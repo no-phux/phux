@@ -44,8 +44,7 @@ SOFTWARE.
 
 ## Spleen bitmap font (BSD-2-Clause)
 
-`crates/phux-record/assets/spleen-8x16.bdf` and the generated
-`crates/phux-record/src/font/spleen_8x16.rs`, Spleen 2.1.0.
+`crates/phux-record/assets/spleen-8x16.bdf`, Spleen 2.1.0, compiled into phux.
 
 Copyright (c) 2018-2024, Frederic Cambus
 All rights reserved.

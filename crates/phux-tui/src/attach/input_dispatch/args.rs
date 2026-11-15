@@ -9,10 +9,7 @@ use crate::layout::{ArrangementDoc, Direction, SplitDir};
 
 /// A [`phux_config::keybind::ResolvedAction`] with no args.
 pub(super) fn bare_action(action: &str) -> phux_config::keybind::ResolvedAction {
-    phux_config::keybind::ResolvedAction {
-        action: action.to_owned(),
-        args: std::collections::BTreeMap::new(),
-    }
+    crate::attach::resolved(action, std::collections::BTreeMap::new())
 }
 
 /// `select-window { index }`.
@@ -149,13 +146,13 @@ pub(super) fn switch_host_action(
     host: impl Into<String>,
     name: impl Into<String>,
 ) -> phux_config::keybind::ResolvedAction {
-    phux_config::keybind::ResolvedAction {
-        action: "switch-host".to_owned(),
-        args: std::collections::BTreeMap::from([
+    crate::attach::resolved(
+        "switch-host",
+        std::collections::BTreeMap::from([
             ("host".to_owned(), toml::Value::String(host.into())),
             ("name".to_owned(), toml::Value::String(name.into())),
         ]),
-    }
+    )
 }
 
 /// Pull an arbitrary string arg out of a

@@ -1,11 +1,12 @@
 //! File-upload chunking and transcription results.
 
 use phux_client_core::input_replay::INPUT_RETRY_HORIZON;
+use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 
 use super::{
     COMPLETED_UPLOADS_KEPT, ControlPlane, FileUploadOutcome, FileUploadReceipt, Pending,
-    ServerFeature, TranscribeOutcome, TranscribeReceipt, UPLOAD_CHUNK_BYTES,
+    TranscribeOutcome, TranscribeReceipt, UPLOAD_CHUNK_BYTES,
 };
 
 impl ControlPlane {
@@ -36,7 +37,11 @@ impl ControlPlane {
             let Some(transfer_id) = self.extensions.upload_order.front().copied() else {
                 return;
             };
-            if !self.server_has(ServerFeature::FileUpload) {
+            let supported = self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has(ServerFeature::FileUpload));
+            if !supported {
                 self.finish_upload(
                     transfer_id,
                     FileUploadOutcome::Refused,

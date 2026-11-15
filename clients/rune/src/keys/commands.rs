@@ -79,24 +79,26 @@ pub struct Chord {
 }
 
 impl Chord {
-    const fn cmd(cap: Cap) -> Self {
+    /// The key alone.
+    const fn bare(cap: Cap) -> Self {
         Self {
             cap,
-            command: true,
+            command: false,
             ctrl: false,
             alt: false,
             shift: false,
         }
     }
 
-    const fn ctrl(cap: Cap) -> Self {
+    const fn cmd(cap: Cap) -> Self {
         Self {
-            cap,
-            command: false,
-            ctrl: true,
-            alt: false,
-            shift: false,
+            command: true,
+            ..Self::bare(cap)
         }
+    }
+
+    const fn ctrl(cap: Cap) -> Self {
+        Self::bare(cap).and_ctrl()
     }
 
     const fn shift(self) -> Self {
@@ -108,13 +110,7 @@ impl Chord {
 
     /// The key with Shift alone.
     const fn shifted(cap: Cap) -> Self {
-        Self {
-            cap,
-            command: false,
-            ctrl: false,
-            alt: false,
-            shift: true,
-        }
+        Self::bare(cap).shift()
     }
 
     const fn alt(self) -> Self {
@@ -123,13 +119,7 @@ impl Chord {
 
     /// The key with Option (Alt) alone.
     const fn opt(cap: Cap) -> Self {
-        Self {
-            cap,
-            command: false,
-            ctrl: false,
-            alt: true,
-            shift: false,
-        }
+        Self::bare(cap).alt()
     }
 
     const fn and_ctrl(self) -> Self {

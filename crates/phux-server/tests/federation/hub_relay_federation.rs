@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::{ResourceId, SatelliteHost};
 use phux_protocol::input::InputEvent;
@@ -17,13 +16,14 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
-    InputMode, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
+    InputMode, Scope, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_server::LaunchCommand;
 use phux_server::{ServerConfig, ServerError};
 use phux_server_testkit::{
-    Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, recv_until_deadline,
-    send_frame, spawn_resource, terminal_server, wait_for_raw_socket, wait_for_socket,
+    Spawn, ascii_key, assert_command_error, bound_listener_addr, encode_frame, recv_typed,
+    recv_until_deadline, send_frame, spawn_resource, terminal_server, wait_for_raw_socket,
+    wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -205,18 +205,11 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    let hello = FrameKind::Hello {
-        client_name: "hub-relay-federation-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    };
+    let hello =
+        phux_server_testkit::hello("hub-relay-federation-test", ClientCapabilities::default());
     let get_state = FrameKind::Command {
         request_id: 900,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     };
     for frame in [hello, get_state] {
         ws.send(Message::Binary(encode_frame(&frame).to_vec().into()))
@@ -324,14 +317,7 @@ async fn command_via_hub(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<FrameKind>) {
-    send_frame(
-        hub,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(hub, request_id, command).await;
     let mut interleaved = Vec::new();
     loop {
         match recv_typed(hub).await.1 {
@@ -349,12 +335,7 @@ async fn get_screen_via_hub(
     request_id: u32,
     terminal_id: ResourceId,
 ) -> CommandResult {
-    let get_screen = Command::GetScreen {
-        terminal_id,
-        request_scrollback: None,
-        cells: false,
-        format: 0,
-    };
+    let get_screen = phux_server_testkit::get_screen(terminal_id);
     command_via_hub(hub, request_id, get_screen).await.0
 }
 
@@ -383,11 +364,8 @@ async fn command_until_linked(
 }
 
 async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResult {
-    command_until_linked(hub, 1000, || Command::GetScreen {
-        terminal_id: ResourceId::satellite("sat", sat_pane),
-        request_scrollback: None,
-        cells: false,
-        format: 0,
+    command_until_linked(hub, 1000, || {
+        phux_server_testkit::get_screen(ResourceId::satellite("sat", sat_pane))
     })
     .await
     .0
@@ -399,9 +377,7 @@ async fn get_state_via_hub(
     hub: &mut UnixStream,
     request_id: u32,
 ) -> (CommandResult, Vec<(ErrorCode, String)>) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     let (result, frames) = command_via_hub(hub, request_id, get_state).await;
     let errors = frames
         .into_iter()
@@ -424,18 +400,8 @@ fn on_satellite(host: &str, spawn: Spawn) -> Spawn {
     }
 }
 
-fn assert_error(result: &CommandResult, expected: ErrorCode) {
-    assert!(
-        matches!(result, CommandResult::Error { code, .. } if *code == expected),
-        "expected {expected:?}, got {result:?}"
-    );
-}
-
 const fn focus_gained(terminal_id: ResourceId) -> Command {
-    Command::RouteInput {
-        terminal_id,
-        event: InputEvent::Focus(FocusEvent::Gained),
-    }
+    phux_server_testkit::route_input(terminal_id, InputEvent::Focus(FocusEvent::Gained))
 }
 
 /// Wait for the next `EVENT` accepted by `pred`.
@@ -470,10 +436,7 @@ fn command_round_trip_and_stream_retagging() {
         // A relayed REPORT_ASKED comes back as an EVENT re-tagged Satellite.
         send_frame(
             &mut hub,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(sat_id.clone()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(sat_id.clone()), None),
         )
         .await;
         let ask = Command::ReportAsked {
@@ -509,7 +472,7 @@ fn command_round_trip_and_stream_retagging() {
         .await
         .expect("no SatelliteUnreachable teardown notification");
         assert!(message.contains("sat"), "{message}");
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 3000, sat_id).await,
             ErrorCode::SatelliteUnreachable,
         );
@@ -592,12 +555,7 @@ fn non_hub_server_refuses_every_satellite_route() {
         );
         let sat = ResourceId::satellite("sat", 1);
         let commands = [
-            Command::GetScreen {
-                terminal_id: sat.clone(),
-                request_scrollback: None,
-                cells: false,
-                format: 0,
-            },
+            phux_server_testkit::get_screen(sat.clone()),
             Command::AcquireInput {
                 terminal_id: sat.clone(),
                 mode: InputMode::Cooperative,
@@ -607,21 +565,17 @@ fn non_hub_server_refuses_every_satellite_route() {
         ];
         for (request_id, command) in (2..).zip(commands) {
             let (result, _) = command_via_hub(&mut plain, request_id, command).await;
-            assert_error(&result, ErrorCode::UnsupportedSatelliteRoute);
+            assert_command_error(&result, ErrorCode::UnsupportedSatelliteRoute);
         }
 
         // SUBSCRIBE_METADATA has no reply, so its refusal is an uncorrelated
         // ERROR push; a pipelined GET_METADATA must answer after it, proving
         // both ordering and that the connection is not poisoned.
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(ResourceId::satellite("gpubox", 7)),
-            key: "phux.agent/v1".to_owned(),
-        };
-        let barrier = FrameKind::GetMetadata {
-            request_id: 9,
-            scope: Scope::Global,
-            key: "phux.test.barrier/v1".to_owned(),
-        };
+        let subscribe = phux_server_testkit::subscribe_metadata(
+            Scope::Resource(ResourceId::satellite("gpubox", 7)),
+            "phux.agent/v1",
+        );
+        let barrier = phux_server_testkit::get_metadata(9, Scope::Global, "phux.test.barrier/v1");
         send_frame(&mut plain, &subscribe).await;
         send_frame(&mut plain, &barrier).await;
         let FrameKind::Error {
@@ -660,10 +614,10 @@ fn dead_and_unknown_satellites_fail_fast_with_typed_errors() {
 
         let started = Instant::now();
         let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("sat", 1)).await;
-        assert_error(&result, ErrorCode::SatelliteUnreachable);
+        assert_command_error(&result, ErrorCode::SatelliteUnreachable);
         assert!(started.elapsed() < STEP_DEADLINE, "fail-fast, not a hang");
         let result = get_screen_via_hub(&mut hub, 2, ResourceId::satellite("nowhere", 1)).await;
-        assert_error(&result, ErrorCode::UnsupportedSatelliteRoute);
+        assert_command_error(&result, ErrorCode::UnsupportedSatelliteRoute);
 
         drop(hub);
         stop(hub_shutdown, hub_task).await;
@@ -877,14 +831,7 @@ async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &ResourceId, c: char, 
     enter.text = None;
     enter.unshifted_codepoint = None;
     for event in [ascii_key(c, key), enter] {
-        send_frame(
-            hub,
-            &FrameKind::InputKey {
-                terminal_id: sat_id.clone(),
-                event,
-            },
-        )
-        .await;
+        send_frame(hub, &phux_server_testkit::input_key(sat_id.clone(), event)).await;
     }
 }
 
@@ -1017,16 +964,16 @@ fn satellite_input_lease_is_per_hub_consumer_and_seize_notifies() {
         let (result, _) = command_via_hub(&mut a, 100, acquire(InputMode::Cooperative)).await;
         assert_eq!(result, CommandResult::Ok);
         let (result, _) = command_via_hub(&mut b, 200, acquire(InputMode::Cooperative)).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
         let (result, _) = command_via_hub(&mut b, 201, focus_gained(sat_id.clone())).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
         let release = Command::ReleaseInput {
             terminal_id: sat_id.clone(),
         };
         let (result, _) = command_via_hub(&mut b, 202, release).await;
         assert_eq!(result, CommandResult::Ok, "non-holder release is a no-op");
         let (result, _) = command_via_hub(&mut b, 203, acquire(InputMode::Cooperative)).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
 
         let (result, _) = command_via_hub(&mut b, 204, acquire(InputMode::Seize)).await;
         assert_eq!(result, CommandResult::Ok, "SEIZE preempts A");
@@ -1057,7 +1004,7 @@ fn satellite_input_lease_is_per_hub_consumer_and_seize_notifies() {
         assert_eq!(action, ControlAction::Seized);
         assert!(input_holder.is_some(), "names the new holder");
         let (result, _) = command_via_hub(&mut a, 101, focus_gained(sat_id.clone())).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
 
         drop((a, b));
         fed.shutdown().await;

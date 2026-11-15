@@ -23,6 +23,9 @@
 #![deny(rustdoc::private_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[macro_use]
+mod macros;
+
 // The codec, input atoms, and policy vocabulary are pure Rust (ADR-0024), so
 // they build for wasm; libghostty conversions sit behind `server`.
 pub mod input;

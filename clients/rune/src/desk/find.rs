@@ -216,16 +216,13 @@ mod tests {
     fn the_confirm_bars_keys_win_over_the_find_field() {
         use crate::desk::Pending;
         use crate::desk::input::Modal;
-        use rune::Mods;
+
         let mut desk = Desk::new(&crate::launch::Resolved::offline("not launched"));
         desk.connection.find_query.focused = true;
         assert_eq!(desk.modal(), Some(Modal::FindField));
         desk.pending = Some(Pending::Close(phux_protocol::ids::ResourceId::local(1)));
         assert_eq!(desk.modal(), Some(Modal::Confirm));
-        let key = |key| KeyEvent {
-            key,
-            mods: Mods::default(),
-        };
+        let key = |key| crate::keys::plain(key);
         assert!(!desk.confirm_key(&key(Key::Text("x".into()))));
         assert!(desk.confirm_key(&key(Key::Escape)));
         assert_eq!(desk.pending, None);

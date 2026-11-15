@@ -4,7 +4,7 @@ use phux_protocol::wire::frame::{
 };
 
 use super::*;
-use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
+use crate::testkit::{OrgFixture, ScriptSpec};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::{ResourceKey, ResourceKind, SessionId, SessionKey};
 
@@ -54,25 +54,8 @@ async fn connect(
     tokio::task::JoinHandle<Vec<phux_protocol::wire::frame::FrameKind>>,
     tempfile::TempDir,
 ) {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) = serve_one(dir.path(), spec);
-    let conn = Connection::connect(&socket).await.expect("connect");
+    let (dir, conn, server) = crate::testkit::connect_one(spec).await;
     (conn, server, dir)
-}
-
-#[tokio::test]
-async fn every_helper_refuses_without_the_bit_and_sends_nothing() {
-    let (mut conn, server, _dir) = connect(ScriptSpec::new()).await;
-    let err = fetch(&mut conn, OrgFilter::All, 1).await.unwrap_err();
-    assert!(matches!(err, OrgError::Unsupported));
-    drop(conn);
-    let seen = server.await.unwrap();
-    assert!(
-        !seen
-            .iter()
-            .any(|frame| matches!(frame, phux_protocol::wire::frame::FrameKind::Command { .. })),
-        "{seen:?}"
-    );
 }
 
 #[tokio::test]

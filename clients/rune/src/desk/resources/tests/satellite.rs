@@ -7,32 +7,8 @@ use super::*;
 use rune::accesskit::Action;
 
 fn satellite_frames(id: &ResourceId, bytes: &[u8]) -> [FrameKind; 3] {
-    let stream_id = StreamId::new(70).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    [
-        FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::PixelSurfacePngV1,
-            cols: 0,
-            rows: 0,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ]
+    let profile = BootstrapStreamProfile::PixelSurfacePngV1;
+    bootstrap_frames(id, [70, 1], profile, [0, 0], bytes)
 }
 
 #[test]
@@ -69,12 +45,7 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
                 .with_title(Some("display".to_owned()))
                 .with_control(Some(phux_protocol::wire::frame::ControlClass::Display)),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request, CommandValue::State(snapshot));
     step(&mut rt);
     assert!(rt.state.is_document(&surface), "the surface is a document");
     let hit = rt

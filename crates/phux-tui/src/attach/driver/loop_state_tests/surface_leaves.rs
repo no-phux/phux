@@ -18,10 +18,8 @@ fn screen_text(bytes: &[u8]) -> String {
     out
 }
 
-/// Rune opens a document live and places it beside pane 1. The live loop
-/// learns its kind from the spawn event (no document bootstrap reaches
-/// this client), so it neither attaches nor resizes the document, and the
-/// placement repaints it as a placeholder.
+/// A document placed live is learned from its spawn event, so it is never
+/// attached or resized and repaints as a placeholder.
 #[tokio::test(flavor = "current_thread")]
 async fn a_document_placed_live_is_never_attached_or_resized() {
     use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};

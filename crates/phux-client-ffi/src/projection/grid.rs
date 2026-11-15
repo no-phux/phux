@@ -1,16 +1,10 @@
 //! One reading of a published [`GridFrame`].
 //!
-//! The two encoders want different things from the same frame: the C lane
-//! lends pointers straight into the retained `Arc<GridFrame>`, and the `UniFFI`
-//! lane copies the cells into a byte vector because Swift and Kotlin cannot
-//! borrow. Both start from [`view`], so "what a frame says" is decided once
-//! and only "how it crosses" differs.
-//!
 //! Cells cross as the pinned 36-byte `phux_client_core::grid::Cell` layout
 //! plus the shared UTF-8 arena every cell addresses — never as one foreign
 //! record per cell.
 
-use phux_client_core::grid::{Cell, Cursor, GridDamage};
+use phux_client_core::grid::{Cell, Cursor};
 use phux_client_runtime::publication::{GridFrame, Rgb, Scrollbar};
 
 /// The width of one serialized [`Cell`], with its padding bytes explicit.
@@ -21,12 +15,6 @@ pub const CELL_BYTES: usize = 36;
 pub struct GridView<'a> {
     /// Increases by one per publish of this terminal, starting at one.
     pub generation: u64,
-    /// The logical subscription of the projected replica generation.
-    pub stream_id: u64,
-    /// The replica generation.
-    pub bootstrap_id: u64,
-    /// The highest live sequence applied to the replica.
-    pub last_seq: u64,
     /// Viewport width in cells.
     pub cols: u16,
     /// Viewport height in cells.
@@ -45,8 +33,6 @@ pub struct GridView<'a> {
     pub default_fg: Rgb,
     /// The effective render background.
     pub default_bg: Rgb,
-    /// How much changed since the previous generation.
-    pub damage: GridDamage,
 }
 
 /// Read one published frame.
@@ -54,9 +40,6 @@ pub struct GridView<'a> {
 pub fn view(frame: &GridFrame) -> GridView<'_> {
     GridView {
         generation: frame.generation,
-        stream_id: frame.stream_id,
-        bootstrap_id: frame.bootstrap_id,
-        last_seq: frame.last_seq,
         cols: frame.cols,
         rows: frame.rows,
         cells: &frame.buffer.cells,
@@ -66,7 +49,6 @@ pub fn view(frame: &GridFrame) -> GridView<'_> {
         scrollbar: frame.scrollbar,
         default_fg: frame.colors.foreground,
         default_bg: frame.colors.background,
-        damage: frame.damage,
     }
 }
 
@@ -76,19 +58,10 @@ pub fn dirty_rows(frame: &GridFrame) -> Vec<u16> {
     frame.dirty_rows().collect()
 }
 
-/// The inclusive first and last changed row, or `None` when nothing changed.
-#[must_use]
-pub fn dirty_row_span(frame: &GridFrame) -> Option<(u16, u16)> {
-    let mut rows = frame.dirty_rows();
-    let first = rows.next()?;
-    Some((first, rows.last().unwrap_or(first)))
-}
-
 /// Serialize cells without reading Rust padding.
 ///
 /// Bytes 18-19 and 35 are explicitly zero, matching the shared layout's
-/// pinned offsets, so a foreign decoder reads the same bytes the C lane
-/// lends by pointer. Each cell is written into one zeroed 36-byte slot and
+/// pinned offsets. Each cell is written into one zeroed 36-byte slot and
 /// copied once. A memcpy of the `Cell` slice would publish whatever the
 /// compiler left in that padding.
 #[must_use]

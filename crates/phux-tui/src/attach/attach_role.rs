@@ -1,7 +1,6 @@
-//! The process's declared attach intent (ADR-0127): `phux attach --viewer`
-//! or `--take`, set once by the CLI before it dials and read by every
-//! `ATTACH` this process sends, so a reconnect or an in-TUI session switch
-//! keeps the role the operator asked for.
+//! The process's declared attach intent (ADR-0127): `--viewer` or `--take`,
+//! set once by the CLI and read by every `ATTACH`, so reconnects and switches
+//! keep it.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 

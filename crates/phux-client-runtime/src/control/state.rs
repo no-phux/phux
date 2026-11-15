@@ -2,7 +2,7 @@
 
 use super::{
     CLIPBOARD_QUEUE_BYTES, CommandResult, ControlPlane, EVENT_QUEUE_CAP, ErrorCode, Event, Pending,
-    ServerFeature, SessionRecovery, Status,
+    SessionRecovery, Status,
 };
 
 impl ControlPlane {
@@ -153,32 +153,14 @@ impl ControlPlane {
             .collect();
         requests.sort_unstable_by_key(|(id, _)| *id);
         for (request_id, frame) in requests {
-            if self.server_has(ServerFeature::SpawnIdempotency) {
-                self.queue_frame(&frame);
-                if let Some(Pending::Spawn { needs_replay, .. }) = self.pending.get_mut(&request_id)
-                {
-                    *needs_replay = false;
-                }
-            } else {
-                self.pending.remove(&request_id);
-                self.push_event(Event::TerminalSpawned {
-                    request_id,
-                    terminal_id: None,
-                    error: Some(
-                        "the new server cannot safely retry this spawn; check its panes".to_owned(),
-                    ),
-                });
+            self.queue_frame(&frame);
+            if let Some(Pending::Spawn { needs_replay, .. }) = self.pending.get_mut(&request_id) {
+                *needs_replay = false;
             }
         }
     }
 
     // ----- small helpers -----------------------------------------------
-
-    pub(super) fn server_has(&self, feature: ServerFeature) -> bool {
-        self.server
-            .as_ref()
-            .is_some_and(|server| server.has(feature))
-    }
 
     pub(super) fn set_status(&mut self, status: Status) {
         if status.is_terminal() {

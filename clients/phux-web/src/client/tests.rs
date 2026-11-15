@@ -167,83 +167,10 @@ async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
     assert_eq!(exits[1], WebTransportExit::PartialEof);
 
     for exit in exits {
-        let terminal_id = ResourceId::local(1);
         let mut session = crate::Connection::new(&vt, 80, 24);
-        let hello = session.on_frame(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: Vec::new(),
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        });
-        assert_eq!(hello.send.len(), 2, "subscribe before attach snapshot");
-        assert!(
-            session
-                .on_frame(FrameKind::Attached {
-                    attach_id: 1,
-                    snapshot: SessionSnapshot::new(
-                        SessionId::new(1),
-                        WindowId::new(1),
-                        terminal_id.clone(),
-                    )
-                    .with_resources(vec![ResourceInfo::new(
-                        terminal_id.clone(),
-                        WindowId::new(1),
-                        80,
-                        24,
-                    )]),
-                    initial_client_id: ClientId::new(1),
-                })
-                .fatal
-                .is_none()
-        );
-        let stream_id = StreamId::new(1).unwrap();
-        let bootstrap_id = BootstrapId::new(1).unwrap();
-        assert!(
-            session
-                .on_frame(FrameKind::BootstrapBegin {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-                    cols: 80,
-                    rows: 24,
-                    base_seq: 0,
-                })
-                .fatal
-                .is_none()
-        );
-        assert!(
-            session
-                .on_frame(FrameKind::BootstrapChunk {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: bytes::Bytes::from_static(b"ready"),
-                })
-                .fatal
-                .is_none()
-        );
-        assert!(
-            session
-                .on_frame(FrameKind::BootstrapReady {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                })
-                .fatal
-                .is_none()
-        );
-        assert!(
-            session
-                .on_frame(FrameKind::AttachReady { attach_id: 1 })
-                .fatal
-                .is_none()
-        );
+        for frame in attached_frames(1, b"ready") {
+            assert!(session.on_frame(frame).fatal.is_none());
+        }
         let key = KeyEvent {
             action: KeyAction::Press,
             key: PhysicalKey::A,
@@ -266,9 +193,9 @@ async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
         assert!(session.key_frame(key).is_none());
 
         let after_exit = session.on_frame(FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
+            terminal_id: ResourceId::new(1),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
             seq: 1,
             bytes: bytes::Bytes::from_static(b"ignored"),
         });
@@ -299,26 +226,24 @@ fn outbound_queue_is_ordered_and_byte_bounded() {
 
 #[wasm_bindgen_test]
 fn fallback_token_carrier_is_strict_and_fragment_free() {
-    assert_eq!(
-        fallback_token_from_webtransport_url("https://host/session?x=1&token=00aF#ignored"),
-        FallbackToken::Valid("00aF")
-    );
-    assert_eq!(
-        fallback_token_from_webtransport_url("https://host/session?token=secret"),
-        FallbackToken::Invalid
-    );
-    assert_eq!(
-        fallback_token_from_webtransport_url("https://host/session#token=00"),
-        FallbackToken::Missing
-    );
-    assert_eq!(
-        fallback_token_from_webtransport_url("https://host/session?token=00&token=00"),
-        FallbackToken::Invalid
-    );
-    assert_eq!(
-        fallback_token_from_webtransport_url("https://host/session?token=00&token"),
-        FallbackToken::Invalid
-    );
+    for (url, token) in [
+        (
+            "https://host/session?x=1&token=00aF#ignored",
+            FallbackToken::Valid("00aF"),
+        ),
+        ("https://host/session?token=secret", FallbackToken::Invalid),
+        ("https://host/session#token=00", FallbackToken::Missing),
+        (
+            "https://host/session?token=00&token=00",
+            FallbackToken::Invalid,
+        ),
+        (
+            "https://host/session?token=00&token",
+            FallbackToken::Invalid,
+        ),
+    ] {
+        assert_eq!(fallback_token_from_webtransport_url(url), token, "{url}");
+    }
     assert_eq!(
         authenticated_websocket_protocols("00aF"),
         ["phux.v1", "phux.bearer.00aF"]
@@ -388,14 +313,15 @@ async fn malformed_token_fails_closed_before_an_available_ws_fallback() {
     assert!(result.is_err());
 }
 
-/// One transport chunk that takes a fresh session through HELLO_OK to
-/// ATTACH_READY with one raw-profile terminal whose bootstrap is
-/// `payload`.
-fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
-    let terminal_id = ResourceId::new(1);
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    let frames = [
+/// Frames that take a fresh session through HELLO_OK to ATTACH_READY with
+/// `count` raw-profile 80x24 terminals `@1..`, each bootstrapped to `payload`.
+pub(super) fn attached_frames(count: u32, payload: &'static [u8]) -> Vec<FrameKind> {
+    let ids = (1..=count).map(ResourceId::new);
+    let resources = ids
+        .clone()
+        .map(|id| ResourceInfo::new(id, WindowId::new(1), 80, 24))
+        .collect();
+    let mut frames = vec![
         FrameKind::HelloOk {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
@@ -407,50 +333,50 @@ fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
         },
         FrameKind::Attached {
             attach_id: 1,
-            snapshot: SessionSnapshot::new(
-                SessionId::new(1),
-                WindowId::new(1),
-                terminal_id.clone(),
-            )
-            .with_resources(vec![ResourceInfo::new(
-                terminal_id.clone(),
-                WindowId::new(1),
-                80,
-                24,
-            )]),
+            snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+                .with_resources(resources),
             initial_client_id: ClientId::new(1),
         },
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 80,
-            rows: 24,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::from_static(payload),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id: 1 },
     ];
-    let mut chunk = Vec::new();
-    for frame in frames {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        chunk.extend_from_slice(&encoded);
+    for (serial, terminal_id) in (1..).zip(ids) {
+        let stream_id = StreamId::new(serial).unwrap();
+        let bootstrap_id = BootstrapId::new(serial).unwrap();
+        frames.extend([
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(payload),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]);
     }
-    chunk
+    frames.push(FrameKind::AttachReady { attach_id: 1 });
+    frames
+}
+
+/// [`attached_frames`] for one terminal, encoded as one transport chunk.
+fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
+    let mut chunk = bytes::BytesMut::new();
+    for frame in attached_frames(1, payload) {
+        frame.encode(&mut chunk);
+    }
+    chunk.to_vec()
 }
 
 #[wasm_bindgen_test]

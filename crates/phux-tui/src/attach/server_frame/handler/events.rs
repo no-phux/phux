@@ -93,13 +93,10 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
     }
 }
 
-/// An organization event (`docs/organization.md`), matched by record key.
-/// A rename of any session renames it in the roster (and on the status line
-/// when it is ours); a peer's arrangement change asks for a re-read of the
-/// peer caches. About the attached session: deletion detaches (R15), a
-/// lifetime change updates what an emptied arrangement does, an arrangement
-/// change asks for a re-read, and a membership change asks for a fresh
-/// inventory.
+/// An organization event (`docs/organization.md`), matched by record key:
+/// renames update the roster, arrangement changes ask for a re-read, and for
+/// the attached session deletion detaches (R15), lifetime changes are kept,
+/// and membership changes ask for a fresh inventory.
 fn fold_org_event<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     event: &AgentEvent,

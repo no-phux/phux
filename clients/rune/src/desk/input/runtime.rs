@@ -111,11 +111,7 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
             rt.pointer_down(x, y);
             rt.pointer_up(x, y);
             rt.frame(0.0);
-            let field = rt
-                .elements()
-                .into_iter()
-                .find(|e| e.key.as_deref() == Some("palette-query"))
-                .expect("field");
+            let field = crate::ui::element(&rt, "palette-query");
             let caret = field.caret.expect("focused caret");
             let ink = theme.roles().text;
             let drawn = rt

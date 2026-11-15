@@ -15,7 +15,7 @@ impl OrganizationReplica {
 
     /// Start a seed of `filter`: the replica buffers events until it ends.
     /// Returns the first page request.
-    pub fn begin_seed(&mut self, filter: OrgFilter) -> Command {
+    pub(crate) fn begin_seed(&mut self, filter: OrgFilter) -> Command {
         self.state = ReplicaState::Seeding;
         self.seed = Some(Seed {
             filter,
@@ -39,7 +39,7 @@ impl OrganizationReplica {
     /// Feed one page of the seed. Returns the next page request, or, on the
     /// last page, installs the records and replays buffered events past the
     /// cut.
-    pub fn apply_page(&mut self, page: OrganizationPage) -> ReplicaAction {
+    pub(crate) fn apply_page(&mut self, page: OrganizationPage) -> ReplicaAction {
         let Some(seed) = self.seed.as_mut() else {
             return ReplicaAction::None;
         };
@@ -75,7 +75,7 @@ impl OrganizationReplica {
 
     /// The seed was refused or failed: drop it. The replica keeps what it
     /// had and reports itself stale.
-    pub fn abandon_seed(&mut self) {
+    pub(crate) fn abandon_seed(&mut self) {
         self.seed = None;
         self.buffered.clear();
         self.state = ReplicaState::Stale;
@@ -116,7 +116,7 @@ impl OrganizationReplica {
     }
 
     /// Store an arrangement fetched with `ARRANGEMENT_GET`.
-    pub fn apply_arrangement(&mut self, value: ArrangementValue) {
+    pub(crate) fn apply_arrangement(&mut self, value: ArrangementValue) {
         if let ArrangementOwner::Session(owner) = value.owner
             && let Some(session) = self.sessions.iter_mut().find(|s| s.key == owner)
         {

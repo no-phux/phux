@@ -189,20 +189,11 @@ async fn confirm_approval(
 }
 
 fn approval_error(verb: &str, err: &ApprovalError) -> CliError {
-    match err {
-        ApprovalError::Unsupported => CliError::new(
-            codes::SERVER_TOO_OLD,
-            format!(
-                "{verb}: the server does not hold actions for approval (it predates approvals)"
-            ),
-            "upgrade phux where the server runs (`phux upgrade`), then retry",
-        ),
-        other => CliError::new(
-            codes::TRANSPORT,
-            format!("{verb} failed: {other}"),
-            "`phux approvals` lists what is still pending",
-        ),
-    }
+    CliError::new(
+        codes::TRANSPORT,
+        format!("{verb} failed: {err}"),
+        "`phux approvals` lists what is still pending",
+    )
 }
 
 fn print_approvals(json: bool, approvals: &[Approval]) {

@@ -27,8 +27,8 @@ pub(crate) use phux_terminal::{ControlRequest, TerminalActorBundle, TerminalInpu
 pub(crate) use phux_terminal_api::native_state::NativeStateError;
 
 use phux_terminal::actor::{
-    ConsumerAttachRequest, ConsumerDetachRequest, EncodedInputRequest, ResizeReceiver,
-    ResizeSender, SnapshotRequest, StateSyncBootstrap, TerminalActor,
+    ConsumerAttachRequest, ConsumerDetachRequest, ResizeReceiver, ResizeSender, SnapshotRequest,
+    StateSyncBootstrap, TerminalActor,
 };
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use phux_terminal::actor::{NativeBootstrapRequest, NativePublicationRequest};
@@ -73,7 +73,6 @@ pub(crate) fn detached_terminal() -> ResourceHandle {
 pub(crate) struct StubRx {
     pub(crate) snapshot: mpsc::Receiver<SnapshotRequest>,
     pub(crate) resize: ResizeReceiver,
-    pub(crate) encoded_input: mpsc::Receiver<EncodedInputRequest>,
     pub(crate) consumer_attach: mpsc::Receiver<ConsumerAttachRequest>,
     pub(crate) consumer_detach: mpsc::Receiver<ConsumerDetachRequest>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -100,6 +99,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
     let (snapshot, snapshot_rx) = channel(8);
     let (resize, resize_rx) = ResizeSender::channel(8);
     let (encoded_input, encoded_rx) = channel(8);
+    keep.push(Box::new(encoded_rx));
     let (ordered_input, input_modes) = phux_terminal::fixture_input_port(encoded_input);
     keep.push(Box::new(input_modes));
     let (consumer_attach, attach_rx) = channel(8);
@@ -133,7 +133,6 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,
-        encoded_input: encoded_rx,
         consumer_attach: attach_rx,
         consumer_detach: detach_rx,
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

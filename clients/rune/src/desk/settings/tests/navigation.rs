@@ -1,6 +1,6 @@
 //! Settings navigation, persistence and search use the real Rune runtime.
 
-use rune::{Key, KeyEvent, Mods};
+use rune::{Key, KeyEvent};
 
 use super::super::Settings;
 use super::*;
@@ -14,10 +14,7 @@ fn settings_desk() -> Desk {
 }
 
 fn event(key: Key) -> KeyEvent {
-    KeyEvent {
-        key,
-        mods: Mods::default(),
-    }
+    crate::keys::plain(key)
 }
 
 fn click(runtime: &mut Runtime<Desk>, key: &str) {

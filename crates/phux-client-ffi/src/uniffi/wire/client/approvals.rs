@@ -1,4 +1,7 @@
 //! Nonsecret approval review and decision projection.
+//!
+//! `UniFFI` includes exported docstrings in API checksums. The C reference
+//! below describes the retired encoder's shared JSON schema; keep it stable.
 
 use super::*;
 

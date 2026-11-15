@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "tests")]
-
 use super::super::*;
 use super::support::*;
 use crate::runtime::apps::agent_session::upgrade::request_agent_session_cut;
@@ -7,57 +5,53 @@ use phux_agent_session::session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
-            append_records(&append, "{\"type\":\"prompt\"}").await;
-            let (_, seal) = capture_blob(&state).await;
-            assert!(matches!(
-                try_append(&append, "{\"type\":\"stop\"}").await,
-                Err(phux_agent_session::session::AppendRejection::Overflow(_))
-            ));
-            let (plan, _listener, _) = unexecutable_plan(seal);
-            assert_eq!(
-                plan.exec().await.kind(),
-                std::io::ErrorKind::PermissionDenied
-            );
-            let next = append_records(&append, "{\"type\":\"stop\"}").await;
-            assert_eq!(next.first_seq, 2, "failed appends consumed no sequence");
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+        append_records(&append, "{\"type\":\"prompt\"}").await;
+        let (_, seal) = capture_blob(&state).await;
+        assert!(matches!(
+            try_append(&append, "{\"type\":\"stop\"}").await,
+            Err(phux_agent_session::session::AppendRejection::Overflow(_))
+        ));
+        let (plan, _listener, _) = unexecutable_plan(seal);
+        assert_eq!(
+            plan.exec().await.kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let next = append_records(&append, "{\"type\":\"stop\"}").await;
+        assert_eq!(next.first_seq, 2, "failed appends consumed no sequence");
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
-            let next = append_records(&append, "{\"type\":\"prompt\"}").await;
-            assert_eq!(next.last_seq, 1);
-            let listener = tempfile::tempfile().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            state.with_mut(|s| {
-                s.set_upgrade_context(
-                    listener.as_raw_fd(),
-                    dir.path().join("phux.sock"),
-                    RuntimeFlags {
-                        upgrade_source_exe: Some(dir.path().join("missing-replacement")),
-                        ..RuntimeFlags::default()
-                    },
-                );
-            });
-            let Err(UpgradeError::Io(error)) = prepare_upgrade(&state).await else {
-                panic!("the replacement does not exist");
-            };
-            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-            let next = append_records(&append, "{\"type\":\"stop\"}").await;
-            assert_eq!(next.first_seq, 2);
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+        let next = append_records(&append, "{\"type\":\"prompt\"}").await;
+        assert_eq!(next.last_seq, 1);
+        let listener = tempfile::tempfile().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        state.with_mut(|s| {
+            s.set_upgrade_context(
+                listener.as_raw_fd(),
+                dir.path().join("phux.sock"),
+                RuntimeFlags {
+                    upgrade_source_exe: Some(dir.path().join("missing-replacement")),
+                    ..RuntimeFlags::default()
+                },
+            );
+        });
+        let Err(UpgradeError::Io(error)) = prepare_upgrade(&state).await else {
+            panic!("the replacement does not exist");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        let next = append_records(&append, "{\"type\":\"stop\"}").await;
+        assert_eq!(next.first_seq, 2);
+    })
+    .await;
 }
 
 /// Wire ids are interned lazily, so a session or pane no client has read yet

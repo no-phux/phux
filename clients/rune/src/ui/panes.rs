@@ -11,6 +11,7 @@ use super::status::placeholder;
 use super::{CARD_GAP, CARD_RADIUS, Ink, PAD, overlay};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
+use crate::ui::Cover;
 use crate::{grid, perf};
 
 /// The gutter between two cards, all of it the divider's hit area.
@@ -222,9 +223,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
                 .clip_rounded(CARD_RADIUS),
         )
         .child(
-            el().absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
+            el().cover()
                 .radius(CARD_RADIUS)
                 .continuous_corners()
                 // A faint sheen from the top, as light catches glass.
@@ -316,7 +315,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
         // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()));
+        .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()));
     float(id, framed(desk, host, ground, lit, ink))
 }
 

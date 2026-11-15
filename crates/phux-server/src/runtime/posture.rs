@@ -11,15 +11,10 @@ use tracing::{error, info};
 /// The engine a posture calls for; `None` keeps the state's current engine.
 pub(in crate::runtime) type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
 
-/// Resolve the startup posture from `[policy] mode` and the configured entry
-/// points, refuse the contradictions (`docs/remote.md#who-can-connect`), and
-/// build the engine it calls for.
-///
-/// A `resuming` image (ADR-0032) never exits on a refusal: the previous
-/// process is already gone, and exiting would end every pane it handed over.
-/// It takes [`crate::policy::PolicyPosture::resume_fallback`] instead, logs
-/// the refusal, and returns the fallback so the caller can leave the remote
-/// entry points unbound.
+/// Resolve the startup posture from `[policy] mode` and the entry points,
+/// refuse contradictions (`docs/remote.md#who-can-connect`), and build its
+/// engine. A `resuming` image never exits on a refusal (the old process is
+/// gone): it takes [`crate::policy::PolicyPosture::resume_fallback`].
 pub(in crate::runtime) fn startup_policy(
     cfg: &ServerConfig,
     remote_listener: bool,

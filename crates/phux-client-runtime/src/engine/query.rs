@@ -7,8 +7,7 @@ use super::{
 #[cfg(feature = "engine")]
 use super::{
     Arc, BoundedSelectionText, EngineDocumentPoint, FrameKey, GridFrame, MouseMode, ReplicaInfo,
-    ReplicaPrompt, Scroll, SearchResults, SelectionGestureEvent, SelectionGestureResult,
-    TextRegion, ViewPresentation, views,
+    ReplicaPrompt, Scroll, SearchResults, SelectionGestureEvent, SelectionGestureResult, views,
 };
 pub(super) enum Query {
     HasProjection(ResourceId, Sender<bool>),
@@ -45,8 +44,6 @@ pub(super) enum Query {
     Republish(ResourceId, Sender<Result<bool, EngineError>>),
     #[cfg(feature = "engine")]
     ReplicaInfo(ResourceId, Sender<Result<ReplicaInfo, EngineError>>),
-    #[cfg(feature = "engine")]
-    Present(ResourceId, Sender<Result<ViewPresentation, EngineError>>),
     #[cfg(feature = "engine")]
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
@@ -91,13 +88,6 @@ pub(super) enum Query {
     ),
     #[cfg(feature = "engine")]
     SelectAll(ResourceId, Sender<Result<bool, EngineError>>),
-    #[cfg(feature = "engine")]
-    RegionText(
-        ResourceId,
-        TextRegion,
-        usize,
-        Sender<Result<BoundedSelectionText, EngineError>>,
-    ),
     #[cfg(feature = "engine")]
     CellPixels(ResourceId, u16, u16, Sender<Result<(), EngineError>>),
     #[cfg(not(feature = "engine"))]

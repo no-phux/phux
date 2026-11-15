@@ -95,7 +95,7 @@ impl TerminalActor {
     /// `ServerState`, which the pane never holds.
     pub fn set_live_session_probe(
         &mut self,
-        probe: crate::agent_detect::live_session::LiveSessionProbe,
+        probe: phux_terminal_api::agent_detect::LiveSessionProbe,
     ) {
         self.live_session_probe = Some(probe);
     }

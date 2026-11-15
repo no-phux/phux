@@ -369,17 +369,13 @@ impl Desk {
 
 #[cfg(test)]
 mod tests {
-    use rune::Mods;
 
     use super::*;
     use crate::desk::input::selection::Selected;
 
     fn press(rt: &mut rune::Runtime<Desk>, keys: &str) {
         for c in keys.chars() {
-            rt.key(KeyEvent {
-                key: Key::Text(c.to_string()),
-                mods: Mods::default(),
-            });
+            rt.key(crate::keys::plain(Key::Text(c.to_string())));
             rt.frame(0.0);
         }
     }
@@ -452,10 +448,7 @@ mod tests {
         assert_eq!(board.text().as_ref().map(|t| t.as_str()), Some("."));
 
         rt.update(|desk, _| desk.toggle_copy_mode());
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         rt.frame(0.0);
         assert!(rt.state.connection.copy_mode.is_none());
         assert_eq!(selected(&rt), None);

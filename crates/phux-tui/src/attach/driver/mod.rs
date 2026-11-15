@@ -1,19 +1,9 @@
-//! The attach loop driver: connect, HELLO + ATTACH, then `tokio::select!`
-//! over the server, stdin, SIGWINCH, and the detach chord until the server
-//! sends `DETACHED` or the user requests detach.
+//! The attach loop driver: connect, HELLO + ATTACH, then `tokio::select!` over
+//! the server, stdin, signals, and timers until detach.
 //!
-//! The driver owns:
-//!
-//! * the [`super::connection::Connection`] (UDS transport),
-//! * stdout via a `RawModeGuard` that flips the outer terminal into raw
-//!   mode + alt screen on construction and restores it on drop (panic-safe
-//!   per ADR-0003's "no hung outer terminals" requirement),
-//! * a stdin reader,
-//! * a SIGWINCH listener (currently a no-op; once `VIEWPORT_RESIZE` lands
-//!   in phux-4hp it will start sending resize frames upstream),
-//! * a local `libghostty_vt::Terminal` + [`super::render::TerminalRenderer`] for the focused
-//!   pane (under ADR-0013 the client is bytes-in / `vt_write` / dirty-row
-//!   redraw — see `research/2026-05-25-libghostty-renderstate.md`).
+//! It owns the connection, the outer terminal's raw mode and alt screen
+//! (restored on every exit path, ADR-0003), and a replica `Terminal` plus
+//! [`super::render::TerminalRenderer`] per pane (ADR-0013).
 
 #![allow(
     clippy::result_large_err,

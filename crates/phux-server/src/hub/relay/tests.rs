@@ -18,6 +18,88 @@ pub(super) fn encode(frame: &FrameKind) -> Vec<u8> {
     buf.to_vec()
 }
 
+/// A raw-VT session with a satellite that negotiated `features`.
+pub(super) fn negotiated(features: &[ServerFeature]) -> RelaySession {
+    RelaySession::new_negotiated(
+        host(),
+        BootstrapLimits::default(),
+        BootstrapProfile::SynthesizedVtRaw,
+        ServerFeatureSet::with(features),
+    )
+}
+
+pub(super) fn agent_event(terminal: u32) -> FrameKind {
+    FrameKind::Event {
+        terminal: Some(ResourceId::local(terminal)),
+        event: AgentEvent::CommandStarted,
+        stamp: None,
+    }
+}
+
+/// The next frame a consumer was sent.
+pub(super) fn next_frame(rx: &mut mpsc::Receiver<Outbound>, what: &str) -> FrameKind {
+    match rx.try_recv().expect(what) {
+        Outbound::Frame(frame) => frame,
+        Outbound::FatalError { .. } => panic!("unexpected terminal outbound sentinel"),
+    }
+}
+
+/// An events-shaped subscription at token 1, with no bootstrap selection.
+pub(super) fn proxy(
+    terminal: u32,
+    client: ClientId,
+    out_tx: mpsc::Sender<Outbound>,
+) -> ProxySubscription {
+    ProxySubscription {
+        resource_kind: None,
+        terminal,
+        client,
+        out_tx,
+        consumer_cancel: CancellationToken::new(),
+        seq: 1,
+        awaits_snapshot: false,
+        bootstrap_profile: None,
+        bootstrap_limits: None,
+    }
+}
+
+/// Send an unsubscribed `command`: its wire bytes and reply.
+pub(super) fn send_command(
+    session: &mut RelaySession,
+    command: Command,
+) -> (Option<Vec<u8>>, oneshot::Receiver<CommandResult>) {
+    let (reply, rx) = oneshot::channel();
+    let wire = session.handle_request_checked(RelayRequest::Command {
+        command,
+        reply,
+        subscribe: None,
+    });
+    (wire, rx)
+}
+
+impl RelaySession {
+    /// Feed one valid satellite frame.
+    pub(super) fn feed(&mut self, frame: &FrameKind) {
+        self.handle_inbound(&encode(frame))
+            .expect("valid satellite frame");
+    }
+
+    /// A receipt-less `Unsubscribe::Terminal`.
+    pub(super) fn unsubscribe_terminal(
+        &mut self,
+        client: ClientId,
+        terminal: u32,
+        seq: u64,
+    ) -> Vec<Vec<u8>> {
+        self.handle_unsubscribe(Unsubscribe::Terminal {
+            client,
+            terminal,
+            seq,
+            reply: None,
+        })
+    }
+}
+
 /// Register a `SUBSCRIBE_EVENTS`-shaped subscription at token 1.
 pub(super) fn subscribe(
     session: &mut RelaySession,
@@ -38,15 +120,8 @@ pub(super) fn subscribe_at(
 ) {
     let wire = session.handle_request(RelayRequest::Subscribe {
         subscription: ProxySubscription {
-            resource_kind: None,
-            terminal,
-            client,
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
             seq,
-            awaits_snapshot: false,
-            bootstrap_profile: None,
-            bootstrap_limits: None,
+            ..proxy(terminal, client, out_tx)
         },
         forward: FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::local(terminal)),
@@ -73,15 +148,10 @@ pub(super) fn attach(
         command: Command::attach_terminal(ResourceId::local(terminal), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal,
-            client,
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(selected_profile),
             bootstrap_limits: Some(selected_limits),
+            ..proxy(terminal, client, out_tx)
         }),
     });
     assert!(!wire.is_empty(), "attach must produce the COMMAND frame");

@@ -229,15 +229,8 @@ fn permanently_full_retirement_cancels_consumer_and_detaches_upstream() {
         .expect("fill downstream mailbox");
     let wire = session.handle_request(RelayRequest::Subscribe {
         subscription: ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(1),
-            out_tx,
             consumer_cancel: consumer_cancel.clone(),
-            seq: 1,
-            awaits_snapshot: false,
-            bootstrap_profile: None,
-            bootstrap_limits: None,
+            ..proxy(9, ClientId(1), out_tx)
         },
         forward: FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::local(9)),

@@ -222,10 +222,7 @@ pub(super) fn decode_optional_key(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<IdempotencyKey>, DecodeError> {
     dec.read_option("Option<IdempotencyKey> tag", |dec| {
-        let mut bytes = [0; 16];
-        for byte in &mut bytes {
-            *byte = dec.read_u8()?;
-        }
+        let bytes: [u8; 16] = dec.read_array()?;
         IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)
     })
 }
@@ -388,10 +385,7 @@ pub(super) fn decode_apply_input_command(
     if command_body_len > MAX_APPLY_INPUT_COMMAND_BODY {
         return Err(DecodeError::ApplyInputLimitExceeded);
     }
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
+    let bytes: [u8; 16] = dec.read_array()?;
     let operation_id = InputOperationId::new(bytes).ok_or(DecodeError::InvalidInputOperationId)?;
     let terminal_id = decode_terminal_id(dec)?;
     let count = dec.read_u16_be()? as usize;

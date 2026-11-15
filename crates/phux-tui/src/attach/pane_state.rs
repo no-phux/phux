@@ -1,8 +1,5 @@
-//! Per-pane frontend state and the client-local indices built over it:
-//! `PaneSlot`, the session-kernel alias, the VCS index, and the attention
-//! helpers. Shared vocabulary the driver and its siblings read; this module
-//! reads nothing back from them (only [`super::outcome`] and
-//! [`super::render`]).
+//! Per-pane frontend state and the client-local indices built over it,
+//! shared by the driver and its siblings; it reads nothing back from them.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -36,11 +33,8 @@ pub(super) fn published_terminal<'a>(
     kernel.published_engine(terminal_id)?.terminal()
 }
 
-/// A pane's published replica `Terminal` paired with its generation token.
-/// Every renderer walk fetches through here: the kernel replaces the
-/// `Terminal` on republish and the renderer drops its pooled cache exactly
-/// when the token changes. Read-only inspection may use
-/// [`published_terminal`].
+/// A pane's published replica `Terminal` with its generation token, for
+/// every renderer walk. Read-only inspection may use [`published_terminal`].
 pub(super) fn published_replica<'a>(
     kernel: &'a AttachKernel,
     terminal_id: &ResourceId,
@@ -126,10 +120,8 @@ pub(super) struct PaneSlot {
     /// The satellite link is down: the leaf stays grey and input is dropped
     /// until an inventory says the host answers again.
     pub satellite_down: bool,
-    /// Progressive history for the published replica is unavailable (pruned,
-    /// tombstoned, rejected): only the scrollback this client already holds
-    /// remains. Cleared when a fresh replica publishes or the cache reports
-    /// a healthy state again; the focused pane badges it.
+    /// Progressive history for the published replica is unavailable: only the
+    /// scrollback already held remains. The focused pane badges it.
     pub history_degraded: bool,
     /// ADR-0147: `Some(title)` for the floating plugin overlay pane, which is
     /// in no layout window and paints in a box over the pane area.

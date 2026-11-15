@@ -141,7 +141,7 @@ fn add_key_from_stdin_enrolls_and_list_shows_the_ceiling() {
             cert_out.to_str().expect("utf-8"),
         ],
         client.csr_pem.as_bytes(),
-        &[],
+        NO_ENV,
     );
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_no_key_bytes(&out, &key_needles(&client.key_pem));
@@ -195,7 +195,7 @@ fn add_key_from_stdin_enrolls_and_list_shows_the_ceiling() {
             again_out.to_str().expect("utf-8"),
         ],
         client.csr_pem.as_bytes(),
-        &[],
+        NO_ENV,
     );
     assert!(!again.status.success());
     assert!(
@@ -212,7 +212,7 @@ fn add_key_from_stdin_enrolls_and_list_shows_the_ceiling() {
         dir.path(),
         &["workload", "add-key", "--scope", "terminal.control"],
         client.csr_pem.as_bytes(),
-        &[],
+        NO_ENV,
     );
     assert!(!bad_scope.status.success());
     assert!(text(&bad_scope.stderr).contains("workload scope 1"));
@@ -298,7 +298,7 @@ fn add_key_refuses_key_material_on_argv() {
             &cert_out_joined,
         ],
         client.csr_pem.as_bytes(),
-        &[],
+        NO_ENV,
     );
     assert!(!joined.status.success());
     assert_no_key_bytes(&joined, &needles);
@@ -335,7 +335,7 @@ fn add_key_refuses_key_material_on_stdin() {
                 cert_out,
             ],
             input.as_bytes(),
-            &[],
+            NO_ENV,
         );
         assert!(!out.status.success());
         assert!(

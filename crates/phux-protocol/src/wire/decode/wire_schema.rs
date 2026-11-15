@@ -31,27 +31,22 @@ use super::{
     decode_string_list, decode_terminal_id, decode_viewport_info,
 };
 use crate::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities, Compression,
-    CompressionSet, ServerCapabilities,
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Compression, ServerCapabilities,
 };
 use crate::ids::{
-    BootstrapId, ClientId, GroupId, IdempotencyKey, ResourceId, SatelliteHost, ServerInstance,
-    SessionId, StreamId, WindowId,
+    BootstrapId, ClientId, IdempotencyKey, ResourceId, ServerInstance, SessionId, StreamId,
+    WindowId,
 };
-use crate::input::focus::FocusEvent;
-use crate::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use crate::input::mouse::{MouseAction, MouseButton, MouseEvent};
-use crate::input::paste::{PasteEvent, PasteTrust};
 use crate::wire::encode::wire_type;
 use crate::wire::frame::{
-    ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason,
-    DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode,
-    EventStamp, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MoveResult,
-    PathErrorCode, PathKind, PathQueryError, PathRow, PathStatus, RolePolicy, Scope, SpawnResource,
-    SpawnResult, TYPE_FRAME_COMPRESSED, TombstoneReason, ViewportInfo,
+    ActorRef, AgentEvent, CloseReason, CommandResult, DetachReason, DirectoryEntry,
+    DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode, EventStamp, FrameKind,
+    HistoryRejectionReason, HistoryTombstoneReason, MoveResult, PathErrorCode, PathKind,
+    PathQueryError, PathRow, PathStatus, Scope, SpawnResult, TYPE_FRAME_COMPRESSED,
+    TombstoneReason,
 };
 use crate::wire::info::SessionSnapshot;
-use crate::wire::ssh_origin::{SshOrigin, decode_ssh_origin};
+use crate::wire::ssh_origin::decode_ssh_origin;
 
 mod derive;
 mod frames;
@@ -187,7 +182,7 @@ fn every_variant_has_a_sample() {
     assert_eq!(
         covered,
         (0..FRAME_VARIANTS).collect(),
-        "every FrameKind variant needs a sample in wire_schema.rs"
+        "every FrameKind variant needs a sample: client frames in kinds/samples, server frames in wire_schema/"
     );
 }
 

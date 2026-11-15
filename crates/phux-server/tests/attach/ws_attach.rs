@@ -6,7 +6,6 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind};
@@ -26,13 +25,7 @@ use super::common::attach;
 type Ws = WebSocketStream<TcpStream>;
 
 fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "ws-attach-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    }
+    phux_server_testkit::hello("ws-attach-test", ClientCapabilities::default())
 }
 
 async fn send(ws: &mut Ws, frame: &FrameKind) {

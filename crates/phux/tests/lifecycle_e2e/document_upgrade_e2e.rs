@@ -6,12 +6,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::common;
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::Stdio;

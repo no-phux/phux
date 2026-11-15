@@ -51,8 +51,7 @@ fn replacement(
 }
 
 async fn follow_seqs(spec: ScriptSpec) -> (Vec<u64>, LogEnd) {
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
     let mut seqs = Vec::new();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -81,7 +80,6 @@ async fn follow_seqs(spec: ScriptSpec) -> (Vec<u64>, LogEnd) {
 async fn a_replacement_generation_overlapping_the_follow_delivers_no_duplicate() {
     let first = record_line(1);
     let spec = ScriptSpec::new()
-        .server_features(kinds())
         .agent_log_bootstrap(&session(), &[first.trim_end()])
         .push(live_frame(record_line(2).as_bytes()));
     let spec = replacement(spec, 2, 2..=4).push(closed_frame());
@@ -94,7 +92,6 @@ async fn a_replacement_generation_overlapping_the_follow_delivers_no_duplicate()
 async fn a_replacement_after_evicted_records_ends_the_follow_with_the_gap() {
     let first = record_line(1);
     let spec = ScriptSpec::new()
-        .server_features(kinds())
         .agent_log_bootstrap(&session(), &[first.trim_end()])
         .push(live_frame(record_line(2).as_bytes()));
     let spec = replacement(spec, 2, 6..=7).push(closed_frame());

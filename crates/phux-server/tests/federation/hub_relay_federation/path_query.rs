@@ -8,15 +8,12 @@ async fn connect(path: &std::path::Path) -> UnixStream {
     let mut socket = wait_for_raw_socket(path, STEP_DEADLINE).await;
     send_frame(
         &mut socket,
-        &FrameKind::Hello {
-            client_name: "satellite-path-query-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new()
+        &phux_server_testkit::hello(
+            "satellite-path-query-test",
+            ClientCapabilities::new()
                 .with_color_support(ColorSupport::TrueColor)
                 .with_layers(LayerSet::all()),
-        },
+        ),
     )
     .await;
     let (_, frame) = recv_typed(&mut socket).await;

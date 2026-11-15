@@ -9,7 +9,7 @@ mod tests;
 pub(in crate::runtime) use input::attached_input_resource;
 
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
-use phux_protocol::wire::frame::{ErrorCode, FrameKind, HistoryTombstoneReason};
+use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 
 use super::dispatch::{FrameFlow, direction_invalid};
 use super::frames::frame_resource;
@@ -74,18 +74,7 @@ async fn unavailable(ctx: &ResourceFrame<'_>, frame: FrameKind) -> FrameFlow {
         return direction_invalid(ctx.client_id, &frame);
     }
     match frame {
-        FrameKind::InputTerminalReply { .. } => {
-            if let Some(selection) = ctx.negotiated
-                && !selection.accepts_terminal_reply()
-            {
-                crate::runtime::send_error(
-                    &ctx.plumbing.out_tx,
-                    ErrorCode::UnknownMessageType,
-                    "INPUT_TERMINAL_REPLY was not advertised for this connection",
-                )
-                .await;
-            }
-        }
+        FrameKind::InputTerminalReply { .. } => {}
         FrameKind::HistoryRequest { .. } => unavailable_history(ctx, frame).await,
         _ => {
             tracing::debug!(client_id = ?ctx.client_id, resource = ?frame_resource(&frame), "resource frame has no local destination; dropping");

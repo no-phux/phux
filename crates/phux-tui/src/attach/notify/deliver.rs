@@ -1,10 +1,6 @@
-//! Turning a [`Note`] into something the user sees.
-//!
-//! Agent names, window names, and session names are written by agents and
-//! other clients, and every byte of a note ends up inside an escape sequence
-//! on the outer terminal. [`sanitize`] is that injection boundary: no control
-//! character (ESC, BEL, the C1 `ST`) survives it, so a name cannot end the
-//! OSC early and smuggle its own sequence onto the user's terminal.
+//! Turning a [`Note`] into something the user sees. Names come from agents
+//! and other clients and end up inside escape sequences, so [`sanitize`] is
+//! the injection boundary: no control character survives it.
 
 use std::process::{Command, Stdio};
 
@@ -98,11 +94,9 @@ pub(in crate::attach) fn plan(
     }
 }
 
-/// Make agent-provided text safe inside an OSC string and as one argv word:
-/// control characters (C0, DEL, C1, so ESC, BEL, and `ST`) are dropped, line
-/// breaks and tabs become spaces, `;` (the OSC field separator) becomes `,`,
-/// a leading `-` is dropped so the word never reads as a flag, and the
-/// result is cut to [`MAX_FIELD_CHARS`].
+/// Make agent text safe in an OSC string and as one argv word: controls
+/// dropped, breaks and tabs to spaces, `;` to `,`, a leading `-` dropped,
+/// cut to [`MAX_FIELD_CHARS`].
 pub(in crate::attach) fn sanitize(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_FIELD_CHARS * 4));
     let mut chars = 0usize;

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{Histogram, Unit};
+use serde_json::Value;
 
 static TRACED: Histogram = Histogram::new();
 static TABLE: &[Metric] = &[Metric::histogram("test.traced", Unit::Micros, &TRACED)];
@@ -61,21 +62,6 @@ fn capture_names_spans_from_tables_and_respects_the_budget() {
             .any(|e| e["name"] == "process_name" && e["args"]["name"] == "phux test")
     );
     assert_eq!(doc["otherData"]["dropped"], 1);
-
-    let merged: Value = serde_json::from_str(&merge_chrome_json([
-        capture.to_chrome_json("a", &[TABLE]).as_str(),
-        "not json",
-        capture.to_chrome_json("b", &[TABLE]).as_str(),
-    ]))
-    .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(
-        merged["traceEvents"].as_array().map(Vec::len),
-        Some(events.len() * 2)
-    );
-    assert_eq!(
-        merged["otherData"]["processes"].as_array().map(Vec::len),
-        Some(2)
-    );
 
     // A deadline for one capture does not end the next.
     assert!(start(4));

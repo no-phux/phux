@@ -260,7 +260,6 @@ pub(crate) fn uuid_bytes(token: &str) -> Option<[u8; 16]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
 

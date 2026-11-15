@@ -4,8 +4,9 @@
 
 use super::*;
 use phux_client_core::document_view::DocumentContent;
-use phux_protocol::caps::BootstrapStreamProfile;
-use phux_protocol::wire::frame::CloseReason;
+use phux_protocol::caps::BootstrapStreamProfile::{
+    DocumentTypedV1 as TYPED, PixelSurfacePngV1 as PNG_SURFACE,
+};
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot decoded here";
 
@@ -17,20 +18,11 @@ fn resource(id: u32, kind: ResourceKind, title: Option<&str>) -> ResourceInfo {
 
 /// A connection attached to `resources`, the first focused.
 async fn attached_to(resources: Vec<ResourceInfo>) -> Connection {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 41, 10);
-    session.on_frame(hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    ));
+    let mut session = hello_session(41, 10).await;
     let focused = resources[0].id.clone();
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), focused)
         .with_resources(resources);
-    let outcome = session.on_frame(FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(1),
-    });
+    let outcome = session.on_frame(attached_snapshot(snapshot));
     assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
     session
 }
@@ -43,43 +35,12 @@ fn publish(
     profile: BootstrapStreamProfile,
     bytes: &[u8],
 ) -> Vec<Vec<u8>> {
-    let (terminal_id, stream_id, bootstrap_id) =
-        (ResourceId::local(id), stream(serial), bootstrap(serial));
-    let (cols, rows) = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
-        (41, 10)
-    } else {
-        (0, 0)
-    };
-    let mut sent = Vec::new();
-    for frame in [
-        begin(
-            terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            0,
-        ),
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: Bytes::copy_from_slice(bytes),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
-        let outcome = session.on_frame(frame);
-        assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
-        sent.extend(outcome.send);
-    }
-    sent
+    let size = if profile == RAW { (41, 10) } else { (0, 0) };
+    Gen::on(ResourceId::local(id), serial)
+        .publish(session, profile, size, Bytes::copy_from_slice(bytes))
+        .into_iter()
+        .flat_map(|outcome| outcome.send)
+        .collect()
 }
 
 fn typed(content_type: &str, bytes: &[u8]) -> Vec<u8> {
@@ -151,14 +112,10 @@ async fn a_document_only_session_draws_each_document_by_content_type() {
         &mut session,
         8,
         2,
-        BootstrapStreamProfile::DocumentTypedV1,
+        TYPED,
         &typed("text/html", b"<script>alert(1)</script>"),
     ));
-    sent.extend(
-        session
-            .on_frame(FrameKind::AttachReady { attach_id: 1 })
-            .send,
-    );
+    sent.extend(session.on_frame(ATTACH_READY).send);
     assert!(
         session.render_visible(),
         "a publication is something to paint"
@@ -196,25 +153,19 @@ async fn images_opaque_and_invalid_publications_and_their_lines() {
         session.document(&ResourceId::local(2)).unwrap().notice(),
         Some("Waiting for the producer’s first document…".to_owned())
     );
-    publish(
-        &mut session,
-        2,
-        1,
-        BootstrapStreamProfile::PixelSurfacePngV1,
-        PNG,
-    );
+    publish(&mut session, 2, 1, PNG_SURFACE, PNG);
     publish(
         &mut session,
         3,
         2,
-        BootstrapStreamProfile::DocumentTypedV1,
+        TYPED,
         &typed("application/pdf", &[0; 2048]),
     );
     publish(
         &mut session,
         4,
         3,
-        BootstrapStreamProfile::DocumentTypedV1,
+        TYPED,
         &typed("IMAGE/WEBP", b"RIFF\0\0\0\0WEBPVP8 "),
     );
     let surface = session.document(&ResourceId::local(2)).unwrap();
@@ -235,13 +186,7 @@ async fn images_opaque_and_invalid_publications_and_their_lines() {
         Some(DocumentContent::Image("image/webp".to_owned()))
     );
     assert_eq!(webp.caption(), "IMAGE/WEBP");
-    let outcome = session.on_frame(FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(2),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        seq: 1,
-        bytes: Bytes::from_static(b"GIF89a"),
-    });
+    let outcome = session.on_frame(generation(2, 1, 1).output(1, &b"GIF89a"[..]));
     assert!(outcome.fatal.is_none() && outcome.render);
     assert_eq!(
         session
@@ -262,32 +207,14 @@ async fn documents_tile_after_terminals_and_only_terminals_are_resized() {
     .await;
     let rects: Vec<_> = session.pane_rects().into_iter().map(|(id, _)| id).collect();
     assert_eq!(rects, [ResourceId::local(1), ResourceId::local(2)]);
-    publish(
-        &mut session,
-        1,
-        1,
-        BootstrapStreamProfile::SynthesizedVtRaw,
-        b"$ ",
-    );
-    publish(
-        &mut session,
-        2,
-        2,
-        BootstrapStreamProfile::PixelSurfacePngV1,
-        PNG,
-    );
-    let ready = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    publish(&mut session, 1, 1, RAW, b"$ ");
+    publish(&mut session, 2, 2, PNG_SURFACE, PNG);
+    let ready = session.on_frame(ATTACH_READY);
     assert_eq!(resized(&ready.send), [(ResourceId::local(1), 20)]);
     assert_eq!(session.focused_pane(), Some(ResourceId::local(1)));
 
     // A document that arrives later takes a tile, and the terminals give it room.
-    let sent = publish(
-        &mut session,
-        5,
-        3,
-        BootstrapStreamProfile::DocumentTypedV1,
-        &typed("text/plain", b"later"),
-    );
+    let sent = publish(&mut session, 5, 3, TYPED, &typed("text/plain", b"later"));
     assert_eq!(session.pane_rects().len(), 3);
     assert_eq!(tiles(&session)[1].2, text("later"));
     assert!(
@@ -297,12 +224,7 @@ async fn documents_tile_after_terminals_and_only_terminals_are_resized() {
     );
 
     for id in [2, 5] {
-        let closed = session.on_frame(FrameKind::ResourceClosed {
-            terminal_id: ResourceId::local(id),
-            exit_status: None,
-            reason: CloseReason::Unknown,
-            signal: None,
-        });
+        let closed = session.on_frame(closed(ResourceId::local(id), CloseReason::Unknown));
         assert!(closed.fatal.is_none() && closed.panes);
     }
     assert!(session.document_tiles().is_empty());
@@ -329,25 +251,13 @@ async fn terminal_and(documents: &[u32]) -> Connection {
             .map(|id| resource(*id, ResourceKind::Document, None)),
     );
     let mut session = attached_to(resources).await;
-    publish(
-        &mut session,
-        1,
-        1,
-        BootstrapStreamProfile::SynthesizedVtRaw,
-        b"$ ",
-    );
+    publish(&mut session, 1, 1, RAW, b"$ ");
     for (serial, id) in documents.iter().enumerate() {
         let payload = typed("text/plain", b"doc");
         let serial = serial as u64 + 2;
-        publish(
-            &mut session,
-            *id,
-            serial,
-            BootstrapStreamProfile::DocumentTypedV1,
-            &payload,
-        );
+        publish(&mut session, *id, serial, TYPED, &payload);
     }
-    session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    session.on_frame(ATTACH_READY);
     session
 }
 
@@ -372,10 +282,7 @@ async fn a_split_displaces_a_document_tile_that_returns_when_a_leaf_frees() {
     let second = ResourceId::local(9);
     let attach = announce_split(&mut session, spawn, second.clone());
     bootstrap_split(&mut session, second.clone(), 9, b"second");
-    let committed = session.on_frame(FrameKind::CommandResult {
-        request_id: attach,
-        result: CommandResult::Ok,
-    });
+    let committed = session.on_frame(reply(attach, CommandResult::Ok));
     assert!(committed.panes && !session.pane_pending());
     let shown = ids(&session);
     assert_eq!(shown.len(), 4);
@@ -404,34 +311,17 @@ async fn a_closed_terminal_frees_its_leaf_for_an_untiled_document() {
             &mut session,
             id,
             u64::from(id) + 10,
-            BootstrapStreamProfile::DocumentTypedV1,
+            TYPED,
             &typed("text/plain", b"later"),
         );
     }
-    let spawn = requested_spawn(&mut session, "vertical");
-    let attach = announce_split(&mut session, spawn, ResourceId::local(9));
-    bootstrap_split(&mut session, ResourceId::local(9), 9, b"second");
-    session.on_frame(FrameKind::CommandResult {
-        request_id: attach,
-        result: CommandResult::Ok,
-    });
-    publish(
-        &mut session,
-        5,
-        20,
-        BootstrapStreamProfile::DocumentTypedV1,
-        &typed("text/plain", b"no room"),
-    );
+    commit_split(&mut session, "vertical", ResourceId::local(9), 9);
+    publish(&mut session, 5, 20, TYPED, &typed("text/plain", b"no room"));
     assert!(
         !ids(&session).contains(&ResourceId::local(5)),
         "four leaves are full"
     );
-    let closed = session.on_frame(FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(9),
-        exit_status: Some(0),
-        reason: CloseReason::Unknown,
-        signal: None,
-    });
+    let closed = session.on_frame(closed(ResourceId::local(9), CloseReason::Unknown));
     assert!(closed.panes);
     assert!(
         ids(&session).contains(&ResourceId::local(5)),
@@ -442,30 +332,11 @@ async fn a_closed_terminal_frees_its_leaf_for_an_untiled_document() {
 #[wasm_bindgen_test]
 async fn a_faulted_document_says_its_stream_is_lost_and_the_terminal_lives() {
     let mut session = terminal_and(&[2]).await;
-    let (terminal_id, stream_id, bootstrap_id) = (ResourceId::local(2), stream(30), bootstrap(30));
-    session.on_frame(begin(
-        terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        BootstrapStreamProfile::DocumentTypedV1,
-        0,
-        0,
-        0,
-    ));
+    let document = generation(2, 30, 30);
+    session.on_frame(document.begin(TYPED, 0, 0, 0));
     // A typed cut whose length byte overruns it names no content type.
-    session.on_frame(FrameKind::BootstrapChunk {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        chunk_seq: 0,
-        payload: Bytes::from_static(&[200]),
-    });
-    let ready = session.on_frame(FrameKind::BootstrapReady {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        history_cursor: None,
-    });
+    session.on_frame(document.chunk(0, &[200][..]));
+    let ready = session.on_frame(document.ready());
     assert!(ready.fatal.is_none() && ready.render);
     assert!(!session.is_failed());
     assert_eq!(
@@ -485,13 +356,7 @@ async fn a_faulted_document_says_its_stream_is_lost_and_the_terminal_lives() {
 #[wasm_bindgen_test]
 async fn a_declared_image_without_its_signature_is_its_type_and_size() {
     let mut session = attached_to(vec![resource(3, ResourceKind::Document, None)]).await;
-    publish(
-        &mut session,
-        3,
-        1,
-        BootstrapStreamProfile::DocumentTypedV1,
-        &typed("image/png", b"<svg/>"),
-    );
+    publish(&mut session, 3, 1, TYPED, &typed("image/png", b"<svg/>"));
     let document = session.document(&ResourceId::local(3)).unwrap();
     assert!(document.image.is_empty(), "nothing for an image decoder");
     assert_eq!(document.notice().as_deref(), Some("image/png · 6 bytes"));
@@ -505,25 +370,13 @@ async fn a_stalled_document_is_attached_again_then_lost_without_failing() {
         Some("display"),
     )])
     .await;
-    publish(
-        &mut session,
-        2,
-        1,
-        BootstrapStreamProfile::PixelSurfacePngV1,
-        PNG,
-    );
+    publish(&mut session, 2, 1, PNG_SURFACE, PNG);
     let mut seq = 5;
     let mut mis_tagged_run = |session: &mut Connection| {
         let mut sent = Vec::new();
         for _ in 0..64 {
             seq += 1;
-            let outcome = session.on_frame(FrameKind::ResourceOutput {
-                terminal_id: ResourceId::local(2),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(9),
-                seq,
-                bytes: Bytes::from_static(b"mis-tagged"),
-            });
+            let outcome = session.on_frame(generation(2, 1, 9).output(seq, &b"mis-tagged"[..]));
             assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
             sent.extend(outcome.send);
         }

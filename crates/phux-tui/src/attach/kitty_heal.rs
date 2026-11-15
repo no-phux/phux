@@ -1,21 +1,14 @@
-//! When the TUI re-sends kitty images the outer terminal may have dropped.
+//! Re-send kitty images the outer terminal may have dropped (quota eviction,
+//! a user clear) even though nothing here cleared them:
 //!
-//! The pane renderers never re-send an unchanged image, which kitty and
-//! Ghostty honour: only `ED2`, a reset or an alt-screen switch clear images
-//! there. Images still go missing behind their back (Ghostty evicting the
-//! oldest under its quota, a user clear such as Cmd-K), so they heal:
+//! - each image [`HEAL_INTERVAL`] after it was last sent, while the window is
+//!   focused or has never reported focus;
+//! - on focus-in, each image older than [`FOCUS_MIN_AGE`];
+//! - at most [`HEAL_BUDGET`] bytes per heal, oldest first, the rest
+//!   [`HEAL_SPACING`] later.
 //!
-//! - each image [`HEAL_INTERVAL`] after it was last sent, while the outer
-//!   terminal is focused or has never reported focus (an unfocused window's
-//!   holes cannot be seen, and focus-in heals them);
-//! - on focus-in, each image sent more than [`FOCUS_MIN_AGE`] ago;
-//! - at most [`HEAL_BUDGET`] bytes per heal, oldest first; the rest is owed
-//!   and healed [`HEAL_SPACING`] later, so a surface of hundreds of tiles
-//!   never bursts megabytes at once.
-//!
-//! A probe (`a=p,q=1` and an `ENOENT` reply) could re-send only what the
-//! outer terminal lost, but the input parser drops APC replies, so the heal
-//! re-sends blind.
+//! The input parser drops APC replies, so the heal cannot probe and re-sends
+//! blind.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -24,21 +17,16 @@ use phux_protocol::ids::ResourceId;
 
 use super::pane_state::PaneSlot;
 
-/// How long an image stays on screen before it is re-sent whole.
-///
-/// One minute bounds a hole a quota eviction or a user clear left to a
-/// minute, and costs one compressed payload per visible image per minute
-/// (about 4.4 KB a minute for the 96x96 image of `docs/assets/payload.sh`).
+/// How long an image stays on screen before it is re-sent whole: bounds a
+/// lost image to a minute for about one payload per image per minute.
 pub(super) const HEAL_INTERVAL: Duration = Duration::from_mins(1);
 
 /// How old an image must be for focus-in to re-send it: an alt-tab bounce or
 /// focus following the mouse re-sends nothing, a real absence heals.
 pub(super) const FOCUS_MIN_AGE: Duration = Duration::from_secs(5);
 
-/// Bytes one heal may re-send; the oldest image always goes, however big.
-///
-/// 256 KiB is a minute's heal of about 60 typical inline images in one
-/// go, and a fifth of a second on a 10 Mbit/s SSH link.
+/// Bytes one heal may re-send (the oldest image always goes): about a
+/// minute's heal of 60 inline images.
 pub(super) const HEAL_BUDGET: usize = 256 * 1024;
 
 /// The least time between two heals, which paces an owed remainder at

@@ -127,16 +127,6 @@ fn watching(pending: &[(ApprovalId, u64)]) -> ControlPlane {
 }
 
 #[test]
-fn nothing_is_sent_to_a_server_without_approvals() {
-    let mut plane = negotiated(&[]);
-    plane.watch_approvals();
-    assert!(outbound(&mut plane).is_empty());
-    assert!(!plane.approvals_supported());
-    assert!(!plane.decide_approval(id(1), Decision::Approve));
-    assert!(outbound(&mut plane).is_empty());
-}
-
-#[test]
 fn the_listing_is_read_oldest_first_and_live_events_keep_it_current() {
     let mut plane = watching(&[(id(2), 20), (id(1), 10)]);
     let listed: Vec<String> = plane.approvals().into_iter().map(|a| a.id).collect();

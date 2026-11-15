@@ -22,12 +22,9 @@ use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::RESOURCE_AGENT_KEY;
-use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{agent_entries, window_infos};
-use super::session_io::{
-    attach_client_caps, attach_client_name, send_attach_without_size_vote, wait_for_attached,
-};
+use super::session_io::{attach_client_caps, attach_client_name, send_attach, wait_for_attached};
 use crate::settings::TuiSettings;
 
 /// Hard cap on waiting for the matching aggregate attach barrier.
@@ -251,49 +248,34 @@ impl HeadlessSession {
 /// Request id of the layout read the completion barrier waits on.
 const LAYOUT_REQUEST_ID: u32 = 1;
 
-/// Read (never watch) this session's layout. Against an `ORGANIZATION`
-/// server it is the session's arrangement record, read over a second
-/// connection within [`ATTACH_READY_DEADLINE`] and ingested here as the
-/// layout reply (none when that read fails: the legacy key is never used
-/// there); `Ok(None)` then means nothing is left to wait for. Against an
-/// older server this GETs the layout key and returns the request id the
-/// completion barrier waits on, or `None` with nothing to ask for.
+/// Read (never watch) this session's layout: on an `ORGANIZATION` server its
+/// arrangement record over a second connection, ingested here (`Ok(None)`:
+/// nothing left to wait for); otherwise a GET of the layout key, returning
+/// the request id to wait on.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 async fn request_layout(
-    conn: &mut Connection,
     socket: &Path,
     session: &mut HeadlessSession,
     subscribe_layout: bool,
     focused_session: Option<SessionId>,
-) -> Result<Option<u32>, AttachError> {
+) -> Result<(), AttachError> {
     if !subscribe_layout {
-        return Ok(None);
+        return Ok(());
     }
     let Some(session_id) = focused_session else {
-        return Ok(None);
+        return Ok(());
     };
-    if phux_client::org::supported(conn) {
-        let read =
-            tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
-                .await
-                .unwrap_or_else(|_| Err("timed out".to_owned()));
-        let document = read.unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "arrangement read failed; no layout");
-            None
-        });
-        session.ingest_layout(document.as_ref(), session_id)?;
-        return Ok(None);
-    }
-    conn.send(&FrameKind::GetMetadata {
-        request_id: LAYOUT_REQUEST_ID,
-        scope: Scope::Group(DEFAULT_GROUP_ID),
-        key: layout_key(session_id),
-    })
-    .await?;
-    Ok(Some(LAYOUT_REQUEST_ID))
+    let read = tokio::time::timeout(ATTACH_READY_DEADLINE, read_arrangement(socket, session_id))
+        .await
+        .unwrap_or_else(|_| Err("timed out".to_owned()));
+    let document = read.unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "arrangement read failed; no layout");
+        None
+    });
+    session.ingest_layout(document.as_ref(), session_id)
 }
 
 /// Read the session's arrangement record over a dedicated connection:
@@ -303,13 +285,10 @@ async fn read_arrangement(
     session_id: SessionId,
 ) -> Result<Option<crate::layout::ArrangementDoc>, String> {
     let dial = crate::attach::Dial::uds(socket);
-    let link = crate::attach::arrangement_link::ArrangementLink::open(&dial, session_id)
+    crate::attach::arrangement_link::ArrangementLink::lazy(dial, session_id)
+        .read()
         .await
-        .map_err(|err| err.to_string())?;
-    let Some(mut link) = link else {
-        return Err("the server no longer advertises ORGANIZATION".to_owned());
-    };
-    link.read().await.map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())
 }
 
 /// Re-attach after the engine asked for a rebootstrap, restarting the
@@ -324,8 +303,7 @@ async fn restart_attach(
             "engine requested rebootstrap before ATTACHED named the session".to_owned(),
         ));
     }
-    let attach_id =
-        send_attach_without_size_vote(conn, AttachTarget::ByName(session_name.to_owned())).await?;
+    let attach_id = send_attach(conn, AttachTarget::ByName(session_name.to_owned())).await?;
     completion.restart_attach();
     Ok(attach_id)
 }
@@ -362,12 +340,11 @@ async fn drain_until_settled(
     completion: &mut HeadlessCompletion,
     attach_id: &mut u32,
     focused_session: Option<SessionId>,
-    layout_get_request_id: Option<u32>,
 ) -> Result<(), AttachError> {
     loop {
         let frame = conn.recv().await?;
         completion.observe_frame(&frame, *attach_id);
-        let outcome = session.ingest(frame, focused_session, layout_get_request_id)?;
+        let outcome = session.ingest(frame, focused_session, None)?;
         if outcome.resync_required {
             *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
             continue;
@@ -384,14 +361,11 @@ async fn drain_until_settled(
     }
 }
 
-/// Headless one-shot (`phux snapshot --rendered`): the composited view as cells.
+/// Headless one-shot (`phux snapshot --rendered`): the composited view as
+/// cells, through the live render path with no raw mode, alt screen, or VT.
 ///
-/// Attaches and ingests the session and its layout through the live client
-/// render path. No raw mode, no alt screen, no
-/// VT: mirrors ingest with `defer_paint`, then one compose pass at the
-/// caller's viewport. Completion waits for `ATTACH_READY`, every requested
-/// history chain, and every metadata reply; the deadline is an error, never
-/// a partial frame.
+/// Waits for `ATTACH_READY`, every requested history chain, and every metadata
+/// reply; the deadline is an error, never a partial frame.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -419,7 +393,7 @@ pub async fn run_headless_rendered(
         negotiated.profile,
         history_config,
     );
-    let mut attach_id = send_attach_without_size_vote(&mut conn, target).await?;
+    let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));
@@ -433,8 +407,7 @@ pub async fn run_headless_rendered(
     let focused_session = outcome.sessions.map(|(_, focused)| focused);
 
     session.request_agent_records(&mut conn).await?;
-    let layout_get_request_id = request_layout(
-        &mut conn,
+    request_layout(
         socket,
         &mut session,
         outcome.subscribe_layout,
@@ -442,7 +415,7 @@ pub async fn run_headless_rendered(
     )
     .await?;
 
-    let mut completion = HeadlessCompletion::new(layout_get_request_id);
+    let mut completion = HeadlessCompletion::default();
     let settled = tokio::time::timeout(
         ATTACH_READY_DEADLINE,
         drain_until_settled(
@@ -451,7 +424,6 @@ pub async fn run_headless_rendered(
             &mut completion,
             &mut attach_id,
             focused_session,
-            layout_get_request_id,
         ),
     )
     .await;

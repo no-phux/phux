@@ -244,69 +244,90 @@ fn active_write_bytes_remain_charged_against_the_aggregate_bound() {
     assert_eq!(total.get(), 0);
 }
 
+/// A relay session whose transport writer blocks in its first send: the
+/// `SUBSCRIBE_EVENTS` of the one event subscriber it hands back.
+struct Blocked {
+    session: tokio::task::JoinHandle<Option<String>>,
+    inbound: tokio::sync::mpsc::Sender<Vec<u8>>,
+    out_rx: tokio::sync::mpsc::Receiver<crate::mailbox::Outbound>,
+    release_write: Arc<tokio::sync::Notify>,
+    writer_dropped: Arc<std::sync::atomic::AtomicBool>,
+    /// Held so the session keeps its request mailbox.
+    _relay: crate::hub::relay::RelayHandle,
+}
+
+async fn blocked_session(cancel: CancellationToken) -> Blocked {
+    let host = host();
+    let (relay, mailbox) = relay_pair(&host);
+    let (inbound, inbound_rx) = tokio::sync::mpsc::channel(1);
+    let write_started = Arc::new(tokio::sync::Notify::new());
+    let release_write = Arc::new(tokio::sync::Notify::new());
+    let writer_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let conn = BlockedWriteConn {
+        inbound: inbound_rx,
+        write_started: Arc::clone(&write_started),
+        release_write: Arc::clone(&release_write),
+        writer_dropped: Arc::clone(&writer_dropped),
+    };
+    let session = tokio::task::spawn_local(async move {
+        let crate::hub::relay::RelayMailbox {
+            mut requests,
+            mut unsubscribes,
+            resource_kinds,
+            ..
+        } = mailbox;
+        run_relay_session(
+            &host,
+            conn,
+            &mut requests,
+            &mut unsubscribes,
+            &cancel,
+            None,
+            &crate::hub::operation_fence::OperationFence::default(),
+            resource_kinds,
+        )
+        .await
+    });
+    let (out_tx, out_rx) = tokio::sync::mpsc::channel(4);
+    let started = write_started.notified();
+    tokio::pin!(started);
+    relay.subscribe(
+        crate::hub::relay::ProxySubscription {
+            resource_kind: None,
+            terminal: 9,
+            client: crate::state::ClientId(7),
+            out_tx,
+            consumer_cancel: CancellationToken::new(),
+            seq: 0,
+            awaits_snapshot: false,
+            bootstrap_profile: None,
+            bootstrap_limits: None,
+        },
+        FrameKind::SubscribeEvents {
+            terminal: Some(phux_protocol::ResourceId::local(9)),
+            after_seq: None,
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(1), &mut started)
+        .await
+        .expect("the ordered writer entered its blocked send");
+    Blocked {
+        session,
+        inbound,
+        out_rx,
+        release_write,
+        writer_dropped,
+        _relay: relay,
+    }
+}
+
 #[tokio::test]
 async fn blocked_outbound_write_does_not_stall_inbound_fanout() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let host = host();
-            let (relay, mailbox) = relay_pair(&host);
-            let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1);
-            let write_started = Arc::new(tokio::sync::Notify::new());
-            let release_write = Arc::new(tokio::sync::Notify::new());
-            let writer_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let conn = BlockedWriteConn {
-                inbound: inbound_rx,
-                write_started: Arc::clone(&write_started),
-                release_write: Arc::clone(&release_write),
-                writer_dropped,
-            };
             let cancel = CancellationToken::new();
-            let session_host = host.clone();
-            let session_cancel = cancel.clone();
-            let session = tokio::task::spawn_local(async move {
-                let crate::hub::relay::RelayMailbox {
-                    mut requests,
-                    mut unsubscribes,
-                    resource_kinds,
-                    ..
-                } = mailbox;
-                run_relay_session(
-                    &session_host,
-                    conn,
-                    &mut requests,
-                    &mut unsubscribes,
-                    &session_cancel,
-                    None,
-                    &crate::hub::operation_fence::OperationFence::default(),
-                    resource_kinds,
-                )
-                .await
-            });
-            let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(4);
-            let started = write_started.notified();
-            tokio::pin!(started);
-            relay.subscribe(
-                crate::hub::relay::ProxySubscription {
-                    resource_kind: None,
-                    terminal: 9,
-                    client: crate::state::ClientId(7),
-                    out_tx,
-                    consumer_cancel: CancellationToken::new(),
-                    seq: 0,
-                    awaits_snapshot: false,
-                    bootstrap_profile: None,
-                    bootstrap_limits: None,
-                },
-                FrameKind::SubscribeEvents {
-                    terminal: Some(phux_protocol::ResourceId::local(9)),
-                    after_seq: None,
-                },
-            );
-            tokio::time::timeout(Duration::from_secs(1), &mut started)
-                .await
-                .expect("the ordered writer entered its blocked send");
-
+            let mut blocked = blocked_session(cancel.clone()).await;
             let mut encoded = bytes::BytesMut::new();
             FrameKind::Event {
                 terminal: Some(phux_protocol::ResourceId::local(9)),
@@ -314,21 +335,21 @@ async fn blocked_outbound_write_does_not_stall_inbound_fanout() {
                 stamp: None,
             }
             .encode(&mut encoded);
-            inbound_tx
+            blocked
+                .inbound
                 .send(encoded.to_vec())
                 .await
                 .expect("inject inbound event");
             assert!(matches!(
-                tokio::time::timeout(Duration::from_millis(250), out_rx.recv())
+                tokio::time::timeout(Duration::from_millis(250), blocked.out_rx.recv())
                     .await
                     .expect("inbound fanout must not wait for the write")
                     .expect("subscriber remains live"),
                 crate::mailbox::Outbound::Frame(FrameKind::Event { .. })
             ));
-
             cancel.cancel();
-            release_write.notify_waiters();
-            let _ = session.await;
+            blocked.release_write.notify_waiters();
+            let _ = blocked.session.await;
         })
         .await;
 }
@@ -338,64 +359,14 @@ async fn aborting_session_cancels_a_blocked_transport_writer() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let host = host();
-            let (relay, mailbox) = relay_pair(&host);
-            let (_inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1);
-            let write_started = Arc::new(tokio::sync::Notify::new());
-            let writer_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let conn = BlockedWriteConn {
-                inbound: inbound_rx,
-                write_started: Arc::clone(&write_started),
-                release_write: Arc::new(tokio::sync::Notify::new()),
-                writer_dropped: Arc::clone(&writer_dropped),
-            };
-            let session_host = host.clone();
-            let session = tokio::task::spawn_local(async move {
-                let crate::hub::relay::RelayMailbox {
-                    mut requests,
-                    mut unsubscribes,
-                    resource_kinds,
-                    ..
-                } = mailbox;
-                run_relay_session(
-                    &session_host,
-                    conn,
-                    &mut requests,
-                    &mut unsubscribes,
-                    &CancellationToken::new(),
-                    None,
-                    &crate::hub::operation_fence::OperationFence::default(),
-                    resource_kinds,
-                )
-                .await
-            });
-            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(1);
-            let started = write_started.notified();
-            tokio::pin!(started);
-            relay.subscribe(
-                crate::hub::relay::ProxySubscription {
-                    resource_kind: None,
-                    terminal: 9,
-                    client: crate::state::ClientId(7),
-                    out_tx,
-                    consumer_cancel: CancellationToken::new(),
-                    seq: 0,
-                    awaits_snapshot: false,
-                    bootstrap_profile: None,
-                    bootstrap_limits: None,
-                },
-                FrameKind::SubscribeEvents {
-                    terminal: Some(phux_protocol::ResourceId::local(9)),
-                    after_seq: None,
-                },
-            );
-            tokio::time::timeout(Duration::from_secs(1), &mut started)
-                .await
-                .expect("writer entered blocked send");
-            session.abort();
+            let blocked = blocked_session(CancellationToken::new()).await;
+            blocked.session.abort();
             for _ in 0..10 {
                 tokio::task::yield_now().await;
-                if writer_dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                if blocked
+                    .writer_dropped
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
                     return;
                 }
             }

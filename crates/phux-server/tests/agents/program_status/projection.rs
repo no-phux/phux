@@ -119,12 +119,15 @@ fn program_status_beats_a_live_screen_heuristic_but_not_an_explicit_state() {
         assert_eq!(pane.record("").await["state"], "done");
 
         let request_id = pane.next_request();
-        send_frame(&mut pane.stream, &FrameKind::SetMetadata {
+        let pinned = br#"{"name":"pinned","kind":"claude","state":"blocked","attention":"high","session":"manual"}"#;
+        let scope = Scope::Resource(pane.terminal.clone());
+        let set = phux_server_testkit::set_metadata(
             request_id,
-            scope: Scope::Resource(pane.terminal.clone()),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-            value: br#"{"name":"pinned","kind":"claude","state":"blocked","attention":"high","session":"manual"}"#.to_vec(),
-        }).await;
+            scope,
+            RESOURCE_AGENT_KEY,
+            pinned.to_vec(),
+        );
+        send_frame(&mut pane.stream, &set).await;
         pane.wait_value(RESOURCE_AGENT_KEY, |value| {
             value
                 .as_ref()
@@ -245,10 +248,7 @@ fn live_agent_stream_keeps_precedence_and_program_status_resumes_without_a_repor
                     bytes: b"{\"type\":\"session_end\"}\n".to_vec(),
                 }
             } else {
-                Command::KillResource {
-                    terminal_id: session,
-                    operation_id: None,
-                }
+                phux_server_testkit::kill(session)
             };
             let result = command(&mut pane.stream, request_id, ending).await;
             assert!(

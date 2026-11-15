@@ -2,17 +2,9 @@
 
 use super::*;
 
-/// phux-l96p.8 fix pass: a row must advance the terminal's cursor
-/// exactly `rect.w` columns.
-///
-/// The strip emits each row as one uninterrupted run from its own
-/// `CUP`, so its column budget is only as good as its idea of how
-/// wide each glyph is. A DOUBLE-WIDTH character advances two columns
-/// and ratatui leaves the cell it spills into empty; writing a space
-/// there advanced the row one column too far per wide character, and
-/// a CJK window name walked the whole strip out of its reserved
-/// columns and over the panes beside it — libghostty's cells
-/// (ADR-0020).
+/// A row advances the cursor exactly `rect.w` columns: a wide glyph spills
+/// into a cell ratatui leaves empty, and writing a space there pushed CJK
+/// window names out over the panes.
 #[test]
 fn a_wide_window_name_stays_inside_the_strip() {
     let mut p = SidebarPainter::new(Theme::default());

@@ -264,8 +264,8 @@ jobs:
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
         run: nix develop -c just e2e
 
-  # phux-client-ffi with `uniffi` instead of its defaults shares no artifacts
-  # with the unit pool; the C ABI checks link its default staticlib.
+  # phux-client-ffi with the mobile artifact's features shares no artifacts
+  # with the unit pool.
   ffi:
     name: rust ffi
     needs: plan
@@ -282,7 +282,6 @@ jobs:
           cache-lane: uniffi
           build-cache: deps
       - run: nix develop -c just binding-uniffi-test
-      - run: nix develop -c just ffi-abi
 
   # x86_64 callgrind counts: the checked-in baseline is an x86_64 number.
   icount:

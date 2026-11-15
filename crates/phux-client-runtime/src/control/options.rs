@@ -14,11 +14,9 @@ pub struct ControlOptions {
     /// Whether the runtime queues its post-handshake attach, topology reads,
     /// and agent metadata discovery/recovery.
     ///
-    /// Socket-owning embedders set this to `false`: their stable ABI exposes
-    /// `HELLO` and `ATTACH` as explicit calls, while this plane still owns all
-    /// lifecycle validation and frame application. These embedders also own
-    /// request-ID allocation and metadata orchestration; autonomous roster
-    /// reads would collide with their externally allocated correlations.
+    /// An embedder that drives attaches itself sets this to `false`; this
+    /// plane still owns lifecycle validation and frame application, but
+    /// issues no autonomous roster reads.
     pub automatic_lifecycle: bool,
     /// Recover session selection and terminal subscriptions after transport loss.
     /// Disable when the consumer revalidates authority and persistent keys from
@@ -55,8 +53,6 @@ pub struct ControlOptions {
     /// Image protocols this consumer can paint. Currently Kitty is supported;
     /// unsupported protocols are not advertised. Empty for text-only and ABI consumers.
     pub image_protocols: ImageProtocolSet,
-    /// Where the connection driver puts an inbound frame.
-    pub deliver_inbound: InboundDelivery,
     /// How predictive echo is drawn. Applied to every engine this plane starts.
     pub prediction_style: PredictionStyle,
 }
@@ -82,31 +78,6 @@ pub enum SessionRecovery {
     CallerValidated,
 }
 
-/// What a connected driver does with a frame it read off the socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InboundDelivery {
-    /// Feed it straight into this plane, on the driver's thread. The
-    /// consumer observes the result through events and the published grid.
-    #[default]
-    Fed,
-    /// Queue it for the consumer to drain with `take_inbound` and feed
-    /// itself. A binding whose own per-frame state lives on one owning
-    /// thread needs this: it keeps the socket in the runtime and the
-    /// decode point in the binding.
-    Queued,
-}
-
-/// The inbound queue's ceiling. At it the driver stops reading, so a
-/// consumer that falls behind backs the socket up to the server instead
-/// of growing the queue or failing the connection.
-pub const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
-/// The inbound queue's byte ceiling; see [`MAX_QUEUED_INBOUND_FRAMES`].
-///
-/// It counts frame bytes. A queued frame is a view of the driver's read
-/// buffer, not a copy, so it also pins that read's slab (64 KiB, or one
-/// larger frame) until the consumer drains it.
-pub const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
-
 impl Default for ControlOptions {
     fn default() -> Self {
         Self {
@@ -122,7 +93,6 @@ impl Default for ControlOptions {
             subscribe_agent_sessions: false,
             bootstrap_limits: BootstrapLimits::default(),
             image_protocols: ImageProtocolSet::new(),
-            deliver_inbound: InboundDelivery::Fed,
             prediction_style: PredictionStyle::Underline,
         }
     }

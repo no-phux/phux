@@ -1,6 +1,6 @@
 //! The `phux ls --json` document (`SessionListJson`, `schema_version` 4),
-//! built from one `GET_STATE` view and, from a server that advertises
-//! `ORGANIZATION`, the organization records read beside it.
+//! built from one `GET_STATE` view and the organization records read
+//! beside it.
 //!
 //! One builder for both surfaces: `phux ls --json` serializes it to stdout
 //! and the MCP `phux_ls` tool returns it in-process, so the two cannot
@@ -21,7 +21,6 @@ use phux_protocol::wire::info::{
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::wire::HandleMap;
-use crate::layout_ops::{LayoutOps, LayoutOpsError};
 use crate::org::{OrgError, OrgInventory};
 use crate::resource;
 use crate::selector::format_terminal_id;
@@ -31,8 +30,7 @@ use crate::state::{Degradation, StateView};
 /// `phux_ls`) is built from.
 ///
 /// It carries window counts as a TUI shows them ([`count_layout_windows`])
-/// and, when the server advertises `ORGANIZATION`, the organization records
-/// ([`StateView::organization`]).
+/// and the organization records ([`StateView::organization`]).
 ///
 /// # Errors
 ///
@@ -53,15 +51,13 @@ pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachErro
 /// As [`listing_view`].
 pub async fn glance_view(conn: &mut Connection) -> Result<StateView, AttachError> {
     let mut view = crate::state::get_state_on(conn).await?;
-    if crate::org::supported(conn) {
-        match crate::org::fetch(conn, OrgFilter::All, LAYOUT_READ_FIRST_REQUEST_ID - 0x100).await {
-            Ok(inventory) => view = view.with_organization(Some(inventory)),
-            Err(OrgError::Attach(err)) => return Err(err),
-            Err(OrgError::OutcomeUnknown { .. }) => return Err(AttachError::Disconnected),
-            // A refused read (no INVENTORY grant) keeps the snapshot-only
-            // listing.
-            Err(_) => {}
-        }
+    match crate::org::fetch(conn, OrgFilter::All, LAYOUT_READ_FIRST_REQUEST_ID - 0x100).await {
+        Ok(inventory) => view = view.with_organization(Some(inventory)),
+        Err(OrgError::Attach(err)) => return Err(err),
+        Err(OrgError::OutcomeUnknown { .. }) => return Err(AttachError::Disconnected),
+        // A refused read (no INVENTORY grant) keeps the snapshot-only
+        // listing.
+        Err(_) => {}
     }
     count_session_windows(view.snapshot_mut());
     Ok(view)
@@ -121,34 +117,6 @@ pub async fn count_layout_windows(
     conn: &mut Connection,
     view: &mut StateView,
 ) -> Result<(), AttachError> {
-    if crate::org::supported(conn) {
-        return count_arrangement_groups(conn, view).await;
-    }
-    let mut request_id = LAYOUT_READ_FIRST_REQUEST_ID;
-    for session in &mut view.snapshot_mut().sessions {
-        let read = LayoutOps::new(conn, session.id, request_id).read().await;
-        request_id = request_id.wrapping_add(0x100);
-        match read {
-            Ok(workspace) => {
-                session.window_count = u16::try_from(workspace.groups.len()).unwrap_or(u16::MAX);
-            }
-            Err(LayoutOpsError::Transport(err) | LayoutOpsError::Org(OrgError::Attach(err))) => {
-                return Err(err);
-            }
-            Err(_) => {}
-        }
-    }
-    Ok(())
-}
-
-/// [`count_layout_windows`] on a server that keeps organization records: the
-/// group count of each session's arrangement, placed with that session's
-/// members as [`LayoutOps::read`] places them. Without the records (a
-/// refused read) every session keeps the server's count.
-async fn count_arrangement_groups(
-    conn: &mut Connection,
-    view: &mut StateView,
-) -> Result<(), AttachError> {
     let Some(organization) = view.organization() else {
         return Ok(());
     };
@@ -190,10 +158,6 @@ async fn count_arrangement_groups(
 /// `degradation` becomes the `unreachable` list: always present, empty when
 /// the listing is complete.
 ///
-/// `hosts_complete` is whether the server advertised `HOST_SESSIONS`: only
-/// then is the `hosts` grouping the whole fleet. Without it the document
-/// carries this host's group alone and says so (`"hosts_complete": false`).
-///
 /// `organization` supplies each session's lifetime, member count, and
 /// execution counts (else derived from the snapshot), and every record's
 /// full `key`, which a `session:` or `resource:` scope names.
@@ -202,7 +166,6 @@ pub fn document(
     snapshot: &SessionSnapshot,
     organization: Option<&OrgInventory>,
     degradation: &Degradation,
-    hosts_complete: bool,
 ) -> SessionListJson {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -235,8 +198,8 @@ pub fn document(
     SessionListJson::new(entries)
         .with_terminals(terminals)
         .with_resources(resources)
-        .with_hosts(host_groups(snapshot, hosts_complete))
-        .with_hosts_complete(hosts_complete)
+        .with_hosts(host_groups(snapshot))
+        .with_hosts_complete(true)
         .with_unreachable(degradation.notices().to_vec())
 }
 
@@ -329,15 +292,9 @@ fn resource_exit_json(exit: &ExitFacet) -> ResourceExitJson {
 /// The `hosts` grouping: this host first, then every satellite the hub
 /// reported, reachable or not. Always emitted, so a consumer reads the
 /// grouping positively instead of inferring it from a missing key.
-///
-/// Without `HOST_SESSIONS` (`complete` false) the server does not report
-/// its satellites, so only this host's group is emitted; the document's
-/// `hosts_complete: false` says the rest is unknown rather than absent.
-fn host_groups(snapshot: &SessionSnapshot, complete: bool) -> Vec<HostJson> {
+fn host_groups(snapshot: &SessionSnapshot) -> Vec<HostJson> {
     let mut groups = vec![local_host_group(snapshot)];
-    if complete {
-        groups.extend(snapshot.hosts().iter().map(satellite_host_group));
-    }
+    groups.extend(snapshot.hosts().iter().map(satellite_host_group));
     groups
 }
 

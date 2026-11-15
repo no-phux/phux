@@ -1,12 +1,9 @@
 //! Registry resolution for a remote host: rung 1 of the CLI's `phux --remote`
 //! ladder (ADR-0093), for native embedders.
 //!
-//! Reads the `[[remote]]` registry (ADR-0055) through the CLI's own
-//! `phux-config` schema. The target grammar, registry match order, and
-//! token-file rule here are the ones the CLI uses too
-//! (`crates/phux/src/commands/remote_target.rs`); only the error wording
-//! differs, through [`RemoteTarget::parse_labeled`]. Pairing (rungs 2-4) is
-//! operator-present and stays in the CLI.
+//! Reads the `[[remote]]` registry (ADR-0055) with the CLI's grammar, match
+//! order, and token-file rule; only error wording differs
+//! ([`RemoteTarget::parse_labeled`]). Pairing stays in the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -465,7 +462,7 @@ impl AuthorityPin {
 ///
 /// Half an identity or a relative path (see
 /// [`RemoteConfigEntry::client_identity`]), or an unusable hardware key.
-pub fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
+pub(crate) fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
     entry
         .client_identity()?
         .map_or(Ok(TlsClientIdentity::None), |(certificate, private_key)| {
@@ -497,7 +494,7 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
 /// # Errors
 ///
 /// An endpoint no embedder can dial ([`classify`]), a malformed client
-/// identity ([`entry_identity`]), or a TLS server name that is not a DNS
+/// identity (`entry_identity`), or a TLS server name that is not a DNS
 /// name ([`validate_tls_server_name`]).
 pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result<Resolved, String> {
     if entry.paused {

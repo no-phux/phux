@@ -154,10 +154,6 @@ impl Client {
     }
 
     /// Objectives matching `filter`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn list(&self, filter: ListFilter) -> Result<Vec<Objective>, Error> {
         match self.call(Request::List(filter))? {
             Response::Objectives(objectives) => Ok(objectives),
@@ -166,10 +162,6 @@ impl Client {
     }
 
     /// One objective.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn show(&self, alias: Alias) -> Result<Objective, Error> {
         match self.call(Request::Show { alias })? {
             Response::Objective(objective) => Ok(objective),
@@ -178,55 +170,31 @@ impl Client {
     }
 
     /// Change a title or description.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn edit(&self, request: EditObjective) -> Result<Applied, Error> {
         applied(self.call(Request::Edit(request))?)
     }
 
     /// Archive an objective.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn archive(&self, request: RevisionEdit) -> Result<Applied, Error> {
         applied(self.call(Request::Archive(request))?)
     }
 
     /// Restore an archived objective.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn restore(&self, request: RevisionEdit) -> Result<Applied, Error> {
         applied(self.call(Request::Restore(request))?)
     }
 
     /// Write an objective's state.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn record_state(&self, request: StateEdit) -> Result<Applied, Error> {
         applied(self.call(Request::RecordState(request))?)
     }
 
     /// Record a signal on an objective.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn raise_signal(&self, request: RaiseSignal) -> Result<Applied, Error> {
         applied(self.call(Request::RaiseSignal(request))?)
     }
 
     /// An objective's signals.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn signals(&self, alias: Alias) -> Result<Vec<Signal>, Error> {
         match self.call(Request::Signals { alias })? {
             Response::Signals(signals) => Ok(signals),
@@ -247,10 +215,6 @@ impl Client {
     }
 
     /// The stored start when `request` repeats an admitted operation.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn replay_start(&self, request: &StartRequest) -> Result<Option<StartApplied>, Error> {
         match self.call(Request::ReplayStart(request.clone()))? {
             Response::StartReplay(applied) => Ok(applied),
@@ -271,10 +235,6 @@ impl Client {
     }
 
     /// Live runs, oldest first.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn open_runs(&self) -> Result<Vec<OpenRun>, Error> {
         match self.call(Request::OpenRuns)? {
             Response::OpenRuns(runs) => Ok(runs),
@@ -295,10 +255,6 @@ impl Client {
     }
 
     /// The stored promotion when `operation_id` was already admitted.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn replay_launch(
         &self,
         operation_id: crate::id::OperationId,

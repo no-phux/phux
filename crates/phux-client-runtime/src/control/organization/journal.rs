@@ -13,7 +13,7 @@ impl OrganizationReplica {
         clippy::too_many_lines,
         reason = "one arm per organization event, each a few record updates"
     )]
-    pub fn apply_event(&mut self, seq: Option<u64>, event: &AgentEvent) -> ReplicaAction {
+    pub(crate) fn apply_event(&mut self, seq: Option<u64>, event: &AgentEvent) -> ReplicaAction {
         if matches!(event, AgentEvent::JournalGap { .. }) {
             if self.state != ReplicaState::Empty {
                 self.state = ReplicaState::Stale;

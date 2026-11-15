@@ -1,10 +1,6 @@
-//! Layered render: ratatui chrome ([`chrome`], overlays) composited over
-//! libghostty pane interiors, which write VT straight to stdout (see
-//! `attach::render`).
-//!
-//! Chrome carves skip cells for pane rects, so the layers
-//! never interleave; cursor and SGR are handed off at the boundary. `ratatui`
-//! lives only in this crate (ADR-0020).
+//! Layered render: ratatui chrome composited over libghostty pane interiors
+//! (`attach::render`). Chrome carves skip cells for pane rects, so the
+//! layers never interleave (ADR-0020).
 
 pub mod breakpoints;
 pub mod chrome;
@@ -48,12 +44,8 @@ pub fn clip_left(text: &str, max: usize) -> String {
     tail.into_iter().rev().collect()
 }
 
-/// `path` as the shell shows it: `home` becomes `~`; an empty path means home.
-///
-/// A path under home becomes `~/rest`. A sibling that merely shares the
-/// prefix (`/Users/pat` under home `/Users/p`) is left alone, since the match
-/// must end at a `/` boundary. `home` is a parameter so callers read `$HOME`
-/// once and tests pass their own.
+/// `path` as the shell shows it: `~/rest` under `home` (at a `/` boundary
+/// only), `~` for an empty path.
 #[must_use]
 pub fn home_to_tilde(path: &str, home: Option<&str>) -> String {
     if path.is_empty() {
@@ -73,13 +65,8 @@ pub fn home_to_tilde(path: &str, home: Option<&str>) -> String {
 }
 
 /// Clip `s` to at most `max` display cells, marking a cut with [`ELLIPSIS`]
-/// (which replaces the last cell, so the result never exceeds `max`).
-///
-/// Cells, not chars: chrome text is arbitrary input, and a CJK label
-/// measured by chars overruns its neighbours; a wide glyph straddling the
-/// budget is dropped whole. Zero-width marks ride with their base for free;
-/// controls and bidi overrides are dropped (see [`cell_width`]). Every chrome
-/// surface shortens text here, so a cut is always marked.
+/// in the last cell. Cells, not chars: a wide glyph straddling the budget is
+/// dropped whole, and controls and bidi overrides are dropped.
 #[must_use]
 pub fn clip_text(s: &str, max: usize) -> String {
     if max == 0 {

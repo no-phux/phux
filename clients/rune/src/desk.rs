@@ -353,3 +353,24 @@ impl Desk {
         changed | self.blink(&client, tx) | self.tend_link(tx)
     }
 }
+
+/// A topology of just `sessions` and `panes`.
+#[cfg(test)]
+pub fn topology(
+    sessions: Vec<phux_client_runtime::control::SessionDescriptor>,
+    panes: Vec<phux_client_runtime::control::PaneDescriptor>,
+) -> phux_client_runtime::control::Topology {
+    phux_client_runtime::control::Topology {
+        sessions,
+        resources: Vec::new(),
+        panes,
+        agent_sessions: Vec::new(),
+        documents: Vec::new(),
+        satellite_sessions: Vec::new(),
+        focused_session: 0,
+        focused_pane: ResourceId::local(0),
+        authority: None,
+        inbox: None,
+        handles: phux_client_core::layout::wire::HandleMap::new(),
+    }
+}

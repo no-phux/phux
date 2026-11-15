@@ -44,40 +44,39 @@ fn assert_text_snapshot(snapshot: &SnapshotBytes) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn bounded_snapshot_request_omits_unsupported_resident_images() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let bundle = image_actor();
-            let terminal = bundle.handle.terminal().unwrap().clone();
-            let token = bundle.token.clone();
-            let run = tokio::task::spawn_local(bundle.actor.run());
-            for image_protocols in [ImageProtocolSet::all(), ImageProtocolSet::new()] {
-                let (reply, receive) = oneshot::channel();
-                terminal
-                    .snapshot
-                    .send(SnapshotRequest {
-                        scrollback: None,
-                        image_protocols,
-                        max_bytes: 512,
-                        max_frames: 16,
-                        chunk_bytes: 512,
-                        reply,
-                    })
-                    .await
-                    .unwrap();
-                let result = receive.await.unwrap();
-                if image_protocols == ImageProtocolSet::all() {
-                    assert!(matches!(
-                        result,
-                        Err(phux_terminal_api::grid::CaptureError::LimitExceeded)
-                    ));
-                } else {
-                    assert_text_snapshot(&result.expect("text fits independently of images").0);
-                }
+    on_local!(async {
+        let bundle = image_actor();
+        let terminal = bundle.handle.terminal().unwrap().clone();
+        let token = bundle.token.clone();
+        let run = tokio::task::spawn_local(bundle.actor.run());
+        for image_protocols in [ImageProtocolSet::all(), ImageProtocolSet::new()] {
+            let (reply, receive) = oneshot::channel();
+            terminal
+                .snapshot
+                .send(SnapshotRequest {
+                    scrollback: None,
+                    image_protocols,
+                    max_bytes: 512,
+                    max_frames: 16,
+                    chunk_bytes: 512,
+                    reply,
+                })
+                .await
+                .unwrap();
+            let result = receive.await.unwrap();
+            if image_protocols == ImageProtocolSet::all() {
+                assert!(matches!(
+                    result,
+                    Err(phux_terminal_api::grid::CaptureError::LimitExceeded)
+                ));
+            } else {
+                assert_text_snapshot(&result.expect("text fits independently of images").0);
             }
-            token.cancel();
-            run.await.unwrap();
-        })
-        .await;
+        }
+        token.cancel();
+        run.await.unwrap();
+    })
+    .await;
 }
 
 #[test]

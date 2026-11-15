@@ -46,6 +46,8 @@ mod system_settings;
 mod theme;
 mod ui;
 mod updates;
+#[cfg(test)]
+mod wire_fixture;
 
 #[cfg(test)]
 mod test_support;

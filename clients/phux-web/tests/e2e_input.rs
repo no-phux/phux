@@ -4,17 +4,17 @@
 //! drag selects text to copy; find, mouse and focus reporting, the
 //! alternate screen's wheel, links, and the bell. The runner starts the
 //! server with `PHUX_DEMO_PANE=cat`, so the seeded pane runs `cat` on a
-//! cooked TTY: the line discipline echoes
-//! whatever bytes arrive (control bytes as `^X`), and each finished line comes
-//! back raw as program output, which is how these tests make the "program"
-//! enable mouse modes, print OSC 8 links, and ring the bell.
-
-use std::time::Duration;
+//! cooked TTY: the line discipline echoes whatever bytes arrive (control
+//! bytes as `^X`), and each finished line comes back raw as program output,
+//! which is how these tests make the "program" enable mouse modes, print
+//! OSC 8 links, and ring the bell.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gloo_timers::future::sleep;
+use phux_web::client::Client;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -29,13 +29,17 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[path = "browser_support/metrics.rs"]
 mod metrics;
+#[path = "browser_support/page.rs"]
+mod page;
+use page::{MARKER, POLLS, poll};
 
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
     None => "ws://127.0.0.1:47654/",
 };
-const POLL: Duration = Duration::from_millis(50);
-const POLLS: usize = 120;
+/// How long a finger rests before the drag selects. The gesture treats 400ms
+/// as a hold.
+const HOLD: Duration = Duration::from_millis(450);
 
 fn document() -> Document {
     web_sys::window().unwrap().document().unwrap()
@@ -56,27 +60,71 @@ fn mounted_canvas(id: &str) -> HtmlCanvasElement {
     canvas
 }
 
-async fn wait_for(client: &phux_web::client::Client, needle: &str) -> bool {
-    for _ in 0..POLLS {
-        // Wide glyphs leave a spacer cell; compare with blanks removed.
-        let screen: String = client.rows_text().concat().replace([' ', '\0'], "");
-        if screen.contains(needle) {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
+async fn connect(canvas: &HtmlCanvasElement) -> Client {
+    phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server")
 }
 
-fn screen(client: &phux_web::client::Client) -> String {
+/// A mounted, connected 80x24 canvas and its input surface.
+async fn connected(id: &str) -> (HtmlCanvasElement, Client, Element) {
+    let canvas = mounted_canvas(id);
+    let client = connect(&canvas).await;
+    let surface = input_surface(&canvas);
+    (canvas, client, surface)
+}
+
+async fn wait_for(client: &Client, needle: &str) -> bool {
+    // Wide glyphs leave a spacer cell; compare with blanks removed.
+    poll(|| {
+        let screen: String = client.rows_text().concat().replace([' ', '\0'], "");
+        screen.contains(needle)
+    })
+    .await
+}
+
+fn screen(client: &Client) -> String {
     client.rows_text().join("\n")
 }
 
-fn keydown(target: &Element, key: &str, code: &str, meta: bool) -> bool {
+fn shows(client: &Client, needle: &str) -> bool {
+    client.rows_text().iter().any(|row| row.contains(needle))
+}
+
+async fn wait_until(client: &Client, visible: bool, needle: &str) -> bool {
+    poll(|| shows(client, needle) == visible).await
+}
+
+/// Wait until at least `count` rows contain `needle`.
+async fn wait_rows(client: &Client, needle: &str, count: usize) -> bool {
+    poll(|| {
+        let rows = client.rows_text();
+        rows.iter().filter(|row| row.contains(needle)).count() >= count
+    })
+    .await
+}
+
+/// How many times `needle` shows on screen.
+fn occurrences(client: &Client, needle: &str) -> usize {
+    screen(client).matches(needle).count()
+}
+
+/// Wait until `needle` shows more than `before` times.
+async fn wait_more(client: &Client, needle: &str, before: usize) -> bool {
+    poll(|| occurrences(client, needle) > before).await
+}
+
+/// Dispatch a keydown; returns whether the client took it.
+fn key_with(
+    target: &Element,
+    key: &str,
+    code: &str,
+    mods: impl FnOnce(&KeyboardEventInit),
+) -> bool {
     let init = KeyboardEventInit::new();
     init.set_key(key);
     init.set_code(code);
-    init.set_meta_key(meta);
+    mods(&init);
     init.set_bubbles(true);
     init.set_cancelable(true);
     let event = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
@@ -84,28 +132,276 @@ fn keydown(target: &Element, key: &str, code: &str, meta: bool) -> bool {
     event.default_prevented()
 }
 
+fn keydown(target: &Element, key: &str, code: &str, meta: bool) -> bool {
+    key_with(target, key, code, |init| init.set_meta_key(meta))
+}
+
+fn enter(surface: &Element) {
+    assert!(keydown(surface, "Enter", "Enter", false), "Enter is input");
+}
+
+/// Press Ctrl+`key` at the terminal.
+fn ctrl_key(surface: &Element, key: &str, code: &str) {
+    let taken = key_with(surface, key, code, |init| init.set_ctrl_key(true));
+    assert!(taken, "Ctrl+{key} is terminal input");
+}
+
 /// The hidden input surface the client places beside its canvas.
 fn input_surface(canvas: &HtmlCanvasElement) -> Element {
-    canvas
-        .parent_element()
-        .and_then(|host| {
-            host.query_selector("textarea.phux-web-input")
-                .ok()
-                .flatten()
-        })
+    beside(canvas, "textarea.phux-web-input")
         .expect("client mounts a textarea input surface beside the canvas")
+}
+
+/// The element matching `selector` in the canvas's host.
+fn beside(canvas: &HtmlCanvasElement, selector: &str) -> Option<Element> {
+    canvas.parent_element()?.query_selector(selector).ok()?
+}
+
+/// Type text at the terminal as one committed composition.
+fn type_text(surface: &Element, text: &str) {
+    let init = CompositionEventInit::new();
+    init.set_data(text);
+    init.set_bubbles(true);
+    let commit = CompositionEvent::new_with_event_init_dict("compositionend", &init).unwrap();
+    surface.dispatch_event(&commit).unwrap();
+}
+
+/// Start a fresh line: Ctrl+U discards whatever earlier tests left typed
+/// but unsent in the TTY's line buffer.
+fn fresh_line(surface: &Element) {
+    ctrl_key(surface, "u", "KeyU");
+}
+
+/// Type `text` on a fresh line and press Enter.
+fn type_line(surface: &Element, text: &str) {
+    fresh_line(surface);
+    type_text(surface, text);
+    enter(surface);
+}
+
+/// Make the pane's `cat` print a line: each of `before` preceded by `ESC`,
+/// then `marker`, then each of `after` preceded by `ESC`. The marker, alone
+/// on its row, shows the program output (not just the TTY's `^[` echo) has
+/// been applied.
+async fn program_prints(
+    client: &Client,
+    surface: &Element,
+    before: &[&str],
+    marker: &str,
+    after: &[&str],
+) {
+    fresh_line(surface);
+    let escaped = |sequences: &[&str]| {
+        for sequence in sequences {
+            assert!(keydown(surface, "Escape", "Escape", false));
+            type_text(surface, sequence);
+        }
+    };
+    escaped(before);
+    type_text(surface, marker);
+    escaped(after);
+    enter(surface);
+    let shown = poll(|| client.rows_text().iter().any(|row| row.trim() == marker)).await;
+    assert!(shown, "the program printed {marker}: {}", screen(client));
+}
+
+/// Wait until the screen stops changing for a quarter second.
+async fn settle(client: &Client) {
+    let mut last = screen(client);
+    for _ in 0..POLLS {
+        sleep(Duration::from_millis(250)).await;
+        let now = screen(client);
+        if now == last {
+            return;
+        }
+        last = now;
+    }
+    panic!("the screen never settled: {last}");
+}
+
+/// The 80×24 grid `run` requested, once an attach-time reflow has landed.
+///
+/// A previous test's geometry can still be in flight. Its snapshot replaces
+/// the replica, so a marker is printed only after the grid is that size and
+/// the screen has stopped changing.
+async fn settled_80x24(client: &Client) {
+    let sized = poll(|| {
+        let rows = client.rows_text();
+        rows.len() == 24 && rows.iter().all(|row| row.chars().count() == 80)
+    })
+    .await;
+    assert!(
+        sized,
+        "the pane is 80x24 before the marker is printed: {}",
+        screen(client)
+    );
+    settle(client).await;
+}
+
+/// Finish the shared `cat` pane's echo of a burst of Enters before scrolling.
+///
+/// A live chunk older than the server's stale-output budget (250ms) makes the
+/// pump skip that client to a fresh snapshot. A debug CI build falls that far
+/// behind while `cat` is still echoing, and the snapshot replaces a scrolled
+/// replica with the live screen: a hold copies blank cells, and until the
+/// snapshot lands the replica is frozen so a keydown is not handled. The
+/// sentinel is committed once the replica accepts it (a frozen one drops the
+/// key), and it is on screen twice (the tty echo and `cat`) before the view
+/// is allowed to go still.
+async fn drain_echo(client: &Client, surface: &Element) {
+    let sentinel = format!("PHUX_DRAIN_{}", js_sys::Date::now() as u64);
+    let submitted = poll(|| {
+        type_text(surface, &sentinel);
+        keydown(surface, "Enter", "Enter", false)
+    })
+    .await;
+    assert!(
+        submitted,
+        "drain sentinel is terminal input: {}",
+        screen(client)
+    );
+    assert!(
+        wait_rows(client, &sentinel, 2).await,
+        "echo drained ({sentinel}): {}",
+        screen(client)
+    );
+    settle(client).await;
+}
+
+/// Push `marker` off the live screen with a burst of Enters, and wait for
+/// the echo to finish. The tty echoes each Enter as a newline.
+async fn scroll_away(client: &Client, surface: &Element, marker: &str) {
+    for _ in 0..40 {
+        enter(surface);
+    }
+    assert!(
+        wait_until(client, false, marker).await,
+        "marker scrolled away: {}",
+        screen(client)
+    );
+    // Scroll only after `cat` has printed a sentinel, or a stale snapshot
+    // lands mid-gesture and freezes input.
+    drain_echo(client, surface).await;
+}
+
+/// The row of `marker` and its first and last columns.
+fn marker_cells(client: &Client, marker: &str) -> (u16, u16, u16) {
+    let rows = client.rows_text();
+    let row = rows.iter().position(|r| r.contains(marker)).unwrap();
+    let col = rows[row].find(marker).unwrap();
+    (row as u16, col as u16, (col + marker.len() - 1) as u16)
+}
+
+/// Row index of the first row equal (trimmed) to `text`.
+fn row_of(client: &Client, text: &str) -> u16 {
+    client
+        .rows_text()
+        .iter()
+        .position(|row| row.trim() == text)
+        .unwrap_or_else(|| panic!("no row {text}: {}", screen(client))) as u16
+}
+
+/// The newest row containing `needle`, and the column it starts at.
+fn newest(client: &Client, needle: &str) -> (u16, u16) {
+    let rows = client.rows_text();
+    rows.iter()
+        .enumerate()
+        .rev()
+        .find_map(|(row, text)| text.find(needle).map(|col| (row as u16, col as u16)))
+        .unwrap_or_else(|| panic!("no row with {needle}: {}", screen(client)))
+}
+
+fn find_count(bar: &Element) -> String {
+    bar.query_selector(".phux-find-count")
+        .unwrap()
+        .unwrap()
+        .text_content()
+        .unwrap_or_default()
+}
+
+/// A background pixel of cell `(col, row)`: its bottom edge, below the glyph.
+fn cell_pixel(canvas: &HtmlCanvasElement, col: u16, row: u16) -> [u8; 3] {
+    let ctx: CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let cell = metrics::measured(canvas);
+    let dpr = web_sys::window().unwrap().device_pixel_ratio();
+    let data = ctx
+        .get_image_data(
+            (((f64::from(col) + 1.0) * cell.cell_w - 2.0) * dpr) as i32,
+            (((f64::from(row) + 1.0) * cell.cell_h - 1.0) * dpr) as i32,
+            1,
+            1,
+        )
+        .unwrap()
+        .data();
+    [data[0], data[1], data[2]]
+}
+
+fn copy_event(surface: &Element) -> (bool, String) {
+    let clipboard = DataTransfer::new().unwrap();
+    let init = ClipboardEventInit::new();
+    init.set_clipboard_data(Some(&clipboard));
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let copy = ClipboardEvent::new_with_event_init_dict("copy", &init).unwrap();
+    surface.dispatch_event(&copy).unwrap();
+    (
+        copy.default_prevented(),
+        clipboard.get_data("text/plain").unwrap_or_default(),
+    )
+}
+
+const NOTHING: (bool, String) = (false, String::new());
+
+fn copied(text: &str) -> (bool, String) {
+    (true, text.to_owned())
+}
+
+/// `window.open`, replaced by a recorder of `(url, target, features)` until
+/// [`Self::restore`].
+struct OpenStub {
+    opened: Rc<RefCell<Vec<(String, String, String)>>>,
+    real: JsValue,
+    _stub: Closure<dyn FnMut(String, String, String) -> JsValue>,
+}
+
+impl OpenStub {
+    fn install() -> Self {
+        let opened: Rc<RefCell<Vec<_>>> = Rc::default();
+        let record = Rc::clone(&opened);
+        let stub = Closure::<dyn FnMut(String, String, String) -> JsValue>::new(
+            move |url, target, features| {
+                record.borrow_mut().push((url, target, features));
+                JsValue::NULL
+            },
+        );
+        let window = web_sys::window().unwrap();
+        let real = js_sys::Reflect::get(&window, &"open".into()).unwrap();
+        js_sys::Reflect::set(&window, &"open".into(), stub.as_ref()).unwrap();
+        Self {
+            opened,
+            real,
+            _stub: stub,
+        }
+    }
+
+    fn restore(&self) -> Vec<(String, String, String)> {
+        let window = web_sys::window().unwrap();
+        js_sys::Reflect::set(&window, &"open".into(), &self.real).unwrap();
+        self.opened.borrow().clone()
+    }
 }
 
 #[wasm_bindgen_test]
 async fn keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured() {
-    let canvas = mounted_canvas("input-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("input-canvas").await;
 
     // Focusing the canvas (what an embedder does) lands on the input surface.
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     assert_eq!(
         document().active_element().as_ref(),
         Some(&surface),
@@ -140,11 +436,7 @@ async fn keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captu
     );
 
     // An IME (or dead-key) commit arrives as committed text.
-    let init = CompositionEventInit::new();
-    init.set_data("\u{65e5}\u{672c}");
-    init.set_bubbles(true);
-    let commit = CompositionEvent::new_with_event_init_dict("compositionend", &init).unwrap();
-    surface.dispatch_event(&commit).unwrap();
+    type_text(&surface, "\u{65e5}\u{672c}");
     assert!(
         wait_for(&client, "\u{65e5}\u{672c}").await,
         "IME commit: {}",
@@ -173,72 +465,23 @@ async fn keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captu
 
     client.close();
     assert!(
-        canvas
-            .parent_element()
-            .unwrap()
-            .query_selector("textarea.phux-web-input")
-            .unwrap()
-            .is_none(),
+        beside(&canvas, "textarea.phux-web-input").is_none(),
         "closing the client removes its input surface"
     );
 }
 
-fn shift_keydown(target: &Element, key: &str) -> bool {
-    let init = KeyboardEventInit::new();
-    init.set_key(key);
-    init.set_code(key);
-    init.set_shift_key(true);
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    let event = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-    target.dispatch_event(&event).unwrap();
-    event.default_prevented()
-}
-
-async fn wait_until(client: &phux_web::client::Client, visible: bool, needle: &str) -> bool {
-    for _ in 0..POLLS {
-        if client.rows_text().iter().any(|row| row.contains(needle)) == visible {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
-}
-
 #[wasm_bindgen_test]
 async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it() {
-    let canvas = mounted_canvas("scrollback-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
-    let marker = "PHUX_WEB_OK";
+    let (canvas, client, surface) = connected("scrollback-canvas").await;
+    let marker = MARKER;
     assert!(
         wait_until(&client, true, marker).await,
         "{}",
         screen(&client)
     );
-    let surface = input_surface(&canvas);
+    scroll_away(&client, &surface, marker).await;
 
-    // The tty echoes each Enter as a newline: push the marker off screen.
-    for _ in 0..40 {
-        assert!(keydown(&surface, "Enter", "Enter", false));
-    }
-    assert!(
-        wait_until(&client, false, marker).await,
-        "marker scrolled away: {}",
-        screen(&client)
-    );
-    // The burst is still echoing. Scroll only after `cat` has printed a
-    // sentinel, or a stale snapshot lands mid-gesture and freezes input.
-    drain_echo(&client, &surface).await;
-
-    let init = WheelEventInit::new();
-    init.set_delta_y(-4_000.0);
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    let wheel = WheelEvent::new_with_event_init_dict("wheel", &init).unwrap();
-    canvas.dispatch_event(&wheel).unwrap();
-    assert!(wheel.default_prevented(), "the page does not scroll too");
+    wheel(&canvas, -4_000.0);
     assert!(
         wait_until(&client, true, marker).await,
         "wheel reached the marker in scrollback: {}",
@@ -246,7 +489,7 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
     );
 
     // Typing returns to the live screen.
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    enter(&surface);
     assert!(
         wait_until(&client, false, marker).await,
         "typing returned to live: {}",
@@ -255,10 +498,10 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
 
     // Shift+PageUp pages the local scrollback and never reaches the app.
     for _ in 0..4 {
-        assert!(
-            shift_keydown(&surface, "PageUp"),
-            "Shift+PageUp is consumed"
-        );
+        let taken = key_with(&surface, "PageUp", "PageUp", |init| {
+            init.set_shift_key(true)
+        });
+        assert!(taken, "Shift+PageUp is consumed");
     }
     assert!(
         wait_until(&client, true, marker).await,
@@ -267,46 +510,39 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
     );
 
     // Nothing selected: copy is left to the browser.
-    assert_eq!(copy_event(&surface), (false, String::new()));
+    assert_eq!(copy_event(&surface), NOTHING);
     // Drag across the marker in the scrolled-back view and copy it.
-    let rows = client.rows_text();
-    let row = rows.iter().position(|r| r.contains(marker)).unwrap();
-    let col = rows[row].find(marker).unwrap();
-    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    let (row, first, last) = marker_cells(&client, marker);
     // A cancelled pointer (a touch the browser took for panning) ends the
     // drag: later moves select nothing.
     pointer(&canvas, "pointerdown", first, row);
     pointer(&canvas, "pointercancel", first, row);
     pointer(&canvas, "pointermove", last, row);
-    assert_eq!(copy_event(&surface), (false, String::new()));
+    assert_eq!(copy_event(&surface), NOTHING);
     pointer(&canvas, "pointerdown", first, row);
     pointer(&canvas, "pointermove", first + 3, row);
     pointer(&canvas, "pointermove", last, row);
     pointer(&canvas, "pointerup", last, row);
     assert_eq!(
         copy_event(&surface),
-        (true, marker.to_owned()),
+        copied(marker),
         "the drag copied the marker"
     );
     // A click without a drag clears the selection.
     pointer(&canvas, "pointerdown", 0, 0);
     pointer(&canvas, "pointerup", 0, 0);
-    assert_eq!(copy_event(&surface), (false, String::new()));
+    assert_eq!(copy_event(&surface), NOTHING);
 
-    // The Enters pushed the seeded marker off the live screen of the shared
-    // pane; echo it back so suites that run later against the same server
-    // still find it.
-    let init = CompositionEventInit::new();
-    init.set_data(marker);
-    let retype = CompositionEvent::new_with_event_init_dict("compositionend", &init).unwrap();
-    surface.dispatch_event(&retype).unwrap();
-    assert!(keydown(&surface, "Enter", "Enter", false));
-    assert!(
-        wait_until(&client, true, marker).await,
-        "{}",
-        screen(&client)
-    );
+    restore_seeded_marker(&client, &surface).await;
     client.close();
+}
+
+/// The Enters pushed the seeded marker off the live screen of the shared
+/// pane; echo it back so suites that run later against the same server
+/// still find it.
+async fn restore_seeded_marker(client: &Client, surface: &Element) {
+    type_line(surface, MARKER);
+    assert!(wait_until(client, true, MARKER).await, "{}", screen(client));
 }
 
 fn pointer(canvas: &HtmlCanvasElement, kind: &str, col: u16, row: u16) {
@@ -321,6 +557,12 @@ struct Pointer {
     shift: bool,
     ctrl: bool,
 }
+
+const CTRL: Pointer = Pointer {
+    button: None,
+    shift: false,
+    ctrl: true,
+};
 
 fn pointer_with(
     canvas: &HtmlCanvasElement,
@@ -348,6 +590,24 @@ fn pointer_with(
     event.default_prevented()
 }
 
+/// Press, drag to, and release at the cells, with `with`'s modifiers.
+fn drag(canvas: &HtmlCanvasElement, from: (u16, u16), to: (u16, u16), with: Pointer) {
+    pointer_with(canvas, "pointerdown", from, with);
+    let held = Pointer {
+        button: Some(0),
+        ..with
+    };
+    pointer_with(canvas, "pointermove", to, held);
+    pointer_with(canvas, "pointerup", to, with);
+}
+
+/// Press and release at the cell; returns whether the press was taken.
+fn click(canvas: &HtmlCanvasElement, cell: (u16, u16), with: Pointer) -> bool {
+    let taken = pointer_with(canvas, "pointerdown", cell, with);
+    pointer_with(canvas, "pointerup", cell, with);
+    taken
+}
+
 /// Whether a Ctrl hover at `cell` is a link the client would open.
 ///
 /// `hover_link` runs the click's hit test (`cell_under` + `link_at`) and
@@ -355,31 +615,8 @@ fn pointer_with(
 /// A miss clears it, so the cursor after this move is the result of this
 /// probe, not a previous one.
 fn hover_sees_link(canvas: &HtmlCanvasElement, cell: (u16, u16)) -> bool {
-    pointer_with(
-        canvas,
-        "pointermove",
-        cell,
-        Pointer {
-            ctrl: true,
-            ..Pointer::default()
-        },
-    );
+    pointer_with(canvas, "pointermove", cell, CTRL);
     canvas.style().get_property_value("cursor").ok().as_deref() == Some("pointer")
-}
-
-/// Wait until `cell` is hit-testable as a link at the coordinates
-/// [`pointer_with`] will click. Row text can land in the replica before the
-/// animation frame publishes the canvas CSS box those coordinates name, and
-/// a plain URL is read from the grid that frame paints. The hover is that
-/// condition; it does not open the link.
-async fn wait_link_hit(canvas: &HtmlCanvasElement, cell: (u16, u16)) -> bool {
-    for _ in 0..POLLS {
-        if hover_sees_link(canvas, cell) {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
 }
 
 /// Newest viewport row whose trimmed text is `marker`, once a Ctrl hover at
@@ -388,236 +625,29 @@ async fn wait_link_hit(canvas: &HtmlCanvasElement, cell: (u16, u16)) -> bool {
 /// the last one, and it is not clickable until that hover succeeds.
 async fn wait_newest_marker_link(
     canvas: &HtmlCanvasElement,
-    client: &phux_web::client::Client,
+    client: &Client,
     marker: &str,
     col: u16,
 ) -> Option<u16> {
-    for _ in 0..POLLS {
-        if let Some(row) = client
-            .rows_text()
+    let mut found = None;
+    poll(|| {
+        let rows = client.rows_text();
+        found = rows
             .iter()
             .rposition(|text| text.trim() == marker)
-        {
-            let row = row as u16;
-            if hover_sees_link(canvas, (col, row)) {
-                return Some(row);
-            }
-        }
-        sleep(POLL).await;
-    }
-    None
-}
-
-/// Type text at the terminal as one committed composition.
-fn type_text(surface: &Element, text: &str) {
-    let init = CompositionEventInit::new();
-    init.set_data(text);
-    init.set_bubbles(true);
-    let commit = CompositionEvent::new_with_event_init_dict("compositionend", &init).unwrap();
-    surface.dispatch_event(&commit).unwrap();
-}
-
-/// Press Ctrl+`key` at the terminal.
-fn ctrl_key(surface: &Element, key: &str, code: &str) {
-    let init = KeyboardEventInit::new();
-    init.set_key(key);
-    init.set_code(code);
-    init.set_ctrl_key(true);
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    let event = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-    surface.dispatch_event(&event).unwrap();
-    assert!(event.default_prevented(), "Ctrl+{key} is terminal input");
-}
-
-/// Start a fresh line: Ctrl+U discards whatever earlier tests left typed
-/// but unsent in the TTY's line buffer.
-fn fresh_line(surface: &Element) {
-    ctrl_key(surface, "u", "KeyU");
-}
-
-/// Make the pane's `cat` print a line: each of `before` preceded by `ESC`,
-/// then `marker`, then each of `after` preceded by `ESC`. The marker, alone
-/// on its row, shows the program output (not just the TTY's `^[` echo) has
-/// been applied.
-async fn program_prints(
-    client: &phux_web::client::Client,
-    surface: &Element,
-    before: &[&str],
-    marker: &str,
-    after: &[&str],
-) {
-    fresh_line(surface);
-    let escaped = |sequences: &[&str]| {
-        for sequence in sequences {
-            assert!(keydown(surface, "Escape", "Escape", false));
-            type_text(surface, sequence);
-        }
-    };
-    escaped(before);
-    type_text(surface, marker);
-    escaped(after);
-    assert!(keydown(surface, "Enter", "Enter", false));
-    let mut shown = false;
-    for _ in 0..POLLS {
-        if client.rows_text().iter().any(|row| row.trim() == marker) {
-            shown = true;
-            break;
-        }
-        sleep(POLL).await;
-    }
-    assert!(shown, "the program printed {marker}: {}", screen(client));
-}
-
-/// Wait until the screen stops changing for a quarter second.
-async fn settle(client: &phux_web::client::Client) {
-    let mut last = screen(client);
-    for _ in 0..POLLS {
-        sleep(Duration::from_millis(250)).await;
-        let now = screen(client);
-        if now == last {
-            return;
-        }
-        last = now;
-    }
-    panic!("the screen never settled: {last}");
-}
-
-/// Wait until at least `count` rows contain `needle`.
-async fn wait_rows(client: &phux_web::client::Client, needle: &str, count: usize) -> bool {
-    for _ in 0..POLLS {
-        if client
-            .rows_text()
-            .iter()
-            .filter(|row| row.contains(needle))
-            .count()
-            >= count
-        {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
-}
-
-/// The 80×24 grid `run` requested, once an attach-time reflow has landed.
-///
-/// A previous test's geometry can still be in flight. Its snapshot replaces
-/// the replica, so a marker is printed only after the grid is that size and
-/// the screen has stopped changing.
-async fn settled_80x24(client: &phux_web::client::Client) {
-    let mut sized = false;
-    for _ in 0..POLLS {
-        let rows = client.rows_text();
-        if rows.len() == 24 && rows.iter().all(|row| row.chars().count() == 80) {
-            sized = true;
-            break;
-        }
-        sleep(POLL).await;
-    }
-    assert!(
-        sized,
-        "the pane is 80x24 before the marker is printed: {}",
-        screen(client)
-    );
-    settle(client).await;
-}
-
-/// Finish the shared `cat` pane's echo of a burst of Enters before scrolling.
-///
-/// A live chunk older than the server's stale-output budget (250ms) makes the
-/// pump skip that client to a fresh snapshot. A debug CI build falls that far
-/// behind while `cat` is still echoing, and the snapshot replaces a scrolled
-/// replica with the live screen: a hold copies blank cells, and until the
-/// snapshot lands the replica is frozen so a keydown is not handled. The
-/// sentinel is committed once the replica accepts it (a frozen one drops the
-/// key), and it is on screen twice (the tty echo and `cat`) before the view
-/// is allowed to go still.
-async fn drain_echo(client: &phux_web::client::Client, surface: &Element) {
-    let sentinel = format!("PHUX_DRAIN_{}", js_sys::Date::now() as u64);
-    let mut submitted = false;
-    for _ in 0..POLLS {
-        type_text(surface, &sentinel);
-        if keydown(surface, "Enter", "Enter", false) {
-            submitted = true;
-            break;
-        }
-        sleep(POLL).await;
-    }
-    assert!(
-        submitted,
-        "drain sentinel is terminal input: {}",
-        screen(client)
-    );
-    assert!(
-        wait_rows(client, &sentinel, 2).await,
-        "echo drained ({sentinel}): {}",
-        screen(client)
-    );
-    settle(client).await;
-}
-
-/// Row index of the first row equal (trimmed) to `text`.
-fn row_of(client: &phux_web::client::Client, text: &str) -> u16 {
-    client
-        .rows_text()
-        .iter()
-        .position(|row| row.trim() == text)
-        .unwrap_or_else(|| panic!("no row {text}: {}", screen(client))) as u16
-}
-
-fn find_bar(canvas: &HtmlCanvasElement) -> Element {
-    canvas
-        .parent_element()
-        .and_then(|host| {
-            host.query_selector(&format!(".{}", phux_web::client::FIND_BAR_CLASS))
-                .ok()
-                .flatten()
-        })
-        .expect("client mounts a find bar beside the canvas")
-}
-
-fn find_count(bar: &Element) -> String {
-    bar.query_selector(".phux-find-count")
-        .unwrap()
-        .unwrap()
-        .text_content()
-        .unwrap_or_default()
-}
-
-/// A background pixel of cell `(col, row)`: its bottom edge, below the glyph.
-fn cell_pixel(canvas: &HtmlCanvasElement, col: u16, row: u16) -> [u8; 3] {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    let cell = metrics::measured(canvas);
-    let dpr = web_sys::window().unwrap().device_pixel_ratio();
-    let data = ctx
-        .get_image_data(
-            (((f64::from(col) + 1.0) * cell.cell_w - 2.0) * dpr) as i32,
-            (((f64::from(row) + 1.0) * cell.cell_h - 1.0) * dpr) as i32,
-            1,
-            1,
-        )
-        .unwrap()
-        .data();
-    [data[0], data[1], data[2]]
+            .map(|row| row as u16)
+            .filter(|row| hover_sees_link(canvas, (col, *row)));
+        found.is_some()
+    })
+    .await;
+    found
 }
 
 #[wasm_bindgen_test]
 async fn find_highlights_matches_in_history_and_steps_between_them() {
-    let canvas = mounted_canvas("find-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("find-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
-    fresh_line(&surface);
-    type_text(&surface, "FINDME_ONE");
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    type_line(&surface, "FINDME_ONE");
     // Keep the echo and cat's copy together before flooding scrollback;
     // otherwise the blank-line echoes can put them more than a viewport apart.
     assert!(
@@ -626,13 +656,13 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
         screen(&client)
     );
     for _ in 0..30 {
-        assert!(keydown(&surface, "Enter", "Enter", false));
+        enter(&surface);
     }
     // cat writes its copies of those lines apart from the TTY's echo; let
     // them land so none splits the next line's echo.
     settle(&client).await;
     type_text(&surface, "FINDME_TWO");
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    enter(&surface);
     // Settled: the TTY echo and cat's copy of the last line are both in.
     assert!(
         wait_rows(&client, "FINDME_TWO", 2).await,
@@ -646,7 +676,8 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     );
 
     // Command+F aimed at the page is the browser's; at the terminal, ours.
-    let bar = find_bar(&canvas);
+    let bar_selector = format!(".{}", phux_web::client::FIND_BAR_CLASS);
+    let bar = beside(&canvas, &bar_selector).expect("client mounts a find bar beside the canvas");
     assert!(bar.has_attribute("hidden"), "closed until asked for");
     assert!(keydown(&surface, "f", "KeyF", true), "Command+F opens find");
     assert!(!bar.has_attribute("hidden"));
@@ -688,8 +719,9 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     );
     // The current match paints in the current-match color, the other
     // match on screen in the match color.
+    let expected = [[0x8a, 0x72, 0x1c], [0xf2, 0xb1, 0x3a]];
     let mut marks = Vec::new();
-    for _ in 0..POLLS {
+    poll(|| {
         let rows = client.rows_text();
         marks = rows
             .iter()
@@ -699,14 +731,12 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
                     .map(|c| cell_pixel(&canvas, c as u16, r as u16))
             })
             .collect();
-        if marks == [[0x8a, 0x72, 0x1c], [0xf2, 0xb1, 0x3a]] {
-            break;
-        }
-        sleep(POLL).await;
-    }
+        marks == expected
+    })
+    .await;
     assert_eq!(
         marks,
-        [[0x8a, 0x72, 0x1c], [0xf2, 0xb1, 0x3a]],
+        expected,
         "the echo's match, then the current (cat's copy), highlighted; viewport:\n{}",
         screen(&client)
     );
@@ -718,52 +748,29 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     assert!(keydown(&surface, "Enter", "Enter", false), "typing resumes");
     client.close();
     assert!(
-        canvas
-            .parent_element()
-            .unwrap()
-            .query_selector(&format!(".{}", phux_web::client::FIND_BAR_CLASS))
-            .unwrap()
-            .is_none(),
+        beside(&canvas, &bar_selector).is_none(),
         "closing the client removes its find bar"
     );
 }
 
 #[wasm_bindgen_test]
 async fn mouse_reports_reach_a_tracking_program_and_shift_drag_still_selects() {
-    let canvas = mounted_canvas("mouse-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("mouse-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     program_prints(&client, &surface, &["[?1002;1006h"], "MOUSE_ON", &[]).await;
 
     // A click is a press and a release at the cell, 1-based, in SGR form;
     // the TTY echoes the reports the server wrote to the pane.
-    pointer(&canvas, "pointerdown", 4, 2);
-    pointer(&canvas, "pointerup", 4, 2);
-    assert!(
-        wait_for(&client, "[<0;5;3M").await,
-        "press: {}",
-        screen(&client)
-    );
-    assert!(
-        wait_for(&client, "[<0;5;3m").await,
-        "release: {}",
-        screen(&client)
-    );
+    click(&canvas, (4, 2), Pointer::default());
+    for (report, what) in [("[<0;5;3M", "press"), ("[<0;5;3m", "release")] {
+        assert!(
+            wait_for(&client, report).await,
+            "{what}: {}",
+            screen(&client)
+        );
+    }
     // A drag reports motion with the button held (1002).
-    pointer_with(&canvas, "pointerdown", (6, 2), Pointer::default());
-    pointer_with(
-        &canvas,
-        "pointermove",
-        (7, 2),
-        Pointer {
-            button: Some(0),
-            ..Pointer::default()
-        },
-    );
-    pointer_with(&canvas, "pointerup", (7, 2), Pointer::default());
+    drag(&canvas, (6, 2), (7, 2), Pointer::default());
     assert!(
         wait_for(&client, "[<32;8;3M").await,
         "drag: {}",
@@ -801,22 +808,11 @@ async fn mouse_reports_reach_a_tracking_program_and_shift_drag_still_selects() {
         shift: true,
         ..Pointer::default()
     };
-    pointer_with(&canvas, "pointerdown", (0, row), shift);
-    pointer_with(
-        &canvas,
-        "pointermove",
-        (7, row),
-        Pointer {
-            button: Some(0),
-            ..shift
-        },
-    );
-    pointer_with(&canvas, "pointerup", (7, row), shift);
-    assert_eq!(copy_event(&surface), (true, "MOUSE_ON".to_owned()));
+    drag(&canvas, (0, row), (7, row), shift);
+    assert_eq!(copy_event(&surface), copied("MOUSE_ON"));
 
     program_prints(&client, &surface, &["[?1002;1006l"], "MOUSE_OFF", &[]).await;
-    pointer(&canvas, "pointerdown", 9, 9);
-    pointer(&canvas, "pointerup", 9, 9);
+    click(&canvas, (9, 9), Pointer::default());
     sleep(Duration::from_millis(300)).await;
     assert!(
         !screen(&client).contains(";10;10"),
@@ -828,45 +824,16 @@ async fn mouse_reports_reach_a_tracking_program_and_shift_drag_still_selects() {
 
 #[wasm_bindgen_test]
 async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
-    let opened: Rc<RefCell<Vec<(String, String, String)>>> = Rc::default();
-    let record = Rc::clone(&opened);
-    let stub = Closure::<dyn FnMut(String, String, String) -> JsValue>::new(
-        move |url: String, target: String, features: String| {
-            record.borrow_mut().push((url, target, features));
-            JsValue::NULL
-        },
-    );
-    let window = web_sys::window().unwrap();
-    let real_open = js_sys::Reflect::get(&window, &"open".into()).unwrap();
-    js_sys::Reflect::set(&window, &"open".into(), stub.as_ref()).unwrap();
-
-    let canvas = mounted_canvas("link-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let open = OpenStub::install();
+    let (canvas, client, surface) = connected("link-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     // OSC 8 open and close, each terminated by ESC \.
     let close = ["]8;;", "\\"];
-    program_prints(
-        &client,
-        &surface,
-        &["]8;;https://example.com/osc8", "\\"],
-        "OSCLINK",
-        &close,
-    )
-    .await;
-    program_prints(
-        &client,
-        &surface,
-        &["]8;;javascript:alert(1)", "\\"],
-        "BADLINK",
-        &close,
-    )
-    .await;
-    fresh_line(&surface);
-    type_text(&surface, "see https://example.com/plain.");
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    let link = ["]8;;https://example.com/osc8", "\\"];
+    program_prints(&client, &surface, &link, "OSCLINK", &close).await;
+    let bad = ["]8;;javascript:alert(1)", "\\"];
+    program_prints(&client, &surface, &bad, "BADLINK", &close).await;
+    type_line(&surface, "see https://example.com/plain.");
     // Settled (echo and cat's copy both in), so rows stop moving.
     assert!(wait_rows(&client, "https://example.com/plain.", 2).await);
     // The newest copy is the line this test just printed. Its text can be
@@ -884,48 +851,33 @@ async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
         .iter()
         .rposition(|text| text.trim() == "BADLINK")
         .unwrap_or_else(|| panic!("no row BADLINK: {}", screen(&client))) as u16;
-    let rows = client.rows_text();
-    let (plain_row, plain_col) = rows
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(row, text)| {
-            text.find("https://example.com/plain")
-                .map(|col| (row as u16, col as u16))
-        })
-        .unwrap();
+    let (plain_row, plain_col) = newest(&client, "https://example.com/plain");
 
-    let ctrl = Pointer {
-        ctrl: true,
-        ..Pointer::default()
-    };
     // A plain click on a link selects and opens nothing.
-    pointer(&canvas, "pointerdown", 2, osc_row);
-    pointer(&canvas, "pointerup", 2, osc_row);
-    assert!(opened.borrow().is_empty(), "no modifier, no navigation");
+    click(&canvas, (2, osc_row), Pointer::default());
     assert!(
-        pointer_with(&canvas, "pointerdown", (2, osc_row), ctrl),
+        open.opened.borrow().is_empty(),
+        "no modifier, no navigation"
+    );
+    assert!(
+        click(&canvas, (2, osc_row), CTRL),
         "the link took the click"
     );
-    pointer_with(&canvas, "pointerup", (2, osc_row), ctrl);
     assert!(
-        !pointer_with(&canvas, "pointerdown", (2, bad_row), ctrl),
+        !click(&canvas, (2, bad_row), CTRL),
         "javascript: never opens"
     );
-    pointer_with(&canvas, "pointerup", (2, bad_row), ctrl);
     // A plain URL is the painted grid, which the same frame updates. Hover
     // that cell before clicking it so the click cannot land on the pre-paint
     // snapshot.
+    let plain = (plain_col + 10, plain_row);
     assert!(
-        wait_link_hit(&canvas, (plain_col + 10, plain_row)).await,
+        poll(|| hover_sees_link(&canvas, plain)).await,
         "plain URL is hit-testable at the click: {}",
         screen(&client)
     );
-    pointer_with(&canvas, "pointerdown", (plain_col + 10, plain_row), ctrl);
-    pointer_with(&canvas, "pointerup", (plain_col + 10, plain_row), ctrl);
+    click(&canvas, plain, CTRL);
 
-    js_sys::Reflect::set(&window, &"open".into(), &real_open).unwrap();
-    let opened = opened.borrow();
     let expect = |url: &str| {
         (
             url.to_owned(),
@@ -934,7 +886,7 @@ async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
         )
     };
     assert_eq!(
-        *opened,
+        open.restore(),
         [
             expect("https://example.com/osc8"),
             expect("https://example.com/plain")
@@ -956,9 +908,7 @@ async fn the_bell_announces_itself_and_flashes_the_canvas() {
             listener.as_ref().unchecked_ref(),
         )
         .unwrap();
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let client = connect(&canvas).await;
     canvas.focus().unwrap();
     let surface = input_surface(&canvas);
     sleep(Duration::from_millis(300)).await;
@@ -968,7 +918,7 @@ async fn the_bell_announces_itself_and_flashes_the_canvas() {
     // Ctrl+G is BEL: the TTY echoes `^G`, then cat rings it.
     fresh_line(&surface);
     ctrl_key(&surface, "g", "KeyG");
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    enter(&surface);
     let mut flashed = false;
     for _ in 0..POLLS * 4 {
         flashed |= rung.get() > 0 && cell_pixel(&canvas, 79, 23) != background;
@@ -986,12 +936,8 @@ async fn the_bell_announces_itself_and_flashes_the_canvas() {
 
 #[wasm_bindgen_test]
 async fn a_double_width_character_copies_without_a_trailing_space() {
-    let canvas = mounted_canvas("wide-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("wide-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     fresh_line(&surface);
     type_text(&surface, "\u{4e2d}\u{6587}Z");
     assert!(wait_for(&client, "\u{4e2d}\u{6587}Z").await);
@@ -1006,50 +952,32 @@ async fn a_double_width_character_copies_without_a_trailing_space() {
         })
         .unwrap();
     // Cells: the two wide characters and their spacers, then "Z".
-    pointer(&canvas, "pointerdown", first, row);
-    pointer(&canvas, "pointermove", first + 4, row);
-    pointer(&canvas, "pointerup", first + 4, row);
-    assert_eq!(copy_event(&surface), (true, "\u{4e2d}\u{6587}Z".to_owned()));
-    pointer(&canvas, "pointerdown", first, row);
-    pointer(&canvas, "pointermove", first + 1, row);
-    pointer(&canvas, "pointerup", first + 1, row);
+    let select = |last: u16| {
+        pointer(&canvas, "pointerdown", first, row);
+        pointer(&canvas, "pointermove", last, row);
+        pointer(&canvas, "pointerup", last, row);
+        copy_event(&surface)
+    };
+    assert_eq!(select(first + 4), copied("\u{4e2d}\u{6587}Z"));
     assert_eq!(
-        copy_event(&surface),
-        (true, "\u{4e2d}".to_owned()),
+        select(first + 1),
+        copied("\u{4e2d}"),
         "a wide character alone copies without its spacer"
     );
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    enter(&surface);
     client.close();
-}
-
-/// How many times `needle` shows on screen.
-fn occurrences(client: &phux_web::client::Client, needle: &str) -> usize {
-    screen(client).matches(needle).count()
-}
-
-/// Wait until `needle` shows more than `before` times.
-async fn wait_more(client: &phux_web::client::Client, needle: &str, before: usize) -> bool {
-    for _ in 0..POLLS {
-        if occurrences(client, needle) > before {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
 }
 
 #[wasm_bindgen_test]
 async fn focus_changes_reach_a_program_that_asks_for_them() {
-    let canvas = mounted_canvas("focus-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("focus-canvas").await;
     canvas.focus().unwrap();
-    let surface: web_sys::HtmlElement = input_surface(&canvas).dyn_into().unwrap();
+    let surface: web_sys::HtmlElement = surface.dyn_into().unwrap();
     program_prints(&client, &surface, &["[?1004h"], "FOCUS_ON", &[]).await;
 
     // The server writes CSI O and CSI I to the pane; the TTY echoes them.
-    let (lost, gained) = (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
+    let reports = || (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
+    let (lost, gained) = reports();
     surface.blur().unwrap();
     assert!(
         wait_more(&client, "^[[O", lost).await,
@@ -1064,13 +992,13 @@ async fn focus_changes_reach_a_program_that_asks_for_them() {
     );
 
     program_prints(&client, &surface, &["[?1004l"], "FOCUS_OFF", &[]).await;
-    let (lost, gained) = (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
+    let before = reports();
     surface.blur().unwrap();
     surface.focus().unwrap();
     sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        (occurrences(&client, "^[[O"), occurrences(&client, "^[[I")),
-        (lost, gained),
+        reports(),
+        before,
         "no reports once the program stops asking: {}",
         screen(&client)
     );
@@ -1089,12 +1017,8 @@ fn wheel(canvas: &HtmlCanvasElement, delta_y: f64) {
 
 #[wasm_bindgen_test]
 async fn the_wheel_on_the_alternate_screen_is_arrow_keys() {
-    let canvas = mounted_canvas("alt-wheel-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("alt-wheel-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     program_prints(&client, &surface, &["[?1049h"], "ALT_ON", &[]).await;
 
     // Three rows of travel up, two down: one arrow key each, which the
@@ -1112,19 +1036,18 @@ async fn the_wheel_on_the_alternate_screen_is_arrow_keys() {
         screen(&client)
     );
 
-    // A program that clears alternate scroll (DECSET 1007) gets nothing.
-    program_prints(&client, &surface, &["[?1007l"], "ALT_SCROLL_OFF", &[]).await;
-    let arrows = occurrences(&client, "^[[A");
-    wheel(&canvas, -48.0);
-    sleep(Duration::from_millis(300)).await;
-    assert_eq!(occurrences(&client, "^[[A"), arrows, "{}", screen(&client));
-
-    // Back to the primary screen, where the wheel is scrollback again.
-    program_prints(&client, &surface, &["[?1007h", "[?1049l"], "ALT_OFF", &[]).await;
-    let arrows = occurrences(&client, "^[[A");
-    wheel(&canvas, -48.0);
-    sleep(Duration::from_millis(300)).await;
-    assert_eq!(occurrences(&client, "^[[A"), arrows, "{}", screen(&client));
+    // A program that clears alternate scroll (DECSET 1007) gets nothing,
+    // and back on the primary screen the wheel is scrollback again.
+    for (sequences, marker) in [
+        (&["[?1007l"][..], "ALT_SCROLL_OFF"),
+        (&["[?1007h", "[?1049l"][..], "ALT_OFF"),
+    ] {
+        program_prints(&client, &surface, sequences, marker, &[]).await;
+        let arrows = occurrences(&client, "^[[A");
+        wheel(&canvas, -48.0);
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(occurrences(&client, "^[[A"), arrows, "{}", screen(&client));
+    }
     client.close();
 }
 
@@ -1170,13 +1093,11 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
     socket.set_onmessage(Some(message.as_ref().unchecked_ref()));
     open.forget();
     message.forget();
-    for _ in 0..POLLS {
-        if attached.get() {
-            return socket;
-        }
-        sleep(POLL).await;
-    }
-    panic!("the second connection never attached");
+    assert!(
+        poll(|| attached.get()).await,
+        "the second connection never attached"
+    );
+    socket
 }
 
 /// Close `socket` and resolve when the browser's close event fires.
@@ -1193,13 +1114,8 @@ async fn await_socket_close(socket: web_sys::WebSocket) {
     socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
     on_close.forget();
     socket.close().unwrap();
-    for _ in 0..POLLS {
-        if closed.get() {
-            return;
-        }
-        sleep(POLL).await;
-    }
-    panic!(
+    assert!(
+        poll(|| closed.get()).await,
         "the second connection never closed (ready_state {})",
         socket.ready_state()
     );
@@ -1210,16 +1126,11 @@ async fn await_socket_close(socket: web_sys::WebSocket) {
 /// face is already that.
 fn foreign_cell_px(canvas: &HtmlCanvasElement) -> (u16, u16) {
     let measured = metrics::measured(canvas).cell_px();
-    let foreign = if measured == (10, 20) {
+    if measured == (10, 20) {
         (12, 24)
     } else {
         (10, 20)
-    };
-    assert_ne!(
-        foreign, measured,
-        "the second client must report a different cell size"
-    );
-    foreign
+    }
 }
 
 /// The server divides mouse positions by the cell size of the most recent
@@ -1228,15 +1139,10 @@ fn foreign_cell_px(canvas: &HtmlCanvasElement) -> (u16, u16) {
 #[wasm_bindgen_test]
 async fn mouse_positions_land_on_their_cells_after_another_client_reports_other_cells() {
     let other = attach_with_cells((10, 20)).await;
-    let canvas = mounted_canvas("cells-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("cells-canvas").await;
     canvas.focus().unwrap();
-    let surface = input_surface(&canvas);
     program_prints(&client, &surface, &["[?1000;1006h"], "CELLS_ON", &[]).await;
-    pointer(&canvas, "pointerdown", 4, 2);
-    pointer(&canvas, "pointerup", 4, 2);
+    click(&canvas, (4, 2), Pointer::default());
     assert!(
         wait_for(&client, "[<0;5;3m").await,
         "the click lands on column 5, row 3: {}",
@@ -1247,20 +1153,6 @@ async fn mouse_positions_land_on_their_cells_after_another_client_reports_other_
     // tearing the connection down, which is what queues this client's detach.
     await_socket_close(other).await;
     client.close();
-}
-
-fn copy_event(surface: &Element) -> (bool, String) {
-    let clipboard = DataTransfer::new().unwrap();
-    let init = ClipboardEventInit::new();
-    init.set_clipboard_data(Some(&clipboard));
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    let copy = ClipboardEvent::new_with_event_init_dict("copy", &init).unwrap();
-    surface.dispatch_event(&copy).unwrap();
-    (
-        copy.default_prevented(),
-        clipboard.get_data("text/plain").unwrap_or_default(),
-    )
 }
 
 /// A synthetic finger at the centre of cell `(col, row)`, or `offset_y` CSS
@@ -1283,95 +1175,73 @@ fn finger(canvas: &HtmlCanvasElement, kind: &str, (col, row): (u16, u16), offset
     event.default_prevented()
 }
 
+/// Drag a finger down until `marker` is pulled back into view.
+fn finger_scroll_to(canvas: &HtmlCanvasElement, client: &Client, marker: &str) {
+    let row_px = metrics::measured(canvas).cell_h;
+    let reached = (0..30).any(|_| {
+        finger(canvas, "pointerdown", (10, 2), 0.0);
+        for step in 1..=4 {
+            finger(canvas, "pointermove", (10, 2), f64::from(step) * row_px);
+        }
+        finger(canvas, "pointerup", (10, 6), 0.0);
+        shows(client, marker)
+    });
+    assert!(
+        reached,
+        "the drag reached the marker in scrollback: {}",
+        screen(client)
+    );
+}
+
+/// After a press at `first`, drag the finger across the marker and lift.
+fn finger_select(canvas: &HtmlCanvasElement, (row, first, last): (u16, u16, u16)) {
+    finger(canvas, "pointermove", (first + 3, row), 0.0);
+    finger(canvas, "pointermove", (last, row), 0.0);
+    finger(canvas, "pointerup", (last, row), 0.0);
+}
+
+/// A marker for this run alone: the pane is shared, so a previous
+/// copy of a fixed marker can be the row a later scroll finds.
+fn run_marker(prefix: &str) -> String {
+    format!("{prefix}_{}", js_sys::Date::now() as u64)
+}
+
 #[wasm_bindgen_test]
 async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
-    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
-    let record = Rc::clone(&opened);
-    let stub = Closure::<dyn FnMut(String) -> JsValue>::new(move |url: String| {
-        record.borrow_mut().push(url);
-        JsValue::NULL
-    });
-    let window = web_sys::window().unwrap();
-    let real_open = js_sys::Reflect::get(&window, &"open".into()).unwrap();
-    js_sys::Reflect::set(&window, &"open".into(), stub.as_ref()).unwrap();
-
-    let canvas = mounted_canvas("touch-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let open = OpenStub::install();
+    let (canvas, client, surface) = connected("touch-canvas").await;
     assert_eq!(
         canvas.style().get_property_value("touch-action").unwrap(),
         "none",
         "the browser neither pans nor zooms over the terminal"
     );
     settled_80x24(&client).await;
-    let surface = input_surface(&canvas);
-    // This run's own line. The pane is shared, so a previous copy of a fixed
-    // marker can be the row a later scroll finds.
-    let marker = format!("PHUX_TOUCH_{}", js_sys::Date::now() as u64);
-    fresh_line(&surface);
-    type_text(&surface, &marker);
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    let marker = run_marker("PHUX_TOUCH");
+    type_line(&surface, &marker);
     assert!(wait_rows(&client, &marker, 2).await, "{}", screen(&client));
-    for _ in 0..40 {
-        assert!(keydown(&surface, "Enter", "Enter", false));
-    }
-    assert!(
-        wait_until(&client, false, &marker).await,
-        "marker scrolled away: {}",
-        screen(&client)
-    );
-    drain_echo(&client, &surface).await;
+    scroll_away(&client, &surface, &marker).await;
 
     // A finger dragged down pulls history into view, as on any phone.
-    let row_px = metrics::measured(&canvas).cell_h;
-    let mut reached = false;
-    for _ in 0..30 {
-        finger(&canvas, "pointerdown", (10, 2), 0.0);
-        for step in 1..=4 {
-            finger(&canvas, "pointermove", (10, 2), f64::from(step) * row_px);
-        }
-        finger(&canvas, "pointerup", (10, 6), 0.0);
-        if client.rows_text().iter().any(|row| row.contains(&marker)) {
-            reached = true;
-            break;
-        }
-    }
-    assert!(
-        reached,
-        "the drag reached the marker in scrollback: {}",
-        screen(&client)
-    );
-    assert_eq!(
-        copy_event(&surface),
-        (false, String::new()),
-        "a scroll selects nothing"
-    );
+    finger_scroll_to(&canvas, &client, &marker);
+    assert_eq!(copy_event(&surface), NOTHING, "a scroll selects nothing");
 
     // Hold, then drag across the marker: the cells are selected.
-    let rows = client.rows_text();
-    let row = rows.iter().position(|r| r.contains(&marker)).unwrap();
-    let col = rows[row].find(&marker).unwrap();
-    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
-    finger(&canvas, "pointerdown", (first, row), 0.0);
+    let cells = marker_cells(&client, &marker);
+    finger(&canvas, "pointerdown", (cells.1, cells.0), 0.0);
     sleep(HOLD).await;
-    finger(&canvas, "pointermove", (first + 3, row), 0.0);
-    finger(&canvas, "pointermove", (last, row), 0.0);
-    finger(&canvas, "pointerup", (last, row), 0.0);
+    finger_select(&canvas, cells);
     assert_eq!(
         copy_event(&surface),
-        (true, marker.clone()),
+        copied(&marker),
         "the hold-drag selected the marker"
     );
     // A tap clears it, as a click does.
     finger(&canvas, "pointerdown", (0, 0), 0.0);
     finger(&canvas, "pointerup", (0, 0), 0.0);
-    assert_eq!(copy_event(&surface), (false, String::new()));
+    assert_eq!(copy_event(&surface), NOTHING);
 
     // A tap on a URL opens it, with no modifier to hold.
-    fresh_line(&surface);
-    type_text(&surface, "see https://example.com/touch.");
-    assert!(keydown(&surface, "Enter", "Enter", false));
+    type_line(&surface, "see https://example.com/touch.");
     assert!(wait_rows(&client, "https://example.com/touch.", 2).await);
     let rows = client.rows_text();
     let link = rows
@@ -1383,7 +1253,7 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
         })
         .unwrap();
     // A tap opens what is painted: wait for the frame that draws the URL.
-    assert!(wait_link_hit(&canvas, link).await);
+    assert!(poll(|| hover_sees_link(&canvas, link)).await);
     finger(&canvas, "pointerdown", link, 0.0);
     finger(&canvas, "pointerup", link, 0.0);
     // A hold on it is not a tap.
@@ -1391,14 +1261,10 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
     sleep(HOLD).await;
     finger(&canvas, "pointerup", link, 0.0);
 
-    js_sys::Reflect::set(&window, &"open".into(), &real_open).unwrap();
-    assert_eq!(*opened.borrow(), ["https://example.com/touch"]);
+    let opened: Vec<_> = open.restore().into_iter().map(|(url, ..)| url).collect();
+    assert_eq!(opened, ["https://example.com/touch"]);
     client.close();
 }
-
-/// How long a finger rests before the drag selects. The gesture treats 400ms
-/// as a hold; the suite's other hold uses this same window.
-const HOLD: Duration = Duration::from_millis(450);
 
 /// A pixel-only detach during a scrollback hold must not wipe the selection.
 ///
@@ -1412,91 +1278,38 @@ const HOLD: Duration = Duration::from_millis(450);
 /// the test does not read another test's screen.
 #[wasm_bindgen_test]
 async fn a_hold_still_selects_scrollback_when_another_cell_size_detaches() {
-    let canvas = mounted_canvas("hold-detach-canvas");
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let (canvas, client, surface) = connected("hold-detach-canvas").await;
     // The other client reports this same grid; a reflow has to land first.
     settled_80x24(&client).await;
 
-    let surface = input_surface(&canvas);
-    let marker = format!("PHUX_HOLD_{}", js_sys::Date::now() as u64);
+    let marker = run_marker("PHUX_HOLD");
     // Primary screen, with mouse and focus reporting off, whatever an earlier
     // test left on. The marker is this run's own line.
-    program_prints(
-        &client,
-        &surface,
-        &[
-            "[?1049l", "[?1000l", "[?1002l", "[?1003l", "[?1006l", "[?1004l",
-        ],
-        &marker,
-        &[],
-    )
-    .await;
-    for _ in 0..40 {
-        assert!(keydown(&surface, "Enter", "Enter", false));
-    }
-    assert!(
-        wait_until(&client, false, &marker).await,
-        "marker scrolled away: {}",
-        screen(&client)
-    );
-    drain_echo(&client, &surface).await;
+    let reset = [
+        "[?1049l", "[?1000l", "[?1002l", "[?1003l", "[?1006l", "[?1004l",
+    ];
+    program_prints(&client, &surface, &reset, &marker, &[]).await;
+    scroll_away(&client, &surface, &marker).await;
+    finger_scroll_to(&canvas, &client, &marker);
 
-    let row_px = metrics::measured(&canvas).cell_h;
-    let mut reached = false;
-    for _ in 0..30 {
-        finger(&canvas, "pointerdown", (10, 2), 0.0);
-        for step in 1..=4 {
-            finger(&canvas, "pointermove", (10, 2), f64::from(step) * row_px);
-        }
-        finger(&canvas, "pointerup", (10, 6), 0.0);
-        if client.rows_text().iter().any(|row| row.contains(&marker)) {
-            reached = true;
-            break;
-        }
-    }
-    assert!(
-        reached,
-        "the drag reached the marker in scrollback: {}",
-        screen(&client)
-    );
-
-    let rows = client.rows_text();
-    let row = rows.iter().position(|r| r.contains(&marker)).unwrap();
-    let col = rows[row].find(&marker).unwrap();
-    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    let cells = marker_cells(&client, &marker);
     let foreign = foreign_cell_px(&canvas);
-
     // Press, then attach. ATTACHED is the known point: detach there, while
     // the finger is still down and has not yet dragged.
-    finger(&canvas, "pointerdown", (first, row), 0.0);
+    finger(&canvas, "pointerdown", (cells.1, cells.0), 0.0);
     let other = attach_with_cells(foreign).await;
     await_socket_close(other).await;
     // The close has been observed. Rest the hold from that event so the
     // selecting drag cannot start before the detach, and a debounced resync
     // owed by the old handler has the whole window to land first.
     sleep(HOLD).await;
-    finger(&canvas, "pointermove", (first + 3, row), 0.0);
-    finger(&canvas, "pointermove", (last, row), 0.0);
-    finger(&canvas, "pointerup", (last, row), 0.0);
+    finger_select(&canvas, cells);
     assert_eq!(
         copy_event(&surface),
-        (true, marker),
+        copied(&marker),
         "the hold-drag selected the marker"
     );
-
-    // The enters pushed the seeded marker off the live screen of the shared
-    // pane; echo it back so suites that run later against the same server
-    // still find it.
-    fresh_line(&surface);
-    type_text(&surface, "PHUX_WEB_OK");
-    assert!(keydown(&surface, "Enter", "Enter", false));
-    assert!(
-        wait_until(&client, true, "PHUX_WEB_OK").await,
-        "{}",
-        screen(&client)
-    );
+    restore_seeded_marker(&client, &surface).await;
     client.close();
 }
 
@@ -1513,9 +1326,7 @@ async fn on_screen_keys_and_the_ctrl_latch_reach_the_terminal() {
     canvas
         .add_event_listener_with_callback("phux-modifiers", listener.as_ref().unchecked_ref())
         .unwrap();
-    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
-        .await
-        .expect("connect to live phux server");
+    let client = connect(&canvas).await;
     let surface = input_surface(&canvas);
     fresh_line(&surface);
     // The latch chords the next key the phone keyboard types, then lets go.

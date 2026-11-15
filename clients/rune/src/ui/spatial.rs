@@ -11,6 +11,7 @@ use crate::desk::phone::{
     Phone,
     spatial::{self, Rect},
 };
+use crate::ui::Cover;
 
 const MAP_W: f32 = 96.0;
 const MAP_H: f32 = 64.0;
@@ -311,9 +312,7 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, ink: &Ink
         .w_full(),
     );
     el().key("phone-picker-modal")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(ink.shade)
         .modal(true, Desk::close_phone_picker)
         .on_key(|d: &mut Desk, event, _| d.phone_picker_key(event))

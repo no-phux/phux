@@ -27,7 +27,6 @@
 )]
 
 pub(crate) mod identify;
-pub mod live_session;
 pub use phux_agent_session::agent_record as record;
 
 mod detector;
@@ -196,7 +195,7 @@ pub(crate) struct AgentDetector {
     published_source: phux_agent_session::state::EvidenceSource,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5).
     /// `None` means no.
-    live_session: Option<live_session::LiveSessionProbe>,
+    live_session: Option<phux_terminal_api::agent_detect::LiveSessionProbe>,
     /// The probe's previous answer, so the child ending is an edge.
     live_session_held: bool,
     /// The last state a live stream published, or `None` if it has said

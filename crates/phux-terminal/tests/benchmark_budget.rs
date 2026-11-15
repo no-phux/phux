@@ -1,4 +1,3 @@
-#![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #![allow(clippy::expect_used, missing_docs)]
 
 #[path = "../benches/measure.rs"]

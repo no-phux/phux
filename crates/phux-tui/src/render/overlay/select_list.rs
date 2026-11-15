@@ -95,10 +95,7 @@ impl SelectItem {
         Self {
             label: label.into(),
             secondary: None,
-            action: ResolvedAction {
-                action: String::new(),
-                args: std::collections::BTreeMap::new(),
-            },
+            action: crate::attach::resolved("", std::collections::BTreeMap::new()),
             kind: SelectKind::Header,
             indented: false,
             attention: false,
@@ -188,11 +185,8 @@ pub struct SelectList {
     breakpoints: ChromeBreakpoints,
 }
 
-/// Whether `next` is `prev` with only the session display name changed.
-///
-/// The stable identity is the action plus its host-qualified id (`host` +
-/// `id`). Rows that carry no id, or that differ by any other arg, are not
-/// the same selection.
+/// Whether `next` is `prev` with only the session display name changed
+/// (same action, `host`, and `id`).
 fn same_renamed_session(prev: &ResolvedAction, next: &ResolvedAction) -> bool {
     if prev.action != next.action || !is_session_action(&prev.action) {
         return false;
@@ -277,9 +271,7 @@ impl SelectList {
     }
 
     /// Replace the items in place, keeping the query. The selection follows
-    /// the selected row's action (a row inserted above the cursor must not
-    /// change what Enter commits). A session row whose display name changed
-    /// follows its host-qualified id instead. Otherwise the selection keeps
+    /// the selected row's action (a renamed session row, its id), else keeps
     /// its position, snapped.
     pub fn replace_items(&mut self, items: Vec<SelectItem>) {
         let kept = self.selected_action();
@@ -313,11 +305,8 @@ impl SelectList {
             .position(|&idx| !self.items[idx].is_header() && self.items[idx].action == *action)
     }
 
-    /// The visible row of the same session as `action` after a rename.
-    ///
-    /// Session rows are keyed by action, host, and stable id. The display
-    /// `name` is the only arg allowed to differ, so a refresh that changes
-    /// anything else (a window, a pane) keeps the position fallback.
+    /// The visible row of the same session as `action` after a rename: only
+    /// the display `name` may differ.
     fn row_of_renamed_session(&self, indices: &[usize], action: &ResolvedAction) -> Option<usize> {
         indices.iter().position(|&idx| {
             let item = &self.items[idx];
@@ -881,11 +870,8 @@ pub(super) fn fuzzy_rank(
     scored.into_iter().map(|(_, i)| i).collect()
 }
 
-/// Scored subsequence (fuzzy) match of a lowercased `needle` in `haystack`.
-///
-/// `None` when it is not a subsequence, `0` for an
-/// empty needle. Contiguous runs compound, word-boundary hits earn a bonus,
-/// and skipped gaps cost a little. Only the induced ordering is contractual.
+/// Scored subsequence match of a lowercased `needle` in `haystack` (`None`
+/// when not a subsequence). Only the induced ordering is contractual.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     fuzzy_match(needle, haystack).map(|(score, _)| score)
@@ -942,23 +928,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn action(name: &str) -> ResolvedAction {
-        ResolvedAction {
-            action: name.to_owned(),
-            args: BTreeMap::new(),
-        }
+        crate::attach::resolved(name, std::collections::BTreeMap::new())
     }
 
-    fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press_text as press;
 
     fn key(sl: &mut SelectList, key: PhysicalKey) -> OverlayCommand {
         sl.handle_key(&press(key, None))
@@ -1022,16 +995,7 @@ mod tests {
         buf
     }
 
-    fn render_to_string(sl: &SelectList, w: u16, h: u16) -> String {
-        let buf = render_buf(sl, w, h);
-        let mut out = String::new();
-        for y in 0..h {
-            let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_to_string;
 
     /// The label of the row painted on the selection surface, or `None` when
     /// no row is highlighted on screen (the cursor walked off the box).
@@ -1100,13 +1064,13 @@ mod tests {
 
     #[test]
     fn session_management_tab_preserves_filtered_target_and_ignores_status_rows() {
-        let target = ResolvedAction {
-            action: "switch-session".to_owned(),
-            args: std::collections::BTreeMap::from([
+        let target = crate::attach::resolved(
+            "switch-session",
+            std::collections::BTreeMap::from([
                 ("id".to_owned(), toml::Value::Integer(42)),
                 ("name".to_owned(), toml::Value::String("build".to_owned())),
             ]),
-        };
+        );
         let mut other = target.clone();
         other.args.insert("id".to_owned(), toml::Value::Integer(41));
         let mut sl = list(vec![
@@ -1479,10 +1443,7 @@ mod tests {
         if let Some(window) = window {
             args.insert("window".to_owned(), toml::Value::Integer(window));
         }
-        ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        }
+        crate::attach::resolved("switch-session", args)
     }
 
     #[test]

@@ -91,10 +91,7 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
             let sender = if from_a { &mut client_a } else { &mut client_b };
             send_frame(
                 sender,
-                &FrameKind::InputKey {
-                    terminal_id: terminal_id.clone(),
-                    event: ascii_key(ch, key),
-                },
+                &phux_server_testkit::input_key(terminal_id.clone(), ascii_key(ch, key)),
             )
             .await;
             drain_until_row0(&mut client_a, &mut screen, expect_prefix).await;

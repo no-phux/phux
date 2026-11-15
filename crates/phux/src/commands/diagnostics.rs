@@ -69,11 +69,6 @@ fn is_dead_socket(err: &AttachError) -> bool {
 
 /// Print a "no server" diagnostic for a connect-time error, or a generic
 /// one otherwise. Returns the failure exit code for the caller to bubble.
-///
-/// Every arm ends with its remedy (phux-i0e8.7.3): the no-server arm names
-/// the exact start commands, and all arms name the canonical server log and
-/// `phux doctor` — the two places the *reason* lives when the sentence here
-/// is not enough.
 pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str) -> ExitCode {
     crate::output::error_block(
         no_server_lines(
@@ -133,12 +128,6 @@ pub(super) fn no_server_lines(
 }
 
 /// Print an `AttachError` as a one-line, actionable message on stderr.
-///
-/// `phux-roz` (5): the previous output was `attach failed: connection
-/// refused` — accurate but useless. The new shape names the socket and
-/// `phux server --ensure`, so the user can copy-paste their way out of
-/// the failure mode. A bare `phux server` stays in the foreground and
-/// dies with the terminal. `--ensure` conflicts with `--session`.
 pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session: &str) {
     crate::output::error_block(
         attach_error_lines(

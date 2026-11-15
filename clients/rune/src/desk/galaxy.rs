@@ -180,3 +180,26 @@ impl Desk {
         self.open_star(&id);
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::Desk;
+    use crate::desk::surfaces::Playground;
+    use phux_protocol::ids::ResourceId;
+
+    #[test]
+    fn opening_the_galaxy_preserves_the_reef_state() {
+        let mut desk = Desk::new(&crate::launch::Resolved::offline("galaxy"));
+        let selected = ResourceId::local(7);
+        desk.playground = Some(Playground::Reef);
+        desk.reef.scene.selected = Some(selected.clone());
+        desk.reef.viewport = [800.0, 600.0];
+        desk.reef.night.set(true);
+
+        desk.toggle_galaxy();
+
+        assert_eq!(desk.playground, Some(Playground::Galaxy));
+        assert_eq!(desk.reef.scene.selected, Some(selected));
+        assert_eq!(desk.reef.viewport, [800.0, 600.0]);
+        assert!(desk.reef.night.get());
+    }
+}

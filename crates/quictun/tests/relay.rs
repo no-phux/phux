@@ -368,27 +368,6 @@ async fn stalled_tcp_clients_take_no_connection_slot() {
     .expect("deadline");
 }
 
-/// A local TCP service that reads each connection to its end, then answers
-/// with how much it got.
-async fn counting_target() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let _ = stream.read_to_end(&mut request).await;
-                let reply = format!("got {} bytes", request.len());
-                let _ = stream.write_all(reply.as_bytes()).await;
-                let _ = stream.shutdown().await;
-            });
-        }
-    });
-    addr
-}
-
 // The post-claim event is the fixture's receipt: Tunnel::open only sends
 // the preamble. Wait for publication, rather than retrying the TLS assertion.
 struct RouteUp(Arc<tokio::sync::Notify>);
@@ -453,7 +432,7 @@ async fn tls_clients_without_quic_reach_a_route_through_the_tcp_ingress() {
         let tls = ServiceTls::Terminate(Arc::new(
             service_tls_config(&cert, &key, Vec::new()).expect("service tls"),
         ));
-        let target = counting_target().await;
+        let target = quictun::testing::counting_target().await;
         tokio::spawn(async move { serve_tunnel(&tunnel, target, &tls).await });
         route_up.notified().await;
 

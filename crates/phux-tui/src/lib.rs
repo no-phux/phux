@@ -1,14 +1,8 @@
-//! phux reference TUI: the interactive front end over the headless
-//! [`phux_client`] library. It takes over the controlling terminal, feeds
-//! `RESOURCE_OUTPUT` bytes into a local `libghostty_vt::Terminal` per pane
-//! (ADR-0013), and paints dirty rows plus chrome back out.
-//!
-//! Pane interiors are painted by libghostty; chrome (status bar, dividers,
-//! overlays) by `ratatui` from [`render`], over disjoint regions (ADR-0020).
-//! `ratatui` lives only in this crate: the pane-interior substrate
-//! (`phux-client-core`, re-exported as [`layout`], [`multi_pane`],
-//! [`predict`]) and the headless client (`phux-client`) cannot link it.
-//! `testkit` turns on `phux_client::testkit` for downstream tests.
+//! phux reference TUI over the headless [`phux_client`] library: one local
+//! `libghostty_vt::Terminal` per pane (ADR-0013), chrome painted by `ratatui`
+//! from [`render`] over disjoint regions (ADR-0020). `ratatui` lives only in
+//! this crate; the pane substrate is re-exported as [`layout`],
+//! [`multi_pane`], and [`predict`].
 
 // Tokio's `AsyncFd` registration requires a caller-side lifetime proof. Keep
 // unsafe denied except for the two audited registrations in `attach::tty_input`.
@@ -24,13 +18,14 @@ pub mod report;
 // swapped whole on reload.
 pub mod settings;
 
-/// The shared benchmark corpora, compiled into the test build so gates
-/// assert against the grids the benches measure. Declared here because
-/// `#[path]` inside nested inline modules resolves against a directory
-/// that does not exist.
+/// The shared benchmark corpora, so test gates assert against the grids the
+/// benches measure (`#[path]` in nested modules resolves elsewhere).
 #[cfg(test)]
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod bench_support;
+
+#[cfg(test)]
+mod test_util;
 
 // Pane-interior substrate, re-exported so the `ratatui`-free boundary stays
 // compiler-enforced (ADR-0020).

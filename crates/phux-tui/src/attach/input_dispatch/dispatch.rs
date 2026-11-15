@@ -140,10 +140,8 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     ctx: &'a mut DispatchCtx<'c>,
 }
 
-/// Translate a batch of parser events into wire frames and ship them. Each
-/// event walks the stages in `EventEnv::dispatch_event`; a chord that
-/// resolves runs its action and is not forwarded (tmux's prefix table).
-/// Predictions paint once per batch.
+/// Translate a batch of parser events into wire frames and ship them. A
+/// resolved chord runs its action and is not forwarded.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -189,10 +187,8 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     Ok(layout_changed)
 }
 
-/// Passthrough popups (which-key, guidance) never eat input: a key press
-/// dismisses and then executes as if the popup were absent, except Esc,
-/// which also cancels the pending prefix; mouse input dismisses and cancels
-/// the prefix, then routes normally. Other events pass untouched.
+/// Passthrough popups never eat input: a key dismisses and then executes
+/// (Esc also cancels the prefix); mouse input dismisses and routes normally.
 fn dismiss_passthrough_popup(ctx: &mut DispatchCtx<'_>, ev: &InputEvent) -> StageOutcome {
     use phux_protocol::input::key::KeyAction;
     if !ctx.overlays.top_is_passthrough() {

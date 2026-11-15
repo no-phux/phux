@@ -58,12 +58,9 @@ mod help_inventory;
 pub use commands::server::AUTO_SPAWN_IDLE_ENV;
 pub use commands::server::ENSURE_TIMEOUT_ENV;
 
-/// Record this build's source checkout `distros/` directory.
-///
-/// It is searched last for a bundled `--distro` name. The `phux` binary
-/// passes it from `CARGO_MANIFEST_DIR`; it lives there, not in this library, because a
-/// compile-time checkout path keys a crate, and everything that links it,
-/// to one checkout in a content-addressed build cache.
+/// Record this build's source checkout `distros/` directory, searched last
+/// for a bundled `--distro`. The binary passes it so no checkout path keys
+/// this library in a content-addressed build cache.
 pub fn set_checkout_distros(dir: &'static str) {
     let _ = commands::config::CHECKOUT_DISTROS.set(std::path::Path::new(dir));
 }
@@ -177,9 +174,6 @@ fn json_output_requested() -> bool {
 }
 
 /// Endpoints answered straight from argv, before clap parses anything.
-///
-/// Returns `Some(code)` when this invocation is one of them and no further
-/// setup should run.
 fn preparse_endpoint(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     // Recognize the canonical launcher spelling before clap so every trailing
     // byte belongs to the companion, including names that overlap root flags

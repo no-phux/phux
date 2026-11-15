@@ -13,11 +13,10 @@ use phux_protocol::{BootstrapId, ClientId, StreamId};
 use phux_resource::ResourceHandle;
 use phux_terminal::actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
-    ProcessFacetRequest, ResizeRequest, ResourceOutput, SnapshotRequest, TerminalActor,
+    ProcessFacetRequest, ResourceOutput, SnapshotRequest, TerminalActor,
 };
 use phux_terminal::grid::SnapshotBytes;
 use phux_terminal::{Outbound, TerminalInput};
-use phux_terminal_api::launch::default_shell_command;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 
@@ -27,10 +26,10 @@ use super::common::{collect_until, fresh, named_key, render_grid, sh};
 const DEADLINE: Duration = Duration::from_secs(30);
 const WIRE_TID: u32 = 7;
 
-fn run_local_paused<F: Future<Output = ()>>(fut: F) {
+fn run_local<F: Future<Output = ()>>(paused: bool, fut: F) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .start_paused(true)
+        .start_paused(paused)
         .build()
         .unwrap();
     tokio::task::LocalSet::new().block_on(&rt, fut);
@@ -110,7 +109,7 @@ fn outputs(rx: &mut mpsc::Receiver<Outbound>) -> Vec<(u32, u64)> {
 /// consumer.
 #[test]
 fn tick_and_ack_routing_survive_every_consumer_lifecycle_edge() {
-    run_local_paused(async {
+    run_local(true, async {
         let bundle = TerminalActor::new_with_seed(20, 5, b"hello").unwrap();
         let handle = bundle.handle.clone();
         let token = bundle.token.clone();
@@ -205,11 +204,7 @@ fn replay(cols: u16, rows: u16, bytes: &[u8]) -> Vec<String> {
 /// before the first release, so there is neither overlap nor gap. A second
 /// subscriber proves the broadcast fans the same bytes out to both.
 fn assert_replay_totality(resize: Option<(u16, u16)>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
+    run_local(false, async {
         let script = "read _; printf '\\r\\nalpha\\r\\nbravo'; \
                       read _; printf '\\r\\ncharlie\\r\\nSENTINEL'; sleep 3600";
         let bundle = TerminalActor::new_with_command(sh(script), 80, 24).unwrap();
@@ -228,15 +223,11 @@ fn assert_replay_totality(resize: Option<(u16, u16)>) {
         release().await;
         let mut tail = collect_until(&mut rx, b"bravo").await;
         if let Some((cols, rows)) = resize {
-            let request = ResizeRequest {
-                cols,
-                rows,
-                cell_px: None,
-                resync_clients: true,
-                resync_only: false,
-                resync_for: None,
-            };
-            terminal.resize.send(request).await.unwrap();
+            use phux_resource::companions::Resize as _;
+            assert!(
+                terminal.resize.resize((cols, rows), None),
+                "queue the resize"
+            );
         }
         release().await;
         tail.extend(collect_until(&mut rx, b"SENTINEL").await);
@@ -278,11 +269,7 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
 /// `Child::wait` returns.
 #[test]
 fn shutdown_signal_terminates_long_running_child() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
+    run_local(false, async {
         let bundle = TerminalActor::new_with_command(sh("sleep 60"), 80, 24).unwrap();
         let token = bundle.token;
         let join = tokio::task::spawn_local(bundle.actor.run());
@@ -299,11 +286,7 @@ fn shutdown_signal_terminates_long_running_child() {
 /// pane): the engine outcome and the facet both name the signal.
 #[test]
 fn signal_death_is_reported_in_the_exit_facet_not_flattened() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
+    run_local(false, async {
         let mut bundle = TerminalActor::new_with_command(sh("kill -9 $$"), 40, 5).unwrap();
         let exit_rx = bundle.exit_notify.take().unwrap();
         let terminal = bundle.handle.terminal().unwrap().clone();
@@ -332,17 +315,4 @@ fn signal_death_is_reported_in_the_exit_facet_not_flattened() {
         );
         token.cancel();
     });
-}
-
-/// phux-7vx: ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
-/// (htop) push kitty flags they cannot parse back. The default shell must
-/// stay on `xterm-256color` until that is proven safe.
-#[test]
-fn default_shell_command_advertises_xterm_256color() {
-    let shell = phux_config::shell::resolve_shell(None);
-    let cmd = default_shell_command(&shell, false);
-    assert_eq!(
-        cmd.get_env("TERM").and_then(|t| t.to_str()),
-        Some("xterm-256color")
-    );
 }

@@ -5,8 +5,6 @@ use phux_resource::mailbox::Outbound;
 use phux_resource::replication::ConsumerSync;
 use tokio::sync::{mpsc, watch};
 
-pub use phux_resource::replication::MAX_EMIT_INSTANTS;
-
 /// Per-consumer state-sync cache (ADR-0018), one per attached consumer on
 /// the actor. `!Send` like the terminal it tracks.
 pub struct ConsumerSyncState {

@@ -18,6 +18,42 @@ fn group_of(pid: u32) -> i32 {
     group
 }
 
+/// The sidecar pidfile path under `dir`, its parent created.
+fn pidfile(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let path = dir.path().join("plugin-startup/plug/web.pid");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    path
+}
+
+/// A record with no owning server (`write_pidfile` would record this test,
+/// and the reap would skip a sidecar whose server is still alive).
+fn orphan(leader: i32, group: i32, start_time: String) -> PidRecord {
+    PidRecord {
+        pid: leader,
+        pgid: group,
+        start_time,
+        server_pid: 0,
+        server_start_time: String::new(),
+        boot_id: String::new(),
+    }
+}
+
+/// Write `record` at the pidfile and run one reap pass over `dir`.
+fn reap_with(dir: &tempfile::TempDir, record: &PidRecord) -> std::path::PathBuf {
+    let path = pidfile(dir);
+    std::fs::write(&path, serde_json::to_vec(record).unwrap()).unwrap();
+    reap(dir);
+    path
+}
+
+fn reap(dir: &tempfile::TempDir) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(reap_orphans(dir.path()));
+}
+
 #[test]
 fn reap_refuses_a_start_time_mismatch() {
     let dir = tempfile::tempdir().unwrap();
@@ -25,28 +61,7 @@ fn reap_refuses_a_start_time_mismatch() {
     let pid = child.id().cast_signed();
     let group = group_of(child.id());
     let real = process_start_time(pid).expect("start time");
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let body = serde_json::to_vec(&PidRecord {
-        pid,
-        pgid: group,
-        start_time: format!("mismatch-{real}"),
-        server_pid: 0,
-        server_start_time: String::new(),
-        boot_id: String::new(),
-    })
-    .unwrap();
-    std::fs::write(&path, body).unwrap();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap_with(&dir, &orphan(pid, group, format!("mismatch-{real}")));
     assert!(
         process_exists(pid),
         "a mismatched start time must not be killed"
@@ -64,31 +79,7 @@ fn reap_refuses_when_the_leader_is_dead_even_if_the_group_id_is_live() {
     let leader_pid = leader.id().cast_signed();
     leader.wait().unwrap();
     assert!(!process_exists(leader_pid));
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid: leader_pid,
-            pgid: innocent_group,
-            start_time: "1".to_owned(),
-            server_pid: 0,
-            server_start_time: String::new(),
-            boot_id: String::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap_with(&dir, &orphan(leader_pid, innocent_group, "1".to_owned()));
     assert!(
         process_exists(innocent.id().cast_signed()),
         "a dead leader must not take a live group with it"
@@ -104,33 +95,7 @@ fn reap_kills_when_the_leader_and_start_time_match() {
     let pid = child.id().cast_signed();
     let group = group_of(child.id());
     let start = process_start_time(pid).expect("start time");
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // No owner: `write_pidfile` would record this test, and the reap
-    // would skip a sidecar whose server is still alive.
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid,
-            pgid: group,
-            start_time: start,
-            server_pid: 0,
-            server_start_time: String::new(),
-            boot_id: String::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap_with(&dir, &orphan(pid, group, start));
     // The test is the parent, so a killed child is a zombie until waited.
     // `kill(pid, 0)` still succeeds for a zombie; `try_wait` tells them apart.
     let status = child.try_wait().unwrap();
@@ -146,12 +111,7 @@ fn reap_skips_while_the_owning_server_is_alive() {
     let mut sidecar = sleep_group();
     let pid = sidecar.id().cast_signed();
     let group = group_of(sidecar.id());
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let path = pidfile(&dir);
     write_pidfile(&path, pid, group).unwrap();
     let record: PidRecord = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let self_pid = unsafe { libc::getpid() };
@@ -160,12 +120,7 @@ fn reap_skips_while_the_owning_server_is_alive() {
         record.server_start_time,
         process_start_time(self_pid).expect("server start")
     );
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap(&dir);
     assert!(
         sidecar.try_wait().unwrap().is_none(),
         "a second start must not reap a sidecar whose server is alive"
@@ -183,7 +138,7 @@ fn reap_skips_while_the_owning_server_is_alive() {
         ..record
     };
     std::fs::write(&path, serde_json::to_vec(&dead_owner).unwrap()).unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap(&dir);
     assert!(
         sidecar.try_wait().unwrap().is_some(),
         "once the owning server is gone the sidecar is reaped"
@@ -238,31 +193,7 @@ fn reap_kills_a_grandchild_after_the_leader_exits() {
         process_exists(grand),
         "grandchild should outlive the leader"
     );
-
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid: leader_pid,
-            pgid: group,
-            start_time: start,
-            server_pid: 0,
-            server_start_time: String::new(),
-            boot_id: String::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap_with(&dir, &orphan(leader_pid, group, start));
     assert!(
         !process_exists(grand),
         "a dead leader's later group member is reaped"
@@ -278,30 +209,7 @@ fn reap_refuses_a_live_leader_whose_pgid_is_not_its_pid() {
     let mut innocent = sleep_group();
     let innocent_group = group_of(innocent.id());
     assert_ne!(innocent_group, leader_pid);
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid: leader_pid,
-            pgid: innocent_group,
-            start_time: start,
-            server_pid: 0,
-            server_start_time: String::new(),
-            boot_id: String::new(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    reap_with(&dir, &orphan(leader_pid, innocent_group, start));
     assert!(
         innocent.try_wait().unwrap().is_none(),
         "a pidfile whose pgid is not the leader must not signal that group"
@@ -320,32 +228,14 @@ fn reap_skips_when_the_owner_start_time_is_unreadable() {
     let pid = sidecar.id().cast_signed();
     let group = group_of(sidecar.id());
     let start = process_start_time(pid).expect("start");
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     // SAFETY: the test process is the recorded owner.
     let server_pid = unsafe { libc::getpid() };
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid,
-            pgid: group,
-            start_time: start,
-            server_pid,
-            server_start_time: String::new(),
-            boot_id: current_boot_id().unwrap_or_default(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    let record = PidRecord {
+        server_pid,
+        boot_id: current_boot_id().unwrap_or_default(),
+        ..orphan(pid, group, start)
+    };
+    reap_with(&dir, &record);
     assert!(
         sidecar.try_wait().unwrap().is_none(),
         "an unreadable owner start time must fail toward alive"
@@ -361,30 +251,11 @@ fn reap_does_not_kill_a_pidfile_from_another_boot() {
     let pid = child.id().cast_signed();
     let group = group_of(child.id());
     let start = process_start_time(pid).expect("start");
-    let path = dir
-        .path()
-        .join("plugin-startup")
-        .join("plug")
-        .join("web.pid");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&PidRecord {
-            pid,
-            pgid: group,
-            start_time: start,
-            server_pid: 0,
-            server_start_time: String::new(),
-            boot_id: "not-this-boot".to_owned(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    rt.block_on(reap_orphans(dir.path()));
+    let record = PidRecord {
+        boot_id: "not-this-boot".to_owned(),
+        ..orphan(pid, group, start)
+    };
+    let path = reap_with(&dir, &record);
     assert!(
         child.try_wait().unwrap().is_none(),
         "a pidfile from another boot must not be signaled"

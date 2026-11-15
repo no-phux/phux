@@ -325,12 +325,7 @@ fn input_resumes_on_the_same_connection_after_a_killed_session() {
         .expect("a non-fatal ending");
     assert!(!plane.input_ready(&terminal()), "not before it subscribes");
     let request_id = plane.attach_terminal(&terminal());
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     assert!(plane.input_ready(&terminal()));
 }
 

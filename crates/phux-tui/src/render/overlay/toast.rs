@@ -1,7 +1,11 @@
 //! Toast overlay: a dismissable notice (a failed plugin action's output, a
 //! config error). Any key dismisses it.
+//!
+//! A placeholder for a picker whose data is still in flight is a toast too:
+//! it swallows keys, Escape cancels, and the real picker replaces it only
+//! while it is on top.
 
-use phux_protocol::input::key::KeyEvent;
+use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -22,6 +26,8 @@ pub struct ToastOverlay {
     /// The border's key legend in place of `any key` (a confirm's
     /// `⏎ kill · esc`); `None` keeps the default.
     keys: Option<&'static str>,
+    /// The request a placeholder awaits; only Escape dismisses one.
+    pending: Option<u32>,
     /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
@@ -36,6 +42,7 @@ impl ToastOverlay {
             theme: *theme,
             passthrough: false,
             keys: None,
+            pending: None,
             breakpoints: ChromeBreakpoints::default(),
         }
     }
@@ -44,17 +51,24 @@ impl ToastOverlay {
     #[must_use]
     pub fn passthrough(title: impl Into<String>, lines: Vec<String>, theme: &Theme) -> Self {
         Self {
-            title: title.into(),
-            lines,
-            theme: *theme,
             passthrough: true,
-            keys: None,
-            breakpoints: ChromeBreakpoints::default(),
+            ..Self::new(title, lines, theme)
         }
     }
-}
 
-impl ToastOverlay {
+    /// The placeholder for a `go-to-directory` listing of `path` (empty
+    /// means the server user's home) sent as `request_id`, titled like the
+    /// picker it turns into.
+    #[must_use]
+    pub fn listing(path: &str, request_id: u32, theme: &Theme) -> Self {
+        let shown = if path.is_empty() { "~" } else { path };
+        let line = format!("Listing {shown}\u{2026}");
+        Self {
+            pending: Some(request_id),
+            ..Self::new("New tab in folder", vec![line], theme).with_keys("esc")
+        }
+    }
+
     /// Show `keys` in the border instead of `any key`, for a caller that
     /// takes only some keys (a confirm).
     #[must_use]
@@ -108,9 +122,16 @@ impl RenderOverlay for ToastOverlay {
         self.breakpoints = bp;
     }
 
-    fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-        // Any key dismisses — a toast has no inner interaction.
+    fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
+        let escape = key.action == KeyAction::Press && key.key == PhysicalKey::Escape;
+        if self.pending.is_some() && !escape {
+            return OverlayCommand::Stay;
+        }
         OverlayCommand::Dismiss
+    }
+
+    fn pending_request(&self) -> Option<u32> {
+        self.pending
     }
 
     fn is_input_passthrough(&self) -> bool {
@@ -122,35 +143,10 @@ impl RenderOverlay for ToastOverlay {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use crate::render::overlay::{OverlayState, SelectList};
+    use crate::test_util::press as key;
 
-    fn key(k: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key: k,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
-
-    fn render_to_string(overlay: &ToastOverlay, width: u16, height: u16) -> String {
-        let area = Rect::new(0, 0, width, height);
-        let mut buf = Buffer::empty(area);
-        overlay.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_to_string;
 
     #[test]
     fn any_key_dismisses() {
@@ -241,5 +237,65 @@ mod tests {
         let long = ToastOverlay::new("t", vec!["line".into(); 100], &Theme::default());
         let b = long.bounds(outer).expect("bounded");
         assert_eq!(b.height, 20, "capped at half the viewport");
+    }
+
+    fn placeholder(request_id: u32) -> Box<ToastOverlay> {
+        Box::new(ToastOverlay::listing("/srv", request_id, &Theme::default()))
+    }
+
+    fn picker() -> Box<SelectList> {
+        Box::new(SelectList::new("picker", Vec::new(), &Theme::default()))
+    }
+
+    #[test]
+    fn a_placeholder_cancels_on_escape_and_swallows_other_keys() {
+        let mut pending = ToastOverlay::listing("", 1, &Theme::default());
+        assert_eq!(
+            pending.handle_key(&key(PhysicalKey::A)),
+            OverlayCommand::Stay
+        );
+        assert_eq!(
+            pending.handle_key(&key(PhysicalKey::Escape)),
+            OverlayCommand::Dismiss
+        );
+        assert_eq!(pending.lines, ["Listing ~\u{2026}"]);
+        assert_eq!(pending.title, "New tab in folder");
+        let b = pending.bounds(Rect::new(0, 0, 100, 40)).expect("bounded");
+        assert_eq!(b.height, 3, "border, one line, border: {b:?}");
+        let text = render_to_string(&pending, 100, 40);
+        assert!(text.contains("New tab in folder"), "title:\n{text}");
+        assert!(
+            text.contains(" esc ") && !text.contains("cancel"),
+            "legend:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_reply_replaces_only_its_uncovered_placeholder() {
+        let mut overlays = OverlayState::new();
+        overlays.push(placeholder(7));
+        assert!(overlays.replace_pending(7, picker()));
+        assert_eq!(overlays.depth(), 1);
+        assert_eq!(overlays.top_pending_request(), None, "the picker is on top");
+
+        let mut overlays = OverlayState::new();
+        overlays.push(placeholder(7));
+        overlays.handle_key(&key(PhysicalKey::Escape));
+        assert!(!overlays.awaits(7), "Escape cancelled the listing");
+        assert!(!overlays.replace_pending(7, picker()));
+        assert_eq!(overlays.depth(), 0, "no picker opens over the pane");
+
+        let mut overlays = OverlayState::new();
+        overlays.push(placeholder(7));
+        overlays.push(picker());
+        assert!(
+            !overlays.replace_pending(7, picker()),
+            "covered placeholder"
+        );
+
+        let mut overlays = OverlayState::new();
+        overlays.push(placeholder(8));
+        assert!(!overlays.replace_pending(7, picker()), "stale request id");
+        assert_eq!(overlays.top_pending_request(), Some(8));
     }
 }

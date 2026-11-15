@@ -15,15 +15,13 @@ workspace = true
 
 [features]
 default = ["native-engine"]
-# Incremental native checkpoint capture/advertisement.
-native-engine = ["phux-terminal-api/native-engine", "phux-client-core/native-engine"]
+# Always on; kept so dependents that name it still resolve.
+native-engine = []
 # Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
 # to its dependents, so these are opt-in and enabled only as a dev-dependency.
 test-support = ["phux-terminal-api/test-support"]
-# Benchmark/example tooling, opt-in so default test builds skip Criterion
-# and DHAT.
+# Benchmark tooling, opt-in so default test builds skip Criterion and DHAT.
 capture-bench = ["dep:criterion", "dep:dhat"]
-ack-allocations-example = ["dep:dhat"]
 # Builds the `#[ignore]`d `perf_bursty_output` gates. Only `just stress` runs
 # them, so the default test build skips compiling and linking that binary.
 stress = []
@@ -35,7 +33,7 @@ dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-resource.workspace = true
-phux-terminal-api.workspace = true
+phux-terminal-api = { workspace = true, features = ["native-engine"] }
 phux-agent-session.workspace = true
 phux-agent-rules.workspace = true
 phux-config.workspace = true
@@ -66,7 +64,7 @@ portable-pty.workspace = true
 portable-pty-adopt.workspace = true
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
-phux-client-core.workspace = true
+phux-client-core = { workspace = true, features = ["native-engine"] }
 libghostty-vt.workspace = true
 sha2 = "0.11"
 
@@ -86,21 +84,10 @@ name = "perf_bursty_output"
 path = "tests/perf_bursty_output.rs"
 required-features = ["stress"]
 
-[[example]]
-name = "ack_allocations"
-required-features = ["ack-allocations-example"]
-
 [[bench]]
 name = "capture"
 harness = false
 required-features = ["native-engine", "capture-bench"]
-
-# State-sync tick and wire-copy stages (phux-69pq.5): allocation table plus
-# Criterion timings.
-[[bench]]
-name = "live_path"
-harness = false
-required-features = ["capture-bench"]
 
 # Callgrind instruction counts for the engine hot paths; see `phux-server`'s
 # `icount` bench for the rest of the guarded set.

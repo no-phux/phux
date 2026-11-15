@@ -12,9 +12,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::field;
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, StateScope, TYPE_HELLO,
-};
+use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, TYPE_HELLO};
 
 use phux_server_testkit::{
     command, encode_frame, recv_typed, run_local, spawn_server, wait_for_raw_socket,
@@ -74,14 +72,7 @@ fn a_hello_with_unknown_capability_values_is_admitted() {
         assert!(bootstrap_limits.max_chunk_bytes() <= MAX_BOOTSTRAP_CHUNK_BYTES);
         assert!(bootstrap_limits.max_history_page_bytes() <= MAX_HISTORY_PAGE_BYTES);
 
-        let state = command(
-            &mut stream,
-            1,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-        )
-        .await;
+        let state = command(&mut stream, 1, phux_server_testkit::get_state()).await;
         assert!(matches!(
             state,
             CommandResult::OkWith(CommandValue::State(_))

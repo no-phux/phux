@@ -283,7 +283,6 @@ impl TerminalActor {
         self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
         // Resume queued captures only after both final snapshots have read
         // the canonical terminal; starting one earlier would loan it again.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
@@ -420,7 +419,6 @@ impl TerminalActor {
         // Close an idle output burst (independent of the emitter gate).
         self.maybe_emit_idle();
         self.tick_emit();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.expire_native_cursors();
     }
 
@@ -435,7 +433,6 @@ impl TerminalActor {
         if self.in_output_burst {
             return true;
         }
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if !self.native_cursor_owners.is_empty() {
             return true;
         }
@@ -494,10 +491,7 @@ impl TerminalActor {
         } else {
             self.handle_resize(req.cols, req.rows, req.cell_px)
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let tombstoned = std::mem::take(&mut self.reflow_tombstoned);
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        let tombstoned: Vec<ResyncTarget> = Vec::new();
         if !req.resync_clients {
             return tombstoned
                 .into_iter()

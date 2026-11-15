@@ -4,8 +4,6 @@
 /// `claude/blocked_permission.txt`: transcript above a rule, the dialog stem and
 /// numbered options below) and then holds.
 fn write_fake_claude(dir: &std::path::Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join("claude");
     let script = concat!(
         "#!/bin/sh\n",
@@ -28,9 +26,7 @@ fn write_fake_claude(dir: &std::path::Path) -> PathBuf {
         "echo ' Esc to cancel'\n",
         "sleep 120\n",
     );
-    std::fs::write(&path, script).expect("write fake claude");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod fake claude");
+    crate::common::write_executable(&path, script);
     path
 }
 

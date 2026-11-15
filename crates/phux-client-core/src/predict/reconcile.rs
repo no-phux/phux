@@ -1,7 +1,7 @@
 //! Reconciliation — confirm, contradict, or keep predictions when
 //! authoritative state arrives.
 //!
-//! [`reconcile_terminal_output_per_cell`] walks the prediction queue from
+//! [`reconcile_terminal_output_per_cell_at`] walks the prediction queue from
 //! the front, reads each prediction's target cell, and partitions it into
 //! **confirmed** (drop: the server painted exactly the guess), **pending**
 //! (keep: not echoed yet), and **contradicted** (drop it and the whole
@@ -16,11 +16,8 @@
 //! | `Newline` | `cursor.row > pred.row` | never (instantaneous) | `cursor.row <= pred.row` |
 //! | `CursorLeft` / `CursorRight` | `cursor == (pred.row, pred.col)` | cursor is still on `pred.row` and (Left: `cursor.col > pred.col`, Right: `cursor.col < pred.col`) — server hasn't caught up | otherwise |
 //!
-//! `BackspaceEol`'s "blank or blank" collapse is intentional: a backspace
-//! prediction predicts that the cell becomes blank, so a blank cell post-
-//! reconcile is equivalent to confirmation; there is no "still pending"
-//! state distinguishable from "confirmed" without snapshotting prior
-//! contents, which we don't do.
+//! A blank cell confirms `BackspaceEol`: without snapshotting prior contents
+//! "pending" and "confirmed" are indistinguishable.
 
 use super::state::{PredictionKind, PredictionState};
 
@@ -45,7 +42,8 @@ pub struct ReconcileStats {
 ///
 /// The cursor estimate resyncs to `(cursor_row, cursor_col)` only when the
 /// queue drains; otherwise it stays ahead so later inserts queue correctly.
-pub fn reconcile_terminal_output_per_cell<F>(
+#[cfg(test)]
+pub(super) fn reconcile_terminal_output_per_cell<F>(
     state: &mut PredictionState,
     cursor_row: u16,
     cursor_col: u16,

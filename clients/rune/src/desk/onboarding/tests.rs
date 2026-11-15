@@ -100,10 +100,7 @@ fn bringing_your_setup_shows_only_with_an_agent() {
 
 #[test]
 fn keys_continue_step_back_and_skip() {
-    let key = |key| KeyEvent {
-        key,
-        mods: rune::Mods::default(),
-    };
+    let key = |key| crate::keys::plain(key);
     let mut desk = desk(Prefs::memory());
     desk.open_onboarding();
     assert!(desk.onboarding_key(&key(Key::Enter)));

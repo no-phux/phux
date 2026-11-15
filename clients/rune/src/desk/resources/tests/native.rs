@@ -89,26 +89,7 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
         let records = [moved, reused];
         let attach_id = seed(&client, &records).expect("reconnect attach");
         install_arrangement(&client, &records, &doc(split(9, 1)));
-        let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-            .with_sessions(vec![
-                SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-            ])
-            .with_resources(
-                records
-                    .iter()
-                    .map(|r| {
-                        ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                            .with_session(Some(SessionId::new(1)))
-                    })
-                    .collect(),
-            );
-        client
-            .feed(FrameKind::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id: ClientId::new(1),
-            })
-            .unwrap();
+        attach_records(&client, attach_id, &records);
         client.feed(FrameKind::AttachReady { attach_id }).unwrap();
         publish(
             &client,
@@ -201,20 +182,7 @@ fn native_png_headless_renderer_smoke() {
     );
     let gpu = rune::render::Gpu::headless();
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-    let target = rune::render::Offscreen::new(&gpu.device, 800, 600);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (800, 600),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(&gpu, &mut renderer, &mut rt, (800, 600));
     let accessibility = rt.accessibility_json().to_string();
     assert!(
         accessibility.contains("Native JSON inspector"),

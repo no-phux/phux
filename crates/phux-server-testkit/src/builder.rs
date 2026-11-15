@@ -45,15 +45,12 @@ const DEFAULT_COLS: u16 = 80;
 /// See [`DEFAULT_COLS`].
 const DEFAULT_ROWS: u16 = 24;
 
-/// How long [`ClientHandle::converge`] keeps draining after the last byte
-/// before declaring the screen settled. A short window: the broadcast
-/// pump emits within a couple of 33 Hz ticks, so 150ms of silence is a
-/// confident "nothing more is coming."
+/// Silence after the last render that [`ClientHandle::converge`] treats as
+/// settled: a few 33 Hz broadcast ticks.
 pub const DEFAULT_IDLE_MS: u64 = 150;
 
-/// Chainable spin-up for an e2e scenario. Collapses the
-/// server-spawn + socket-wait + N-client-attach boilerplate into one
-/// `run(|clients| async { ... })` call.
+/// Chainable spin-up for an e2e scenario: server, socket wait, and N
+/// attached clients in one `run(|clients| async { ... })` call.
 ///
 /// ```ignore
 /// E2eBuilder::new()
@@ -79,8 +76,7 @@ impl Default for E2eBuilder {
 }
 
 impl E2eBuilder {
-    /// A fresh builder: session `default`, no seed command (a plain shell
-    /// pane), one client, 80x24 viewport.
+    /// Session `default`, a plain shell seed pane, one client, 80x24.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -98,25 +94,21 @@ impl E2eBuilder {
         self
     }
 
-    /// Run `cmd` in the seed pane's PTY instead of the default shell. Use
-    /// `/bin/cat` for a deterministic echo fixture or `/bin/sh -c '...'`
-    /// for a scripted scenario.
+    /// Run `cmd` in the seed pane's PTY instead of the default shell.
     #[must_use]
     pub fn seed_cmd(mut self, cmd: LaunchCommand) -> Self {
         self.seed_cmd = Some(cmd);
         self
     }
 
-    /// Number of clients to attach before the closure runs. Each gets its
-    /// own [`ClientHandle`] in the `Vec` passed to [`Self::run`].
+    /// Number of clients attached before [`Self::run`]'s closure runs.
     #[must_use]
     pub fn clients(mut self, n: usize) -> Self {
         self.clients = n.max(1);
         self
     }
 
-    /// Override the attach viewport (and the oracle dimensions). Defaults
-    /// to 80x24.
+    /// Override the attach viewport and oracle dimensions.
     #[must_use]
     pub const fn viewport(mut self, cols: u16, rows: u16) -> Self {
         self.viewport = ViewportInfo::new(cols, rows);
@@ -166,8 +158,7 @@ impl E2eBuilder {
     }
 }
 
-/// A live harness: the attached clients plus the handles needed to tear
-/// the server down. Held by value across a scenario.
+/// The attached clients plus the handles that tear the server down.
 pub struct Harness {
     /// One handle per attached client, in attach order.
     pub clients: Vec<ClientHandle>,
@@ -182,36 +173,23 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Attach an additional client to the same session mid-scenario. Used
-    /// by the attach/detach-churn stress test.
-    ///
-    /// # Panics
-    /// Panics if the attach handshake is malformed or times out.
+    /// Attach an additional client to the same session mid-scenario.
     pub async fn attach_client(&self, viewport: ViewportInfo) -> ClientHandle {
         ClientHandle::attach(&self.socket_path, &self.session_name(), viewport)
             .await
             .expect("attach additional client")
     }
 
-    /// The session name a fresh client should attach to. Recovered from
-    /// the first client's attach target so [`Self::attach_client`] needs
-    /// no extra state.
+    /// The session the first client attached to.
     fn session_name(&self) -> String {
         self.clients
             .first()
             .map_or_else(|| "default".to_owned(), |c| c.session.clone())
     }
 
-    /// Drive a clean server shutdown and assert the socket was unlinked.
-    /// The mirror of [`E2eBuilder::run`]'s teardown for tests that drove a
-    /// scenario via [`E2eBuilder::spawn`] and manage clients themselves.
-    ///
-    /// # Panics
-    /// Panics if the server fails to shut down within 5s or the socket
-    /// file leaks.
+    /// Drop the clients, shut the server down, and assert the socket was
+    /// unlinked.
     pub async fn shutdown(self) {
-        // Drop any live client streams first so the server's last
-        // connection closes before we send the shutdown signal.
         drop(self.clients);
         self.shutdown_tx.send(()).ok();
         timeout(super::SERVER_JOIN_DEADLINE, self.server_handle)
@@ -227,14 +205,13 @@ impl Harness {
     }
 }
 
-/// One attached client: the wire stream, its oracle, and the focused
-/// pane's id. All input/observe verbs hang off this.
+/// One attached client: the wire stream, its screen oracle, and the
+/// focused pane's id.
 pub struct ClientHandle {
     stream: UnixStream,
     receiver: BufferedFrameReceiver,
     oracle: ScreenOracle,
-    /// The focused pane's wire id, captured from the opening `ATTACHED`
-    /// snapshot. Input frames target this terminal.
+    /// The focused pane from the opening `ATTACHED`; input targets it.
     pub terminal_id: ResourceId,
     /// Server-allocated client id for this attachment.
     pub client_id: u32,
@@ -647,8 +624,7 @@ async fn receive_opening_oracle(
 }
 
 impl ClientHandle {
-    /// Connect a fresh socket, attach to `session`, and drain the
-    /// `ATTACHED + TERMINAL_SNAPSHOT` opening sequence into a fresh oracle.
+    /// Connect, attach to `session`, and drain the opening bootstrap.
     async fn attach(
         socket_path: &std::path::Path,
         session: &str,
@@ -690,8 +666,6 @@ impl ClientHandle {
             other => return Err(format!("expected Attached, got {other:?}")),
         };
 
-        // Drain BEGIN -> CHUNK* -> READY through the same replica-aware seam
-        // used by every post-attach screen helper.
         let oracle = receive_opening_oracle(&mut stream, &terminal_id).await?;
 
         Ok(Self {
@@ -705,10 +679,7 @@ impl ClientHandle {
         })
     }
 
-    /// Send `text` as an `INPUT_PASTE`. The bulk path: a single frame
-    /// carries the whole string, which the server feeds to the PTY via
-    /// `paste::encode` (bracketing decided by the pane's DEC 2004 state).
-    /// Use this for typing strings and command lines.
+    /// Send `text` as one trusted `INPUT_PASTE`.
     pub async fn send_text(&mut self, text: &str) {
         send_frame(
             &mut self.stream,
@@ -723,14 +694,9 @@ impl ClientHandle {
         .await;
     }
 
-    /// Drain whatever terminal render frames are *already* buffered on the
-    /// wire into the oracle, without blocking for new output, then return a
-    /// mutable view of the oracle. A non-blocking snapshot of "what the
-    /// client would render right now."
+    /// Drain the render frames already on the wire (until a 20ms quiet
+    /// gap) and return the oracle.
     pub async fn screenshot(&mut self) -> &mut Screen {
-        // Pull every frame that is immediately available. A zero-ish
-        // timeout per recv keeps this from blocking on a quiet wire while
-        // still consuming a frame that is mid-flight.
         loop {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
             match self.receive_before(deadline).await {
@@ -743,26 +709,15 @@ impl ClientHandle {
         self.oracle.screen_mut()
     }
 
-    /// Snapshot the oracle's current text WITHOUT draining the wire.
-    ///
-    /// Safe to call against a continuously-emitting seed where
-    /// [`Self::screenshot`] would loop forever (its "drain until quiet" never
-    /// terminates when output arrives faster than its idle window). Pair with
-    /// [`Self::drain_output_bounded`] when the latest content is wanted.
+    /// The oracle's text without draining the wire, safe against a seed
+    /// that never goes quiet (where [`Self::screenshot`] never returns).
     pub fn snapshot_text(&mut self) -> String {
         self.oracle.screen_mut().snapshot_text()
     }
 
-    /// Drain up to `max_frames` of immediately-available wire frames into the
-    /// oracle, stopping early on a brief (5ms) quiet gap.
-    ///
-    /// Unlike [`Self::screenshot`], this is BOUNDED by frame count, so it is
-    /// safe to call against a seed that emits continuously (e.g. an infinite
-    /// `printf` loop): `screenshot`'s "drain until quiet" never terminates
-    /// when output arrives faster than its idle window. Use this inside a
-    /// resize/output storm to keep the server's bounded outbound mailbox and
-    /// socket buffer from filling — a client that only sends and never reads
-    /// wedges the writer and deadlocks the shared current-thread runtime.
+    /// Drain at most `max_frames` (stopping at a 5ms quiet gap). Call it
+    /// inside a storm so a client that only sends cannot fill the server's
+    /// outbound mailbox and wedge the shared current-thread runtime.
     pub async fn drain_output_bounded(&mut self, max_frames: usize) {
         for _ in 0..max_frames {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(5);
@@ -775,12 +730,8 @@ impl ClientHandle {
         }
     }
 
-    /// Drain terminal render frames into the oracle until `pred` holds or
-    /// [`WIRE_RECV_TIMEOUT`] elapses. Returns `Ok(())` if the predicate
-    /// held, `Err` with the final screen text on timeout.
-    ///
-    /// This is the workhorse that replaces the hand-rolled
-    /// `while deadline { recv_typed; match; if cond break }` loops.
+    /// Drain render frames until `pred` holds or [`WIRE_RECV_TIMEOUT`]
+    /// elapses.
     ///
     /// # Errors
     /// Returns the rendered screen text if the predicate never held before
@@ -792,15 +743,8 @@ impl ClientHandle {
         self.wait_until_with_timeout(WIRE_RECV_TIMEOUT, pred).await
     }
 
-    /// [`wait_until`](Self::wait_until) with a caller-supplied deadline
-    /// instead of the default [`WIRE_RECV_TIMEOUT`].
-    ///
-    /// Use this only for the rare test whose legitimate drain genuinely
-    /// outlasts the standard budget on a constrained runner — e.g. a
-    /// multi-megabyte no-newline burst whose single-thread reflow on two
-    /// cores takes longer than 15s (phux-fheq). It is NOT a license to
-    /// paper over a hung server: pick the smallest budget that covers the
-    /// real work, and a stalled server still fails at the ceiling.
+    /// [`wait_until`](Self::wait_until) with a caller budget, only for a
+    /// drain that legitimately outlasts 15s on a small runner (phux-fheq).
     ///
     /// # Errors
     /// Returns the rendered screen text if the predicate never held before
@@ -818,12 +762,8 @@ impl ClientHandle {
         }
         let deadline = tokio::time::Instant::now() + budget;
         while tokio::time::Instant::now() < deadline {
-            // phux-fheq: use the EOF-tolerant reader. Under the tmux
-            // server-exit model a slow drain can race the server's
-            // self-exit (it drops every client when its last session is
-            // reaped), closing the socket mid-loop. That clean EOF is not a
-            // test failure — break and report the screen we have, rather
-            // than panicking with `UnexpectedEof` on the length prefix.
+            // A slow drain can race the server's self-exit; a clean EOF
+            // reports the screen we have (phux-fheq).
             match self.receive_before(deadline).await {
                 ReceiveBefore::Frame(frame) => {
                     if self.oracle.apply(&frame).published_changed()
@@ -838,36 +778,15 @@ impl ClientHandle {
         Err(self.oracle.screen_mut().snapshot_text())
     }
 
-    /// Drain until the screen stops changing for `idle_ms` (the "settled"
-    /// signal), or [`WIRE_RECV_TIMEOUT`] elapses. Returns the wall-clock
-    /// time from the first drained byte to settle — the time-to-settle
-    /// latency the perf gate measures.
-    ///
-    /// Two phases. First, wait up to [`WIRE_RECV_TIMEOUT`] for the FIRST
-    /// applied output/bootstrap payload — the idle rule does NOT apply before
-    /// any output arrives, so a deferred burst (e.g. a seed pane that sleeps
-    /// before printing) is not mistaken for "already settled." Once output starts,
-    /// the idle rule kicks in: when no further rendered payload arrives
-    /// within `idle_ms`, the screen is settled. A long-running emitter (an
-    /// infinite output loop) never settles and the call returns at the
-    /// [`WIRE_RECV_TIMEOUT`] ceiling.
-    ///
-    /// Idle-only settle is the wrong oracle for a burst that can pause
-    /// between rows. Use `converge_until` when completion has a
-    /// marker.
+    /// Drain until nothing renders for `idle_ms` after the first payload
+    /// (the idle rule does not start before output does), or until
+    /// [`WIRE_RECV_TIMEOUT`]. Returns first-byte-to-settle time.
     pub async fn converge(&mut self, idle_ms: u64) -> Duration {
         self.converge_until(idle_ms, |_| true).await
     }
 
     /// [`converge`](Self::converge), but a quiet gap is not settle until
-    /// `pred` holds.
-    ///
-    /// A burst that can pause between rows (or a loaded host that
-    /// schedules the emitter in fits) can go quiet for longer than
-    /// [`DEFAULT_IDLE_MS`] before its completion marker. Treating that gap
-    /// as settle makes the latency gate race the emitter (phux-4s38). The
-    /// idle window starts only after the predicate is true; first-byte
-    /// timing is unchanged.
+    /// `pred` holds: a burst can pause past the idle window (phux-4s38).
     async fn converge_until<P>(&mut self, idle_ms: u64, pred: P) -> Duration
     where
         P: FnMut(&mut Screen) -> bool,
@@ -876,15 +795,8 @@ impl ClientHandle {
             .await
     }
 
-    /// `converge_until` with a caller-supplied hard
-    /// deadline instead of [`WIRE_RECV_TIMEOUT`].
-    ///
-    /// Use this when the legitimate drain can outlast the standard 15s
-    /// budget — the colored-output perf gate's settle ceiling is 30s, and
-    /// waiting only 15s reported "never completed" under host load
-    /// (phux-iuxr). Same rule as [`Self::wait_until_with_timeout`]: pick
-    /// the smallest budget that covers the real work; a stalled server
-    /// still fails at the ceiling.
+    /// `converge_until` with a caller budget (the colored-output gate's
+    /// 30s ceiling, phux-iuxr).
     pub async fn converge_until_with_timeout<P>(
         &mut self,
         idle_ms: u64,
@@ -904,9 +816,7 @@ impl ClientHandle {
             if now >= hard_deadline {
                 break;
             }
-            // Before the first byte, or before the completion marker, wait
-            // the remaining hard budget so a transient gap is not settle.
-            // After both, only wait out the idle window.
+            // Only a complete screen waits out just the idle window.
             let receive_deadline = if complete {
                 last_render_at
                     .map_or(hard_deadline, |last| last + idle)
@@ -923,8 +833,6 @@ impl ClientHandle {
                         last_render_at = Some(applied_at);
                     }
                     if applied.published_changed() {
-                        // Publishing a staged replacement changes the visible
-                        // screen even though READY carries no VT payload.
                         last_render_at = Some(applied_at);
                     }
                     complete = if self.oracle.has_staging() {
@@ -938,15 +846,11 @@ impl ClientHandle {
                 ReceiveBefore::Eof | ReceiveBefore::Deadline => break,
             }
         }
-        // Time-to-settle is measured from the first byte (input->render
-        // latency). If nothing ever arrived, report zero rather than the
-        // full first-byte wait (no output means no latency to gate).
         first_byte_at.map_or(Duration::ZERO, |t| t.elapsed())
     }
 
-    /// Send a `VIEWPORT_RESIZE` with the exact dimensions (degenerate `0`s
-    /// included) and rebuild the oracle at that size, clamped to 1x1. Prior
-    /// content is dropped; `converge` afterwards to repopulate.
+    /// Send `VIEWPORT_RESIZE` (zeros included) and rebuild an empty oracle
+    /// at that size, clamped to 1x1.
     pub async fn resize(&mut self, cols: u16, rows: u16) {
         self.viewport = ViewportInfo::new(cols, rows);
         self.oracle.replace_screen(cols.max(1), rows.max(1));
@@ -971,13 +875,8 @@ impl ClientHandle {
     }
 }
 
-/// Bytes for the heavy-colored burst the perf gate drives.
-///
-/// `gens` full-grid repaints of `rows` × `cols`, each cell its own
-/// 256-color SGR (`\033[38;5;NmX`), homed with `\033[H` so the grid is
-/// rewritten in place. Color index is `16 + (col + row + gen) % 216`.
-/// Ends with `COLORDONE`. No RNG; two calls with the same geometry emit
-/// identical bytes.
+/// The perf gate's colored burst: `gens` in-place repaints of the grid,
+/// every cell its own 256-color SGR, then `COLORDONE`. Deterministic.
 #[must_use]
 pub fn colored_burst_bytes(cols: u16, rows: u16, gens: u16) -> Vec<u8> {
     // Per-cell SGR is ~12 bytes; 80×40×24 is under a megabyte.
@@ -997,16 +896,9 @@ pub fn colored_burst_bytes(cols: u16, rows: u16, gens: u16) -> Vec<u8> {
     out
 }
 
-/// Seed command for the heavy-colored burst: wait until `gate` exists,
-/// `cat` precomputed `burst` bytes (from [`colored_burst_bytes`]), then
-/// idle so the pane stays up for teardown.
-///
-/// `cat` of precomputed bytes emits the burst at a cost that does not track
-/// host load. A shell loop generating it under CPU load outlasts the
-/// converge wait, and the gate fails "colored burst never completed"
-/// without ever checking the ceiling (phux-iuxr). The gate file (same pattern
-/// as the lagged-resync fixtures) starts the dump only after attach, so
-/// a fast `cat` cannot land in the opening snapshot.
+/// Seed command that `cat`s precomputed `burst` bytes once `gate` exists
+/// (after attach, so it misses the opening snapshot), then idles. A shell
+/// loop generating it under load outlasted the wait (phux-iuxr).
 #[must_use]
 pub fn colored_burst_command(burst: &Path, gate: &Path) -> LaunchCommand {
     let script = format!(

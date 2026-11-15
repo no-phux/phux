@@ -8,6 +8,7 @@ use super::{CAPTION, Ink, LABEL, icons, pressable};
 use crate::desk::{CONTEXT_MENU, Desk, TAB_MENU};
 use crate::keys::{self, Shortcut};
 use crate::palette::{Hit, Mode, Target};
+use crate::ui::Cover;
 
 const WIDTH: f32 = 600.0;
 /// The path picker, narrower, at the cursor.
@@ -137,9 +138,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         }));
     let scrim = el()
         .key("palette-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette());
@@ -211,9 +210,7 @@ pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
         rows = rows.children(context_row(action, locked, ink));
     }
     el().key("context-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .modal(true, |d: &mut Desk| d.close_menu())
         .child(rows)

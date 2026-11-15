@@ -91,7 +91,7 @@ export const CONTENT_PATHS = [
 
 /**
  * The mobile FFI artifacts ffi-xcframework.yml and ffi-android.yml build on
- * main: phux-client-ffi's C ABI and UniFFI closures, its builders, and both workflows.
+ * main: phux-client-ffi's closure, its builders, and both workflows.
  * Not a lane, so an unknown path does not rebuild them.
  */
 function mobileFfiPaths(root: string): string[] {
@@ -99,7 +99,7 @@ function mobileFfiPaths(root: string): string[] {
     ...[
       ...pathClosure([{ dir: "crates/phux-client-ffi", dev: false, features: ["uniffi"] }], root),
     ].map((dir) => `${dir}/**`),
-    "scripts/{build-ffi-xcframework,build-mobile-ffi-xcframework,build-mobile-ffi-android}.sh",
+    "scripts/build-mobile-ffi-{xcframework,android}.sh",
     "scripts/ci/setup-android-ndk.sh",
     ".github/workflows/ffi-{android,xcframework}.yml",
   ];

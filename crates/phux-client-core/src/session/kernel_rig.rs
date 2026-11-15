@@ -3,17 +3,18 @@ use std::convert::Infallible;
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{CloseReason, TombstoneReason};
+use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
 
+use super::test_rig::{Gen, begin_input, closed};
 use super::{
     EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputEligibility, KernelAction,
     KernelEffect, KernelInput, KernelSend, ReplicaKey, SessionKernel, TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
-    EngineDocumentAdapter, EngineDocumentSelection, EngineEffectBuffer, EngineHistoryProjection,
-    EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch, HistoryApplyOutcome,
+    EngineDocumentAdapter, EngineDocumentSelection, EngineEffectBuffer, EngineSearchMatch,
+    HistoryApplyOutcome,
 };
 use crate::history::{DocumentAnchorId, HistoryCacheConfig, HistoryLoadState, ViewportAnchor};
 
@@ -105,10 +106,6 @@ pub(super) enum RigEvent {
         stream: u8,
         generation: u8,
         last_valid_seq: u64,
-    },
-    Project {
-        width: u16,
-        max_rows: usize,
     },
     Track {
         x: u16,
@@ -316,32 +313,6 @@ impl EngineAdapter for RigAdapter {
 }
 
 impl EngineDocumentAdapter for RigAdapter {
-    fn project_history(
-        &mut self,
-        replica: &mut Self::Replica,
-        width: u16,
-        _origin: EngineProjectionOrigin,
-        max_rows: usize,
-    ) -> Result<EngineHistoryProjection, Self::Error> {
-        let rows = replica
-            .history
-            .iter()
-            .rev()
-            .take(max_rows.min(replica.history_row_budget))
-            .rev()
-            .map(|payload| EngineProjectionRow {
-                text: String::from_utf8_lossy(payload).into_owned(),
-                soft_wrapped: false,
-                page: None,
-            })
-            .collect();
-        Ok(EngineHistoryProjection {
-            width,
-            rows,
-            has_older: false,
-        })
-    }
-
     fn track_document_anchor(
         &mut self,
         replica: &mut Self::Replica,
@@ -418,7 +389,6 @@ pub(super) struct HistoryObservation {
     pub(super) materialized_rows: usize,
     pub(super) unread_rows: u64,
     pub(super) viewport: ViewportAnchor,
-    pub(super) projection_width: u16,
     pub(super) next_cursor: Option<Vec<u8>>,
     pub(super) next_page_seq: Option<u64>,
 }
@@ -578,14 +548,8 @@ impl KernelRig {
                 seq,
                 text,
             } => {
-                let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::ResourceOutput {
-                    terminal_id: &terminal_id,
-                    stream_id: stream_id(*stream),
-                    bootstrap_id: bootstrap_id(*generation),
-                    seq: *seq,
-                    payload: text.as_bytes(),
-                })
+                let g = self.on(*stream, *generation);
+                self.update(g.output(*seq, text.as_bytes()))
             }
             RigEvent::Paste { text } => {
                 let input = InputEvent::Paste(PasteEvent {
@@ -651,35 +615,17 @@ impl KernelRig {
                 required_rows,
             } => {
                 let cursor = cursor_bytes(*cursor);
-                let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::HistoryRejected {
-                    terminal_id: &terminal_id,
-                    stream_id: stream_id(*stream),
-                    bootstrap_id: bootstrap_id(*generation),
-                    cursor: &cursor,
-                    reason: *reason,
-                    required_bytes: *required_bytes,
-                    required_rows: *required_rows,
-                })
+                let g = self.on(*stream, *generation);
+                self.update(g.rejected(&cursor, *reason, *required_bytes, *required_rows))
             }
             RigEvent::Tombstone {
                 stream,
                 generation,
                 last_valid_seq,
             } => {
-                let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::Tombstone {
-                    terminal_id: &terminal_id,
-                    stream_id: stream_id(*stream),
-                    bootstrap_id: bootstrap_id(*generation),
-                    reason: TombstoneReason::OutboundGap,
-                    last_valid_seq: *last_valid_seq,
-                })
+                let g = self.on(*stream, *generation);
+                self.update(g.tombstone(TombstoneReason::OutboundGap, *last_valid_seq))
             }
-            RigEvent::Project { width, max_rows } => self
-                .kernel
-                .project_history(&self.terminal_id, *width, *max_rows)
-                .is_ok(),
             RigEvent::Track { x, y } => {
                 let tracked = self.kernel.track_document_anchor(
                     &self.terminal_id,
@@ -730,7 +676,6 @@ impl KernelRig {
             RigEvent::InvalidateAnchors => {
                 if let Some(engine) = self.kernel.published_engine_mut(&self.terminal_id) {
                     engine.anchors.clear();
-                    let _ = self.kernel.project_history(&self.terminal_id, 80, 8);
                     true
                 } else {
                     false
@@ -738,13 +683,16 @@ impl KernelRig {
             }
             RigEvent::Close => {
                 let terminal_id = self.terminal_id.clone();
-                self.update(KernelInput::ResourceClosed {
-                    terminal_id: &terminal_id,
-                    exit_status: None,
-                    signal: None,
-                    reason: CloseReason::Unknown,
-                })
+                self.update(closed(&terminal_id))
             }
+        }
+    }
+
+    fn on(&self, stream: u8, generation: u8) -> Gen {
+        Gen {
+            id: self.terminal_id.clone(),
+            s: stream_id(stream),
+            b: bootstrap_id(generation),
         }
     }
 
@@ -761,61 +709,32 @@ impl KernelRig {
         base_seq: u64,
         exact_profile: bool,
     ) -> bool {
-        let selected = self.kernel.selected_profile();
-        let matching = match selected {
-            BootstrapProfile::SynthesizedVtRaw => BootstrapStreamProfile::SynthesizedVtRaw,
-            BootstrapProfile::SynthesizedVtStateSync => {
-                BootstrapStreamProfile::SynthesizedVtStateSync
-            }
-            _ => unreachable!("rig negotiates synthesized profiles"),
-        };
-        let profile = if exact_profile {
-            matching
+        let state_sync = matches!(
+            self.kernel.selected_profile(),
+            BootstrapProfile::SynthesizedVtStateSync
+        );
+        // An inexact profile is the other synthesized one.
+        let profile = if state_sync == exact_profile {
+            BootstrapStreamProfile::SynthesizedVtStateSync
         } else {
-            match matching {
-                BootstrapStreamProfile::SynthesizedVtRaw => {
-                    BootstrapStreamProfile::SynthesizedVtStateSync
-                }
-                BootstrapStreamProfile::SynthesizedVtStateSync => {
-                    BootstrapStreamProfile::SynthesizedVtRaw
-                }
-                _ => unreachable!("rig negotiates synthesized profiles"),
-            }
+            BootstrapStreamProfile::SynthesizedVtRaw
         };
         let Some(geometry) = CanonicalGeometry::new(cols, rows) else {
             return false;
         };
-        let terminal_id = self.terminal_id.clone();
-        self.update(KernelInput::BootstrapBegin {
-            terminal_id: &terminal_id,
-            stream_id: stream_id(stream),
-            bootstrap_id: bootstrap_id(generation),
-            profile,
-            geometry,
-            base_seq,
-        })
+        let g = self.on(stream, generation);
+        self.update(begin_input(&g.id, g.s, g.b, profile, geometry, base_seq))
     }
 
     fn chunk(&mut self, stream: u8, generation: u8, chunk_seq: u32, text: &str) -> bool {
-        let terminal_id = self.terminal_id.clone();
-        self.update(KernelInput::BootstrapChunk {
-            terminal_id: &terminal_id,
-            stream_id: stream_id(stream),
-            bootstrap_id: bootstrap_id(generation),
-            chunk_seq,
-            payload: text.as_bytes(),
-        })
+        let g = self.on(stream, generation);
+        self.update(g.chunk(chunk_seq, text.as_bytes()))
     }
 
     fn ready(&mut self, stream: u8, generation: u8, cursor: Option<u8>) -> bool {
         let cursor = cursor.map(cursor_bytes);
-        let terminal_id = self.terminal_id.clone();
-        self.update(KernelInput::BootstrapReady {
-            terminal_id: &terminal_id,
-            stream_id: stream_id(stream),
-            bootstrap_id: bootstrap_id(generation),
-            history_cursor: cursor.as_deref(),
-        })
+        let g = self.on(stream, generation);
+        self.update(g.ready(cursor.as_deref()))
     }
 
     fn selected_anchor(&self, slot: usize) -> Option<DocumentAnchorId> {
@@ -893,7 +812,6 @@ impl KernelRig {
                     materialized_rows: status.materialized_rows,
                     unread_rows: status.unread_rows,
                     viewport: published.history().viewport_anchor(),
-                    projection_width: published.history().projection_width(),
                     next_cursor: status
                         .next_cursor
                         .as_ref()

@@ -196,39 +196,7 @@ async fn terminal_hello(
         identity: Some(identity),
         inner: None,
     };
-    let (_endpoint, conn, mut send, mut recv) = phux_dial::quic::dial(&dial).await?;
-    let hello = encode_frame(&FrameKind::Hello {
-        client_name: "reverse-enrollment".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    });
-    let io = async {
-        send.write_all(&hello)
-            .await
-            .map_err(std::io::Error::other)?;
-        let mut header = [0_u8; 4];
-        recv.read_exact(&mut header)
-            .await
-            .map_err(std::io::Error::other)?;
-        let mut framed = header.to_vec();
-        framed.resize(4 + u32::from_be_bytes(header) as usize, 0);
-        recv.read_exact(&mut framed[4..])
-            .await
-            .map_err(std::io::Error::other)?;
-        Ok::<_, std::io::Error>(framed)
-    };
-    let framed = tokio::time::timeout(STEP_DEADLINE, io)
-        .await
-        .map_err(|_| DialError::Connect("no answer".to_owned()))?
-        .map_err(|err| {
-            conn.close_reason().map_or_else(
-                || DialError::Connect(err.to_string()),
-                |close| phux_dial::quic::close_error(&close),
-            )
-        })?;
-    Ok(FrameKind::decode(&framed[4..]).expect("decode").0)
+    crate::relay_common::quic_hello(&dial, "reverse-enrollment").await
 }
 
 #[test]

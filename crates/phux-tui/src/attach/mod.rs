@@ -1,11 +1,8 @@
 //! Attach loop: the runtime behind `phux attach <session>`.
 //!
-//! The entry point is [`run_dial`], called from a tokio
-//! current-thread runtime (ADR-0003); it takes over the controlling terminal
-//! and restores it on every exit path including panic. The headless half of
-//! the vocabulary (connection, transports, stdin parser, replay journal,
-//! [`AttachError`] / [`AttachEnd`]) lives in `phux_client::attach` and is
-//! re-exported here; this module adds everything that needs a screen.
+//! [`run_dial`] takes over the controlling terminal on a current-thread runtime
+//! (ADR-0003) and restores it on every exit path. The headless half lives in
+//! `phux_client::attach` and is re-exported here.
 
 pub mod action_registry;
 pub mod actions;
@@ -30,18 +27,17 @@ mod paste_safety;
 mod path_picker;
 // phux-foz.11: glass-diff regression + stress tests for the compose
 // invariant (no doubled text under rapid window switching / control spam).
+mod client_state;
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod ghost_stress_tests;
 pub mod input_dispatch;
 // ADR-0172: background work that reports back as a toast.
-mod agent_filter_state;
 mod jobs;
 mod kitty_heal;
 mod notify;
 mod onboarding;
 pub mod paint;
-mod project_collapse;
 mod restore_hint;
 // `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
@@ -122,10 +118,20 @@ fn sync_dim(
 
 pub use crate::multi_pane;
 
-/// The output sink the attach driver composites into.
-///
-/// A pure byte sink (stdout, a `Vec<u8>` capture, any `Write`) threaded
-/// through the whole render path; chrome is rasterized to VT bytes first.
+/// A [`ResolvedAction`](phux_config::keybind::ResolvedAction) named `name`
+/// with `args`, the shape a keybinding resolves to.
+pub(crate) fn resolved(
+    name: &str,
+    args: std::collections::BTreeMap<String, toml::Value>,
+) -> phux_config::keybind::ResolvedAction {
+    phux_config::keybind::ResolvedAction {
+        action: name.to_owned(),
+        args,
+    }
+}
+
+/// The output sink the attach driver composites into: any `Write`, chrome
+/// rasterized to VT first.
 pub trait RenderSink: std::io::Write {}
 impl<T: std::io::Write + ?Sized> RenderSink for T {}
 

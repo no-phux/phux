@@ -1,7 +1,7 @@
 //! Every step through the real window, and fixture renders of each.
 
 use rune::accesskit::Action;
-use rune::{Env, Key, KeyEvent, Mods, Runtime};
+use rune::{Env, Key, Runtime};
 
 use super::*;
 use crate::onboarding::{AgentSkill, KEEP_ALIVE, Permissions};
@@ -65,20 +65,7 @@ fn snap(rt: &mut Runtime<Desk>, name: &str) {
     let (w, h) = ((SIZE.0 * SCALE) as u32, (SIZE.1 * SCALE) as u32);
     let gpu = rune::render::Gpu::headless();
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-    let target = rune::render::Offscreen::new(&gpu.device, w, h);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (w, h),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(&gpu, &mut renderer, rt, (w, h));
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
     std::fs::create_dir_all(&dir).unwrap();
     rune::render::write_png(&path, w, h, &pixels).unwrap();
@@ -208,16 +195,10 @@ fn picks_apply_to_the_window_and_keys_move_on() {
     assert!(rt.accessibility_action("look-auto", Action::Click, None));
     rt.frame(3.5);
     assert_eq!(rt.state.settings.theme, None, "Auto follows the system");
-    rt.key(KeyEvent {
-        key: Key::Enter,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Enter));
     rt.frame(4.0);
     assert_eq!(rt.state.onboarding.step, Step::Agents);
-    rt.key(KeyEvent {
-        key: Key::Escape,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Escape));
     rt.frame(4.5);
     assert_eq!(rt.state.onboarding.step, Step::Look);
 }
@@ -253,10 +234,7 @@ fn the_glass_slider_steps_and_clamps() {
     rt.frame(0.1);
     assert!(rt.accessibility_action("look-glass", Action::Focus, None));
     for key in [Key::Right, Key::Right] {
-        rt.key(KeyEvent {
-            key,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(key));
         rt.frame(0.2);
     }
     assert_eq!(rt.state.settings.glass, 10, "arrows step by 5");
@@ -266,10 +244,7 @@ fn the_glass_slider_steps_and_clamps() {
         Step::Look,
         "arrows don't change step"
     );
-    rt.key(KeyEvent {
-        key: Key::End,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::End));
     rt.frame(0.3);
     assert_eq!(rt.state.settings.glass, 100);
     snap(&mut rt, "2b-look-glass");

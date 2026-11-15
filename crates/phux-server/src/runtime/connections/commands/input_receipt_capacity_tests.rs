@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::test_support::error_code;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::caps::BootstrapProfile;
 use phux_protocol::caps::ClientCapabilities;
@@ -85,14 +86,9 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
                     vec![paste(b"replacement")],
                 )
                 .await;
-            assert!(
-                matches!(
-                    result,
-                    CommandResult::Error {
-                        code: ErrorCode::TerminalNotFound,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&result),
+                Some(ErrorCode::TerminalNotFound),
                 "{result:?}"
             );
             drop(connection);

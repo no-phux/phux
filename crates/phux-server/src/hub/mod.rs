@@ -75,25 +75,32 @@ impl core::fmt::Display for SatelliteTarget {
         match self {
             Self::Quic { host, port } => write!(f, "quic://{host}:{port}"),
             Self::Ws { url } | Self::Wss { url } => f.write_str(url),
-            Self::Ssh { user, host, port } => {
-                f.write_str("ssh://")?;
-                if let Some(user) = user {
-                    write!(f, "{user}@")?;
-                }
-                // Re-bracket IPv6 so the display is a valid URI.
-                if host.contains(':') {
-                    write!(f, "[{host}]")?;
-                } else {
-                    f.write_str(host)?;
-                }
-                if let Some(port) = port {
-                    write!(f, ":{port}")?;
-                }
-                Ok(())
-            }
+            Self::Ssh { user, host, port } => write_ssh_uri(f, user.as_deref(), host, *port),
             Self::Inbound => f.write_str(INBOUND_ENDPOINT),
         }
     }
+}
+
+/// `ssh://[user@]host[:port]`, re-bracketing an IPv6 host so it is a valid URI.
+pub(crate) fn write_ssh_uri(
+    f: &mut core::fmt::Formatter<'_>,
+    user: Option<&str>,
+    host: &str,
+    port: Option<u16>,
+) -> core::fmt::Result {
+    f.write_str("ssh://")?;
+    if let Some(user) = user {
+        write!(f, "{user}@")?;
+    }
+    if host.contains(':') {
+        write!(f, "[{host}]")?;
+    } else {
+        f.write_str(host)?;
+    }
+    if let Some(port) = port {
+        write!(f, ":{port}")?;
+    }
+    Ok(())
 }
 
 /// Errors produced while building a [`HubTable`] from the registry.

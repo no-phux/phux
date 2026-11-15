@@ -150,10 +150,6 @@ impl From<std::process::Output> for SshOutput {
 /// hardware-key prompt reaches the person at this terminal, and keep that
 /// connection as phux's ssh master. Every later ssh run for the destination,
 /// `BatchMode` ones included, rides it instead of authenticating again.
-///
-/// Does nothing without a terminal or a private control directory, or when a
-/// master is already up, so a caller may retry it freely. A failed login is
-/// left to the next ssh run to report; ssh has already said why on stderr.
 pub(crate) fn login(destination: &str) {
     use std::io::IsTerminal as _;
     if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {

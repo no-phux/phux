@@ -221,10 +221,7 @@ impl Desk {
         let Some(phone) = self.phone.as_mut() else {
             return;
         };
-        let event = KeyEvent {
-            key: phone.for_field(soft),
-            mods: Mods::default(),
-        };
+        let event = crate::keys::plain(phone.for_field(soft));
         self.soft_to_field(field, &event, tx);
     }
 

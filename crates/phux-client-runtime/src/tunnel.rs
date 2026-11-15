@@ -51,9 +51,9 @@ pub enum TunnelState {
 }
 
 impl TunnelState {
-    /// The stable numeric form a C ABI carries.
+    /// The stable numeric form the shared atomic stores.
     #[must_use]
-    pub const fn as_u32(self) -> u32 {
+    pub(crate) const fn as_u32(self) -> u32 {
         self as u32
     }
 
@@ -80,7 +80,7 @@ impl TunnelState {
 /// reader that observes FAILED always finds a stable message it may borrow
 /// for the tunnel's lifetime.
 #[derive(Debug)]
-pub struct TunnelShared {
+pub(crate) struct TunnelShared {
     state: AtomicU32,
     message: OnceLock<String>,
 }
@@ -95,14 +95,14 @@ impl TunnelShared {
 
     /// The current state.
     #[must_use]
-    pub fn state(&self) -> TunnelState {
+    pub(crate) fn state(&self) -> TunnelState {
         TunnelState::from_u32(self.state.load(Ordering::Acquire))
     }
 
     /// Why the tunnel failed. `None` unless [`TunnelState::Failed`] is
     /// observable, so a reader never sees a message before its state.
     #[must_use]
-    pub fn message(&self) -> Option<&str> {
+    pub(crate) fn message(&self) -> Option<&str> {
         if self.state() == TunnelState::Failed {
             self.message.get().map(String::as_str)
         } else {
@@ -209,12 +209,6 @@ impl Tunnel {
     #[must_use]
     pub const fn transport(&self) -> &Transport {
         &self.resolved.transport
-    }
-
-    /// Publish a failure as a test would observe one, without a network.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn inject_failure(&self, message: String) {
-        self.shared.fail(message);
     }
 
     /// The current state.

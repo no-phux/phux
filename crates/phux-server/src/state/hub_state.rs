@@ -5,7 +5,7 @@
 //! `pub(super)` and sync.
 
 /// Every hub handle, all `None` off-hub.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct HubState {
     /// Validated satellite table.
     table: Option<crate::hub::HubTable>,
@@ -29,27 +29,7 @@ pub(super) struct HubState {
     adopter: crate::hub::adopt::SatelliteAdopter,
 }
 
-impl Default for HubState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl HubState {
-    /// Build the off-hub state: no table, no relays.
-    #[must_use]
-    pub(super) fn new() -> Self {
-        Self {
-            table: None,
-            relays: None,
-            links: None,
-            source: None,
-            cancel: None,
-            satellite_features: Vec::new(),
-            adopter: crate::hub::adopt::SatelliteAdopter::default(),
-        }
-    }
-
     /// The adopter every link supervisor and the QUIC listener share.
     pub(super) fn adopter(&self) -> crate::hub::adopt::SatelliteAdopter {
         self.adopter.clone()

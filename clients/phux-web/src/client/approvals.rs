@@ -9,8 +9,8 @@ pub(super) struct ApprovalBinding {
     callback: Closure<dyn FnMut(Event)>,
 }
 
-impl ApprovalBinding {
-    pub(super) fn dispose(self) {
+impl Drop for ApprovalBinding {
+    fn drop(&mut self) {
         let _ = self
             .container
             .remove_event_listener_with_callback("click", self.callback.as_ref().unchecked_ref());
@@ -109,7 +109,7 @@ pub(super) fn install(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
             callback,
         });
     if let Some(old) = old {
-        old.dispose();
+        drop(old);
     }
     paint(&app.borrow());
     Ok(())

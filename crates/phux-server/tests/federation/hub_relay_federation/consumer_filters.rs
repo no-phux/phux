@@ -100,10 +100,7 @@ fn a_lost_link_owes_its_consumers_a_journal_gap() {
         let mut hub = fed.linked_hub().await;
         send_frame(
             &mut hub,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(fed.sat_id()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(fed.sat_id()), None),
         )
         .await;
         let _ = get_screen_until_ok(&mut hub, fed.seed).await;

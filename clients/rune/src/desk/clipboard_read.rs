@@ -183,7 +183,7 @@ impl Desk {
 
 #[cfg(test)]
 mod tests {
-    use rune::{Env, Key, KeyEvent, Mods, Runtime};
+    use rune::{Env, Key, Runtime};
 
     use super::*;
     use crate::launch::Resolved;
@@ -230,10 +230,7 @@ mod tests {
         rt.update(|d, tx| assert!(d.clipboard_read(id(1), C, tx)));
         assert_eq!(rt.state.pending, Some(Pending::ClipboardRead(id(1), C)));
         rt.update(|d, tx| {
-            let escape = KeyEvent {
-                key: Key::Escape,
-                mods: Mods::default(),
-            };
+            let escape = crate::keys::plain(Key::Escape);
             assert_eq!(d.clipboard_read_key(&escape, tx), Some(true));
             assert_eq!(d.pending, None, "denied");
             assert!(!d.clipboard_read(id(1), C, tx), "asked a moment ago");
@@ -246,14 +243,8 @@ mod tests {
         let mut rt = window(ClipboardRead::Ask);
         rt.update(|d, tx| {
             assert!(d.clipboard_read(id(1), C, tx));
-            let a = KeyEvent {
-                key: Key::Text("a".into()),
-                mods: Mods::default(),
-            };
-            let enter = KeyEvent {
-                key: Key::Enter,
-                mods: Mods::default(),
-            };
+            let a = crate::keys::plain(Key::Text("a".into()));
+            let enter = crate::keys::plain(Key::Enter);
             // Typed straight after it appears, a key that allows does nothing.
             assert_eq!(d.clipboard_read_key(&a, tx), Some(false));
             assert_eq!(d.clipboard_read_key(&enter, tx), Some(false));

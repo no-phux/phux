@@ -13,7 +13,7 @@
 //! - **Resend only inside the horizon and to the same authority.** Receipts
 //!   live in the authority's organization store, so they survive a server
 //!   restart but not a different authority, and the server prunes them. Past
-//!   [`OrgJournal::horizon_ms`] an attempted operation is never resent: it
+//!   the journal's horizon an attempted operation is never resent: it
 //!   resolves [`OrgOutcome::Unknown`] and the caller reconciles from a fresh
 //!   `GET_ORGANIZATION`.
 //! - **Never-sent is refused, attempted is unknown.** An operation that never
@@ -178,12 +178,6 @@ impl OrgJournal {
             authority: None,
             live: false,
         }
-    }
-
-    /// The resend horizon, in milliseconds.
-    #[must_use]
-    pub const fn horizon_ms(&self) -> u64 {
-        self.horizon_ms
     }
 
     /// How many operations are unresolved.
@@ -389,7 +383,7 @@ impl OrgJournal {
 /// A digest of `command`'s payload, operation id included: what the server
 /// compares a same-id resend against.
 #[must_use]
-pub fn payload_hash(command: &Command) -> [u8; 32] {
+pub(crate) fn payload_hash(command: &Command) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(format!("{command:?}").as_bytes());
     if let Some(operation) = command.organization_operation() {

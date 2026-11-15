@@ -1,17 +1,8 @@
-//! One connection's forwards.
-//!
-//! A slot is reserved before its `FORWARD_OPEN` dials and holds the two
-//! halves of the TCP connection once it does. A `FORWARD_READ` leases the
-//! read half and a `FORWARD_WRITE` the write half for the length of the
-//! command, so each direction has at most one command in flight and the
-//! bytes of two writes can never interleave. The number of slots bounds the
-//! connection's forwards. Ids come from one process-wide counter, so an id
-//! from an earlier connection never names a later connection's forward.
-//!
-//! [`Forwards::reap`] closes forwards whose client went away: one no read
-//! or write ever touched within [`UNUSED_REAP`] of its dial (an open whose
-//! caller stopped waiting), and one no read or write finished on for
-//! [`IDLE_REAP`].
+//! One connection's forwards. A slot is reserved before `FORWARD_OPEN` dials;
+//! reads and writes each lease one half, so a direction has at most one
+//! command in flight. Ids are process-wide, never reused across connections.
+//! [`Forwards::reap`] closes forwards unused within [`UNUSED_REAP`] or idle
+//! for [`IDLE_REAP`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

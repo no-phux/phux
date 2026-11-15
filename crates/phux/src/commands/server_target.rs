@@ -65,10 +65,6 @@ impl ServerSpec {
     }
 
     /// Build the verb's runtime and resolve the server it talks to.
-    ///
-    /// `verb` names the command in diagnostics. Failures are reported here,
-    /// as prose or as one JSON line under `json`, so a verb only has to
-    /// return the exit code.
     pub(crate) fn prepare(
         self,
         verb: &str,
@@ -80,10 +76,6 @@ impl ServerSpec {
     }
 
     /// Resolve the spec: the local socket unless `--remote` names a host.
-    ///
-    /// The `--socket`/`--remote` pair is refused post-parse before any verb
-    /// runs; the guard here keeps this helper honest for a caller that did
-    /// not come through the CLI.
     pub(crate) fn resolve(
         self,
         rt: &tokio::runtime::Runtime,

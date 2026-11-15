@@ -11,6 +11,7 @@ use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
+use crate::ui::Cover;
 
 const WIDTH: f32 = 400.0;
 const CARD_W: f32 = 340.0;
@@ -319,9 +320,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
         .child(foot);
     el().key("inbox-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(Color::BLACK.alpha(0.16))
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())

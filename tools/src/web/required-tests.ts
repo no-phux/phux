@@ -28,5 +28,11 @@ export const REQUIRED_TESTS = [
   "new_requests_keep_existing_decision_buttons_and_keyboard_focus",
   "uncertain_decisions_survive_connection_ui_replacement",
   "a_detached_canvas_keeps_its_uncertain_decision_notice",
+  "dpr_backing_store_keeps_css_extent_and_measured_dataset",
+  "repeated_prepare_and_one_axis_resize_do_not_compound_transforms",
+  "css_hit_testing_and_wire_pixels_do_not_depend_on_dpr",
+  "cursor_row_and_translated_pane_render_in_logical_coordinates",
+  "pane_borders_are_one_logical_pixel_and_neutral",
+  "invalid_dpr_falls_back_to_logical_resolution",
 ] as const;
 export const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];

@@ -50,12 +50,6 @@ pub(crate) struct RenderedOpts {
 
 /// `phux snapshot [TARGET]` — read a pane as structured data (ADR-0022) via
 /// the side-effect-free `GET_SCREEN`, emitting JSON or a boxed text view.
-///
-/// A document resource is read by kind instead ([`read_kind`]).
-/// `--rendered` instead drives the headless client render (and ATTACHES).
-/// `--tail` / `--unwrap` (ADR-0077) are client-side projections of the reply;
-/// with `--format` (D9) the reply has no lines, so `--tail N` becomes the
-/// request's scrollback bound and `--unwrap` rides `format`'s high bit.
 pub(crate) fn run_snapshot(
     session: Option<&str>,
     json: bool,
@@ -347,9 +341,6 @@ pub(crate) fn print_screen_rows(screen: &ScreenState) {
 }
 
 /// The trailing status line shared by both text views.
-///
-/// `truncated` is called out in words: a caller reading a clipped window
-/// should not have to notice a missing row to learn that rows are missing.
 fn footer(screen: &ScreenState) -> String {
     let cursor = screen
         .cursor

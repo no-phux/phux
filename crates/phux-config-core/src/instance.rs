@@ -171,10 +171,6 @@ pub fn is_dev_build() -> bool {
 /// manager) swaps the binary in place, the installed file is `<path>` itself;
 /// keeping the suffix wrote it into the service unit and made the server's
 /// hot-swap open a file that does not exist.
-///
-/// # Errors
-///
-/// Whatever `std::env::current_exe` returns.
 pub fn running_executable() -> std::io::Result<PathBuf> {
     std::env::current_exe().map(|exe| without_deleted_suffix(&exe))
 }

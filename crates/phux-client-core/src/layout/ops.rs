@@ -6,7 +6,7 @@ use super::{
 
 /// Keep `state`'s focus when it is still a leaf, else fall back to the
 /// first leaf (or none for an empty tree).
-pub fn repair_focus(state: &mut LayoutState) {
+pub(super) fn repair_focus(state: &mut LayoutState) {
     state.focus = state.tree.as_ref().and_then(|tree| {
         let panes = leaves(tree);
         state

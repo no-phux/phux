@@ -82,10 +82,6 @@ fn spec_for(peer: &Peer) -> ScriptSpec {
 }
 
 /// Run `verb` on its own thread; its exit code and how long it took.
-///
-/// # Panics
-///
-/// If the verb has not returned within [`WEDGE`].
 pub(crate) fn run_verb(verb: impl FnOnce() -> ExitCode + Send + 'static) -> (ExitCode, Duration) {
     let start = Instant::now();
     let (tx, rx) = mpsc::channel();

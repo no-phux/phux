@@ -15,7 +15,9 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use phux_server::ServerConfig;
 use phux_server::state::RetainPolicy;
-use phux_server_testkit::{Spawn, ascii_key, command, recv_typed, send_frame};
+use phux_server_testkit::{
+    Spawn, ascii_key, assert_command_error, command, recv_typed, send_frame,
+};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
@@ -105,10 +107,7 @@ impl Harness {
     }
 
     async fn kill(&mut self, pane: &ResourceId) {
-        let kill = Command::KillResource {
-            terminal_id: pane.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(pane.clone());
         assert_eq!(self.command(kill).await, CommandResult::Ok);
     }
 
@@ -179,23 +178,13 @@ const fn is_closed(event: &AgentEvent) -> bool {
     matches!(event, AgentEvent::ResourceClosed { .. })
 }
 
-fn assert_error(result: &CommandResult, want: ErrorCode, what: &str) {
-    assert!(
-        matches!(result, CommandResult::Error { code, .. } if *code == want),
-        "{what}: {result:?}"
-    );
-}
-
 /// A retained pane refuses input and signals; resize is a no-op.
 async fn assert_inert(h: &mut Harness, pane: &ResourceId, info: &ResourceInfo) {
     let key = || InputEvent::Key(ascii_key('a', PhysicalKey::A));
     let routed = h
-        .command(Command::RouteInput {
-            terminal_id: pane.clone(),
-            event: key(),
-        })
+        .command(phux_server_testkit::route_input(pane.clone(), key()))
         .await;
-    assert_error(&routed, ErrorCode::InputNotWritten, "ROUTE_INPUT");
+    assert_command_error(&routed, ErrorCode::InputNotWritten);
     let applied = h
         .command(Command::ApplyInput {
             operation_id: InputOperationId::new([7; 16]).unwrap(),
@@ -203,7 +192,7 @@ async fn assert_inert(h: &mut Harness, pane: &ResourceId, info: &ResourceInfo) {
             events: vec![key()],
         })
         .await;
-    assert_error(&applied, ErrorCode::InputNotWritten, "APPLY_INPUT");
+    assert_command_error(&applied, ErrorCode::InputNotWritten);
     let signalled = h
         .command(Command::SignalTerminal {
             terminal_id: pane.clone(),
@@ -211,7 +200,7 @@ async fn assert_inert(h: &mut Harness, pane: &ResourceId, info: &ResourceInfo) {
             operation_id: None,
         })
         .await;
-    assert_error(&signalled, ErrorCode::InvalidCommand, "SIGNAL_TERMINAL");
+    assert_command_error(&signalled, ErrorCode::InvalidCommand);
     send_frame(
         &mut h.probe,
         &FrameKind::ResizeTerminal {
@@ -310,10 +299,7 @@ fn a_retained_exit_is_a_readable_facet_until_its_purge() {
 
         h.kill(&pane).await;
         let again = h
-            .command(Command::KillResources {
-                ids: vec![pane.clone()],
-                operation_id: None,
-            })
+            .command(phux_server_testkit::kill_all(vec![pane.clone()]))
             .await;
         assert_eq!(again, CommandResult::Ok, "a repeated kill is not an error");
         assert_eq!(

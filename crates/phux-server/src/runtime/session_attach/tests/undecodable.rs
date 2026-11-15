@@ -46,114 +46,112 @@ fn png() -> Bytes {
 
 #[tokio::test(flavor = "current_thread")]
 async fn an_undecodable_kind_is_listed_but_never_streamed_or_attached() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, false);
-            let (tree, tree_handle) = tree(&state, parent, session);
-            publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{}")).await;
-            let (surface, surface_handle) = surface(&state, parent, session);
-            publish::<SurfaceDocument>(&surface_handle, png()).await;
-            let (tree_wire, surface_wire) = state.with_mut(|s| {
-                (
-                    s.intern_resource_wire(tree),
-                    s.intern_resource_wire(surface),
-                )
-            });
-            let kinds = ResourceKindSet::with(&[ResourceKind::AccessibilityTree]);
-            let mut connection = Connection::start_with(&state, false, 64, Some(kinds)).await;
-            connection.attach(1).await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, false);
+        let (tree, tree_handle) = tree(&state, parent, session);
+        publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{}")).await;
+        let (surface, surface_handle) = surface(&state, parent, session);
+        publish::<SurfaceDocument>(&surface_handle, png()).await;
+        let (tree_wire, surface_wire) = state.with_mut(|s| {
+            (
+                s.intern_resource_wire(tree),
+                s.intern_resource_wire(surface),
+            )
+        });
+        let kinds = ResourceKindSet::with(&[ResourceKind::AccessibilityTree]);
+        let mut connection = Connection::start_with(&state, false, 64, Some(kinds)).await;
+        connection.attach(1).await;
 
-            let FrameKind::Attached { snapshot, .. } = connection.next().await else {
-                panic!("ATTACHED")
-            };
-            assert!(
-                snapshot.resources.iter().any(|r| r.id == surface_wire),
-                "the surface is still listed"
-            );
-            let mut bootstrapped = Vec::new();
-            loop {
-                match connection.next().await {
-                    FrameKind::BootstrapBegin { terminal_id, .. } => bootstrapped.push(terminal_id),
-                    FrameKind::BootstrapChunk { terminal_id, .. }
-                    | FrameKind::BootstrapReady { terminal_id, .. } => {
-                        assert_eq!(terminal_id, tree_wire);
-                    }
-                    FrameKind::AttachReady { attach_id: 1 } => break,
-                    frame => panic!("unexpected aggregate frame: {frame:?}"),
+        let FrameKind::Attached { snapshot, .. } = connection.next().await else {
+            panic!("ATTACHED")
+        };
+        assert!(
+            snapshot.resources.iter().any(|r| r.id == surface_wire),
+            "the surface is still listed"
+        );
+        let mut bootstrapped = Vec::new();
+        loop {
+            match connection.next().await {
+                FrameKind::BootstrapBegin { terminal_id, .. } => bootstrapped.push(terminal_id),
+                FrameKind::BootstrapChunk { terminal_id, .. }
+                | FrameKind::BootstrapReady { terminal_id, .. } => {
+                    assert_eq!(terminal_id, tree_wire);
                 }
+                FrameKind::AttachReady { attach_id: 1 } => break,
+                frame => panic!("unexpected aggregate frame: {frame:?}"),
             }
-            assert_eq!(bootstrapped, std::slice::from_ref(&tree_wire));
-            state.with(|s| {
-                assert!(
-                    !s.subscribers_for_resource(surface)
-                        .contains(&connection.client)
-                );
-                assert!(
-                    s.subscribers_for_resource(tree)
-                        .contains(&connection.client)
-                );
-            });
-
-            publish::<SurfaceDocument>(&surface_handle, png()).await;
-            publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{\"live\":1}")).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::ResourceOutput { terminal_id, .. } if terminal_id == tree_wire
-            ));
-
-            connection
-                .send(FrameKind::Command {
-                    request_id: 5,
-                    command: Command::attach_terminal(surface_wire, None),
-                })
-                .await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::CommandResult {
-                    request_id: 5,
-                    result: CommandResult::Error {
-                        code: ErrorCode::CodecUnavailable,
-                        ..
-                    },
-                }
-            ));
-            assert!(!state.with(|s| {
-                s.subscribers_for_resource(surface)
+        }
+        assert_eq!(bootstrapped, std::slice::from_ref(&tree_wire));
+        state.with(|s| {
+            assert!(
+                !s.subscribers_for_resource(surface)
                     .contains(&connection.client)
-            }));
-            connection.send(FrameKind::Ping { nonce: 3 }).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::Pong { nonce: 3 }
-            ));
-            connection.finish().await;
-        })
-        .await;
+            );
+            assert!(
+                s.subscribers_for_resource(tree)
+                    .contains(&connection.client)
+            );
+        });
+
+        publish::<SurfaceDocument>(&surface_handle, png()).await;
+        publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{\"live\":1}")).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::ResourceOutput { terminal_id, .. } if terminal_id == tree_wire
+        ));
+
+        connection
+            .send(FrameKind::Command {
+                request_id: 5,
+                command: Command::attach_terminal(surface_wire, None),
+            })
+            .await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::CommandResult {
+                request_id: 5,
+                result: CommandResult::Error {
+                    code: ErrorCode::CodecUnavailable,
+                    ..
+                },
+            }
+        ));
+        assert!(!state.with(|s| {
+            s.subscribers_for_resource(surface)
+                .contains(&connection.client)
+        }));
+        connection.send(FrameKind::Ping { nonce: 3 }).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::Pong { nonce: 3 }
+        ));
+        connection.finish().await;
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_hello_without_resource_kinds_streams_every_legacy_kind() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, false);
-            let (_, tree_handle) = tree(&state, parent, session);
-            publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{}")).await;
-            let (_, surface_handle) = surface(&state, parent, session);
-            publish::<SurfaceDocument>(&surface_handle, png()).await;
-            let mut connection = Connection::start_with(&state, false, 64, None).await;
-            connection.attach(1).await;
-            let profiles = prefix(&mut connection, 2, 1).await;
-            assert!(profiles.contains(&BootstrapStreamProfile::AccessibilityTreeJsonV1));
-            assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
-            assert_eq!(
-                state.with(|s| s.attached()[&connection.client].client_caps.resource_kinds),
-                ResourceKindSet::LEGACY
-            );
-            connection.finish().await;
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, false);
+        let (_, tree_handle) = tree(&state, parent, session);
+        publish::<TreeDocument>(&tree_handle, Bytes::from_static(b"{}")).await;
+        let (_, surface_handle) = surface(&state, parent, session);
+        publish::<SurfaceDocument>(&surface_handle, png()).await;
+        let mut connection = Connection::start_with(&state, false, 64, None).await;
+        connection.attach(1).await;
+        let profiles = prefix(&mut connection, 2, 1).await;
+        assert!(profiles.contains(&BootstrapStreamProfile::AccessibilityTreeJsonV1));
+        assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
+        assert_eq!(
+            state.with(|s| s.attached()[&connection.client].client_caps.resource_kinds),
+            ResourceKindSet::LEGACY
+        );
+        connection.finish().await;
+    })
+    .await;
 }
 
 fn spawn_frame(
@@ -177,46 +175,43 @@ fn spawn_frame(
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_spawner_is_streamed_only_the_kinds_it_lists() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (_, parent) = parent(&state, true);
-            let parent_wire = state.with_mut(|s| s.intern_resource_wire(parent));
-            let kinds = ResourceKindSet::with(&[ResourceKind::AgentSession]);
-            let mut connection = Connection::start_with(&state, true, 64, Some(kinds)).await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (_, parent) = parent(&state, true);
+        let parent_wire = state.with_mut(|s| s.intern_resource_wire(parent));
+        let kinds = ResourceKindSet::with(&[ResourceKind::AgentSession]);
+        let mut connection = Connection::start_with(&state, true, 64, Some(kinds)).await;
 
-            // The producer of a tree it does not decode: spawned, no stream.
-            let tree = phux_protocol::wire::frame::SpawnResource::accessibility_tree(
-                parent_wire,
-                "fixture",
-            );
-            connection.send(spawn_frame(1, Some(tree))).await;
-            let frame = connection.next().await;
-            let FrameKind::ResourceSpawned {
-                request_id: 1,
-                result,
-            } = frame
-            else {
-                panic!("RESOURCE_SPAWNED, got {frame:?}")
-            };
-            assert!(result.spawned_id().is_some(), "{result:?}");
+        // The producer of a tree it does not decode: spawned, no stream.
+        let tree =
+            phux_protocol::wire::frame::SpawnResource::accessibility_tree(parent_wire, "fixture");
+        connection.send(spawn_frame(1, Some(tree))).await;
+        let frame = connection.next().await;
+        let FrameKind::ResourceSpawned {
+            request_id: 1,
+            result,
+        } = frame
+        else {
+            panic!("RESOURCE_SPAWNED, got {frame:?}")
+        };
+        assert!(result.spawned_id().is_some(), "{result:?}");
 
-            // A Terminal it does not decode is refused before it runs.
-            connection.send(spawn_frame(2, None)).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::Error {
-                    request_id: Some(2),
-                    code: ErrorCode::CodecUnavailable,
-                    ..
-                }
-            ));
-            connection.send(FrameKind::Ping { nonce: 4 }).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::Pong { nonce: 4 }
-            ));
-            connection.finish().await;
-        })
-        .await;
+        // A Terminal it does not decode is refused before it runs.
+        connection.send(spawn_frame(2, None)).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::Error {
+                request_id: Some(2),
+                code: ErrorCode::CodecUnavailable,
+                ..
+            }
+        ));
+        connection.send(FrameKind::Ping { nonce: 4 }).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::Pong { nonce: 4 }
+        ));
+        connection.finish().await;
+    })
+    .await;
 }

@@ -377,11 +377,8 @@ fn cursor_shape(style: CoreCursorStyle) -> CursorShape {
     }
 }
 
-/// Copy one published frame into the record `UniFFI` carries.
-///
-/// The connected lane's counterpart in `crate::c` lends the very same
-/// [`crate::projection::grid::GridView`] by pointer; this one copies it,
-/// because Swift and Kotlin cannot borrow.
+/// Copy one published frame into the record `UniFFI` carries; Swift and
+/// Kotlin cannot borrow it.
 pub(crate) fn grid_projection(view: &grid::GridView<'_>, dirty_rows: Vec<u16>) -> GridProjection {
     GridProjection {
         cols: view.cols,

@@ -216,7 +216,6 @@ impl TerminalActor {
     /// Drop the per-consumer state for `client_id`, if present.
     pub(super) fn unregister_consumer(&mut self, client_id: ClientId) {
         let _ = self.consumer_states.remove(&client_id);
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.release_native_owner(u64::from(client_id.get()));
     }
 

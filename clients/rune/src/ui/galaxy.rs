@@ -17,6 +17,7 @@ use crate::activity::Mark;
 use crate::creature;
 use crate::desk::Desk;
 use crate::galaxy::{self, Detail, Kin, Pt};
+use crate::ui::Cover;
 
 const NAME: TextStyle = TextStyle::new(11.0, 500.0).mono();
 const WORD: TextStyle = TextStyle::new(9.5, 600.0).mono().tracking(1.5);
@@ -287,9 +288,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         ));
 
     el().key("galaxy")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(p.bg)
         .modal(false, Desk::close_galaxy)
         .label("Galaxy")
@@ -297,9 +296,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .child(
             canvas(shape)
                 .key("galaxy-sky")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
+                .cover()
                 .on_drag(|desk: &mut Desk, drag, _| desk.galaxy_drag(drag))
                 .on_double_press(Desk::fit_galaxy)
                 .on_wheel(|desk: &mut Desk, e, _| {

@@ -27,6 +27,18 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// A foreground phone app that has asked for nothing.
+    #[cfg(test)]
+    pub fn test() -> Platform {
+        Platform {
+            target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            active: true,
+            connection_requested: false,
+            paste_requested: false,
+            away_since: None,
+        }
+    }
+
     /// Note a lifecycle edge at `now`. Coming back, how long the app was
     /// away, when it had left.
     fn set_active(&mut self, active: bool, now: SystemTime) -> Option<Duration> {

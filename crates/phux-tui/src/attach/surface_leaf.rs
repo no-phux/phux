@@ -1,14 +1,7 @@
-//! Layout leaves that are not Terminals: a document, accessibility tree,
-//! pixel surface, or agent session another client placed in the arrangement
-//! (docs/resource-kinds.md, "any resource with a surface can be a layout
-//! leaf"). The TUI has no renderer for them, so it tiles a labelled
-//! placeholder in the leaf's rect and never sends the leaf input or a resize.
-//!
-//! A leaf's kind comes first from the server's resource graph (the
-//! `ATTACHED` snapshot, later inventories, and live `RESOURCE_SPAWNED`
-//! events), recorded in a [`LeafBook`]; the session kernel's kind, learned
-//! from a bootstrap, is the fallback. A leaf neither knows keeps the
-//! Terminal path.
+//! Layout leaves that are not Terminals (documents, accessibility trees,
+//! pixel surfaces, agent sessions): the TUI tiles a labelled placeholder and
+//! never sends them input or a resize. A leaf's kind comes from the server's
+//! resource graph ([`LeafBook`]), else the kernel; unknown stays Terminal.
 
 use std::collections::HashMap;
 use std::io::Write;

@@ -59,88 +59,87 @@ fn only(tag: char, written: &str) -> String {
 #[tokio::test(flavor = "current_thread")]
 async fn a_saturated_pane_loses_no_input_and_blocks_no_other_pane() {
     const PER_CLIENT: usize = 3 * INPUT_CREDITS;
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let mut stalled = spawn_pane(&state, "a", b"");
-            let mut others = [spawn_pane(&state, "b", b""), spawn_pane(&state, "c", b"")];
-            let attach = |session: &str| {
-                state.with_mut(|s| {
-                    let id = s.new_client_id();
-                    s.attach_default_caps(id, session, mpsc::channel(16).0)
-                        .expect("attach");
-                    id
-                })
-            };
-            let (a1, a2, b, c) = (attach("a"), attach("a"), attach("b"), attach("c"));
-            let lane = spawn_input_lane(state.clone()).expect("spawn lane");
-
-            let mut typists = tokio::task::JoinSet::new();
-            for (client, pane, tag) in [
-                (a1, stalled.wire.clone(), 'x'),
-                (a2, stalled.wire.clone(), 'y'),
-                (b, others[0].wire.clone(), 'b'),
-                (c, others[1].wire.clone(), 'c'),
-            ] {
-                typists.spawn_local(type_into(
-                    state.clone(),
-                    lane.handle(),
-                    client,
-                    pane,
-                    tag,
-                    PER_CLIENT,
-                ));
-            }
-
-            // The other panes take everything while `a` is stuck.
-            for (pane, tag) in others.iter_mut().zip(['b', 'c']) {
-                let written = drain(&mut pane.writer_rx, PER_CLIENT).await;
-                assert_eq!(written, typed_by(tag, PER_CLIENT), "pane {tag}");
-            }
-
-            // `a` holds exactly its credits, and its typists are waiting.
-            tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
-                while stalled.writer_rx.len() < INPUT_CREDITS {
-                    tokio::task::yield_now().await;
-                }
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let mut stalled = spawn_pane(&state, "a", b"");
+        let mut others = [spawn_pane(&state, "b", b""), spawn_pane(&state, "c", b"")];
+        let attach = |session: &str| {
+            state.with_mut(|s| {
+                let id = s.new_client_id();
+                s.attach_default_caps(id, session, mpsc::channel(16).0)
+                    .expect("attach");
+                id
             })
-            .await
-            .expect("the stalled pane fills its credits");
-            assert_eq!(stalled.credits.available(), 0);
-            assert_eq!(stalled.writer_rx.len(), INPUT_CREDITS);
-            tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
-                while typists.len() > 2 {
-                    if typists.try_join_next().is_none() {
-                        tokio::task::yield_now().await;
-                    }
-                }
-            })
-            .await
-            .expect("the typists into `b` and `c` finish");
-            assert!(
-                typists.try_join_next().is_none(),
-                "the typists into `a` wait for credits"
-            );
+        };
+        let (a1, a2, b, c) = (attach("a"), attach("a"), attach("b"), attach("c"));
+        let lane = spawn_input_lane(state.clone()).expect("spawn lane");
 
-            let written = drain(&mut stalled.writer_rx, 2 * PER_CLIENT).await;
-            for tag in ['x', 'y'] {
-                assert_eq!(
-                    only(tag, &written),
-                    typed_by(tag, PER_CLIENT),
-                    "client {tag}"
-                );
-            }
-            tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
-                while typists.join_next().await.is_some() {}
-            })
-            .await
-            .expect("every typist finishes");
-            assert_no_write(&mut stalled.writer_rx).await;
-            assert_eq!(stalled.credits.available(), INPUT_CREDITS);
+        let mut typists = tokio::task::JoinSet::new();
+        for (client, pane, tag) in [
+            (a1, stalled.wire.clone(), 'x'),
+            (a2, stalled.wire.clone(), 'y'),
+            (b, others[0].wire.clone(), 'b'),
+            (c, others[1].wire.clone(), 'c'),
+        ] {
+            typists.spawn_local(type_into(
+                state.clone(),
+                lane.handle(),
+                client,
+                pane,
+                tag,
+                PER_CLIENT,
+            ));
+        }
 
-            for pane in std::iter::once(&stalled).chain(&others) {
-                pane.token.cancel();
+        // The other panes take everything while `a` is stuck.
+        for (pane, tag) in others.iter_mut().zip(['b', 'c']) {
+            let written = drain(&mut pane.writer_rx, PER_CLIENT).await;
+            assert_eq!(written, typed_by(tag, PER_CLIENT), "pane {tag}");
+        }
+
+        // `a` holds exactly its credits, and its typists are waiting.
+        tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
+            while stalled.writer_rx.len() < INPUT_CREDITS {
+                tokio::task::yield_now().await;
             }
         })
-        .await;
+        .await
+        .expect("the stalled pane fills its credits");
+        assert_eq!(stalled.credits.available(), 0);
+        assert_eq!(stalled.writer_rx.len(), INPUT_CREDITS);
+        tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
+            while typists.len() > 2 {
+                if typists.try_join_next().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            }
+        })
+        .await
+        .expect("the typists into `b` and `c` finish");
+        assert!(
+            typists.try_join_next().is_none(),
+            "the typists into `a` wait for credits"
+        );
+
+        let written = drain(&mut stalled.writer_rx, 2 * PER_CLIENT).await;
+        for tag in ['x', 'y'] {
+            assert_eq!(
+                only(tag, &written),
+                typed_by(tag, PER_CLIENT),
+                "client {tag}"
+            );
+        }
+        tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
+            while typists.join_next().await.is_some() {}
+        })
+        .await
+        .expect("every typist finishes");
+        assert_no_write(&mut stalled.writer_rx).await;
+        assert_eq!(stalled.credits.available(), INPUT_CREDITS);
+
+        for pane in std::iter::once(&stalled).chain(&others) {
+            pane.token.cancel();
+        }
+    })
+    .await;
 }
