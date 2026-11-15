@@ -9,7 +9,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, FileUploadId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FileUploadAck, FrameKind,
-    StateScope, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, ViewportInfo,
+    TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, ViewportInfo,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -184,9 +184,7 @@ fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
                 ),
                 "HELLO_OK states the server's own version"
             );
-            let get_state = Command::GetState {
-                scope: StateScope::Server,
-            };
+            let get_state = phux_server_testkit::get_state();
             let result = command(&mut stream, 5, get_state).await;
             assert!(
                 matches!(result, CommandResult::OkWith(CommandValue::State(_))),
@@ -326,9 +324,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
         ));
         let get_state = FrameKind::Command {
             request_id: 7,
-            command: Command::GetState {
-                scope: StateScope::Server,
-            },
+            command: phux_server_testkit::get_state(),
         };
         send_frame(&mut stream, &get_state).await;
         assert!(matches!(

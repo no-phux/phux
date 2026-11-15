@@ -12,7 +12,7 @@ use std::time::Duration;
 use phux_protocol::ids::{ResourceId, ServerInstance};
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, FrameKind, KillConditions, KillPrecondition,
-    SpawnResource, SpawnResult, StateScope,
+    SpawnResource, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server_testkit::{
@@ -238,9 +238,7 @@ fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {
              already omits the pane"
         );
 
-        let barrier = Command::GetState {
-            scope: StateScope::Server,
-        };
+        let barrier = phux_server_testkit::get_state();
         send_frame(
             &mut watcher,
             &FrameKind::Command {

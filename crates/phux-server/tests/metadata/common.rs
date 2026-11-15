@@ -9,7 +9,7 @@ use std::path::Path;
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, StateScope};
+use phux_protocol::wire::frame::{CommandResult, FrameKind};
 use phux_server::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
@@ -76,9 +76,7 @@ pub(crate) async fn subscribe_all(stream: &mut UnixStream, request_id: u32) {
         },
     )
     .await;
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     let barrier = command(stream, request_id, get_state).await;
     assert!(
         !matches!(barrier, CommandResult::Error { .. }),

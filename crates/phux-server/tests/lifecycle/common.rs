@@ -11,9 +11,8 @@ use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, EventStamp, FrameKind,
-    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult,
-    StateScope, ViewportInfo,
+    AgentEvent, AttachTarget, Command, CommandResult, EventStamp, FrameKind, SESSION_CREATE_KEY,
+    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult, ViewportInfo,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_server::{LaunchCommand, ServerConfig};
@@ -250,16 +249,7 @@ pub(crate) async fn spawned(stream: &mut UnixStream, request_id: u32, spawn: Spa
     }
 }
 
-/// `GET_STATE { Server }`. Also an in-order barrier for this connection.
-pub(crate) async fn state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get = Command::GetState {
-        scope: StateScope::Server,
-    };
-    match command(stream, request_id, get).await {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("GET_STATE failed: {other:?}"),
-    }
-}
+pub(crate) use phux_server_testkit::server_state as state;
 
 /// Poll `GET_STATE` until `ready` holds.
 pub(crate) async fn wait_for_state(

@@ -16,7 +16,7 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
-    InputMode, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
+    InputMode, Scope, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_server::LaunchCommand;
 use phux_server::{ServerConfig, ServerError};
@@ -209,9 +209,7 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
         phux_server_testkit::hello("hub-relay-federation-test", ClientCapabilities::default());
     let get_state = FrameKind::Command {
         request_id: 900,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     };
     for frame in [hello, get_state] {
         ws.send(Message::Binary(encode_frame(&frame).to_vec().into()))
@@ -394,9 +392,7 @@ async fn get_state_via_hub(
     hub: &mut UnixStream,
     request_id: u32,
 ) -> (CommandResult, Vec<(ErrorCode, String)>) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     let (result, frames) = command_via_hub(hub, request_id, get_state).await;
     let errors = frames
         .into_iter()

@@ -153,9 +153,7 @@ async fn send_isolation_probes(stream: &mut UnixStream, terminal_id: ResourceId)
         stream,
         &FrameKind::Command {
             request_id: 11,
-            command: Command::GetState {
-                scope: phux_protocol::wire::frame::StateScope::Server,
-            },
+            command: phux_server_testkit::get_state(),
         },
     )
     .await;

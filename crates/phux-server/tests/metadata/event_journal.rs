@@ -17,7 +17,6 @@ use std::time::Duration;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, EventStamp, FrameKind, SpawnResult,
-    StateScope,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -148,9 +147,7 @@ async fn command(
 }
 
 const fn get_state() -> Command {
-    Command::GetState {
-        scope: StateScope::Server,
-    }
+    phux_server_testkit::get_state()
 }
 
 /// `SUBSCRIBE_EVENTS` then the barrier; returns the replay sent ahead of it.

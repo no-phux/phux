@@ -13,7 +13,6 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, RESOURCE_AGENT_KEY,
     RESOURCE_PROGRAM_STATUS_KEY, RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
-    StateScope,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::state::RetainPolicy;

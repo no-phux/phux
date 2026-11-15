@@ -10,7 +10,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
-    SpawnResult, StateScope, ViewportInfo,
+    SpawnResult, ViewportInfo,
 };
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, command, recv_until, recv_until_deadline,
@@ -297,14 +297,7 @@ fn cwd_changed_announces_the_start_dir_once_then_real_moves() {
 
         // phux-qkaii: a client that refreshes its inventory after the move
         // reads the registry, which must have followed the event.
-        let get_state = Command::GetState {
-            scope: StateScope::Server,
-        };
-        let CommandResult::OkWith(CommandValue::State(snapshot)) =
-            command(&mut stream, 3, get_state).await
-        else {
-            panic!("GET_STATE failed");
-        };
+        let snapshot = phux_server_testkit::server_state(&mut stream, 3).await;
         let listed = snapshot
             .resources
             .iter()
@@ -330,14 +323,7 @@ fn get_state_reports_the_program_title_without_streaming_the_pane() {
         let mut request = 10;
         loop {
             request += 1;
-            let get_state = Command::GetState {
-                scope: StateScope::Server,
-            };
-            let CommandResult::OkWith(CommandValue::State(snapshot)) =
-                command(&mut stream, request, get_state).await
-            else {
-                panic!("GET_STATE failed");
-            };
+            let snapshot = phux_server_testkit::server_state(&mut stream, request).await;
             let listed = snapshot.resources.iter().find(|p| p.id == pane).cloned();
             let listed = listed.expect("the pane is listed");
             if listed.program_title.as_deref() == Some("build the docs") {

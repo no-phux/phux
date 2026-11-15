@@ -6,7 +6,7 @@
 //! which the in-order frame loop queues behind any duplicate.
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult, StateScope};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
@@ -38,9 +38,7 @@ async fn closed_exactly_once(
     .expect("RESOURCE_CLOSED never arrived");
     let get_state = FrameKind::Command {
         request_id: barrier,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     };
     send_frame(stream, &get_state).await;
     let mut extra = 0;

@@ -148,9 +148,7 @@ fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generati
             &mut watcher,
             &FrameKind::Command {
                 request_id: 103,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
+                command: phux_server_testkit::get_state(),
             },
         )
         .await;

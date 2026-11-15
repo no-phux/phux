@@ -2,7 +2,7 @@
 //! reap) must get a typed reply for every request and leave the server
 //! responsive.
 
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult, StateScope};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
@@ -66,14 +66,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
         send_frame(&mut stream, &kill(99, spawned[0].clone())).await;
         let _ = next_command_result(&mut stream).await;
 
-        let state = command(
-            &mut stream,
-            98,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-        )
-        .await;
+        let state = command(&mut stream, 98, phux_server_testkit::get_state()).await;
         assert!(
             matches!(state, CommandResult::OkWith(_)),
             "unresponsive: {state:?}"

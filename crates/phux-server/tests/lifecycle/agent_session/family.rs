@@ -50,9 +50,7 @@ fn a_childs_spawn_and_close_reach_the_parents_watchers_once() {
             &mut watcher,
             &FrameKind::Command {
                 request_id: 101,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
+                command: phux_server_testkit::get_state(),
             },
         )
         .await;
@@ -142,9 +140,7 @@ fn kill_resources_over_a_mixed_set_closes_each_once() {
             &mut owner,
             &FrameKind::Command {
                 request_id: 5,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
+                command: phux_server_testkit::get_state(),
             },
         )
         .await;

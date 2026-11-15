@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, SpawnResult, StateScope};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, SpawnResult};
 use phux_server::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
@@ -22,14 +22,7 @@ async fn panes_and_focus(
     stream: &mut UnixStream,
     request_id: u32,
 ) -> (Vec<ResourceId>, ResourceId) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
-    let CommandResult::OkWith(CommandValue::State(snap)) =
-        command(stream, request_id, get_state).await
-    else {
-        panic!("GET_STATE failed");
-    };
+    let snap = phux_server_testkit::server_state(stream, request_id).await;
     (
         snap.resources.iter().map(|p| p.id.clone()).collect(),
         snap.focused_resource,

@@ -4,9 +4,7 @@
 use std::time::Duration;
 
 use phux_protocol::input::focus::FocusEvent;
-use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{AttachTarget, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_protocol::wire::info::SessionSnapshot;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
@@ -23,9 +21,7 @@ use super::common::{
 };
 
 async fn state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     match command(stream, request_id, get_state).await {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
         other => panic!("GET_STATE failed: {other:?}"),

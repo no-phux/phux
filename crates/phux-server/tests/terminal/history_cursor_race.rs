@@ -17,8 +17,8 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason,
-    SpawnResult, StateScope, TombstoneReason, ViewportInfo,
+    AttachTarget, CommandResult, CommandValue, FrameKind, HistoryTombstoneReason, SpawnResult,
+    TombstoneReason, ViewportInfo,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
@@ -164,9 +164,7 @@ async fn split_pane(stream: &mut UnixStream, request_id: u32) -> Generation {
 const fn get_state(request_id: u32) -> FrameKind {
     FrameKind::Command {
         request_id,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
+        command: phux_server_testkit::get_state(),
     }
 }
 

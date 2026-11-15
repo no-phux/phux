@@ -12,7 +12,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, RESOURCE_AGENT_SESSION_KEY,
     SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
-    SESSION_NAME_KEY, Scope, SpawnResult, StateScope,
+    SESSION_NAME_KEY, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::LaunchCommand as CommandBuilder;
@@ -39,9 +39,7 @@ async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
 }
 
 async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     match command(stream, request_id, get_state).await {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
         other => panic!("expected State, got {other:?}"),

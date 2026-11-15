@@ -12,9 +12,7 @@ use phux_protocol::input::{
     InputEvent,
     paste::{PasteEvent, PasteTrust},
 };
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnResult, StateScope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
@@ -237,15 +235,7 @@ async fn detach_and_check(
         CommandResult::Ok
     );
     write_and_observe(control, pane, marker).await;
-    command(
-        stream,
-        901,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-        true,
-    )
-    .await;
+    command(stream, 901, phux_server_testkit::get_state(), true).await;
     // Output has positively reached the live terminal. Observe the client
     // mailbox too, including output that a previously scheduled pump queues
     // behind the state reply. No terminal process is killed to create silence.
@@ -268,15 +258,8 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     let seed = match source {
         Source::Session | Source::Spawn => attach_session(&mut stream).await,
         Source::Explicit => {
-            let CommandResult::OkWith(CommandValue::State(state)) = command(
-                &mut control,
-                1,
-                Command::GetState {
-                    scope: StateScope::Server,
-                },
-                false,
-            )
-            .await
+            let CommandResult::OkWith(CommandValue::State(state)) =
+                command(&mut control, 1, phux_server_testkit::get_state(), false).await
             else {
                 panic!("state");
             };
@@ -412,15 +395,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
                 ..
             }
         ));
-        command(
-            &mut stream,
-            2,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-            true,
-        )
-        .await;
+        command(&mut stream, 2, phux_server_testkit::get_state(), true).await;
         drop(stream);
         join_after_shutdown(shutdown, task).await;
     });

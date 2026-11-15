@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::forward::{ForwardChunk, ForwardOp, MAX_FORWARD_CHUNK_BYTES};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_server::runtime::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
@@ -118,9 +116,7 @@ fn bytes_cross_the_socket_and_a_parked_read_delays_nothing() {
                 fin: false,
             });
             assert_eq!(command(&mut stream, 4, write).await, CommandResult::Ok);
-            let state = Command::GetState {
-                scope: StateScope::Server,
-            };
+            let state = phux_server_testkit::get_state();
             assert!(matches!(
                 command(&mut stream, 5, state).await,
                 CommandResult::OkWith(_)

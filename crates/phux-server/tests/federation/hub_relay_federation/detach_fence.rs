@@ -118,9 +118,7 @@ async fn get_state_via_hub_frames(
     client: &mut UnixStream,
     request_id: u32,
 ) -> (CommandResult, Vec<FrameKind>) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     command_via_hub(client, request_id, get_state).await
 }
 

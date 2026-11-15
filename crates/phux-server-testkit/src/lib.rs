@@ -45,6 +45,7 @@ use phux_protocol::wire::frame::{
     SpawnResource,
     SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::ServerError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -316,6 +317,22 @@ pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command)
     await_command_result(stream, request_id).await
 }
 
+/// `GET_STATE { Server }`.
+#[must_use]
+pub const fn get_state() -> Command {
+    Command::GetState {
+        scope: StateScope::Server,
+    }
+}
+
+/// The [`get_state`] snapshot; also an in-order barrier for this connection.
+pub async fn server_state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
+    match command(stream, request_id, get_state()).await {
+        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
+        other => panic!("GET_STATE failed: {other:?}"),
+    }
+}
+
 /// Assert `result` is a `CommandResult::Error` carrying `code`.
 #[track_caller]
 pub fn assert_command_error(result: &CommandResult, code: ErrorCode) {
@@ -334,17 +351,7 @@ pub async fn bound_listener_addr(
     transport: RemoteListenerTransport,
 ) -> std::net::SocketAddr {
     let mut stream = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
-    let result = command(
-        &mut stream,
-        1,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-    )
-    .await;
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("GET_STATE failed: {result:?}");
-    };
+    let snapshot = server_state(&mut stream, 1).await;
     let report = snapshot
         .listeners()
         .unwrap_or_else(|| panic!("the server reported no remote listeners"));

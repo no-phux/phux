@@ -2,14 +2,12 @@
 //! round-trips the canonical grid, a PTY resized to the client's viewport,
 //! and a session that survives its last shell exiting.
 
-use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{AttachTarget, Command, CommandResult, FrameKind};
 use tempfile::TempDir;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_typed,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed,
     recv_until_deadline, run_local, send_frame, spawn_server_connected, spawn_server_with_seed_cmd,
     wait_for_socket,
 };
@@ -136,14 +134,7 @@ fn last_shell_eof_closes_the_terminal_and_keeps_the_session() {
             "the exited shell closes with its status"
         );
 
-        let get_state = Command::GetState {
-            scope: StateScope::Server,
-        };
-        let CommandResult::OkWith(CommandValue::State(snapshot)) =
-            command(&mut stream, 10, get_state).await
-        else {
-            panic!("GET_STATE failed");
-        };
+        let snapshot = phux_server_testkit::server_state(&mut stream, 10).await;
         assert!(
             snapshot.resources.is_empty(),
             "nothing was respawned: {snapshot:?}"
@@ -177,17 +168,7 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
                 ),
             );
             let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-            let CommandResult::OkWith(CommandValue::State(snapshot)) = command(
-                &mut owner,
-                1,
-                Command::GetState {
-                    scope: StateScope::Server,
-                },
-            )
-            .await
-            else {
-                panic!("server topology unavailable")
-            };
+            let snapshot = phux_server_testkit::server_state(&mut owner, 1).await;
             let pane = snapshot.resources.first().unwrap().id.clone();
             let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
             wait_for_server_screen_text(&mut probe, &pane, "HISTORY_TAIL", WIRE_RECV_TIMEOUT).await;
