@@ -231,6 +231,16 @@ impl WorkloadPaths {
             registry: registry.unwrap_or_else(default_registry_path),
         }
     }
+
+    /// The default file names under `dir`.
+    #[cfg(test)]
+    pub(crate) fn in_dir(dir: &Path) -> Self {
+        Self {
+            ca_cert: dir.join("workload-ca.pem"),
+            ca_key: dir.join("workload-ca.key"),
+            registry: dir.join("workload-keys"),
+        }
+    }
 }
 
 /// The ceiling a paired device enrolls with: every verb on the whole host.

@@ -42,11 +42,7 @@ async fn wss_with_a_configured_ca_looks_up_the_client_certificate_like_quic() {
     let leaf_key = dir.path().join("leaf-key.pem");
     crate::transport::tls::ensure_self_signed_for(&leaf, &leaf_key, &["localhost".to_owned()])
         .unwrap();
-    let paths = WorkloadPaths {
-        ca_cert: dir.path().join("ca.pem"),
-        ca_key: dir.path().join("ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = WorkloadPaths::in_dir(dir.path());
     crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
 
     let client_key = rcgen::KeyPair::generate().unwrap();

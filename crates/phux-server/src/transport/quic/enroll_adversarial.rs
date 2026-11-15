@@ -37,11 +37,7 @@ impl Paired {
             <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
         )
         .unwrap();
-        let paths = WorkloadPaths {
-            ca_cert: dir.path().join("workload-ca.pem"),
-            ca_key: dir.path().join("workload-ca.key"),
-            registry: dir.path().join("workload-keys"),
-        };
+        let paths = WorkloadPaths::in_dir(dir.path());
         let cert = dir.path().join("remote-cert.pem");
         let key = dir.path().join("remote-key.pem");
         crate::transport::tls::ensure_server_identity(&cert, &key, &[], &paths).unwrap();

@@ -56,11 +56,7 @@ struct Authority {
 impl Authority {
     fn init() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let paths = WorkloadPaths {
-            ca_cert: dir.path().join("ca.pem"),
-            ca_key: dir.path().join("ca.key"),
-            registry: dir.path().join("workload-keys"),
-        };
+        let paths = WorkloadPaths::in_dir(dir.path());
         crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
         Self { _dir: dir, paths }
     }

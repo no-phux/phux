@@ -77,11 +77,7 @@ async fn under_paired_only_an_inner_session_with_an_enrolled_certificate_is_admi
     use std::os::unix::fs::PermissionsExt as _;
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let paths = crate::workload::WorkloadPaths {
-        ca_cert: dir.path().join("workload-ca.pem"),
-        ca_key: dir.path().join("workload-ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = crate::workload::WorkloadPaths::in_dir(dir.path());
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     super::super::tls::ensure_server_identity(&cert, &key, &[], &paths).unwrap();
     let client_key = rcgen::KeyPair::generate().unwrap();

@@ -299,11 +299,7 @@ fn enrolled_client(
 #[tokio::test]
 async fn an_ephemeral_listener_in_workload_mode_requires_an_enrolled_certificate() {
     let (dir, cert, key) = cert_pair();
-    let paths = crate::workload::WorkloadPaths {
-        ca_cert: dir.path().join("ca.pem"),
-        ca_key: dir.path().join("ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = crate::workload::WorkloadPaths::in_dir(dir.path());
     crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
     let (identity, enrolled) = enrolled_client(&paths, dir.path());
     let ca_certificate = crate::workload::authority_certificate(&paths.ca_cert).unwrap();
