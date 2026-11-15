@@ -191,70 +191,56 @@ fn a_second_attach_sees_its_snapshot_before_any_delta_of_the_ongoing_stream() {
     );
 }
 
+/// A gated subscriber still receives `BELL` (without opening the gate) and
+/// `RESOURCE_CLOSED` (before it is reaped).
 #[test]
-fn a_gated_attach_still_receives_terminal_closed_before_being_reaped() {
-    // A gated subscriber still receives RESOURCE_CLOSED.
+fn a_gated_attach_still_receives_bell_and_terminal_closed() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (tx_b, mut rx_b) = mpsc::channel(8);
-    // B attaches: gate is AwaitingFirst, no snapshot delivered yet.
     attach(&mut session, 9, ClientId(2), tx_b);
-
-    // A normal delta is still suppressed while gated...
     session.feed(&output_frame(9, 1, b"suppressed"));
     assert!(
         rx_b.try_recv().is_err(),
-        "a content delta is suppressed before the snapshot"
+        "a delta is suppressed before the snapshot"
     );
 
-    // ...but the terminal closing must reach B before it is reaped.
-    session.feed(&FrameKind::ResourceClosed {
+    session.feed(&FrameKind::Bell {
         terminal_id: ResourceId::local(9),
+    });
+    let bell = FrameKind::Bell {
+        terminal_id: ResourceId::satellite("devbox", 9),
+    };
+    assert_eq!(next_frame(&mut rx_b, "bell past the gate"), bell);
+    session.feed(&output_frame(9, 2, b"still-gated"));
+    assert!(
+        rx_b.try_recv().is_err(),
+        "the bell bypass does not open the gate"
+    );
+
+    let closed = |terminal_id| FrameKind::ResourceClosed {
+        terminal_id,
         exit_status: Some(0),
         reason: phux_protocol::wire::frame::CloseReason::Unknown,
         signal: None,
-    });
+    };
+    session.feed(&closed(ResourceId::local(9)));
     let frame = next_frame(&mut rx_b, "close delivered past the gate");
-    assert_eq!(
-        frame,
-        FrameKind::ResourceClosed {
-            terminal_id: ResourceId::satellite("devbox", 9),
-            exit_status: Some(0),
-            reason: phux_protocol::wire::frame::CloseReason::Unknown,
-            signal: None,
-        },
-        "a gated subscriber must still see RESOURCE_CLOSED"
-    );
-    // And the subscription is reaped: no further fan-out for the id.
-    session.feed(&output_frame(9, 2, b"after-close"));
+    assert_eq!(frame, closed(ResourceId::satellite("devbox", 9)));
+    session.feed(&output_frame(9, 3, b"after-close"));
     assert!(
         rx_b.try_recv().is_err(),
         "subscription must be reaped on close"
     );
 }
 
+/// Event-only subscriptions carry no snapshot, so they flow at once, and a
+/// re-subscribe does not re-gate them. The hub drops the satellite's
+/// journal stamp (L1 §7.3).
 #[test]
-fn an_event_only_subscription_is_not_gated_by_the_snapshot() {
-    // Event-only subscriptions carry no snapshot and flow at once.
+fn an_event_only_subscription_flows_ungated_without_the_satellite_stamp() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(8);
-    subscribe(&mut session, 9, ClientId(1), out_tx);
-    session.feed(&agent_event(9));
-    let frame = next_frame(&mut out_rx, "event flows without a snapshot");
-    assert_eq!(
-        frame,
-        FrameKind::Event {
-            terminal: Some(ResourceId::satellite("devbox", 9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        }
-    );
-}
-
-/// L1 §7.3: the hub drops the satellite's journal stamp.
-#[test]
-fn a_satellite_event_stamp_does_not_cross_the_hub() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
+    subscribe(&mut session, 9, ClientId(1), out_tx.clone());
     subscribe(&mut session, 9, ClientId(1), out_tx);
     let stamp =
         phux_protocol::wire::frame::EventStamp::new(41, 1_700_000_000_000).with_actor(Some(
@@ -320,56 +306,3 @@ fn subscribe_then_attach_upgrade_gates_deltas_until_the_attach_snapshot() {
         "the delta must follow the snapshot, re-tagged, got {delta:?}"
     );
 }
-
-#[test]
-fn an_event_only_re_subscribe_does_not_re_gate_a_flowing_stream() {
-    // An event-only re-subscribe leaves an open stream flowing.
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
-    subscribe(&mut session, 9, ClientId(1), out_tx.clone());
-    // A second event-only subscribe for the same client (idempotent).
-    subscribe(&mut session, 9, ClientId(1), out_tx);
-    session.feed(&agent_event(9));
-    assert!(
-        out_rx.try_recv().is_ok(),
-        "an event-only re-subscribe must not re-gate the flowing stream"
-    );
-}
-
-#[test]
-fn a_gated_attach_still_receives_a_bell_past_the_gate() {
-    // A bell passes an AwaitingFirst gate.
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (tx, mut rx) = mpsc::channel(8);
-    // Attach: gate is AwaitingFirst, no snapshot delivered yet.
-    attach(&mut session, 9, ClientId(2), tx);
-
-    // A content delta is suppressed while gated...
-    session.feed(&output_frame(9, 1, b"suppressed"));
-    assert!(
-        rx.try_recv().is_err(),
-        "a content delta is suppressed before the snapshot"
-    );
-
-    // ...but a bell rings through, re-tagged, past the gate.
-    session.feed(&FrameKind::Bell {
-        terminal_id: ResourceId::local(9),
-    });
-    let frame = next_frame(&mut rx, "bell delivered past the gate");
-    assert_eq!(
-        frame,
-        FrameKind::Bell {
-            terminal_id: ResourceId::satellite("devbox", 9),
-        },
-        "a gated subscriber must still see a BELL"
-    );
-
-    // ...without opening it.
-    session.feed(&output_frame(9, 2, b"still-gated"));
-    assert!(
-        rx.try_recv().is_err(),
-        "the bell bypass must not open the snapshot gate"
-    );
-}
-
-// --- session: lifecycle teardown --------------------------------------

@@ -107,48 +107,6 @@ fn a_correlated_error_and_teardown_both_refuse_pending_listings() {
     );
 }
 
-#[tokio::test]
-async fn fail_fast_refuses_a_listing_naming_the_host() {
-    let (request, rx) = listing_request("/srv");
-    fail_fast(request, &host(), "backoff");
-    let message = refusal_message(rx.await.expect("resolved"));
-    assert!(
-        message.contains("devbox is unreachable: backoff"),
-        "{message}"
-    );
-}
-
-/// A satellite whose link stays up but never answers is refused at the
-/// deadline, naming the host and the path it was asked for.
-#[tokio::test(start_paused = true)]
-async fn a_listing_times_out_against_a_silent_satellite() {
-    let (handle, rx) = RelayHandle::new(host());
-    let refusal = handle
-        .list_directory("/srv".to_owned())
-        .await
-        .expect_err("expected a refusal");
-    assert_eq!(refusal.code, DirectoryErrorCode::Other);
-    assert_eq!(refusal.path, "/srv");
-    assert!(
-        refusal
-            .message
-            .contains("devbox did not answer the listing within 10s"),
-        "{}",
-        refusal.message
-    );
-    drop(rx);
-}
-
-#[test]
-fn prune_abandoned_drops_listings_whose_consumer_gave_up() {
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (request, rx) = listing_request("/srv");
-    let _ = session.handle_request(request);
-    assert_eq!(session.prune_abandoned(), 0);
-    drop(rx);
-    assert_eq!(session.prune_abandoned(), 1);
-}
-
 // --- relayed PATH_QUERY (L3 §5) ----------------------------------------
 
 pub(super) fn path_request(root: &str) -> (RelayRequest, oneshot::Receiver<PathQueryResult>) {
@@ -269,15 +227,17 @@ fn satellite_path_refusal_preserves_its_specific_error_code() {
 }
 
 #[test]
-fn abandoned_path_query_is_pruned_and_late_results_are_dropped() {
+fn abandoned_listings_and_path_queries_are_pruned_and_late_results_dropped() {
     let mut session = path_session();
+    let (listing, listing_rx) = listing_request("/srv");
+    let _ = session.handle_request(listing);
     let (request, rx) = path_request("/tmp");
     let FrameKind::PathQuery { request_id, .. } = decode(&session.handle_request(request)) else {
         panic!("expected PATH_QUERY");
     };
     assert_eq!(session.prune_abandoned(), 0);
-    drop(rx);
-    assert_eq!(session.prune_abandoned(), 1);
+    drop((listing_rx, rx));
+    assert_eq!(session.prune_abandoned(), 2);
     session.feed(&FrameKind::PathResults {
         request_id,
         result: Err(path_refusal("/tmp", "late")),
@@ -285,24 +245,38 @@ fn abandoned_path_query_is_pruned_and_late_results_are_dropped() {
 }
 
 #[tokio::test]
-async fn disconnected_path_query_fails_fast_with_host_and_root() {
+async fn disconnected_listings_and_path_queries_fail_fast_naming_the_host() {
+    let (request, rx) = listing_request("/srv");
+    fail_fast(request, &host(), "backoff");
+    let message = refusal_message(rx.await.expect("resolved"));
+    assert!(
+        message.contains("devbox is unreachable: backoff"),
+        "{message}"
+    );
     let (request, rx) = path_request("/tmp");
     fail_fast(request, &host(), "backoff");
     assert!(path_error(rx.await.unwrap(), "/tmp").contains("backoff"));
 }
 
+/// A link that stays up but never answers is refused at the deadline,
+/// naming the host and the path it was asked for.
 #[tokio::test(start_paused = true)]
-async fn silent_path_query_times_out() {
+async fn listings_and_path_queries_time_out_against_a_silent_satellite() {
     let (handle, _mailbox) = RelayHandle::new(host());
-    assert!(
-        path_error(
-            handle
-                .path_query("~/work".to_owned(), "src".to_owned(), true)
-                .await,
-            "~/work"
-        )
-        .contains("within 10s")
+    let refusal = handle
+        .list_directory("/srv".to_owned())
+        .await
+        .expect_err("expected a refusal");
+    assert_eq!(
+        (refusal.code, refusal.path.as_str()),
+        (DirectoryErrorCode::Other, "/srv")
     );
+    let expected = "devbox did not answer the listing within 10s";
+    assert!(refusal.message.contains(expected), "{}", refusal.message);
+    let result = handle
+        .path_query("~/work".to_owned(), "src".to_owned(), true)
+        .await;
+    assert!(path_error(result, "~/work").contains("within 10s"));
 }
 
 #[tokio::test]
@@ -311,25 +285,10 @@ async fn saturated_and_closed_path_query_mailboxes_refuse() {
     for _ in 0..RELAY_MAILBOX {
         handle.forward(FrameKind::Ping { nonce: 1 });
     }
-    assert!(
-        path_error(
-            handle
-                .path_query("/tmp".to_owned(), String::new(), false)
-                .await,
-            "/tmp"
-        )
-        .contains("saturated")
-    );
+    let query = || handle.path_query("/tmp".to_owned(), String::new(), false);
+    assert!(path_error(query().await, "/tmp").contains("saturated"));
     mailbox.requests.close();
     while mailbox.requests.try_recv().is_ok() {}
     drop(mailbox);
-    assert!(
-        path_error(
-            handle
-                .path_query("/tmp".to_owned(), String::new(), false)
-                .await,
-            "/tmp"
-        )
-        .contains("down")
-    );
+    assert!(path_error(query().await, "/tmp").contains("down"));
 }
