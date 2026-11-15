@@ -8,7 +8,6 @@
 use super::*;
 
 impl TerminalActor {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn handle_native_publication(&mut self, req: NativePublicationRequest) {
         let key = NativeCursorKey::new(req.owner, req.stream_id);
         let valid = self.native_cursor_owners.get(&key).is_some_and(|binding| {
@@ -45,7 +44,6 @@ impl TerminalActor {
     }
 
     /// Queue one HISTORY request for bounded cooperative capture.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn handle_native_history(&mut self, req: NativeHistoryRequest) {
         let pending = PendingNativeHistory {
             request: req,
@@ -83,7 +81,6 @@ impl TerminalActor {
     }
 
     /// Advance at most one engine history step for the oldest queued request.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn step_native_history(&mut self) {
         let Some(pending) = self.pending_native_history.take() else {
             return;
@@ -125,7 +122,6 @@ impl TerminalActor {
         }
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn start_next_native_history(&mut self) {
         // Completion can release an owner, which already promotes the next
         // request through cancellation cleanup. Never overwrite that owner.
@@ -136,7 +132,6 @@ impl TerminalActor {
 
     /// Validate and advance one request. `None` means the engine made bounded
     /// progress but has not completed the next authenticated unit yet.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn native_history_frame(
         &mut self,
         req: &NativeHistoryRequest,
@@ -209,7 +204,6 @@ impl TerminalActor {
     /// record index. `None` when the pump has no binding or the binding does
     /// not match this request's generation identity -- both routine races the
     /// caller answers with a stale tombstone.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn history_binding(
         &self,
         key: NativeCursorKey,
@@ -230,7 +224,6 @@ impl TerminalActor {
     /// Pull one history record out of the native manager, bounded by the
     /// caller's byte and row budget. A host with no native manager surfaces
     /// its own error unchanged.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn history_record_at(
         &self,
         cursor: &crate::native_state::OpaqueHistoryCursor,
@@ -250,7 +243,6 @@ impl TerminalActor {
     /// page's row count. A binding that can no longer be advanced (sequence or
     /// row count out of range) releases the pump and fails the request; a
     /// finished record releases the pump too, since there is no next page.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn advance_history_binding(
         &mut self,
         key: NativeCursorKey,
@@ -279,7 +271,6 @@ impl TerminalActor {
     /// the exact requirement when the client can retry within the negotiated
     /// bounds, else a `HISTORY_TOMBSTONE` that also releases the pump. Returns
     /// the frame and whether the pump is still bound.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn history_out_of_space(
         &mut self,
         key: NativeCursorKey,
@@ -313,7 +304,6 @@ impl TerminalActor {
 }
 
 /// Answer every still-live prepared waiter with `error`.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn fail_native_waiters(
     prepared: Vec<(NativeBootstrapRequest, NativeBootstrapReply)>,
     error: crate::native_state::NativeStateError,
@@ -325,7 +315,6 @@ pub(in crate::actor) fn fail_native_waiters(
 
 /// Keep waiters that are not the targeted pump. `stream_id = None` drops every
 /// waiter for `owner` (client detach); `Some` drops only that stream.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn keeps_native_bootstrap_waiter(
     waiter: &NativeBootstrapRequest,
     owner: u64,
@@ -334,7 +323,6 @@ pub(in crate::actor) fn keeps_native_bootstrap_waiter(
     waiter.owner != owner || stream_id.is_some_and(|sid| waiter.stream_id != sid)
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn matches_native_history(
     request: &NativeHistoryRequest,
     owner: u64,
@@ -344,7 +332,6 @@ pub(in crate::actor) fn matches_native_history(
 }
 
 /// The wire identity every HISTORY answer frame is stamped with.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) struct HistoryFrameId {
     /// Wire terminal identity for this subscription.
     terminal_id: phux_protocol::ids::ResourceId,
@@ -356,7 +343,6 @@ pub(in crate::actor) struct HistoryFrameId {
     cursor: Bytes,
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn history_request_id(request: &NativeHistoryRequest) -> HistoryFrameId {
     HistoryFrameId {
         terminal_id: request.terminal_id.clone(),
@@ -366,7 +352,6 @@ pub(in crate::actor) fn history_request_id(request: &NativeHistoryRequest) -> Hi
     }
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 impl HistoryFrameId {
     /// Stamp a `HISTORY_TOMBSTONE`: this cursor will never be served again.
     pub(in crate::actor) fn tombstone(
@@ -424,7 +409,6 @@ impl HistoryFrameId {
 }
 
 /// Answer one HISTORY request, handing the reserved permit back to the pump.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn answer_history(
     reply: tokio::sync::oneshot::Sender<NativeHistoryReply>,
     permit: tokio::sync::mpsc::OwnedPermit<phux_resource::mailbox::Outbound>,
@@ -436,7 +420,6 @@ pub(in crate::actor) fn answer_history(
     });
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn answer_released_history(request: NativeHistoryRequest) {
     answer_tombstoned_history(
         request,
@@ -444,7 +427,6 @@ pub(in crate::actor) fn answer_released_history(request: NativeHistoryRequest) {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) fn answer_tombstoned_history(
     request: NativeHistoryRequest,
     reason: phux_protocol::wire::frame::HistoryTombstoneReason,
@@ -454,7 +436,6 @@ pub(in crate::actor) fn answer_tombstoned_history(
 }
 
 /// Map a native-state failure onto the tombstone reason the wire carries.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::actor) const fn history_tombstone_reason(
     error: crate::native_state::NativeStateError,
 ) -> phux_protocol::wire::frame::HistoryTombstoneReason {

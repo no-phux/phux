@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
     let (_bootstrap_tx, bootstrap) = mpsc::channel(1);
@@ -60,7 +59,6 @@ async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
     ));
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[test]
 fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -117,7 +115,6 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
 }
 
 /// An attach-time reflow owes a resync to exactly the pumps it tombstoned.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -167,7 +164,6 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
 
 /// A `HISTORY_REQUEST` racing a resize that drained its binding gets a
 /// per-replica `HISTORY_TOMBSTONE`, never a connection-level error.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -260,7 +256,6 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
 
 /// EOF is not a new incarnation: a completed checkpoint blocked on a slow
 /// consumer must still activate and restore its final viewport.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn ready_native_publication_survives_eof_before_activation() {
     use libghostty_vt::fmt::Formatter;
@@ -313,7 +308,6 @@ async fn ready_native_publication_survives_eof_before_activation() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
     use libghostty_vt::fmt::Formatter;

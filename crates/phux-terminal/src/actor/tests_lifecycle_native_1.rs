@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[test]
 fn native_step_allocation_never_exceeds_remaining_capture_budget() {
     assert_eq!(native_step_bytes(10, 7, 8).expect("remaining step"), 3);
@@ -12,7 +11,6 @@ fn native_step_allocation_never_exceeds_remaining_capture_budget() {
 }
 
 /// The bootstrap scratch is sized for one record, not the staging budget.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[test]
 fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
     use super::super::native::{INITIAL_NATIVE_SCRATCH_BYTES, initial_native_scratch_bytes};
@@ -30,7 +28,6 @@ fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
 
 /// Scrollback pushes the prefix past the 64 KiB seed window, so the
 /// `OutOfSpace` retry must widen scratch.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn progressive_native_ready_stays_within_one_seed_window() {
     let local = tokio::task::LocalSet::new();
@@ -102,7 +99,6 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
 
 /// Every reader of the canonical terminal degrades, rather than aborts,
 /// while a capture holds it.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
@@ -163,7 +159,6 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
 
 /// `flush_final_gap_resync` runs outside the bootstrap guards; with a
 /// capture in flight and a queued resize it must land the cut first.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn teardown_drain_survives_an_in_flight_native_capture() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
@@ -215,7 +210,6 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     actor.terminal.borrow_mut().vt_write(b"ok");
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
@@ -248,7 +242,6 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
     let local = tokio::task::LocalSet::new();
@@ -318,7 +311,6 @@ async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
         .await;
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes() {
     const CHUNKS: usize = 200;

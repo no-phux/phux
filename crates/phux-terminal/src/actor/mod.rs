@@ -101,9 +101,7 @@ const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
 
 /// Maximum native history cuts retained per terminal (a hard memory bound;
 /// the release contract exercises eight clients).
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_HISTORY_CLIENTS: usize = 8;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_REPLAY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Max ready PTY chunks coalesced into one `vt_write` + broadcast per pump
@@ -145,9 +143,7 @@ const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20)
 /// has no `SIGCHLD` handler), and a late bridge thread is detached until its
 /// descriptor closes.
 const PANE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_CAPTURE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// The Terminal engine: one per-pane actor.
 ///
@@ -184,23 +180,15 @@ pub struct TerminalActor {
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
     /// Native checkpoint bindings keyed by `(owner, stream_id)`.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners: HashMap<NativeCursorKey, NativeCursorOwner>,
     /// Native pumps the last reflow tombstoned, owed a resync.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     reflow_tombstoned: Vec<phux_resource::ResyncTarget>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_bootstrap: Option<PendingNativeBootstrap>,
     /// Where native captures take their host bytes.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_alloc: NativeAlloc,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_bootstrap_backlog: VecDeque<NativeBootstrapRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_history: Option<PendingNativeHistory>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_history_backlog: VecDeque<PendingNativeHistory>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_publications:
         HashMap<crate::native_state::OpaqueHistoryCursor, NativePublicationGeneration>,
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,

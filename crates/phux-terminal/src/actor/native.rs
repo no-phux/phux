@@ -2,7 +2,6 @@
 //! capture, publication handoff, history paging, cursor-owner
 //! bookkeeping, and live-output replay buffering.
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
     MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeAlloc,
@@ -15,12 +14,10 @@ use super::{NativeActorRequest, TerminalActor};
 
 /// Starting width of the native checkpoint scratch buffer (one standard
 /// page); it grows to the engine's reported `required_bytes`.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) const INITIAL_NATIVE_SCRATCH_BYTES: usize = 64 * 1024;
 
 /// Scratch width for a fresh bootstrap: one page, not the 64 MiB staging
 /// budget or the engine's `u32::MAX` record bound.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
     if ceiling < INITIAL_NATIVE_SCRATCH_BYTES {
         ceiling
@@ -31,7 +28,6 @@ pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
 
 /// Widen `scratch` to `required_bytes` without aborting on allocation
 /// failure.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn grow_native_scratch(
     alloc: &NativeAlloc,
     scratch: &mut Vec<u8>,
@@ -44,7 +40,6 @@ fn grow_native_scratch(
 }
 
 impl TerminalActor {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
         let owner = req.owner;
         let stream_id = req.stream_id;
@@ -79,7 +74,6 @@ impl TerminalActor {
         self.start_native_bootstrap(req);
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn start_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
         let _timer = crate::perf::BOOTSTRAP_NATIVE_BEGIN.timer();
         let limits = req.limits;
@@ -171,7 +165,6 @@ impl TerminalActor {
         });
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[allow(
         clippy::too_many_lines,
         reason = "one cooperative step of the bootstrap state machine: each arm advances the same `pending` value to the next state and they share the buffer-growth retry, so splitting on an arm boundary would thread that scratch buffer and the pending record through a second signature for no reader benefit"
@@ -311,43 +304,22 @@ impl TerminalActor {
 
     pub(super) fn handle_native_actor_request(&mut self, req: NativeActorRequest) {
         match req {
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             NativeActorRequest::Bootstrap(req) => self.handle_native_bootstrap(req),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             NativeActorRequest::Publication(req) => self.handle_native_publication(req),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             NativeActorRequest::History(req) => self.handle_native_history(req),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             NativeActorRequest::Release(req) => self.release_native_owner(req.owner),
-            #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-            NativeActorRequest::Disabled => unreachable!("disabled native receiver"),
         }
     }
 
     pub(super) const fn native_bootstrap_pending(&self) -> bool {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            self.pending_native_bootstrap.is_some()
-        }
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        {
-            false
-        }
+        self.pending_native_bootstrap.is_some()
     }
 
     pub(super) const fn native_work_pending(&self) -> bool {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            self.pending_native_bootstrap.is_some() || self.pending_native_history.is_some()
-        }
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        {
-            false
-        }
+        self.pending_native_bootstrap.is_some() || self.pending_native_history.is_some()
     }
 
     pub(super) fn cooperative_native_step(&mut self) {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if self.pending_native_bootstrap.is_some() {
             self.step_native_bootstrap();
         } else {

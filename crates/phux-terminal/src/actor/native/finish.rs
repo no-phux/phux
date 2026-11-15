@@ -8,7 +8,6 @@
 use super::*;
 
 impl TerminalActor {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn native_bootstrap_reply(
         &self,
         req: &NativeBootstrapRequest,
@@ -73,7 +72,6 @@ impl TerminalActor {
     /// The READY publication fence: install the generation, charge its
     /// reservation, and notify every waiter, unwinding on failure so each
     /// waiter is answered exactly once.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn finish_native_bootstrap(
         &mut self,
         pending: PendingNativeBootstrap,
@@ -122,7 +120,6 @@ impl TerminalActor {
 
     /// Build every waiter's BOOTSTRAP reply up front, answering (and dropping)
     /// the ones whose reply cannot be assembled within their own limits.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn prepare_native_bootstrap_replies(
         &self,
         waiters: Vec<NativeBootstrapRequest>,
@@ -152,7 +149,6 @@ impl TerminalActor {
     /// Install `cursor`'s generation on the native manager, charging its
     /// reservation. `Ok(true)` when this call installed it, `Ok(false)` when
     /// the manager already held it (the seed is then dropped unused).
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn install_native_generation(
         &self,
         cursor: crate::native_state::OpaqueHistoryCursor,
@@ -180,7 +176,6 @@ impl TerminalActor {
     /// Whether an already-published generation for `cursor` disagrees with the
     /// capture we are about to publish. Republishing over it would hand two
     /// replicas different bytes for the same cursor.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn native_publication_conflicts(
         &self,
         cursor: crate::native_state::OpaqueHistoryCursor,
@@ -195,7 +190,6 @@ impl TerminalActor {
     /// Retain the installed generation once per waiter, bind each owner to the
     /// cursor, and ship its reply. Returns the owners still waiting on the
     /// publication (a waiter whose reply channel is gone is released again).
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn register_native_bootstrap_waiters(
         &mut self,
         prepared: Vec<(NativeBootstrapRequest, NativeBootstrapReply)>,
@@ -237,7 +231,6 @@ impl TerminalActor {
     /// Charge one waiter's retain against the generation. `rides_install` is
     /// the first waiter on a freshly installed generation: the install itself
     /// already retained it, so it takes no second retain.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn retain_native_generation(
         &self,
         cursor: &crate::native_state::OpaqueHistoryCursor,
@@ -254,7 +247,6 @@ impl TerminalActor {
 
     /// Record (or extend) the publication generation the waiting owners are
     /// parked on, so a later PUBLICATION request can serve them the replay.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn record_native_publication(
         &mut self,
         cursor: crate::native_state::OpaqueHistoryCursor,
@@ -279,7 +271,6 @@ impl TerminalActor {
         }
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn fail_native_bootstrap(
         &mut self,
         pending: PendingNativeBootstrap,
@@ -291,7 +282,6 @@ impl TerminalActor {
 
     /// Return the loaned terminal and answer this capture without starting
     /// another loan. EOF snapshots need canonical access before work resumes.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn abort_native_bootstrap(
         &mut self,
         mut pending: PendingNativeBootstrap,
@@ -315,7 +305,6 @@ impl TerminalActor {
         }
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn start_next_native_bootstrap(&mut self) {
         if self.pending_native_bootstrap.is_none()
             && let Some(next) = self.native_bootstrap_backlog.pop_front()
@@ -324,7 +313,6 @@ impl TerminalActor {
         }
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn apply_native_replay(&mut self, replay: &VecDeque<(u64, Bytes)>) {
         if replay.is_empty() {
             return;
@@ -339,7 +327,6 @@ impl TerminalActor {
         self.agent_dirty_since_detect = true;
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn buffer_native_live_output(&mut self, seq: u64, bytes: &Bytes) -> bool {
         let mut deferred = false;
         let overflow = self

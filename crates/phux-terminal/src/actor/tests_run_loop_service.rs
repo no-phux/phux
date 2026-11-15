@@ -97,7 +97,6 @@ async fn idle_subscribed_actor(
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
     use crate::actor::{NATIVE_HISTORY_TTL, NativeCursorKey, NativeCursorOwner};
@@ -257,7 +256,6 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
     let bundle = TerminalActor::new(20, 5).expect("actor");

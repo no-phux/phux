@@ -42,7 +42,6 @@ fn configured_history_bytes_decides_retained_scrollback() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn actual_server_wire_kernel_history_reaches_finish_with_zero_and_discarded_rows() {
     use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState};
@@ -72,7 +71,6 @@ async fn actual_server_wire_kernel_history_reaches_finish_with_zero_and_discarde
         .await;
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
     let bundle = TerminalActor::new(20, 5).expect("actor");
@@ -122,7 +120,6 @@ async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
     ));
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
     use phux_protocol::wire::frame::HistoryTombstoneReason;
@@ -228,14 +225,12 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
 }
 
 /// What the next native host allocation does in place of allocating.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Clone, Copy)]
 enum AllocFault {
     Fail,
     Panic,
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,
