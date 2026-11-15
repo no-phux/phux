@@ -15,6 +15,38 @@ use planning::entry;
 use supervisor::{host, relay_pair, wait_for_status};
 use write_bounds::{ScriptConn, ScriptTransport};
 
+/// A link supervisor running on the current `LocalSet`.
+struct Supervised {
+    statuses: HubLinkStatuses,
+    cancel: CancellationToken,
+    host: SatelliteHost,
+    /// Held so the supervisor does not see every relay handle dropped.
+    relay: crate::hub::relay::RelayHandle,
+    task: tokio::task::JoinHandle<()>,
+}
+
+fn supervise<T: LinkTransport + 'static>(entry: HubEntry, transport: T) -> Supervised {
+    let statuses = HubLinkStatuses::default();
+    let cancel = CancellationToken::new();
+    let host = host();
+    let (relay, relay_rx) = relay_pair(&host);
+    let task = tokio::task::spawn_local(run_link(
+        host.clone(),
+        entry,
+        transport,
+        statuses.clone(),
+        relay_rx,
+        cancel.child_token(),
+    ));
+    Supervised {
+        statuses,
+        cancel,
+        host,
+        relay,
+        task,
+    }
+}
+
 /// A satellite on any minor or patch of the hub's major is linked; only
 /// a different major is refused.
 #[test]
