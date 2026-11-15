@@ -98,7 +98,7 @@ pub enum SessionNameError {
 /// # Errors
 ///
 /// The first [`SessionNameError`] the name trips.
-pub fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
+pub(crate) fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
     if name.trim().is_empty() {
         return Err(SessionNameError::Empty);
     }
@@ -112,7 +112,7 @@ pub fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
 }
 
 /// Accept `name` only when the server would store it as given
-/// ([`check_session_name_text`]) and the selector `name` would address this
+/// (`check_session_name_text`) and the selector `name` would address this
 /// session.
 ///
 /// Every frontend that creates or renames a session (CLI, TUI, MCP, and the
