@@ -2,43 +2,12 @@
 
 use super::{
     CellWide, DocumentAnchorId, DocumentPoint, DocumentSpace, EngineDocumentAdapter,
-    EngineDocumentSelection, EngineHistoryProjection, EngineProjectionOrigin, EngineSearchMatch,
-    Formatter, GhosttyAdapter, GhosttyEngineError, GhosttyReplica, GhosttyTerminal, Point,
-    PointCoordinate, VecDeque, empty_projection, engine_history_rows, grid_ref_graphemes,
-    history_window, rewrap_history_rows, to_ghostty_point, to_ghostty_space, trim_projection_rows,
+    EngineDocumentSelection, EngineSearchMatch, Formatter, GhosttyAdapter, GhosttyEngineError,
+    GhosttyReplica, GhosttyTerminal, Point, PointCoordinate, VecDeque, grid_ref_graphemes,
+    to_ghostty_point, to_ghostty_space,
 };
 
 impl EngineDocumentAdapter for GhosttyAdapter {
-    fn project_history(
-        &mut self,
-        replica: &mut Self::Replica,
-        width: u16,
-        origin: EngineProjectionOrigin,
-        max_rows: usize,
-    ) -> Result<EngineHistoryProjection, Self::Error> {
-        let terminal = replica
-            .terminal()
-            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
-        let width = width.max(2);
-        if max_rows == 0 {
-            return Ok(empty_projection(width, false));
-        }
-        let history_rows = terminal.scrollback_rows()?;
-        let physical_limit = max_rows.saturating_add(1);
-        let Some(window) = history_window(replica, terminal, origin, history_rows, physical_limit)?
-        else {
-            return Ok(empty_projection(width, true));
-        };
-        let source = engine_history_rows(terminal, window.start, window.end)?;
-        let mut rows = rewrap_history_rows(source, width);
-        let trimmed_older = trim_projection_rows(&mut rows, max_rows, window.tail);
-        Ok(EngineHistoryProjection {
-            width,
-            rows,
-            has_older: window.start > 0 || trimmed_older,
-        })
-    }
-
     fn track_document_anchor(
         &mut self,
         replica: &mut Self::Replica,

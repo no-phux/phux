@@ -57,7 +57,7 @@ pub const COLOR_KIND_DEFAULT: u8 = 0;
 /// `CellMetadata::foreground_kind`: a 256-color palette index.
 pub const COLOR_KIND_PALETTE: u8 = 1;
 /// `CellMetadata::foreground_kind`: a direct RGB color.
-pub const COLOR_KIND_RGB: u8 = 2;
+pub(crate) const COLOR_KIND_RGB: u8 = 2;
 
 /// One viewport cell, flattened: text and hyperlink URI as spans into the
 /// owning [`GridBuffer`]'s UTF-8 arena, every color palette-resolved to RGB.
@@ -264,8 +264,9 @@ impl GridBuffer {
     }
 
     /// The text of fringe cell `col`, as a UTF-8 slice of the arena.
+    #[cfg(test)]
     #[must_use]
-    pub fn fringe_text(&self, col: usize) -> &[u8] {
+    pub(crate) fn fringe_text(&self, col: usize) -> &[u8] {
         self.fringe.get(col).map_or(&[], |cell| {
             let start = cell.utf8_offset as usize;
             &self.utf8[start..start + usize::from(cell.utf8_len)]
@@ -400,7 +401,7 @@ impl GridProjector {
     /// (history plus active area) into [`GridBuffer::fringe`]. Pass the row
     /// just below a scrolled-back viewport. A row past the screen leaves the
     /// fringe empty rather than failing the projection.
-    pub fn project_with_fringe(
+    pub(crate) fn project_with_fringe(
         &mut self,
         terminal: &Terminal<'static, '_>,
         generation: TerminalGeneration,

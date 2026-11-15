@@ -99,13 +99,13 @@ pub enum InboundDelivery {
 /// The inbound queue's ceiling. At it the driver stops reading, so a
 /// consumer that falls behind backs the socket up to the server instead
 /// of growing the queue or failing the connection.
-pub const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
+pub(super) const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
 /// The inbound queue's byte ceiling; see [`MAX_QUEUED_INBOUND_FRAMES`].
 ///
 /// It counts frame bytes. A queued frame is a view of the driver's read
 /// buffer, not a copy, so it also pins that read's slab (64 KiB, or one
 /// larger frame) until the consumer drains it.
-pub const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
 
 impl Default for ControlOptions {
     fn default() -> Self {

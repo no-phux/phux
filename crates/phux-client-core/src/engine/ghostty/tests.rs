@@ -5,7 +5,6 @@ mod projection;
 mod synthesized;
 
 use super::document::{NeedleScan, history_point, history_row_wrapped_at, scan_history_for_needle};
-use super::projection::ProjectedCell;
 use super::snapshot::{EncodedSnapshot, SnapshotCaptureLimits};
 use super::*;
 

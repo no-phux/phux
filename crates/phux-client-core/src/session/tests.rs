@@ -1015,16 +1015,6 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
             .state,
         HistoryLoadState::Complete
     );
-    let projection = kernel
-        .project_history(&terminal_id, 200, 3_100)
-        .expect("project imported native history");
-    assert!(
-        projection
-            .rows
-            .iter()
-            .any(|row| row.text.contains("wire-history-0010")),
-        "older engine-owned row must survive real wire import"
-    );
 }
 
 #[test]

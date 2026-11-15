@@ -1,7 +1,7 @@
 //! Event application, damage accounting, and publication catch-up.
 
 #[cfg(feature = "engine")]
-use super::{Arc, EngineError, FrameKey, GridFrame, ViewPresentation};
+use super::{Arc, FrameKey, GridFrame};
 use super::{
     EngineApplyError, EngineEvent, EngineOutcome, InputBlockReason, InputEligibility,
     KernelDamageKind, KernelEffect, Owner, ResourceId, apply_event,
@@ -173,27 +173,6 @@ impl Owner {
             Err(error) => tracing::warn!(?key, %error, "grid catch-up failed"),
         }
         self.publication.hand_off(key)
-    }
-
-    /// The active presentation's replica facts and frame, caught up first
-    /// when its projection was deferred, read in this one turn so the frame
-    /// is exactly the replica's state. Marks the frame read, as an acquire
-    /// does.
-    #[cfg(feature = "engine")]
-    pub(super) fn present(&mut self, id: &ResourceId) -> Result<ViewPresentation, EngineError> {
-        let key = self
-            .active_view
-            .map_or_else(|| FrameKey::Default(id.clone()), FrameKey::View);
-        crate::perf::ACQUIRED.incr();
-        if self.publication.stale(&key) {
-            let _timed = crate::perf::CATCH_UP_EXECUTE.timer();
-            self.render_and_publish(id)?;
-            crate::perf::CAUGHT_UP.incr();
-        }
-        Ok(ViewPresentation {
-            replica: self.replica_info(id)?,
-            frame: self.publication.hand_off(&key),
-        })
     }
 
     /// Record which terminals gained or lost a projection in effect order,

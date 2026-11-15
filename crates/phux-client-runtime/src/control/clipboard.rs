@@ -12,7 +12,7 @@ impl ControlPlane {
     /// Whether the server takes `CLIPBOARD_REPLY`. A host that sees false
     /// leaves reads unanswered and never asks its user.
     #[must_use]
-    pub fn clipboard_replies_supported(&self) -> bool {
+    pub(crate) fn clipboard_replies_supported(&self) -> bool {
         self.server
             .as_ref()
             .is_some_and(|server| server.has_ext(ServerFeatureExt::ClipboardRead))

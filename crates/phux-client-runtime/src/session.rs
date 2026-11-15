@@ -86,7 +86,7 @@ mod reply;
 mod requests;
 
 pub use error::SessionError;
-pub use reply::{Answer, Refusal, Reply, error_code_label, unexpected_reply};
+pub use reply::{Answer, Refusal, Reply, unexpected_reply};
 pub use requests::METADATA_WINDOW;
 
 use framed::decode_frame;

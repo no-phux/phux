@@ -11,14 +11,14 @@ use super::facts::{PaneFacts, Scope, in_scope};
 use super::plan::Verdict;
 
 /// The Jev model alias every request names.
-pub const JEV_MODEL: &str = "jev-latest";
+pub(crate) const JEV_MODEL: &str = "jev-latest";
 
 /// Most questions one Jev request carries.
-pub const QUESTIONS_PER_REQUEST: usize = 40;
+pub(crate) const QUESTIONS_PER_REQUEST: usize = 40;
 
 /// The Jev request bodies that ask where each in-scope terminal belongs,
-/// [`QUESTIONS_PER_REQUEST`] questions each. Question ids are `p<index>`
-/// into [`in_scope`]'s order.
+/// `QUESTIONS_PER_REQUEST` questions each. Question ids are `p<index>`
+/// into `in_scope`'s order.
 #[must_use]
 pub fn jev_request(panes: &[PaneFacts], scope: Scope, candidates: &Candidates) -> Vec<Value> {
     let scoped = in_scope(panes, scope);

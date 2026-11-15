@@ -12,8 +12,8 @@ pub mod mouse;
 pub mod rasterize;
 
 pub use layout::{
-    PaneLayout, compute_layout, compute_layout_in, pane_rects, pane_rects_in,
-    pane_rects_proportional_in, split_content_span_at,
+    PaneLayout, compute_layout_in, pane_rects, pane_rects_in, pane_rects_proportional_in,
+    split_content_span_at,
 };
 pub use mouse::{RouteDecision, route_mouse_event};
 pub use rasterize::{DividerCell, DividerHit};
@@ -28,6 +28,7 @@ pub use rasterize::{DividerCell, DividerHit};
 mod tests {
     use super::*;
     use crate::layout::{LayoutNode, LayoutState, Rect, SplitDir, split_at};
+    use crate::multi_pane::layout::compute_layout;
     use phux_protocol::ResourceId;
     use phux_protocol::input::key::ModSet;
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -94,26 +95,6 @@ mod tests {
             assert!(cell.x >= 20, "divider escaped into the sidebar: {cell:?}");
             assert!(cell.x < 80, "divider escaped the screen: {cell:?}");
         }
-    }
-
-    #[test]
-    fn compute_layout_in_full_viewport_matches_compute_layout() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Vertical, 0.5).unwrap();
-        let state = LayoutState {
-            tree: Some(tree),
-            focus: Some(t(1)),
-        };
-        let full = Rect {
-            x: 0,
-            y: 0,
-            w: 80,
-            h: 24,
-        };
-        assert_eq!(
-            compute_layout_in(&state, full, (80, 24)),
-            compute_layout(&state, (80, 24)),
-            "content == full viewport is the identity case"
-        );
     }
 
     #[test]

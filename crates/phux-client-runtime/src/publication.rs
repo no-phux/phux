@@ -63,7 +63,7 @@ pub enum Published {
 impl Published {
     /// The grid, when this slot publishes one.
     #[must_use]
-    pub fn into_grid(self) -> Option<Arc<GridFrame>> {
+    pub(crate) fn into_grid(self) -> Option<Arc<GridFrame>> {
         match self {
             Self::Grid(frame) => Some(frame),
             Self::Document(_) => None,
@@ -72,7 +72,7 @@ impl Published {
 
     /// The document, when this slot publishes one.
     #[must_use]
-    pub fn into_document(self) -> Option<Arc<DocumentPublication>> {
+    pub(crate) fn into_document(self) -> Option<Arc<DocumentPublication>> {
         match self {
             Self::Document(document) => Some(document),
             Self::Grid(_) => None,
@@ -394,12 +394,6 @@ impl Publication {
     /// is unread; a skip leaves the slot stale for the next acquire.
     pub(crate) fn defer(&self, key: &FrameKey) -> bool {
         self.slot_arc(key).is_some_and(|slot| slot.defer())
-    }
-
-    /// Whether the owner deferred `key`'s projection past its current frame.
-    pub(crate) fn stale(&self, key: &FrameKey) -> bool {
-        self.slot_arc(key)
-            .is_some_and(|slot| slot.stale.load(Ordering::SeqCst))
     }
 
     /// Hand `key`'s current frame to the consumer whose acquire asked for a

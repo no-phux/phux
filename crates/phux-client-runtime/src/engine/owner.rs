@@ -17,16 +17,16 @@ use super::{
     EngineDocumentPoint, EngineDocumentSelection, EngineError, FrameKey, GhosttyAdapter,
     GhosttyReplica, GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode,
     Publication, ReplicaInfo, ReplicaPrompt, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch,
-    SearchResults, SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
+    SearchResults, SelectionGestureEvent, SelectionGestureResult,
 };
 #[cfg(feature = "engine")]
 use libghostty_vt::point::{Coordinate as PointCoordinate, Point, Space as PointSpace};
 #[cfg(feature = "engine")]
+use libghostty_vt::selection::Selection;
+#[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
     Behavior, Behaviors, DragEvent, Geometry, Gesture, PressEvent,
 };
-#[cfg(feature = "engine")]
-use libghostty_vt::{fmt::Formatter, selection::Selection};
 
 #[cfg(feature = "engine")]
 mod document;

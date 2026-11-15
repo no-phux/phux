@@ -37,11 +37,7 @@ impl<R> TerminalState<R> {
             .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
         let replica_key = staging.key.clone();
         let pending_effects = std::mem::take(&mut staging.pending_effects);
-        let mut history = HistoryCache::new(
-            history_config,
-            staging.history_cursor.take(),
-            staging.geometry.cols,
-        );
+        let mut history = HistoryCache::new(history_config, staging.history_cursor.take());
         let initial_history_cursor = history.begin_fetch();
         let replacement = Replica {
             key: staging.key,

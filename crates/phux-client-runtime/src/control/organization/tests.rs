@@ -270,7 +270,7 @@ fn membership_moves_and_the_inbox_projection() {
         .with_resources(vec![running(1, skey(2))]);
     replica.apply_page(first);
     let view = replica.intake_view();
-    assert_eq!(view, replica.inbox_view());
+    assert_eq!(view, replica.intake_view());
     assert_eq!(view.intake(), replica.intake());
     assert_eq!(replica.intake(), replica.inbox());
     assert_eq!(

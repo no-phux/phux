@@ -67,7 +67,7 @@ impl ControlPlane {
 
     /// Retain one transport read's frames whole.
     ///
-    /// The driver stops reading while [`Self::has_inbound_room`] is false,
+    /// The driver stops reading while `Self::has_inbound_room` is false,
     /// so the ceilings are backpressure, not a failure: a batch read while
     /// there was room always lands, and the queue stays within the
     /// ceilings plus one read. Queueing past a full queue is a
@@ -87,7 +87,7 @@ impl ControlPlane {
 
     /// Whether the driver may read another batch for the consumer.
     #[must_use]
-    pub const fn has_inbound_room(&self) -> bool {
+    pub(crate) const fn has_inbound_room(&self) -> bool {
         self.inbound.len() < super::MAX_QUEUED_INBOUND_FRAMES
             && self.inbound_bytes < super::MAX_QUEUED_INBOUND_BYTES
     }
@@ -101,7 +101,7 @@ impl ControlPlane {
 
     /// Whether any retained inbound frame is waiting.
     #[must_use]
-    pub const fn has_inbound(&self) -> bool {
+    pub(crate) const fn has_inbound(&self) -> bool {
         !self.inbound.is_empty()
     }
 

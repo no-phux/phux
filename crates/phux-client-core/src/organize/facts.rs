@@ -131,7 +131,7 @@ impl Scope {
 
 /// The terminals `scope` covers, in input order.
 #[must_use]
-pub fn in_scope(panes: &[PaneFacts], scope: Scope) -> Vec<&PaneFacts> {
+pub(crate) fn in_scope(panes: &[PaneFacts], scope: Scope) -> Vec<&PaneFacts> {
     panes.iter().filter(|pane| scope.covers(pane)).collect()
 }
 

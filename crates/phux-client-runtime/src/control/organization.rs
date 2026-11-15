@@ -3,10 +3,10 @@
 //! §04-§07).
 //!
 //! [`OrganizationReplica`] is sans-IO. It is seeded from paged
-//! `GET_ORGANIZATION` replies ([`OrganizationReplica::begin_seed`],
-//! [`OrganizationReplica::apply_page`]), then kept current by the
+//! `GET_ORGANIZATION` replies (`OrganizationReplica::begin_seed`,
+//! `OrganizationReplica::apply_page`), then kept current by the
 //! organization events of the journal, applied in journal order
-//! ([`OrganizationReplica::apply_event`]). Events that arrive while a seed is
+//! (`OrganizationReplica::apply_event`). Events that arrive while a seed is
 //! in flight are buffered and replayed past the seed's cut
 //! (`OrganizationPage::journal_seq`). A `journal_gap`, or an event that names
 //! a record the replica cannot complete from the event alone, asks the
@@ -34,7 +34,7 @@ mod journal;
 mod seed;
 
 /// Records requested per `GET_ORGANIZATION` page.
-pub const ORG_PAGE_SIZE: u32 = 512;
+pub(crate) const ORG_PAGE_SIZE: u32 = 512;
 
 /// Most journal events buffered while a seed is in flight; past it the seed
 /// is restarted rather than growing without bound.
@@ -241,12 +241,6 @@ impl OrganizationReplica {
         Some((key, value.revision, document, binding))
     }
 
-    /// Legacy alias for [`Self::intake_view`].
-    #[must_use]
-    pub fn inbox_view(&self) -> InboxView {
-        self.intake_view()
-    }
-
     /// The owner-local Intake: designated session and imported groups with members.
     #[must_use]
     pub fn intake_view(&self) -> IntakeView {
@@ -275,7 +269,7 @@ impl OrganizationReplica {
 
     /// Fill session live handles from a `GET_STATE` or `ATTACHED` snapshot,
     /// whose sessions carry their keys.
-    pub fn observe_snapshot_keys(
+    pub(crate) fn observe_snapshot_keys(
         &mut self,
         pairs: impl IntoIterator<Item = (SessionKey, SessionId)>,
     ) {
@@ -289,7 +283,7 @@ impl OrganizationReplica {
 
 /// Whether `event` is one the organization replica follows.
 #[must_use]
-pub const fn is_organization_event(event: &AgentEvent) -> bool {
+pub(crate) const fn is_organization_event(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::SessionCreated { .. }

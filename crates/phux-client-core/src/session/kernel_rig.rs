@@ -12,8 +12,8 @@ use super::{
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
-    EngineDocumentAdapter, EngineDocumentSelection, EngineEffectBuffer, EngineHistoryProjection,
-    EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch, HistoryApplyOutcome,
+    EngineDocumentAdapter, EngineDocumentSelection, EngineEffectBuffer, EngineSearchMatch,
+    HistoryApplyOutcome,
 };
 use crate::history::{DocumentAnchorId, HistoryCacheConfig, HistoryLoadState, ViewportAnchor};
 
@@ -105,10 +105,6 @@ pub(super) enum RigEvent {
         stream: u8,
         generation: u8,
         last_valid_seq: u64,
-    },
-    Project {
-        width: u16,
-        max_rows: usize,
     },
     Track {
         x: u16,
@@ -316,32 +312,6 @@ impl EngineAdapter for RigAdapter {
 }
 
 impl EngineDocumentAdapter for RigAdapter {
-    fn project_history(
-        &mut self,
-        replica: &mut Self::Replica,
-        width: u16,
-        _origin: EngineProjectionOrigin,
-        max_rows: usize,
-    ) -> Result<EngineHistoryProjection, Self::Error> {
-        let rows = replica
-            .history
-            .iter()
-            .rev()
-            .take(max_rows.min(replica.history_row_budget))
-            .rev()
-            .map(|payload| EngineProjectionRow {
-                text: String::from_utf8_lossy(payload).into_owned(),
-                soft_wrapped: false,
-                page: None,
-            })
-            .collect();
-        Ok(EngineHistoryProjection {
-            width,
-            rows,
-            has_older: false,
-        })
-    }
-
     fn track_document_anchor(
         &mut self,
         replica: &mut Self::Replica,
@@ -418,7 +388,6 @@ pub(super) struct HistoryObservation {
     pub(super) materialized_rows: usize,
     pub(super) unread_rows: u64,
     pub(super) viewport: ViewportAnchor,
-    pub(super) projection_width: u16,
     pub(super) next_cursor: Option<Vec<u8>>,
     pub(super) next_page_seq: Option<u64>,
 }
@@ -676,10 +645,6 @@ impl KernelRig {
                     last_valid_seq: *last_valid_seq,
                 })
             }
-            RigEvent::Project { width, max_rows } => self
-                .kernel
-                .project_history(&self.terminal_id, *width, *max_rows)
-                .is_ok(),
             RigEvent::Track { x, y } => {
                 let tracked = self.kernel.track_document_anchor(
                     &self.terminal_id,
@@ -730,7 +695,6 @@ impl KernelRig {
             RigEvent::InvalidateAnchors => {
                 if let Some(engine) = self.kernel.published_engine_mut(&self.terminal_id) {
                     engine.anchors.clear();
-                    let _ = self.kernel.project_history(&self.terminal_id, 80, 8);
                     true
                 } else {
                     false
@@ -893,7 +857,6 @@ impl KernelRig {
                     materialized_rows: status.materialized_rows,
                     unread_rows: status.unread_rows,
                     viewport: published.history().viewport_anchor(),
-                    projection_width: published.history().projection_width(),
                     next_cursor: status
                         .next_cursor
                         .as_ref()

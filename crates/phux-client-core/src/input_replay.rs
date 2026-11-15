@@ -82,9 +82,9 @@ const SERVER_ID_LEN: usize = 16;
 const MAX_DEFERRED_REPORTS: usize = 64;
 
 /// Maximum number of input atoms retained across acknowledged operations.
-pub const INPUT_JOURNAL_MAX_EVENTS: usize = 4096;
+pub(crate) const INPUT_JOURNAL_MAX_EVENTS: usize = 4096;
 /// Maximum estimated in-memory bytes retained across acknowledged operations.
-pub const INPUT_JOURNAL_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const INPUT_JOURNAL_MAX_BYTES: usize = 1024 * 1024;
 
 /// One journaled acknowledged operation. The operation id and payload never
 /// change; only connection-local bookkeeping (`attempts`, the in-flight
@@ -225,7 +225,7 @@ impl InputReplayJournal {
     /// - incarnation changed since an operation's first attempt — that
     ///   operation strands the same way (ADR-0053 point 5);
     /// - horizon expired — strands;
-    /// - otherwise the operation stays queued for [`Self::next_frame_at`],
+    /// - otherwise the operation stays queued for `Self::next_frame_at`,
     ///   which will resend it under its original id. The server's dedupe
     ///   cache is what makes that resend idempotent — including the
     ///   session-switch case, where the first attempt's reply was already

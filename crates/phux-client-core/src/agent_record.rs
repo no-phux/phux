@@ -103,7 +103,7 @@ pub struct AgentRecordReading {
     /// How `state` was read.
     pub state_reading: StateReading,
     /// The declared attention and how it was read; `None` when the record
-    /// declared no `attention` (derive it with [`derived_attention`]).
+    /// declared no `attention` (derive it with `derived_attention`).
     pub attention: Option<(AgentAttention, AttentionReading)>,
 }
 
@@ -151,7 +151,7 @@ pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecordReading> {
 /// The conventional attention for an undeclared `attention` (L3 §3.7):
 /// `blocked` is high, `working` normal, `done`/`unknown` low, `idle` none.
 #[must_use]
-pub const fn derived_attention(state: AgentState) -> AgentAttention {
+pub(crate) const fn derived_attention(state: AgentState) -> AgentAttention {
     match state {
         AgentState::Blocked => AgentAttention::High,
         AgentState::Working => AgentAttention::Normal,

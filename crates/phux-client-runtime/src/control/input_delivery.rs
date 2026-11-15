@@ -57,7 +57,7 @@ impl ControlPlane {
     /// horizon; `None` while none is queued. The driver sleeps until then
     /// and calls [`Self::expire_inputs`].
     #[must_use]
-    pub fn next_input_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_input_deadline(&self) -> Option<Instant> {
         self.input_deadlines.values().min().copied()
     }
 
@@ -86,7 +86,7 @@ impl ControlPlane {
 
     /// Resolve every acknowledged input past the retry horizon. Returns
     /// whether any resolved.
-    pub fn expire_inputs(&mut self) -> bool {
+    pub(crate) fn expire_inputs(&mut self) -> bool {
         let before = self.events.len();
         let now_ms = self.now_ms();
         let mut request_id = self.request_seq;

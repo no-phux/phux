@@ -339,7 +339,7 @@ impl Topology {
 
     /// The first live pane of session `session_id`, in the server's order.
     #[must_use]
-    pub fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
+    pub(crate) fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
         self.panes
             .iter()
             .find(|pane| pane.session_id == session_id)
