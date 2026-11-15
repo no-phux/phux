@@ -311,11 +311,14 @@ impl FleetSubscription {
     }
 }
 
-fn event_lifecycle<'a>(
-    event: &'a AgentEvent,
+/// `(terminal, spawned)` when `event` spawns or closes a Terminal.
+const fn event_lifecycle<'a>(
+    event: &AgentEvent,
     terminal: Option<&'a ResourceId>,
 ) -> Option<(&'a ResourceId, bool)> {
-    let terminal = terminal?;
+    let Some(terminal) = terminal else {
+        return None;
+    };
     match event {
         AgentEvent::ResourceSpawned {
             kind: ResourceKind::Terminal,
@@ -327,20 +330,10 @@ fn event_lifecycle<'a>(
 }
 
 const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
-    let FrameKind::Event {
-        terminal: Some(terminal),
-        event,
-        ..
-    } = frame
-    else {
-        return None;
-    };
-    match event {
-        AgentEvent::ResourceSpawned {
-            kind: ResourceKind::Terminal,
-            ..
-        } => Some((terminal, true)),
-        AgentEvent::ResourceClosed { .. } => Some((terminal, false)),
+    match frame {
+        FrameKind::Event {
+            terminal, event, ..
+        } => event_lifecycle(event, terminal.as_ref()),
         _ => None,
     }
 }
