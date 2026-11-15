@@ -1,11 +1,7 @@
-//! `MIRROR` (`docs/resource-kinds.md#standing-mirrors`), the `PixelSurface`
-//! app's: list a host's capture targets and start or stop a mirror of one on
-//! demand, in the same `mirror-<target>` session a `[[mirrors]]` entry gets;
-//! the standing-mirror supervisor runs it. Linux runs the
-//! mirror here; on macOS Rune's runner (`phux agent surface standing`)
-//! reports the targets and runs the mirrors, so without it both are
-//! refused. On-demand mirrors last until stopped or the server restarts or
-//! upgrades.
+//! `MIRROR` (`docs/resource-kinds.md#standing-mirrors`): list a host's
+//! capture targets and start or stop an on-demand mirror in a
+//! `mirror-<target>` session. On macOS Rune's runner reports the targets and
+//! runs the mirrors, so without it both are refused.
 
 use std::time::{Duration, Instant};
 

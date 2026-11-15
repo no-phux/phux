@@ -1,16 +1,8 @@
 //! The dispatch guard as a paired client meets it on the wire
-//! (`docs/remote.md#who-can-do-what`).
-//!
-//! Each test runs the real client loop (`handle_client`) over a scripted
-//! transport, with a workload identity stamped the way the QUIC acceptor
-//! stamps it. The credential the transport cached always claims `*@global`;
-//! every test passes only if the grant came from the engine instead.
-//!
-//! Two engines mint the grant. The `paired` [`ScopedPolicy`] reads a real
-//! registry file, which may not hold `group:` or `terminal:` selectors
-//! (§5.1: session and Terminal ids restart with the server). Group and
-//! Terminal grants, which a future HELLO-requested attenuation carries, are
-//! minted by a fixed engine so the guard's handling of them stays covered.
+//! (`docs/remote.md#who-can-do-what`). The transport's cached credential
+//! always claims `*@global`, so a test passes only if the engine minted the
+//! grant. `group:`/`terminal:` grants, which a registry may not hold, are
+//! minted by a fixed engine so the guard's handling stays covered.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

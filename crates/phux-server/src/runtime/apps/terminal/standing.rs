@@ -1,24 +1,12 @@
-//! Standing mirrors (`[[mirrors]]`, `docs/resource-kinds.md#standing-mirrors`).
+//! Standing mirrors (`[[mirrors]]`, `docs/resource-kinds.md#standing-mirrors`)
+//! and producers (`[[producers]]`, `docs/applications.md#standing-producers`).
 //!
-//! One task on the server `LocalSet` keeps a `phux agent surface mirror`
-//! running for each entry, in a pane of its own ephemeral session named by
-//! [`MirrorConfigEntry::session_name`]. The pane is the surface's parent, so
-//! the surface is listed and granted like any other mirror's. A hot upgrade
-//! carries the pane and the mirror re-adopts its surface by publishing; the
-//! resumed image's task finds the session by name and leaves it. A pane that
-//! exits is replaced after a backoff; a cold start recreates every one. An
-//! adopted `phux` mirror or producer whose binary was replaced since it
-//! started (`phux update`) is restarted on the installed one, so new input
-//! intents reach it; it re-adopts the same surface. A
-//! config reload re-reads the entries: a removed entry's session is closed,
-//! a changed one restarted. On macOS the server's children cannot hold
-//! Screen Recording access (TCC), so the pane only holds the session and
-//! Rune runs the mirror into it (`phux agent surface standing`), which
-//! makes the TCC prompts Rune's.
-//!
-//! `[[producers]]` (`docs/applications.md#standing-producers`) rides the
-//! same loop: each entry's command runs in a `producer-<name>` session and
-//! is restarted, adopted and reloaded exactly like a mirror.
+//! One task keeps each entry's command running in a pane of its own
+//! ephemeral session: an exited pane is replaced after a backoff, a hot
+//! upgrade's carried pane is adopted, one whose binary was replaced since it
+//! started is restarted, and a config reload closes removed entries and
+//! restarts changed ones. On macOS the pane only holds the session and Rune
+//! runs the mirror into it, so the TCC prompts are Rune's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

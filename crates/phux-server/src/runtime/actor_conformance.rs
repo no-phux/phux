@@ -1,11 +1,5 @@
-//! Actors over the real client loop (ADR-0163): a delegated agent is
-//! refused what its grant lacks, a human's takeover from an agent always
-//! wins and the agent hears about it, an agent never seizes a human's
-//! lease, and a minted credential's own socket admits connections as it.
-//!
-//! The connection cases run `handle_client` over a scripted transport, as
-//! the revocation conformance sweep does; the socket case dials a real
-//! delegated socket.
+//! Actors over the real client loop (ADR-0163): delegated-agent refusals,
+//! human-over-agent lease precedence, and a minted credential's own socket.
 
 use std::sync::Arc;
 

@@ -1,14 +1,7 @@
-//! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`,
-//! "revoked/expired authority ... while live").
-//!
-//! Every case runs the real client loop (`handle_client`) over a scripted
-//! transport. The workload's grant is minted by the `paired` engine from a
-//! real registry file (or, for expiry, by an engine whose grant lapses in
-//! well under a second). Each case withdraws the grant in the middle of
-//! something and checks the §7 contract: after the revocation nothing but
-//! `ERROR { PERMISSION_DENIED }` and `DETACHED { reason }` reaches the
-//! connection, nothing it sent or queued runs, what it held is released, and
-//! its Terminals, and every other connection, carry on.
+//! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`).
+//! Each case withdraws the grant mid-operation and checks §7: only
+//! `ERROR { PERMISSION_DENIED }` and `DETACHED { reason }` follow, nothing
+//! queued runs, holdings are released, and other connections carry on.
 
 use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;

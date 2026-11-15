@@ -1,11 +1,7 @@
-//! The audit log of viewers' document input (`SEND_DOCUMENT_INPUT`): who
-//! sent what kind of intent to which document, and what became of it. Text
-//! is never logged, only its length.
-//!
-//! Typing would write a line per keystroke, so lines group into bursts: a
-//! burst is one sender's intents to one resource with one outcome, until
-//! [`QUIET`] passes without another. Its first intent is logged at once; a
-//! summary of the rest follows when it ends.
+//! The audit log of viewers' document input (`SEND_DOCUMENT_INPUT`). Text is
+//! never logged, only its length. Typing is grouped into bursts (one sender,
+//! resource, and outcome until [`QUIET`]): the first intent is logged at
+//! once, a summary of the rest when the burst ends.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};

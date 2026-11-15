@@ -1,20 +1,9 @@
-//! `PRIVACY_STATUS`: the macOS privacy grants this server process holds.
-//!
-//! Only the server can answer: macOS attributes every pane's programs to it
-//! (or to the app responsible for it), so a CLI probing its own grants
-//! would report the terminal's. Every probe is a read that never prompts:
-//!
-//! - Full Disk Access: open the system `TCC.db` read-only (the per-user one
-//!   is gone on newer macOS); a refusal means denied.
-//! - Screen Recording: `CGPreflightScreenCaptureAccess`.
-//! - Accessibility: `AXIsProcessTrusted`.
-//!
-//! When one of those says no, TCC's own answer (`TCCAccessPreflight`)
-//! decides, which also tells "never asked" from "denied". The server lives
-//! for days: `AXIsProcessTrusted` caches its first answer until a
-//! distributed notification only a main run loop receives, which a daemon
-//! never runs, so on its own it never sees a grant given later (#2280).
-//! Off macOS every status is `unknown`.
+//! `PRIVACY_STATUS`: the macOS privacy grants this server process holds; only
+//! the server can answer, since macOS charges every pane's programs to it.
+//! Probes never prompt: `TCC.db` for Full Disk Access,
+//! `CGPreflightScreenCaptureAccess`, `AXIsProcessTrusted`; on a "no", TCC's
+//! own `TCCAccessPreflight` decides (`AXIsProcessTrusted` caches its first
+//! answer in a daemon, #2280). Off macOS every status is `unknown`.
 
 use std::path::{Path, PathBuf};
 

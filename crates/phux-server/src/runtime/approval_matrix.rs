@@ -1,11 +1,6 @@
 //! Server-held approvals as clients meet them on the wire (ADR-0128,
-//! `docs/agents.md#safety`).
-//!
-//! Each test runs real client loops (`handle_client`) over transports the
-//! test feeds as it goes, so a decision can name the id the server minted.
-//! An owner connection subscribed to every event observes the journal: it
-//! sees `approval_requested` and `approval_decided` with the actor each
-//! carries, exactly as `phux watch` would.
+//! `docs/agents.md#safety`). An owner connection subscribed to every event
+//! observes the journal, as `phux watch` would.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

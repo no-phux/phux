@@ -1,12 +1,7 @@
-//! Acknowledged-input bookkeeping for `APPLY_INPUT` (ADR-0053): per-Terminal
-//! admission, the dedupe record, and the completion waiter.
-//!
-//! Admission is keyed by Terminal and the completion wait runs on its own
-//! thread (phux-w7z2.58): serializing per server made unrelated panes collide
-//! and let one pane whose child stopped reading stdin freeze every keystroke
-//! for the full completion timeout. Per Terminal, at most one operation is
-//! unresolved, from admission until its completion or timeout is finalized;
-//! that keeps a same-id retry from writing twice.
+//! Acknowledged-input bookkeeping for `APPLY_INPUT` (ADR-0053). Admission is
+//! per Terminal and the completion wait has its own thread (phux-w7z2.58), so
+//! one pane whose child stopped reading cannot freeze others; at most one
+//! operation per Terminal is unresolved, so a same-id retry never writes twice.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -267,18 +262,13 @@ pub(super) struct CompletionWaiterHandle {
 }
 
 impl CompletionWaiterHandle {
-    /// Register an operation that is about to be handed off.
-    ///
-    /// Must complete **before** the request reaches the pane's mailbox:
-    /// registration and the writer's completion share one queue, so
-    /// registering first guarantees a fast write never reports against a
-    /// ticket the waiter has not seen (which would strand the caller until
-    /// the timeout).
+    /// Register an operation about to be handed off. Must complete **before**
+    /// the request reaches the pane's mailbox, so a fast write never reports
+    /// against a ticket the waiter has not seen.
     ///
     /// # Errors
     ///
-    /// Returns the operation back if the waiter thread is gone (shutdown); the
-    /// caller answers it directly.
+    /// Returns the operation if the waiter thread is gone (shutdown).
     pub(super) fn register(&self, pending: PendingCompletion) -> Result<(), PendingCompletion> {
         self.tx
             .send(WaiterMessage::Registered(Box::new(pending)))

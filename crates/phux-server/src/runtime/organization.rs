@@ -1,17 +1,9 @@
-//! Organization commands (ADR-0161, `docs/organization.md`): every
-//! mutating one commits through [`ServerState::commit_command_from`] and
-//! answers `Ok` with a [`Committed`] receipt, `Accepted` when execution
-//! effects follow as events, or `Refused` with a typed reason. Reads
-//! (`GET_ORGANIZATION`, `ARRANGEMENT_GET`) are answered from the records.
-//!
-//! Only these commands ever receive `Refused` or `Accepted` (R08).
-//!
-//! Effects run after the commit, off its lock: a launch starts the
-//! Terminal's engine and reports its activation; a termination ends a live
-//! engine through the same teardown as a legacy kill (graceful: hangup, the
-//! grace, then kill; forced: the process group is killed at once), or
-//! signals a lost process group after rechecking its identity. Both report
-//! the real outcome as `ActivationChanged`.
+//! Organization commands (ADR-0161, `docs/organization.md`). Mutations
+//! commit through [`ServerState::commit_command_from`] and answer `Ok` with a
+//! [`Committed`] receipt, `Accepted` when effects follow as events, or
+//! `Refused` (only these commands ever get `Refused` or `Accepted`, R08).
+//! Effects run after the commit, off its lock, and report real outcomes as
+//! `ActivationChanged`.
 
 use std::time::Duration;
 

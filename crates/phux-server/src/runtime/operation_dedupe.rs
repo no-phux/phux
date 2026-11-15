@@ -1,16 +1,10 @@
 //! The shared operation dedupe record (ADR-0053, ADR-0126).
 //!
-//! Operations that must be safe to repeat carry a client-drawn 16-byte id,
-//! bound here to a digest of the request and then to its outcome: a same-id,
-//! same-payload repeat answers the original outcome, and a different payload
-//! is refused. Bounds: ten minutes from admission, at most 65,536 live ids,
-//! scoped to this server incarnation. A full store refuses new ids rather
-//! than evicting live ones, so one verb's storm can never make another's
-//! retry run twice. Ids are namespaced per verb by `OperationDomain`.
-//!
-//! The store is shared across threads (runtime, input lane, completion
-//! waiter), and a waiter is a callback so each verb joins with its own reply
-//! type.
+//! A client-drawn 16-byte id binds to a request digest, then its outcome: a
+//! same-payload repeat answers the original, another payload is refused. Ten
+//! minutes, 65,536 live ids, per incarnation; a full store refuses new ids
+//! rather than evicting live ones. Shared across the runtime, input lane, and
+//! waiter.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
