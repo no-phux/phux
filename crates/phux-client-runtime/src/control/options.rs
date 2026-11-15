@@ -14,11 +14,9 @@ pub struct ControlOptions {
     /// Whether the runtime queues its post-handshake attach, topology reads,
     /// and agent metadata discovery/recovery.
     ///
-    /// Socket-owning embedders set this to `false`: their stable ABI exposes
-    /// `HELLO` and `ATTACH` as explicit calls, while this plane still owns all
-    /// lifecycle validation and frame application. These embedders also own
-    /// request-ID allocation and metadata orchestration; autonomous roster
-    /// reads would collide with their externally allocated correlations.
+    /// An embedder that drives attaches itself sets this to `false`; this
+    /// plane still owns lifecycle validation and frame application, but
+    /// issues no autonomous roster reads.
     pub automatic_lifecycle: bool,
     /// Recover session selection and terminal subscriptions after transport loss.
     /// Disable when the consumer revalidates authority and persistent keys from
