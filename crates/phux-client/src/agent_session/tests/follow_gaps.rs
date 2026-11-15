@@ -51,8 +51,7 @@ fn replacement(
 }
 
 async fn follow_seqs(spec: ScriptSpec) -> (Vec<u64>, LogEnd) {
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
     let mut seqs = Vec::new();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),

@@ -5,7 +5,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 
 use super::*;
 use crate::kill::selection::session_is_empty;
-use crate::testkit::{self, OrgFixture, ScriptSpec};
+use crate::testkit::{OrgFixture, ScriptSpec};
 
 const NOTICE: &str = "satellite build-box is unreachable: link is down";
 
@@ -32,10 +32,8 @@ fn a_merged_kill_outcome_names_every_id_that_was_not_killed() {
 /// notice reaches the caller beside the outcome.
 #[tokio::test]
 async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) =
-        testkit::serve_one(dir.path(), ScriptSpec::new().degradation_notice(NOTICE));
-    let mut conn = Connection::connect(&socket).await.expect("connect");
+    let (_dir, mut conn, server) =
+        crate::testkit::connect_one(ScriptSpec::new().degradation_notice(NOTICE)).await;
     let ids = vec![ResourceId::local(1), ResourceId::local(2)];
     let (outcome, degradation) = kill_resources(&mut conn, 1, ids.clone())
         .await
@@ -62,9 +60,7 @@ async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
 #[tokio::test]
 async fn a_keyed_kill_needs_keyed_signal_and_carries_its_key() {
     async fn run(spec: ScriptSpec) -> (Result<(), KeyedError>, Vec<FrameKind>) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = testkit::serve_one(dir.path(), spec);
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
         let key = IdempotencyKey::new([7; 16]).expect("non-zero");
         let sent = kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
             .await
@@ -122,9 +118,7 @@ async fn run_selected_through(
     spec: ScriptSpec,
     target: &str,
 ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) = testkit::serve_one(dir.path(), spec);
-    let mut conn = Connection::connect(&socket).await.expect("connect");
+    let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
     let selector = crate::selector::parse(target).expect("selector");
     let mut notices = Vec::new();
     let result = selected(&mut conn, &selector, target, None, &mut notices).await;

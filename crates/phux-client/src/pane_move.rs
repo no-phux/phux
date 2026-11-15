@@ -606,7 +606,7 @@ mod tests {
 
     use super::*;
     use crate::layout::{Group, LayoutState};
-    use crate::testkit::{ScriptSpec, serve_one};
+    use crate::testkit::{ScriptSpec, connect_one, serve_one};
 
     fn tid(id: u32) -> ResourceId {
         ResourceId::local(id)
@@ -666,19 +666,6 @@ mod tests {
                 ResourceInfo::new(tid(2), source_window, 80, 24),
                 ResourceInfo::new(tid(3), destination_window, 80, 24),
             ])
-    }
-
-    async fn serve(
-        spec: ScriptSpec,
-    ) -> (
-        tempfile::TempDir,
-        Connection,
-        tokio::task::JoinHandle<Vec<FrameKind>>,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, server) = serve_one(dir.path(), spec);
-        let conn = Connection::connect(&socket).await.unwrap();
-        (dir, conn, server)
     }
 
     /// A move-capable server answering `states` in order, `result` to the
@@ -744,7 +731,7 @@ mod tests {
             &layout_key(session),
             initial.encode_cbor().unwrap(),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6, &[])
             .await
@@ -768,7 +755,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
@@ -821,7 +808,7 @@ mod tests {
             (&source_key, &destination_key),
             LayoutNode::Leaf(tid(1)),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
         move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap();
@@ -844,7 +831,7 @@ mod tests {
             ])
             .move_result(MoveResult::Ok(tid(1)))
             .refuse_metadata(ErrorCode::PermissionDenied, "layout blocked");
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap_err();
@@ -862,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn cross_session_move_with_one_projection_key_is_refused() {
         let spec = ScriptSpec::new().states([snapshot(false, true)]);
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let error = move_pane(
             &mut conn,
             tid(1),
@@ -895,7 +882,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         // Destination-first: keys match by embedded session id, not position.
         let outcome = move_pane(
@@ -993,7 +980,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(20),

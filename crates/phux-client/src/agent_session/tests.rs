@@ -6,7 +6,7 @@
 )]
 
 use super::*;
-use crate::testkit::{ScriptSpec, serve_one};
+use crate::testkit::{ScriptSpec, connect_one};
 use phux_protocol::caps::ServerFeatureSet;
 use phux_protocol::ids::ResourceKind;
 
@@ -20,18 +20,6 @@ fn parent() -> ResourceId {
 
 fn kinds() -> ServerFeatureSet {
     ServerFeatureSet::with(&[ServerFeature::ResourceKinds])
-}
-
-fn serve(
-    spec: ScriptSpec,
-) -> (
-    tempfile::TempDir,
-    std::path::PathBuf,
-    tokio::task::JoinHandle<Vec<FrameKind>>,
-) {
-    let dir = tempfile::tempdir().unwrap();
-    let (socket, server) = serve_one(dir.path(), spec);
-    (dir, socket, server)
 }
 
 #[test]
@@ -61,8 +49,7 @@ fn emit_records_are_validated_before_any_byte_is_sent() {
 #[tokio::test]
 async fn every_verb_is_gated_on_the_resource_kinds_bit() {
     // The default scripted server advertises no features.
-    let (_dir, socket, server) = serve(ScriptSpec::new());
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(ScriptSpec::new()).await;
     assert!(matches!(
         open(&mut conn, &parent(), "claude", None).await,
         Err(AgentSessionError::Unsupported)
@@ -94,8 +81,7 @@ async fn open_sends_the_kinded_spawn_and_returns_the_new_resource() {
     let spec = ScriptSpec::new()
         .server_features(kinds())
         .spawn_result(SpawnResult::Ok(session()));
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let opened = open(&mut conn, &parent(), "claude", Some("sess-1"))
         .await
         .unwrap();
@@ -133,8 +119,7 @@ async fn open_maps_the_structured_spawn_refusals() {
         let spec = ScriptSpec::new()
             .server_features(kinds())
             .spawn_result(SpawnResult::Err(error));
-        let (_dir, socket, server) = serve(spec);
-        let mut conn = Connection::connect(&socket).await.unwrap();
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let err = open(&mut conn, &parent(), "claude", None)
             .await
             .unwrap_err();
@@ -160,8 +145,7 @@ async fn open_reports_an_unreadable_answer_as_an_unknown_outcome() {
             ))),
     ];
     for spec in specs {
-        let (_dir, socket, server) = serve(spec);
-        let mut conn = Connection::connect(&socket).await.unwrap();
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let err = open(&mut conn, &parent(), "claude", None)
             .await
             .unwrap_err();
@@ -179,8 +163,7 @@ async fn emit_appends_one_jsonl_line_per_record_and_reads_the_stamped_header() {
         .append_result(CommandResult::OkWith(CommandValue::Json(
             r#"{"seq":42,"ts_ms":1757404800123}"#.to_owned(),
         )));
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let records = [
         EmitRecord::new("prompt", serde_json::json!({ "chars": 4 })).unwrap(),
         EmitRecord::new("stop", serde_json::json!({})).unwrap(),
@@ -227,8 +210,7 @@ async fn emit_maps_every_server_refusal_onto_its_own_variant() {
                 code,
                 message: "nope".to_owned(),
             });
-        let (_dir, socket, server) = serve(spec);
-        let mut conn = Connection::connect(&socket).await.unwrap();
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let record = EmitRecord::new("stop", serde_json::json!({})).unwrap();
         let err = emit(&mut conn, &session(), &[record]).await.unwrap_err();
         assert!(check(&err), "{code:?} mapped to {err:?}");
@@ -247,8 +229,7 @@ async fn log_delivers_the_retained_records_then_detaches() {
     let spec = ScriptSpec::new()
         .server_features(kinds())
         .agent_log_bootstrap(&session(), &lines);
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let mut got = Vec::new();
     let outcome = log(
         &mut conn,
@@ -322,8 +303,7 @@ async fn log_follow_streams_live_records_until_the_session_closes() {
             terminal: Some(session()),
             event: AgentEvent::ResourceClosed { exit_status: None }, stamp: None,
         });
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let mut seqs = Vec::new();
     let outcome = log(
         &mut conn,
@@ -495,8 +475,7 @@ async fn assert_failed_bootstrap_detaches(payload: &[u8]) {
     let spec = ScriptSpec::new()
         .server_features(kinds())
         .agent_log_bootstrap_bytes(&session(), payload, false);
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let mut records = Vec::new();
     let error = log(&mut conn, &session(), LogOptions::default(), |record| {
         records.push(record);
@@ -530,8 +509,7 @@ async fn malformed_live_batch_publishes_no_prefix_and_detaches() {
         .push(live_frame(
             b"{\"seq\":1,\"ts_ms\":1,\"type\":\"stop\",\"data\":{}}\n{",
         ));
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let mut records = Vec::new();
     assert!(
         tokio::time::timeout(
@@ -567,8 +545,7 @@ async fn closed_bootstrap_completes_a_follow_without_waiting_for_another_close()
     let spec = ScriptSpec::new()
         .server_features(kinds())
         .agent_log_bootstrap_bytes(&session(), payload, true);
-    let (_dir, socket, server) = serve(spec);
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = connect_one(spec).await;
     let mut records = Vec::new();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),
