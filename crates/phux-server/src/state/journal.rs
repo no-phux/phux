@@ -150,28 +150,6 @@ impl JournalEntry {
     }
 }
 
-/// What a cursor subscription is owed, per L1 §7.3.
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct Replay {
-    /// A leading `journal_gap` range, when the ring no longer covers the
-    /// cursor or the cursor was never issued by this journal.
-    pub(crate) gap: Option<(u64, u64)>,
-    /// Retained entries after the cursor that the caller's filter admitted,
-    /// in `seq` order.
-    pub(crate) entries: Vec<JournalEntry>,
-}
-
-#[cfg(test)]
-impl Replay {
-    /// Nothing to send.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.gap.is_none() && self.entries.is_empty()
-    }
-}
-
 /// One step of a pull-based replay ([`Journal::next_after`]).
 #[derive(Debug)]
 pub(crate) enum NextEntry {
@@ -287,34 +265,6 @@ impl Journal {
         Some(entry)
     }
 
-    /// What a cursor at `after` is owed (L1 §7.3), filtered by `admits`:
-    /// nothing for `2^64 - 1` or the head; retained entries after it (led by
-    /// a gap if `after + 1` was evicted); only a gap for a never-issued
-    /// cursor.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn replay_after(
-        &self,
-        after: u64,
-        admits: impl Fn(&JournalEntry) -> bool,
-    ) -> Replay {
-        if after >= self.head {
-            return Replay {
-                gap: self.void_cursor_gap(after),
-                entries: Vec::new(),
-            };
-        }
-        Replay {
-            gap: (after < self.evicted_through).then(|| (after + 1, self.evicted_through)),
-            entries: self
-                .entries
-                .iter()
-                .filter(|entry| entry.seq() > after && admits(entry))
-                .cloned()
-                .collect(),
-        }
-    }
-
     /// The next thing a pull replay at `after` is owed: an eviction gap, the
     /// next admitted entry, or nothing.
     pub(crate) fn next_after(
@@ -423,8 +373,24 @@ mod tests {
         EventRecord::new(Some(WireResourceId::local(terminal)), AgentEvent::Bell)
     }
 
-    fn seqs(replay: &Replay) -> Vec<u64> {
-        replay.entries.iter().map(JournalEntry::seq).collect()
+    /// Everything a pull replay from `after` yields: its last gap and the
+    /// admitted `seq`s.
+    fn pull(
+        journal: &Journal,
+        after: u64,
+        admits: impl Fn(&JournalEntry) -> bool,
+    ) -> (Option<(u64, u64)>, Vec<u64>) {
+        let (mut cursor, mut gap, mut seqs) = (after, None, Vec::new());
+        loop {
+            match journal.next_after(cursor, &admits) {
+                NextEntry::Gap(first, last) => (gap, cursor) = (Some((first, last)), last),
+                NextEntry::Entry(entry) => {
+                    cursor = entry.seq();
+                    seqs.push(cursor);
+                }
+                NextEntry::CaughtUp => return (gap, seqs),
+            }
+        }
     }
 
     #[test]
@@ -447,39 +413,33 @@ mod tests {
     }
 
     #[test]
-    fn replay_after_returns_later_entries_in_order_filtered() {
+    fn a_pull_replay_returns_later_entries_in_order_filtered() {
         let mut journal = Journal::new(16, 1 << 20);
         for terminal in [1, 2, 1, 2] {
             let _ = journal.record(bell(terminal), None, 0);
         }
         let only_one = |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(1));
-        let replay = journal.replay_after(0, only_one);
-        assert_eq!(replay.gap, None);
-        assert_eq!(seqs(&replay), vec![1, 3]);
-        assert_eq!(seqs(&journal.replay_after(2, |_| true)), vec![3, 4]);
+        assert_eq!(pull(&journal, 0, only_one), (None, vec![1, 3]));
+        assert_eq!(pull(&journal, 2, |_| true), (None, vec![3, 4]));
+        assert_eq!(pull(&journal, 4, |_| true), (None, vec![]));
     }
 
+    /// An unretained scope owes a cursor everything after it; the head and
+    /// the sentinel are owed nothing, and a cursor ahead of the head is void.
     #[test]
-    fn cursors_at_the_head_or_the_sentinel_are_owed_nothing() {
-        let mut journal = Journal::new(16, 1 << 20);
-        let _ = journal.record(bell(1), None, 0);
-        assert!(journal.replay_after(1, |_| true).is_empty());
-        assert!(journal.replay_after(u64::MAX, |_| true).is_empty());
-    }
-
-    #[test]
-    fn a_cursor_ahead_of_the_head_is_void() {
+    fn gaps_without_replay_name_what_the_cursor_missed() {
         let mut journal = Journal::new(16, 1 << 20);
         assert_eq!(
-            journal.replay_after(9, |_| true).gap,
+            journal.gap_without_replay(9),
             Some((1, 0)),
-            "an empty journal names the empty range"
+            "the empty range"
         );
         let _ = journal.record(bell(1), None, 0);
         let _ = journal.record(bell(1), None, 0);
-        let replay = journal.replay_after(9, |_| true);
-        assert_eq!(replay.gap, Some((1, 2)));
-        assert!(replay.entries.is_empty());
+        assert_eq!(journal.gap_without_replay(0), Some((1, 2)));
+        assert_eq!(journal.gap_without_replay(2), None);
+        assert_eq!(journal.gap_without_replay(u64::MAX), None);
+        assert_eq!(journal.gap_without_replay(9), Some((1, 2)));
     }
 
     #[test]
@@ -488,10 +448,8 @@ mod tests {
         for _ in 0..5 {
             let _ = journal.record(bell(1), None, 0);
         }
-        let replay = journal.replay_after(0, |_| true);
-        assert_eq!(replay.gap, Some((1, 3)));
-        assert_eq!(seqs(&replay), vec![4, 5]);
-        assert_eq!(journal.replay_after(3, |_| true).gap, None);
+        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4, 5]));
+        assert_eq!(pull(&journal, 3, |_| true), (None, vec![4, 5]));
     }
 
     #[test]
@@ -505,13 +463,11 @@ mod tests {
             )
         };
         let mut journal = Journal::new(1024, 400);
-        let _ = journal.record(long(100), None, 0);
-        let _ = journal.record(long(100), None, 0);
-        let _ = journal.record(long(100), None, 0);
+        for _ in 0..3 {
+            let _ = journal.record(long(100), None, 0);
+        }
         assert!(journal.bytes <= 400);
-        let replay = journal.replay_after(0, |_| true);
-        assert_eq!(replay.gap, Some((1, 1)));
-        assert_eq!(seqs(&replay), vec![2, 3]);
+        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 1)), vec![2, 3]));
     }
 
     #[test]
@@ -520,9 +476,7 @@ mod tests {
         let _ = journal.record(bell(1), None, 0);
         let _ = journal.allocate_seq();
         let _ = journal.record(bell(1), None, 0);
-        let replay = journal.replay_after(0, |_| true);
-        assert_eq!(replay.gap, None);
-        assert_eq!(seqs(&replay), vec![1, 3]);
+        assert_eq!(pull(&journal, 0, |_| true), (None, vec![1, 3]));
     }
 
     #[test]
@@ -548,6 +502,6 @@ mod tests {
             let _ = journal.record(bell(1), None, 0);
         }
         journal.set_bounds(1, 1 << 20);
-        assert_eq!(journal.replay_after(0, |_| true).gap, Some((1, 3)));
+        assert_eq!(pull(&journal, 0, |_| true), (Some((1, 3)), vec![4]));
     }
 }
