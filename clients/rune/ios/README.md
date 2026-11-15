@@ -75,6 +75,18 @@ The user must approve installation on the phone. A signed IPA and reachable
 install page are **not** proof that the app installed, launched or passed
 physical-device qualification.
 
+### Scheduled phone updates
+
+With an explicit standing installation order, the upstream follower delivers
+qualified native development builds to the registered iPhone using signed
+ad-hoc distribution and its existing paired-device connection, not TestFlight.
+[DELIVERY.md](./DELIVERY.md) defines the private `PHONE.json` configuration,
+early installed-version check, source-derived build number, immutable OTA
+fallback, in-place install and independent verification. No uninstall,
+credential reset, app launch or silent-OTA claim is part of delivery.
+
+### Native qualification
+
 `qualify.py` creates and deletes its own exact simulator UDID, selects a
 compatible available runtime/model pair, and owns a same-source server on a
 short temporary socket with clean configuration. All commands are bounded.
