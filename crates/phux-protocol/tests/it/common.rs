@@ -70,6 +70,53 @@ pub fn assert_round_trip(frame: &phux_protocol::wire::frame::FrameKind) {
     assert_eq!(&decode(&encode(frame)).unwrap(), frame);
 }
 
+/// Render `bytes` as an `xxd`-style hex dump for the golden snapshots:
+/// 16 columns per row, `OFFSET | HEX HEX ... | ASCII`.
+pub fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    if bytes.is_empty() {
+        return "(empty)\n".to_owned();
+    }
+    let mut out = String::new();
+    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x} |", chunk_idx * 16);
+        for (i, b) in chunk.iter().enumerate() {
+            if i == 8 {
+                out.push(' ');
+            }
+            let _ = write!(out, " {b:02x}");
+        }
+        for i in chunk.len()..16 {
+            if i == 8 {
+                out.push(' ');
+            }
+            out.push_str("   ");
+        }
+        out.push_str(" |");
+        for &b in chunk {
+            out.push(if (0x20..=0x7e).contains(&b) {
+                char::from(b)
+            } else {
+                '.'
+            });
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The golden dump of `frame`, asserting it round-trips first.
+pub fn dump_frame(frame: &phux_protocol::wire::frame::FrameKind) -> String {
+    let bytes = encode(frame);
+    assert_eq!(
+        &decode(&bytes).unwrap(),
+        frame,
+        "the golden frame round-trips"
+    );
+    hex_dump(&bytes)
+}
+
 /// Read an unsigned LEB128 varint at `*offset`, advancing it.
 pub fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
     let mut value = 0u64;
