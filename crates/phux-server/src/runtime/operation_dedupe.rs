@@ -404,5 +404,4 @@ impl Drop for OperationClaim {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests;

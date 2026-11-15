@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "tests")]
-
 use super::super::*;
 use super::support::*;
 use crate::runtime::apps::agent_session::upgrade::request_agent_session_cut;

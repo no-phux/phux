@@ -199,7 +199,6 @@ pub(crate) fn create_empty_session(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};

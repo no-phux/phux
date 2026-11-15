@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "tests")]
-
 use super::super::validate::*;
 use super::super::*;
 use super::support::*;

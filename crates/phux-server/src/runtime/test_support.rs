@@ -3,8 +3,6 @@
 //! `actor_conformance`): each drives the real client loop over an in-memory
 //! transport.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
-
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::rc::Rc;

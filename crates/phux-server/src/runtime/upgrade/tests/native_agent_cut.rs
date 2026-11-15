@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "tests")]
-
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use phux_protocol::ids::ResourceId as WireResourceId;

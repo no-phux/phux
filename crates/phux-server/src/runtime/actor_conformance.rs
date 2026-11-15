@@ -7,13 +7,6 @@
 //! the revocation conformance sweep does; the socket case dials a real
 //! delegated socket.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests"
-)]
-
 use std::sync::Arc;
 
 use chrono::Utc;

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "isolated profile fixtures")]
 use super::*;
 
 fn profile(root: &Path) -> std::path::PathBuf {

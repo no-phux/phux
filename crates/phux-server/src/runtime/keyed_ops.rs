@@ -286,7 +286,6 @@ fn selector_form(id: &ResourceId) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
     use phux_protocol::wire::frame::TerminalSignal;

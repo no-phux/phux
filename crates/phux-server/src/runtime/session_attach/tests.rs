@@ -1,10 +1,4 @@
 //! Actual HELLO/ATTACH dispatch with all four resource engines.
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use bytes::{Bytes, BytesMut};
 use phux_core::{Actor, LaunchSpec, SessionLifetime};

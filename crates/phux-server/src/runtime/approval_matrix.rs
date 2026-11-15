@@ -7,8 +7,6 @@
 //! sees `approval_requested` and `approval_decided` with the actor each
 //! carries, exactly as `phux watch` would.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

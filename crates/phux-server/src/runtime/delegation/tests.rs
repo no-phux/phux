@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
 use std::os::fd::IntoRawFd as _;
 use std::path::Path;
 use std::time::{Duration, Instant};

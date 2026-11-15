@@ -1,5 +1,4 @@
 //! Shared test helpers for the upgrade-orchestration test suite.
-#![allow(clippy::unwrap_used, reason = "tests")]
 
 use phux_agent_session::session::AgentSessionResource as _;
 use std::os::fd::AsRawFd;

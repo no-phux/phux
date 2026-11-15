@@ -479,5 +479,4 @@ pub(super) fn deadline_from(now: Instant, completion_timeout: Duration) -> Insta
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests;

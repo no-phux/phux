@@ -10,13 +10,6 @@
 //! connection, nothing it sent or queued runs, what it held is released, and
 //! its Terminals, and every other connection, carry on.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests"
-)]
-
 use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

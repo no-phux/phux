@@ -12,8 +12,6 @@
 //! Terminal grants, which a future HELLO-requested attenuation carries, are
 //! minted by a fixed engine so the guard's handling of them stays covered.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
