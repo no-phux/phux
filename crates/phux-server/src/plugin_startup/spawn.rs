@@ -342,34 +342,52 @@ mod tests {
     use super::spawn_child;
     use crate::plugin_startup::StartupSpec;
 
-    #[test]
-    fn missing_program_is_a_spawn_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = StartupSpec {
+    fn spec(dir: &tempfile::TempDir, command: &[&str]) -> StartupSpec {
+        StartupSpec {
             plugin_id: "plug".to_owned(),
             plugin_name: "Plug".to_owned(),
             plugin_version: "0.1.0".to_owned(),
             startup_id: "web".to_owned(),
-            command: vec!["/no/such/phux-startup-program".to_owned()],
+            command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             plugin_root: dir.path().to_path_buf(),
             manifest_hash: 1,
-        };
+        }
+    }
+
+    /// Spawn `spec` on a fresh `LocalSet`, then run `then` on the result.
+    fn spawn_on_local(
+        spec: &StartupSpec,
+        dir: &tempfile::TempDir,
+        then: impl AsyncFnOnce(std::io::Result<super::GroupChild>),
+    ) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
+        tokio::task::LocalSet::new().block_on(&rt, async {
             let notify = Arc::new(Notify::new());
-            match spawn_child(
-                &spec,
-                std::path::Path::new("/tmp/phux-missing.sock"),
-                dir.path(),
-                &notify,
-            ) {
-                Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
-                Ok(_) => panic!("a missing program must not look like a live child"),
-            }
+            let socket = std::path::Path::new("/tmp/phux-test.sock");
+            then(spawn_child(spec, socket, dir.path(), &notify)).await;
+        });
+    }
+
+    /// The `/proc/<pid>/stat` state letter, empty when unreadable.
+    #[cfg(target_os = "linux")]
+    fn proc_state(pid: impl std::fmt::Display) -> String {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    #[test]
+    fn missing_program_is_a_spawn_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = spec(&dir, &["/no/such/phux-startup-program"]);
+        spawn_on_local(&spec, &dir, async |spawned| match spawned {
+            Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
+            Ok(_) => panic!("a missing program must not look like a live child"),
         });
     }
 
@@ -439,39 +457,14 @@ mod tests {
             "unshare -Urpf should make this process pid 1"
         );
         let dir = tempfile::tempdir().unwrap();
-        let spec = StartupSpec {
-            plugin_id: "plug".to_owned(),
-            plugin_name: "Plug".to_owned(),
-            plugin_version: "0.1.0".to_owned(),
-            startup_id: "web".to_owned(),
-            command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
-            plugin_root: dir.path().to_path_buf(),
-            manifest_hash: 1,
-        };
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            let notify = Arc::new(Notify::new());
-            let child = spawn_child(
-                &spec,
-                std::path::Path::new("/tmp/phux-pid1.sock"),
-                dir.path(),
-                &notify,
-            )
-            .unwrap();
+        let spec = spec(&dir, &["/bin/sleep", "30"]);
+        spawn_on_local(&spec, &dir, async |spawned| {
+            let child = spawned.unwrap();
             let pid = child.pid().expect("child pid");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             let mut state = String::new();
             while std::time::Instant::now() < deadline {
-                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-                state = stat
-                    .rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next())
-                    .unwrap_or("")
-                    .to_owned();
+                state = proc_state(pid);
                 if state == "S" || state == "Z" {
                     break;
                 }
@@ -493,29 +486,9 @@ mod tests {
             "sleep 1000 & echo $! > '{}'; exit 0\n",
             grand_path.display()
         );
-        let spec = StartupSpec {
-            plugin_id: "plug".to_owned(),
-            plugin_name: "Plug".to_owned(),
-            plugin_version: "0.1.0".to_owned(),
-            startup_id: "web".to_owned(),
-            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
-            plugin_root: dir.path().to_path_buf(),
-            manifest_hash: 1,
-        };
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            let notify = Arc::new(Notify::new());
-            let mut child = spawn_child(
-                &spec,
-                std::path::Path::new("/tmp/phux-drop.sock"),
-                dir.path(),
-                &notify,
-            )
-            .unwrap();
+        let spec = spec(&dir, &["/bin/sh", "-c", &script]);
+        spawn_on_local(&spec, &dir, async |spawned| {
+            let mut child = spawned.unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             let mut grand = None;
             while std::time::Instant::now() < deadline && grand.is_none() {
@@ -537,16 +510,8 @@ mod tests {
             #[cfg(target_os = "linux")]
             {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                let stat =
-                    std::fs::read_to_string(format!("/proc/{grand}/stat")).unwrap_or_default();
-                let state = stat
-                    .rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next())
-                    .unwrap_or("");
-                assert_eq!(
-                    state, "S",
-                    "dropping a reaped leader must not killpg; stat={stat:?}"
-                );
+                let state = proc_state(grand);
+                assert_eq!(state, "S", "dropping a reaped leader must not killpg");
             }
             #[cfg(not(target_os = "linux"))]
             {
