@@ -336,6 +336,15 @@ fn kernel_with_profile(mode: ReadyMode, profile: BootstrapProfile) -> SessionKer
     SessionKernel::new(FakeAdapter { ready_mode: mode }, profile)
 }
 
+const NATIVE_STREAM: BootstrapStreamProfile = BootstrapStreamProfile::NativeState {
+    codec: EngineCodec::LibghosttySnapshotV1,
+};
+
+const NATIVE: BootstrapProfile = BootstrapProfile::NativeState {
+    codec: EngineCodec::LibghosttySnapshotV1,
+    features: EngineFeatureSet::required_native(),
+};
+
 const fn attach_started(attach_id: u32, terminals: &[ResourceId]) -> KernelInput<'_> {
     KernelInput::AttachStarted {
         attach_id,
@@ -424,356 +433,407 @@ const fn output<'a>(
     }
 }
 
+/// Whether any effect in `$effects` matches the pattern (and guard).
+macro_rules! any_effect {
+    ($effects:expr, $($pattern:tt)+) => {
+        $effects.as_slice().iter().any(|effect| matches!(effect, $($pattern)+))
+    };
+}
+
+/// The `(terminal, stream, bootstrap)` triple naming one replica generation,
+/// with builders for the inputs addressed to it.
+#[derive(Clone)]
+struct Gen {
+    id: ResourceId,
+    s: StreamId,
+    b: BootstrapId,
+}
+
+fn gen_of(id: u32, s: u64, b: u64) -> Gen {
+    Gen {
+        id: terminal(id),
+        s: stream(s),
+        b: bootstrap(b),
+    }
+}
+
+impl Gen {
+    /// The same terminal and stream under another bootstrap generation.
+    fn with_bootstrap(&self, raw: u64) -> Self {
+        Self {
+            b: bootstrap(raw),
+            ..self.clone()
+        }
+    }
+
+    fn begin(&self, base_seq: u64) -> KernelInput<'_> {
+        self.begin_as(BootstrapStreamProfile::SynthesizedVtRaw, base_seq)
+    }
+
+    fn begin_as(&self, profile: BootstrapStreamProfile, base_seq: u64) -> KernelInput<'_> {
+        begin_input(&self.id, self.s, self.b, profile, geometry(), base_seq)
+    }
+
+    const fn chunk<'a>(&'a self, seq: u32, payload: &'a [u8]) -> KernelInput<'a> {
+        chunk(&self.id, self.s, self.b, seq, payload)
+    }
+
+    const fn ready<'a>(&'a self, cursor: Option<&'a [u8]>) -> KernelInput<'a> {
+        ready(&self.id, self.s, self.b, cursor)
+    }
+
+    const fn output<'a>(&'a self, seq: u64, payload: &'a [u8]) -> KernelInput<'a> {
+        output(&self.id, self.s, self.b, seq, payload)
+    }
+
+    /// History page `page_seq` 1 for `cursor`.
+    const fn page<'a>(
+        &'a self,
+        cursor: &'a [u8],
+        next_cursor: Option<&'a [u8]>,
+        payload: &'a [u8],
+        rows: u32,
+    ) -> KernelInput<'a> {
+        KernelInput::HistoryPage {
+            terminal_id: &self.id,
+            stream_id: self.s,
+            bootstrap_id: self.b,
+            cursor,
+            next_cursor,
+            payload,
+            page_seq: 1,
+            rows,
+        }
+    }
+
+    const fn rejected<'a>(
+        &'a self,
+        cursor: &'a [u8],
+        reason: HistoryRejectionReason,
+        required_bytes: u32,
+        required_rows: u32,
+    ) -> KernelInput<'a> {
+        KernelInput::HistoryRejected {
+            terminal_id: &self.id,
+            stream_id: self.s,
+            bootstrap_id: self.b,
+            cursor,
+            reason,
+            required_bytes,
+            required_rows,
+        }
+    }
+
+    const fn tombstone(&self, reason: TombstoneReason, last_valid_seq: u64) -> KernelInput<'_> {
+        KernelInput::Tombstone {
+            terminal_id: &self.id,
+            stream_id: self.s,
+            bootstrap_id: self.b,
+            reason,
+            last_valid_seq,
+        }
+    }
+}
+
+/// A kernel and the effect buffer every update writes into.
+struct Rig<E: EngineAdapter = FakeAdapter> {
+    k: SessionKernel<E>,
+    fx: EffectBuffer,
+}
+
+impl Rig {
+    fn new(mode: ReadyMode) -> Self {
+        Self::of(kernel(mode))
+    }
+}
+
+impl<E: EngineAdapter> Rig<E> {
+    fn of(k: SessionKernel<E>) -> Self {
+        Self {
+            k,
+            fx: EffectBuffer::new(),
+        }
+    }
+
+    fn up(&mut self, input: KernelInput<'_>) -> Result<(), KernelError<E::Error>> {
+        self.k.update(input, &mut self.fx)
+    }
+
+    #[track_caller]
+    fn ok(&mut self, input: KernelInput<'_>) {
+        self.up(input).unwrap();
+    }
+
+    fn tomb(&self, g: &Gen) -> Option<TombstoneRecord> {
+        self.k.tombstone(&g.id, g.s, g.b)
+    }
+
+    fn history_state(&self, id: &ResourceId) -> HistoryLoadState {
+        self.k.history_cache(id).unwrap().status().state
+    }
+}
+
+impl Rig<FakeAdapter> {
+    fn begin(&mut self, g: &Gen, base_seq: u64) {
+        self.ok(g.begin(base_seq));
+    }
+
+    /// The synthesized transcript, fragmented across four chunks.
+    fn push_ready_transcript(&mut self, g: &Gen) {
+        for (chunk_seq, payload) in (0_u32..).zip(ready_chunks()) {
+            self.ok(g.chunk(chunk_seq, payload));
+        }
+    }
+
+    fn publish(&mut self, g: &Gen, base_seq: u64) {
+        self.begin(g, base_seq);
+        self.push_ready_transcript(g);
+        self.ok(g.ready(None));
+    }
+
+    fn publish_with_history(&mut self, g: &Gen, base_seq: u64, cursor: &[u8]) {
+        self.begin(g, base_seq);
+        self.push_ready_transcript(g);
+        self.ok(g.ready(Some(cursor)));
+    }
+
+    fn transcript(&self, id: &ResourceId) -> &[u8] {
+        &self.k.published(id).unwrap().engine().transcript
+    }
+
+    fn staging_bytes(&mut self, id: &ResourceId) -> &mut usize {
+        &mut self
+            .k
+            .lanes
+            .terminal_mut(id)
+            .and_then(|state| state.staging.as_mut())
+            .expect("staging")
+            .accepted_bytes
+    }
+}
+
+fn ready_chunks() -> [&'static [u8]; 4] {
+    [
+        b"\x1b[2Jsynthe",
+        b"sized-vt-v1",
+        &READY_MARKER[..9],
+        &READY_MARKER[9..],
+    ]
+}
+
+#[allow(clippy::unnecessary_wraps, reason = "compared with `tombstone()`")]
+fn codec_failure(last_valid_seq: u64) -> Option<TombstoneRecord> {
+    Some(TombstoneRecord {
+        reason: TombstoneReason::CodecFailure,
+        last_valid_seq,
+    })
+}
+
+const fn subscribe_all() -> KernelEffect {
+    KernelEffect::Send(KernelSend::SubscribeEvents {
+        terminal: None,
+        after_seq: None,
+    })
+}
+
+fn damage(terminal_id: &ResourceId, kind: KernelDamageKind) -> KernelEffect {
+    KernelEffect::Damage(KernelDamage {
+        terminal_id: terminal_id.clone(),
+        kind,
+    })
+}
+
+fn exited(terminal_id: &ResourceId) -> KernelEffect {
+    KernelEffect::Status(KernelStatus::Exited {
+        terminal_id: terminal_id.clone(),
+        exit_status: None,
+        signal: None,
+        reason: CloseReason::Unknown,
+    })
+}
+
+fn requests_history(effects: &EffectBuffer, expected: &[u8]) -> bool {
+    any_effect!(effects, KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. }) if cursor == expected)
+}
+
 #[test]
 fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(attach_started(10, std::slice::from_ref(&id)), &mut effects)
-        .unwrap();
-    assert!(!kernel.release_terminal(&id));
-    assert!(kernel.active_attach_contains(&id));
-    kernel.update(closed(&id), &mut effects).unwrap();
-    assert!(!kernel.release_terminal(&id));
-    assert!(kernel.closed.contains(&id));
-    kernel.update(attach_ready(10), &mut effects).unwrap();
-    kernel.release_active_attach();
-    assert!(kernel.release_terminal(&id));
-    assert!(!kernel.closed.contains(&id));
+    rig.ok(attach_started(10, std::slice::from_ref(&id)));
+    assert!(!rig.k.release_terminal(&id));
+    assert!(rig.k.active_attach_contains(&id));
+    rig.ok(closed(&id));
+    assert!(!rig.k.release_terminal(&id));
+    assert!(rig.k.closed.contains(&id));
+    rig.ok(attach_ready(10));
+    rig.k.release_active_attach();
+    assert!(rig.k.release_terminal(&id));
+    assert!(!rig.k.closed.contains(&id));
 }
 
 #[test]
 fn explicit_detach_cannot_bypass_initial_barrier_but_withdraws_released_participation() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(attach_started(10, std::slice::from_ref(&id)), &mut effects)
-        .unwrap();
-    assert!(!kernel.detach_terminal(&id));
-    assert!(kernel.active_attach_contains(&id));
-    assert!(kernel.update(attach_ready(10), &mut effects).is_err());
-    publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-    kernel.update(attach_ready(10), &mut effects).unwrap();
-    assert!(!kernel.release_terminal(&id));
-    effects.clear();
-    assert!(kernel.detach_terminal(&id));
-    assert!(!kernel.active_attach_contains(&id));
-    assert!(kernel.lanes.is_empty());
-    assert!(kernel.closed.is_empty());
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = gen_of(1, 1, 1);
+    rig.ok(attach_started(10, std::slice::from_ref(&g.id)));
+    assert!(!rig.k.detach_terminal(&g.id));
+    assert!(rig.k.active_attach_contains(&g.id));
+    assert!(rig.up(attach_ready(10)).is_err());
+    rig.publish(&g, 0);
+    rig.ok(attach_ready(10));
+    assert!(!rig.k.release_terminal(&g.id));
+    rig.fx.clear();
+    assert!(rig.k.detach_terminal(&g.id));
+    assert!(!rig.k.active_attach_contains(&g.id));
+    assert!(rig.k.lanes.is_empty());
+    assert!(rig.k.closed.is_empty());
     for n in 2..=512 {
-        let next = terminal(n);
-        publish_direct(
-            &mut kernel,
-            &next,
-            stream(n.into()),
-            bootstrap(1),
-            0,
-            &mut effects,
-        );
-        assert!(kernel.detach_terminal(&next));
-        assert!(kernel.lanes.is_empty());
-        assert!(kernel.closed.is_empty());
-        effects.clear();
+        let next = gen_of(n, n.into(), 1);
+        rig.publish(&next, 0);
+        assert!(rig.k.detach_terminal(&next.id));
+        assert!(rig.k.lanes.is_empty());
+        assert!(rig.k.closed.is_empty());
+        rig.fx.clear();
     }
 }
 
 #[test]
 fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     for n in 1..=512 {
-        let id = terminal(n);
-        publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-        assert!(kernel.release_terminal(&id));
-        assert!(kernel.lanes.is_empty());
-        assert!(kernel.closed.is_empty());
+        let g = gen_of(n, 1, 1);
+        rig.publish(&g, 0);
+        assert!(rig.k.release_terminal(&g.id));
+        assert!(rig.k.lanes.is_empty());
+        assert!(rig.k.closed.is_empty());
         // Same ID can acquire a new explicitly admitted subscription.
-        begin(&mut kernel, &id, stream(2), bootstrap(1), 0, &mut effects);
-        kernel.update(closed(&id), &mut effects).unwrap();
-        assert!(kernel.closed.contains(&id));
-        assert!(kernel.release_terminal(&id));
-        assert!(kernel.lanes.is_empty());
-        assert!(kernel.closed.is_empty());
-        effects.clear();
+        rig.begin(&gen_of(n, 2, 1), 0);
+        rig.ok(closed(&g.id));
+        assert!(rig.k.closed.contains(&g.id));
+        assert!(rig.k.release_terminal(&g.id));
+        assert!(rig.k.lanes.is_empty());
+        assert!(rig.k.closed.is_empty());
+        rig.fx.clear();
     }
 }
 
 #[test]
 fn close_transfers_the_final_replica_without_reopening_the_terminal() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &id,
-        stream(7),
-        bootstrap(3),
-        0,
-        b"cursor-0",
-        &mut effects,
-    );
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &id,
-                stream_id: stream(7),
-                bootstrap_id: bootstrap(3),
-                cursor: b"cursor-0",
-                next_cursor: Some(b"cursor-1"),
-                payload: b"finished-history",
-                page_seq: 1,
-                rows: 2,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    kernel.set_retain_replica_on_close(&id, true);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = gen_of(1, 7, 3);
+    rig.publish_with_history(&g, 0, b"cursor-0");
+    rig.ok(g.page(b"cursor-0", Some(b"cursor-1"), b"finished-history", 2));
+    rig.k.set_retain_replica_on_close(&g.id, true);
 
-    kernel.update(closed(&id), &mut effects).unwrap();
+    rig.ok(closed(&g.id));
 
-    assert!(kernel.published(&id).is_none());
+    assert!(rig.k.published(&g.id).is_none());
     assert!(matches!(
-        kernel.input_eligibility(&id),
+        rig.k.input_eligibility(&g.id),
         InputEligibility::Ineligible(InputBlockReason::Closed)
     ));
-    let closed = kernel.take_closed_replica(&id).expect("final replica");
-    assert_eq!(closed.key().stream_id, stream(7));
-    assert_eq!(closed.key().bootstrap_id, bootstrap(3));
-    assert_eq!(closed.geometry(), geometry());
-    assert!(closed.engine().transcript.ends_with(b"finished-history"));
-    assert_eq!(closed.history().status().materialized_rows, 2);
-    assert!(kernel.take_closed_replica(&id).is_none());
-}
+    let replica = rig.k.take_closed_replica(&g.id).expect("final replica");
+    assert_eq!(replica.key().stream_id, g.s);
+    assert_eq!(replica.key().bootstrap_id, g.b);
+    assert_eq!(replica.geometry(), geometry());
+    assert!(replica.engine().transcript.ends_with(b"finished-history"));
+    assert_eq!(replica.history().status().materialized_rows, 2);
+    assert!(rig.k.take_closed_replica(&g.id).is_none());
 
-#[test]
-fn close_drops_the_final_replica_unless_retention_is_requested() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    publish_direct(&mut kernel, &id, stream(7), bootstrap(3), 0, &mut effects);
-    kernel.update(closed(&id), &mut effects).unwrap();
-    assert!(kernel.take_closed_replica(&id).is_none());
-}
-
-fn begin(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    base_seq: u64,
-    effects: &mut EffectBuffer,
-) {
-    kernel
-        .update(
-            begin_input(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                BootstrapStreamProfile::SynthesizedVtRaw,
-                geometry(),
-                base_seq,
-            ),
-            effects,
-        )
-        .unwrap();
+    // Without retention the final replica is dropped.
+    let other = gen_of(2, 7, 3);
+    rig.publish(&other, 0);
+    rig.ok(closed(&other.id));
+    assert!(rig.k.take_closed_replica(&other.id).is_none());
 }
 
 #[test]
 fn bootstrap_staging_rejects_many_legal_chunks_before_excess_allocation() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(&mut kernel, &id, stream_id, bootstrap_id, 7, &mut effects);
-
-    for chunk_seq in 0..u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap() {
-        kernel
-            .update(
-                chunk(&id, stream_id, bootstrap_id, chunk_seq, &[]),
-                &mut effects,
-            )
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = gen_of(1, 1, 1);
+    rig.begin(&g, 7);
+    let limit = u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap();
+    for chunk_seq in 0..limit {
+        rig.up(g.chunk(chunk_seq, &[]))
             .expect("individually legal bounded chunk");
     }
-    let error = kernel
-        .update(
-            chunk(
-                &id,
-                stream_id,
-                bootstrap_id,
-                u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap(),
-                &[],
-            ),
-            &mut effects,
-        )
+    let error = rig
+        .up(g.chunk(limit, &[]))
         .expect_err("aggregate chunk ceiling must terminate staging");
     assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-    assert!(kernel.staging(&id).is_none());
-    assert_eq!(
-        kernel.tombstone(&id, stream_id, bootstrap_id),
-        Some(TombstoneRecord {
-            reason: TombstoneReason::CodecFailure,
-            last_valid_seq: 7,
-        })
-    );
+    assert!(rig.k.staging(&g.id).is_none());
+    assert_eq!(rig.tomb(&g), codec_failure(7));
 }
 
 #[test]
 fn bootstrap_staging_byte_ceiling_is_connection_wide() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let first = terminal(1);
-    let second = terminal(2);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(
-        &mut kernel,
-        &first,
-        stream_id,
-        bootstrap_id,
-        7,
-        &mut effects,
-    );
-    begin(
-        &mut kernel,
-        &second,
-        stream_id,
-        bootstrap_id,
-        9,
-        &mut effects,
-    );
-    kernel
-        .lanes
-        .terminal_mut(&first)
-        .and_then(|state| state.staging.as_mut())
-        .expect("first staging")
-        .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let first = gen_of(1, 1, 1);
+    let second = gen_of(2, 1, 1);
+    rig.begin(&first, 7);
+    rig.begin(&second, 9);
+    *rig.staging_bytes(&first.id) = MAX_BOOTSTRAP_STAGING_BYTES;
 
-    let error = kernel
-        .update(
-            chunk(&second, stream_id, bootstrap_id, 0, b"x"),
-            &mut effects,
-        )
+    let error = rig
+        .up(second.chunk(0, b"x"))
         .expect_err("another generation may not exceed the connection budget");
     assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-    assert!(kernel.staging(&first).is_some());
-    assert!(kernel.staging(&second).is_none());
-    assert_eq!(
-        kernel.tombstone(&second, stream_id, bootstrap_id),
-        Some(TombstoneRecord {
-            reason: TombstoneReason::CodecFailure,
-            last_valid_seq: 9,
-        })
-    );
+    assert!(rig.k.staging(&first.id).is_some());
+    assert!(rig.k.staging(&second.id).is_none());
+    assert_eq!(rig.tomb(&second), codec_failure(9));
 }
 
 #[test]
 fn bootstrap_staging_ceiling_counts_engine_and_pending_effect_capacity() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
-    kernel
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = gen_of(1, 1, 1);
+    rig.begin(&g, 9);
+    rig.k
         .lanes
-        .terminal_mut(&id)
+        .terminal_mut(&g.id)
         .and_then(|state| state.staging.as_mut())
         .expect("staging")
         .engine
         .reported_staging_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
 
-    let error = kernel
-        .update(
-            chunk(&id, stream_id, bootstrap_id, 0, b"bootstrap-effects"),
-            &mut effects,
-        )
+    let error = rig
+        .up(g.chunk(0, b"bootstrap-effects"))
         .expect_err("engine and pending effects count against retained capacity");
     assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-    assert!(kernel.staging(&id).is_none());
+    assert!(rig.k.staging(&g.id).is_none());
 }
 
 #[test]
-fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
-    let error = kernel
-        .update_at(
-            MAX_BOOTSTRAP_STAGING_IDLE_MS + 1,
-            chunk(&id, stream_id, bootstrap_id, 0, b"not-applied"),
-            &mut effects,
-        )
-        .expect_err("expired staging must fail");
-    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-    assert!(kernel.staging(&id).is_none());
-}
-
-#[test]
-fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
-    let mut kernel = kernel(ReadyMode::ProtocolFirst);
-    let id = terminal(1);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(&mut kernel, &id, stream_id, bootstrap_id, 11, &mut effects);
-    let error = kernel
-        .update_at(
-            MAX_BOOTSTRAP_STAGING_IDLE_MS + 1,
-            ready(&id, stream_id, bootstrap_id, None),
-            &mut effects,
-        )
-        .expect_err("expired staging must fail at READY too");
-    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
-    assert!(kernel.staging(&id).is_none());
-    assert_eq!(
-        kernel.tombstone(&id, stream_id, bootstrap_id),
-        Some(TombstoneRecord {
-            reason: TombstoneReason::CodecFailure,
-            last_valid_seq: 11,
-        })
-    );
+fn bootstrap_staging_lifetime_is_checked_before_adapter_input_and_at_protocol_ready() {
+    for mode in [ReadyMode::ChunkFirst, ReadyMode::ProtocolFirst] {
+        let mut rig = Rig::new(mode);
+        let g = gen_of(1, 1, 1);
+        rig.begin(&g, 11);
+        let late = MAX_BOOTSTRAP_STAGING_IDLE_MS + 1;
+        let input = match mode {
+            ReadyMode::ChunkFirst => g.chunk(0, b"not-applied"),
+            ReadyMode::ProtocolFirst => g.ready(None),
+        };
+        let error = rig
+            .k
+            .update_at(late, input, &mut rig.fx)
+            .expect_err("expired staging must fail");
+        assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+        assert!(rig.k.staging(&g.id).is_none());
+        assert_eq!(rig.tomb(&g), codec_failure(11));
+    }
 }
 
 #[test]
 fn progressive_native_ready_requires_cursor_until_finish_is_authenticated() {
-    let profile = BootstrapProfile::NativeState {
-        codec: EngineCodec::LibghosttySnapshotV1,
-        features: EngineFeatureSet::required_native(),
-    };
-    let mut kernel = kernel_with_profile(ReadyMode::ProtocolFirst, profile);
-    let id = terminal(1);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            begin_input(
-                &id,
-                stream_id,
-                bootstrap_id,
-                BootstrapStreamProfile::NativeState {
-                    codec: EngineCodec::LibghosttySnapshotV1,
-                },
-                geometry(),
-                13,
-            ),
-            &mut effects,
-        )
+    let mut rig = Rig::of(kernel_with_profile(ReadyMode::ProtocolFirst, NATIVE));
+    let g = gen_of(1, 1, 1);
+    rig.up(g.begin_as(NATIVE_STREAM, 13))
         .expect("begin progressive native bootstrap");
-    kernel
-        .update(
-            chunk(&id, stream_id, bootstrap_id, 0, READY_MARKER),
-            &mut effects,
-        )
-        .expect("engine READY");
-    let error = kernel
-        .update(ready(&id, stream_id, bootstrap_id, None), &mut effects)
+    rig.up(g.chunk(0, READY_MARKER)).expect("engine READY");
+    let error = rig
+        .up(g.ready(None))
         .expect_err("v1 must receive and authenticate FINISH through history");
     assert!(matches!(
         error,
@@ -782,31 +842,18 @@ fn progressive_native_ready_requires_cursor_until_finish_is_authenticated() {
             has_more: false,
         }
     ));
-    assert!(kernel.staging(&id).is_none());
-    assert_eq!(
-        kernel.tombstone(&id, stream_id, bootstrap_id),
-        Some(TombstoneRecord {
-            reason: TombstoneReason::CodecFailure,
-            last_valid_seq: 13,
-        })
-    );
+    assert!(rig.k.staging(&g.id).is_none());
+    assert_eq!(rig.tomb(&g), codec_failure(13));
 }
 
+/// Encode `frame` on the wire, decode it back, and feed the decoded frame.
 #[cfg(feature = "native-engine")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exhaustive wire-frame adapter keeps every native frame mapping visible in one test helper"
-)]
-fn apply_decoded_native_frame(
-    kernel: &mut SessionKernel<GhosttyAdapter>,
-    frame: &FrameKind,
-    effects: &mut EffectBuffer,
-) {
+fn apply_decoded_native_frame(rig: &mut Rig<GhosttyAdapter>, frame: &FrameKind) {
     let mut encoded = (&[][..]).into();
     frame.encode(&mut encoded);
     let (decoded, tail) = FrameKind::decode(&encoded).expect("wire decode");
     assert!(tail.is_empty());
-    match decoded {
+    let result = match decoded {
         FrameKind::BootstrapBegin {
             terminal_id,
             stream_id,
@@ -815,59 +862,49 @@ fn apply_decoded_native_frame(
             cols,
             rows,
             base_seq,
-        } => kernel
-            .update(
-                begin_input(
-                    &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    profile,
-                    CanonicalGeometry::new(cols, rows).expect("wire geometry"),
-                    base_seq,
-                ),
-                effects,
-            )
-            .expect("wire bootstrap begin"),
+        } => {
+            let geometry = CanonicalGeometry::new(cols, rows).expect("wire geometry");
+            let input = begin_input(
+                &terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
+                geometry,
+                base_seq,
+            );
+            rig.up(input)
+        }
         FrameKind::BootstrapChunk {
             terminal_id,
             stream_id,
             bootstrap_id,
             chunk_seq,
             payload,
-        } => kernel
-            .update(
-                chunk(&terminal_id, stream_id, bootstrap_id, chunk_seq, &payload),
-                effects,
-            )
-            .expect("wire bootstrap chunk"),
+        } => rig.up(chunk(
+            &terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            &payload,
+        )),
         FrameKind::BootstrapReady {
             terminal_id,
             stream_id,
             bootstrap_id,
             history_cursor,
-        } => kernel
-            .update(
-                ready(
-                    &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor.as_deref(),
-                ),
-                effects,
-            )
-            .expect("wire bootstrap READY"),
+        } => rig.up(ready(
+            &terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor.as_deref(),
+        )),
         FrameKind::ResourceOutput {
             terminal_id,
             stream_id,
             bootstrap_id,
             seq,
             bytes,
-        } => kernel
-            .update(
-                output(&terminal_id, stream_id, bootstrap_id, seq, &bytes),
-                effects,
-            )
-            .expect("wire live output"),
+        } => rig.up(output(&terminal_id, stream_id, bootstrap_id, seq, &bytes)),
         FrameKind::HistoryPage {
             terminal_id,
             stream_id,
@@ -877,30 +914,26 @@ fn apply_decoded_native_frame(
             next_cursor,
             payload,
             rows,
-        } => kernel
-            .update(
-                KernelInput::HistoryPage {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    page_seq,
-                    rows,
-                    payload: &payload,
-                    cursor: &cursor,
-                    next_cursor: next_cursor.as_deref(),
-                },
-                effects,
-            )
-            .expect("wire history unit"),
+        } => rig.up(KernelInput::HistoryPage {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            rows,
+            payload: &payload,
+            cursor: &cursor,
+            next_cursor: next_cursor.as_deref(),
+        }),
         other => panic!("unexpected native test frame: {other:?}"),
-    }
+    };
+    result.expect("wire frame applies");
 }
 
 #[cfg(feature = "native-engine")]
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "the acceptance test keeps real capture, wire framing, publication, interleaving, and projection in one end-to-end proof"
+    reason = "the acceptance test keeps real capture, wire framing, publication, and interleaving in one end-to-end proof"
 )]
 fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
     let capture = native_source::capture(SnapshotCaptureLimits {
@@ -923,34 +956,28 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
         .collect();
     assert!(units.len() >= 3, "two pages plus FINISH are required");
 
-    let terminal_id = terminal(91);
-    let stream_id = stream(92);
-    let bootstrap_id = bootstrap(93);
+    let Gen {
+        id: terminal_id,
+        s: stream_id,
+        b: bootstrap_id,
+    } = gen_of(91, 92, 93);
     let limits = phux_protocol::BootstrapLimits::default();
-    let profile = BootstrapProfile::NativeState {
-        codec: EngineCodec::LibghosttySnapshotV1,
-        features: EngineFeatureSet::required_native(),
-    };
-    let mut kernel = SessionKernel::new(GhosttyAdapter::new(limits), profile);
-    let mut effects = EffectBuffer::new();
+    let mut rig = Rig::of(SessionKernel::new(GhosttyAdapter::new(limits), NATIVE));
     apply_decoded_native_frame(
-        &mut kernel,
+        &mut rig,
         &FrameKind::BootstrapBegin {
             terminal_id: terminal_id.clone(),
             stream_id,
             bootstrap_id,
-            profile: BootstrapStreamProfile::NativeState {
-                codec: EngineCodec::LibghosttySnapshotV1,
-            },
+            profile: NATIVE_STREAM,
             cols: 200,
             rows: 3,
             base_seq: 0,
         },
-        &mut effects,
     );
     for (chunk_seq, payload) in ready.chunks(64 * 1024).enumerate() {
         apply_decoded_native_frame(
-            &mut kernel,
+            &mut rig,
             &FrameKind::BootstrapChunk {
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -958,30 +985,28 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
                 chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
                 payload: payload.to_vec().into(),
             },
-            &mut effects,
         );
     }
     let cursor = b"real-native-cursor".to_vec();
     apply_decoded_native_frame(
-        &mut kernel,
+        &mut rig,
         &FrameKind::BootstrapReady {
             terminal_id: terminal_id.clone(),
             stream_id,
             bootstrap_id,
             history_cursor: Some(cursor.clone().into()),
         },
-        &mut effects,
     );
     assert!(
-        kernel.published(&terminal_id).is_some(),
+        rig.k.published(&terminal_id).is_some(),
         "READY publishes before history"
     );
 
     for (index, (payload, rows, finish)) in units.iter().enumerate() {
-        let _ = kernel.prefetch_history(&terminal_id, 0, &mut effects);
+        let _ = rig.k.prefetch_history(&terminal_id, 0, &mut rig.fx);
         if index == 1 {
             apply_decoded_native_frame(
-                &mut kernel,
+                &mut rig,
                 &FrameKind::ResourceOutput {
                     terminal_id: terminal_id.clone(),
                     stream_id,
@@ -989,11 +1014,10 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
                     seq: 1,
                     bytes: b"live-between-pages\r\n".to_vec().into(),
                 },
-                &mut effects,
             );
         }
         apply_decoded_native_frame(
-            &mut kernel,
+            &mut rig,
             &FrameKind::HistoryPage {
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -1004,181 +1028,52 @@ fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
                 payload: payload.clone(),
                 rows: *rows,
             },
-            &mut effects,
         );
     }
-    assert_eq!(
-        kernel
-            .history_cache(&terminal_id)
-            .expect("history cache")
-            .status()
-            .state,
-        HistoryLoadState::Complete
-    );
+    assert_eq!(rig.history_state(&terminal_id), HistoryLoadState::Complete);
 }
 
 #[test]
 fn silent_bootstrap_staging_expires_on_driver_tick() {
-    let mut kernel = kernel(ReadyMode::ProtocolFirst);
-    let first = terminal(1);
-    let second = terminal(2);
-    let stream_id = stream(1);
-    let bootstrap_id = bootstrap(1);
-    let mut effects = EffectBuffer::new();
-    begin(
-        &mut kernel,
-        &first,
-        stream_id,
-        bootstrap_id,
-        7,
-        &mut effects,
-    );
-    begin(
-        &mut kernel,
-        &second,
-        stream_id,
-        bootstrap_id,
-        9,
-        &mut effects,
-    );
+    let mut rig = Rig::new(ReadyMode::ProtocolFirst);
+    let first = gen_of(1, 1, 1);
+    let second = gen_of(2, 1, 1);
+    rig.begin(&first, 7);
+    rig.begin(&second, 9);
 
     assert_eq!(
-        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS, &mut effects),
+        rig.k
+            .expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS, &mut rig.fx),
         0,
         "the exact lifetime remains valid"
     );
     assert_eq!(
-        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS + 1, &mut effects),
+        rig.k
+            .expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_IDLE_MS + 1, &mut rig.fx),
         2
     );
-    assert!(kernel.staging(&first).is_none());
-    assert!(kernel.staging(&second).is_none());
-    assert_eq!(
-        effects
-            .as_slice()
-            .iter()
-            .filter(|effect| matches!(
-                effect,
-                KernelEffect::Status(KernelStatus::ResyncRequired { .. })
-            ))
-            .count(),
-        2
-    );
-}
-
-fn push_ready_transcript(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    effects: &mut EffectBuffer,
-) {
-    let chunks: [&[u8]; 4] = [
-        b"\x1b[2Jsynthe",
-        b"sized-vt-v1",
-        &READY_MARKER[..9],
-        &READY_MARKER[9..],
-    ];
-    for (chunk_seq, payload) in (0_u32..).zip(chunks) {
-        kernel
-            .update(
-                chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
-                effects,
-            )
-            .unwrap();
-    }
-}
-
-fn protocol_ready(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    effects: &mut EffectBuffer,
-) {
-    kernel
-        .update(ready(terminal_id, stream_id, bootstrap_id, None), effects)
-        .unwrap();
-}
-
-fn publish_direct(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    base_seq: u64,
-    effects: &mut EffectBuffer,
-) {
-    begin(
-        kernel,
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        base_seq,
-        effects,
-    );
-    push_ready_transcript(kernel, terminal_id, stream_id, bootstrap_id, effects);
-    protocol_ready(kernel, terminal_id, stream_id, bootstrap_id, effects);
-}
-
-fn publish_direct_with_history(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    base_seq: u64,
-    cursor: &[u8],
-    effects: &mut EffectBuffer,
-) {
-    begin(
-        kernel,
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        base_seq,
-        effects,
-    );
-    push_ready_transcript(kernel, terminal_id, stream_id, bootstrap_id, effects);
-    kernel
-        .update(
-            ready(terminal_id, stream_id, bootstrap_id, Some(cursor)),
-            effects,
+    assert!(rig.k.staging(&first.id).is_none());
+    assert!(rig.k.staging(&second.id).is_none());
+    let resyncs = rig.fx.as_slice().iter().filter(|effect| {
+        matches!(
+            effect,
+            KernelEffect::Status(KernelStatus::ResyncRequired { .. })
         )
-        .unwrap();
+    });
+    assert_eq!(resyncs.count(), 2);
 }
 
 #[test]
 fn dual_ready_orders_and_fragmentation_hold_first_damage() {
     for mode in [ReadyMode::ChunkFirst, ReadyMode::ProtocolFirst] {
-        let terminal_id = terminal(1);
-        let stream_id = stream(11);
-        let bootstrap_id = bootstrap(21);
-        let mut kernel = kernel(mode);
-        let mut effects = EffectBuffer::new();
+        let g = gen_of(1, 11, 21);
+        let mut rig = Rig::new(mode);
 
-        kernel
-            .update(
-                attach_started(7, std::slice::from_ref(&terminal_id)),
-                &mut effects,
-            )
-            .unwrap();
-        begin(
-            &mut kernel,
-            &terminal_id,
-            stream_id,
-            bootstrap_id,
-            100,
-            &mut effects,
-        );
-        push_ready_transcript(
-            &mut kernel,
-            &terminal_id,
-            stream_id,
-            bootstrap_id,
-            &mut effects,
-        );
+        rig.ok(attach_started(7, std::slice::from_ref(&g.id)));
+        rig.begin(&g, 100);
+        rig.push_ready_transcript(&g);
 
-        let staging = kernel.staging(&terminal_id).unwrap();
+        let staging = rig.k.staging(&g.id).unwrap();
         assert_eq!(staging.geometry(), geometry());
         assert_eq!(staging.engine().geometry, geometry());
         assert_eq!(
@@ -1186,17 +1081,11 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
             matches!(mode, ReadyMode::ChunkFirst)
         );
         assert!(!staging.protocol_ready());
-        assert!(kernel.published(&terminal_id).is_none());
-        assert!(effects.is_empty());
+        assert!(rig.k.published(&g.id).is_none());
+        assert!(rig.fx.is_empty());
 
-        protocol_ready(
-            &mut kernel,
-            &terminal_id,
-            stream_id,
-            bootstrap_id,
-            &mut effects,
-        );
-        let published = kernel.published(&terminal_id).unwrap();
+        rig.ok(g.ready(None));
+        let published = rig.k.published(&g.id).unwrap();
         assert_eq!(published.geometry(), geometry());
         assert_eq!(published.engine().geometry, geometry());
         assert_eq!(published.last_seq(), 100);
@@ -1205,236 +1094,112 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
             BootstrapStreamProfile::SynthesizedVtRaw
         );
         assert!(published.engine().transcript.ends_with(READY_MARKER));
-        assert!(effects.is_empty(), "publication is behind ATTACH_READY");
+        assert!(rig.fx.is_empty(), "publication is behind ATTACH_READY");
 
-        kernel.update(attach_ready(7), &mut effects).unwrap();
+        rig.ok(attach_ready(7));
         assert_eq!(
-            effects.as_slice(),
-            &[
-                KernelEffect::Send(KernelSend::SubscribeEvents {
-                    terminal: None,
-                    after_seq: None,
-                }),
-                KernelEffect::Damage(KernelDamage {
-                    terminal_id: terminal_id.clone(),
-                    kind: KernelDamageKind::Full,
-                })
-            ]
+            rig.fx.as_slice(),
+            &[subscribe_all(), damage(&g.id, KernelDamageKind::Full)]
         );
     }
 }
 
 #[test]
 fn chunk_sequence_rejects_duplicates_and_gaps_without_applying() {
-    let terminal_id = terminal(2);
-    let stream_id = stream(12);
-    let bootstrap_id = bootstrap(22);
-    let mut kernel = kernel(ReadyMode::ProtocolFirst);
-    let mut effects = EffectBuffer::new();
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
+    let g = gen_of(2, 12, 22);
+    let mut rig = Rig::new(ReadyMode::ProtocolFirst);
+    rig.begin(&g, 0);
 
-    kernel
-        .update(
-            chunk(&terminal_id, stream_id, bootstrap_id, 0, b"first"),
-            &mut effects,
-        )
-        .unwrap();
-    let duplicate = kernel.update(
-        chunk(&terminal_id, stream_id, bootstrap_id, 0, b"duplicate"),
-        &mut effects,
-    );
+    rig.ok(g.chunk(0, b"first"));
     assert!(matches!(
-        duplicate,
+        rig.up(g.chunk(0, b"duplicate")),
         Err(KernelError::DuplicateChunk {
             expected: 1,
             actual: 0
         })
     ));
-    let gap = kernel.update(
-        chunk(&terminal_id, stream_id, bootstrap_id, 2, b"gap"),
-        &mut effects,
-    );
     assert!(matches!(
-        gap,
+        rig.up(g.chunk(2, b"gap")),
         Err(KernelError::ChunkGap {
             expected: 1,
             actual: 2
         })
     ));
-    assert_eq!(
-        kernel.staging(&terminal_id).unwrap().engine().transcript,
-        b"first"
-    );
+    assert_eq!(rig.k.staging(&g.id).unwrap().engine().transcript, b"first");
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn raw_sequence_ids_and_tombstones_are_exact() {
-    let terminal_id = terminal(3);
-    let stream_id = stream(13);
-    let bootstrap_id = bootstrap(23);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        41,
-        &mut effects,
-    );
+    let g = gen_of(3, 13, 23);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish(&g, 41);
 
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 42, b"first-live"),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 42);
-    let applied = kernel
-        .published(&terminal_id)
-        .unwrap()
-        .engine()
-        .transcript
-        .clone();
+    rig.ok(g.output(42, b"first-live"));
+    assert_eq!(rig.k.published(&g.id).unwrap().last_seq(), 42);
+    let applied = rig.transcript(&g.id).to_vec();
 
-    let duplicate = kernel.update(
-        output(&terminal_id, stream_id, bootstrap_id, 42, b"duplicate"),
-        &mut effects,
-    );
     assert!(matches!(
-        duplicate,
+        rig.up(g.output(42, b"duplicate")),
         Err(KernelError::DuplicateSequence {
             expected: 43,
             actual: 42
         })
     ));
-    let gap = kernel.update(
-        output(&terminal_id, stream_id, bootstrap_id, 44, b"gap"),
-        &mut effects,
-    );
     assert!(matches!(
-        gap,
+        rig.up(g.output(44, b"gap")),
         Err(KernelError::SequenceGap {
             expected: 43,
             actual: 44
         })
     ));
-    let wrong_stream = kernel.update(
-        output(&terminal_id, stream(999), bootstrap_id, 43, b"wrong-stream"),
-        &mut effects,
-    );
+    let wrong_stream = Gen {
+        s: stream(999),
+        ..g.clone()
+    };
     assert!(matches!(
-        wrong_stream,
+        rig.up(wrong_stream.output(43, b"wrong-stream")),
         Err(KernelError::GenerationMismatch { .. })
     ));
-    let wrong_bootstrap = kernel.update(
-        output(
-            &terminal_id,
-            stream_id,
-            bootstrap(999),
-            43,
-            b"wrong-bootstrap",
-        ),
-        &mut effects,
-    );
     assert!(matches!(
-        wrong_bootstrap,
+        rig.up(g.with_bootstrap(999).output(43, b"wrong-bootstrap")),
         Err(KernelError::GenerationMismatch { .. })
     ));
-    let wrong_terminal_id = terminal(999);
-    let wrong_terminal = kernel.update(
-        output(
-            &wrong_terminal_id,
-            stream_id,
-            bootstrap_id,
-            43,
-            b"wrong-terminal",
-        ),
-        &mut effects,
-    );
+    let wrong_terminal = Gen {
+        id: terminal(999),
+        ..g.clone()
+    };
     assert!(matches!(
-        wrong_terminal,
+        rig.up(wrong_terminal.output(43, b"wrong-terminal")),
         Err(KernelError::UnknownTerminal(_))
     ));
-    assert_eq!(
-        kernel.published(&terminal_id).unwrap().engine().transcript,
-        applied
-    );
+    assert_eq!(rig.transcript(&g.id), applied);
 
-    kernel
-        .update(
-            KernelInput::Tombstone {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 42,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.tombstone(TombstoneReason::OutboundGap, 42));
+    assert_eq!(rig.transcript(&g.id), applied);
+    assert_eq!(rig.tomb(&g).unwrap().last_valid_seq, 42);
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().engine().transcript,
-        applied
-    );
-    assert_eq!(
-        kernel
-            .tombstone(&terminal_id, stream_id, bootstrap_id)
-            .unwrap()
-            .last_valid_seq,
-        42
-    );
-    assert_eq!(
-        kernel.input_eligibility(&terminal_id),
+        rig.k.input_eligibility(&g.id),
         InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
     );
-    let stale = kernel.update(
-        output(&terminal_id, stream_id, bootstrap_id, 43, b"stale"),
-        &mut effects,
-    );
-    assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
-    let replacement = bootstrap(24);
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        replacement,
-        42,
-        &mut effects,
-    );
-    push_ready_transcript(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        replacement,
-        &mut effects,
-    );
+    assert!(matches!(
+        rig.up(g.output(43, b"stale")),
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+    let replacement = g.with_bootstrap(24);
+    rig.begin(&replacement, 42);
+    rig.push_ready_transcript(&replacement);
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().key().bootstrap_id,
-        bootstrap_id,
+        rig.k.published(&g.id).unwrap().key().bootstrap_id,
+        g.b,
         "frozen view remains visible while replacement stages"
     );
-    protocol_ready(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        replacement,
-        &mut effects,
+    rig.ok(replacement.ready(None));
+    assert_eq!(
+        rig.k.published(&g.id).unwrap().key().bootstrap_id,
+        replacement.b
     );
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().key().bootstrap_id,
-        replacement
-    );
-    assert_eq!(
-        kernel.tombstone(&terminal_id, stream_id, bootstrap_id),
+        rig.tomb(&g),
         Some(TombstoneRecord {
             reason: TombstoneReason::OutboundGap,
             last_valid_seq: 42,
@@ -1445,808 +1210,306 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
 
 #[test]
 fn published_history_is_generation_bound_and_interleaves_without_advancing_live_seq() {
-    let terminal_id = terminal(30);
-    let stream_id = stream(130);
-    let bootstrap_id = bootstrap(230);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        40,
-        b"cursor-0",
-        &mut effects,
-    );
+    let g = gen_of(30, 130, 230);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 40, b"cursor-0");
 
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                next_cursor: Some(b"cursor-1"),
-                payload: b"history-one",
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
-        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
-            if cursor == b"cursor-1"
-    )));
-    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 40);
+    rig.ok(g.page(b"cursor-0", Some(b"cursor-1"), b"history-one", 0));
+    assert!(requests_history(&rig.fx, b"cursor-1"));
+    assert_eq!(rig.k.published(&g.id).unwrap().last_seq(), 40);
 
-    kernel
-        .update(
-            output(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                41,
-                b"live-between-history",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(!kernel.prefetch_history(&terminal_id, 0, &mut effects));
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-1",
-                next_cursor: Some(b"cursor-2"),
-                payload: b"history-two",
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    let published = kernel.published(&terminal_id).unwrap();
-    assert_eq!(published.last_seq(), 41);
+    rig.ok(g.output(41, b"live-between-history"));
+    assert!(!rig.k.prefetch_history(&g.id, 0, &mut rig.fx));
+    rig.ok(g.page(b"cursor-1", Some(b"cursor-2"), b"history-two", 0));
+    assert_eq!(rig.k.published(&g.id).unwrap().last_seq(), 41);
     assert!(
-        published
-            .engine()
-            .transcript
+        rig.transcript(&g.id)
             .ends_with(b"history-onelive-between-historyhistory-two")
     );
 
-    let before_wrong_generation = published.engine().transcript.clone();
-    let wrong_generation = kernel.update(
-        KernelInput::HistoryPage {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id: bootstrap(999),
-            cursor: b"wrong-cursor",
-            next_cursor: Some(b"wrong-next"),
-            payload: b"wrong-generation",
-            page_seq: 1,
-            rows: 0,
-        },
-        &mut effects,
-    );
+    let before_wrong_generation = rig.transcript(&g.id).to_vec();
+    let wrong = g.with_bootstrap(999);
+    let wrong_generation =
+        rig.up(wrong.page(b"wrong-cursor", Some(b"wrong-next"), b"wrong-generation", 0));
     assert!(matches!(
         wrong_generation,
         Err(KernelError::GenerationMismatch { .. })
     ));
-    assert_eq!(
-        kernel.published(&terminal_id).unwrap().engine().transcript,
-        before_wrong_generation
-    );
+    assert_eq!(rig.transcript(&g.id), before_wrong_generation);
 }
 
 #[test]
 fn delayed_history_tombstone_for_an_advanced_cursor_is_ignored() {
-    let terminal_id = terminal(31);
-    let stream_id = stream(131);
-    let bootstrap_id = bootstrap(231);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        40,
-        b"cursor-0",
-        &mut effects,
-    );
-    effects.clear();
+    let g = gen_of(31, 131, 231);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 40, b"cursor-0");
+    rig.fx.clear();
 
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                next_cursor: Some(b"cursor-1"),
-                payload: b"history-one",
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.page(b"cursor-0", Some(b"cursor-1"), b"history-one", 0));
     assert_eq!(
-        kernel.history_cache(&terminal_id).unwrap().status().state,
+        rig.history_state(&g.id),
         HistoryLoadState::Loading,
         "the first page advances the outstanding request to cursor-1"
     );
-    effects.clear();
+    rig.fx.clear();
 
-    let delayed = kernel.update(
-        KernelInput::HistoryTombstone {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: b"cursor-0",
-            reason: HistoryUnavailableReason::Expired,
-        },
-        &mut effects,
-    );
+    let delayed = rig.up(KernelInput::HistoryTombstone {
+        terminal_id: &g.id,
+        stream_id: g.s,
+        bootstrap_id: g.b,
+        cursor: b"cursor-0",
+        reason: HistoryUnavailableReason::Expired,
+    });
     assert!(
         delayed.is_ok(),
         "a late tombstone for cursor-0 must not disconnect the live pane: {delayed:?}"
     );
     assert_eq!(
-        kernel.history_cache(&terminal_id).unwrap().status().state,
+        rig.history_state(&g.id),
         HistoryLoadState::Loading,
         "the newer cursor remains usable"
     );
     assert!(
-        effects.as_slice().is_empty(),
+        rig.fx.is_empty(),
         "ignoring an obsolete cursor must not change visible history state"
     );
 }
 
 #[test]
 fn retained_history_limit_and_prefetch_threshold_are_explicit() {
-    let terminal_id = terminal(35);
-    let stream_id = stream(135);
-    let bootstrap_id = bootstrap(235);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        40,
-        b"cursor-0",
-        &mut effects,
-    );
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                next_cursor: Some(b"cursor-1"),
-                payload: b"history-page",
-                page_seq: 1,
-                rows: 128,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().all(|effect| !matches!(
-        effect,
+    let g = gen_of(35, 135, 235);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 40, b"cursor-0");
+    rig.fx.clear();
+    rig.ok(g.page(b"cursor-0", Some(b"cursor-1"), b"history-page", 128));
+    assert!(!any_effect!(
+        rig.fx,
         KernelEffect::Send(KernelSend::HistoryRequest { .. })
-    )));
-    assert!(kernel.prefetch_history(&terminal_id, 0, &mut effects));
+    ));
+    assert!(rig.k.prefetch_history(&g.id, 0, &mut rig.fx));
 
-    let limited = terminal(36);
-    publish_direct_with_history(
-        &mut kernel,
-        &limited,
-        stream_id,
-        bootstrap_id,
-        50,
-        b"limited-0",
-        &mut effects,
-    );
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &limited,
-                stream_id,
-                bootstrap_id,
-                cursor: b"limited-0",
-                next_cursor: Some(b"limited-1"),
-                payload: b"history-not-retained",
-                page_seq: 1,
-                rows: 1,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
-        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
-            if cursor == b"limited-1"
-    )));
-    assert_eq!(
-        kernel.history_cache(&limited).unwrap().status().state,
-        HistoryLoadState::Loading
-    );
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &limited,
-                stream_id,
-                bootstrap_id,
-                cursor: b"limited-1",
-                next_cursor: None,
-                payload: b"finish",
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    let status = kernel.history_cache(&limited).unwrap().status();
+    let limited = Gen {
+        id: terminal(36),
+        ..g
+    };
+    rig.publish_with_history(&limited, 50, b"limited-0");
+    rig.fx.clear();
+    rig.ok(limited.page(b"limited-0", Some(b"limited-1"), b"history-not-retained", 1));
+    assert!(requests_history(&rig.fx, b"limited-1"));
+    assert_eq!(rig.history_state(&limited.id), HistoryLoadState::Loading);
+    rig.fx.clear();
+    rig.ok(limited.page(b"limited-1", None, b"finish", 0));
+    let status = rig.k.history_cache(&limited.id).unwrap().status();
     assert_eq!(status.state, HistoryLoadState::Complete);
     assert_eq!(status.materialized_rows, 0);
 }
 
 #[test]
 fn busy_history_retries_are_automatic_and_bounded() {
-    let terminal_id = terminal(37);
-    let stream_id = stream(137);
-    let bootstrap_id = bootstrap(237);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        50,
-        b"busy-cursor",
-        &mut effects,
-    );
+    let g = gen_of(37, 137, 237);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 50, b"busy-cursor");
 
     for retry in 0..=64 {
-        effects.clear();
-        kernel
-            .update(
-                KernelInput::HistoryRejected {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    cursor: b"busy-cursor",
-                    reason: HistoryRejectionReason::Busy,
-                    required_bytes: 1,
-                    required_rows: 1,
-                },
-                &mut effects,
-            )
-            .unwrap();
-        let retried = effects.as_slice().iter().any(|effect| {
-            matches!(
-                effect,
-                KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
-                    if cursor == b"busy-cursor"
-            )
-        });
-        assert_eq!(retried, retry < 64);
+        rig.fx.clear();
+        rig.ok(g.rejected(b"busy-cursor", HistoryRejectionReason::Busy, 1, 1));
+        assert_eq!(requests_history(&rig.fx, b"busy-cursor"), retry < 64);
     }
-    assert_eq!(
-        kernel.history_cache(&terminal_id).unwrap().status().state,
-        HistoryLoadState::Tombstoned
-    );
+    assert_eq!(rig.history_state(&g.id), HistoryLoadState::Tombstoned);
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the regression keeps the TooSmall, Busy, PAGE, and authenticated FINISH sequence visible"
-)]
 fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
-    let terminal_id = terminal(38);
-    let stream_id = stream(138);
-    let bootstrap_id = bootstrap(238);
-    let profile = BootstrapProfile::NativeState {
-        codec: EngineCodec::LibghosttySnapshotV1,
-        features: EngineFeatureSet::required_native(),
-    };
-    let mut kernel = SessionKernel::with_history_config(
+    let g = gen_of(38, 138, 238);
+    let mut rig = Rig::of(SessionKernel::with_history_config(
         FakeAdapter {
             ready_mode: ReadyMode::ChunkFirst,
         },
-        profile,
+        NATIVE,
         crate::history::HistoryCacheConfig {
             prefetch_rows: 4_096,
             ..crate::history::HistoryCacheConfig::default()
         },
-    );
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            begin_input(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                BootstrapStreamProfile::NativeState {
-                    codec: EngineCodec::LibghosttySnapshotV1,
-                },
-                geometry(),
-                50,
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    push_ready_transcript(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        &mut effects,
-    );
-    kernel
-        .update(
-            ready(&terminal_id, stream_id, bootstrap_id, Some(b"grown-cursor")),
-            &mut effects,
-        )
-        .unwrap();
+    ));
+    rig.ok(g.begin_as(NATIVE_STREAM, 50));
+    rig.push_ready_transcript(&g);
+    rig.ok(g.ready(Some(b"grown-cursor")));
 
     let grown_bytes = 2 * 1024 * 1024;
     let grown_rows = 2_048;
+    let requests = |effects: &EffectBuffer, bytes: u32, rows: u32| {
+        any_effect!(effects, KernelEffect::Send(KernelSend::HistoryRequest {
+            max_bytes,
+            max_rows,
+            ..
+        }) if *max_bytes == bytes && *max_rows == rows)
+    };
     for reason in [
         HistoryRejectionReason::TooSmall,
         HistoryRejectionReason::Busy,
     ] {
-        effects.clear();
-        kernel
-            .update(
-                KernelInput::HistoryRejected {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    cursor: b"grown-cursor",
-                    reason,
-                    required_bytes: grown_bytes,
-                    required_rows: grown_rows,
-                },
-                &mut effects,
-            )
-            .unwrap();
-        assert!(effects.as_slice().iter().any(|effect| matches!(
-            effect,
-            KernelEffect::Send(KernelSend::HistoryRequest {
-                max_bytes,
-                max_rows,
-                ..
-            }) if *max_bytes == grown_bytes && *max_rows == grown_rows
-        )));
+        rig.fx.clear();
+        rig.ok(g.rejected(b"grown-cursor", reason, grown_bytes, grown_rows));
+        assert!(requests(&rig.fx, grown_bytes, grown_rows));
     }
 
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"grown-cursor",
-                next_cursor: Some(b"grown-cursor"),
-                payload: b"history-page",
-                page_seq: 1,
-                rows: grown_rows,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
-        KernelEffect::Send(KernelSend::HistoryRequest {
-            max_bytes,
-            max_rows,
-            ..
-        }) if *max_bytes == 1024 * 1024 && *max_rows == 1024
-    )));
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"grown-cursor",
-                next_cursor: None,
-                payload: b"history-finish",
-                page_seq: 2,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(
-        kernel.history_cache(&terminal_id).unwrap().status().state,
-        HistoryLoadState::Complete
-    );
+    rig.fx.clear();
+    rig.ok(g.page(
+        b"grown-cursor",
+        Some(b"grown-cursor"),
+        b"history-page",
+        grown_rows,
+    ));
+    assert!(requests(&rig.fx, 1024 * 1024, 1024));
+    rig.ok(KernelInput::HistoryPage {
+        terminal_id: &g.id,
+        stream_id: g.s,
+        bootstrap_id: g.b,
+        cursor: b"grown-cursor",
+        next_cursor: None,
+        payload: b"history-finish",
+        page_seq: 2,
+        rows: 0,
+    });
+    assert_eq!(rig.history_state(&g.id), HistoryLoadState::Complete);
 }
 
 #[test]
 fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
-    let terminal_id = terminal(31);
-    let stream_id = stream(131);
-    let bootstrap_id = bootstrap(231);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        73,
-        b"cursor-0",
-        &mut effects,
-    );
-    effects.clear();
+    let g = gen_of(31, 131, 231);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 73, b"cursor-0");
+    rig.fx.clear();
 
-    let failed = kernel.update(
-        KernelInput::HistoryPage {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq: 1,
-            rows: 0,
-            cursor: b"cursor-0",
-            next_cursor: Some(b"cursor-1"),
-            payload: b"history-error",
-        },
-        &mut effects,
-    );
+    let failed = rig.up(g.page(b"cursor-0", Some(b"cursor-1"), b"history-error", 0));
     assert!(matches!(
         failed,
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
+    assert!(rig.tomb(&g).is_none());
     assert!(
-        kernel
-            .tombstone(&terminal_id, stream_id, bootstrap_id)
-            .is_none()
-    );
-    assert!(
-        !kernel
-            .published(&terminal_id)
-            .unwrap()
-            .engine()
-            .transcript
-            .ends_with(b"history-error"),
+        !rig.transcript(&g.id).ends_with(b"history-error"),
         "history import errors are transactional"
     );
     assert!(matches!(
-        kernel.input_eligibility(&terminal_id),
+        rig.k.input_eligibility(&g.id),
         InputEligibility::Eligible {
             stream_id: actual_stream,
             bootstrap_id: actual_bootstrap,
-        } if actual_stream == stream_id && actual_bootstrap == bootstrap_id
+        } if actual_stream == g.s && actual_bootstrap == g.b
     ));
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::History { status, .. })
             if status.state == HistoryLoadState::Tombstoned
-    )));
-    assert!(effects.as_slice().iter().all(|effect| !matches!(
-        effect,
+    ));
+    assert!(!any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::ResyncRequired { .. })
             | KernelEffect::Damage(KernelDamage {
                 kind: KernelDamageKind::Removed,
                 ..
             })
-    )));
+    ));
 
-    effects.clear();
-    kernel
-        .update(
-            output(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                74,
-                b"live-after-history-error",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(
-        kernel
-            .published(&terminal_id)
-            .unwrap()
-            .engine()
-            .transcript
-            .ends_with(b"live-after-history-error")
-    );
+    rig.fx.clear();
+    rig.ok(g.output(74, b"live-after-history-error"));
+    assert!(rig.transcript(&g.id).ends_with(b"live-after-history-error"));
 }
 
 #[test]
 fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
-    let terminal_id = terminal(32);
-    let stream_id = stream(132);
-    let bootstrap_id = bootstrap(232);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct_with_history(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        80,
-        b"cursor-0",
-        &mut effects,
-    );
+    let g = gen_of(32, 132, 232);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish_with_history(&g, 80, b"cursor-0");
 
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryRejected {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                reason: HistoryRejectionReason::TooSmall,
-                required_bytes: u32::MAX,
-                required_rows: 1,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    rig.fx.clear();
+    rig.ok(g.rejected(b"cursor-0", HistoryRejectionReason::TooSmall, u32::MAX, 1));
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::History { status, .. })
-            if status.state == HistoryLoadState::Tombstoned
-                && status.next_cursor.is_none()
-    )));
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+            if status.state == HistoryLoadState::Tombstoned && status.next_cursor.is_none()
+    ));
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::HistoryUnavailable {
             reason: HistoryUnavailableReason::Limit,
             ..
         })
-    )));
-    assert!(effects.as_slice().iter().all(|effect| !matches!(
-        effect,
+    ));
+    assert!(!any_effect!(
+        rig.fx,
         KernelEffect::Send(KernelSend::HistoryRequest { .. })
-    )));
+    ));
 
-    kernel
-        .update(
-            output(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                81,
-                b"live-after-limit",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 81);
+    rig.ok(g.output(81, b"live-after-limit"));
+    assert_eq!(rig.k.published(&g.id).unwrap().last_seq(), 81);
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
-    let terminal_id = terminal(4);
-    let stream_id = stream(14);
-    let old_bootstrap = bootstrap(24);
-    let new_bootstrap = bootstrap(25);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        old_bootstrap,
-        0,
-        &mut effects,
-    );
-    let old_view = kernel
-        .published(&terminal_id)
-        .unwrap()
-        .engine()
-        .transcript
-        .clone();
+    let old = gen_of(4, 14, 24);
+    let new = old.with_bootstrap(25);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish(&old, 0);
+    let old_view = rig.transcript(&old.id).to_vec();
 
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        new_bootstrap,
-        10,
-        &mut effects,
-    );
-    kernel
-        .update(
-            chunk(
-                &terminal_id,
-                stream_id,
-                new_bootstrap,
-                0,
-                b"replacement-prefix",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(
-        kernel.published(&terminal_id).unwrap().engine().transcript,
-        old_view
-    );
+    rig.begin(&new, 10);
+    rig.ok(new.chunk(0, b"replacement-prefix"));
+    assert_eq!(rig.transcript(&old.id), old_view);
 
-    kernel
-        .update(
-            output(&terminal_id, stream_id, old_bootstrap, 1, b"old-still-live"),
-            &mut effects,
-        )
-        .unwrap();
-    kernel
-        .update(
-            chunk(&terminal_id, stream_id, new_bootstrap, 1, READY_MARKER),
-            &mut effects,
-        )
-        .unwrap();
-    protocol_ready(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        new_bootstrap,
-        &mut effects,
-    );
-    assert_eq!(
-        kernel.published(&terminal_id).unwrap().key().bootstrap_id,
-        new_bootstrap
-    );
-    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 10);
-    assert!(
-        kernel
-            .published(&terminal_id)
-            .unwrap()
-            .engine()
-            .transcript
-            .starts_with(b"replacement-prefix")
-    );
-    assert!(
-        kernel
-            .tombstone(&terminal_id, stream_id, old_bootstrap)
-            .is_some()
-    );
+    rig.ok(old.output(1, b"old-still-live"));
+    rig.ok(new.chunk(1, READY_MARKER));
+    rig.ok(new.ready(None));
+    let published = rig.k.published(&old.id).unwrap();
+    assert_eq!(published.key().bootstrap_id, new.b);
+    assert_eq!(published.last_seq(), 10);
+    assert!(rig.transcript(&old.id).starts_with(b"replacement-prefix"));
+    assert!(rig.tomb(&old).is_some());
 
-    let stale = kernel.update(
-        output(&terminal_id, stream_id, old_bootstrap, 2, b"stale-old"),
-        &mut effects,
-    );
-    assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
+    assert!(matches!(
+        rig.up(old.output(2, b"stale-old")),
+        Err(KernelError::RetiredGeneration { .. })
+    ));
 }
 
 #[test]
 fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
-    let ready_terminal = terminal(5);
+    let ready = gen_of(5, 15, 26);
     let closed_terminal = terminal(6);
-    let stream_id = stream(15);
-    let bootstrap_id = bootstrap(26);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(8, &[ready_terminal.clone(), closed_terminal.clone()]),
-            &mut effects,
-        )
-        .unwrap();
-    publish_direct(
-        &mut kernel,
-        &ready_terminal,
-        stream_id,
-        bootstrap_id,
-        4,
-        &mut effects,
-    );
-    assert!(effects.is_empty());
-    kernel
-        .update(closed(&closed_terminal), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::Exited {
-            terminal_id: closed_terminal.clone(),
-            exit_status: None,
-            signal: None,
-            reason: CloseReason::Unknown,
-        })]
-    );
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(attach_started(
+        8,
+        &[ready.id.clone(), closed_terminal.clone()],
+    ));
+    rig.publish(&ready, 4);
+    assert!(rig.fx.is_empty());
+    rig.ok(closed(&closed_terminal));
+    assert_eq!(rig.fx.as_slice(), &[exited(&closed_terminal)]);
 
-    kernel.update(attach_ready(8), &mut effects).unwrap();
+    rig.ok(attach_ready(8));
     assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Send(KernelSend::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            }),
-            KernelEffect::Damage(KernelDamage {
-                terminal_id: ready_terminal.clone(),
-                kind: KernelDamageKind::Full,
-            })
-        ]
+        rig.fx.as_slice(),
+        &[subscribe_all(), damage(&ready.id, KernelDamageKind::Full)]
     );
     assert!(matches!(
-        kernel.input_eligibility(&ready_terminal),
+        rig.k.input_eligibility(&ready.id),
         InputEligibility::Eligible { .. }
     ));
     assert_eq!(
-        kernel.input_eligibility(&closed_terminal),
+        rig.k.input_eligibility(&closed_terminal),
         InputEligibility::Ineligible(InputBlockReason::Closed)
     );
 }
 
 #[test]
-fn selected_synth_profile_is_explicit_and_enforced() {
-    let terminal_id = terminal(7);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    assert_eq!(
-        kernel.selected_profile(),
-        BootstrapProfile::SynthesizedVtRaw
-    );
-
-    let mismatched = kernel.update(
-        begin_input(
-            &terminal_id,
-            stream(16),
-            bootstrap(27),
-            BootstrapStreamProfile::SynthesizedVtStateSync,
-            geometry(),
-            0,
-        ),
-        &mut effects,
-    );
-    assert!(matches!(
-        mismatched,
-        Err(KernelError::ProfileMismatch {
-            selected: BootstrapProfile::SynthesizedVtRaw,
-            incoming: BootstrapStreamProfile::SynthesizedVtStateSync,
-        })
-    ));
-    assert!(kernel.staging(&terminal_id).is_none());
-}
-
-#[test]
 fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
-    let terminal_id = terminal(70);
-    let stream_id = stream(71);
-    let bootstrap_id = bootstrap(72);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(73, std::slice::from_ref(&terminal_id)),
-            &mut effects,
-        )
-        .unwrap();
+    let g = gen_of(70, 71, 72);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    assert_eq!(rig.k.selected_profile(), BootstrapProfile::SynthesizedVtRaw);
+    rig.ok(attach_started(73, std::slice::from_ref(&g.id)));
 
-    let wrong_profile = kernel.update(
-        begin_input(
-            &terminal_id,
-            stream_id,
-            bootstrap_id,
-            BootstrapStreamProfile::SynthesizedVtStateSync,
-            geometry(),
-            100,
-        ),
-        &mut effects,
-    );
+    let wrong_profile = rig.up(g.begin_as(BootstrapStreamProfile::SynthesizedVtStateSync, 100));
     assert!(matches!(
         wrong_profile,
         Err(KernelError::ProfileMismatch {
@@ -2254,68 +1517,51 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
             incoming: BootstrapStreamProfile::SynthesizedVtStateSync,
         })
     ));
-    assert!(kernel.staging(&terminal_id).is_none());
+    assert!(rig.k.staging(&g.id).is_none());
 
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        100,
-        &mut effects,
-    );
-    let staging_before = kernel.staging(&terminal_id).unwrap();
+    rig.begin(&g, 100);
+    let staging_before = rig.k.staging(&g.id).unwrap();
     let key_before = staging_before.key().clone();
     let geometry_before = staging_before.geometry();
     let engine_ready_before = staging_before.engine_ready();
     let protocol_ready_before = staging_before.protocol_ready();
     assert!(staging_before.engine().transcript.is_empty());
-    assert!(effects.is_empty());
-    let live_before_ready = kernel.update(
-        output(
-            &terminal_id,
-            stream_id,
-            bootstrap_id,
-            101,
-            b"\xfflive-before-ready",
-        ),
-        &mut effects,
-    );
+    assert!(rig.fx.is_empty());
     assert!(matches!(
-        live_before_ready,
+        rig.up(g.output(101, b"\xfflive-before-ready")),
         Err(KernelError::GenerationMismatch { .. })
     ));
-    assert!(effects.is_empty());
-    let history_before_ready = kernel.update(
-        KernelInput::HistoryPage {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: b"cursor-0",
-            next_cursor: Some(b"cursor-1"),
-            payload: b"\xfefuture-history-before-ready",
-            page_seq: 1,
-            rows: 0,
-        },
-        &mut effects,
-    );
+    assert!(rig.fx.is_empty());
+    let history_before_ready = rig.up(g.page(
+        b"cursor-0",
+        Some(b"cursor-1"),
+        b"\xfefuture-history-before-ready",
+        0,
+    ));
     assert!(matches!(
         history_before_ready,
         Err(KernelError::GenerationMismatch { .. })
     ));
-    assert!(effects.is_empty());
-    let staging_after = kernel.staging(&terminal_id).unwrap();
+    assert!(rig.fx.is_empty());
+    let staging_after = rig.k.staging(&g.id).unwrap();
     assert_eq!(staging_after.key(), &key_before);
     assert_eq!(staging_after.geometry(), geometry_before);
     assert_eq!(staging_after.engine_ready(), engine_ready_before);
     assert_eq!(staging_after.protocol_ready(), protocol_ready_before);
     assert!(staging_after.engine().transcript.is_empty());
-    assert!(kernel.published(&terminal_id).is_none());
-    assert!(kernel.staging(&terminal_id).is_some());
+    assert!(rig.k.published(&g.id).is_none());
+}
+
+fn published_recording_native(g: &Gen) -> Rig<RecordingNativeAdapter> {
+    let mut rig = Rig::of(SessionKernel::new(RecordingNativeAdapter, NATIVE));
+    rig.ok(g.begin_as(NATIVE_STREAM, 10));
+    rig.ok(g.chunk(0, b"checkpoint-a"));
+    rig.ok(g.chunk(1, b"checkpoint-b"));
+    rig.ok(g.ready(Some(b"cursor-0")));
+    rig
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let advertised = BootstrapCapabilities::new().with_native(
         EngineCodec::LibghosttySnapshotV1,
@@ -2323,110 +1569,48 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     );
     let client = ClientCapabilities::new().with_bootstrap(advertised);
     let (selected, _) = select_bootstrap_profile(&client, &advertised).unwrap();
-    assert_eq!(
-        selected,
-        BootstrapProfile::NativeState {
-            codec: EngineCodec::LibghosttySnapshotV1,
-            features: EngineFeatureSet::required_native(),
-        }
-    );
-    let profile = BootstrapStreamProfile::NativeState {
-        codec: EngineCodec::LibghosttySnapshotV1,
-    };
-    let terminal_id = terminal(80);
-    let stream_id = stream(81);
-    let bootstrap_id = bootstrap(82);
-    let mut kernel = SessionKernel::new(RecordingNativeAdapter, selected);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            begin_input(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                geometry(),
-                900,
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
+    assert_eq!(selected, NATIVE);
+    let g = gen_of(80, 81, 82);
+    let mut rig = Rig::of(SessionKernel::new(RecordingNativeAdapter, selected));
+    rig.ok(g.begin_as(NATIVE_STREAM, 900));
+    assert!(rig.fx.is_empty());
 
     let checkpoint_a: &[u8] = b"\xff\0checkpoint-a\x80";
     let checkpoint_b: &[u8] = b"\xfecheckpoint-b\0\xfd";
     for (chunk_seq, payload) in [(0, checkpoint_a), (1, checkpoint_b)] {
-        kernel
-            .update(
-                chunk(&terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
-                &mut effects,
-            )
-            .unwrap();
-        assert!(effects.is_empty());
+        rig.ok(g.chunk(chunk_seq, payload));
+        assert!(rig.fx.is_empty());
     }
-    kernel
-        .update(
-            ready(&terminal_id, stream_id, bootstrap_id, Some(b"cursor-0")),
-            &mut effects,
-        )
-        .unwrap();
-    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
-    assert_eq!(published_key.terminal_id, terminal_id);
-    assert_eq!(published_key.stream_id, stream_id);
-    assert_eq!(published_key.bootstrap_id, bootstrap_id);
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
-        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
-            if cursor == b"cursor-0"
-    )));
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    rig.ok(g.ready(Some(b"cursor-0")));
+    let published_key = rig.k.published(&g.id).unwrap().key().clone();
+    assert_eq!(published_key.terminal_id, g.id);
+    assert_eq!(published_key.stream_id, g.s);
+    assert_eq!(published_key.bootstrap_id, g.b);
+    assert!(requests_history(&rig.fx, b"cursor-0"));
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Damage(KernelDamage {
             terminal_id: damaged,
             kind: KernelDamageKind::Full,
-        }) if damaged == &terminal_id
-    )));
+        }) if damaged == &g.id
+    ));
 
     let live_a: &[u8] = b"\x80live-a\xff";
     let history: &[u8] = b"\0\xfehistory-future\x81";
     let live_b: &[u8] = b"\xfdlive-b\0";
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 901, live_a),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
-    kernel
-        .update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                next_cursor: Some(b"cursor-1"),
-                payload: history,
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    rig.ok(g.output(901, live_a));
+    assert!(rig.fx.is_empty());
+    rig.ok(g.page(b"cursor-0", Some(b"cursor-1"), history, 0));
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::History { status, .. })
             if status.state == HistoryLoadState::Loading
-    )));
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 902, live_b),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
+    ));
+    rig.ok(g.output(902, live_b));
+    assert!(rig.fx.is_empty());
 
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().engine().records,
+        rig.k.published(&g.id).unwrap().engine().records,
         [
             NativeRecord::Bootstrap(checkpoint_a.to_vec()),
             NativeRecord::Bootstrap(checkpoint_b.to_vec()),
@@ -2436,53 +1620,6 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
             NativeRecord::Live(live_b.to_vec()),
         ]
     );
-}
-fn published_recording_native(
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-) -> SessionKernel<RecordingNativeAdapter> {
-    let mut kernel = SessionKernel::new(
-        RecordingNativeAdapter,
-        BootstrapProfile::NativeState {
-            codec: EngineCodec::LibghosttySnapshotV1,
-            features: EngineFeatureSet::required_native(),
-        },
-    );
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            begin_input(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                BootstrapStreamProfile::NativeState {
-                    codec: EngineCodec::LibghosttySnapshotV1,
-                },
-                geometry(),
-                10,
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    for (chunk_seq, payload) in [
-        (0, b"checkpoint-a".as_slice()),
-        (1, b"checkpoint-b".as_slice()),
-    ] {
-        kernel
-            .update(
-                chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
-                &mut effects,
-            )
-            .unwrap();
-    }
-    kernel
-        .update(
-            ready(terminal_id, stream_id, bootstrap_id, Some(b"cursor-0")),
-            &mut effects,
-        )
-        .unwrap();
-    kernel
 }
 
 #[test]
@@ -2495,24 +1632,11 @@ fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
         ),
         (b"finish".as_slice(), true, BootstrapProgress::Finished),
     ] {
-        let terminal_id = terminal(83);
-        let stream_id = stream(84);
-        let bootstrap_id = bootstrap(85);
-        let mut kernel = published_recording_native(&terminal_id, stream_id, bootstrap_id);
-        let mut effects = EffectBuffer::new();
-        let result = kernel.update(
-            KernelInput::HistoryPage {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                next_cursor: has_more.then_some(b"cursor-1".as_slice()),
-                payload,
-                page_seq: 1,
-                rows: 0,
-            },
-            &mut effects,
-        );
+        let g = gen_of(83, 84, 85);
+        let mut rig = published_recording_native(&g);
+        rig.fx.clear();
+        let next = has_more.then_some(b"cursor-1".as_slice());
+        let result = rig.up(g.page(b"cursor-0", next, payload, 0));
         assert!(matches!(
             result,
             Err(KernelError::HistoryCompletionMismatch {
@@ -2521,60 +1645,40 @@ fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
             }) if progress == expected_progress && actual_has_more == has_more
         ));
         assert!(
-            kernel.published(&terminal_id).is_some(),
+            rig.k.published(&g.id).is_some(),
             "history mismatch retains the last renderable replica"
         );
-        assert!(
-            kernel
-                .tombstone(&terminal_id, stream_id, bootstrap_id)
-                .is_none()
-        );
+        assert!(rig.tomb(&g).is_none());
         assert!(matches!(
-            kernel.input_eligibility(&terminal_id),
+            rig.k.input_eligibility(&g.id),
             InputEligibility::Eligible { .. }
         ));
-        assert!(effects.as_slice().iter().any(|effect| matches!(
-            effect,
+        assert!(any_effect!(
+            rig.fx,
             KernelEffect::Status(KernelStatus::History { status, .. })
                 if status.state == HistoryLoadState::Tombstoned
-        )));
-        assert!(effects.as_slice().iter().all(|effect| !matches!(
-            effect,
+        ));
+        assert!(!any_effect!(
+            rig.fx,
             KernelEffect::Status(KernelStatus::ResyncRequired { .. })
-        )));
+        ));
     }
 }
 
 #[test]
-fn engine_effects_are_drained_after_apply_in_order() {
-    let terminal_id = terminal(8);
-    let stream_id = stream(17);
-    let bootstrap_id = bootstrap(28);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
-    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
+fn engine_effects_are_drained_after_apply_in_order_into_a_reused_buffer() {
+    let g = gen_of(8, 17, 28);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.fx = EffectBuffer::with_capacity(4);
+    let initial_capacity = rig.fx.capacity();
+    rig.publish(&g, 0);
+    let published_key = rig.k.published(&g.id).unwrap().key().clone();
 
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 1, b"effects"),
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.output(1, b"effects"));
     assert_eq!(
-        effects.as_slice(),
+        rig.fx.as_slice(),
         &[
-            KernelEffect::Damage(KernelDamage {
-                terminal_id: terminal_id.clone(),
-                kind: KernelDamageKind::Rows { first: 2, last: 4 },
-            }),
+            damage(&g.id, KernelDamageKind::Rows { first: 2, last: 4 }),
             KernelEffect::Status(KernelStatus::Engine {
                 key: published_key.clone(),
                 status: EngineStatus::Bell,
@@ -2585,642 +1689,245 @@ fn engine_effects_are_drained_after_apply_in_order() {
             }),
         ]
     );
+    assert_eq!(rig.fx.capacity(), initial_capacity);
 
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 2, b"plain"),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(effects.len(), 1, "prior engine effects were fully drained");
+    rig.ok(g.output(2, b"plain"));
+    assert_eq!(rig.fx.len(), 1, "prior engine effects were fully drained");
+    assert_eq!(rig.fx.capacity(), initial_capacity);
+    rig.fx.clear();
+    assert_eq!(rig.fx.capacity(), initial_capacity);
 }
 
 #[test]
 fn input_gate_requires_published_replica_and_attach_ready() {
-    let terminal_id = terminal(9);
-    let stream_id = stream(18);
-    let bootstrap_id = bootstrap(29);
+    let g = gen_of(9, 18, 29);
     let event = InputEvent::Focus(FocusEvent::Gained);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(9, std::slice::from_ref(&terminal_id)),
-            &mut effects,
-        )
-        .unwrap();
-
-    assert_eq!(
-        kernel.input_eligibility(&terminal_id),
-        InputEligibility::Ineligible(InputBlockReason::AwaitingReplica)
-    );
-    let before_replica = kernel.update(
+    let input = || {
         KernelInput::Action(KernelAction::Input {
-            terminal_id: &terminal_id,
+            terminal_id: &g.id,
             event: &event,
-        }),
-        &mut effects,
-    );
-    assert!(matches!(
-        before_replica,
-        Err(KernelError::InputIneligible {
-            reason: InputBlockReason::AwaitingReplica,
-            ..
         })
-    ));
+    };
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(attach_started(9, std::slice::from_ref(&g.id)));
 
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
-    assert_eq!(
-        kernel.input_eligibility(&terminal_id),
-        InputEligibility::Ineligible(InputBlockReason::AwaitingAttachReady)
-    );
-    let before_barrier = kernel.update(
-        KernelInput::Action(KernelAction::Input {
-            terminal_id: &terminal_id,
-            event: &event,
-        }),
-        &mut effects,
-    );
-    assert!(matches!(
-        before_barrier,
-        Err(KernelError::InputIneligible {
-            reason: InputBlockReason::AwaitingAttachReady,
-            ..
-        })
-    ));
+    for (reason, publish) in [
+        (InputBlockReason::AwaitingReplica, true),
+        (InputBlockReason::AwaitingAttachReady, false),
+    ] {
+        assert_eq!(
+            rig.k.input_eligibility(&g.id),
+            InputEligibility::Ineligible(reason)
+        );
+        assert!(matches!(
+            rig.up(input()),
+            Err(KernelError::InputIneligible { reason: actual, .. }) if actual == reason
+        ));
+        if publish {
+            rig.publish(&g, 0);
+        }
+    }
 
-    kernel.update(attach_ready(9), &mut effects).unwrap();
+    rig.ok(attach_ready(9));
     assert_eq!(
-        kernel.input_eligibility(&terminal_id),
+        rig.k.input_eligibility(&g.id),
         InputEligibility::Eligible {
-            stream_id,
-            bootstrap_id,
+            stream_id: g.s,
+            bootstrap_id: g.b,
         }
     );
-    kernel
-        .update(
-            KernelInput::Action(KernelAction::Input {
-                terminal_id: &terminal_id,
-                event: &event,
-            }),
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(input());
     assert_eq!(
-        effects.as_slice(),
+        rig.fx.as_slice(),
         &[KernelEffect::Send(KernelSend::Input {
-            terminal_id: terminal_id.clone(),
+            terminal_id: g.id.clone(),
             event,
         })]
     );
 }
 
 #[test]
-fn effect_buffer_reuses_high_water_capacity() {
-    let terminal_id = terminal(10);
-    let stream_id = stream(19);
-    let bootstrap_id = bootstrap(30);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::with_capacity(4);
-    let initial_capacity = effects.capacity();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 1, b"effects"),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(effects.len(), 3);
-    assert_eq!(effects.capacity(), initial_capacity);
-
-    kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 2, b"plain"),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(effects.len(), 1);
-    assert_eq!(effects.capacity(), initial_capacity);
-    effects.clear();
-    assert_eq!(effects.capacity(), initial_capacity);
-}
-
-#[test]
 fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
-    let terminal_id = terminal(11);
-    let stream_id = stream(20);
-    let bootstrap_id = bootstrap(31);
-    let mut state_sync_kernel = kernel_with_profile(
+    let g = gen_of(11, 20, 31);
+    let mut rig = Rig::of(kernel_with_profile(
         ReadyMode::ChunkFirst,
         BootstrapProfile::SynthesizedVtStateSync,
-    );
-    let mut effects = EffectBuffer::new();
-    state_sync_kernel
-        .update(
-            begin_input(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                BootstrapStreamProfile::SynthesizedVtStateSync,
-                geometry(),
-                0,
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    push_ready_transcript(
-        &mut state_sync_kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        &mut effects,
-    );
-    protocol_ready(
-        &mut state_sync_kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        &mut effects,
-    );
+    ));
+    rig.ok(g.begin_as(BootstrapStreamProfile::SynthesizedVtStateSync, 0));
+    rig.push_ready_transcript(&g);
+    rig.ok(g.ready(None));
 
-    state_sync_kernel
-        .update(
-            output(&terminal_id, stream_id, bootstrap_id, 1, b"state-sync"),
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.output(1, b"state-sync"));
     assert_eq!(
-        effects.as_slice(),
+        rig.fx.as_slice(),
         &[
-            KernelEffect::Damage(KernelDamage {
-                terminal_id: terminal_id.clone(),
-                kind: KernelDamageKind::Full,
-            }),
+            damage(&g.id, KernelDamageKind::Full),
             KernelEffect::Send(KernelSend::FrameAck {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
+                terminal_id: g.id.clone(),
+                stream_id: g.s,
+                bootstrap_id: g.b,
                 seq: 1,
             }),
         ]
     );
 
-    let raw_terminal = terminal(12);
-    let raw_stream = stream(21);
-    let raw_bootstrap = bootstrap(32);
-    let mut raw_kernel = kernel(ReadyMode::ChunkFirst);
-    publish_direct(
-        &mut raw_kernel,
-        &raw_terminal,
-        raw_stream,
-        raw_bootstrap,
-        0,
-        &mut effects,
-    );
-    raw_kernel
-        .update(
-            output(&raw_terminal, raw_stream, raw_bootstrap, 1, b"raw"),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(
-        effects
-            .as_slice()
-            .iter()
-            .all(|effect| !matches!(effect, KernelEffect::Send(KernelSend::FrameAck { .. })))
-    );
+    let raw = gen_of(12, 21, 32);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish(&raw, 0);
+    rig.ok(raw.output(1, b"raw"));
+    assert!(!any_effect!(
+        rig.fx,
+        KernelEffect::Send(KernelSend::FrameAck { .. })
+    ));
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn mutating_adapter_errors_retire_staging_and_published_replicas() {
-    let mut kernel = kernel(ReadyMode::ProtocolFirst);
-    let mut effects = EffectBuffer::new();
-
-    let chunk_terminal = terminal(13);
-    let chunk_stream = stream(22);
-    let chunk_bootstrap = bootstrap(33);
-    begin(
-        &mut kernel,
-        &chunk_terminal,
-        chunk_stream,
-        chunk_bootstrap,
-        0,
-        &mut effects,
-    );
-    let chunk_error = kernel.update(
-        chunk(
-            &chunk_terminal,
-            chunk_stream,
-            chunk_bootstrap,
-            0,
-            b"mutate-then-error",
-        ),
-        &mut effects,
-    );
-    assert!(matches!(
-        chunk_error,
-        Err(KernelError::Engine(FakeError::MutatedThenFailed))
-    ));
-    assert!(kernel.staging(&chunk_terminal).is_none());
-    assert!(
-        kernel
-            .tombstone(&chunk_terminal, chunk_stream, chunk_bootstrap)
-            .is_some()
-    );
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::ResyncRequired {
-            terminal_id: chunk_terminal.clone(),
-            stream_id: chunk_stream,
-            bootstrap_id: chunk_bootstrap,
+    let mut rig = Rig::new(ReadyMode::ProtocolFirst);
+    let resync = |g: &Gen| {
+        KernelEffect::Status(KernelStatus::ResyncRequired {
+            terminal_id: g.id.clone(),
+            stream_id: g.s,
+            bootstrap_id: g.b,
             reason: TombstoneReason::CodecFailure,
-        })]
-    );
-    let chunk_retry = kernel.update(
-        chunk(&chunk_terminal, chunk_stream, chunk_bootstrap, 0, b"retry"),
-        &mut effects,
-    );
+        })
+    };
+
+    let chunked = gen_of(13, 22, 33);
+    rig.begin(&chunked, 0);
     assert!(matches!(
-        chunk_retry,
+        rig.up(chunked.chunk(0, b"mutate-then-error")),
+        Err(KernelError::Engine(FakeError::MutatedThenFailed))
+    ));
+    assert!(rig.k.staging(&chunked.id).is_none());
+    assert!(rig.tomb(&chunked).is_some());
+    assert_eq!(rig.fx.as_slice(), &[resync(&chunked)]);
+    assert!(matches!(
+        rig.up(chunked.chunk(0, b"retry")),
         Err(KernelError::RetiredGeneration { .. })
     ));
 
-    let finish_terminal = terminal(14);
-    let finish_stream = stream(23);
-    let finish_bootstrap = bootstrap(34);
-    begin(
-        &mut kernel,
-        &finish_terminal,
-        finish_stream,
-        finish_bootstrap,
-        0,
-        &mut effects,
-    );
-    kernel
-        .update(
-            chunk(
-                &finish_terminal,
-                finish_stream,
-                finish_bootstrap,
-                0,
-                b"<FINISH_ERROR>",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    let finish_error = kernel.update(
-        ready(&finish_terminal, finish_stream, finish_bootstrap, None),
-        &mut effects,
-    );
+    let finish = gen_of(14, 23, 34);
+    rig.begin(&finish, 0);
+    rig.ok(finish.chunk(0, b"<FINISH_ERROR>"));
     assert!(matches!(
-        finish_error,
+        rig.up(finish.ready(None)),
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
-    assert!(kernel.staging(&finish_terminal).is_none());
-    assert!(
-        kernel
-            .tombstone(&finish_terminal, finish_stream, finish_bootstrap)
-            .is_some()
-    );
-    let finish_retry = kernel.update(
-        ready(&finish_terminal, finish_stream, finish_bootstrap, None),
-        &mut effects,
-    );
+    assert!(rig.k.staging(&finish.id).is_none());
+    assert!(rig.tomb(&finish).is_some());
     assert!(matches!(
-        finish_retry,
+        rig.up(finish.ready(None)),
         Err(KernelError::RetiredGeneration { .. })
     ));
 
-    let live_terminal = terminal(15);
-    let live_stream = stream(24);
-    let live_bootstrap = bootstrap(35);
-    publish_direct(
-        &mut kernel,
-        &live_terminal,
-        live_stream,
-        live_bootstrap,
-        0,
-        &mut effects,
-    );
-    let live_error = kernel.update(
-        output(
-            &live_terminal,
-            live_stream,
-            live_bootstrap,
-            1,
-            b"mutate-then-error",
-        ),
-        &mut effects,
-    );
+    let live = gen_of(15, 24, 35);
+    rig.publish(&live, 0);
     assert!(matches!(
-        live_error,
+        rig.up(live.output(1, b"mutate-then-error")),
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
-    assert!(kernel.published(&live_terminal).is_none());
-    assert!(
-        kernel
-            .tombstone(&live_terminal, live_stream, live_bootstrap)
-            .is_some()
-    );
+    assert!(rig.k.published(&live.id).is_none());
+    assert!(rig.tomb(&live).is_some());
     assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Status(KernelStatus::ResyncRequired {
-                terminal_id: live_terminal.clone(),
-                stream_id: live_stream,
-                bootstrap_id: live_bootstrap,
-                reason: TombstoneReason::CodecFailure,
-            }),
-            KernelEffect::Damage(KernelDamage {
-                terminal_id: live_terminal.clone(),
-                kind: KernelDamageKind::Removed,
-            }),
-        ]
-    );
-    let live_retry = kernel.update(
-        output(&live_terminal, live_stream, live_bootstrap, 1, b"retry"),
-        &mut effects,
+        rig.fx.as_slice(),
+        &[resync(&live), damage(&live.id, KernelDamageKind::Removed)]
     );
     assert!(matches!(
-        live_retry,
+        rig.up(live.output(1, b"retry")),
         Err(KernelError::RetiredGeneration { .. })
     ));
+}
+
+/// The effects a `bootstrap-effects` chunk and its finish leave for publication.
+fn bootstrap_effects(key: &super::ReplicaKey) -> Vec<KernelEffect> {
+    let title = |title: &str| {
+        KernelEffect::Status(KernelStatus::Engine {
+            key: key.clone(),
+            status: EngineStatus::Title(title.to_owned()),
+        })
+    };
+    let wakeup = || {
+        KernelEffect::Job(KernelJob {
+            key: key.clone(),
+            job: EngineJob::Wakeup,
+        })
+    };
+    vec![
+        title("bootstrap-staging"),
+        wakeup(),
+        title("bootstrap-finished"),
+        wakeup(),
+        damage(&key.terminal_id, KernelDamageKind::Full),
+    ]
 }
 
 #[test]
 fn bootstrap_effects_wait_for_publication_and_suppress_send_and_damage() {
-    let terminal_id = terminal(16);
-    let stream_id = stream(25);
-    let bootstrap_id = bootstrap(36);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
-    kernel
-        .update(
-            chunk(
-                &terminal_id,
-                stream_id,
-                bootstrap_id,
-                0,
-                b"bootstrap-effects",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
-
-    kernel
-        .update(
-            chunk(&terminal_id, stream_id, bootstrap_id, 1, READY_MARKER),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
-    protocol_ready(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        &mut effects,
-    );
-    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
-    assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Status(KernelStatus::Engine {
-                key: published_key.clone(),
-                status: EngineStatus::Title("bootstrap-staging".to_owned()),
-            }),
-            KernelEffect::Job(KernelJob {
-                key: published_key.clone(),
-                job: EngineJob::Wakeup,
-            }),
-            KernelEffect::Status(KernelStatus::Engine {
-                key: published_key.clone(),
-                status: EngineStatus::Title("bootstrap-finished".to_owned()),
-            }),
-            KernelEffect::Job(KernelJob {
-                key: published_key,
-                job: EngineJob::Wakeup,
-            }),
-            KernelEffect::Damage(KernelDamage {
-                terminal_id,
-                kind: KernelDamageKind::Full,
-            }),
-        ]
-    );
+    let g = gen_of(16, 25, 36);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.begin(&g, 0);
+    rig.ok(g.chunk(0, b"bootstrap-effects"));
+    assert!(rig.fx.is_empty());
+    rig.ok(g.chunk(1, READY_MARKER));
+    assert!(rig.fx.is_empty());
+    rig.ok(g.ready(None));
+    let published_key = rig.k.published(&g.id).unwrap().key().clone();
+    assert_eq!(rig.fx.as_slice(), bootstrap_effects(&published_key));
 }
 
 #[test]
 fn replacement_attach_close_flushes_pending_removal_at_barrier() {
-    let terminal_id = terminal(17);
-    let stream_id = stream(26);
-    let bootstrap_id = bootstrap(37);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(40, std::slice::from_ref(&terminal_id)),
-            &mut effects,
-        )
-        .unwrap();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    );
-    kernel.update(attach_ready(40), &mut effects).unwrap();
+    let g = gen_of(17, 26, 37);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(attach_started(40, std::slice::from_ref(&g.id)));
+    rig.publish(&g, 0);
+    rig.ok(attach_ready(40));
 
-    kernel
-        .update(
-            attach_started(41, std::slice::from_ref(&terminal_id)),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(kernel.published(&terminal_id).is_some());
-    kernel.update(closed(&terminal_id), &mut effects).unwrap();
+    rig.ok(attach_started(41, std::slice::from_ref(&g.id)));
+    assert!(rig.k.published(&g.id).is_some());
+    rig.ok(closed(&g.id));
+    assert_eq!(rig.fx.as_slice(), &[exited(&g.id)]);
+    rig.ok(attach_ready(41));
     assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::Exited {
-            terminal_id: terminal_id.clone(),
-            exit_status: None,
-            signal: None,
-            reason: CloseReason::Unknown,
-        })]
-    );
-    kernel.update(attach_ready(41), &mut effects).unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Send(KernelSend::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            }),
-            KernelEffect::Damage(KernelDamage {
-                terminal_id,
-                kind: KernelDamageKind::Removed,
-            })
-        ]
+        rig.fx.as_slice(),
+        &[subscribe_all(), damage(&g.id, KernelDamageKind::Removed)]
     );
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
-    let terminal_id = terminal(18);
-    let stream_id = stream(27);
-    let published_bootstrap = bootstrap(38);
-    let cancelled_bootstrap = bootstrap(39);
-    let replacement_bootstrap = bootstrap(40);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    publish_direct(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        published_bootstrap,
-        0,
-        &mut effects,
-    );
-    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
+    let published = gen_of(18, 27, 38);
+    let cancelled = published.with_bootstrap(39);
+    let replacement = published.with_bootstrap(40);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.publish(&published, 0);
+    let published_key = rig.k.published(&published.id).unwrap().key().clone();
 
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        cancelled_bootstrap,
-        10,
-        &mut effects,
-    );
-    kernel
-        .update(
-            chunk(
-                &terminal_id,
-                stream_id,
-                cancelled_bootstrap,
-                0,
-                b"bootstrap-effects",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
+    rig.begin(&cancelled, 10);
+    rig.ok(cancelled.chunk(0, b"bootstrap-effects"));
+    assert!(rig.fx.is_empty());
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().key(),
+        rig.k.published(&published.id).unwrap().key(),
         &published_key
     );
 
-    kernel
-        .update(
-            KernelInput::Tombstone {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id: cancelled_bootstrap,
-                reason: TombstoneReason::CodecFailure,
-                last_valid_seq: 10,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty(), "retired staging effects are discarded");
+    rig.ok(cancelled.tombstone(TombstoneReason::CodecFailure, 10));
+    assert!(rig.fx.is_empty(), "retired staging effects are discarded");
     assert_eq!(
-        kernel.published(&terminal_id).unwrap().key(),
+        rig.k.published(&published.id).unwrap().key(),
         &published_key
     );
 
-    begin(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        replacement_bootstrap,
-        20,
-        &mut effects,
-    );
-    kernel
-        .update(
-            chunk(
-                &terminal_id,
-                stream_id,
-                replacement_bootstrap,
-                0,
-                b"bootstrap-effects",
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
-    kernel
-        .update(
-            chunk(
-                &terminal_id,
-                stream_id,
-                replacement_bootstrap,
-                1,
-                READY_MARKER,
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty());
-    protocol_ready(
-        &mut kernel,
-        &terminal_id,
-        stream_id,
-        replacement_bootstrap,
-        &mut effects,
-    );
-    let replacement_key = kernel.published(&terminal_id).unwrap().key().clone();
-    assert_eq!(replacement_key.bootstrap_id, replacement_bootstrap);
-    assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Status(KernelStatus::Engine {
-                key: replacement_key.clone(),
-                status: EngineStatus::Title("bootstrap-staging".to_owned()),
-            }),
-            KernelEffect::Job(KernelJob {
-                key: replacement_key.clone(),
-                job: EngineJob::Wakeup,
-            }),
-            KernelEffect::Status(KernelStatus::Engine {
-                key: replacement_key.clone(),
-                status: EngineStatus::Title("bootstrap-finished".to_owned()),
-            }),
-            KernelEffect::Job(KernelJob {
-                key: replacement_key,
-                job: EngineJob::Wakeup,
-            }),
-            KernelEffect::Damage(KernelDamage {
-                terminal_id,
-                kind: KernelDamageKind::Full,
-            }),
-        ]
-    );
+    rig.begin(&replacement, 20);
+    rig.ok(replacement.chunk(0, b"bootstrap-effects"));
+    assert!(rig.fx.is_empty());
+    rig.ok(replacement.chunk(1, READY_MARKER));
+    assert!(rig.fx.is_empty());
+    rig.ok(replacement.ready(None));
+    let replacement_key = rig.k.published(&published.id).unwrap().key().clone();
+    assert_eq!(replacement_key.bootstrap_id, replacement.b);
+    assert_eq!(rig.fx.as_slice(), bootstrap_effects(&replacement_key));
 }
 
 /// phux-994s: the walk-identity token a frontend hands its render pool packs
@@ -3247,98 +1954,45 @@ fn generation_token_is_lossless_and_changes_per_generation() {
     );
 }
 
-/// phux-l96p.10: the gap resync's replacement generation is adopted whole.
-///
-/// After a broadcast gap the server republishes the pane as a *new* bootstrap
-/// generation whose `base_seq` is the actor's current raw sequence — far
-/// beyond anything the old generation reached, because the whole point is that
-/// the frames in between were dropped. The kernel must take that base as the
-/// new origin and accept `base + 1` as the very next live frame; treating the
-/// jump as a `SequenceGap` is what turned a recoverable gap into
-/// `session kernel rejected terminal_output: live sequence gap at N;
-/// expected M` and a dead pane.
-///
-/// Both server shapes are covered, because the two bootstrap profiles differ:
-/// the native path tombstones the old generation first, the synthesized path
-/// republishes without one. In both, output still addressed to the old
-/// generation must be *ignored* (`RetiredGeneration`), never a sequence error.
+/// phux-l96p.10: a gap resync's replacement generation is adopted whole: its
+/// `base_seq` (far past the dropped window) is the new origin and `base + 1`
+/// the next live frame, never a `SequenceGap`. The native path tombstones
+/// the old generation first, the synthesized path does not; in both, output
+/// for the old generation is `RetiredGeneration`, which the host ignores.
 #[test]
 fn gap_resync_replacement_generation_resets_the_live_sequence() {
     for tombstone_first in [true, false] {
-        let terminal_id = terminal(7);
-        let stream_id = stream(17);
-        let old = bootstrap(27);
-        let replacement = bootstrap(28);
-        let mut kernel = kernel(ReadyMode::ChunkFirst);
-        let mut effects = EffectBuffer::new();
+        let old = gen_of(7, 17, 27);
+        let replacement = old.with_bootstrap(28);
+        let mut rig = Rig::new(ReadyMode::ChunkFirst);
 
-        publish_direct(&mut kernel, &terminal_id, stream_id, old, 41, &mut effects);
-        kernel
-            .update(
-                output(&terminal_id, stream_id, old, 42, b"before-the-gap"),
-                &mut effects,
-            )
-            .unwrap();
-
+        rig.publish(&old, 41);
+        rig.ok(old.output(42, b"before-the-gap"));
         if tombstone_first {
-            kernel
-                .update(
-                    KernelInput::Tombstone {
-                        terminal_id: &terminal_id,
-                        stream_id,
-                        bootstrap_id: old,
-                        reason: TombstoneReason::OutboundGap,
-                        last_valid_seq: 42,
-                    },
-                    &mut effects,
-                )
-                .unwrap();
+            rig.ok(old.tombstone(TombstoneReason::OutboundGap, 42));
         }
 
-        // The dropped window: the actor is thousands of sequences further on.
         let resync_base = 9_000;
-        publish_direct(
-            &mut kernel,
-            &terminal_id,
-            stream_id,
-            replacement,
-            resync_base,
-            &mut effects,
-        );
+        rig.publish(&replacement, resync_base);
+        let published = rig.k.published(&old.id).unwrap();
         assert_eq!(
-            kernel.published(&terminal_id).unwrap().key().bootstrap_id,
-            replacement,
-            "tombstone_first={tombstone_first}: replacement must become the published generation",
+            published.key().bootstrap_id,
+            replacement.b,
+            "{tombstone_first}"
         );
-        assert_eq!(
-            kernel.published(&terminal_id).unwrap().last_seq(),
-            resync_base,
-            "tombstone_first={tombstone_first}: the replacement's base_seq is the new origin",
-        );
+        assert_eq!(published.last_seq(), resync_base, "{tombstone_first}");
 
-        kernel
-            .update(
-                output(&terminal_id, stream_id, replacement, resync_base + 1, b"after-the-gap"),
-                &mut effects,
-            )
-            .unwrap_or_else(|err| {
-                panic!("tombstone_first={tombstone_first}: first frame after the resync was rejected: {err}")
-            });
+        rig.up(replacement.output(resync_base + 1, b"after-the-gap"))
+            .unwrap_or_else(|err| panic!("{tombstone_first}: first frame after resync: {err}"));
         assert_eq!(
-            kernel.published(&terminal_id).unwrap().last_seq(),
+            rig.k.published(&old.id).unwrap().last_seq(),
             resync_base + 1
         );
 
-        // A frame the pump had already queued against the old generation is
-        // ignorable, not fatal: `engine_route` folds `RetiredGeneration` into
-        // "ignored", and any other error would detach the client.
-        let stale = kernel.update(
-            output(&terminal_id, stream_id, old, 43, b"stale"),
-            &mut effects,
-        );
+        let stale = rig.up(old.output(43, b"stale"));
         assert!(
             matches!(stale, Err(KernelError::RetiredGeneration { .. })),
-            "tombstone_first={tombstone_first}: stale generation output must be ignored, got {stale:?}",
+            "{tombstone_first}: stale generation output must be ignored, got {stale:?}",
         );
     }
 }
@@ -3352,49 +2006,43 @@ fn agent_line(seq: u64, kind: &str, data: &str) -> String {
     )
 }
 
-fn declare_agent(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    agent: &ResourceId,
-    parent: &ResourceId,
-    effects: &mut EffectBuffer,
-) {
-    kernel
-        .update(
-            KernelInput::AgentSessionDeclared(super::AgentSessionDeclaration {
-                terminal_id: agent,
-                parent: Some(parent),
-                provider: Some("claude"),
-                native_id: Some("s-1"),
-                state: Some("working"),
-            }),
-            effects,
-        )
-        .unwrap();
+/// A generation of the agent these tests use, `AgentSession` 2.
+fn agent_gen(s: u64, b: u64) -> Gen {
+    gen_of(2, s, b)
 }
 
-fn agent_begin(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    agent: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    base_seq: u64,
-    effects: &mut EffectBuffer,
-) -> Result<(), KernelError<FakeError>> {
-    kernel.update(
+impl Gen {
+    const fn agent_begin(&self, base_seq: u64) -> KernelInput<'_> {
+        self.agent_begin_as(AGENT_PROFILE, base_seq)
+    }
+
+    const fn resume(&self, after_seq: u64, base_seq: u64) -> KernelInput<'_> {
+        self.agent_begin_as(
+            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq },
+            base_seq,
+        )
+    }
+
+    const fn agent_begin_as(
+        &self,
+        profile: BootstrapStreamProfile,
+        base_seq: u64,
+    ) -> KernelInput<'_> {
         KernelInput::BootstrapBegin {
-            terminal_id: agent,
-            stream_id,
-            bootstrap_id,
-            profile: AGENT_PROFILE,
+            terminal_id: &self.id,
+            stream_id: self.s,
+            bootstrap_id: self.b,
+            profile,
             // An AgentSession has no grid; the wire encodes that as 0x0.
             geometry: CanonicalGeometry { cols: 0, rows: 0 },
             base_seq,
-        },
-        effects,
-    )
+        }
+    }
 }
 
-fn committed_agent(
+type Publication = (ResourceId, Vec<u64>, AgentRecordMode, AgentStreamInfo);
+
+const fn committed_agent(
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     last_seq: u64,
@@ -3406,70 +2054,109 @@ fn committed_agent(
     }
 }
 
-fn agent_publication(
-    effects: &EffectBuffer,
-) -> Option<(ResourceId, Vec<u64>, AgentRecordMode, AgentStreamInfo)> {
+/// The publication `g` should commit: `seqs` under `mode`, cursor at `last_seq`.
+#[allow(clippy::unnecessary_wraps, reason = "compared with `publication()`")]
+fn published(g: &Gen, seqs: &[u64], mode: AgentRecordMode, last_seq: u64) -> Option<Publication> {
+    Some((
+        g.id.clone(),
+        seqs.to_vec(),
+        mode,
+        committed_agent(g.s, g.b, last_seq),
+    ))
+}
+
+fn agent_publication(effects: &EffectBuffer) -> Option<Publication> {
     effects.as_slice().iter().find_map(|effect| {
         let KernelEffect::AgentPublication(publication) = effect else {
             return None;
         };
+        let seqs = publication.records.iter().map(|record| record.seq);
         Some((
             publication.resource_id.clone(),
-            publication
-                .records
-                .iter()
-                .map(|record| record.seq)
-                .collect(),
+            seqs.collect(),
             publication.mode,
             publication.stream,
         ))
     })
 }
 
+fn batch_payload(records: &[(u64, &str)]) -> String {
+    use std::fmt::Write;
+    let mut payload = String::new();
+    for (seq, kind) in records {
+        writeln!(
+            payload,
+            "{{\"seq\":{seq},\"ts_ms\":1,\"type\":\"{kind}\",\"data\":{{}}}}"
+        )
+        .unwrap();
+    }
+    payload
+}
+
+impl Rig {
+    fn declare_agent(&mut self, agent: &ResourceId, parent: &ResourceId) {
+        self.ok(KernelInput::AgentSessionDeclared(
+            super::AgentSessionDeclaration {
+                terminal_id: agent,
+                parent: Some(parent),
+                provider: Some("claude"),
+                native_id: Some("s-1"),
+                state: Some("working"),
+            },
+        ));
+    }
+
+    fn publication(&self) -> Option<Publication> {
+        agent_publication(&self.fx)
+    }
+
+    /// One live frame on agent generation (3, 4) carrying `records`.
+    fn batch(&mut self, seq: u64, records: &[(u64, &str)]) -> Result<(), KernelError<FakeError>> {
+        self.up(agent_gen(3, 4).output(seq, batch_payload(records).as_bytes()))
+    }
+
+    fn seqs(&self) -> Vec<u64> {
+        let log = &self.k.agent_session(&terminal(2)).unwrap().log;
+        log.records().map(|record| record.seq).collect()
+    }
+
+    fn status(&self) -> AgentSessionStatus {
+        self.k.agent_session(&terminal(2)).unwrap().state.status
+    }
+
+    fn cursor(&self) -> Option<AgentStreamInfo> {
+        self.k.agent_stream_info(&terminal(2))
+    }
+}
+
+/// Agent 2 (parent 1) declared and published empty on generation (3, 4).
+fn agent_rig(base_seq: u64) -> Rig {
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = agent_gen(3, 4);
+    rig.declare_agent(&g.id, &terminal(1));
+    rig.ok(g.agent_begin(base_seq));
+    rig.ok(g.ready(None));
+    rig.fx.clear();
+    rig
+}
+
 fn assert_agent_fragment_publication(fragments: &[&[u8]]) {
-    let agent = terminal(2);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(4),
-        2,
-        &mut effects,
-    )
-    .unwrap();
-    for (index, payload) in fragments.iter().enumerate() {
-        kernel
-            .update(
-                chunk(
-                    &agent,
-                    stream(3),
-                    bootstrap(4),
-                    u32::try_from(index).unwrap(),
-                    payload,
-                ),
-                &mut effects,
-            )
-            .unwrap();
-        assert!(effects.is_empty());
-        let view = kernel.agent_session(&agent).unwrap();
+    let g = agent_gen(3, 4);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(g.agent_begin(2));
+    for (index, payload) in (0_u32..).zip(fragments) {
+        rig.ok(g.chunk(index, payload));
+        assert!(rig.fx.is_empty());
+        let view = rig.k.agent_session(&g.id).unwrap();
         assert!(!view.published);
         assert!(view.log.is_empty());
     }
-    kernel
-        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
-        .unwrap();
+    rig.ok(g.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![1, 2],
-            AgentRecordMode::Replace,
-            committed_agent(stream(3), bootstrap(4), 2),
-        ))
+        rig.publication(),
+        published(&g, &[1, 2], AgentRecordMode::Replace, 2)
     );
-    let view = kernel.agent_session(&agent).unwrap();
+    let view = rig.k.agent_session(&g.id).unwrap();
     assert_eq!(view.state.status, AgentSessionStatus::Blocked);
     assert_eq!(
         view.log.last().unwrap().data_str("question"),
@@ -3495,78 +2182,49 @@ fn agent_bootstrap_records_accept_every_byte_split_and_empty_chunks() {
 
 #[test]
 fn agent_bootstrap_accepts_exact_record_limit_including_split_lf() {
-    let agent = terminal(2);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
+    let g = agent_gen(3, 4);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     let mut line = agent_line(1, "stop", "{}").into_bytes();
     line.pop();
     line.resize(super::agent_stream::MAX_RECORD_BYTES - 1, b' ');
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(4),
-        1,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(
-            chunk(&agent, stream(3), bootstrap(4), 0, &line),
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.agent_begin(1));
+    rig.ok(g.chunk(0, &line));
     assert_eq!(
-        kernel.lanes.agent(&agent).unwrap().staged_record_count(),
+        rig.k.lanes.agent(&g.id).unwrap().staged_record_count(),
         Some(0),
         "no decoding before LF"
     );
-    kernel
-        .update(
-            chunk(&agent, stream(3), bootstrap(4), 1, b"\n"),
-            &mut effects,
-        )
-        .unwrap();
-    kernel
-        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
-        .unwrap();
+    rig.ok(g.chunk(1, b"\n"));
+    rig.ok(g.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent,
-            vec![1],
-            AgentRecordMode::Replace,
-            committed_agent(stream(3), bootstrap(4), 1),
-        ))
+        rig.publication(),
+        published(&g, &[1], AgentRecordMode::Replace, 1)
     );
 }
 
-fn assert_agent_replacement_failure(kernel: &SessionKernel<FakeAdapter>, effects: &EffectBuffer) {
-    let view = kernel.agent_session(&terminal(2)).unwrap();
+/// Agent 2 published with record 1 ("stop"), staging generation (3, 5).
+fn replacing_agent_rig(base_seq: u64) -> (Rig, Gen) {
+    let mut rig = agent_rig(0);
+    rig.batch(1, &[(1, "stop")]).unwrap();
+    let g = agent_gen(3, 5);
+    rig.ok(g.agent_begin(base_seq));
+    (rig, g)
+}
+
+fn assert_agent_replacement_failure(rig: &Rig) {
+    let view = rig.k.agent_session(&terminal(2)).unwrap();
     assert!(view.published);
     assert_eq!(view.state.status, AgentSessionStatus::Done);
     assert_eq!(view.log.len(), 1);
     assert_eq!(view.log.last().unwrap().seq, 1);
-    assert!(agent_publication(effects).is_none());
-    assert!(effects.as_slice().iter().any(|effect| matches!(effect,
-        KernelEffect::Status(KernelStatus::ResyncRequired {
-            bootstrap_id, reason: TombstoneReason::CodecFailure, ..
-        }) if *bootstrap_id == bootstrap(5)
-    )));
+    assert!(rig.publication().is_none());
     assert!(
-        kernel
-            .lanes
-            .agent(&terminal(2))
-            .unwrap()
-            .staged_record_count()
-            .is_none()
+        any_effect!(rig.fx, KernelEffect::Status(KernelStatus::ResyncRequired {
+            bootstrap_id, reason: TombstoneReason::CodecFailure, ..
+        }) if *bootstrap_id == bootstrap(5))
     );
-}
-
-fn published_agent_with_record() -> SessionKernel<FakeAdapter> {
-    let mut kernel = published_agent_for_batches(0);
-    apply_agent_batch(&mut kernel, &mut EffectBuffer::new(), 1, &[(1, "stop")]).unwrap();
-    kernel
+    let lane = rig.k.lanes.agent(&terminal(2)).unwrap();
+    assert!(lane.staged_record_count().is_none());
 }
 
 fn padded_agent_wire_record(seq: u64, wire_bytes: usize) -> Vec<u8> {
@@ -3582,27 +2240,16 @@ fn agent_record_parser_counts_lf_and_untrimmed_whitespace_at_the_limit() {
     use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES, parse_records};
     let exact = padded_agent_wire_record(1, MAX_RECORD_BYTES);
     let oversize = padded_agent_wire_record(1, MAX_RECORD_BYTES + 1);
-    for record in [&exact, &oversize] {
-        for bytes in [record.as_slice(), &record[..record.len() - 1]] {
-            if record.len() == MAX_RECORD_BYTES {
-                assert_eq!(parse_records(bytes).unwrap().len(), 1);
-            } else {
-                assert_eq!(
-                    parse_records(bytes),
-                    Err(AgentRecordError::Oversize(MAX_RECORD_BYTES + 1))
-                );
-            }
-        }
+    let too_big = Err(AgentRecordError::Oversize(MAX_RECORD_BYTES + 1));
+    for bytes in [exact.as_slice(), &exact[..exact.len() - 1]] {
+        assert_eq!(parse_records(bytes).unwrap().len(), 1);
     }
-    assert!(
-        parse_records(&vec![b' '; MAX_RECORD_BYTES - 1])
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        parse_records(&vec![b' '; MAX_RECORD_BYTES]),
-        Err(AgentRecordError::Oversize(MAX_RECORD_BYTES + 1))
-    );
+    for bytes in [oversize.as_slice(), &oversize[..oversize.len() - 1]] {
+        assert_eq!(parse_records(bytes), too_big);
+    }
+    let blank = vec![b' '; MAX_RECORD_BYTES - 1];
+    assert!(parse_records(&blank).unwrap().is_empty());
+    assert_eq!(parse_records(&vec![b' '; MAX_RECORD_BYTES]), too_big);
 }
 
 #[test]
@@ -3610,321 +2257,140 @@ fn agent_bootstrap_rejects_record_one_byte_over_wire_limit_with_or_without_lf() 
     use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
     let oversize = padded_agent_wire_record(1, MAX_RECORD_BYTES + 1);
     for bytes in [oversize.as_slice(), &oversize[..oversize.len() - 1]] {
-        let agent = terminal(2);
-        let mut kernel = published_agent_with_record();
-        let mut effects = EffectBuffer::new();
-        agent_begin(
-            &mut kernel,
-            &agent,
-            stream(3),
-            bootstrap(5),
-            1,
-            &mut effects,
-        )
-        .unwrap();
+        let (mut rig, g) = replacing_agent_rig(1);
         assert!(matches!(
-            kernel.update(
-                chunk(&agent, stream(3), bootstrap(5), 0, bytes),
-                &mut effects
-            ),
+            rig.up(g.chunk(0, bytes)),
             Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
         ));
-        assert_agent_replacement_failure(&kernel, &effects);
+        assert_agent_replacement_failure(&rig);
     }
 }
 
 #[test]
 fn agent_live_record_wire_limit_includes_lf_and_whitespace() {
     use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
-    let agent = terminal(2);
-    let mut kernel = published_agent_for_batches(0);
-    let mut effects = EffectBuffer::new();
-    let exact = padded_agent_wire_record(1, MAX_RECORD_BYTES);
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 1, &exact),
-            &mut effects,
-        )
-        .unwrap();
+    let g = agent_gen(3, 4);
+    let mut rig = agent_rig(0);
+    rig.ok(g.output(1, &padded_agent_wire_record(1, MAX_RECORD_BYTES)));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![1],
-            AgentRecordMode::Append,
-            committed_agent(stream(3), bootstrap(4), 1),
-        ))
+        rig.publication(),
+        published(&g, &[1], AgentRecordMode::Append, 1)
     );
     let oversize = padded_agent_wire_record(2, MAX_RECORD_BYTES + 1);
     assert!(matches!(
-        kernel.update(
-            output(&agent, stream(3), bootstrap(4), 2, &oversize),
-            &mut effects
-        ),
+        rig.up(g.output(2, &oversize)),
         Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
     ));
-    assert!(agent_publication(&effects).is_none());
-    assert_eq!(kernel.agent_session(&agent).unwrap().log.len(), 1);
+    assert!(rig.publication().is_none());
+    assert_eq!(rig.seqs(), [1]);
 }
 
 #[test]
 fn agent_bootstrap_rejects_oversize_before_lf_and_preserves_published_state() {
-    let agent = terminal(2);
     for suffix in [b" ".as_slice(), b" \n".as_slice()] {
-        let mut kernel = published_agent_with_record();
-        let mut effects = EffectBuffer::new();
-        agent_begin(
-            &mut kernel,
-            &agent,
-            stream(3),
-            bootstrap(5),
-            2,
-            &mut effects,
-        )
-        .unwrap();
-        kernel
-            .update(
-                chunk(
-                    &agent,
-                    stream(3),
-                    bootstrap(5),
-                    0,
-                    &vec![b' '; super::agent_stream::MAX_RECORD_BYTES - 1],
-                ),
-                &mut effects,
-            )
-            .unwrap();
+        let (mut rig, g) = replacing_agent_rig(2);
+        rig.ok(g.chunk(0, &vec![b' '; super::agent_stream::MAX_RECORD_BYTES - 1]));
         assert!(matches!(
-            kernel.update(
-                chunk(&agent, stream(3), bootstrap(5), 1, suffix),
-                &mut effects
-            ),
+            rig.up(g.chunk(1, suffix)),
             Err(KernelError::AgentRecord(super::AgentRecordError::Oversize(
                 16_385
             )))
         ));
-        assert_agent_replacement_failure(&kernel, &effects);
+        assert_agent_replacement_failure(&rig);
         assert!(matches!(
-            kernel.update(ready(&agent, stream(3), bootstrap(5), None), &mut effects),
+            rig.up(g.ready(None)),
             Err(KernelError::RetiredGeneration { .. })
         ));
     }
 }
 
 #[test]
-fn agent_bootstrap_rejects_trailing_line_at_ready_without_replacing_published_state() {
-    let agent = terminal(2);
+fn agent_bootstrap_rejects_bad_records_without_replacing_published_state() {
     let complete = agent_line(2, "ask", "{}");
+    // A trailing line that is still incomplete or invalid at READY.
     for tail in [
         b"{".as_slice(),
         complete.trim_end().as_bytes(),
         b" ",
         &[0xf0, 0x9f],
     ] {
-        let mut kernel = published_agent_with_record();
-        let mut effects = EffectBuffer::new();
-        agent_begin(
-            &mut kernel,
-            &agent,
-            stream(3),
-            bootstrap(5),
-            2,
-            &mut effects,
-        )
-        .unwrap();
-        kernel
-            .update(
-                chunk(&agent, stream(3), bootstrap(5), 0, complete.as_bytes()),
-                &mut effects,
-            )
-            .unwrap();
-        kernel
-            .update(
-                chunk(&agent, stream(3), bootstrap(5), 1, tail),
-                &mut effects,
-            )
-            .unwrap();
+        let (mut rig, g) = replacing_agent_rig(2);
+        rig.ok(g.chunk(0, complete.as_bytes()));
+        rig.ok(g.chunk(1, tail));
         assert!(matches!(
-            kernel.update(ready(&agent, stream(3), bootstrap(5), None), &mut effects),
+            rig.up(g.ready(None)),
             Err(KernelError::AgentRecord(super::AgentRecordError::Json(_)))
         ));
-        assert_agent_replacement_failure(&kernel, &effects);
+        assert_agent_replacement_failure(&rig);
     }
-}
-
-#[test]
-fn agent_bootstrap_malformed_complete_line_preserves_published_state() {
-    let agent = terminal(2);
-    let mut kernel = published_agent_with_record();
-    let mut effects = EffectBuffer::new();
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(5),
-        2,
-        &mut effects,
-    )
-    .unwrap();
-    let bytes = format!("{}{{bad json}}\n", agent_line(2, "ask", "{}"));
+    // A malformed complete line fails at its chunk.
+    let (mut rig, g) = replacing_agent_rig(2);
+    let bytes = format!("{complete}{{bad json}}\n");
     assert!(matches!(
-        kernel.update(
-            chunk(&agent, stream(3), bootstrap(5), 0, bytes.as_bytes()),
-            &mut effects
-        ),
+        rig.up(g.chunk(0, bytes.as_bytes())),
         Err(KernelError::AgentRecord(_))
     ));
-    assert_agent_replacement_failure(&kernel, &effects);
+    assert_agent_replacement_failure(&rig);
 }
 
 #[test]
 fn agent_bootstrap_replacement_and_release_reset_partial_decoder() {
-    let agent = terminal(2);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(4),
-        0,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(
-            chunk(&agent, stream(3), bootstrap(4), 0, b"{partial"),
-            &mut effects,
-        )
-        .unwrap();
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(5),
-        1,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(
-            chunk(
-                &agent,
-                stream(3),
-                bootstrap(5),
-                0,
-                agent_line(1, "stop", "{}").as_bytes(),
-            ),
-            &mut effects,
-        )
-        .unwrap();
-    kernel
-        .update(ready(&agent, stream(3), bootstrap(5), None), &mut effects)
-        .unwrap();
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let first = agent_gen(3, 4);
+    rig.ok(first.agent_begin(0));
+    rig.ok(first.chunk(0, b"{partial"));
+    let second = agent_gen(3, 5);
+    rig.ok(second.agent_begin(1));
+    rig.ok(second.chunk(0, agent_line(1, "stop", "{}").as_bytes()));
+    rig.ok(second.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![1],
-            AgentRecordMode::Replace,
-            committed_agent(stream(3), bootstrap(5), 1),
-        ))
+        rig.publication(),
+        published(&second, &[1], AgentRecordMode::Replace, 1)
     );
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(6),
-        1,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(
-            chunk(&agent, stream(3), bootstrap(6), 0, b"{partial"),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(kernel.release_terminal(&agent));
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(6),
-        0,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(ready(&agent, stream(3), bootstrap(6), None), &mut effects)
-        .unwrap();
+    let third = agent_gen(3, 6);
+    rig.ok(third.agent_begin(1));
+    rig.ok(third.chunk(0, b"{partial"));
+    assert!(rig.k.release_terminal(&third.id));
+    rig.ok(third.agent_begin(0));
+    rig.ok(third.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent,
-            vec![],
-            AgentRecordMode::Replace,
-            committed_agent(stream(3), bootstrap(6), 0),
-        ))
+        rig.publication(),
+        published(&third, &[], AgentRecordMode::Replace, 0)
     );
 }
 
 #[test]
 #[allow(
     clippy::cognitive_complexity,
-    clippy::too_many_lines,
     reason = "one stream lifecycle end to end: declare, bootstrap, live, close"
 )]
 fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
-    let parent = terminal(1);
-    let agent = terminal(2);
-    let stream_id = stream(3);
-    let bootstrap_id = bootstrap(4);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(1, std::slice::from_ref(&parent)),
-            &mut effects,
-        )
-        .unwrap();
-    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+    let parent = gen_of(1, 10, 11);
+    let g = agent_gen(3, 4);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(attach_started(1, std::slice::from_ref(&parent.id)));
+    rig.declare_agent(&g.id, &parent.id);
+    assert_eq!(rig.k.resource_kind(&g.id), Some(ResourceKind::AgentSession));
     assert_eq!(
-        kernel.resource_kind(&agent),
-        Some(ResourceKind::AgentSession)
+        rig.k.resource_kind(&parent.id),
+        Some(ResourceKind::Terminal)
     );
-    assert_eq!(kernel.resource_kind(&parent), Some(ResourceKind::Terminal));
-    let view = kernel.agent_session(&agent).expect("declared");
-    assert_eq!(view.parent, Some(&parent));
+    let view = rig.k.agent_session(&g.id).expect("declared");
+    assert_eq!(view.parent, Some(&parent.id));
     assert_eq!(view.state.provider.as_deref(), Some("claude"));
     assert_eq!(view.state.status, AgentSessionStatus::Working);
     assert!(!view.published);
     assert_eq!(
-        kernel.input_eligibility(&agent),
+        rig.k.input_eligibility(&g.id),
         InputEligibility::Ineligible(InputBlockReason::NotATerminal)
     );
 
     // A declared AgentSession is not an attach participant: the barrier
     // releases on the parent alone.
-    publish_direct(
-        &mut kernel,
-        &parent,
-        stream(10),
-        bootstrap(11),
-        0,
-        &mut effects,
-    );
-    kernel.update(attach_ready(1), &mut effects).unwrap();
+    rig.publish(&parent, 0);
+    rig.ok(attach_ready(1));
 
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream_id,
-        bootstrap_id,
-        5,
-        &mut effects,
-    )
-    .unwrap();
+    rig.ok(g.agent_begin(5));
     let records = format!(
         "{}{}",
         agent_line(
@@ -3934,38 +2400,23 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         ),
         agent_line(5, "ask", r#"{"question":"deploy?"}"#)
     );
-    kernel
-        .update(
-            chunk(&agent, stream_id, bootstrap_id, 0, records.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(effects.is_empty(), "staging emits nothing until READY");
-    kernel
-        .update(ready(&agent, stream_id, bootstrap_id, None), &mut effects)
-        .unwrap();
+    rig.ok(g.chunk(0, records.as_bytes()));
+    assert!(rig.fx.is_empty(), "staging emits nothing until READY");
+    rig.ok(g.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![4, 5],
-            AgentRecordMode::Replace,
-            committed_agent(stream_id, bootstrap_id, 5),
-        )),
+        rig.publication(),
+        published(&g, &[4, 5], AgentRecordMode::Replace, 5),
         "publication hands the frontend every retained record"
     );
     assert!(
-        !effects
-            .as_slice()
-            .iter()
-            .any(|effect| matches!(effect, KernelEffect::Damage(_))),
+        !any_effect!(rig.fx, KernelEffect::Damage(_)),
         "an agent stream never damages a grid"
     );
     assert!(
-        kernel.published(&agent).is_none(),
+        rig.k.published(&g.id).is_none(),
         "no replica for a record stream"
     );
-    let view = kernel.agent_session(&agent).expect("published");
+    let view = rig.k.agent_session(&g.id).expect("published");
     assert!(view.published);
     assert_eq!(
         view.state.native_id.as_deref(),
@@ -3976,38 +2427,17 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     assert_eq!(view.log.len(), 2);
 
     // Live output appends and re-derives.
-    let live = agent_line(6, "stop", "{}");
-    kernel
-        .update(
-            output(&agent, stream_id, bootstrap_id, 6, live.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(g.output(6, agent_line(6, "stop", "{}").as_bytes()));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![6],
-            AgentRecordMode::Append,
-            committed_agent(stream_id, bootstrap_id, 6),
-        ))
+        rig.publication(),
+        published(&g, &[6], AgentRecordMode::Append, 6)
     );
-    let view = kernel.agent_session(&agent).expect("live");
-    assert_eq!(view.state.status, AgentSessionStatus::Done);
-    assert_eq!(view.log.last().map(|record| record.seq), Some(6));
+    assert_eq!(rig.status(), AgentSessionStatus::Done);
+    assert_eq!(rig.seqs().last(), Some(&6));
 
     // Sequencing stays exact.
     assert!(matches!(
-        kernel.update(
-            output(
-                &agent,
-                stream_id,
-                bootstrap_id,
-                8,
-                agent_line(8, "stop", "{}").as_bytes()
-            ),
-            &mut effects,
-        ),
+        rig.up(g.output(8, agent_line(8, "stop", "{}").as_bytes())),
         Err(KernelError::SequenceGap {
             expected: 7,
             actual: 8
@@ -4015,53 +2445,37 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     ));
 
     // Closing the session drops the view; its kind is still known.
-    kernel.update(closed(&agent), &mut effects).unwrap();
+    rig.ok(closed(&g.id));
     assert!(
-        effects.is_empty(),
+        rig.fx.is_empty(),
         "closing a record stream removes no grid, and an AgentSession's exit \
          status is not a Terminal process exit"
     );
-    assert!(kernel.agent_session(&agent).is_none());
-    assert_eq!(
-        kernel.resource_kind(&agent),
-        Some(ResourceKind::AgentSession)
-    );
+    assert!(rig.k.agent_session(&g.id).is_none());
+    assert_eq!(rig.k.resource_kind(&g.id), Some(ResourceKind::AgentSession));
     assert!(
-        kernel.published(&parent).is_some(),
+        rig.k.published(&parent.id).is_some(),
         "the parent is untouched"
     );
 }
 
 #[test]
 fn agent_profile_skips_the_geometry_check_but_terminals_still_need_one() {
-    let agent = terminal(2);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     // No declaration at all: the profile alone fixes the kind.
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(1),
-        bootstrap(1),
-        0,
-        &mut effects,
-    )
-    .unwrap();
+    rig.ok(agent_gen(1, 1).agent_begin(0));
     assert_eq!(
-        kernel.resource_kind(&agent),
+        rig.k.resource_kind(&terminal(2)),
         Some(ResourceKind::AgentSession)
     );
-    let zero = kernel.update(
-        begin_input(
-            &terminal(3),
-            stream(2),
-            bootstrap(2),
-            BootstrapStreamProfile::SynthesizedVtRaw,
-            CanonicalGeometry { cols: 0, rows: 0 },
-            0,
-        ),
-        &mut effects,
-    );
+    let zero = rig.up(begin_input(
+        &terminal(3),
+        stream(2),
+        bootstrap(2),
+        BootstrapStreamProfile::SynthesizedVtRaw,
+        CanonicalGeometry { cols: 0, rows: 0 },
+        0,
+    ));
     assert!(matches!(
         zero,
         Err(KernelError::InvalidGeometry { cols: 0, rows: 0 })
@@ -4070,32 +2484,15 @@ fn agent_profile_skips_the_geometry_check_but_terminals_still_need_one() {
 
 #[test]
 fn kind_mismatches_are_rejected_in_both_directions() {
-    let parent = terminal(1);
-    let agent = terminal(2);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(
-            attach_started(1, std::slice::from_ref(&parent)),
-            &mut effects,
-        )
-        .unwrap();
-    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+    let parent = gen_of(1, 2, 2);
+    let agent = agent_gen(1, 1);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(attach_started(1, std::slice::from_ref(&parent.id)));
+    rig.declare_agent(&agent.id, &parent.id);
 
     // A terminal-profile bootstrap on a declared AgentSession.
-    let wrong = kernel.update(
-        begin_input(
-            &agent,
-            stream(1),
-            bootstrap(1),
-            BootstrapStreamProfile::SynthesizedVtRaw,
-            geometry(),
-            0,
-        ),
-        &mut effects,
-    );
     assert!(matches!(
-        wrong,
+        rig.up(agent.begin(0)),
         Err(KernelError::KindMismatch {
             declared: ResourceKind::AgentSession,
             incoming: ResourceKind::Terminal,
@@ -4103,16 +2500,8 @@ fn kind_mismatches_are_rejected_in_both_directions() {
         })
     ));
     // An agent-profile bootstrap on an attach-inventory Terminal.
-    let wrong = agent_begin(
-        &mut kernel,
-        &parent,
-        stream(2),
-        bootstrap(2),
-        0,
-        &mut effects,
-    );
     assert!(matches!(
-        wrong,
+        rig.up(parent.agent_begin(0)),
         Err(KernelError::KindMismatch {
             declared: ResourceKind::Terminal,
             incoming: ResourceKind::AgentSession,
@@ -4120,115 +2509,67 @@ fn kind_mismatches_are_rejected_in_both_directions() {
         })
     ));
     // Declaring an attach-inventory Terminal as an AgentSession.
-    let wrong = kernel.update(
-        KernelInput::AgentSessionDeclared(super::AgentSessionDeclaration {
-            terminal_id: &parent,
+    let wrong = rig.up(KernelInput::AgentSessionDeclared(
+        super::AgentSessionDeclaration {
+            terminal_id: &parent.id,
             parent: None,
             provider: None,
             native_id: None,
             state: None,
-        }),
-        &mut effects,
-    );
+        },
+    ));
     assert!(matches!(wrong, Err(KernelError::KindMismatch { .. })));
 }
 
 #[test]
 fn malformed_agent_records_retire_only_that_generation() {
-    let agent = terminal(2);
-    let stream_id = stream(3);
-    let bootstrap_id = bootstrap(4);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream_id,
-        bootstrap_id,
-        0,
-        &mut effects,
-    )
-    .unwrap();
-    let bad = kernel.update(
-        chunk(
-            &agent,
-            stream_id,
-            bootstrap_id,
-            0,
-            b"{\"seq\":1,\"ts_ms\":1}\n",
-        ),
-        &mut effects,
-    );
+    let g = agent_gen(3, 4);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.ok(g.agent_begin(0));
+    let bad = rig.up(g.chunk(0, b"{\"seq\":1,\"ts_ms\":1}\n"));
     assert!(matches!(bad, Err(KernelError::AgentRecord(_))));
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::ResyncRequired {
             reason: TombstoneReason::CodecFailure,
             ..
         })
-    )));
+    ));
     assert_eq!(
-        kernel.tombstone(&agent, stream_id, bootstrap_id),
+        rig.tomb(&g),
         None,
         "agent generations retire inside the stream, not the terminal table"
     );
     assert!(matches!(
-        kernel.update(ready(&agent, stream_id, bootstrap_id, None), &mut effects,),
+        rig.up(g.ready(None)),
         Err(KernelError::RetiredGeneration { .. })
     ));
     // A replacement generation is accepted and publishes cleanly.
-    let next = bootstrap(5);
-    agent_begin(&mut kernel, &agent, stream_id, next, 0, &mut effects).unwrap();
-    kernel
-        .update(ready(&agent, stream_id, next, None), &mut effects)
-        .unwrap();
+    let next = g.with_bootstrap(5);
+    rig.ok(next.agent_begin(0));
+    rig.ok(next.ready(None));
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![],
-            AgentRecordMode::Replace,
-            committed_agent(stream_id, next, 0),
-        ))
+        rig.publication(),
+        published(&next, &[], AgentRecordMode::Replace, 0)
     );
     assert!(
-        kernel
-            .agent_session(&agent)
+        rig.k
+            .agent_session(&g.id)
             .is_some_and(|view| view.published)
     );
 }
 
 #[test]
 fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
-    let parent = terminal(1);
-    let agent = terminal(2);
-    let stream_id = stream(3);
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    declare_agent(&mut kernel, &agent, &parent, &mut effects);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    rig.declare_agent(&terminal(2), &terminal(1));
     for (generation, kind) in [(1, "ask"), (2, "stop")] {
-        let bootstrap_id = bootstrap(generation);
-        agent_begin(
-            &mut kernel,
-            &agent,
-            stream_id,
-            bootstrap_id,
-            1,
-            &mut effects,
-        )
-        .unwrap();
-        let records = agent_line(1, kind, "{}");
-        kernel
-            .update(
-                chunk(&agent, stream_id, bootstrap_id, 0, records.as_bytes()),
-                &mut effects,
-            )
-            .unwrap();
-        kernel
-            .update(ready(&agent, stream_id, bootstrap_id, None), &mut effects)
-            .unwrap();
+        let g = agent_gen(3, generation);
+        rig.ok(g.agent_begin(1));
+        rig.ok(g.chunk(0, agent_line(1, kind, "{}").as_bytes()));
+        rig.ok(g.ready(None));
     }
-    let view = kernel.agent_session(&agent).expect("published");
+    let view = rig.k.agent_session(&terminal(2)).expect("published");
     assert_eq!(view.state.status, AgentSessionStatus::Done);
     assert_eq!(
         view.log.len(),
@@ -4240,108 +2581,33 @@ fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
         Some("claude"),
         "the declaration seeds every generation"
     );
+    let replaced = agent_gen(3, 1);
+    assert!(rig.tomb(&replaced).is_none());
     assert!(
-        kernel.tombstone(&agent, stream_id, bootstrap(1)).is_none()
-            && kernel
-                .update(
-                    output(&agent, stream_id, bootstrap(1), 1, b""),
-                    &mut effects,
-                )
-                .is_err(),
+        rig.up(replaced.output(1, b"")).is_err(),
         "the replaced generation is retired"
     );
 }
 
-fn published_agent_for_batches(base_seq: u64) -> SessionKernel<FakeAdapter> {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
-    let agent = terminal(2);
-    declare_agent(&mut kernel, &agent, &terminal(1), &mut effects);
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(3),
-        bootstrap(4),
-        base_seq,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
-        .unwrap();
-    kernel
-}
-
-fn batch_payload(records: &[(u64, &str)]) -> String {
-    use std::fmt::Write;
-    let mut payload = String::new();
-    for (seq, kind) in records {
-        writeln!(
-            payload,
-            "{{\"seq\":{seq},\"ts_ms\":1,\"type\":\"{kind}\",\"data\":{{}}}}"
-        )
-        .unwrap();
-    }
-    payload
-}
-
-fn apply_agent_batch(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    effects: &mut EffectBuffer,
-    seq: u64,
-    records: &[(u64, &str)],
-) -> Result<(), KernelError<FakeError>> {
-    kernel.update(
-        output(
-            &terminal(2),
-            stream(3),
-            bootstrap(4),
-            seq,
-            batch_payload(records).as_bytes(),
-        ),
-        effects,
-    )
-}
-
 #[test]
 fn agent_live_batches_advance_by_the_last_record_sequence() {
-    let mut kernel = published_agent_for_batches(0);
-    let mut effects = EffectBuffer::new();
+    let g = agent_gen(3, 4);
+    let mut rig = agent_rig(0);
     // The server stamps each record, then emits one frame with the last seq.
-    apply_agent_batch(
-        &mut kernel,
-        &mut effects,
-        3,
-        &[(1, "prompt"), (2, "ask"), (3, "stop")],
-    )
-    .unwrap();
+    rig.batch(3, &[(1, "prompt"), (2, "ask"), (3, "stop")])
+        .unwrap();
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            terminal(2),
-            vec![1, 2, 3],
-            AgentRecordMode::Append,
-            committed_agent(stream(3), bootstrap(4), 3),
-        ))
+        rig.publication(),
+        published(&g, &[1, 2, 3], AgentRecordMode::Append, 3)
     );
-    let agent = terminal(2);
-    let view = kernel.agent_session(&agent).unwrap();
-    assert_eq!(view.state.status, AgentSessionStatus::Done);
-    assert_eq!(view.log.len(), 3);
-    apply_agent_batch(&mut kernel, &mut effects, 5, &[(4, "prompt"), (5, "ask")]).unwrap();
+    assert_eq!(rig.status(), AgentSessionStatus::Done);
+    assert_eq!(rig.seqs().len(), 3);
+    rig.batch(5, &[(4, "prompt"), (5, "ask")]).unwrap();
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            agent.clone(),
-            vec![4, 5],
-            AgentRecordMode::Append,
-            committed_agent(stream(3), bootstrap(4), 5),
-        ))
+        rig.publication(),
+        published(&g, &[4, 5], AgentRecordMode::Append, 5)
     );
-    assert_eq!(
-        kernel.agent_session(&agent).unwrap().state.status,
-        AgentSessionStatus::Blocked
-    );
+    assert_eq!(rig.status(), AgentSessionStatus::Blocked);
 }
 
 #[test]
@@ -4354,143 +2620,79 @@ fn agent_live_batch_record_gaps_duplicates_and_envelope_mismatch_publish_nothing
         (3, vec![(1, "ask"), (2, "stop")]),
         (1, vec![]),
     ] {
-        let mut kernel = published_agent_for_batches(0);
-        let mut effects = EffectBuffer::new();
+        let mut rig = agent_rig(0);
         assert!(
-            apply_agent_batch(&mut kernel, &mut effects, seq, &records).is_err(),
+            rig.batch(seq, &records).is_err(),
             "invalid batch {records:?} with envelope {seq}"
         );
-        assert!(
-            effects.is_empty(),
-            "no partial publication on invalid batch"
-        );
-        let agent = terminal(2);
-        let view = kernel.agent_session(&agent).unwrap();
-        assert!(view.log.is_empty());
-        assert_eq!(view.state.status, AgentSessionStatus::Working);
-        apply_agent_batch(&mut kernel, &mut effects, 1, &[(1, "stop")]).unwrap();
-        assert_eq!(
-            kernel.agent_session(&agent).unwrap().state.status,
-            AgentSessionStatus::Done
-        );
+        assert!(rig.fx.is_empty(), "no partial publication on invalid batch");
+        assert!(rig.seqs().is_empty());
+        assert_eq!(rig.status(), AgentSessionStatus::Working);
+        rig.batch(1, &[(1, "stop")]).unwrap();
+        assert_eq!(rig.status(), AgentSessionStatus::Done);
     }
 }
 
 #[test]
 fn agent_live_batches_preserve_duplicate_and_generation_fences() {
-    let mut kernel = published_agent_for_batches(0);
-    let mut effects = EffectBuffer::new();
+    let mut rig = agent_rig(0);
     let records = [(1, "prompt"), (2, "ask")];
-    apply_agent_batch(&mut kernel, &mut effects, 2, &records).unwrap();
+    rig.batch(2, &records).unwrap();
     assert!(matches!(
-        apply_agent_batch(&mut kernel, &mut effects, 2, &records),
+        rig.batch(2, &records),
         Err(KernelError::DuplicateSequence { .. })
     ));
-    assert!(effects.is_empty());
+    assert!(rig.fx.is_empty());
+    let next = batch_payload(&[(3, "prompt"), (4, "stop")]);
     assert!(matches!(
-        kernel.update(
-            output(
-                &terminal(2),
-                stream(3),
-                bootstrap(99),
-                4,
-                batch_payload(&[(3, "prompt"), (4, "stop")]).as_bytes()
-            ),
-            &mut effects
-        ),
+        rig.up(agent_gen(3, 99).output(4, next.as_bytes())),
         Err(KernelError::GenerationMismatch { .. })
     ));
-    assert!(effects.is_empty());
-    assert_eq!(
-        kernel.agent_session(&terminal(2)).unwrap().state.status,
-        AgentSessionStatus::Blocked
-    );
-    apply_agent_batch(&mut kernel, &mut effects, 4, &[(3, "prompt"), (4, "stop")]).unwrap();
+    assert!(rig.fx.is_empty());
+    assert_eq!(rig.status(), AgentSessionStatus::Blocked);
+    rig.batch(4, &[(3, "prompt"), (4, "stop")]).unwrap();
 }
 
 #[test]
 fn agent_live_batches_reach_sequence_exhaustion_without_wrapping() {
-    let mut kernel = published_agent_for_batches(u64::MAX - 2);
-    let mut effects = EffectBuffer::new();
-    apply_agent_batch(
-        &mut kernel,
-        &mut effects,
-        u64::MAX,
-        &[(u64::MAX - 1, "prompt"), (u64::MAX, "stop")],
-    )
-    .unwrap();
+    let mut rig = agent_rig(u64::MAX - 2);
+    rig.batch(u64::MAX, &[(u64::MAX - 1, "prompt"), (u64::MAX, "stop")])
+        .unwrap();
     assert_eq!(
-        agent_publication(&effects),
-        Some((
-            terminal(2),
-            vec![u64::MAX - 1, u64::MAX],
+        rig.publication(),
+        published(
+            &agent_gen(3, 4),
+            &[u64::MAX - 1, u64::MAX],
             AgentRecordMode::Append,
-            committed_agent(stream(3), bootstrap(4), u64::MAX),
-        ))
+            u64::MAX
+        )
     );
     assert!(matches!(
-        apply_agent_batch(&mut kernel, &mut effects, 0, &[(0, "ask")]),
+        rig.batch(0, &[(0, "ask")]),
         Err(KernelError::SequenceExhausted)
     ));
-    assert!(effects.is_empty());
-    assert_eq!(
-        kernel.agent_session(&terminal(2)).unwrap().state.status,
-        AgentSessionStatus::Done
-    );
+    assert!(rig.fx.is_empty());
+    assert_eq!(rig.status(), AgentSessionStatus::Done);
 }
 
 #[test]
 fn malformed_later_agent_batch_record_retires_without_partial_publication() {
-    let mut kernel = published_agent_for_batches(0);
-    let mut effects = EffectBuffer::new();
+    let mut rig = agent_rig(0);
     let payload = batch_payload(&[(1, "ask")]) + "{malformed}\n";
-    let result = kernel.update(
-        output(&terminal(2), stream(3), bootstrap(4), 2, payload.as_bytes()),
-        &mut effects,
-    );
+    let result = rig.up(agent_gen(3, 4).output(2, payload.as_bytes()));
     assert!(matches!(result, Err(KernelError::AgentRecord(_))));
-    assert!(agent_publication(&effects).is_none());
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
+    assert!(rig.publication().is_none());
+    assert!(any_effect!(
+        rig.fx,
         KernelEffect::Status(KernelStatus::ResyncRequired {
             reason: TombstoneReason::CodecFailure,
             ..
         })
-    )));
+    ));
     assert!(matches!(
-        apply_agent_batch(&mut kernel, &mut effects, 1, &[(1, "stop")]),
+        rig.batch(1, &[(1, "stop")]),
         Err(KernelError::RetiredGeneration { .. })
     ));
-}
-
-fn agent_resume_begin(
-    kernel: &mut SessionKernel<FakeAdapter>,
-    generation: (StreamId, BootstrapId),
-    after_seq: u64,
-    base_seq: u64,
-    effects: &mut EffectBuffer,
-) -> Result<(), KernelError<FakeError>> {
-    kernel.update(
-        KernelInput::BootstrapBegin {
-            terminal_id: &terminal(2),
-            stream_id: generation.0,
-            bootstrap_id: generation.1,
-            profile: BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq },
-            geometry: CanonicalGeometry { cols: 0, rows: 0 },
-            base_seq,
-        },
-        effects,
-    )
-}
-
-fn agent_sequences(kernel: &SessionKernel<FakeAdapter>) -> Vec<u64> {
-    kernel
-        .agent_session(&terminal(2))
-        .unwrap()
-        .log
-        .records()
-        .map(|record| record.seq)
-        .collect()
 }
 
 // PHA-406/PHA-276: `KernelInput::Event` folds a subscribed `AgentEvent` into
@@ -4498,12 +2700,9 @@ fn agent_sequences(kernel: &SessionKernel<FakeAdapter>) -> Vec<u64> {
 
 #[test]
 fn cwd_and_command_events_become_statuses_in_order() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
-        .unwrap();
+    rig.ok(attach_started(1, std::slice::from_ref(&id)));
     let cases = [
         (
             AgentEvent::CwdChanged {
@@ -4531,35 +2730,25 @@ fn cwd_and_command_events_become_statuses_in_order() {
         (AgentEvent::Bell, None),
     ];
     for (event, status) in cases {
-        kernel
-            .update(event_input(&id, &event), &mut effects)
-            .unwrap();
+        rig.ok(event_input(&id, &event));
         let expected: Vec<_> = status.into_iter().map(KernelEffect::Status).collect();
-        assert_eq!(effects.as_slice(), expected.as_slice());
+        assert_eq!(rig.fx.as_slice(), expected.as_slice());
     }
 }
 
 #[test]
 fn resource_closed_exit_and_signal_become_exited_status() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
-        .unwrap();
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: Some(137),
-                signal: Some(9),
-                reason: CloseReason::Killed,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    rig.ok(attach_started(1, std::slice::from_ref(&id)));
+    rig.ok(KernelInput::ResourceClosed {
+        terminal_id: &id,
+        exit_status: Some(137),
+        signal: Some(9),
+        reason: CloseReason::Killed,
+    });
     assert_eq!(
-        effects.as_slice(),
+        rig.fx.as_slice(),
         &[KernelEffect::Status(KernelStatus::Exited {
             terminal_id: id.clone(),
             exit_status: Some(137),
@@ -4574,11 +2763,10 @@ fn resource_closed_exit_and_signal_become_exited_status() {
 /// eventual `RESOURCE_CLOSED` must not report it again.
 #[test]
 fn a_retained_exit_reports_status_once_without_closing_the_pane() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-    effects.clear();
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
+    let g = gen_of(1, 1, 1);
+    rig.publish(&g, 0);
+    rig.fx.clear();
     let control = |action, exit_status| AgentEvent::TerminalControl {
         lifecycle: ResourceLifecycle::Exited,
         exit_status,
@@ -4587,78 +2775,62 @@ fn a_retained_exit_reports_status_once_without_closing_the_pane() {
         actor: None,
     };
 
-    let exited = control(ControlAction::Exited, Some(7));
-    kernel
-        .update(event_input(&id, &exited), &mut effects)
-        .unwrap();
+    rig.ok(event_input(&g.id, &control(ControlAction::Exited, Some(7))));
     assert_eq!(
-        effects.as_slice(),
+        rig.fx.as_slice(),
         &[KernelEffect::Status(KernelStatus::Exited {
-            terminal_id: id.clone(),
+            terminal_id: g.id.clone(),
             exit_status: Some(7),
             signal: None,
             reason: CloseReason::Exited,
         })]
     );
-    assert!(!kernel.closed.contains(&id), "exit must not close the pane");
-    assert!(kernel.published(&id).is_some(), "the replica survives");
-
-    let lease_change = control(ControlAction::Interrupted, None);
-    kernel
-        .update(event_input(&id, &lease_change), &mut effects)
-        .unwrap();
-    assert!(effects.is_empty(), "a lease change must not reemit Exited");
-
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: Some(7),
-                signal: None,
-                reason: CloseReason::Exited,
-            },
-            &mut effects,
-        )
-        .unwrap();
     assert!(
-        effects
-            .as_slice()
-            .iter()
-            .all(|effect| !matches!(effect, KernelEffect::Status(KernelStatus::Exited { .. }))),
+        !rig.k.closed.contains(&g.id),
+        "exit must not close the pane"
+    );
+    assert!(rig.k.published(&g.id).is_some(), "the replica survives");
+
+    rig.ok(event_input(
+        &g.id,
+        &control(ControlAction::Interrupted, None),
+    ));
+    assert!(rig.fx.is_empty(), "a lease change must not reemit Exited");
+
+    rig.ok(KernelInput::ResourceClosed {
+        terminal_id: &g.id,
+        exit_status: Some(7),
+        signal: None,
+        reason: CloseReason::Exited,
+    });
+    assert!(
+        !any_effect!(rig.fx, KernelEffect::Status(KernelStatus::Exited { .. })),
         "the purge must not report Exited again"
     );
 }
 
 #[test]
 fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let mut effects = EffectBuffer::new();
+    let mut rig = Rig::new(ReadyMode::ChunkFirst);
     let event = AgentEvent::CwdChanged {
         cwd: "/tmp".to_owned(),
     };
 
     // Never attached, bootstrapped, or declared.
-    let unknown = terminal(99);
-    kernel
-        .update(event_input(&unknown, &event), &mut effects)
-        .unwrap();
+    rig.ok(event_input(&terminal(99), &event));
     assert!(
-        effects.is_empty(),
+        rig.fx.is_empty(),
         "an event for a terminal this kernel never tracked must be a no-op"
     );
 
     // Closed, though `self.kinds` still knows its kind.
     let gone = terminal(1);
-    kernel
-        .update(attach_started(1, std::slice::from_ref(&gone)), &mut effects)
-        .unwrap();
-    kernel.update(closed(&gone), &mut effects).unwrap();
-    effects.clear();
-    kernel
-        .update(event_input(&gone, &event), &mut effects)
-        .unwrap();
+    rig.ok(attach_started(1, std::slice::from_ref(&gone)));
+    rig.ok(closed(&gone));
+    rig.fx.clear();
+    rig.ok(event_input(&gone, &event));
     assert!(
-        effects.is_empty(),
+        rig.fx.is_empty(),
         "an event for an already-closed terminal must be a no-op"
     );
 }
@@ -4701,163 +2873,88 @@ fn native_view_line(seq: u64, view: &phux_protocol::native_agent::NativeView) ->
     )
 }
 
+/// [`agent_rig`] whose first live record is the controller view.
+fn native_agent_rig() -> (Rig, phux_protocol::native_agent::NativeView) {
+    let mut rig = agent_rig(0);
+    let view = controller_view();
+    rig.ok(agent_gen(3, 4).output(1, native_view_line(1, &view).as_bytes()));
+    (rig, view)
+}
+
 #[test]
 fn native_controls_require_a_full_controller_view_and_survive_log_eviction() {
-    let mut kernel = published_agent_for_batches(0);
-    let agent = terminal(2);
-    let mut effects = EffectBuffer::new();
+    let g = agent_gen(3, 4);
     // Provider declaration, even one naming a native-capable provider, grants
     // no SDK authority.
-    assert_eq!(kernel.native_agent_view(&agent), None);
-    let view = controller_view();
-    let payload = native_view_line(1, &view);
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.native_agent_view(&agent), Some(view.clone()));
-    assert_eq!(kernel.native_agent_view(&terminal(1)), None);
+    assert_eq!(agent_rig(0).k.native_agent_view(&g.id), None);
+    let (mut rig, view) = native_agent_rig();
+    assert_eq!(rig.k.native_agent_view(&g.id), Some(view.clone()));
+    assert_eq!(rig.k.native_agent_view(&terminal(1)), None);
     let last = super::agent_stream::DEFAULT_LOG_CAPACITY as u64 + 2;
     let payload: String = (2..=last)
         .map(|seq| agent_line(seq, "provider_raw", "{}"))
         .collect();
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), last, payload.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert!(
-        kernel
-            .agent_session(&agent)
-            .unwrap()
-            .log
-            .records()
-            .all(|record| record.seq != 1)
-    );
-    assert_eq!(kernel.native_agent_view(&agent), Some(view));
+    rig.ok(g.output(last, payload.as_bytes()));
+    assert!(!rig.seqs().contains(&1));
+    assert_eq!(rig.k.native_agent_view(&g.id), Some(view));
 }
 
 #[test]
 fn native_view_replacement_publishes_atomically_and_never_infers_a_lost_activation() {
-    let mut kernel = published_agent_for_batches(0);
+    let (mut rig, original) = native_agent_rig();
     let agent = terminal(2);
-    let mut effects = EffectBuffer::new();
-    let original = controller_view();
-    let payload = native_view_line(1, &original);
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
     let mut replacement = original.clone();
     replacement.activation = "replacement-activation".into();
     replacement.questions.clear();
     replacement.turn_id = None;
     replacement.connected = false;
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(5),
-        bootstrap(6),
-        2,
-        &mut effects,
-    )
-    .unwrap();
-    let payload = native_view_line(2, &replacement);
-    kernel
-        .update(
-            chunk(&agent, stream(5), bootstrap(6), 0, payload.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.native_agent_view(&agent), Some(original));
-    kernel
-        .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
-        .unwrap();
-    assert_eq!(kernel.native_agent_view(&agent), Some(replacement));
+    let next = agent_gen(5, 6);
+    rig.ok(next.agent_begin(2));
+    rig.ok(next.chunk(0, native_view_line(2, &replacement).as_bytes()));
+    assert_eq!(rig.k.native_agent_view(&agent), Some(original));
+    rig.ok(next.ready(None));
+    assert_eq!(rig.k.native_agent_view(&agent), Some(replacement));
     // A fresh retained generation with no controller view must not preserve
     // the old activation, even when its resource/provider identity matches.
-    agent_begin(
-        &mut kernel,
-        &agent,
-        stream(7),
-        bootstrap(8),
-        2,
-        &mut effects,
-    )
-    .unwrap();
-    kernel
-        .update(ready(&agent, stream(7), bootstrap(8), None), &mut effects)
-        .unwrap();
-    assert!(!kernel.has_native_agent_view(&agent));
+    let fresh = agent_gen(7, 8);
+    rig.ok(fresh.agent_begin(2));
+    rig.ok(fresh.ready(None));
+    assert!(!rig.k.has_native_agent_view(&agent));
 }
 
 #[test]
 fn malformed_reserved_native_view_retracts_controls_but_unrelated_raw_does_not() {
-    let mut kernel = published_agent_for_batches(0);
-    let agent = terminal(2);
-    let mut effects = EffectBuffer::new();
-    let view = controller_view();
-    let payload = native_view_line(1, &view);
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
+    let (mut rig, view) = native_agent_rig();
+    let g = agent_gen(3, 4);
     let unrelated = agent_line(
         2,
         "provider_raw",
         r#"{"schema":"phux.transcript/v1","entry":{"text":"hi"}}"#,
     );
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 2, unrelated.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.native_agent_view(&agent), Some(view));
+    rig.ok(g.output(2, unrelated.as_bytes()));
+    assert_eq!(rig.k.native_agent_view(&g.id), Some(view));
     let malformed = agent_line(
         3,
         "provider_raw",
         r#"{"schema":"phux.native-agent/v1","update":{"type":"view","view":{"activation":"bogus"}}}"#,
     );
-    kernel
-        .update(
-            output(&agent, stream(3), bootstrap(4), 3, malformed.as_bytes()),
-            &mut effects,
-        )
-        .unwrap();
-    assert_eq!(kernel.native_agent_view(&agent), None);
+    rig.ok(g.output(3, malformed.as_bytes()));
+    assert_eq!(rig.k.native_agent_view(&g.id), None);
 }
 
 #[test]
 fn closing_native_source_or_parent_retains_a_readable_but_disconnected_view() {
     for source in [terminal(1), terminal(2)] {
-        let mut kernel = published_agent_for_batches(0);
-        let agent = terminal(2);
-        let mut effects = EffectBuffer::new();
-        let view = controller_view();
-        let payload = native_view_line(1, &view);
-        kernel
-            .update(
-                output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
-                &mut effects,
-            )
-            .unwrap();
-        kernel.update(closed(&source), &mut effects).unwrap();
-        let retained = kernel.native_agent_view(&agent).unwrap();
+        let (mut rig, view) = native_agent_rig();
+        rig.ok(closed(&source));
+        let retained = rig.k.native_agent_view(&terminal(2)).unwrap();
         assert_eq!(retained.activation, view.activation);
         assert_eq!(retained.backend, view.backend);
         assert!(!retained.connected);
         assert!(retained.questions.is_empty());
         assert_eq!(retained.turn_id, None);
-        kernel.release_incarnation();
-        assert_eq!(kernel.native_agent_view(&agent), None);
+        rig.k.release_incarnation();
+        assert_eq!(rig.k.native_agent_view(&terminal(2)), None);
     }
 }
 
