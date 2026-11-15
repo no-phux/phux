@@ -100,7 +100,15 @@ pub struct SpawnedServer {
 impl SpawnedServer {
     /// Start a server, optionally pre-seeding session `pre_seeded`.
     pub fn start(pre_seeded: Option<&str>, configure: impl FnOnce(&mut ServerConfig)) -> Self {
-        let tmp = TempDir::new().unwrap();
+        Self::start_in(TempDir::new().unwrap(), pre_seeded, configure)
+    }
+
+    /// [`Self::start`] in `tmp`, which the caller may have populated.
+    pub fn start_in(
+        tmp: TempDir,
+        pre_seeded: Option<&str>,
+        configure: impl FnOnce(&mut ServerConfig),
+    ) -> Self {
         let socket = tmp.path().join("phux.sock");
         let (shutdown, server) = spawn_server_with(socket.clone(), pre_seeded, configure);
         Self {
@@ -119,6 +127,11 @@ impl SpawnedServer {
     /// Pre-seed `session` with a PTY-backed pane running `cmd`.
     pub fn seeded(session: &str, cmd: LaunchCommand) -> Self {
         Self::start(Some(session), |cfg| seed_pty(cfg, cmd))
+    }
+
+    /// [`Self::seeded`] in `tmp`, which the caller may have populated.
+    pub fn seeded_in(tmp: TempDir, session: &str, cmd: LaunchCommand) -> Self {
+        Self::start_in(tmp, Some(session), |cfg| seed_pty(cfg, cmd))
     }
 
     /// Open another HELLO'd client against this server.

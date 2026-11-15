@@ -20,8 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    assert_command_error, command, join_after_shutdown, recv_until, run_local, seed_pty,
-    spawn_server_with,
+    SpawnedServer, assert_command_error, command, recv_until, run_local, seed_pty,
 };
 
 use crate::common::{connect_as, full_caps};
@@ -39,7 +38,6 @@ fn broker(socket: &Path) -> PathBuf {
 /// `SSH_AUTH_SOCK` it was started with in `env`.
 async fn serve(agent: bool, body: impl AsyncFnOnce(&Path, PathBuf)) {
     let tmp = TempDir::new().unwrap();
-    let socket = tmp.path().join("phux.sock");
     let env = tmp.path().join("env");
     let mut seed = LaunchCommand::new("/bin/sh");
     seed.arg("-c");
@@ -49,12 +47,12 @@ async fn serve(agent: bool, body: impl AsyncFnOnce(&Path, PathBuf)) {
     ));
     // What the server's own environment names is what a pane inherits.
     seed.env("SSH_AUTH_SOCK", "/the/servers/own/agent");
-    let (shutdown, server) = spawn_server_with(socket.clone(), Some("main"), |cfg| {
+    let server = SpawnedServer::start_in(tmp, Some("main"), |cfg| {
         cfg.forward.agent = agent;
         seed_pty(cfg, seed);
     });
-    body(&socket, env).await;
-    join_after_shutdown(shutdown, server).await;
+    body(&server.socket, env).await;
+    server.stop().await;
 }
 
 async fn client(socket: &Path, name: &str) -> (UnixStream, bool) {

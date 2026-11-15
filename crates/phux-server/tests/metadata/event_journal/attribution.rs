@@ -9,9 +9,7 @@ use phux_protocol::wire::frame::{
 };
 use tempfile::TempDir;
 
-use phux_server_testkit::{
-    Spawn, join_after_shutdown, recv_until, run_local, send_frame, spawn_server_with_seed_cmd,
-};
+use phux_server_testkit::{Spawn, SpawnedServer, recv_until, run_local, send_frame};
 
 use super::{
     Seen, Server, asked_ids, command, drain_until_quiet, journal_contents, next_event,
@@ -25,13 +23,12 @@ use crate::common::{attach_pane, connect_as, full_caps, gated_seed};
 fn sink_overflow_journals_source_gap_for_that_terminal() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         let marks = "\\033]133;C\\007\\033]133;D;0\\007".repeat(400);
         let seed = gated_seed(&release, &format!("printf '{marks}'; sleep 600"));
-        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "demo", seed);
-        let (mut observer, _) = connect_as(&socket, "observer", full_caps()).await;
-        let (mut attacher, _) = connect_as(&socket, "attacher", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (mut observer, _) = connect_as(&server.socket, "observer", full_caps()).await;
+        let (mut attacher, _) = connect_as(&server.socket, "attacher", full_caps()).await;
         let pane = attach_pane(&mut attacher, "demo").await;
         let _ = subscribe(&mut observer, 1, Some(pane.clone()), None).await;
         std::fs::write(&release, b"go").unwrap();
@@ -47,7 +44,7 @@ fn sink_overflow_journals_source_gap_for_that_terminal() {
             reported
         } else {
             // The observer's own mailbox overflowed first; the journal still holds it.
-            let (mut replayer, _) = connect_as(&socket, "replayer", full_caps()).await;
+            let (mut replayer, _) = connect_as(&server.socket, "replayer", full_caps()).await;
             subscribe(&mut replayer, 2, Some(pane.clone()), Some(0))
                 .await
                 .into_iter()
@@ -62,7 +59,7 @@ fn sink_overflow_journals_source_gap_for_that_terminal() {
         assert!(source_gap.stamp.is_some(), "journaled and stamped");
 
         drop((observer, attacher));
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -72,14 +69,13 @@ fn sink_overflow_journals_source_gap_for_that_terminal() {
 fn resource_event_filters_are_replaced_and_empty_admits_everything() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         let seed = gated_seed(
             &release,
             "printf '\\007\\033]2;journal-title\\007'; sleep 600",
         );
-        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "demo", seed);
-        let (mut a, _) = connect_as(&socket, "filtered", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (mut a, _) = connect_as(&server.socket, "filtered", full_caps()).await;
         let pane = attach_pane(&mut a, "demo").await;
         let filter = |types: Vec<ResourceEventType>| Command::SubscribeResourceEvents {
             terminal_id: pane.clone(),
@@ -130,7 +126,7 @@ fn resource_event_filters_are_replaced_and_empty_admits_everything() {
         );
 
         drop(a);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 

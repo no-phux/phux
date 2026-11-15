@@ -17,9 +17,7 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{
-    assert_command_error, command, join_after_shutdown, run_local, spawn_server_with_seed_cmd,
-};
+use phux_server_testkit::{SpawnedServer, assert_command_error, command, run_local};
 
 use crate::common::{attach_pane, connect_as, full_caps};
 
@@ -141,15 +139,14 @@ async fn assert_outside_paths_refused(stream: &mut UnixStream, pane: &ResourceId
 fn checkout_methods_read_and_stage_the_terminals_checkout() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let repo = repo(tmp.path());
         let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("sleep 30");
         cmd.cwd(repo.join("src"));
-        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), SESSION, cmd);
+        let server = SpawnedServer::seeded_in(tmp, SESSION, cmd);
 
-        let (mut stream, hello) = connect_as(&socket, "checkout-test", full_caps()).await;
+        let (mut stream, hello) = connect_as(&server.socket, "checkout-test", full_caps()).await;
         let FrameKind::HelloOk { server_caps, .. } = hello else {
             panic!("expected HELLO_OK");
         };
@@ -228,7 +225,7 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
         .await;
         assert_command_error(&missing, ErrorCode::TerminalNotFound);
 
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -236,7 +233,6 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
 fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
@@ -244,8 +240,8 @@ fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
         cmd.arg("sleep 30");
         cmd.cwd(&plain);
         // A fresh temp directory is under no checkout.
-        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), SESSION, cmd);
-        let (mut stream, _) = connect_as(&socket, "checkout-none", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, SESSION, cmd);
+        let (mut stream, _) = connect_as(&server.socket, "checkout-none", full_caps()).await;
         let pane = attach_pane(&mut stream, SESSION).await;
 
         let answer = checkout(&mut stream, 1, &pane, CheckoutRequest::Branches).await;
@@ -254,6 +250,6 @@ fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
             "{answer:?}"
         );
 
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
