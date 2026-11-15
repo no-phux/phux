@@ -350,12 +350,23 @@ impl Desk {
         let Some(id) = self.client.as_ref().and_then(|c| c.selected_session()) else {
             return;
         };
-        let session = self.topology.as_ref().and_then(|t| {
-            let session = t.sessions.iter().find(|s| s.id == id)?;
-            Some((session.key?, session.name.clone()))
+        let key = self.topology.as_ref().and_then(|t| {
+            t.sessions.iter().find(|s| s.id == id)?.key
         });
-        if let Some((key, name)) = session {
-            self.pending = Some(Pending::CloseSession(key, name));
+        if let Some(key) = key {
+            self.close_session_key(key);
+        }
+    }
+
+    /// Ask before ending this local session, without selecting it. Resolve
+    /// its name now: a memoized sidebar control may predate a rename or close.
+    /// A stale key must never fall back to a reused name or live handle.
+    pub fn close_session_key(&mut self, key: SessionKey) {
+        if self.client.is_none() {
+            return;
+        }
+        if let Some(session) = self.topology.as_ref().and_then(|t| t.session_keyed(&key)) {
+            self.pending = Some(Pending::CloseSession(key, session.name.clone()));
         }
     }
 
@@ -440,6 +451,9 @@ impl Desk {
         }
     }
 }
+
+#[cfg(test)]
+mod close_tests;
 
 #[cfg(test)]
 mod tests {
