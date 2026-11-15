@@ -34,15 +34,7 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
 
     let press = |spec: &str| {
         let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(KeyEvent {
-            action: KeyAction::Press,
-            key: chord.key,
-            mods: chord.modifiers,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
     };
     // Layout actions wait for the initial shared layout read.
     state.layout_read_complete = true;

@@ -179,20 +179,10 @@ impl CopyModeOverlay {
 mod tests {
     use super::*;
 
-    use phux_protocol::input::key::KeyAction;
-
     use crate::render::overlay::RenderOverlay as _;
 
     fn press(overlay: &mut CopyModeOverlay, key: PhysicalKey, mods: ModSet) -> OverlayCommand {
-        overlay.handle_key(&KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        overlay.handle_key(&crate::test_util::press_mods(key, mods))
     }
 
     fn plain(overlay: &mut CopyModeOverlay, key: PhysicalKey) -> OverlayCommand {

@@ -1369,7 +1369,7 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
 #[test]
 fn session_picker_keeps_selection_across_a_live_rename() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let before = session_picker_items(
         &[sinfo(1, "alpha"), sinfo(2, "beta"), sinfo(3, "gamma")],
@@ -1400,15 +1400,7 @@ fn session_picker_keeps_selection_across_a_live_rename() {
     );
     renamed.insert(0, logs);
 
-    let press = |key| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    };
+    let press = |key| crate::test_util::press(key);
     let mut picker = SelectList::new("Sessions", before, &Theme::default())
         .with_live_key(SESSION_PICKER_LIVE_KEY);
     assert_eq!(
@@ -2253,7 +2245,7 @@ fn a_machine_row_commits_switch_host() {
 #[test]
 fn session_picker_filter_spans_machines() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let hosts = machine_fixture();
     let items = host_grouped_session_items(
@@ -2265,15 +2257,7 @@ fn session_picker_filter_spans_machines() {
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
         &ArrangementDoc::single(tid(1)),
     );
-    let press = |key, text: Option<&str>| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: text.map(ToOwned::to_owned),
-        unshifted_codepoint: None,
-    };
+    let press = |key, text: Option<&str>| crate::test_util::press_text(key, text);
     let mut picker = SelectList::new("Sessions", items, &Theme::default());
     for ch in "phall".chars() {
         let _ = picker.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
@@ -2388,7 +2372,7 @@ fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
 #[test]
 fn rename_session_requests_the_effect_or_prompts() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let effects = run(
         &act("rename-session", &[("name", "notes".into())]),
@@ -2406,15 +2390,7 @@ fn rename_session_requests_the_effect_or_prompts() {
     assert!(f.overlays.is_active());
 
     let mut prompt = PromptOverlay::rename_session("work", &Theme::default());
-    let key = |key, text: Option<&str>| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: text.map(ToOwned::to_owned),
-        unshifted_codepoint: None,
-    };
+    let key = |key, text: Option<&str>| crate::test_util::press_text(key, text);
     for _ in 0..4 {
         let _ = prompt.handle_key(&key(PhysicalKey::Backspace, None));
     }

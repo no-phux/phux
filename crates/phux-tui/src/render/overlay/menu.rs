@@ -432,17 +432,7 @@ mod tests {
         mouse(MouseAction::Press, MouseButton::Left, x, y)
     }
 
-    fn key(k: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key: k,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press as key;
 
     fn committed(cmd: OverlayCommand) -> String {
         match cmd {

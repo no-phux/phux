@@ -30,7 +30,7 @@ fn strip_csi(vt: &str) -> String {
 fn the_real_palette_scrolls_to_its_last_row() {
     use crate::render::Theme;
     use crate::render::overlay::{OverlayState, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let items = palette_items(None, &[], &[]);
     let last = items
@@ -66,15 +66,7 @@ fn the_real_palette_scrolls_to_its_last_row() {
     );
 
     // End jumps to the last row: it must now be painted inside the box.
-    overlays.handle_key(&KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::End,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    });
+    overlays.handle_key(&crate::test_util::press(PhysicalKey::End));
     let scrolled = paint(&overlays);
     assert!(
         scrolled.contains(&last),

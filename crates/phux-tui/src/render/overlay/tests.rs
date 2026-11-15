@@ -1,17 +1,7 @@
 use super::*;
-use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+use phux_protocol::input::key::PhysicalKey;
 
-fn key(k: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key: k,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
+use crate::test_util::press as key;
 
 fn action(name: &str) -> phux_config::keybind::ResolvedAction {
     phux_config::keybind::ResolvedAction {

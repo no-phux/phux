@@ -112,15 +112,7 @@ async fn selecting_a_same_shaped_window_never_clears_the_screen() {
 
     let press = |spec: &str| {
         let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(KeyEvent {
-            action: KeyAction::Press,
-            key: chord.key,
-            mods: chord.modifiers,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
     };
     let sidebar = state.sidebar();
     out.clear();
@@ -190,15 +182,7 @@ async fn focusing_another_pane_never_clears_the_screen() {
 
     let press = |spec: &str| {
         let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(KeyEvent {
-            action: KeyAction::Press,
-            key: chord.key,
-            mods: chord.modifiers,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
     };
     let sidebar = state.sidebar();
     out.clear();

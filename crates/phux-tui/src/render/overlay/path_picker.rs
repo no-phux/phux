@@ -185,7 +185,7 @@ impl RenderOverlay for PathPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
     use phux_protocol::wire::frame::{PathResults, PathRow};
 
     #[test]
@@ -283,15 +283,7 @@ mod tests {
         });
         let mut picker = PathPicker::new("/home".into(), &Theme::default());
         picker.update_paths(&result);
-        let key = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::X,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("x".into()),
-            unshifted_codepoint: None,
-        };
+        let key = crate::test_util::press_text(PhysicalKey::X, Some("x"));
         assert_eq!(picker.handle_key(&key), OverlayCommand::Stay);
         assert_eq!(picker.path_search(), Some(("/home", "x")));
         let enter = KeyEvent {
@@ -309,15 +301,7 @@ mod tests {
     #[test]
     fn the_first_j_or_k_is_search_text_not_vi_navigation() {
         let mut picker = PathPicker::new("/src".into(), &Theme::default());
-        let key = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::J,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("j".into()),
-            unshifted_codepoint: None,
-        };
+        let key = crate::test_util::press_text(PhysicalKey::J, Some("j"));
         picker.handle_key(&key);
         assert_eq!(picker.path_search(), Some(("/src", "j")));
     }

@@ -1578,17 +1578,7 @@ mod tests {
         assert_eq!(shown("/Users/pat/x"), "/Users/pat/x");
     }
 
-    fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press_text as press;
 
     fn ctrl(key: PhysicalKey) -> KeyEvent {
         let mut ev = press(key, None);

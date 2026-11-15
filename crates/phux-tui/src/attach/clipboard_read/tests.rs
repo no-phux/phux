@@ -1,5 +1,3 @@
-use phux_protocol::input::key::ModSet;
-
 use super::*;
 
 const C: ClipboardSelection = ClipboardSelection::Clipboard;
@@ -12,17 +10,7 @@ fn reads() -> SharedClipboardReads {
     ClipboardReads::shared(true)
 }
 
-fn press(key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
+use crate::test_util::press;
 
 #[test]
 fn deny_an_unfocused_pane_and_an_old_server_never_prompt() {

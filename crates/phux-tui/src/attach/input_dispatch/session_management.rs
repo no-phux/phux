@@ -342,17 +342,7 @@ mod tests {
         }
     }
 
-    fn key(key: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press as key;
 
     fn edits(seen: &[FrameKind]) -> Vec<&Command> {
         seen.iter()

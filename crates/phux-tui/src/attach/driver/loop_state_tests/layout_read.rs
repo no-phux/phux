@@ -28,15 +28,7 @@ async fn rename_from_prompt(state: &mut SessionLoop, conn: &mut Connection, out:
             "renamed",
             &state.settings.theme,
         )));
-    let mut events = vec![InputEvent::Key(KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::Enter,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    })];
+    let mut events = vec![InputEvent::Key(crate::test_util::press(PhysicalKey::Enter))];
     state
         .dispatch_input(conn, out, None, &mut events)
         .await
@@ -352,15 +344,7 @@ async fn deferred_focus_edits_clear_predictions_and_suspend_without_a_known_curs
         state.layout_read_complete = true;
         state.mirror.predict = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         state.mirror.predict.set_cursor(4, 9);
-        state.mirror.predict.predict_key(&KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("a".to_owned()),
-            unshifted_codepoint: None,
-        });
+        state.mirror.predict.predict_key(&crate::test_util::press_text(PhysicalKey::A, Some("a")));
         assert_eq!(state.mirror.predict.pending_len(), 1);
         state.deferred_arrangement_edits.push(edit);
         assert!(state.flush_deferred_arrangement_edits());
