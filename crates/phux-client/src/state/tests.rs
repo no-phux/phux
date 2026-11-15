@@ -71,10 +71,7 @@ async fn get_state_hands_back_the_degradation_with_the_snapshot() {
 
 #[tokio::test]
 async fn probe_hello_returns_the_negotiated_version_triple() {
-    let dir = tempfile::tempdir().unwrap();
-    let (socket, server) = serve_one(dir.path(), ScriptSpec::new());
-
-    let mut conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, mut conn, server) = crate::testkit::connect_one(ScriptSpec::new()).await;
     let triple = super::probe_hello(&mut conn).await.unwrap();
     assert_eq!(
         triple,
@@ -103,10 +100,7 @@ async fn probe_hello_returns_the_negotiated_version_triple() {
 #[tokio::test]
 async fn peer_pid_names_the_process_behind_the_socket() {
     // The listener is this process, so the peer pid is ours.
-    let dir = tempfile::tempdir().unwrap();
-    let (socket, server) = serve_one(dir.path(), ScriptSpec::new());
-
-    let conn = Connection::connect(&socket).await.unwrap();
+    let (_dir, conn, server) = crate::testkit::connect_one(ScriptSpec::new()).await;
     assert_eq!(
         conn.peer_pid(),
         Some(i32::try_from(std::process::id()).unwrap()),

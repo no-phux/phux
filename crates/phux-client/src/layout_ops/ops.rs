@@ -417,25 +417,6 @@ impl<'a> LayoutOps<'a> {
     }
 }
 
-/// [`LayoutOps::write_and_confirm`] over a fresh connection (`phux
-/// workspace restore`).
-///
-/// # Errors
-///
-/// A connect failure, or [`LayoutOps::write_and_confirm`]'s own errors.
-pub async fn write_layout_on(
-    socket_path: &std::path::Path,
-    session: SessionId,
-    workspace: &ArrangementDoc,
-    first_request_id: u32,
-) -> Result<(), LayoutOpsError> {
-    let mut conn = Connection::connect(socket_path).await?;
-    LayoutOps::new(&mut conn, session, first_request_id)
-        .write_and_confirm(workspace)
-        .await
-        .map(|_workspace| ())
-}
-
 /// A compare-and-swap gave up. Retries that still have attempts left stay at
 /// debug; exhausting them is the refusal an operator can see at info.
 fn log_conflict_exhausted() {

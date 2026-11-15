@@ -3,13 +3,15 @@
 //! [`DropProxy`] sits between a QUIC client and server on loopback and can
 //! stop delivering the server's datagrams, so no ack returns and the server's
 //! congestion window freezes, which is how a send-window test stalls a path.
+//! [`counting_target`] is the TCP service the forwarding tests reach.
 
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::task::JoinHandle;
 
 /// A loopback UDP forwarder between one client and one upstream server.
@@ -115,4 +117,28 @@ pub(crate) fn quic_server(dir: &std::path::Path, alpn: &[u8]) -> quinn::Endpoint
         .expect("quic crypto");
     let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     quinn::Endpoint::server(config, "127.0.0.1:0".parse().expect("addr")).expect("bind server")
+}
+
+/// A loopback TCP service that reads each connection to its end, then
+/// answers `got N bytes`.
+///
+/// # Panics
+///
+/// If no loopback TCP port is available.
+#[allow(clippy::expect_used, reason = "a test fixture")]
+pub async fn counting_target() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let _ = stream.read_to_end(&mut request).await;
+                let reply = format!("got {} bytes", request.len());
+                let _ = stream.write_all(reply.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    addr
 }

@@ -5,7 +5,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 
 use super::*;
 use crate::kill::selection::session_is_empty;
-use crate::testkit::{self, OrgFixture, ScriptSpec};
+use crate::testkit::{OrgFixture, ScriptSpec};
 
 const NOTICE: &str = "satellite build-box is unreachable: link is down";
 
@@ -32,10 +32,8 @@ fn a_merged_kill_outcome_names_every_id_that_was_not_killed() {
 /// notice reaches the caller beside the outcome.
 #[tokio::test]
 async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) =
-        testkit::serve_one(dir.path(), ScriptSpec::new().degradation_notice(NOTICE));
-    let mut conn = Connection::connect(&socket).await.expect("connect");
+    let (_dir, mut conn, server) =
+        crate::testkit::connect_one(ScriptSpec::new().degradation_notice(NOTICE)).await;
     let ids = vec![ResourceId::local(1), ResourceId::local(2)];
     let (outcome, degradation) = kill_resources(&mut conn, 1, ids.clone())
         .await
@@ -62,9 +60,7 @@ async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
 #[tokio::test]
 async fn a_keyed_kill_needs_keyed_signal_and_carries_its_key() {
     async fn run(spec: ScriptSpec) -> (Result<(), KeyedError>, Vec<FrameKind>) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = testkit::serve_one(dir.path(), spec);
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
         let key = IdempotencyKey::new([7; 16]).expect("non-zero");
         let sent = kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
             .await
@@ -111,27 +107,18 @@ fn pane_state() -> SessionSnapshot {
         ])
 }
 
-/// The state once every pane is reaped: nothing listed.
-fn reaped_state() -> SessionSnapshot {
-    SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
-}
-
-/// The first `GET_STATE` resolves against [`pane_state`]; every later
-/// one (the post-kill reap wait) answers [`reaped_state`].
 async fn run_selected(
     spec: ScriptSpec,
     target: &str,
 ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
-    run_selected_through(spec.states([pane_state()]).state(reaped_state()), target).await
+    run_selected_through(spec.state(pane_state()), target).await
 }
 
 async fn run_selected_through(
     spec: ScriptSpec,
     target: &str,
 ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) = testkit::serve_one(dir.path(), spec);
-    let mut conn = Connection::connect(&socket).await.expect("connect");
+    let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
     let selector = crate::selector::parse(target).expect("selector");
     let mut notices = Vec::new();
     let result = selected(&mut conn, &selector, target, None, &mut notices).await;
@@ -267,56 +254,6 @@ async fn selected_splits_a_complete_miss_from_a_partial_view() {
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(notices, [NOTICE]);
     assert!(killed_one(&seen, 2), "a partial-view hit still kills");
-}
-
-fn state_reads(seen: &[FrameKind]) -> usize {
-    seen.iter()
-        .filter(|frame| {
-            matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::GetState { .. },
-                    ..
-                }
-            )
-        })
-        .count()
-}
-
-/// Against a server without `COMMITTED_TEARDOWN`, a successful kill
-/// returns only once its panes are no longer listed, so
-/// `phux kill work && phux new work` cannot race the reap.
-#[tokio::test]
-async fn selected_waits_until_an_older_server_reaps_the_killed_panes() {
-    let spec = ScriptSpec::new()
-        .states([pane_state(), pane_state(), pane_state()])
-        .state(reaped_state());
-    let (result, _, seen) = run_selected_through(spec, "work").await;
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(
-        state_reads(&seen),
-        4,
-        "resolve, two still-listed polls, then reaped: {seen:?}"
-    );
-}
-
-/// A server advertising `COMMITTED_TEARDOWN` replies only once the kill
-/// is the whole visible teardown (L1 §5.2), so the kill polls nothing.
-#[tokio::test]
-async fn selected_trusts_a_committed_teardown_reply() {
-    use phux_protocol::caps::ServerFeatureExtSet;
-
-    for target in ["work", "@2"] {
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[
-                ServerFeatureExt::CommittedTeardown,
-            ]))
-            .states([pane_state(), pane_state()])
-            .state(reaped_state());
-        let (result, _, seen) = run_selected_through(spec, target).await;
-        assert!(result.is_ok(), "{target}: {result:?}");
-        assert_eq!(state_reads(&seen), 1, "{target}: resolve only: {seen:?}");
-    }
 }
 
 fn org_spec(fixture: OrgFixture) -> ScriptSpec {

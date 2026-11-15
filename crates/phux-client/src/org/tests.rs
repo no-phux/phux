@@ -4,7 +4,7 @@ use phux_protocol::wire::frame::{
 };
 
 use super::*;
-use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
+use crate::testkit::{OrgFixture, ScriptSpec};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::{ResourceKey, ResourceKind, SessionId, SessionKey};
 
@@ -54,9 +54,7 @@ async fn connect(
     tokio::task::JoinHandle<Vec<phux_protocol::wire::frame::FrameKind>>,
     tempfile::TempDir,
 ) {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let (socket, server) = serve_one(dir.path(), spec);
-    let conn = Connection::connect(&socket).await.expect("connect");
+    let (dir, conn, server) = crate::testkit::connect_one(spec).await;
     (conn, server, dir)
 }
 

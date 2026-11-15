@@ -642,7 +642,6 @@ async fn await_change(
     reason = "tests"
 )]
 mod tests {
-    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::frame::{Command, ControlAction, EventStamp};
     use phux_protocol::wire::info::SessionSnapshot;
@@ -681,9 +680,7 @@ mod tests {
     }
 
     fn journal_spec() -> ScriptSpec {
-        ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
-            .server_id(SERVER_ID.to_vec())
+        ScriptSpec::new().server_id(SERVER_ID.to_vec())
     }
 
     fn event_for(terminal: ResourceId, event: AgentEvent, seq: u64) -> FrameKind {
@@ -1146,20 +1143,6 @@ mod tests {
         let err = result.expect_err("the server hung up before the answer");
         assert!(matches!(err.cause, WaitFailure::Attach(_)), "{err:?}");
         assert_eq!(err.cursor.expect("cursor").seq(), 5);
-    }
-
-    #[tokio::test]
-    async fn a_server_without_a_journal_issues_no_cursor() {
-        let (result, seen) = run(
-            ScriptSpec::new().state(retained(0)),
-            None,
-            Duration::from_secs(20),
-        )
-        .await;
-        let wait = result.expect("wait");
-        assert_eq!(subscribed_after(&seen), None, "live only: no journal");
-        assert!(wait.cursor.is_none());
-        assert!(wait.to_json()["cursor"].is_null());
     }
 
     /// A refused state read, or a subscription refused with an uncorrelated

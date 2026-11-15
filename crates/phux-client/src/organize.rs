@@ -563,9 +563,7 @@ mod tests {
         let now_in = fixture.session("elsewhere", SessionLifetime::Persistent);
         let target = fixture.session("phux", SessionLifetime::Persistent);
         let pane = fixture.resource(now_in, Some(ExecState::Running));
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = crate::testkit::serve_one(dir.path(), org_spec(fixture));
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) = crate::testkit::connect_one(org_spec(fixture)).await;
         let plan = Plan {
             judge: JudgeKind::Jev,
             creates: Vec::new(),
@@ -601,9 +599,7 @@ mod tests {
         let mut fixture = OrgFixture::new();
         let home = fixture.session("misc", SessionLifetime::Persistent);
         let pane = fixture.resource(home, Some(ExecState::Running));
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = crate::testkit::serve_one(dir.path(), org_spec(fixture));
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) = crate::testkit::connect_one(org_spec(fixture)).await;
         let plan = Plan {
             judge: JudgeKind::Heuristic,
             creates: vec![planner::NewSession {
@@ -658,9 +654,7 @@ mod tests {
     async fn undo_refuses_another_servers_journal() {
         let mut fixture = OrgFixture::new();
         fixture.session("misc", SessionLifetime::Persistent);
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = crate::testkit::serve_one(dir.path(), org_spec(fixture));
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) = crate::testkit::connect_one(org_spec(fixture)).await;
         let mut journal = Journal::new();
         journal.authority = Some(AuthorityId::new([0xee; 16]).expect("non-zero"));
         let refused = undo(&mut conn, &journal).await;

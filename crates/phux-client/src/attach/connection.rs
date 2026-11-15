@@ -80,20 +80,6 @@ impl Connection {
         Self::connect_dial(&Dial::Quic(dial.clone())).await
     }
 
-    /// Dial QUIC and negotiate with the supplied client profile; a plain
-    /// QUIC link also offers per-Terminal streams (docs/protocol.md#quic-stream-routing).
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_quic_with_hello(
-        dial: &QuicDial,
-        client_name: String,
-        client_caps: ClientCapabilities,
-    ) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(&Dial::Quic(dial.clone()), client_name, client_caps).await
-    }
-
     /// [`Self::connect_quic`] with a short incomplete-Terminal-frame deadline.
     ///
     /// # Errors
@@ -108,19 +94,6 @@ impl Connection {
         conn.session
             .set_terminal_frame_deadline_for_test(terminal_frame_deadline);
         Ok(conn)
-    }
-
-    /// Dial WebSocket and negotiate with the supplied client profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_ws_with_hello(
-        dial: &WsDial,
-        client_name: String,
-        client_caps: ClientCapabilities,
-    ) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(&Dial::Ws(dial.clone()), client_name, client_caps).await
     }
 
     /// Connect over `dial` and negotiate the control-plane profile.
