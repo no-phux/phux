@@ -10,18 +10,15 @@
 
 use std::time::{Duration, Instant};
 
-use phux_dial::quic::DialedStream;
 use phux_dial::{CertTrust, DialError, QuicDial, TlsClientIdentity};
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::workload::WorkloadPaths;
-use phux_server_testkit::WIRE_RECV_TIMEOUT;
 use phux_server_testkit::relay::RelayHarness;
 use tempfile::TempDir;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::relay_common::{
-    RelayedServer, hello as hello_frame, loopback, read_frame, relay_config, relay_pin,
-    write_frame, write_private,
+    RelayedServer, loopback, quic_hello, relay_config, relay_pin, write_private,
 };
 
 const ROUTE: &str = "inner-test";
@@ -86,39 +83,11 @@ fn inner(ca: &str, identity: TlsClientIdentity) -> phux_dial::quic::InnerTls {
     crate::relay_common::inner(ca, identity, ROUTE)
 }
 
-/// HELLO through `plan`; the server's first answer, or why the dial failed.
-async fn hello(plan: &QuicDial) -> Result<FrameKind, DialError> {
-    let (_endpoint, conn, stream) = phux_dial::quic::dial_stream(plan).await?;
-    let io = async {
-        let (mut reader, mut writer): (
-            Box<dyn tokio::io::AsyncRead + Unpin>,
-            Box<dyn tokio::io::AsyncWrite + Unpin>,
-        ) = match stream {
-            DialedStream::Plain { send, recv } => (Box::new(recv), Box::new(send)),
-            DialedStream::Inner(stream) => {
-                let (recv, send) = tokio::io::split(*stream);
-                (Box::new(recv), Box::new(send))
-            }
-        };
-        write_frame(&mut writer, &hello_frame("relay-inner-tls")).await?;
-        read_frame(&mut reader).await
-    };
-    timeout(WIRE_RECV_TIMEOUT, io)
-        .await
-        .map_err(|_| DialError::Connect("no answer".to_owned()))?
-        .map_err(|err| {
-            conn.close_reason().map_or_else(
-                || DialError::Connect(err.to_string()),
-                |close| phux_dial::quic::close_error(&close),
-            )
-        })
-}
-
 /// Retry until the connector holds the route.
 async fn first_answer(plan: &QuicDial) -> Result<FrameKind, DialError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let answer = hello(plan).await;
+        let answer = quic_hello(plan, "relay-inner-tls").await;
         let route_offline =
             matches!(&answer, Err(DialError::Connect(detail)) if detail.contains("route offline"));
         if !route_offline || Instant::now() > deadline {
