@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phux_config::plugin::{self, PluginManifest, PluginPlatform};
+use phux_config::plugin::{self, PluginManifest};
 use phux_config::{Config, HookEntry, vocab};
 use tracing::{debug, warn};
+
+use super::platform_enabled;
 
 /// One `[[events]]` entry resolved from an **enabled** plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,25 +163,4 @@ fn hook_entry_problems(event: &str, context_keys: &[&str], entry: &HookEntry) ->
         ));
     }
     details
-}
-
-/// Whether the current OS is allowed (`None` means every platform).
-fn platform_enabled(platforms: Option<&[PluginPlatform]>) -> bool {
-    let Some(platforms) = platforms else {
-        return true;
-    };
-    current_platform().is_some_and(|current| platforms.contains(&current))
-}
-
-/// The manifest-vocabulary name of the OS this server runs on.
-const fn current_platform() -> Option<PluginPlatform> {
-    if cfg!(target_os = "macos") {
-        Some(PluginPlatform::Macos)
-    } else if cfg!(target_os = "linux") {
-        Some(PluginPlatform::Linux)
-    } else if cfg!(target_os = "windows") {
-        Some(PluginPlatform::Windows)
-    } else {
-        None
-    }
 }
