@@ -1,554 +1,253 @@
-// -----------------------------------------------------------------------------
-// The client-frame table (workload-auth §6, first table), in spec row order.
-// -----------------------------------------------------------------------------
-
-const GLOBAL: Subject = Subject::Global {
-    owner_uds_only: false,
-};
-const GLOBAL_OWNER_UDS: Subject = Subject::Global {
-    owner_uds_only: true,
-};
-
-static F_HELLO: Rule = Rule::exempt("`HELLO`", Exemption::Handshake, Subject::None);
-static F_PING: Rule = Rule::exempt("`PING`", Exemption::Liveness, Subject::None);
-static F_DETACH: Rule = Rule::exempt("`DETACH`", Exemption::Cleanup, Subject::CallingConnection);
-static F_ATTACH: Rule = Rule::verbs(
-    "`ATTACH` existing/last target",
-    &[Verb::Bind, Verb::Observe],
-    Subject::ResolvedGroup,
-);
-static F_ATTACH_CREATE: Rule = Rule::verbs(
-    "`ATTACH` create-if-missing",
-    &[Verb::Create, Verb::Bind, Verb::Observe],
-    Subject::SelectedLocalGroup,
-);
-static F_HISTORY_REQUEST: Rule = Rule::verbs(
-    "`HISTORY_REQUEST`",
-    &[Verb::Observe],
-    Subject::NamedTerminal,
-);
-static F_FRAME_ACK: Rule = Rule::verbs("`FRAME_ACK`", &[Verb::Observe], Subject::NamedTerminal);
-static F_COMMAND: Rule = Rule {
-    case: "`COMMAND`",
-    requirement: Requirement::Nested,
-    subject: Subject::None,
-};
-static F_SUBSCRIBE: Rule = Rule::deny("`SUBSCRIBE` (unallocated)");
-static F_INPUT: Rule = Rule::verbs(
-    "`INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY`",
-    &[Verb::Input],
-    Subject::NamedTerminal,
-);
-static F_VIEWPORT_RESIZE: Rule = Rule::verbs(
-    "`VIEWPORT_RESIZE`",
-    &[Verb::Bind],
-    Subject::AttachedTerminals,
-);
-static F_SPAWN_SATELLITE: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { satellite: Some, owner_terminal: None }`",
-    &[Verb::Create],
-    Subject::SatelliteHost,
-);
-static F_SPAWN_LOCAL: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { satellite: None, owner_terminal: None }`",
-    &[Verb::Create],
-    Subject::PayloadGroup,
-);
-static F_SPAWN_OWNED: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { satellite: None, owner_terminal: Some }`",
-    &[Verb::Create, Verb::Bind],
-    Subject::OwnerTerminalGroup,
-);
-static F_SPAWN_SATELLITE_OWNED: Rule =
-    Rule::deny("`SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }`");
-static F_SPAWN_CHILD_LOCAL: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }`",
-    &[Verb::Create, Verb::Bind],
-    Subject::ParentTerminalGroup,
-);
-static F_SPAWN_CHILD_SATELLITE: Rule = Rule::verbs(
-    "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
-    &[Verb::Create, Verb::Bind],
-    Subject::SatelliteHostAndParent,
-);
-static F_SPAWN_KIND_MISMATCH: Rule = Rule::deny(
-    "`SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }`",
-);
-// Declaring a control class (page, window, display) claims what viewers'
-// `input@CLASS` grants then reach: only the owner socket opens one
-// (`docs/authority.md`).
-static F_SPAWN_MACHINE_CONTROL: Rule = Rule::deny("`SPAWN_RESOURCE { control: Some }`");
-static F_RESIZE_TERMINAL: Rule =
-    Rule::verbs("`RESIZE_TERMINAL`", &[Verb::Bind], Subject::NamedTerminal);
-static F_MOVE_RESOURCE: Rule = Rule::verbs(
-    "`MOVE_RESOURCE`",
-    &[Verb::Bind],
-    Subject::MovedAndOwnerTerminals,
-);
-static F_SUBSCRIBE_EVENTS_ONE: Rule = Rule::verbs(
-    "`SUBSCRIBE_EVENTS { terminal: Some }`",
-    &[Verb::Observe],
-    Subject::NamedTerminal,
-);
-static F_SUBSCRIBE_EVENTS_ALL: Rule = Rule::verbs(
-    "`SUBSCRIBE_EVENTS { terminal: None }`",
-    &[Verb::Observe],
-    Subject::ObservableTerminals,
-);
-static F_WHOAMI: Rule = Rule::exempt(
-    r#"`GET_METADATA { Global, "phux.whoami/v1" }`"#,
-    Exemption::SelfRead,
-    Subject::CallingConnection,
-);
-static F_GET_METADATA: Rule = Rule::verbs(
-    "Other `GET_METADATA`",
-    &[Verb::Observe],
-    Subject::MetadataScope,
-);
-static F_SESSION_CREATE: Rule = Rule::verbs(
-    r#"`SET_METADATA { Global, "phux.session.create/v1" }`"#,
-    &[Verb::Create, Verb::Bind],
-    GLOBAL,
-);
-static F_KEEP_EMPTY_MARK: Rule = Rule::verbs(
-    r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true`"#,
-    &[Verb::Create, Verb::Bind],
-    GLOBAL,
-);
-static F_KEEP_EMPTY_CLEAR: Rule = Rule::verbs(
-    r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false`"#,
-    &[Verb::Signal],
-    Subject::NamedSession,
-);
-static F_KEEP_EMPTY_OTHER: Rule =
-    Rule::deny(r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value"#);
-static F_CONFIG_RELOAD: Rule = Rule::verbs(
-    r#"`SET_METADATA { Global, "phux.config.reload/v1" }`"#,
-    &[Verb::Signal],
-    GLOBAL,
-);
-static F_APPROVAL_DECIDE: Rule = Rule::verbs(
-    r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny`"#,
-    &[Verb::Signal],
-    Subject::HeldAction,
-);
-static F_APPROVAL_DECIDE_OTHER: Rule = Rule::deny(
-    r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value"#,
-);
-static F_RESULT_NAMESPACE_WRITE: Rule = Rule::deny(
-    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results",
-);
-static F_RESULT_NAMESPACE_SUBSCRIBE: Rule =
-    Rule::deny("`SUBSCRIBE_METADATA` targeting that result namespace");
-static F_SERVER_OWNED_WRITE: Rule = Rule::deny(
-    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.controller/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key",
-);
-static F_METADATA_WRITE: Rule = Rule::verbs(
-    "Other `SET_METADATA`, `DELETE_METADATA`",
-    &[Verb::Bind],
-    Subject::MetadataScope,
-);
-static F_LIST_METADATA: Rule = Rule::verbs(
-    "`LIST_METADATA`",
-    &[Verb::Inventory],
-    Subject::MetadataScope,
-);
-static F_LIST_DIRECTORY: Rule = Rule::verbs("`LIST_DIRECTORY`", &[Verb::Inventory], GLOBAL);
-static F_PATH_QUERY: Rule = Rule::verbs("`PATH_QUERY`", &[Verb::Inventory], GLOBAL);
-static F_SUBSCRIBE_METADATA: Rule = Rule::verbs(
-    "Other `SUBSCRIBE_METADATA`",
-    &[Verb::Observe],
-    Subject::MetadataScope,
-);
-static F_UNCLASSIFIED: Rule =
-    Rule::deny("Unknown, wrong-direction, retired, or otherwise unclassified frame");
-
-/// The client-frame table of workload-auth §6, in spec row order.
-///
-/// [`classify_frame`] returns one of these rows for every decoded frame. It
-/// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 41] = [
-    &F_HELLO,
-    &F_PING,
-    &F_DETACH,
-    &F_ATTACH,
-    &F_ATTACH_CREATE,
-    &F_HISTORY_REQUEST,
-    &F_FRAME_ACK,
-    &F_COMMAND,
-    &F_SUBSCRIBE,
-    &F_INPUT,
-    &F_VIEWPORT_RESIZE,
-    &F_SPAWN_SATELLITE,
-    &F_SPAWN_LOCAL,
-    &F_SPAWN_OWNED,
-    &F_SPAWN_SATELLITE_OWNED,
-    &F_SPAWN_CHILD_LOCAL,
-    &F_SPAWN_CHILD_SATELLITE,
-    &F_SPAWN_KIND_MISMATCH,
-    &F_SPAWN_MACHINE_CONTROL,
-    &F_RESIZE_TERMINAL,
-    &F_MOVE_RESOURCE,
-    &F_SUBSCRIBE_EVENTS_ONE,
-    &F_SUBSCRIBE_EVENTS_ALL,
-    &F_WHOAMI,
-    &F_GET_METADATA,
-    &F_SESSION_CREATE,
-    &F_KEEP_EMPTY_MARK,
-    &F_KEEP_EMPTY_CLEAR,
-    &F_KEEP_EMPTY_OTHER,
-    &F_CONFIG_RELOAD,
-    &F_APPROVAL_DECIDE,
-    &F_APPROVAL_DECIDE_OTHER,
-    &F_RESULT_NAMESPACE_WRITE,
-    &F_RESULT_NAMESPACE_SUBSCRIBE,
-    &F_SERVER_OWNED_WRITE,
-    &F_METADATA_WRITE,
-    &F_LIST_METADATA,
-    &F_LIST_DIRECTORY,
-    &F_PATH_QUERY,
-    &F_SUBSCRIBE_METADATA,
-    &F_UNCLASSIFIED,
-];
-
-// -----------------------------------------------------------------------------
-// The nested-command table (workload-auth §6, second table), in spec order.
-// -----------------------------------------------------------------------------
-
-static C_SPAWN: Rule = Rule::deny("`SPAWN` (unallocated)");
-// `OBSERVE` on a named window or display document needs a grant naming its
-// class, never its parent; the server splits that verb off this row and the
-// other observe rows (`docs/authority.md#watching`).
-static C_ATTACH_RESOURCE: Rule = Rule::verbs(
-    "`ATTACH_RESOURCE`",
-    &[Verb::Bind, Verb::Observe],
-    Subject::NamedTerminal,
-);
-static C_DETACH_RESOURCE: Rule = Rule::exempt(
-    "`DETACH_RESOURCE`",
-    Exemption::Cleanup,
-    Subject::CallingConnection,
-);
-static C_KILL_RESOURCE: Rule =
-    Rule::verbs("`KILL_RESOURCE`", &[Verb::Signal], Subject::NamedTerminal);
-static C_KILL_RESOURCE_IF: Rule = Rule::verbs(
-    "`KILL_RESOURCE_IF`",
-    &[Verb::Signal],
-    Subject::NamedTerminal,
-);
-static C_GET_SCREEN: Rule = Rule::verbs("`GET_SCREEN`", &[Verb::Observe], Subject::NamedTerminal);
-static C_INPUT: Rule = Rule::verbs(
-    "`ROUTE_INPUT`, `APPLY_INPUT`",
-    &[Verb::Input],
-    Subject::NamedTerminal,
-);
-static C_KILL_RESOURCES: Rule = Rule::verbs(
-    "`KILL_RESOURCES`",
-    &[Verb::Signal],
-    Subject::EveryNamedTerminal,
-);
-static C_CLOSE_TAB_RESOURCES: Rule = Rule::verbs(
-    "`CLOSE_TAB_RESOURCES`",
-    &[Verb::Signal],
-    Subject::EveryNamedTerminal,
-);
-static C_RESIZE_TERMINAL: Rule = Rule::deny("`RESIZE_TERMINAL` (unallocated)");
-static C_GET_STATE: Rule = Rule::verbs(
-    "`GET_STATE { SERVER }`",
-    &[Verb::Inventory],
-    Subject::InventoryMatches,
-);
-static C_RUN_HOOK: Rule = Rule::deny("`RUN_HOOK` (unallocated)");
-static C_GET_TERMINAL_STATE: Rule = Rule::verbs(
-    "`GET_TERMINAL_STATE`",
-    &[Verb::Inventory],
-    Subject::NamedTerminal,
-);
-static C_SUBSCRIBE_RESOURCE_EVENTS: Rule = Rule::verbs(
-    "`SUBSCRIBE_RESOURCE_EVENTS`",
-    &[Verb::Observe],
-    Subject::NamedTerminal,
-);
-static C_UPGRADE: Rule = Rule::verbs("`UPGRADE`", &[Verb::Signal], GLOBAL);
-static C_INPUT_LEASE: Rule = Rule::verbs(
-    "`ACQUIRE_INPUT`, `RELEASE_INPUT`",
-    &[Verb::Bind],
-    Subject::NamedTerminal,
-);
-static C_SIGNAL_TERMINAL: Rule =
-    Rule::verbs("`SIGNAL_TERMINAL`", &[Verb::Signal], Subject::NamedTerminal);
-static C_AGENT_REPORT: Rule = Rule::verbs(
-    "`REPORT_ASKED`, `REPORT_AGENT_STATE`",
-    &[Verb::Bind],
-    Subject::NamedTerminal,
-);
-static C_PUT_FILE: Rule = Rule::verbs("`PUT_FILE`", &[Verb::Input], Subject::NamedTerminal);
-static C_GET_FILE: Rule = Rule::verbs("`GET_FILE`", &[Verb::Input], GLOBAL);
-// Diffs and file reads are content an `INPUT` holder can already `cat` in the
-// named Terminal, and stage/unstage write its checkout's index: `INPUT`, not
-// `OBSERVE`, on the Terminal whose working directory selects the checkout.
-static C_CHECKOUT: Rule = Rule::verbs("`CHECKOUT`", &[Verb::Input], Subject::NamedTerminal);
-// A host service answers as the serving user; an `INPUT` holder on this
-// server can already run it from any shell, so `INPUT` on the server.
-static C_SERVICE_HTTP: Rule = Rule::verbs(
-    "`SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE`",
-    &[Verb::Input],
-    GLOBAL,
-);
-// The server dials as the serving user, which an `INPUT` holder on this
-// server can already do from any shell (`nc`): `INPUT` on the server.
-static C_FORWARD: Rule = Rule::verbs(
-    "`FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY`",
-    &[Verb::Input],
-    GLOBAL,
-);
-/// One forwarding method: all share a row; `$bit` gates it (`FORWARD_TCP`
-/// when not named).
-macro_rules! forward {
-    ($name:expr, $tag:expr) => {
-        forward!($name, $tag, ForwardTcp)
+/// Declares each row as a `static` and `$table` as every row, in order.
+/// Verbs and subjects name [`Verb`] and [`Subject`] variants; `Global` and
+/// `GlobalOwnerUds` are the Global selector without and with the owner-UDS
+/// transport predicate.
+macro_rules! rule_table {
+    ($(#[$meta:meta])* $table:ident; $($name:ident = $kind:ident($($arg:tt)*);)*) => {
+        $(static $name: Rule = rule_table!(@$kind $($arg)*);)*
+        $(#[$meta])*
+        pub static $table: [&Rule; [$(stringify!($name)),*].len()] = [$(&$name),*];
     };
-    ($name:expr, $tag:expr, $bit:ident) => {
-        method!(
-            $name,
-            Carrier::Command($tag),
-            [C_FORWARD],
-            Some(FeatureGate::FeaturesExt {
-                mask: ServerFeatureExt::$bit.mask(),
-                wire_name: ServerFeatureExt::$bit.wire_name(),
-            })
-        )
+    (@verbs $case:expr, [$($verb:ident),+], $subject:ident $(,)?) => {
+        Rule::verbs($case, &[$(Verb::$verb),+], rule_table!(@subject $subject))
+    };
+    (@exempt $case:expr, $exemption:ident, $subject:ident $(,)?) => {
+        Rule::exempt($case, Exemption::$exemption, Subject::$subject)
+    };
+    (@deny $case:expr $(,)?) => {
+        Rule::deny($case)
+    };
+    (@nested $case:expr) => {
+        Rule {
+            case: $case,
+            requirement: Requirement::Nested,
+            subject: Subject::None,
+        }
+    };
+    (@subject Global) => {
+        Subject::Global { owner_uds_only: false }
+    };
+    (@subject GlobalOwnerUds) => {
+        Subject::Global { owner_uds_only: true }
+    };
+    (@subject $subject:ident) => {
+        Subject::$subject
     };
 }
-/// The gate on `SERVICE_HTTP_*`.
-const SERVICE_HTTP: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::HostServiceHttp.mask(),
-    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-});
-static C_TRANSCRIBE: Rule = Rule::verbs("`TRANSCRIBE`", &[Verb::Input], Subject::NamedTerminal);
-static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
-    "`DETACH_CLIENTS { session: Some }`",
-    &[Verb::Signal],
-    Subject::ResolvedGroup,
-);
-static C_DETACH_CLIENTS_ALL: Rule = Rule::verbs(
-    "`DETACH_CLIENTS { session: None }`",
-    &[Verb::Signal],
-    GLOBAL,
-);
-static C_SHUTDOWN: Rule = Rule::verbs("`SHUTDOWN`", &[Verb::Signal], GLOBAL_OWNER_UDS);
-static C_OPEN_LISTENER: Rule = Rule::verbs("`OPEN_LISTENER`", &[Verb::Signal], GLOBAL_OWNER_UDS);
-static C_GET_PERF: Rule = Rule::verbs("`GET_PERF { reset: false }`", &[Verb::Observe], GLOBAL);
-static C_GET_PERF_RESET: Rule = Rule::verbs(
-    "`GET_PERF { reset: true }`",
-    &[Verb::Observe, Verb::Bind],
-    GLOBAL,
-);
-// Owner socket only: a trace writes files on the server host and heap
-// accounting taxes every allocation, which no remote grant should reach.
-static C_PERF_CONTROL: Rule = Rule::verbs(
-    "`PERF_CONTROL`",
-    &[Verb::Observe, Verb::Bind],
-    GLOBAL_OWNER_UDS,
-);
-static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
-    "`APPEND_RESOURCE_OUTPUT`",
-    &[Verb::Bind, Verb::Input],
-    Subject::ParentOfNamed,
-);
-static C_PUBLISH_RESOURCE_STATE: Rule = Rule::verbs(
-    "`PUBLISH_RESOURCE_STATE`",
-    &[Verb::Bind, Verb::Input],
-    Subject::ParentOfNamed,
-);
-// Input to a page, window or display is control of what it shows, so no
-// terminal grant reaches it: only a grant naming the document's control
-// class, or the document itself (`docs/resource-kinds.md#authority`).
-static C_SEND_DOCUMENT_INPUT: Rule = Rule::verbs(
-    "`SEND_DOCUMENT_INPUT`",
-    &[Verb::Input],
-    Subject::ControlledDocument,
-);
-static C_NATIVE_SPAWN: Rule = Rule::verbs(
-    "`NATIVE_AGENT { type: spawn }`",
-    &[Verb::Create, Verb::Bind],
-    Subject::KeyedSession,
-);
-static C_NATIVE_LIST: Rule = Rule::verbs(
-    "`NATIVE_AGENT { type: list_integrations }`",
-    &[Verb::Inventory],
-    Subject::OrganizationView,
-);
-static C_NATIVE_LAUNCH: Rule = Rule::verbs(
-    "`NATIVE_AGENT { type: launch_integration }`",
-    &[Verb::Create, Verb::Bind, Verb::Input],
-    Subject::KeyedSession,
-);
-static C_NATIVE_COMMAND: Rule = Rule::verbs(
-    "`NATIVE_AGENT { type: command }`",
-    &[Verb::Input],
-    Subject::NamedTerminal,
-);
-static C_NATIVE_CONTROLLER: Rule = Rule::verbs(
-    "`NATIVE_AGENT { type: register/receive/complete/publish/close }`",
-    &[Verb::Bind],
-    Subject::ParentOfNamed,
-);
-static C_GET_ORGANIZATION: Rule = Rule::verbs(
-    "`GET_ORGANIZATION`",
-    &[Verb::Inventory],
-    Subject::OrganizationView,
-);
-static C_SESSION_CREATE: Rule = Rule::verbs("`SESSION_CREATE`", &[Verb::Create], GLOBAL);
-static C_SESSION_ORGANIZE: Rule = Rule::verbs(
-    "`SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE`",
-    &[Verb::Organize],
-    Subject::KeyedSession,
-);
-static C_SESSION_DELETE: Rule = Rule::verbs(
-    "`SESSION_DELETE`, `SESSION_KILL`",
-    &[Verb::Terminate],
-    Subject::KeyedSession,
-);
-static C_API_DESCRIBE: Rule = Rule::verbs("`DESCRIBE_API`", &[Verb::Inventory], GLOBAL);
-static C_GET_CREATION: Rule = Rule::verbs("`GET_CREATION`", &[Verb::Inventory], Subject::KeyedSession);
-static C_RESOURCE_CREATE: Rule =
-    Rule::verbs("`RESOURCE_CREATE`", &[Verb::Create], Subject::KeyedSession);
-static C_RESOURCE_CREATE_PLACED: Rule = Rule::verbs(
-    "`RESOURCE_CREATE` with placement",
-    &[Verb::Create, Verb::Organize],
-    Subject::KeyedSession,
-);
-static C_RESOURCE_MOVE: Rule = Rule::verbs(
-    "`RESOURCE_MOVE`, `RESOURCE_MOVE_MANY`",
-    &[Verb::Organize],
-    Subject::MoveSessions,
-);
-static C_RESOURCE_RENAME: Rule = Rule::verbs(
-    "`RESOURCE_RENAME`",
-    &[Verb::Organize],
-    Subject::KeyedResource,
-);
-static C_RESOURCE_TERMINATE: Rule = Rule::verbs(
-    "`RESOURCE_TERMINATE`",
-    &[Verb::Terminate],
-    Subject::NamedTerminal,
-);
-static C_RESOURCE_REMOVE: Rule = Rule::verbs(
-    "`RESOURCE_REMOVE`",
-    &[Verb::Terminate],
-    Subject::KeyedResource,
-);
-static C_RESOURCE_RELAUNCH: Rule = Rule::verbs(
-    "`RESOURCE_RELAUNCH`",
-    &[Verb::Create],
-    Subject::KeyedResource,
-);
-static C_ORGANIZATION_UNDO: Rule = Rule::verbs(
-    "`ORGANIZATION_UNDO`",
-    &[Verb::Organize],
-    Subject::UndoneOperation,
-);
-static C_ARRANGEMENT_GET: Rule = Rule::verbs(
-    "`ARRANGEMENT_GET`",
-    &[Verb::Inventory],
-    Subject::ArrangementOwner,
-);
-static C_ARRANGEMENT_REPLACE: Rule = Rule::verbs(
-    "`ARRANGEMENT_REPLACE`, `ARRANGEMENT_LOCK`",
-    &[Verb::Organize],
-    Subject::ArrangementOwner,
-);
-static C_DELEGATION: Rule = Rule::verbs(
-    "`DELEGATE_AGENT`, `REVOKE_DELEGATION`",
-    &[Verb::Terminate],
-    GLOBAL_OWNER_UDS,
-);
-// Listing, starting or stopping a host's mirrors shows its screen: a
-// control selector of the class the target falls in (`window`, or
-// `display` for `display[:OUTPUT]`; listing is `window`), as for the
-// documents it opens. Rune's macOS runner reports from the owner socket.
-static C_MIRROR: Rule = Rule::verbs("`MIRROR`", &[Verb::Observe], Subject::ControlledDocument);
-static C_MIRROR_PROVIDE: Rule = Rule::verbs(
-    "`MIRROR_PROVIDE`",
-    &[Verb::Observe],
-    GLOBAL_OWNER_UDS,
-);
-// Which grants the host's server holds says what its panes can read: owner,
-// Unix socket only.
-static C_PRIVACY_STATUS: Rule = Rule::verbs(
-    "`PRIVACY_STATUS`",
-    &[Verb::Inventory],
-    GLOBAL_OWNER_UDS,
-);
-// What works on the host, for a person deciding what to fix: inventory, so a
-// paired phone reads it like `GET_STATE`.
-static C_HOST_CHECKLIST: Rule = Rule::verbs("`HOST_CHECKLIST`", &[Verb::Inventory], GLOBAL);
-static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
-/// The nested-command table of workload-auth §6, in spec row order.
-///
-/// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 61] = [
-    &C_SPAWN,
-    &C_ATTACH_RESOURCE,
-    &C_DETACH_RESOURCE,
-    &C_KILL_RESOURCE,
-    &C_KILL_RESOURCE_IF,
-    &C_GET_SCREEN,
-    &C_INPUT,
-    &C_KILL_RESOURCES,
-    &C_CLOSE_TAB_RESOURCES,
-    &C_RESIZE_TERMINAL,
-    &C_GET_STATE,
-    &C_RUN_HOOK,
-    &C_GET_TERMINAL_STATE,
-    &C_SUBSCRIBE_RESOURCE_EVENTS,
-    &C_UPGRADE,
-    &C_INPUT_LEASE,
-    &C_SIGNAL_TERMINAL,
-    &C_AGENT_REPORT,
-    &C_PUT_FILE,
-    &C_GET_FILE,
-    &C_CHECKOUT,
-    &C_SERVICE_HTTP,
-    &C_FORWARD,
-    &C_TRANSCRIBE,
-    &C_DETACH_CLIENTS_SESSION,
-    &C_DETACH_CLIENTS_ALL,
-    &C_SHUTDOWN,
-    &C_OPEN_LISTENER,
-    &C_GET_PERF,
-    &C_GET_PERF_RESET,
-    &C_PERF_CONTROL,
-    &C_APPEND_RESOURCE_OUTPUT,
-    &C_PUBLISH_RESOURCE_STATE,
-    &C_SEND_DOCUMENT_INPUT,
-    &C_MIRROR,
-    &C_MIRROR_PROVIDE,
-    &C_PRIVACY_STATUS,
-    &C_HOST_CHECKLIST,
-    &C_NATIVE_SPAWN,
-    &C_NATIVE_LIST,
-    &C_NATIVE_LAUNCH,
-    &C_NATIVE_COMMAND,
-    &C_NATIVE_CONTROLLER,
-    &C_GET_ORGANIZATION,
-    &C_API_DESCRIBE,
-    &C_GET_CREATION,
-    &C_SESSION_CREATE,
-    &C_SESSION_ORGANIZE,
-    &C_SESSION_DELETE,
-    &C_RESOURCE_CREATE,
-    &C_RESOURCE_CREATE_PLACED,
-    &C_RESOURCE_MOVE,
-    &C_RESOURCE_RENAME,
-    &C_RESOURCE_TERMINATE,
-    &C_RESOURCE_REMOVE,
-    &C_RESOURCE_RELAUNCH,
-    &C_ORGANIZATION_UNDO,
-    &C_ARRANGEMENT_GET,
-    &C_ARRANGEMENT_REPLACE,
-    &C_DELEGATION,
-    &C_UNCLASSIFIED,
-];
+rule_table! {
+    /// The client-frame table of workload-auth §6, in spec row order.
+    ///
+    /// [`classify_frame`] returns one of these rows for every decoded frame. It
+    /// never returns the `COMMAND` row: the nested command decides.
+    FRAME_RULES;
+    F_HELLO = exempt("`HELLO`", Handshake, None);
+    F_PING = exempt("`PING`", Liveness, None);
+    F_DETACH = exempt("`DETACH`", Cleanup, CallingConnection);
+    F_ATTACH = verbs("`ATTACH` existing/last target", [Bind, Observe], ResolvedGroup);
+    F_ATTACH_CREATE = verbs(
+        "`ATTACH` create-if-missing", [Create, Bind, Observe], SelectedLocalGroup
+    );
+    F_HISTORY_REQUEST = verbs("`HISTORY_REQUEST`", [Observe], NamedTerminal);
+    F_FRAME_ACK = verbs("`FRAME_ACK`", [Observe], NamedTerminal);
+    F_COMMAND = nested("`COMMAND`");
+    F_SUBSCRIBE = deny("`SUBSCRIBE` (unallocated)");
+    F_INPUT = verbs(
+        "`INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_RAW`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, `CLIPBOARD_REPLY`",
+        [Input],
+        NamedTerminal,
+    );
+    F_VIEWPORT_RESIZE = verbs("`VIEWPORT_RESIZE`", [Bind], AttachedTerminals);
+    F_SPAWN_SATELLITE = verbs(
+        "`SPAWN_RESOURCE { satellite: Some, owner_terminal: None }`", [Create], SatelliteHost
+    );
+    F_SPAWN_LOCAL = verbs(
+        "`SPAWN_RESOURCE { satellite: None, owner_terminal: None }`", [Create], PayloadGroup
+    );
+    F_SPAWN_OWNED = verbs(
+        "`SPAWN_RESOURCE { satellite: None, owner_terminal: Some }`",
+        [Create, Bind],
+        OwnerTerminalGroup,
+    );
+    F_SPAWN_SATELLITE_OWNED = deny("`SPAWN_RESOURCE { satellite: Some, owner_terminal: Some }`");
+    F_SPAWN_CHILD_LOCAL = verbs(
+        "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: None, parent: Some }`",
+        [Create, Bind],
+        ParentTerminalGroup,
+    );
+    F_SPAWN_CHILD_SATELLITE = verbs(
+        "`SPAWN_RESOURCE { kind: served non-TERMINAL, satellite: Some(H), parent: Some(Satellite { H, .. }) }`",
+        [Create, Bind],
+        SatelliteHostAndParent,
+    );
+    F_SPAWN_KIND_MISMATCH = deny(
+        "`SPAWN_RESOURCE { kind: not TERMINAL, parent: None }` or `{ kind: TERMINAL, parent: Some }`",
+    );
+    // Declaring a control class (page, window, display) claims what viewers'
+    // `input@CLASS` grants then reach: only the owner socket opens one
+    // (`docs/authority.md`).
+    F_SPAWN_MACHINE_CONTROL = deny("`SPAWN_RESOURCE { control: Some }`");
+    F_RESIZE_TERMINAL = verbs("`RESIZE_TERMINAL`", [Bind], NamedTerminal);
+    F_MOVE_RESOURCE = verbs("`MOVE_RESOURCE`", [Bind], MovedAndOwnerTerminals);
+    F_SUBSCRIBE_EVENTS_ONE = verbs(
+        "`SUBSCRIBE_EVENTS { terminal: Some }`", [Observe], NamedTerminal
+    );
+    F_SUBSCRIBE_EVENTS_ALL = verbs(
+        "`SUBSCRIBE_EVENTS { terminal: None }`", [Observe], ObservableTerminals
+    );
+    F_WHOAMI = exempt(
+        r#"`GET_METADATA { Global, "phux.whoami/v1" }`"#, SelfRead, CallingConnection
+    );
+    F_GET_METADATA = verbs("Other `GET_METADATA`", [Observe], MetadataScope);
+    F_SESSION_CREATE = verbs(
+        r#"`SET_METADATA { Global, "phux.session.create/v1" }`"#, [Create, Bind], Global
+    );
+    F_KEEP_EMPTY_MARK = verbs(
+        r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true`"#,
+        [Create, Bind],
+        Global,
+    );
+    F_KEEP_EMPTY_CLEAR = verbs(
+        r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false`"#,
+        [Signal],
+        NamedSession,
+    );
+    F_KEEP_EMPTY_OTHER = deny(
+        r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value"#
+    );
+    F_CONFIG_RELOAD = verbs(
+        r#"`SET_METADATA { Global, "phux.config.reload/v1" }`"#, [Signal], Global
+    );
+    F_APPROVAL_DECIDE = verbs(
+        r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny`"#,
+        [Signal],
+        HeldAction,
+    );
+    F_APPROVAL_DECIDE_OTHER = deny(
+        r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value"#,
+    );
+    F_RESULT_NAMESPACE_WRITE = deny(
+        "`SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results",
+    );
+    F_RESULT_NAMESPACE_SUBSCRIBE = deny("`SUBSCRIBE_METADATA` targeting that result namespace");
+    F_SERVER_OWNED_WRITE = deny(
+        "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.controller/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key",
+    );
+    F_METADATA_WRITE = verbs("Other `SET_METADATA`, `DELETE_METADATA`", [Bind], MetadataScope);
+    F_LIST_METADATA = verbs("`LIST_METADATA`", [Inventory], MetadataScope);
+    F_LIST_DIRECTORY = verbs("`LIST_DIRECTORY`", [Inventory], Global);
+    F_PATH_QUERY = verbs("`PATH_QUERY`", [Inventory], Global);
+    F_SUBSCRIBE_METADATA = verbs("Other `SUBSCRIBE_METADATA`", [Observe], MetadataScope);
+    F_UNCLASSIFIED = deny("Unknown, wrong-direction, retired, or otherwise unclassified frame");
+}
+
+rule_table! {
+    /// The nested-command table of workload-auth §6, in spec row order.
+    ///
+    /// [`classify_command`] returns one of these rows for every decoded command.
+    COMMAND_RULES;
+    C_SPAWN = deny("`SPAWN` (unallocated)");
+    // `OBSERVE` on a named window or display document needs a grant naming its
+    // class, never its parent; the server splits that verb off this row and the
+    // other observe rows (`docs/authority.md#watching`).
+    C_ATTACH_RESOURCE = verbs("`ATTACH_RESOURCE`", [Bind, Observe], NamedTerminal);
+    C_DETACH_RESOURCE = exempt("`DETACH_RESOURCE`", Cleanup, CallingConnection);
+    C_KILL_RESOURCE = verbs("`KILL_RESOURCE`", [Signal], NamedTerminal);
+    C_KILL_RESOURCE_IF = verbs("`KILL_RESOURCE_IF`", [Signal], NamedTerminal);
+    C_GET_SCREEN = verbs("`GET_SCREEN`", [Observe], NamedTerminal);
+    C_INPUT = verbs("`ROUTE_INPUT`, `APPLY_INPUT`", [Input], NamedTerminal);
+    C_KILL_RESOURCES = verbs("`KILL_RESOURCES`", [Signal], EveryNamedTerminal);
+    C_CLOSE_TAB_RESOURCES = verbs("`CLOSE_TAB_RESOURCES`", [Signal], EveryNamedTerminal);
+    C_RESIZE_TERMINAL = deny("`RESIZE_TERMINAL` (unallocated)");
+    C_GET_STATE = verbs("`GET_STATE { SERVER }`", [Inventory], InventoryMatches);
+    C_RUN_HOOK = deny("`RUN_HOOK` (unallocated)");
+    C_GET_TERMINAL_STATE = verbs("`GET_TERMINAL_STATE`", [Inventory], NamedTerminal);
+    C_SUBSCRIBE_RESOURCE_EVENTS = verbs("`SUBSCRIBE_RESOURCE_EVENTS`", [Observe], NamedTerminal);
+    C_UPGRADE = verbs("`UPGRADE`", [Signal], Global);
+    C_INPUT_LEASE = verbs("`ACQUIRE_INPUT`, `RELEASE_INPUT`", [Bind], NamedTerminal);
+    C_SIGNAL_TERMINAL = verbs("`SIGNAL_TERMINAL`", [Signal], NamedTerminal);
+    C_AGENT_REPORT = verbs("`REPORT_ASKED`, `REPORT_AGENT_STATE`", [Bind], NamedTerminal);
+    C_PUT_FILE = verbs("`PUT_FILE`", [Input], NamedTerminal);
+    C_GET_FILE = verbs("`GET_FILE`", [Input], Global);
+    // Diffs and file reads are content an `INPUT` holder can already `cat` in the
+    // named Terminal, and stage/unstage write its checkout's index: `INPUT`, not
+    // `OBSERVE`, on the Terminal whose working directory selects the checkout.
+    C_CHECKOUT = verbs("`CHECKOUT`", [Input], NamedTerminal);
+    // A host service answers as the serving user; an `INPUT` holder on this
+    // server can already run it from any shell, so `INPUT` on the server.
+    C_SERVICE_HTTP = verbs(
+        "`SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE`", [Input], Global
+    );
+    // The server dials as the serving user, which an `INPUT` holder on this
+    // server can already do from any shell (`nc`): `INPUT` on the server.
+    C_FORWARD = verbs(
+        "`FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY`",
+        [Input],
+        Global,
+    );
+    C_TRANSCRIBE = verbs("`TRANSCRIBE`", [Input], NamedTerminal);
+    C_DETACH_CLIENTS_SESSION = verbs("`DETACH_CLIENTS { session: Some }`", [Signal], ResolvedGroup);
+    C_DETACH_CLIENTS_ALL = verbs("`DETACH_CLIENTS { session: None }`", [Signal], Global);
+    C_SHUTDOWN = verbs("`SHUTDOWN`", [Signal], GlobalOwnerUds);
+    C_OPEN_LISTENER = verbs("`OPEN_LISTENER`", [Signal], GlobalOwnerUds);
+    C_GET_PERF = verbs("`GET_PERF { reset: false }`", [Observe], Global);
+    C_GET_PERF_RESET = verbs("`GET_PERF { reset: true }`", [Observe, Bind], Global);
+    // Owner socket only: a trace writes files on the server host and heap
+    // accounting taxes every allocation, which no remote grant should reach.
+    C_PERF_CONTROL = verbs("`PERF_CONTROL`", [Observe, Bind], GlobalOwnerUds);
+    C_APPEND_RESOURCE_OUTPUT = verbs("`APPEND_RESOURCE_OUTPUT`", [Bind, Input], ParentOfNamed);
+    C_PUBLISH_RESOURCE_STATE = verbs("`PUBLISH_RESOURCE_STATE`", [Bind, Input], ParentOfNamed);
+    // Input to a page, window or display is control of what it shows, so no
+    // terminal grant reaches it: only a grant naming the document's control
+    // class, or the document itself (`docs/resource-kinds.md#authority`).
+    C_SEND_DOCUMENT_INPUT = verbs("`SEND_DOCUMENT_INPUT`", [Input], ControlledDocument);
+    // Listing, starting or stopping a host's mirrors shows its screen: a
+    // control selector of the class the target falls in (`window`, or
+    // `display` for `display[:OUTPUT]`; listing is `window`), as for the
+    // documents it opens. Rune's macOS runner reports from the owner socket.
+    C_MIRROR = verbs("`MIRROR`", [Observe], ControlledDocument);
+    C_MIRROR_PROVIDE = verbs("`MIRROR_PROVIDE`", [Observe], GlobalOwnerUds);
+    // Which grants the host's server holds says what its panes can read: owner,
+    // Unix socket only.
+    C_PRIVACY_STATUS = verbs("`PRIVACY_STATUS`", [Inventory], GlobalOwnerUds);
+    // What works on the host, for a person deciding what to fix: inventory, so a
+    // paired phone reads it like `GET_STATE`.
+    C_HOST_CHECKLIST = verbs("`HOST_CHECKLIST`", [Inventory], Global);
+    C_NATIVE_SPAWN = verbs("`NATIVE_AGENT { type: spawn }`", [Create, Bind], KeyedSession);
+    C_NATIVE_LIST = verbs(
+        "`NATIVE_AGENT { type: list_integrations }`", [Inventory], OrganizationView
+    );
+    C_NATIVE_LAUNCH = verbs(
+        "`NATIVE_AGENT { type: launch_integration }`", [Create, Bind, Input], KeyedSession
+    );
+    C_NATIVE_COMMAND = verbs("`NATIVE_AGENT { type: command }`", [Input], NamedTerminal);
+    C_NATIVE_CONTROLLER = verbs(
+        "`NATIVE_AGENT { type: register/receive/complete/publish/close }`", [Bind], ParentOfNamed
+    );
+    C_GET_ORGANIZATION = verbs("`GET_ORGANIZATION`", [Inventory], OrganizationView);
+    C_API_DESCRIBE = verbs("`DESCRIBE_API`", [Inventory], Global);
+    C_GET_CREATION = verbs("`GET_CREATION`", [Inventory], KeyedSession);
+    C_SESSION_CREATE = verbs("`SESSION_CREATE`", [Create], Global);
+    C_SESSION_ORGANIZE = verbs(
+        "`SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE`",
+        [Organize],
+        KeyedSession,
+    );
+    C_SESSION_DELETE = verbs("`SESSION_DELETE`, `SESSION_KILL`", [Terminate], KeyedSession);
+    C_RESOURCE_CREATE = verbs("`RESOURCE_CREATE`", [Create], KeyedSession);
+    C_RESOURCE_CREATE_PLACED = verbs(
+        "`RESOURCE_CREATE` with placement", [Create, Organize], KeyedSession
+    );
+    C_RESOURCE_MOVE = verbs("`RESOURCE_MOVE`, `RESOURCE_MOVE_MANY`", [Organize], MoveSessions);
+    C_RESOURCE_RENAME = verbs("`RESOURCE_RENAME`", [Organize], KeyedResource);
+    C_RESOURCE_TERMINATE = verbs("`RESOURCE_TERMINATE`", [Terminate], NamedTerminal);
+    C_RESOURCE_REMOVE = verbs("`RESOURCE_REMOVE`", [Terminate], KeyedResource);
+    C_RESOURCE_RELAUNCH = verbs("`RESOURCE_RELAUNCH`", [Create], KeyedResource);
+    C_ORGANIZATION_UNDO = verbs("`ORGANIZATION_UNDO`", [Organize], UndoneOperation);
+    C_ARRANGEMENT_GET = verbs("`ARRANGEMENT_GET`", [Inventory], ArrangementOwner);
+    C_ARRANGEMENT_REPLACE = verbs(
+        "`ARRANGEMENT_REPLACE`, `ARRANGEMENT_LOCK`", [Organize], ArrangementOwner
+    );
+    C_DELEGATION = verbs("`DELEGATE_AGENT`, `REVOKE_DELEGATION`", [Terminate], GlobalOwnerUds);
+    C_UNCLASSIFIED = deny("Unknown, retired, or otherwise unclassified command tag");
+}

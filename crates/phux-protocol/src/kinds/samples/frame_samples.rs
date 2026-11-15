@@ -258,6 +258,10 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
             &F_SERVER_OWNED_WRITE,
         ),
         (set(Scope::Global, WHOAMI_KEY, b"x"), &F_SERVER_OWNED_WRITE),
+        (
+            set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"work\0yes"),
+            &F_KEEP_EMPTY_OTHER,
+        ),
         // The special rows are Global-scoped; elsewhere the key is ordinary.
         (
             set(pane.clone(), SESSION_CREATE_KEY, b"{}"),
@@ -270,6 +274,8 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
         (delete(CONFIG_RELOAD_KEY), &F_SERVER_OWNED_WRITE),
         (delete(SESSION_KEEP_EMPTY_KEY), &F_SERVER_OWNED_WRITE),
         (delete(SESSION_CREATE_KEY), &F_METADATA_WRITE),
+        (delete(&result), &F_RESULT_NAMESPACE_WRITE),
+        (subscribe(SESSION_CREATE_RESULT_KEY), &F_RESULT_NAMESPACE_SUBSCRIBE),
         (
             FrameKind::ListMetadata {
                 request_id: 1,
@@ -282,7 +288,26 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
     ]
     .into_iter()
     .chain(approval_samples())
+    .chain(server_owned_samples())
     .collect()
+}
+
+/// The server-owned keys outside the approval records, in any scope.
+fn server_owned_samples() -> Vec<(FrameKind, &'static Rule)> {
+    use crate::wire::frame::{
+        RESOURCE_CONTROLLER_KEY, RESOURCE_PROGRAM_STATUS_KEY, RESOURCE_PROGRAM_STATUS_RECORD_PREFIX,
+    };
+    let mut samples = Vec::new();
+    for key in [
+        RESOURCE_CONTROLLER_KEY,
+        RESOURCE_PROGRAM_STATUS_KEY,
+        RESOURCE_PROGRAM_STATUS_RECORD_PREFIX,
+        "phux.program-status.record/v1/build/test",
+    ] {
+        samples.push((set(Scope::Resource(terminal()), key, b"x"), &F_SERVER_OWNED_WRITE));
+        samples.push((delete(key), &F_SERVER_OWNED_WRITE));
+    }
+    samples
 }
 
 /// The decision key and the approval records (ADR-0128).

@@ -31,10 +31,10 @@ pub struct NativeCommand {
     /// The typed operation captured by this identity.
     pub intent: NativeIntent,
 }
+wire_enum! { to_u8 / from_u8;
 /// A factual operation stage; admission is distinct from model success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[repr(u8)]
 pub enum NativeDisposition {
     /// The provider accepted the operation.
     Admitted = 0x00,
@@ -49,23 +49,8 @@ pub enum NativeDisposition {
     #[serde(other)]
     Unknown = 0x04,
 }
-
-impl NativeDisposition {
-    pub(crate) const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    pub(crate) const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0x00 => Some(Self::Admitted),
-            0x01 => Some(Self::Queued),
-            0x02 => Some(Self::Completed),
-            0x03 => Some(Self::Refused),
-            0x04 => Some(Self::Unknown),
-            _ => None,
-        }
-    }
 }
+
 /// A correlated native operation receipt, never a PTY input receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeCommandResult {

@@ -155,9 +155,7 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
 
 /// Write an approval id as its 16 raw bytes (ADR-0128).
 pub(super) fn write_approval_id(id: &crate::ids::ApprovalId, enc: &mut Encoder<'_>) {
-    for byte in id.as_bytes() {
-        enc.write_u8(*byte);
-    }
+    enc.write_raw(id.as_bytes());
 }
 
 /// Decode an approval event body (16 id bytes, then a decision's outcome);
@@ -166,10 +164,7 @@ pub(super) fn decode_approval_event(
     tag: u8,
     dec: &mut Decoder<'_>,
 ) -> Result<Option<AgentEvent>, DecodeError> {
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
+    let bytes: [u8; 16] = dec.read_array()?;
     let id = crate::ids::ApprovalId::new(bytes);
     if tag == EVENT_TAG_APPROVAL_REQUESTED {
         return Ok(id.map(|id| AgentEvent::ApprovalRequested { id }));

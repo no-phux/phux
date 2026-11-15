@@ -163,10 +163,7 @@ pub(super) const fn checkout_decode_error(
 }
 
 pub(super) fn decode_file_upload_id(dec: &mut Decoder<'_>) -> Result<FileUploadId, DecodeError> {
-    let mut id_bytes = [0; 16];
-    for byte in &mut id_bytes {
-        *byte = dec.read_u8()?;
-    }
+    let id_bytes: [u8; 16] = dec.read_array()?;
     FileUploadId::new(id_bytes).ok_or(DecodeError::InvalidFileUploadId)
 }
 
@@ -199,10 +196,7 @@ pub(super) fn decode_optional_sha256(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<[u8; 32]>, DecodeError> {
     dec.read_option("PutFile.sha256 tag", |dec| {
-        let mut digest = [0; 32];
-        for byte in &mut digest {
-            *byte = dec.read_u8()?;
-        }
+        let digest: [u8; 32] = dec.read_array()?;
         Ok(digest)
     })
 }

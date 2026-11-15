@@ -277,15 +277,7 @@ fn only_organization_commands_need_the_v2_verbs() {
                 Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,
                 _ => crate::caps::ServerFeatureExt::Organization,
             };
-            assert_eq!(
-                method.gate,
-                Some(FeatureGate::FeaturesExt {
-                    mask: gate.mask(),
-                    wire_name: gate.wire_name(),
-                }),
-                "{}",
-                method.name
-            );
+            assert_eq!(method.gate, Some(FeatureGate::ext(gate)), "{}", method.name);
         } else {
             assert!(!needs_v2, "{command:?} must keep its legacy verbs");
         }
@@ -332,4 +324,60 @@ fn freeze_resume_and_deny_are_the_payload_exceptions() {
         RESOURCE_TAGS_KEY,
         b"[]"
     )));
+}
+
+/// Every served child kind lands on the parent rows, not default-deny, so a
+/// scoped grant can open one beside a Terminal it may bind.
+#[test]
+fn every_served_child_kind_spawns_on_the_parent_rows() {
+    let remote_parent = ResourceId::satellite("h", 7);
+    for spec in KINDS.iter().filter(|spec| !spec.kind.is_terminal()) {
+        let child = |parent: ResourceId| SpawnResource {
+            kind: spec.kind,
+            ..agent(parent)
+        };
+        for (frame, expected) in [
+            (
+                spawn(None, None, Some(child(terminal()))),
+                &F_SPAWN_CHILD_LOCAL,
+            ),
+            (
+                spawn(Some("h"), None, Some(child(remote_parent.clone()))),
+                &F_SPAWN_CHILD_SATELLITE,
+            ),
+            (
+                spawn(None, Some(terminal()), Some(child(terminal()))),
+                &F_UNCLASSIFIED,
+            ),
+        ] {
+            assert!(std::ptr::eq(frame_rule(&frame), expected), "{}", spec.name);
+        }
+    }
+    let unknown = SpawnResource {
+        kind: ResourceKind::Unknown { tag: 9 },
+        ..agent(terminal())
+    };
+    let unclassified: &Rule = &F_UNCLASSIFIED;
+    assert!(std::ptr::eq(
+        frame_rule(&spawn(None, None, Some(unknown))),
+        unclassified
+    ));
+}
+
+#[test]
+fn verb_set_helpers() {
+    let all = Verbs::of(&Verb::ALL);
+    assert_eq!(all.bits(), Verbs::KNOWN_BITS);
+    assert!(!Verbs::of(&[Verb::Inventory, Verb::Observe]).mutates());
+    assert!(Verbs::of(&[Verb::Observe, Verb::Bind]).mutates());
+    assert!(Verbs::EMPTY.is_empty());
+    assert_eq!(
+        C_GET_PERF_RESET.requirement_label(),
+        "OBSERVE+BIND",
+        "labels list verbs in bit order"
+    );
+    assert_eq!(
+        C_OPEN_LISTENER.requirement_label(),
+        "SIGNAL + owner-UDS transport"
+    );
 }

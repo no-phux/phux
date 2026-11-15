@@ -20,8 +20,7 @@ fn session_attach_without_a_role_matches_its_golden_bytes() {
         scrollback_limit_lines: 10_000,
         role_policy: None,
     };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
+    let buf = crate::common::encode(&frame);
     let mut hex = String::new();
     for byte in &buf {
         let _ = write!(hex, "{byte:02x}");
