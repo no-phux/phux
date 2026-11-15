@@ -67,8 +67,11 @@ fn machine(target: String, name: String, state: Offered, p: &Ink) -> El {
     };
     let why = match state {
         Offered::Failed(why) => Some(
-            el().w_full()
-                .px(36.0)
+            col()
+                .w_full()
+                .min_w(0.0)
+                .pl(36.0)
+                .pr(10.0)
                 .child(text(why).font(COPY).color(p.danger).wrap()),
         ),
         _ => None,
