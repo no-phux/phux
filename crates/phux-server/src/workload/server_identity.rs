@@ -291,11 +291,7 @@ mod tests {
     use rustls::pki_types::UnixTime;
 
     fn paths(dir: &Path) -> WorkloadPaths {
-        WorkloadPaths {
-            ca_cert: dir.join("workload-ca.pem"),
-            ca_key: dir.join("workload-ca.key"),
-            registry: dir.join("workload-keys"),
-        }
+        WorkloadPaths::in_dir(dir)
     }
 
     fn chain(pem: &str) -> Vec<CertificateDer<'static>> {

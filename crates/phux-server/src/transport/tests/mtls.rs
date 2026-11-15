@@ -34,36 +34,20 @@ async fn mtls_attempt(
 /// certificate, wrong token, or revoked credential is refused live.
 #[tokio::test]
 async fn wss_with_a_configured_ca_looks_up_the_client_certificate_like_quic() {
-    use crate::workload::{
-        ClientMaterial, ReloadingWorkloadRegistry, WorkloadPaths, WorkloadRegistry,
-    };
+    use crate::workload::{ReloadingWorkloadRegistry, WorkloadPaths, WorkloadRegistry};
     let dir = tempfile::tempdir().unwrap();
     let leaf = dir.path().join("leaf.pem");
     let leaf_key = dir.path().join("leaf-key.pem");
     crate::transport::tls::ensure_self_signed_for(&leaf, &leaf_key, &["localhost".to_owned()])
         .unwrap();
-    let paths = WorkloadPaths {
-        ca_cert: dir.path().join("ca.pem"),
-        ca_key: dir.path().join("ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = WorkloadPaths::in_dir(dir.path());
     crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
 
     let client_key = rcgen::KeyPair::generate().unwrap();
-    let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
-        .unwrap()
-        .serialize_request(&client_key)
-        .unwrap();
-    let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
-    let expires = chrono::Utc::now().timestamp() + 3600;
-    let prepared = crate::workload::prepare_enrollment(&paths, &material, expires).unwrap();
     let client_cert = dir.path().join("client.pem");
     let client_key_path = dir.path().join("client.key");
-    std::fs::write(&client_cert, prepared.issued_chain_pem().unwrap()).unwrap();
+    let enrolled = paths.enroll_test_key(&client_key, &client_cert);
     std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
-    let enrolled = prepared
-        .commit(&paths.registry, vec!["*@global".to_owned()], expires)
-        .unwrap();
 
     let tokens = dir.path().join("tokens.json");
     crate::auth::write_test_credential(&tokens, &TEST_TOKEN);

@@ -76,7 +76,7 @@ impl OutputPumpTask {
 }
 
 /// Every resource-keyed table, plus client subscriptions and output pumps.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct ResourceTable {
     /// Engine handles by core [`ResourceId`] (the engines run on the
     /// `LocalSet`, ADR-0014).
@@ -116,29 +116,7 @@ struct SpawnRecord {
     used_by_other: bool,
 }
 
-impl Default for ResourceTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ResourceTable {
-    /// Build an empty table.
-    #[must_use]
-    pub(super) fn new() -> Self {
-        Self {
-            handles: HashMap::new(),
-            tokens: HashMap::new(),
-            tasks: JoinSet::new(),
-            subscribers: HashMap::new(),
-            pumps: HashMap::new(),
-            output_pumps: HashMap::new(),
-            next_bootstrap: HashMap::new(),
-            draining_resources: HashMap::new(),
-            spawns: HashMap::new(),
-        }
-    }
-
     // -- actor handles ------------------------------------------------
 
     /// Look up the [`ResourceHandle`] for `terminal`, if registered.

@@ -25,6 +25,16 @@ pub(super) fn native_profile() -> BootstrapProfile {
     }
 }
 
+/// A native-profile session (the listing bit marks it negotiated).
+fn native_session() -> RelaySession {
+    RelaySession::new_negotiated(
+        host(),
+        BootstrapLimits::default(),
+        native_profile(),
+        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
+    )
+}
+
 pub(super) fn native_stream_profile() -> BootstrapStreamProfile {
     BootstrapStreamProfile::NativeState {
         codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
@@ -33,12 +43,7 @@ pub(super) fn native_stream_profile() -> BootstrapStreamProfile {
 
 #[test]
 fn relay_rejects_bootstrap_profile_mismatch_before_fanout() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        native_profile(),
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
+    let mut session = native_session();
     let (out_tx, mut out_rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), out_tx);
     let error = session
@@ -62,23 +67,16 @@ fn relay_rejects_gapped_chunks_and_live_delta_before_ready() {
     let stream_id = StreamId::new(2).expect("stream");
     let bootstrap_id = BootstrapId::new(3).expect("bootstrap");
 
-    let mut gapped = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        native_profile(),
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
-    gapped
-        .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            profile: native_stream_profile(),
-            cols: 80,
-            rows: 24,
-            base_seq: 10,
-        }))
-        .expect("valid BEGIN");
+    let mut gapped = native_session();
+    gapped.feed(&FrameKind::BootstrapBegin {
+        terminal_id: ResourceId::local(7),
+        stream_id,
+        bootstrap_id,
+        profile: native_stream_profile(),
+        cols: 80,
+        rows: 24,
+        base_seq: 10,
+    });
     let error = gapped
         .handle_inbound(&encode(&FrameKind::BootstrapChunk {
             terminal_id: ResourceId::local(7),
@@ -90,23 +88,16 @@ fn relay_rejects_gapped_chunks_and_live_delta_before_ready() {
         .expect_err("gapped chunk must fail the link");
     assert!(error.contains("expected 0"));
 
-    let mut early_live = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        native_profile(),
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
-    early_live
-        .handle_inbound(&encode(&FrameKind::BootstrapBegin {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            profile: native_stream_profile(),
-            cols: 80,
-            rows: 24,
-            base_seq: 10,
-        }))
-        .expect("valid BEGIN");
+    let mut early_live = native_session();
+    early_live.feed(&FrameKind::BootstrapBegin {
+        terminal_id: ResourceId::local(7),
+        stream_id,
+        bootstrap_id,
+        profile: native_stream_profile(),
+        cols: 80,
+        rows: 24,
+        base_seq: 10,
+    });
     let error = early_live
         .handle_inbound(&encode(&FrameKind::ResourceOutput {
             terminal_id: ResourceId::local(7),
@@ -121,12 +112,7 @@ fn relay_rejects_gapped_chunks_and_live_delta_before_ready() {
 
 #[test]
 fn relay_fans_out_complete_native_prefix_before_live_delta() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        native_profile(),
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
+    let mut session = native_session();
     let (out_tx, mut out_rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), out_tx);
     let stream_id = StreamId::new(4).expect("stream");
@@ -162,9 +148,7 @@ fn relay_fans_out_complete_native_prefix_before_live_delta() {
             bytes: bytes::Bytes::from_static(b"live"),
         },
     ] {
-        session
-            .handle_inbound(&encode(&frame))
-            .expect("ordered native bootstrap frame");
+        session.feed(&frame);
     }
     assert!(matches!(
         out_rx.try_recv().expect("BEGIN"),
@@ -204,15 +188,10 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
         command: Command::attach_terminal(ResourceId::local(7), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 7,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(limits),
+            ..proxy(7, ClientId(1), out_tx)
         }),
     });
     assert!(
@@ -239,15 +218,10 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
         command: Command::attach_terminal(ResourceId::local(8), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 8,
-            client: ClientId(2),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(native_profile()),
             bootstrap_limits: Some(smaller),
+            ..proxy(8, ClientId(2), out_tx)
         }),
     });
     assert!(wire.is_none(), "mismatched bounds reached the link");
@@ -262,12 +236,7 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
 
 #[test]
 fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        native_profile(),
-        ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-    );
+    let mut session = native_session();
     let (out_tx, mut out_rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), out_tx);
     let stream_id = StreamId::new(4).expect("stream");
@@ -289,9 +258,7 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
             history_cursor: None,
         },
     ] {
-        session
-            .handle_inbound(&encode(&frame))
-            .expect("valid bootstrap prefix");
+        session.feed(&frame);
     }
     let _ = out_rx.try_recv().expect("BEGIN");
     let _ = out_rx.try_recv().expect("READY");
@@ -324,12 +291,7 @@ fn relay_passes_a_document_stream_the_satellite_advertises() {
         })
     };
     let session_with = |ext: &[ServerFeatureExt]| {
-        let mut session = RelaySession::new_negotiated(
-            host(),
-            BootstrapLimits::default(),
-            native_profile(),
-            ServerFeatureSet::with(&[ServerFeature::ListDirectory]),
-        );
+        let mut session = native_session();
         session.set_satellite_features_ext(ServerFeatureExtSet::with(ext));
         session
     };

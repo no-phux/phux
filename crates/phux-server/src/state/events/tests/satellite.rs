@@ -36,7 +36,7 @@ fn relayed_events_reach_only_their_satellite_scope_and_are_not_retained() {
     assert_eq!((stamp.seq, stamp.ts_ms), (seq, 1_234));
     assert_eq!(stamp.actor, None, "a satellite's actor does not cross");
     assert!(
-        state.journal.replay_after(0, |_| true).entries.is_empty(),
+        state.journal.retained().next().is_none(),
         "relayed events are not retained"
     );
 }

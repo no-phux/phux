@@ -29,7 +29,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::kinds::{
     COMMAND_RULES, Exemption, FRAME_RULES, Requirement, Verb, Verbs, frame_rule,
 };
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, ControlClass, FrameKind, InputMode, KillPrecondition,
@@ -43,7 +43,6 @@ use super::{
     Authority, ConnectionGrant, PolicyPosture, PostureError, PostureInputs, Request, ScopedPolicy,
     enforce,
 };
-use crate::auth::AuthenticatedCredential;
 use crate::state::{ClientId, ServerState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
