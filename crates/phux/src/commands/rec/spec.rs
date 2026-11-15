@@ -39,13 +39,6 @@ impl From<RecFormat> for OutputFormat {
 }
 
 /// Resolve `out` plus an optional explicit format into a [`RecordSpec`]:
-///
-/// 1. An explicit format wins and the path is left as typed.
-/// 2. Otherwise the extension decides, case-insensitively: `cast`, `gif`, or
-///    `png`/`apng` (APNG).
-/// 3. No extension means GIF, with `.gif` appended.
-/// 4. An unknown extension is an error naming the accepted ones.
-/// 5. A path whose directory does not exist is refused up front.
 pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec, ExitCode> {
     let extension = out
         .extension()

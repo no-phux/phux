@@ -214,10 +214,6 @@ fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> 
 /// Run `phux bootstrap` on the host and read its report. Only stdout is
 /// captured: ssh's stderr is copied through as it comes, so host-key,
 /// password, and 2FA prompts reach the operator.
-///
-/// A login sshd drops before it begins (its `MaxStartups` limit, when many
-/// connections open at once) is tried again after a jittered pause, a few
-/// times; nothing ran on the host then. A refused login or host key is not.
 fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
     let mut retry = 0;

@@ -20,10 +20,6 @@ const INSTALLER_URL: &str = "https://phux.sh/install";
 /// The `phux` to enroll with: `remote_phux` when it answers (updated first
 /// when it is older than this one), else the one the installer just put in
 /// place.
-///
-/// # Errors
-///
-/// ssh failing, or phux still missing after the installer ran.
 pub(crate) fn provision_remote_phux(
     ssh_host: &str,
     remote_phux: &str,

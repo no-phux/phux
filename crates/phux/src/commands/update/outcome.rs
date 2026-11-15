@@ -187,10 +187,6 @@ pub(crate) struct Outcome {
 
 impl Outcome {
     /// The stable machine document.
-    ///
-    /// `schema_version` is the universal CLI convention (ADR-0071 freezes the
-    /// shape); every optional member is present as `null` rather than absent,
-    /// so a consumer can index it unconditionally.
     pub(crate) fn document(&self) -> serde_json::Value {
         let install = &self.plan.install;
         serde_json::json!({

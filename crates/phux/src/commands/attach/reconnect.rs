@@ -185,12 +185,6 @@ pub(super) async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) ->
 }
 
 /// Wait until the server accepts again on `dial`, or give up.
-///
-/// UDS short-circuits to [`ReconnectOutcome::SocketGone`] when the socket file is
-/// gone (a clean shutdown unlinks it; an upgrade does not). Remote lanes return
-/// the negotiated connection for the next attach to reuse, and a refusal ends
-/// the ladder immediately (ADR-0133). The first attempt is immediate; `policy`
-/// sets the deadline and cadence.
 pub(super) async fn wait_until_connectable(
     dial: &Dial,
     policy: ReconnectPolicy,
@@ -228,10 +222,6 @@ pub(super) async fn wait_until_connectable(
 /// report HERE and returns `Err(Disconnected)`, so callers must not print a
 /// second remedy. `default_name = Some` enables one lookup-only `ByName` retry
 /// after a refused `Last`.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 pub(super) async fn attach_with_reconnect(
     dial: &Dial,
     first: Option<Box<Connection>>,

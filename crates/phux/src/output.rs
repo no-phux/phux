@@ -61,12 +61,6 @@ fn settle(result: io::Result<()>) {
 }
 
 /// End the process because stdout's reader is gone.
-///
-/// Exits here rather than returning a sentinel: every write site reports work
-/// that already completed, so there is nothing to unwind, and threading a
-/// `Result` through every renderer would reintroduce the panic at the first
-/// missed `?`. Exit 0 because `| head` hanging up is the intended end. The cost
-/// is that no destructors run (a `PHUX_LOG` tee may lose its tail).
 fn give_up() -> ! {
     process::exit(0)
 }

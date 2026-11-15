@@ -60,10 +60,6 @@ pub(crate) fn default_dir() -> PathBuf {
 }
 
 /// Whether `sha256` is the approved digest for `key`.
-///
-/// # Errors
-///
-/// The store exists but cannot be read or parsed (fail closed).
 pub(crate) fn is_trusted(dir: &Path, key: &TrustKey, sha256: &str) -> Result<bool, String> {
     let store = read_store(&dir.join(STORE_FILE))?;
     Ok(store.recipes.iter().any(|approval| {

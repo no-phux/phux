@@ -375,10 +375,6 @@ fn reconcile_version_skew(socket_path: &Path) {
 }
 
 /// What auto-attach tells the user about a version skew hand-over.
-///
-/// An upgrade that has started may say it is upgrading in place. An
-/// incompatible protocol prints the stop-and-start recovery and does not
-/// claim the panes survive.
 pub(super) fn skew_handover_lines(
     theirs: &str,
     ours: &str,
