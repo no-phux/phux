@@ -1,13 +1,8 @@
-//! The pitch: the fleet as football training, each machine a squad in its
-//! own share of the pitch, every agent a player in its harness's kit acting
-//! out its state. A press on a player selects it; a press on the selected
-//! one (or Return) shows its terminal, as the galaxy does. Escape lets go,
-//! then closes. Night follows a dark theme.
-//!
-//! Drawn back to front as the prototype: the still ground (painted once per
-//! layout), the stands' passing light, the squads' boards, then pigeons,
-//! players and balls by depth, confetti, and the shell's overlays: shirt
-//! numbers, the selection ring, name pills, press targets and the readout.
+//! The pitch's painter (the scene is `crate::pitch`), back to front as the
+//! prototype: the still ground (painted once per layout), the stands'
+//! passing light, the squads' boards, then pigeons, players and balls by
+//! depth, confetti, and the shell's overlays: shirt numbers, the selection
+//! ring, name pills, press targets and the readout.
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 

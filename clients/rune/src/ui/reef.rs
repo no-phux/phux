@@ -1,12 +1,7 @@
-//! The reef: the fleet as an aquarium, each machine a reef with its buoy,
-//! every machine's agents it can reach as fish of their harness's species
-//! acting out their state. A press on a fish selects it and the camera follows it
-//! in; a press on the selected one (or Return) shows its terminal, as the
-//! galaxy does. Escape lets go, then closes. Night follows a dark theme.
-//!
-//! Drawn back to front as the prototype: scenery under the sand's caustics
-//! in one canvas, the caustics as a scrolling tile, the rest in another,
-//! then labels, the fish's press targets and the readout.
+//! The reef's painter (the scene is `crate::reef`), back to front as the
+//! prototype: scenery under the sand's caustics in one canvas, the caustics
+//! as a scrolling tile, the rest in another, then labels, the fish's press
+//! targets and the readout. The camera follows a selected fish in.
 
 use rune::{Cx, El, canvas, el, row, text};
 

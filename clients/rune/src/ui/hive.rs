@@ -1,14 +1,8 @@
-//! The hive: the fleet as beehives, each machine a comb frame with its
-//! stamped plaque, every agent it can reach a bee in its harness's colours
-//! acting out its state. A press on a bee selects it and the camera follows
-//! it in; a press on the selected one (or Return) shows its terminal, as the
-//! galaxy does. Escape lets go, then closes. Night follows a dark theme.
-//!
-//! Drawn back to front as the prototype: the still backdrop (painted once
-//! per layout, day and night) stretched through the camera; flowers, the
-//! bees' cells and the comb's light; the plaques; trails, bees, drift and
-//! the vignette; then the selection ring, name pills, the bees' press
-//! targets and the readout.
+//! The hive's painter (the scene is `crate::hive`), back to front as the
+//! prototype: the still backdrop (painted once per layout, day and night)
+//! stretched through the camera; flowers, the bees' cells and the comb's
+//! light; the plaques; trails, bees, drift and the vignette; then the
+//! selection ring, name pills, the bees' press targets and the readout.
 
 use std::f32::consts::TAU;
 

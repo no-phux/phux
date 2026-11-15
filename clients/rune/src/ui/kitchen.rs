@@ -1,12 +1,8 @@
-//! The kitchen: the fleet as a restaurant, each machine a line with its
-//! sign, every agent it can reach a chef in its harness's colours acting out
-//! its state. A press on a chef selects it; a press on the selected one (or
-//! Return) shows its terminal, as the galaxy does. Escape lets go, then
-//! closes. Night follows a dark theme: the lights go down to warm pools.
-//!
-//! Drawn back to front as the prototype: the room once per layout in one
-//! canvas, the stations, pass, chefs, air and night in another, then the
-//! line signs, the neon, name pills, the chefs' press targets and the readout.
+//! The kitchen's painter (the scene is `crate::kitchen`), back to front as
+//! the prototype: the room once per layout in one canvas, the stations,
+//! pass, chefs, air and night (the lights go down to warm pools) in another,
+//! then the line signs, the neon, name pills, the chefs' press targets and
+//! the readout.
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 

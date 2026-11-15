@@ -1,13 +1,8 @@
-//! The pit lane: the fleet as a race circuit, each machine a team garage on
-//! the pit lane, every machine's agents it can reach as race cars in their
-//! harness's livery acting out their state. A press on a car selects it; a
-//! press on the selected one (or Return) shows its terminal, as the galaxy
-//! does. Escape lets go, then closes. Night follows a dark theme.
-//!
-//! Drawn back to front as the prototype: the grounds, drawn once per layout
-//! by day and by night (night faded in over day), the cars and the sky in
-//! one canvas, then the garages' boards, name pills, the cars' press targets
-//! and the readout. The camera stays put: a car laps too fast to follow.
+//! The pit lane's painter (the scene is `crate::pitlane`), back to front as
+//! the prototype: the grounds, drawn once per layout by day and by night
+//! (night faded in over day), the cars and the sky in one canvas, then the
+//! garages' boards, name pills, the cars' press targets and the readout. The
+//! camera stays put: a car laps too fast to follow.
 
 use rune::{Cx, El, canvas, row, text};
 

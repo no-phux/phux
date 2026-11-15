@@ -1,5 +1,8 @@
 //! The playground views (galaxy, reef, pitch, kitchen, pit lane, hive) and
-//! the way out every one of them shows.
+//! the way out every one of them shows. In the creature scenes a press on a
+//! creature selects it; a press on the selected one (or Return) shows its
+//! terminal, as the galaxy does. Escape lets go, then closes. Night follows
+//! a dark theme.
 
 use phux_protocol::ids::ResourceId;
 use rune::{Cx, El, TextStyle, col, el, row, text};
