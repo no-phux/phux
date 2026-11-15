@@ -148,7 +148,7 @@ impl ControlPlane {
     }
 
     /// The driver measured a round trip.
-    pub const fn note_round_trip(&mut self, round_trip: std::time::Duration) {
+    pub(crate) const fn note_round_trip(&mut self, round_trip: std::time::Duration) {
         self.round_trip = Some(round_trip);
     }
 
@@ -276,13 +276,13 @@ impl ControlPlane {
 
     /// Whether frames are waiting to be sent.
     #[must_use]
-    pub const fn has_outbound(&self) -> bool {
+    pub(crate) const fn has_outbound(&self) -> bool {
         !self.outbound.is_empty()
     }
 
     /// Whether events are waiting to be drained.
     #[must_use]
-    pub const fn has_events(&self) -> bool {
+    pub(crate) const fn has_events(&self) -> bool {
         !self.events.is_empty() || !self.damaged.is_empty()
     }
 

@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ControlPlane, Pending, ServerFeature};
+use super::{ControlPlane, Pending};
 
 mod types;
 mod uploads;
@@ -133,7 +133,7 @@ impl ControlPlane {
 
     /// When the oldest pending upload crosses its bounded retry horizon.
     #[must_use]
-    pub fn next_upload_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_upload_deadline(&self) -> Option<Instant> {
         self.extensions
             .uploads
             .values()
@@ -143,7 +143,7 @@ impl ControlPlane {
 
     /// Resolve uploads that exceeded their retry horizon. Returns whether any
     /// lossless receipt was published.
-    pub fn expire_uploads(&mut self) -> bool {
+    pub(crate) fn expire_uploads(&mut self) -> bool {
         let expired = self
             .extensions
             .uploads

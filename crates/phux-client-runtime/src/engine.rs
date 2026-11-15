@@ -265,7 +265,7 @@ impl EngineHandle {
     /// Draw predictive echo underlined (the default) or as plain text. Takes
     /// effect from the next publication of each terminal.
     #[cfg(feature = "engine")]
-    pub fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
+    pub(crate) fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
         self.request(|reply| Command::Query(Query::PredictionUnderline(underline, reply)))
     }
 
@@ -425,7 +425,7 @@ impl EngineHandle {
     /// [`Self::search`] returning at most `max_matches` (capped at
     /// [`SEARCH_MATCH_LIMIT`]) and whether a bound hid more.
     #[cfg(feature = "engine")]
-    pub fn search_bounded(
+    pub(crate) fn search_bounded(
         &self,
         terminal_id: &ResourceId,
         query: String,

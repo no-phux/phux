@@ -80,7 +80,7 @@ impl TunnelState {
 /// reader that observes FAILED always finds a stable message it may borrow
 /// for the tunnel's lifetime.
 #[derive(Debug)]
-pub struct TunnelShared {
+pub(crate) struct TunnelShared {
     state: AtomicU32,
     message: OnceLock<String>,
 }
@@ -95,14 +95,14 @@ impl TunnelShared {
 
     /// The current state.
     #[must_use]
-    pub fn state(&self) -> TunnelState {
+    pub(crate) fn state(&self) -> TunnelState {
         TunnelState::from_u32(self.state.load(Ordering::Acquire))
     }
 
     /// Why the tunnel failed. `None` unless [`TunnelState::Failed`] is
     /// observable, so a reader never sees a message before its state.
     #[must_use]
-    pub fn message(&self) -> Option<&str> {
+    pub(crate) fn message(&self) -> Option<&str> {
         if self.state() == TunnelState::Failed {
             self.message.get().map(String::as_str)
         } else {

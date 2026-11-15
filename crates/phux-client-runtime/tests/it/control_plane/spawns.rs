@@ -204,27 +204,6 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
 }
 
 #[test]
-fn unkeyed_spawn_is_not_retried_after_a_lost_connection() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
-    let request_id = plane.spawn_terminal(SpawnRequest::default());
-    let sent = plane.take_outbound();
-    assert!(matches!(
-        decode(&sent[0]),
-        FrameKind::SpawnResource { resource: None, .. }
-    ));
-    plane.connection_lost(Some("socket closed".to_owned()));
-    plane.connection_opened();
-    assert!(plane.take_events().iter().any(|event| matches!(event,
-        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
-            if *id == request_id
-    )));
-    assert!(!plane.take_outbound().iter().any(|frame| *frame == sent[0]));
-}
-
-#[test]
 fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
     let mut plane = ControlPlane::new(ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),

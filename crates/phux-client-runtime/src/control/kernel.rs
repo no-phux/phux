@@ -3,7 +3,7 @@
 use super::subscriptions::Origin;
 use super::{
     ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
-    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
+    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId,
 };
 use phux_protocol::ids::ResourceKind;
 
@@ -237,9 +237,7 @@ impl ControlPlane {
                 after_seq,
             } => FrameKind::SubscribeEvents {
                 terminal,
-                after_seq: after_seq
-                    .or(self.options.event_after_seq)
-                    .filter(|_| self.server_has(ServerFeature::EventJournal)),
+                after_seq: after_seq.or(self.options.event_after_seq),
             },
         };
         self.queue_frame(&frame);

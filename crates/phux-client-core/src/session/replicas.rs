@@ -188,8 +188,9 @@ impl<E: EngineAdapter> StagingReplica<'_, E> {
     }
 
     /// Whether the engine reported its internal READY boundary.
+    #[cfg(test)]
     #[must_use]
-    pub const fn engine_ready(&self) -> bool {
+    pub(crate) const fn engine_ready(&self) -> bool {
         self.engine_ready
     }
 

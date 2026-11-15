@@ -22,7 +22,7 @@ use libghostty_vt::{
     fmt::Formatter,
     grid_ref::TrackedGridRef,
     point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
-    screen::{CellContentTag, CellWide},
+    screen::CellWide,
     selection::Selection,
     snapshot::{FeedDecoder, FeedIncrementalDecoder},
     terminal::ScrollViewport,
@@ -35,8 +35,7 @@ use thiserror::Error;
 use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EnginePresentationAdapter, EngineProjectionOrigin,
-    EngineProjectionRow, EngineSearchMatch, HistoryApplyOutcome,
+    EnginePresentationAdapter, EngineSearchMatch, HistoryApplyOutcome,
 };
 use crate::history::DocumentAnchorId;
 
@@ -54,10 +53,7 @@ pub mod snapshot;
 
 use document::enforce_history_budget;
 use native::{PendingEffects, finish_native, install_effect_hooks, push_history, push_native};
-use projection::{
-    empty_projection, engine_history_rows, grid_ref_graphemes, history_window, rewrap_history_rows,
-    to_ghostty_point, to_ghostty_space, trim_projection_rows,
-};
+use projection::{grid_ref_graphemes, to_ghostty_point, to_ghostty_space};
 pub use replica::GhosttyReplica;
 use replica::{NativeDecoderState, NativeReplica, ReplicaState};
 

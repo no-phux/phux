@@ -2,13 +2,13 @@
 
 #[cfg(all(doc, feature = "engine"))]
 use super::EngineHandle;
+#[cfg(feature = "engine")]
+use super::HistoryStatus;
 use super::{
     AgentEvent, BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
     CloseReason, HistoryCacheConfig, HistoryRejectionReason, HistoryUnavailableReason,
     KernelEffect, KernelError, KernelStatus, ResourceId, StreamId, TombstoneReason,
 };
-#[cfg(feature = "engine")]
-use super::{Arc, GridFrame, HistoryStatus};
 /// One owned kernel input, as the control plane decodes it from a frame.
 #[derive(Debug, Clone)]
 #[allow(
@@ -120,7 +120,7 @@ impl EngineEvent {
     /// A close the control plane inferred (a pane the same snapshot view
     /// listed before and no longer lists) rather than received.
     #[must_use]
-    pub const fn closed_unknown(terminal_id: ResourceId) -> Self {
+    pub(crate) const fn closed_unknown(terminal_id: ResourceId) -> Self {
         Self::Closed {
             terminal_id,
             exit_status: None,
@@ -195,7 +195,7 @@ pub struct EngineOutcome {
 impl EngineOutcome {
     /// Whether an effect asked for a fresh bootstrap.
     #[must_use]
-    pub fn resync_required(&self) -> bool {
+    pub(crate) fn resync_required(&self) -> bool {
         self.effects.iter().any(|effect| {
             matches!(
                 effect,
@@ -222,16 +222,6 @@ pub enum Scroll {
     /// Without that many prompts, the farthest one found is used; with none,
     /// the viewport stays put.
     Prompt(i64),
-}
-
-/// A whole-document text range a consumer can copy out.
-#[cfg(feature = "engine")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextRegion {
-    /// Loaded scrollback plus the active screen.
-    Screen,
-    /// Loaded scrollback only; empty on the alternate screen.
-    History,
 }
 
 /// One document coordinate accepted by the owner thread.
@@ -266,19 +256,6 @@ pub struct ReplicaInfo {
     /// answers, read in the same owner turn so a consumer validating a
     /// presentation needs one round trip, not two.
     pub input_ready: bool,
-}
-
-/// One view as a single owner turn saw it: its replica facts and the frame
-/// published for exactly that state, caught up first if its projection was
-/// deferred. See [`EngineHandle::present_view`].
-#[cfg(feature = "engine")]
-#[derive(Debug, Clone)]
-pub struct ViewPresentation {
-    /// The replica behind the view.
-    pub replica: ReplicaInfo,
-    /// The view's current frame, now marked read; `None` before its first
-    /// publication.
-    pub frame: Option<Arc<GridFrame>>,
 }
 
 /// Where a replica's shell is in its OSC 133 prompt cycle, read from the

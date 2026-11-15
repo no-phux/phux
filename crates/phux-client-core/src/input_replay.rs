@@ -1,46 +1,22 @@
 //! Transport-free acknowledged-input replay policy (ADR-0053).
 //!
-//! The Ws/QUIC reconnect window (phux-i0e8.2.3, extended to the remote lanes
-//! by the transport-aware reconnect work) resurrects the *session*, but any
-//! input that was crossing the wire at the drop is simply gone — and ADR-0053
-//! is explicit that replaying fire-and-forget `INPUT_*` frames is not a fix,
-//! because a transport failure cannot reveal whether the first copy reached
-//! the PTY. The acknowledged `APPLY_INPUT` surface exists for exactly this:
-//! a consumer-generated 128-bit operation id names the batch, the
-//! terminal-owning server caches the outcome by that id, and a same-id resend
-//! after reconnect is answered from the cache instead of being written twice.
-//!
-//! This module is the reusable client half of that contract. Native and web
-//! hosts own clocks, operation-id generation, sockets, and UI delivery; this
-//! journal owns only ordering, retention, replay eligibility, and result
+//! A reconnect cannot reveal whether input crossing the wire at the drop
+//! reached the PTY, so fire-and-forget `INPUT_*` is never replayed. Instead an
+//! `APPLY_INPUT` batch carries a 128-bit operation id the server dedupes, and
+//! this journal owns ordering, retention, replay eligibility and result
 //! classification:
 //!
-//! - **One operation id per user action, forever.** A resend after reconnect
-//!   reuses the id verbatim; a fresh id is precisely the duplicate the design
-//!   exists to prevent.
-//! - **Replay only against the same server incarnation** (`HELLO_OK.server_id`,
-//!   ADR-0053 point 5). Dedupe state is process memory; a changed incarnation
-//!   means the cache is gone, so an already-attempted operation resolves
-//!   *unknown* — never a silent replay, never a silent drop.
-//! - **Replay only inside [`INPUT_RETRY_HORIZON`]**, which matches the
-//!   server's dedupe retention (`DEDUPE_RETENTION`,
-//!   `phux-server/src/runtime/apps/terminal/input_lane/acknowledged.rs`). Past it the
-//!   server may have evicted the record, so a resend could write twice.
-//! - **At most one operation per Terminal in flight**, submission order
-//!   preserved independently for each Terminal. Unrelated Terminals may make
-//!   progress while one waits, matching server admission scope.
-//! - **Bounded retention.** Event and byte budgets turn overflow into an
-//!   explicit refusal report rather than silently dropping input.
-//! - **An attempted operation strands as *unknown*; a never-sent one as
-//!   *refused*.** The distinction is the whole vocabulary: refused means
-//!   nothing was written and retyping is safe, unknown means the pane must be
-//!   read before anything is resent.
+//! - One operation id per user action, forever; a fresh id is the duplicate.
+//! - Replay only to the same server incarnation (`HELLO_OK.server_id`) and
+//!   inside [`INPUT_RETRY_HORIZON`], the server's dedupe retention.
+//! - At most one operation per Terminal in flight, in submission order.
+//! - Bounded retention: overflow is an explicit refusal, never a drop.
+//! - An attempted operation strands as *unknown* (read the pane before
+//!   resending); a never-sent one as *refused* (retyping is safe).
 //!
-//! The journal is deliberately transport- and UI-free: it holds state and
-//! builds frames. A host keeps one journal across connection attempts, sends
-//! the returned frames in order, feeds command results back through
-//! [`InputReplayJournal::resolve`], and presents [`ReplayReport`]s in its own
-//! UI. Raw fire-and-forget input never enters this type.
+//! Hosts own clocks, ids, sockets and UI: they keep one journal across
+//! connections, send its frames in order, and feed results back through
+//! [`InputReplayJournal::resolve`].
 
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,9 +58,9 @@ const SERVER_ID_LEN: usize = 16;
 const MAX_DEFERRED_REPORTS: usize = 64;
 
 /// Maximum number of input atoms retained across acknowledged operations.
-pub const INPUT_JOURNAL_MAX_EVENTS: usize = 4096;
+pub(crate) const INPUT_JOURNAL_MAX_EVENTS: usize = 4096;
 /// Maximum estimated in-memory bytes retained across acknowledged operations.
-pub const INPUT_JOURNAL_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const INPUT_JOURNAL_MAX_BYTES: usize = 1024 * 1024;
 
 /// One journaled acknowledged operation. The operation id and payload never
 /// change; only connection-local bookkeeping (`attempts`, the in-flight
@@ -212,12 +188,8 @@ impl InputReplayJournal {
     /// Adopt a (re)connected socket's identity and decide every queued
     /// operation's fate against it.
     ///
-    /// Called once per `main_loop` entry — a fresh dial after the reconnect
-    /// window and an in-connection session switch both pass through here,
-    /// and both need the same treatment: any in-flight correlation is dead
-    /// (the reply either died with the socket or was discarded by the
-    /// session-switch drain), while the operations themselves survive and
-    /// are re-decided:
+    /// Called on every (re)dial and session switch: in-flight correlation is
+    /// dead, the operations survive and are re-decided:
     ///
     /// - no usable incarnation, or no `ACKNOWLEDGED_INPUT` — every queued
     ///   operation strands (attempted ⇒ unknown, never-sent ⇒ refused) and
@@ -225,11 +197,8 @@ impl InputReplayJournal {
     /// - incarnation changed since an operation's first attempt — that
     ///   operation strands the same way (ADR-0053 point 5);
     /// - horizon expired — strands;
-    /// - otherwise the operation stays queued for [`Self::next_frame_at`],
-    ///   which will resend it under its original id. The server's dedupe
-    ///   cache is what makes that resend idempotent — including the
-    ///   session-switch case, where the first attempt's reply was already
-    ///   emitted and dropped.
+    /// - otherwise the operation stays queued and is resent under its
+    ///   original id, which the server's dedupe cache makes idempotent.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn begin_connection(
         &mut self,

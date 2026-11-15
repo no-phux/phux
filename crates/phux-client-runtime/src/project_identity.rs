@@ -14,7 +14,7 @@ use phux_protocol::wire::info::SessionInfo;
 
 /// Where a checkout's git state lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitCheckout {
+pub(crate) struct GitCheckout {
     /// The work tree root; the repository itself for a bare repository.
     pub root: PathBuf,
     /// This checkout's git dir (`.git`, or `.git/worktrees/<name>`).
@@ -26,7 +26,7 @@ pub struct GitCheckout {
 impl GitCheckout {
     /// A linked worktree, as opposed to the primary checkout.
     #[must_use]
-    pub fn is_linked_worktree(&self) -> bool {
+    pub(crate) fn is_linked_worktree(&self) -> bool {
         self.git_dir != self.common_dir
     }
 }
@@ -35,7 +35,7 @@ impl GitCheckout {
 /// directory or `gitdir:` file, or a git dir itself (a bare repository, or a
 /// path inside `.git`). `None` outside git or when a path cannot be read.
 #[must_use]
-pub fn find_checkout(start: &Path) -> Option<GitCheckout> {
+pub(crate) fn find_checkout(start: &Path) -> Option<GitCheckout> {
     let start = start.canonicalize().ok()?;
     for dir in start.ancestors() {
         let dot_git = dir.join(".git");
@@ -102,7 +102,7 @@ pub fn head_branch(git_dir: &Path) -> Option<String> {
 /// The first `url` of `[remote "origin"]` in a git config file's text.
 /// Includes and `insteadOf` rewrites are not applied.
 #[must_use]
-pub fn origin_url(config: &str) -> Option<String> {
+pub(crate) fn origin_url(config: &str) -> Option<String> {
     let mut in_origin = false;
     for raw in config.lines() {
         let mut line = raw.trim();
@@ -185,7 +185,7 @@ pub fn creation_attrs(dir: &Path, host: &str, label: Option<&str>) -> Vec<(Strin
 /// Set by `SESSION_SET_PROJECT` (`phux project link`). Not the free-text
 /// `project` attribute a recipe or archive writes, and not part of the
 /// repository identity.
-pub const LINK_ATTR: &str = phux_core::project_identity::attr::LINK;
+pub(crate) const LINK_ATTR: &str = phux_core::project_identity::attr::LINK;
 
 /// The explicit project link in a session's attributes.
 #[must_use]
@@ -220,7 +220,7 @@ pub fn of_session(session: &SessionInfo) -> Option<SessionProject> {
 
 /// The identity a session's attributes carry.
 #[must_use]
-pub fn of_attrs(attrs: &[(String, String)]) -> Option<SessionProject> {
+pub(crate) fn of_attrs(attrs: &[(String, String)]) -> Option<SessionProject> {
     SessionProject::from_attrs(
         attrs
             .iter()

@@ -19,7 +19,7 @@ use phux_protocol::wire::info::SessionSnapshot;
 /// contain-fit (aspect kept, centered, scaled up or down) in a
 /// `view`-point area; `None` for an empty frame or area.
 #[must_use]
-pub fn frame_scale(view: [f32; 2], frame: [u32; 2]) -> Option<f32> {
+pub(crate) fn frame_scale(view: [f32; 2], frame: [u32; 2]) -> Option<f32> {
     let fit = (view[0] / frame[0] as f32).min(view[1] / frame[1] as f32);
     (fit.is_finite() && fit > 0.0).then(|| 1.0 / fit)
 }
