@@ -23,15 +23,17 @@ pub enum Step {
     Look,
     Agents,
     Migrate,
+    Machines,
     Done,
 }
 
 impl Step {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Welcome,
         Self::Look,
         Self::Agents,
         Self::Migrate,
+        Self::Machines,
         Self::Done,
     ];
 
@@ -42,6 +44,7 @@ impl Step {
             Self::Look => "look",
             Self::Agents => "agents",
             Self::Migrate => "migrate",
+            Self::Machines => "machines",
             Self::Done => "done",
         }
     }
@@ -92,19 +95,20 @@ pub const fn promise(permissions: bool) -> Promise {
     if permissions {
         Promise {
             welcome: "Pick a look, give your agents the phux skill and the permissions they \
-                      need, and bring your key bindings with you.",
+                      need, bring your key bindings with you and add your other machines.",
             agents_title: "Agents & permissions",
             agents_lead: "Give your agents the phux skill, and phux the access they ask for.",
-            get_started: "The look, the phux agent skill, permissions and your key bindings, \
-                          step by step.",
+            get_started: "The look, the phux agent skill, permissions, your key bindings and \
+                          your other machines, step by step.",
         }
     } else {
         Promise {
-            welcome: "Pick a look, give your agents the phux skill and bring your key \
-                      bindings with you.",
+            welcome: "Pick a look, give your agents the phux skill, bring your key bindings \
+                      with you and add your other machines.",
             agents_title: "Agents",
             agents_lead: "Give your agents the phux skill so they can drive phux.",
-            get_started: "The look, the phux agent skill and your key bindings, step by step.",
+            get_started: "The look, the phux agent skill, your key bindings and your other \
+                          machines, step by step.",
         }
     }
 }

@@ -294,3 +294,37 @@ fn skill_shows_installed_with_no_agent_found() {
         "the shared skill is in place"
     );
 }
+
+#[test]
+fn the_machines_step_offers_ssh_and_tailnet_hosts_to_tick() {
+    let mut rt = window(Step::Machines);
+    rt.update(|d, _| {
+        let list = &mut d.machines;
+        list.ssh.hosts = vec!["devbox".to_owned(), "mini".to_owned()];
+        list.peers = vec![crate::machines::Peer {
+            name: "nas".to_owned(),
+            ssh_host: "nas.tail1.ts.net".to_owned(),
+            online: true,
+        }];
+        list.hosts = vec![crate::machines::Host {
+            name: "mini".to_owned(),
+            ssh: Some("mini".to_owned()),
+            ssh_only: false,
+            paused: false,
+        }];
+    });
+    settle(&mut rt);
+    assert!(
+        has(&rt, "onboarding-machine-devbox") && has(&rt, "onboarding-machine-nas.tail1.ts.net")
+    );
+    assert!(!has(&rt, "onboarding-machine-mini"), "already set up");
+    assert!(
+        !has(&rt, "onboarding-machines-set-up"),
+        "nothing ticked yet"
+    );
+    assert!(rt.accessibility_action("onboarding-machine-devbox", Action::Click, None));
+    settle(&mut rt);
+    assert!(rt.state.machines.ssh.picked.contains("devbox"));
+    assert!(has(&rt, "onboarding-machines-set-up"));
+    snap(&mut rt, "4c-machines");
+}

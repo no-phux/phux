@@ -80,9 +80,10 @@ session (or `--session NAME`). It never creates a session on its own.
   or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
-  keep running wherever they are. **Add a machine** takes `me@host` or a
-  machine from your tailnet and runs `phux host add --install` over the ssh
-  access you already have. A window shows one machine at a time. On a new
+  keep running wherever they are. **Add a machine** takes `me@host`, a
+  machine from your tailnet or a host from `~/.ssh/config`, and runs
+  `phux host add --install` over the ssh access you already have.
+  Onboarding offers the same hosts to tick and sets them up one by one. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added. Opening a `phux://connect?...` or
   `https://phux.sh/connect?...` link from `phux pair` (relay links too)

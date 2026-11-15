@@ -39,6 +39,7 @@ mod reef;
 mod scheme;
 mod services;
 mod session_color;
+mod ssh_config;
 mod standing;
 mod system_settings;
 mod theme;

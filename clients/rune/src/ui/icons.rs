@@ -120,6 +120,11 @@ icon!(
 );
 
 icon!(
+    MACHINES,
+    "phux-machines",
+    "M2.5 3h11v4h-11zM2.5 9h11v4h-11zM5 5h.01M5 11h.01"
+);
+icon!(
     BELL,
     "phux-bell",
     "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"

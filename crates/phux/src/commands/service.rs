@@ -1305,8 +1305,8 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
     report_linger_for(manager);
 }
 
-/// Write the unit file (and the wrapper, when `--restore` is on), creating
-/// the directories the init system expects.
+/// Write the unit file (and the wrapper, under `--restore`), making the
+/// directories the init system expects.
 fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
     refuse_dev_on_production_credentials(plan)?;
     if let Some(parent) = unit_path.parent() {
@@ -1314,7 +1314,7 @@ fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> R
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
     if let Some(parent) = plan.log.parent() {
-        std::fs::create_dir_all(parent)
+        phux_server::owner_dir::create(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
 
