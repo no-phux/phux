@@ -180,7 +180,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .clip_rounded(0.0)
                 .motion(tok::motion::SNAPPY)
-                .child(sidebar::view(desk, &p, TITLEBAR_H)),
+                .child(sidebar::view(desk, &p, TITLEBAR_H, lights)),
         )
         .child(
             col()
@@ -221,8 +221,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // answers to the modal and keeps the terminal asked for.
     let root = chrome_ground(el().w_full().h_full(), desk.glass(), p.sidebar)
         .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
-        .child(main)
-        .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
+        .child(main);
     floating(root, desk, &p, band, cx)
 }
 
@@ -304,12 +303,7 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p));
     let main = col().key("main").w_full().h_full().child(band).child(stage);
-    let root = el()
-        .w_full()
-        .h_full()
-        .fill(p.bg)
-        .child(main)
-        .child(crate::host_color::edge(desk.machines.label(), p.bg));
+    let root = el().w_full().h_full().fill(p.bg).child(main);
     floating(root, desk, p, band_h, cx)
 }
 

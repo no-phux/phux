@@ -29,7 +29,6 @@ pub(super) fn session_controls(key: Option<SessionKey>, name: &str, ink: &Ink) -
 mod tests {
     use super::*;
     use crate::desk::{Desk, Pending};
-    use crate::launch::Resolved;
     use phux_client_runtime::control::Topology;
     use phux_protocol::ids::{ResourceId, SessionId, WindowId};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
@@ -53,18 +52,14 @@ mod tests {
     #[test]
     fn a_close_button_owns_its_press_in_a_selectable_draggable_header() {
         let (client, _) = crate::grid::budget::input_fixture();
-        let mut desk = Desk::new(&Resolved::offline("sidebar close"));
-        desk.prefs = rune::prefs::Prefs::memory();
+        let mut desk = Desk::settings_test_fixture();
         desk.client = Some(client.clone());
-        let snapshot = SessionSnapshot::new(
-            SessionId::new(1),
-            WindowId::new(1),
-            ResourceId::local(1),
-        )
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "budget"),
-            SessionInfo::new(SessionId::new(2), "empty"),
-        ]);
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                .with_sessions(vec![
+                    SessionInfo::new(SessionId::new(1), "budget"),
+                    SessionInfo::new(SessionId::new(2), "empty"),
+                ]);
         let request_id = client.refresh_topology().unwrap();
         client
             .feed(phux_protocol::wire::frame::FrameKind::CommandResult {
@@ -87,7 +82,10 @@ mod tests {
         rt.pointer_down(x, y);
         rt.pointer_move(x + 6.0, y + 6.0);
         rt.frame(0.0);
-        assert!(rt.state.reorder.held.is_none(), "the parent never starts dragging");
+        assert!(
+            rt.state.reorder.held.is_none(),
+            "the parent never starts dragging"
+        );
         assert_eq!(client.selected_session(), Some(1));
         rt.pointer_up(x + 6.0, y + 6.0);
         rt.frame(0.0);
@@ -101,14 +99,27 @@ mod tests {
             Some(Pending::CloseSession(key(), "empty".into())),
             "the question uses topology, not a stale rendered name",
         );
-        assert_eq!(client.selected_session(), Some(1), "the header never selects");
-        assert!(rt.state.tabs.renaming.is_none(), "the header never double-presses");
+        assert_eq!(
+            client.selected_session(),
+            Some(1),
+            "the header never selects"
+        );
+        assert!(
+            rt.state.tabs.renaming.is_none(),
+            "the header never double-presses"
+        );
         rt.update(|d, _| d.cancel_pending());
-        assert!(client.take_outbound().is_empty(), "press and cancel send no commands");
+        assert!(
+            client.take_outbound().is_empty(),
+            "press and cancel send no commands"
+        );
 
         assert!(rt.accessibility_action(&button, rune::accesskit::Action::Click, None));
         rt.frame(0.0);
-        assert_eq!(rt.state.pending, Some(Pending::CloseSession(key(), "empty".into())));
+        assert_eq!(
+            rt.state.pending,
+            Some(Pending::CloseSession(key(), "empty".into()))
+        );
     }
 
     #[test]
@@ -117,7 +128,7 @@ mod tests {
             let ink = crate::ui::ink(true, rune::oklch(0.6, 0.15, 250.0), None);
             session_controls(None, "satellite", &ink)
         }
-        let desk = Desk::new(&Resolved::offline("satellite close"));
+        let desk = Desk::settings_test_fixture();
         let mut rt = Runtime::new(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
         rt.frame(0.0);
         assert!(!rt.accessibility_action(

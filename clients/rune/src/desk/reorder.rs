@@ -125,7 +125,12 @@ impl Desk {
         if matches!(held, Grab::Tab(_)) {
             for tab in &self.tabs.list {
                 let grab = Grab::Tab(tab.id);
-                if self.reorder.rects.get(&grab).is_some_and(|r| contains(*r, point)) {
+                if self
+                    .reorder
+                    .rects
+                    .get(&grab)
+                    .is_some_and(|r| contains(*r, point))
+                {
                     return Some(grab);
                 }
             }
@@ -140,14 +145,26 @@ impl Desk {
                 continue;
             }
             if matches!(held, Grab::Tab(_))
-                && self.client.as_ref().and_then(|client| client.selected_session()) == Some(session.id)
+                && self
+                    .client
+                    .as_ref()
+                    .and_then(|client| client.selected_session())
+                    == Some(session.id)
             {
                 continue;
             }
             let Some(key) = session.key else { continue };
             let grab = Grab::Session(key);
-            if self.reorder.rects.get(&grab).is_some_and(|r| contains(*r, point)) {
+            if self
+                .reorder
+                .rects
+                .get(&grab)
+                .is_some_and(|r| contains(*r, point))
+            {
                 return Some(grab);
+            }
+            if self.sidebar_collapsed.contains(&key) {
+                continue;
             }
             for (row, rect) in &self.reorder.rects {
                 if let Grab::Resource(id, owner) = *row
@@ -164,8 +181,15 @@ impl Desk {
 
     fn resource_in_session(&self, id: u32, key: SessionKey, session: u32) -> bool {
         let live = phux_protocol::ids::ResourceId::local(id);
-        self.resources.entries.get(&live).is_some_and(|doc| doc.record.session == key)
-            || self.topology.as_ref().and_then(|t| t.pane(&live)).is_some_and(|pane| pane.session_id == session)
+        self.resources
+            .entries
+            .get(&live)
+            .is_some_and(|doc| doc.record.session == key)
+            || self
+                .topology
+                .as_ref()
+                .and_then(|t| t.pane(&live))
+                .is_some_and(|pane| pane.session_id == session)
     }
 
     /// Move a tab's group to where `to`'s is, in the session's arrangement.

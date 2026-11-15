@@ -17,9 +17,12 @@ pub(super) fn region(handle: El) -> El {
 
 /// A local resource row drags its resource, not the session it belongs to.
 pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey, _ink: &Ink) -> El {
-    let Some(id) = id.local_id() else { return handle };
+    let Some(id) = id.local_id() else {
+        return handle;
+    };
     let grab = Grab::Resource(id, session);
     handle
+        .help("Open resource · drag to another session")
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
             d.reorder.laid_out(grab, rect);
@@ -38,5 +41,12 @@ pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, ink
             d.reorder.laid_out(grab, rect);
             tx.live_only();
         })
-        .border(if target { 1.0 } else { 0.0 }, ink.accent)
+        .border(
+            1.0,
+            if target {
+                ink.accent
+            } else {
+                rune::Color::TRANSPARENT
+            },
+        )
 }

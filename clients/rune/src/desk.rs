@@ -139,9 +139,6 @@ pub struct Desk {
     pub window_w: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
-    /// The sidebar's foot button under the pointer, by key, so it can show
-    /// its chord.
-    pub foot_hover: Option<&'static str>,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
@@ -182,6 +179,8 @@ pub struct Desk {
     pub tabs: tabs::Tabs,
     /// A tab or session drag, and the session order the server keeps.
     pub reorder: reorder::Reorder,
+    /// Session disclosure is a window preference, independent of selection.
+    pub sidebar_collapsed: HashSet<SessionKey>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -331,7 +330,6 @@ impl Desk {
             sidebar_open,
             window_w: 0.0,
             sidebar_peek: false,
-            foot_hover: None,
             find: None,
             copy_mode: None,
             find_query: rune::TextEdit::new(""),
@@ -353,6 +351,7 @@ impl Desk {
             settings_ui: settings::SettingsUi::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            sidebar_collapsed: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),

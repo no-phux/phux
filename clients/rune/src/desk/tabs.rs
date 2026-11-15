@@ -350,9 +350,10 @@ impl Desk {
         let Some(id) = self.client.as_ref().and_then(|c| c.selected_session()) else {
             return;
         };
-        let key = self.topology.as_ref().and_then(|t| {
-            t.sessions.iter().find(|s| s.id == id)?.key
-        });
+        let key = self
+            .topology
+            .as_ref()
+            .and_then(|t| t.sessions.iter().find(|s| s.id == id)?.key);
         if let Some(key) = key {
             self.close_session_key(key);
         }

@@ -47,28 +47,24 @@ fn fixture() -> (Arc<Client>, Desk) {
             bootstrap_limits: BootstrapLimits::default(),
         })
         .unwrap();
-    let snapshot = SessionSnapshot::new(
-        SessionId::new(1),
-        WindowId::new(1),
-        ResourceId::local(0),
-    )
-    .with_sessions(vec![
-        SessionInfo::new(SessionId::new(1), "selected"),
-        SessionInfo::new(SessionId::new(2), "empty"),
-    ]);
-    let page = OrganizationPage::new(
-        AuthorityId::new([1; 16]).unwrap(),
-        Revision::new(1),
-        0,
-    )
-    .with_sessions(vec![
-        SessionRecord::new(key(1), "selected", Revision::new(1))
-            .with_live(Some(SessionId::new(1))),
-        SessionRecord::new(key(2), "empty", Revision::new(1))
-            .with_live(Some(SessionId::new(2))),
-    ]);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(0))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "selected"),
+            SessionInfo::new(SessionId::new(2), "empty"),
+        ]);
+    let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(1), 0)
+        .with_sessions(vec![
+            SessionRecord::new(key(1), "selected", Revision::new(1))
+                .with_live(Some(SessionId::new(1))),
+            SessionRecord::new(key(2), "empty", Revision::new(1))
+                .with_live(Some(SessionId::new(2))),
+        ]);
     for frame in sent(&client) {
-        let FrameKind::Command { request_id, command } = frame else {
+        let FrameKind::Command {
+            request_id,
+            command,
+        } = frame
+        else {
             continue;
         };
         let result = match command {
@@ -126,7 +122,13 @@ fn a_nonselected_empty_session_closes_by_key_without_selecting_it() {
     desk.cancel_pending();
     assert!(desk.pending.is_none());
     assert!(sent(&client).is_empty(), "cancel leaves the session alone");
-    assert!(desk.topology.as_ref().unwrap().session_keyed(&key(2)).is_some());
+    assert!(
+        desk.topology
+            .as_ref()
+            .unwrap()
+            .session_keyed(&key(2))
+            .is_some()
+    );
 
     desk.close_session_key(key(2));
     desk.confirm_pending();
@@ -150,7 +152,10 @@ fn stale_session_controls_do_not_close_a_reused_name_or_handle() {
     let question = Some(Pending::CloseSession(key(1), "selected".into()));
     assert_eq!(desk.pending, question);
     desk.close_session_key(key(2));
-    assert_eq!(desk.pending, question, "stale controls leave a held question alone");
+    assert_eq!(
+        desk.pending, question,
+        "stale controls leave a held question alone"
+    );
     // Selection and the target's name can change while confirmation is
     // held; the accepted operation still addresses the original key.
     client.attach_session(AttachTarget::ByName("empty".into()));
@@ -168,13 +173,24 @@ fn closing_selected_empty_sessions_never_recreates_their_home() {
     let _ = sent(&client);
     desk.settle_home(&client);
     desk.close_session();
-    assert_eq!(desk.pending, Some(Pending::CloseSession(key(2), "empty".into())));
+    assert_eq!(
+        desk.pending,
+        Some(Pending::CloseSession(key(2), "empty".into()))
+    );
     desk.confirm_pending();
     assert_eq!(killed(&client), [key(2)]);
 
-    desk.topology.as_mut().unwrap().sessions.retain(|s| s.key != Some(key(2)));
+    desk.topology
+        .as_mut()
+        .unwrap()
+        .sessions
+        .retain(|s| s.key != Some(key(2)));
     assert!(desk.settle_home(&client));
-    assert_eq!(client.selected_session(), Some(1), "use the remaining session");
+    assert_eq!(
+        client.selected_session(),
+        Some(1),
+        "use the remaining session"
+    );
     let _ = sent(&client);
     desk.settle_home(&client);
     desk.close_session();
@@ -183,5 +199,8 @@ fn closing_selected_empty_sessions_never_recreates_their_home() {
 
     desk.topology.as_mut().unwrap().sessions.clear();
     assert!(!desk.settle_home(&client));
-    assert!(sent(&client).is_empty(), "the last session is not created again");
+    assert!(
+        sent(&client).is_empty(),
+        "the last session is not created again"
+    );
 }
