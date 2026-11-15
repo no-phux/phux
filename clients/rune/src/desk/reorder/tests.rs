@@ -240,3 +240,36 @@ fn unverified_server_identity_retires_pending_resource_moves() {
     assert!(!desk.sidebar_move_outcome(&client, operation, &OrgOutcome::Accepted));
     assert!(outbound(&client).is_empty());
 }
+
+#[test]
+fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
+    for before_submission in [false, true] {
+        let (client, mut desk) = connected();
+        desk.shown = Some(crate::desk::Shown { resource: live(7), view: None });
+        if before_submission {
+            desk.want(live(8));
+        }
+        desk.drag_at(Grab::Resource(7, key(1)), Phase::Up, [50.0, 160.0], false);
+        let (request, operation) = move_request(&client);
+        if !before_submission {
+            desk.want(live(8));
+        }
+        reply(&client, &mut desk, request, CommandResult::Accepted { operation });
+        assert_eq!(client.selected_session(), Some(1), "pending navigation is already a new selection");
+        assert_eq!(desk.wanted.as_ref().map(|(id, _)| id), Some(&live(8)));
+    }
+}
+
+#[test]
+fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop() {
+    for other in [ResourceId::satellite("elsewhere", 8), live(99)] {
+        let (client, mut desk) = connected();
+        let id = [9; 16];
+        desk.tabs.list.push(crate::desk::Tab {
+            id, name: "mixed".into(), resources: vec![live(7), other], active: true, locked: false,
+        });
+        desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
+        assert!(outbound(&client).is_empty());
+        assert!(desk.reorder.moves.is_empty());
+    }
+}
