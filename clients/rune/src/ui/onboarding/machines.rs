@@ -30,20 +30,27 @@ fn machine(target: String, name: String, state: Offered, p: &Ink) -> El {
         .color(p.text)
         .truncate();
     let row = match &state {
-        Offered::Pick(on) => pressable(format!("onboarding-machine-{target}"), p)
-            .w_full()
-            .h(30.0)
-            .px(10.0)
-            .gap(10.0)
-            .radius(7.0)
-            .items_center()
-            .focusable(true)
-            .role("checkbox")
-            .label(name)
-            .checked(*on)
-            .on_press(move |d: &mut Desk| d.pick_machine(&target))
-            .child(checkbox(*on, p))
-            .child(label.a11y_hidden()),
+        // A failed one ticks again to retry.
+        Offered::Pick(_) | Offered::Failed(_) => {
+            let on = state == Offered::Pick(true);
+            let failed = matches!(state, Offered::Failed(_));
+            pressable(format!("onboarding-machine-{target}"), p)
+                .w_full()
+                .h(30.0)
+                .px(10.0)
+                .gap(10.0)
+                .radius(7.0)
+                .items_center()
+                .focusable(true)
+                .role("checkbox")
+                .label(name)
+                .checked(on)
+                .on_press(move |d: &mut Desk| d.pick_machine(&target))
+                .child(checkbox(on, p))
+                .child(label.a11y_hidden())
+                .child(el().grow(1.0))
+                .children(failed.then(|| status("Couldn't set up", p.danger)))
+        }
         Offered::Done => line
             .child(rune::icon(&icons::CHECK, 14.0).color(p.marks.good))
             .child(label)
@@ -59,11 +66,6 @@ fn machine(target: String, name: String, state: Offered, p: &Ink) -> El {
             .child(label)
             .child(el().grow(1.0))
             .child(status(step.clone(), p.accent)),
-        Offered::Failed(_) => line
-            .child(checkbox(false, p))
-            .child(label)
-            .child(el().grow(1.0))
-            .child(status("Couldn't set up", p.danger)),
     };
     let why = match state {
         Offered::Failed(why) => Some(

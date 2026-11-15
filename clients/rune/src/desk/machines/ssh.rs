@@ -113,6 +113,7 @@ impl Desk {
     }
 
     pub fn pick_machine(&mut self, target: &str) {
+        self.machines.ssh.failed.remove(target);
         let picked = &mut self.machines.ssh.picked;
         if !picked.remove(target) {
             picked.insert(target.to_owned());

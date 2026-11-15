@@ -198,6 +198,9 @@ fn ticked_machines_set_up_one_after_another_and_a_failure_stays_by_its_row() {
         Offered::Running(_)
     ));
     assert!(desk.machines.ssh.picked.is_empty());
+    // Ticking a failed one again clears why, ready to retry.
+    desk.pick_machine("a");
+    assert_eq!(desk.machines.offer_state("a"), Offered::Pick(true));
 }
 
 #[test]
