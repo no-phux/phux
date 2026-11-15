@@ -182,7 +182,7 @@ fn every_variant_has_a_sample() {
     assert_eq!(
         covered,
         (0..FRAME_VARIANTS).collect(),
-        "every FrameKind variant needs a sample in wire_schema.rs"
+        "every FrameKind variant needs a sample: client frames in kinds/samples, server frames in wire_schema/"
     );
 }
 
