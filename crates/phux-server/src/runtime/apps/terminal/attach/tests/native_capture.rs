@@ -145,141 +145,80 @@ async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_faul
         .await;
 }
 
+/// A native capacity failure on a fresh attach, or on a replacement after
+/// one that succeeded, sends `CODEC_UNAVAILABLE`, publishes nothing more,
+/// and closes the connection cleanly without reaping the Terminal.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[tokio::test(flavor = "current_thread")]
-async fn fresh_native_capacity_failure_sends_error_then_closes_without_publication() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (_session, terminal) = state.with_mut(|s| s.seed_session("fresh-failure"));
-            let (
-                handle,
-                mut consumer_attach_rx,
-                mut native_bootstrap_rx,
-                mut native_publication_rx,
-            ) = native_attach_handle();
-            state.with_mut(|s| {
-                s.register_resource_handle(terminal, handle, CancellationToken::new())
-                    .unwrap();
-            });
-            let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-            let (out_tx, mut out_rx) =
-                tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
-            let connection_token = CancellationToken::new();
-            let mut output_pumps = JoinSet::new();
-            tokio::join!(
-                attach(
-                    &state,
-                    client_id,
-                    41,
-                    "fresh-failure",
-                    None,
-                    &out_tx,
-                    native_profile(),
-                    &mut output_pumps,
-                    &connection_token,
-                    false,
-                ),
-                answer_native_attach(
-                    &mut consumer_attach_rx,
-                    &mut native_bootstrap_rx,
-                    &mut native_publication_rx,
-                    false,
-                )
-            );
-
-            assert!(matches!(
-                out_rx.recv().await,
-                Some(Outbound::FatalError {
-                    code: ErrorCode::CodecUnavailable,
-                    ..
-                })
-            ));
-            assert!(out_rx.try_recv().is_err(), "no ATTACHED or BEGIN may leak");
-            assert!(connection_token.is_cancelled());
-            assert!(state.with(|s| !s.attached().contains_key(&client_id)));
-            drop(out_tx);
-            assert!(
-                out_rx.recv().await.is_none(),
-                "fatal fresh attach must reach EOF"
-            );
+async fn native_capacity_failure_closes(attempts: &[bool]) {
+    let state = SharedState::new();
+    let (_session, terminal) = state.with_mut(|s| s.seed_session("capacity"));
+    let (handle, mut consumer_attach_rx, mut native_bootstrap_rx, mut native_publication_rx) =
+        native_attach_handle();
+    state.with_mut(|s| {
+        s.register_resource_handle(terminal, handle, CancellationToken::new())
+            .unwrap();
+    });
+    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+    let connection_token = CancellationToken::new();
+    let mut output_pumps = JoinSet::new();
+    for (attach_id, succeed) in (51..).zip(attempts.iter().copied()) {
+        tokio::join!(
+            attach(
+                &state,
+                client_id,
+                attach_id,
+                "capacity",
+                None,
+                &out_tx,
+                native_profile(),
+                &mut output_pumps,
+                &connection_token,
+                false,
+            ),
+            answer_native_attach(
+                &mut consumer_attach_rx,
+                &mut native_bootstrap_rx,
+                &mut native_publication_rx,
+                succeed,
+            )
+        );
+        if succeed {
+            for _ in 0..5 {
+                out_rx.recv().await.expect("initial attach publication");
+            }
+            assert!(state.with(|s| s.attached().contains_key(&client_id)));
+        }
+    }
+    assert!(matches!(
+        out_rx.recv().await,
+        Some(Outbound::FatalError {
+            code: ErrorCode::CodecUnavailable,
+            ..
         })
-        .await;
+    ));
+    assert!(out_rx.try_recv().is_err(), "no ATTACHED or BEGIN may leak");
+    assert!(connection_token.is_cancelled());
+    assert!(state.with(|s| !s.attached().contains_key(&client_id)));
+    assert!(
+        state.with(|s| s.registry().terminal(terminal).is_some()),
+        "a failed attach must not reap canonical terminal state"
+    );
+    output_pumps.abort_all();
+    while output_pumps.join_next().await.is_some() {}
+    drop(out_tx);
+    assert!(
+        out_rx.recv().await.is_none(),
+        "a fatal attach must close cleanly after ERROR"
+    );
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
-async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (_session, terminal) = state.with_mut(|s| s.seed_session("replacement-failure"));
-            let (
-                handle,
-                mut consumer_attach_rx,
-                mut native_bootstrap_rx,
-                mut native_publication_rx,
-            ) = native_attach_handle();
-            state.with_mut(|s| {
-                s.register_resource_handle(terminal, handle, CancellationToken::new())
-                    .unwrap();
-            });
-            let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-            let (out_tx, mut out_rx) =
-                tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
-            let connection_token = CancellationToken::new();
-            let mut output_pumps = JoinSet::new();
-
-            for (attach_id, succeed) in [(51, true), (52, false)] {
-                tokio::join!(
-                    attach(
-                        &state,
-                        client_id,
-                        attach_id,
-                        "replacement-failure",
-                        None,
-                        &out_tx,
-                        native_profile(),
-                        &mut output_pumps,
-                        &connection_token,
-                        false,
-                    ),
-                    answer_native_attach(
-                        &mut consumer_attach_rx,
-                        &mut native_bootstrap_rx,
-                        &mut native_publication_rx,
-                        succeed,
-                    )
-                );
-                if succeed {
-                    for _ in 0..5 {
-                        out_rx.recv().await.expect("initial attach publication");
-                    }
-                    assert!(state.with(|s| s.attached().contains_key(&client_id)));
-                }
-            }
-            assert!(matches!(
-                out_rx.recv().await,
-                Some(Outbound::FatalError {
-                    code: ErrorCode::CodecUnavailable,
-                    ..
-                })
-            ));
-            assert!(connection_token.is_cancelled());
-            assert!(state.with(|s| !s.attached().contains_key(&client_id)));
-            assert!(
-                state.with(|s| s.registry().terminal(terminal).is_some()),
-                "failed replacement must not reap canonical terminal state"
-            );
-            output_pumps.abort_all();
-            while output_pumps.join_next().await.is_some() {}
-            drop(out_tx);
-            assert!(
-                out_rx.recv().await.is_none(),
-                "fatal replacement must close cleanly after ERROR"
-            );
-        })
-        .await;
+async fn native_capacity_failure_on_a_fresh_or_replacement_attach_closes() {
+    for attempts in [&[false][..], &[true, false]] {
+        tokio::task::LocalSet::new()
+            .run_until(native_capacity_failure_closes(attempts))
+            .await;
+    }
 }
