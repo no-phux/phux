@@ -10,7 +10,6 @@
 
 pub mod agent;
 pub mod agent_records;
-pub mod checkout;
 pub mod grid;
 pub mod id;
 pub mod organization;

@@ -498,7 +498,7 @@ impl RemoteClient {
                 client
                     .take_checkout_answers()
                     .into_iter()
-                    .map(|answer| crate::projection::checkout::result(answer).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
