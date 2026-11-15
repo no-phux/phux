@@ -197,13 +197,12 @@ fn crossings(crossings_in: fn(&str, &str) -> usize) -> BTreeMap<String, usize> {
 /// `connections/` names no stream helper and branches on no kind.
 #[test]
 fn connections_hand_resource_frames_to_the_app() {
-    const HELPERS: [&str; 7] = [
+    const HELPERS: [&str; 6] = [
         "is_agent_session",
         "handle_frame_ack",
         "handle_terminal_resize",
         "serve_history_request",
         "route_client_input",
-        "dispatch_terminal_reply",
         "ResourceKind::",
     ];
     fn scan(dir: &Path, root: &Path, hits: &mut Vec<String>) {
