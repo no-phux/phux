@@ -367,7 +367,7 @@ async fn assert_degraded(
     layout: (ArrangementKey, &ArrangementDoc),
 ) {
     let [local, a, b] = panes;
-    assert_error(
+    assert_command_error(
         &get_screen_via_hub(hub, 400, b.clone()).await,
         ErrorCode::SatelliteUnreachable,
     );

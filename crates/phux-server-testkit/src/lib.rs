@@ -25,12 +25,12 @@ pub mod screen;
 mod server;
 pub mod tracing_capture;
 pub use server::{
-    ServerHandles, hangup_proof_script, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd,
+    ServerHandles, SpawnedServer, spawn_server_connected, hangup_proof_script, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd,
     spawn_server_with, spawn_server_with_seed_cmd, terminal_server,
 };
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -46,7 +46,6 @@ use phux_protocol::wire::frame::{
     SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::ServerError;
-use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -109,41 +108,6 @@ pub async fn wait_for_socket_with(
     assert_eq!(type_byte, TYPE_HELLO_OK);
     assert!(matches!(frame, FrameKind::HelloOk { .. }));
     stream
-}
-
-/// Owning handles for [`spawn_server_connected`]; dropping it stops the server.
-#[must_use = "dropping the shutdown sender stops the server"]
-pub struct SpawnedServer {
-    _tmp: TempDir,
-    socket_path: PathBuf,
-    _shutdown: oneshot::Sender<()>,
-    _server: JoinHandle<Result<(), ServerError>>,
-}
-
-impl SpawnedServer {
-    /// Open another HELLO'd client against this server.
-    pub async fn connect(&self) -> UnixStream {
-        wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await
-    }
-}
-
-/// Spawn a [`phux_server::ServerRuntime`] (optionally pre-seeded) in a temp dir and return
-/// a HELLO'd client. Extra clients use [`SpawnedServer::connect`].
-#[must_use = "dropping the shutdown sender stops the server"]
-pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {
-    let tmp = TempDir::new().unwrap();
-    let socket_path = tmp.path().join("phux.sock");
-    let (shutdown, server) = spawn_server(socket_path.clone(), pre_seeded);
-    let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-    (
-        SpawnedServer {
-            _tmp: tmp,
-            socket_path,
-            _shutdown: shutdown,
-            _server: server,
-        },
-        stream,
-    )
 }
 
 /// Poll `UnixStream::connect(path)` without sending protocol frames.

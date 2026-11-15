@@ -5,7 +5,6 @@
     reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
 )]
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use phux_protocol::caps::BootstrapStreamProfile;
@@ -17,55 +16,13 @@ use phux_protocol::wire::frame::{
     StateScope, ViewportInfo,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
-use phux_server::{LaunchCommand, ServerConfig, ServerError};
+use phux_server::{LaunchCommand, ServerConfig};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, command, join_after_shutdown,
-    recv_until_deadline, seed_pty, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
+    Spawn, WIRE_RECV_TIMEOUT, command, recv_until_deadline, seed_pty, send_frame, spawn_resource,
 };
-use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
-/// A server in its own temp dir.
-pub(crate) struct Server {
-    pub(crate) tmp: TempDir,
-    pub(crate) socket: PathBuf,
-    shutdown: oneshot::Sender<()>,
-    handle: JoinHandle<Result<(), ServerError>>,
-}
-
-impl Server {
-    /// Start a server, optionally pre-seeding session `pre_seeded`.
-    pub(crate) fn start(
-        pre_seeded: Option<&str>,
-        configure: impl FnOnce(&mut ServerConfig),
-    ) -> Self {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, handle) = spawn_server_with(socket.clone(), pre_seeded, configure);
-        Self {
-            tmp,
-            socket,
-            shutdown,
-            handle,
-        }
-    }
-
-    /// A server whose panes (seed and attach-create) run on real PTYs.
-    pub(crate) fn pty(pre_seeded: Option<&str>) -> Self {
-        Self::start(pre_seeded, |cfg| cfg.seed_with_pty = true)
-    }
-
-    /// A HELLO'd client.
-    pub(crate) async fn connect(&self) -> UnixStream {
-        wait_for_socket(&self.socket, SOCKET_CONNECT_DEADLINE).await
-    }
-
-    pub(crate) async fn stop(self) {
-        join_after_shutdown(self.shutdown, self.handle).await;
-    }
-}
+pub(crate) use phux_server_testkit::SpawnedServer as Server;
 
 /// `/bin/sh -c script` as an argv.
 pub(crate) fn sh(script: &str) -> Spawn {

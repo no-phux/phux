@@ -41,13 +41,8 @@ fn hello() -> FrameKind {
     let caps = ClientCapabilities::new()
         .with_color_support(ColorSupport::TrueColor)
         .with_layers(LayerSet::all());
-    FrameKind::Hello {
-        client_name: "phux-end-to-end-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: caps,
-    }
+    let v = PROTOCOL_VERSION;
+    hello_at(v.major, v.minor, v.patch, caps)
 }
 
 const fn synth_only(limits: BootstrapLimits) -> ClientCapabilities {
@@ -62,21 +57,17 @@ const fn synth_only(limits: BootstrapLimits) -> ClientCapabilities {
     )
 }
 
-fn server() -> (
+type Running = (
     TempDir,
     std::path::PathBuf,
     phux_server_testkit::ServerHandles,
-) {
+);
+
+fn server() -> Running {
     server_with(|_| {})
 }
 
-fn server_with(
-    configure: impl FnOnce(&mut phux_server::ServerConfig),
-) -> (
-    TempDir,
-    std::path::PathBuf,
-    phux_server_testkit::ServerHandles,
-) {
+fn server_with(configure: impl FnOnce(&mut phux_server::ServerConfig)) -> Running {
     let tmp = TempDir::new().unwrap();
     let socket = tmp.path().join("phux.sock");
     let handles = spawn_server_with(socket.clone(), Some("default"), configure);
@@ -193,24 +184,10 @@ fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
                 ),
                 "HELLO_OK states the server's own version"
             );
-            send_frame(
-                &mut stream,
-                &FrameKind::Command {
-                    request_id: 5,
-                    command: Command::GetState {
-                        scope: StateScope::Server,
-                    },
-                },
-            )
-            .await;
-            let result = recv_until(&mut stream, |_, frame| match frame {
-                FrameKind::CommandResult {
-                    request_id: 5,
-                    result,
-                } => Some(result),
-                _ => None,
-            })
-            .await;
+            let get_state = Command::GetState {
+                scope: StateScope::Server,
+            };
+            let result = command(&mut stream, 5, get_state).await;
             assert!(
                 matches!(result, CommandResult::OkWith(CommandValue::State(_))),
                 "{result:?}"

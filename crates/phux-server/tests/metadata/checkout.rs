@@ -17,7 +17,9 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{command, join_after_shutdown, run_local, spawn_server_with_seed_cmd};
+use phux_server_testkit::{
+    assert_command_error, command, join_after_shutdown, run_local, spawn_server_with_seed_cmd,
+};
 
 use crate::common::{attach_pane, connect_as, full_caps};
 
@@ -224,16 +226,7 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
             },
         )
         .await;
-        assert!(
-            matches!(
-                missing,
-                CommandResult::Error {
-                    code: ErrorCode::TerminalNotFound,
-                    ..
-                }
-            ),
-            "{missing:?}"
-        );
+        assert_command_error(&missing, ErrorCode::TerminalNotFound);
 
         join_after_shutdown(shutdown, server).await;
     });

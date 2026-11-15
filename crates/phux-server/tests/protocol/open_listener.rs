@@ -20,8 +20,8 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, ListenerTransport,
 };
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, await_command_result, encode_frame_vec,
-    run_local, send_frame, spawn_server_with, wait_for_socket,
+    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, assert_command_error, await_command_result,
+    encode_frame_vec, run_local, send_frame, spawn_server_with, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -336,31 +336,13 @@ fn malformed_requests_are_refused_with_invalid_command() {
     with_server(|mut uds| async move {
         // A transport a newer client defines is unsupported, not invalid.
         let unknown = open(&mut uds, 1, ListenerTransport::Unknown(7), None, 0).await;
-        assert!(
-            matches!(
-                unknown,
-                CommandResult::Error {
-                    code: ErrorCode::Unsupported,
-                    ..
-                }
-            ),
-            "{unknown:?}"
-        );
+        assert_command_error(&unknown, ErrorCode::Unsupported);
         for (request_id, transport, range) in [
             (2, ListenerTransport::Quic, Some((9, 3))),
             (3, ListenerTransport::Quic, Some((0, 5))),
         ] {
             let result = open(&mut uds, request_id, transport, range, 0).await;
-            assert!(
-                matches!(
-                    result,
-                    CommandResult::Error {
-                        code: ErrorCode::InvalidCommand,
-                        ..
-                    }
-                ),
-                "{transport:?} {range:?} must be refused, got {result:?}"
-            );
+            assert_command_error(&result, ErrorCode::InvalidCommand);
         }
     });
 }

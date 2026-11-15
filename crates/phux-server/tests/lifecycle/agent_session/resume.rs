@@ -248,13 +248,7 @@ fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes(
                 Command::attach_agent_session(parent.clone(), Some(role_policy), Some(0)),
             )
             .await;
-            assert!(matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    ..
-                }
-            ));
+            assert_command_error(&result, ErrorCode::InvalidCommand);
         }
         assert_eq!(
             command(&mut watcher, 103, route()).await,

@@ -55,7 +55,7 @@ fn assert_refused(result: &CommandResult, what: &str) {
                 ..
             }
         ),
-        "{what}: expected PRECONDITION_FAILED, got {result:?}"
+        "{what}: {result:?}"
     );
 }
 

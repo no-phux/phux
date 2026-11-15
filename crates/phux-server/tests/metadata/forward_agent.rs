@@ -20,7 +20,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    command, join_after_shutdown, recv_until, run_local, seed_pty, spawn_server_with,
+    assert_command_error, command, join_after_shutdown, recv_until, run_local, seed_pty,
+    spawn_server_with,
 };
 
 use crate::common::{connect_as, full_caps};
@@ -166,13 +167,7 @@ fn on_a_pane_reaches_the_offering_client_and_only_with_list_or_sign() {
         assert_eq!(answer(&mut pane).await, identities);
         // Answered once: the id is spent.
         let again = reply(&mut stream, 3, first, &identities).await;
-        assert!(matches!(
-            again,
-            CommandResult::Error {
-                code: ErrorCode::NotFound,
-                ..
-            }
-        ));
+        assert_command_error(&again, ErrorCode::NotFound);
 
         // Add (17), remove (18), remove-all (19), lock (22), add-constrained
         // (25) and extension (27) are refused by the server alone.
@@ -237,13 +232,7 @@ fn the_newest_of_two_offers_is_asked() {
         send(&mut pane, LIST).await;
         let (id, _) = request(&mut new).await;
         let stolen = reply(&mut old, 2, id, &[12, 9]).await;
-        assert!(matches!(
-            stolen,
-            CommandResult::Error {
-                code: ErrorCode::NotFound,
-                ..
-            }
-        ));
+        assert_command_error(&stolen, ErrorCode::NotFound);
         drop(old);
         assert_eq!(reply(&mut new, 2, id, &[12, 1]).await, CommandResult::Ok);
         assert_eq!(answer(&mut pane).await, [12, 1]);

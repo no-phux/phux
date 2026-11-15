@@ -112,7 +112,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
         let seed = discover_satellite_pane(ws_port).await;
         let sat_id = ResourceId::satellite("sat", seed);
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 2, sat_id.clone()).await,
             ErrorCode::UnsupportedSatelliteRoute,
         );
@@ -167,7 +167,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         // Forget the satellite: routing stops, the hub's pane stays.
         registry.lock().unwrap().clear();
         ring_reload(&mut hub, 50, "remove-3").await;
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 60, sat_id).await,
             ErrorCode::UnsupportedSatelliteRoute,
         );

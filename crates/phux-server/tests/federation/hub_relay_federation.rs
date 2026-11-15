@@ -22,8 +22,9 @@ use phux_protocol::wire::frame::{
 use phux_server::LaunchCommand;
 use phux_server::{ServerConfig, ServerError};
 use phux_server_testkit::{
-    Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, recv_until_deadline,
-    send_frame, spawn_resource, terminal_server, wait_for_raw_socket, wait_for_socket,
+    Spawn, ascii_key, assert_command_error, bound_listener_addr, encode_frame, recv_typed,
+    recv_until_deadline, send_frame, spawn_resource, terminal_server, wait_for_raw_socket,
+    wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -424,13 +425,6 @@ fn on_satellite(host: &str, spawn: Spawn) -> Spawn {
     }
 }
 
-fn assert_error(result: &CommandResult, expected: ErrorCode) {
-    assert!(
-        matches!(result, CommandResult::Error { code, .. } if *code == expected),
-        "expected {expected:?}, got {result:?}"
-    );
-}
-
 const fn focus_gained(terminal_id: ResourceId) -> Command {
     Command::RouteInput {
         terminal_id,
@@ -509,7 +503,7 @@ fn command_round_trip_and_stream_retagging() {
         .await
         .expect("no SatelliteUnreachable teardown notification");
         assert!(message.contains("sat"), "{message}");
-        assert_error(
+        assert_command_error(
             &get_screen_via_hub(&mut hub, 3000, sat_id).await,
             ErrorCode::SatelliteUnreachable,
         );
@@ -607,7 +601,7 @@ fn non_hub_server_refuses_every_satellite_route() {
         ];
         for (request_id, command) in (2..).zip(commands) {
             let (result, _) = command_via_hub(&mut plain, request_id, command).await;
-            assert_error(&result, ErrorCode::UnsupportedSatelliteRoute);
+            assert_command_error(&result, ErrorCode::UnsupportedSatelliteRoute);
         }
 
         // SUBSCRIBE_METADATA has no reply, so its refusal is an uncorrelated
@@ -660,10 +654,10 @@ fn dead_and_unknown_satellites_fail_fast_with_typed_errors() {
 
         let started = Instant::now();
         let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("sat", 1)).await;
-        assert_error(&result, ErrorCode::SatelliteUnreachable);
+        assert_command_error(&result, ErrorCode::SatelliteUnreachable);
         assert!(started.elapsed() < STEP_DEADLINE, "fail-fast, not a hang");
         let result = get_screen_via_hub(&mut hub, 2, ResourceId::satellite("nowhere", 1)).await;
-        assert_error(&result, ErrorCode::UnsupportedSatelliteRoute);
+        assert_command_error(&result, ErrorCode::UnsupportedSatelliteRoute);
 
         drop(hub);
         stop(hub_shutdown, hub_task).await;
@@ -1017,16 +1011,16 @@ fn satellite_input_lease_is_per_hub_consumer_and_seize_notifies() {
         let (result, _) = command_via_hub(&mut a, 100, acquire(InputMode::Cooperative)).await;
         assert_eq!(result, CommandResult::Ok);
         let (result, _) = command_via_hub(&mut b, 200, acquire(InputMode::Cooperative)).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
         let (result, _) = command_via_hub(&mut b, 201, focus_gained(sat_id.clone())).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
         let release = Command::ReleaseInput {
             terminal_id: sat_id.clone(),
         };
         let (result, _) = command_via_hub(&mut b, 202, release).await;
         assert_eq!(result, CommandResult::Ok, "non-holder release is a no-op");
         let (result, _) = command_via_hub(&mut b, 203, acquire(InputMode::Cooperative)).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
 
         let (result, _) = command_via_hub(&mut b, 204, acquire(InputMode::Seize)).await;
         assert_eq!(result, CommandResult::Ok, "SEIZE preempts A");
@@ -1057,7 +1051,7 @@ fn satellite_input_lease_is_per_hub_consumer_and_seize_notifies() {
         assert_eq!(action, ControlAction::Seized);
         assert!(input_holder.is_some(), "names the new holder");
         let (result, _) = command_via_hub(&mut a, 101, focus_gained(sat_id.clone())).await;
-        assert_error(&result, ErrorCode::InputLeaseHeld);
+        assert_command_error(&result, ErrorCode::InputLeaseHeld);
 
         drop((a, b));
         fed.shutdown().await;

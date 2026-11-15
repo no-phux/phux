@@ -9,8 +9,8 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
 };
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, command, join_after_shutdown, recv_typed, run_local, send_frame,
-    spawn_server_with, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, assert_command_error, command, join_after_shutdown, recv_typed,
+    run_local, send_frame, spawn_server_with, wait_for_raw_socket,
 };
 
 fn native(request: NativeRequest) -> Command {
@@ -107,16 +107,7 @@ async fn invalid_directories(stream: &mut tokio::net::UnixStream, session: Sessi
             }),
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    ..
-                }
-            ),
-            "{result:?}"
-        );
+        assert_command_error(&result, ErrorCode::InvalidCommand);
     }
 }
 

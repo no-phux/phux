@@ -27,8 +27,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    await_command_result, encode_frame, expect_protocol_error_close, recv_until, run_local,
-    spawn_server_connected,
+    assert_command_error, await_command_result, encode_frame, expect_protocol_error_close,
+    recv_until, run_local, spawn_server_connected,
 };
 
 /// A framed message of `type_byte` with these TLV fields, in order.
@@ -95,16 +95,7 @@ pub(crate) async fn next_error(stream: &mut UnixStream) -> (ErrorCode, String) {
 }
 
 pub(crate) fn assert_unsupported(result: &CommandResult) {
-    assert!(
-        matches!(
-            result,
-            CommandResult::Error {
-                code: ErrorCode::Unsupported,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
+    assert_command_error(result, ErrorCode::Unsupported);
 }
 
 #[test]
