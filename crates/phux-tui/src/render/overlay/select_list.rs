@@ -948,17 +948,7 @@ mod tests {
         }
     }
 
-    fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_keys::press_text as press;
 
     fn key(sl: &mut SelectList, key: PhysicalKey) -> OverlayCommand {
         sl.handle_key(&press(key, None))

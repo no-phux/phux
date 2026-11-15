@@ -1,4 +1,4 @@
-use phux_protocol::input::key::{KeyAction, ModSet};
+use phux_protocol::input::key::ModSet;
 
 use std::time::{Duration, Instant};
 
@@ -8,17 +8,7 @@ use super::super::selection::SearchMatch;
 use super::click::REPEAT_CLICK;
 use super::*;
 
-fn press(key: PhysicalKey, mods: ModSet) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods,
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
+use crate::test_keys::press_mods as press;
 
 fn mouse(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
     MouseEvent {

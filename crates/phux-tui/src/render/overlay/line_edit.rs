@@ -142,19 +142,7 @@ impl LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::input::key::KeyAction;
-
-    fn key(key: PhysicalKey, mods: ModSet, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_keys::key_event as key;
 
     fn ctrl(k: PhysicalKey) -> KeyEvent {
         key(k, ModSet::CTRL, None)

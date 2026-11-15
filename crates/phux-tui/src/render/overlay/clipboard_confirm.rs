@@ -77,21 +77,8 @@ impl RenderOverlay for ClipboardConfirmOverlay {
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::input::key::ModSet;
-
     use super::*;
-
-    fn press(key: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_keys::press;
 
     fn overlay() -> ClipboardConfirmOverlay {
         ClipboardConfirmOverlay::new(

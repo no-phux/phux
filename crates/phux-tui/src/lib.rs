@@ -32,6 +32,9 @@ pub mod settings;
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod bench_support;
 
+#[cfg(test)]
+mod test_keys;
+
 // Pane-interior substrate, re-exported so the `ratatui`-free boundary stays
 // compiler-enforced (ADR-0020).
 pub use phux_client_core::{layout, multi_pane, predict};
