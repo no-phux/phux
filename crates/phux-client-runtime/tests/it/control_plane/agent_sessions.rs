@@ -78,8 +78,7 @@ fn attach_resources(plane: &mut ControlPlane) -> Vec<(u32, ResourceId)> {
 #[test]
 fn an_agent_session_is_subscribed_once_its_pane_is_streamed() {
     let (mut plane, attach_id) = subscribing(true);
-    // The agent runs in the other session's pane, which this attach does
-    // not stream.
+    // The agent runs in a pane this attach does not stream.
     attach_to(&mut plane, attach_id, with_agent(ResourceId::local(8)));
     assert!(attach_resources(&mut plane).is_empty());
 
@@ -993,7 +992,7 @@ fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
 
 fn declare_agent(plane: &mut ControlPlane) {
     plane
-        .apply_engine_event(
+        .apply_engine_events(vec![
             phux_client_runtime::engine::EngineEvent::AgentSessionDeclared {
                 terminal_id: ResourceId::local(AGENT),
                 parent: Some(terminal()),
@@ -1001,7 +1000,7 @@ fn declare_agent(plane: &mut ControlPlane) {
                 native_id: None,
                 state: Some("working".into()),
             },
-        )
+        ])
         .unwrap();
 }
 
