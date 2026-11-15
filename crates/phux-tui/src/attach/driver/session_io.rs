@@ -47,11 +47,8 @@ pub(super) fn peer_gone(err: &AttachError) -> bool {
 }
 
 /// Send a frame, treating "the peer already hung up" as success. The read
-/// side owns the ending: the frames explaining why the session ended (say a
-/// last-pane `RESOURCE_CLOSED`) are already buffered, and failing on an ack
-/// written into the closed socket would replace "the last pane exited 7"
-/// with "Broken pipe". Every write here is advisory or a request whose answer
-/// can no longer arrive, so nothing is lost.
+/// side owns the ending: failing here would replace "the last pane exited 7"
+/// with "Broken pipe", and no answer could arrive anyway.
 pub(super) async fn send_unless_peer_gone(
     conn: &mut Connection,
     frame: &FrameKind,
@@ -129,11 +126,8 @@ pub(super) async fn send_attach(
     Ok(attach_id)
 }
 
-/// Read frames until `ATTACHED`. An `ERROR` is `AttachError::Refused`,
-/// except `VERSION_INCOMPATIBLE`, which stays
-/// [`AttachError::IncompatibleProtocol`] so the caller can print the
-/// old-server recovery. Anything else is `Protocol`. Runs on the cooked
-/// terminal.
+/// Read frames until `ATTACHED` on the cooked terminal. An `ERROR` is
+/// `Refused`, except `VERSION_INCOMPATIBLE` ([`AttachError::IncompatibleProtocol`]).
 pub(super) async fn wait_for_attached(
     conn: &mut Connection,
     expected_attach_id: u32,
@@ -158,12 +152,9 @@ pub(super) async fn wait_for_attached(
     }
 }
 
-/// Make the session `new-session` asked for persistent, so closing its last
-/// tab leaves it empty rather than ending it: create it headless with that
-/// lifetime, as `phux new` does. The `CreateIfMissing` attach that follows
-/// then opens it, or the session already holding that name, whose lifetime
-/// this leaves alone. A server without the organization plane skips this,
-/// and the attach creates the session as it always did.
+/// Make the session `new-session` asked for persistent by creating it
+/// headless with that lifetime, as `phux new` does; the `CreateIfMissing`
+/// attach then opens it. Skipped without the organization plane.
 pub(super) async fn create_persistent_session(conn: &mut Connection, target: &AttachTarget) {
     let AttachTarget::CreateIfMissing { name, cwd, .. } = target else {
         return;

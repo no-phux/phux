@@ -1,8 +1,6 @@
-//! Per-client interval runners behind `exec` status widgets: one task per
-//! [`ExecFeed`] runs its argv as a bounded, `kill_on_drop` child
-//! ([`phux_plugin::run_command_spec`]) and folds stdout into the feed. A hung
-//! run is killed at its timeout, a failed one keeps the last output, and
-//! dropping [`ExecFeedRunners`] aborts every task.
+//! Per-client interval runners behind `exec` status widgets: one bounded,
+//! `kill_on_drop` child per [`ExecFeed`] run, killed at its timeout; a
+//! failed run keeps the last output.
 
 use std::time::Duration;
 

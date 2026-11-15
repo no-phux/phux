@@ -44,12 +44,8 @@ pub fn clip_left(text: &str, max: usize) -> String {
     tail.into_iter().rev().collect()
 }
 
-/// `path` as the shell shows it: `home` becomes `~`; an empty path means home.
-///
-/// A path under home becomes `~/rest`. A sibling that merely shares the
-/// prefix (`/Users/pat` under home `/Users/p`) is left alone, since the match
-/// must end at a `/` boundary. `home` is a parameter so callers read `$HOME`
-/// once and tests pass their own.
+/// `path` as the shell shows it: `~/rest` under `home` (at a `/` boundary
+/// only), `~` for an empty path.
 #[must_use]
 pub fn home_to_tilde(path: &str, home: Option<&str>) -> String {
     if path.is_empty() {

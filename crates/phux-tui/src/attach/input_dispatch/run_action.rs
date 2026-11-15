@@ -1,8 +1,6 @@
-//! The action interpreter and its handlers. [`run_action`] looks the
-//! action up in the registry ([`crate::attach::action_registry::ACTIONS`])
-//! and calls the handler its row names; each handler takes one
-//! [`ActionCall`] (ADR-0172). The handlers live in submodules by what they
-//! act on and are re-exported here, where the registry names them.
+//! The action interpreter: [`run_action`] calls the handler the registry
+//! row names with one [`ActionCall`] (ADR-0172). Handlers live in submodules
+//! by what they act on.
 
 use std::collections::HashMap;
 

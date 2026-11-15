@@ -182,12 +182,9 @@ impl WhichKeyOverlay {
         grid
     }
 
-    /// The layout for a viewport too small for every binding. Each group
-    /// keeps its first `cap` bindings, the largest cap that leaves room for
-    /// the closing note, so a cramped screen shows every group's headline
-    /// keys rather than the first group whole. Below one binding a group,
-    /// groups flow at the full height and only the columns that fit stay.
-    /// Either way the last cell says how many bindings the rest holds.
+    /// The layout for a viewport too small for every binding: each group
+    /// keeps its first `cap` bindings (or, below one, the columns that fit),
+    /// and the last cell counts what the rest holds.
     fn truncated(
         &self,
         groups: &[(Group, Vec<usize>)],

@@ -213,12 +213,9 @@ async fn kill_commands(client: &mut Connection, server: &mut Connection) -> Vec<
         .collect()
 }
 
-/// A bound spawn stranded by an unreachable satellite is recorded, sends
-/// nothing while the satellite is down, and is retried once with
-/// `KILL_RESOURCE_IF` carrying its instance token once an inventory lists
-/// the satellite reachable. The satellite's `PRECONDITION_FAILED` is
-/// consumed and forgets the stray: no second attempt, and no unconditional
-/// fallback.
+/// A bound spawn stranded by an unreachable satellite is retried once with
+/// `KILL_RESOURCE_IF` when an inventory lists the satellite reachable; its
+/// `PRECONDITION_FAILED` is consumed and forgets the stray.
 #[tokio::test(flavor = "current_thread")]
 async fn a_bound_unreachable_stray_is_retried_conditionally_once_reachable() {
     use phux_protocol::wire::frame::{CommandResult, ErrorCode};

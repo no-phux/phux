@@ -295,11 +295,8 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
     rows
 }
 
-/// Satellite agents not already open, grouped by agent name then host.
-///
-/// `open` is the attached workspace's leaves, which the agents section
-/// already lists. Order is appended after the local and peer rows so a
-/// state change cannot jump an existing row.
+/// Satellite agents not already open, grouped by agent name then host and
+/// appended so a state change cannot jump an existing row.
 pub(super) fn satellite_agent_rows(
     peers: &PeerInputs<'_>,
     open: &HashSet<ResourceId>,
@@ -1201,11 +1198,8 @@ mod tests {
         );
     }
 
-    /// A session linked into a project by name (`phux project link`), here
-    /// or on another machine, joins the group of that project's git
-    /// sessions; the link rides the session's `project.link` attribute. A
-    /// recipe's free-text `project` label naming something else leaves a
-    /// git session in its repository's group.
+    /// A session linked into a project by name joins that project's group,
+    /// here or elsewhere; a free-text `project` label does not move it.
     #[test]
     fn a_linked_session_joins_its_project_group_across_machines() {
         use phux_core::host_list::HostKind;

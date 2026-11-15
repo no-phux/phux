@@ -18,11 +18,8 @@ pub(in crate::attach) enum DeferredArrangementEdit {
     ReopenViews,
 }
 
-/// Apply `edits` to the workspace the layout read adopted.
-///
-/// Returns whether the document changed, which is the caller's cue to save
-/// it. An edit that names a pane the adopted layout does not hold does
-/// nothing. Members the user did not ask to reopen stay hidden.
+/// Apply `edits` to the workspace the layout read adopted; `true` when it
+/// changed and must be saved. Edits naming a pane it lacks do nothing.
 pub(in crate::attach) fn apply_deferred_arrangement_edits(
     edits: &mut Vec<DeferredArrangementEdit>,
     workspace: &mut ArrangementDoc,

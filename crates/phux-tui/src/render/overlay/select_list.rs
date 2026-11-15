@@ -188,11 +188,8 @@ pub struct SelectList {
     breakpoints: ChromeBreakpoints,
 }
 
-/// Whether `next` is `prev` with only the session display name changed.
-///
-/// The stable identity is the action plus its host-qualified id (`host` +
-/// `id`). Rows that carry no id, or that differ by any other arg, are not
-/// the same selection.
+/// Whether `next` is `prev` with only the session display name changed
+/// (same action, `host`, and `id`).
 fn same_renamed_session(prev: &ResolvedAction, next: &ResolvedAction) -> bool {
     if prev.action != next.action || !is_session_action(&prev.action) {
         return false;
@@ -277,9 +274,7 @@ impl SelectList {
     }
 
     /// Replace the items in place, keeping the query. The selection follows
-    /// the selected row's action (a row inserted above the cursor must not
-    /// change what Enter commits). A session row whose display name changed
-    /// follows its host-qualified id instead. Otherwise the selection keeps
+    /// the selected row's action (a renamed session row, its id), else keeps
     /// its position, snapped.
     pub fn replace_items(&mut self, items: Vec<SelectItem>) {
         let kept = self.selected_action();
@@ -313,11 +308,8 @@ impl SelectList {
             .position(|&idx| !self.items[idx].is_header() && self.items[idx].action == *action)
     }
 
-    /// The visible row of the same session as `action` after a rename.
-    ///
-    /// Session rows are keyed by action, host, and stable id. The display
-    /// `name` is the only arg allowed to differ, so a refresh that changes
-    /// anything else (a window, a pane) keeps the position fallback.
+    /// The visible row of the same session as `action` after a rename: only
+    /// the display `name` may differ.
     fn row_of_renamed_session(&self, indices: &[usize], action: &ResolvedAction) -> Option<usize> {
         indices.iter().position(|&idx| {
             let item = &self.items[idx];
@@ -881,11 +873,8 @@ pub(super) fn fuzzy_rank(
     scored.into_iter().map(|(_, i)| i).collect()
 }
 
-/// Scored subsequence (fuzzy) match of a lowercased `needle` in `haystack`.
-///
-/// `None` when it is not a subsequence, `0` for an
-/// empty needle. Contiguous runs compound, word-boundary hits earn a bonus,
-/// and skipped gaps cost a little. Only the induced ordering is contractual.
+/// Scored subsequence match of a lowercased `needle` in `haystack` (`None`
+/// when not a subsequence). Only the induced ordering is contractual.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     fuzzy_match(needle, haystack).map(|(score, _)| score)

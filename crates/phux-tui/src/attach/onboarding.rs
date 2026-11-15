@@ -1,8 +1,5 @@
-//! Moment-based first-use guidance.
-//!
-//! The journey is profile-scoped under phux's state directory and deliberately
-//! best-effort: state failures suppress guidance rather than preventing attach.
-//! The command palette can always reopen the introduction.
+//! Moment-based first-use guidance, profile-scoped and best-effort: state
+//! failures suppress guidance rather than preventing attach.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -46,11 +43,8 @@ struct State {
     stage: Stage,
 }
 
-/// An attach moment reserved under the profile lock.
-///
-/// Dropping an uncommitted claim leaves its pending stage retryable. The open
-/// file is deliberately retained for the claim's entire lifetime: advisory
-/// `flock` ownership is tied to that file description, not a lexical syscall.
+/// An attach moment reserved under the profile lock. The open file is kept
+/// for the claim's lifetime: `flock` ownership is tied to it.
 #[derive(Debug)]
 pub(super) struct AttachClaim {
     path: PathBuf,

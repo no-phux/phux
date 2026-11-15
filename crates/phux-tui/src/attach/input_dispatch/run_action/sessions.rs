@@ -84,11 +84,8 @@ pub(in crate::attach) fn switch_session(
     });
 }
 
-/// ADR-0140: `switch-host { host, name }` — re-attach this terminal to
-/// session `name` on another machine. `host` is a `phux.hosts/v1` row name:
-/// a `[[remote]]` registry name, or `local` for this machine's own server.
-/// The sidebar's machine segments and the session picker's machine groups
-/// commit it.
+/// ADR-0140: `switch-host { host, name }`: re-attach this terminal to
+/// session `name` on another machine (`host` is a `phux.hosts/v1` row name).
 pub(in crate::attach) fn switch_host(
     ActionCall {
         resolved, effects, ..

@@ -141,11 +141,9 @@ fn primary_scrollback_vt(lines: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Wheel routing by the pane's screen and mode state: the alt screen (even
-/// with prior primary history) synthesizes 3 arrows per notch unless the app
-/// turned alternate scroll off or tracks the mouse (then it forwards); the
-/// primary screen scrolls locally, forwarding when there is nothing to
-/// scroll (no history, or already at the live tail).
+/// Wheel routing: the alt screen synthesizes 3 arrows per notch unless the
+/// app turned alternate scroll off or tracks the mouse; the primary screen
+/// scrolls locally, forwarding when there is nothing to scroll.
 #[tokio::test]
 async fn wheel_routing_follows_the_panes_screen_and_modes() {
     enum Want {

@@ -28,11 +28,8 @@ const MIN_REFRESH: Duration = Duration::from_secs(2);
 /// for a slow third-party provider rather than a tuning knob.
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Which machine this process attached to.
-///
-/// Set once by the CLI before the attach loop starts. One process holds one
-/// attach, and a host switch replaces the process, so the value never
-/// changes underneath the driver.
+/// Which machine this process attached to, set once by the CLI. A host
+/// switch replaces the process, so it never changes underneath the driver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttachOrigin {
     /// This machine's own server, over its local socket.
@@ -134,11 +131,8 @@ impl HostsSettings {
     }
 }
 
-/// Start the provider loop: run it now, then every `settings.refresh`.
-///
-/// Each parsed document's hosts go out on `tx`. The loop stops when the
-/// receiver is dropped (the attach loop ended). A failed or unparseable run
-/// sends nothing and keeps the last good segments on screen.
+/// Start the provider loop: run now, then every `settings.refresh`, until
+/// `tx`'s receiver drops. A failed run keeps the last good segments.
 pub fn spawn_provider(settings: &HostsSettings, tx: UnboundedSender<Vec<HostJson>>) {
     if !settings.enabled {
         return;
@@ -260,11 +254,8 @@ pub fn origin_label(
     }
 }
 
-/// The argv `phux attach` needs to land on `session` at `host`.
-///
-/// [`LOCAL_HOST`] pins the local socket with `--socket`, which also stops a
-/// session that happens to share a registered host's name from being read
-/// as that host.
+/// The argv `phux attach` needs to land on `session` at `host`; [`LOCAL_HOST`]
+/// pins the local socket so a same-named registered host is not read.
 #[must_use]
 pub fn switch_args(host: &str, session: &str) -> Vec<String> {
     let mut args = vec!["attach".to_owned()];
@@ -288,12 +279,8 @@ pub fn switch_args(host: &str, session: &str) -> Vec<String> {
 /// successor paints over it instead of re-entering (and clearing) it.
 pub const ALT_SCREEN_HANDOFF_ENV: &str = "PHUX_ALT_SCREEN_HANDOFF";
 
-/// Become `phux attach` against `host`'s `session`, telling it the alt
-/// screen is handed over ([`ALT_SCREEN_HANDOFF_ENV`]).
-///
-/// The caller (the attach driver) has already restored termios and the input
-/// modes but left the alt screen up with the last frame on it. Returns only
-/// when the exec failed; the caller then still owns the alt screen.
+/// Become `phux attach` against `host`'s `session`, handing over the alt
+/// screen ([`ALT_SCREEN_HANDOFF_ENV`]). Returns only when the exec failed.
 #[must_use]
 pub fn exec_switch_host(host: &str, session: &str) -> std::io::Error {
     use std::os::unix::process::CommandExt;

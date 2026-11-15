@@ -86,12 +86,8 @@ pub(in crate::attach::input_dispatch) const LOCAL_HOST_HEADER: &str = "Local";
 /// inventory or hosts-provider answer lands.
 pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 
-/// The full session-picker rows (host-grouped sessions plus "+ New
-/// session"), one builder for the open and the live refresh.
-///
-/// A project identity or non-empty project tag regroups only the attached
-/// host's sessions. Satellites and other machines stay under their own
-/// headers; another machine's row names its project.
+/// The full session-picker rows, one builder for open and live refresh. A
+/// project regroups only the attached host's sessions.
 pub(in crate::attach) fn session_picker_rows(
     peers: &PeerInputs<'_>,
     workspace: &ArrangementDoc,
@@ -133,12 +129,10 @@ pub(in crate::attach) fn session_picker_rows(
     items
 }
 
-/// Attached-host sessions grouped by project (ADR-0168): a session's
-/// explicit project link, else its identity, else its
-/// `phux.session.project/v1` label. Groups sort by name;
-/// in each, primary checkouts lead and their linked worktrees follow marked
-/// `└`. A group header counts the panes that need you. Sessions in no
-/// project sit under `Sessions`. Each row is an [`attached_session_row`].
+/// Attached-host sessions grouped by project (ADR-0168): link, else
+/// identity, else the project tag. Primary checkouts lead their worktrees
+/// (marked `└`); headers count panes that need you; the rest sit under
+/// `Sessions`.
 fn project_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<SessionId>,

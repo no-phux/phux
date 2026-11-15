@@ -53,11 +53,8 @@ pub(in crate::attach) fn unarranged_lines(
     ]
 }
 
-/// Paint a session with nothing arranged: the chrome as usual and the
-/// empty-state lines ([`empty_session_lines`] or [`unarranged_lines`])
-/// centered in the content area. One
-/// frame block like [`super::paint_full_frame`]; the cursor ends parked and hidden
-/// at the content origin, since there is no pane to own it.
+/// Paint a session with nothing arranged: the chrome and the empty-state
+/// lines centered in the content area, the cursor parked hidden.
 pub(in crate::attach) fn paint_empty_session<W: crate::attach::RenderSink>(
     out: &mut W,
     chrome: &mut ChromeCtx<'_>,

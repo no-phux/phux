@@ -124,12 +124,8 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
     out.flush()
 }
 
-/// Restore the outer terminal. Idempotent.
-///
-/// Drops SGR, bracketed paste, hover, and mouse capture, shows the cursor,
-/// and, if entered, pops the kitty keyboard flags and leaves the alt screen.
-/// Every teardown (Drop, signal, panic hook, detach exit, switch-host
-/// hand-off) routes through here.
+/// Restore the outer terminal; idempotent. Every teardown (Drop, signal,
+/// panic hook, detach exit, switch-host hand-off) routes through here.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
     out.write_all(b"\x1b[?2004l")?;
@@ -213,11 +209,9 @@ fn write_terminal_reset_and_finalize<W: Write>(
 }
 
 /// Hand the outer terminal to the process a `switch-host` execs: cooked
-/// termios and every input mode dropped, exactly as a detach restores them,
-/// but the alt screen and the current frame stay up. The successor learns
-/// this from [`crate::attach::hosts::ALT_SCREEN_HANDOFF_ENV`] and paints over the frame instead of
-/// re-entering (and clearing) the alt screen; leaving it here flashed the
-/// shell's primary screen for the whole re-dial.
+/// termios and input modes as a detach restores them, but the alt screen
+/// and frame stay up ([`crate::attach::hosts::ALT_SCREEN_HANDOFF_ENV`]), so
+/// the re-dial does not flash the primary screen.
 fn restore_terminal_for_handoff() {
     restore_terminal_termios();
     let mut stdout = io::stdout().lock();
@@ -292,11 +286,8 @@ pub fn adopt_alt_screen_handoff() {
     INHERITED_ALT_SCREEN.read_once();
 }
 
-/// Leave an alt screen inherited from a `switch-host` hand-off.
-///
-/// The CLI calls this before it prints a cooked diagnostic, so the message
-/// lands where the shell will show it, and on the way out. A no-op once the
-/// attach adopted the alt screen, or without a hand-off.
+/// Leave an alt screen inherited from a `switch-host` hand-off, before the
+/// CLI prints a cooked diagnostic. A no-op once adopted or without one.
 pub fn leave_inherited_alt_screen() {
     if INHERITED_ALT_SCREEN.take() {
         let mut stdout = io::stdout().lock();

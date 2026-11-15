@@ -199,11 +199,9 @@ fn split_host(host: Option<SatelliteHost>) -> SplitHost {
     host.map_or(SplitHost::Attached, SplitHost::Satellite)
 }
 
-/// `kill-pane`: without a target, open the confirm naming the focused
-/// pane; with the `terminals` target the confirm committed, close it with
-/// one correlated `KILL_RESOURCE`. A `TerminalNotFound` refusal folds the
-/// leaf out too, so a pane whose resource died under us can still be
-/// dismissed.
+/// `kill-pane`: without a target, confirm the focused pane; with the
+/// confirmed `terminals`, one correlated `KILL_RESOURCE`. A
+/// `TerminalNotFound` refusal folds the leaf out too.
 pub(in crate::attach) fn kill_focused_pane(call: ActionCall<'_, '_>) {
     if crate::attach::input_dispatch::tab_lock::refuse_locked(call.ctx, call.effects, true) {
         return;

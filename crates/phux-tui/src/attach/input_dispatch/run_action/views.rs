@@ -165,12 +165,8 @@ pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall
         )));
 }
 
-/// phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
-/// the cursor without extending the selection unless Shift is held;
-/// mouse drag can select and copy in one gesture. The copy cursor starts
-/// where the pane's own cursor was last painted (the prompt, usually), so
-/// the output just above it is a few keystrokes away; a hidden or
-/// scrolled-off cursor starts at the top-left.
+/// Enter copy mode, the cursor starting where the pane's cursor was last
+/// painted (top-left when hidden or scrolled off).
 pub(in crate::attach) fn push_copy_mode(
     ActionCall {
         ctx,

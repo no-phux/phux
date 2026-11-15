@@ -1,8 +1,5 @@
-/// `C-a H` moved the divider on screen but never resized the panes' PTYs:
-/// the batch reflowed only on a zoom or sidebar change, so the shells kept
-/// their old width and painted letterboxed (or cropped) in the new tiles.
-/// A resize of the active window's own layout must send `RESIZE_TERMINAL`
-/// for the leaves whose rect moved.
+/// A resize of the active window's layout sends `RESIZE_TERMINAL` for the
+/// leaves whose rect moved (`C-a H` once moved only the divider).
 #[tokio::test(flavor = "current_thread")]
 async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};

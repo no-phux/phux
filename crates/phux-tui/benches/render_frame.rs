@@ -31,20 +31,14 @@ use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_tui::attach::render::{ReplicaWalk, TerminalRenderer};
 use support::{Corpus, MEASURED_SAMPLES, WARMUP_SAMPLES, deterministic_line, percentile};
 
-/// Allocation counter.
-///
-/// A pass-through to the system allocator plus one relaxed increment, so the
-/// timing numbers this binary also reports stay representative (a full
-/// profiler such as `dhat` records backtraces and would dominate them).
+/// Allocation counter: the system allocator plus one relaxed increment, so
+/// the timing numbers stay representative.
 struct CountingAlloc;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every method forwards its arguments unchanged to `System`, which is
-// a correct `GlobalAlloc`; the only added work is a relaxed counter bump that
-// touches no allocator state. The safety contract of each method is therefore
-// exactly `System`'s, and the caller's obligations are passed straight
-// through.
+// SAFETY: every method forwards unchanged to `System`, a correct
+// `GlobalAlloc`; the only added work is a relaxed counter bump.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);

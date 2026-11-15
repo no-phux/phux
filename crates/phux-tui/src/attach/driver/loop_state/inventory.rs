@@ -25,11 +25,9 @@ impl super::SessionLoop {
         .await
     }
 
-    /// Refresh each peer session's arrangement (for the picker's one-step
-    /// rows and the live roster), then the peer agent records, serving host,
-    /// and host inventory. With a peer reader (an `ORGANIZATION` server) the
-    /// records are read off the loop once the burst settles; otherwise each
-    /// peer's legacy layout key is fetched and subscribed, fire-and-forget.
+    /// Refresh peer arrangements (read off the loop with a peer reader, else
+    /// each legacy layout key), then peer agent records, serving host, and
+    /// host inventory.
     pub(super) async fn sweep_peer_layouts(
         &mut self,
         conn: &mut Connection,

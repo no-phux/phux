@@ -24,12 +24,8 @@ const PROBE_QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
 /// fallback for a terminal that answers neither.
 const PROBE_BUDGET: Duration = Duration::from_millis(25);
 
-/// Extra wait, only after the budget misses with no DA1 reply, to swallow a
-/// late colour reply.
-///
-/// A reply that arrives after echo is restored is printed on the cooked
-/// terminal as `^[]10;rgb:...`. The success path and the DA1 early-exit do
-/// not pay this.
+/// Extra wait after the budget misses with no DA1, to swallow a late colour
+/// reply that would otherwise print on the cooked terminal.
 const LATE_REPLY_BUDGET: Duration = Duration::from_millis(40);
 
 /// Cap on bytes read while looking for the replies.
@@ -52,12 +48,8 @@ enum ProbeRead {
     Failed,
 }
 
-/// Probe OSC 10/11 on `/dev/tty`, returning `None` on any unsupported or
-/// non-interactive path.
-///
-/// Terminals that answer the colour queries still return as soon as both
-/// replies arrive. Terminals that answer only DA1 return `None` without
-/// spending the budgets. Terminals that answer neither still pay both budgets.
+/// Probe OSC 10/11 on `/dev/tty`; `None` on any unsupported or
+/// non-interactive path. Returns as soon as both replies or a DA1 arrive.
 pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
     let mut tty = OpenOptions::new()
         .read(true)
@@ -161,12 +153,8 @@ enum ProbeProgress {
     Pending,
 }
 
-/// Scan `bytes` in order.
-///
-/// Both colour replies decide success immediately, which is the path a
-/// terminal that answers OSC 10/11 already took. A later DA1 in the same
-/// buffer does not undo that. A primary-DA reply that arrives first, or with
-/// only one colour, means the other colour is not coming.
+/// Scan `bytes` in order: both colour replies decide success; a DA1 first,
+/// or with only one colour, means the other is not coming.
 fn classify(bytes: &[u8]) -> ProbeProgress {
     let mut foreground = None;
     let mut background = None;
@@ -310,11 +298,8 @@ pub(super) fn discard_pending(fd: impl AsFd) {
     let _ = rustix::fs::fcntl_setfl(fd, flags);
 }
 
-/// Block until `tty` has input or `deadline` passes.
-///
-/// `Some(true)` means readable, `Some(false)` means the budget is spent, and
-/// `None` means the probe cannot continue at all. An interrupted wait retries
-/// against the same deadline so a signal cannot extend the budget.
+/// Block until `tty` has input (`Some(true)`) or `deadline` passes
+/// (`Some(false)`); `None` when the probe cannot continue.
 #[cfg(test)]
 fn wait_readable<Fd: AsFd>(tty: &Fd, deadline: Instant) -> Option<bool> {
     wait_with(deadline, Instant::now, |timeout| poll_in(tty, timeout))
@@ -330,12 +315,8 @@ fn poll_in<Fd: AsFd>(fd: &Fd, timeout: Duration) -> Result<bool, Errno> {
     }
 }
 
-/// One deadline, one remaining-time poll, EINTR retries the same Instant.
-///
-/// The host-wall clock is not an oracle here: a descheduled test thread
-/// can outlive `PROBE_BUDGET * 4` without the probe restarting its budget.
-/// Tests drive this with a fake clock so contention cannot
-/// be mistaken for a restarted deadline.
+/// One deadline polled for its remaining time; EINTR retries the same
+/// `Instant`. Tests drive it with a fake clock.
 fn wait_with(
     deadline: Instant,
     mut now: impl FnMut() -> Instant,
@@ -623,11 +604,8 @@ mod tests {
         assert_eq!(calls.get(), 1);
     }
 
-    /// A silent source costs one remaining-time poll, not a restarted budget.
-    ///
-    /// The clock and `poll` are fakes so host descheduling cannot be judged
-    /// as probe work. A restarted deadline would poll again
-    /// with a fresh 20 ms after the first timeout.
+    /// A silent source costs one remaining-time poll, not a restarted budget
+    /// (fake clock and `poll`).
     #[test]
     fn silent_source_gives_up_at_the_deadline() {
         let start = Instant::now();

@@ -370,11 +370,8 @@ pub(super) struct SessionLoop {
     /// provider task stops once this receiver is dropped.
     _hosts_tx: tokio::sync::mpsc::UnboundedSender<Vec<phux_core::host_list::HostJson>>,
     hosts_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<phux_core::host_list::HostJson>>,
-    /// phux-8n4w: bar ticks left to surface a background update check. The
-    /// production entry kicks `attach::update_notice::spawn_background_refresh`
-    /// before the loop; this poll reads its cache for a handful of ticks so a
-    /// check that lands mid-session still reaches the user, without a second
-    /// channel or a network call on the input loop.
+    /// Bar ticks left to read the background update check's cache, so a
+    /// check that lands mid-session still reaches the user.
     update_poll_ticks: u8,
     /// The window-strip painter; caches so an unchanged repaint emits nothing.
     sidebar_painter: SidebarPainter,

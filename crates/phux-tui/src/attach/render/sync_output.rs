@@ -17,10 +17,8 @@ thread_local! {
 }
 
 /// An open DEC 2026 synchronized-output block, nestable: only the outermost
-/// `begin`/`end` emit `CSI ? 2026 h`/`l`. The depth is released in `Drop`, so
-/// an early return cannot strand it (the driver's sync-output watchdog backs
-/// up a transaction left open). Closing is explicit because the guard cannot
-/// hold the sink across the paint's borrow of `out`.
+/// `begin`/`end` emit. Depth is released in `Drop`, so an early return
+/// cannot strand it.
 #[derive(Debug)]
 #[must_use = "an opened synchronized-output block must be closed with `end`"]
 pub(in crate::attach) struct SyncOutput {

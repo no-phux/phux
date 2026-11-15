@@ -94,11 +94,9 @@ pub(in crate::attach) fn plan(
     }
 }
 
-/// Make agent-provided text safe inside an OSC string and as one argv word:
-/// control characters (C0, DEL, C1, so ESC, BEL, and `ST`) are dropped, line
-/// breaks and tabs become spaces, `;` (the OSC field separator) becomes `,`,
-/// a leading `-` is dropped so the word never reads as a flag, and the
-/// result is cut to [`MAX_FIELD_CHARS`].
+/// Make agent text safe in an OSC string and as one argv word: controls
+/// dropped, breaks and tabs to spaces, `;` to `,`, a leading `-` dropped,
+/// cut to [`MAX_FIELD_CHARS`].
 pub(in crate::attach) fn sanitize(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_FIELD_CHARS * 4));
     let mut chars = 0usize;

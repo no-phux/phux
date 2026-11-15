@@ -1,8 +1,5 @@
-//! Paint composition for the attach driver.
-//!
-//! `paint_full_frame` (clear and repaint everything, after layout mutations, resize, or attach), the
-//! incremental `paint_focused_pane` + `paint_bar_after_pane` path, the
-//! in-place chrome repaint, and the chrome geometry (`content_layout`).
+//! Paint composition for the attach driver: the full frame, the incremental
+//! pane-plus-bar path, the in-place repaints, and the chrome geometry.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -182,11 +179,8 @@ pub(super) fn end_of_frame_cursor<W: Write>(
     out.flush()
 }
 
-/// Clear the viewport and paint every pane + dividers + bar from scratch.
-///
-/// The composite is buffered in a [`FrameBlock`] and reaches `out` as ONE
-/// write and ONE flush, so the stdout queue delivers or drops it whole (a
-/// frame split across chunks could lose its `ED2` but keep its terminator).
+/// Clear the viewport and paint everything from scratch, as one write and
+/// one flush ([`FrameBlock`]) so the stdout queue delivers or drops it whole.
 pub(super) fn paint_full_frame<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
@@ -318,12 +312,9 @@ fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, junc
     let _ = painter.paint(out, sidebar_rect(chrome.viewport, res));
 }
 
-/// Ship a composited frame and reconcile the bar cache with what actually
-/// reached the sink: a failed frame reports `NotPublished` and invalidates
-/// the painter. Pane cell fronts need no forgetting: frames sealed here
-/// paint panes forced, which records no cells. Kitty image residency is
-/// recorded even on a forced paint, so a sink that fails here must also
-/// forget it; `StdoutSink` never fails a write, so none does today.
+/// Ship a composited frame and reconcile the bar cache with what reached
+/// the sink: a failed frame reports `NotPublished` and invalidates the
+/// painter. Panes here paint forced, so no cell front needs forgetting.
 fn seal_frame<W: Write>(
     block: FrameBlock<'_, W>,
     painted: StatusBarPaint,
@@ -341,11 +332,8 @@ fn seal_frame<W: Write>(
     StatusBarPaint::NotPublished
 }
 
-/// [`paint_full_frame`]'s body, emitting into the frame block. `clear` is the
-/// whole-screen `ED2` (the full-frame path); [`paint_panes_in_place`] passes
-/// `false` to redraw the same-shaped view without the flash. Returns the bar
-/// outcome and whether the composition itself succeeded (the cursor tail
-/// landed); shipping is the caller's.
+/// [`paint_full_frame`]'s body, emitting into the frame block (`clear` is
+/// the `ED2`). Returns the bar outcome and whether the cursor tail landed.
 fn paint_full_frame_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
@@ -743,10 +731,8 @@ pub(super) struct SidebarReservation {
 }
 
 /// Fold the sidebar's on/off state and geometry into the per-frame
-/// reservation. The strip yields (`None`) below `width + min_pane_cols`, so it
-/// never starves the panes it exists to navigate. Automatic width (`0`) is a
-/// quarter of the viewport clamped to `28..=40`. The single decision point for
-/// every layout site.
+/// reservation: `None` below `width + min_pane_cols`; automatic width (`0`)
+/// is a quarter of the viewport clamped to `28..=40`.
 pub(super) const fn sidebar_reservation(
     outer_cols: u16,
     enabled: bool,

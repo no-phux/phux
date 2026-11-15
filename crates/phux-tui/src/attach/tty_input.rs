@@ -42,10 +42,9 @@ impl TtyInput {
         }
         match controlling_tty() {
             // Read interest only; the handle is `O_RDONLY`.
-            // SAFETY: `controlling_tty` returns a freshly opened, valid `OwnedFd`.
-            // Moving it into `AsyncFd` keeps the same descriptor and underlying
-            // file description open until deregistration; we only borrow it for
-            // reads and never replace it or expose a raw alias that could close it.
+            // SAFETY: `controlling_tty` returns a freshly opened, valid
+            // `OwnedFd`; `AsyncFd` keeps it open until deregistration and it
+            // is only borrowed for reads, never replaced or aliased.
             Ok(fd) => match unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) } {
                 Ok(registered) => {
                     tracing::debug!("reading the outer terminal on reactor readiness");

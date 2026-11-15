@@ -164,12 +164,8 @@ impl SessionRecorder<BufWriter<File>> {
         Ok(recorder)
     }
 
-    /// Open `path` at a fixed cell grid and never consult the real terminal.
-    ///
-    /// The size probe always reports `cols` x `rows`, so the cast gains no
-    /// resize events from the host TTY. This is the headless composited
-    /// capture: the grid is a virtual viewport, and nothing here talks to
-    /// a pane, so it cannot resize one.
+    /// Open `path` at a fixed virtual cell grid that never consults the real
+    /// terminal, so the cast gains no resize events (headless capture).
     pub fn create_virtual(
         path: &Path,
         cols: u16,

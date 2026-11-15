@@ -89,12 +89,10 @@ pub(super) struct ForeignSessions<'a> {
     pub terminals: &'a HashMap<SessionId, usize>,
 }
 
-/// Build the dashboard rows. Sessions are headers, current first, then in
-/// the stored session `order`, then by name. Current-session panes (windows in order, DFS leaves) commit
-/// `focus-pane { window, pane }`; a foreign session with a cached layout
-/// lists its panes committing `switch-session { name, window, pane }`, else
-/// one `switch-session { name }` row. Before any session graph, local panes
-/// list flat.
+/// Build the dashboard rows: sessions as headers (current first, then stored
+/// order, then name). Current panes commit `focus-pane { window, pane }`; a
+/// foreign session lists `switch-session` rows from its cached layout, else
+/// one. Before any session graph, local panes list flat.
 pub(super) fn fleet_items(
     workspace: &ArrangementDoc,
     sessions: &[SessionInfo],

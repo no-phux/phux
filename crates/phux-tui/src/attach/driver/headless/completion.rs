@@ -28,11 +28,9 @@ impl HeadlessCompletion {
             FrameKind::AttachReady {
                 attach_id: ready_id,
             } if *ready_id == attach_id => self.attach_ready = true,
-            // Any answer settles the outstanding request. A page with a next
-            // cursor stays pending only if the engine asks for that cursor
-            // (`note_history_request` re-arms it): the client pulls history
-            // lazily (ADR-0119) and stops once its prefetch window is full,
-            // so waiting for the chain's end would time out on deep history.
+            // Any answer settles the request. History is pulled lazily
+            // (ADR-0119), so a page stays pending only if the engine asks
+            // for its next cursor.
             FrameKind::HistoryPage {
                 terminal_id,
                 stream_id,

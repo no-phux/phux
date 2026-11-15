@@ -97,11 +97,9 @@ pub(super) fn compose_full_frame_cells(
     frame
 }
 
-/// Overlay a ratatui [`Buffer`] onto `frame`, shifting the buffer's rows by
-/// `row_offset`. `Skip` cells are never written (the libghostty pane owns
-/// them). When `skip_blanks` is set, empty/space cells are also skipped so a
-/// divider buffer's gap cells don't paint over pane content; the status bar
-/// passes `false` so its styled background spaces survive.
+/// Overlay a ratatui [`Buffer`] onto `frame` at `row_offset`. `Skip` cells
+/// are never written; `skip_blanks` also skips blank cells (dividers), off
+/// for the status bar's styled background.
 fn overlay_buffer(frame: &mut RenderedFrame, buf: &Buffer, origin: (u16, u16), skip_blanks: bool) {
     let (col_offset, row_offset) = origin;
     let area = buf.area;

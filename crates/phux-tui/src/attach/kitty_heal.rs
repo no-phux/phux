@@ -17,11 +17,8 @@ use phux_protocol::ids::ResourceId;
 
 use super::pane_state::PaneSlot;
 
-/// How long an image stays on screen before it is re-sent whole.
-///
-/// One minute bounds a hole a quota eviction or a user clear left to a
-/// minute, and costs one compressed payload per visible image per minute
-/// (about 4.4 KB a minute for the 96x96 image of `docs/assets/payload.sh`).
+/// How long an image stays on screen before it is re-sent whole: bounds a
+/// lost image to a minute for about one payload per image per minute.
 pub(super) const HEAL_INTERVAL: Duration = Duration::from_mins(1);
 
 /// How old an image must be for focus-in to re-send it: an alt-tab bounce or

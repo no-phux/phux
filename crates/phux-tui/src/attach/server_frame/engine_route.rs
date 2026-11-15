@@ -97,12 +97,9 @@ pub(super) fn attach_agent_sessions<'a>(
         .collect()
 }
 
-/// The panes an ATTACH will bootstrap: the focused session's members,
-/// arranged or not, Terminal-kind only. The snapshot is a whole-server view,
-/// but counting other sessions' panes left `ATTACH_READY` unresolvable
-/// whenever a second session existed. A pane whose session the snapshot
-/// cannot name is excluded, so the failure mode is a late paint rather than
-/// an attach that never completes.
+/// The panes an ATTACH will bootstrap: the focused session's Terminal-kind
+/// members. Counting other sessions' panes left `ATTACH_READY`
+/// unresolvable; an unnamed pane is excluded (a late paint, not a hang).
 pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     session_terminals(
         &snapshot.windows,

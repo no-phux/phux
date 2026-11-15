@@ -1,9 +1,7 @@
 //! Overlay layer: modals, the action finder, and pickers.
 //!
-//! An active overlay captures input and pauses pane stdout flushes (ADR-0020)
-//! while the pane mirrors keep ingesting; dismiss triggers a full repaint.
-//! [`OverlayState`] is a stack: the top captures input, rendering walks it
-//! bottom-up.
+//! [`OverlayState`] is a stack: the top captures input and pauses pane
+//! flushes (ADR-0020); dismiss triggers a full repaint.
 
 use std::io::{self, Write};
 
@@ -150,11 +148,8 @@ pub trait RenderOverlay {
         false
     }
 
-    /// Whether this overlay's geometry survives a viewport resize. Centered
-    /// overlays reflow from `area` every paint; the context menu pins its box
-    /// to the pointer, so it returns `false` and is dropped on SIGWINCH
-    /// ([`OverlayState::dismiss_stale_on_resize`]) rather than capture keys
-    /// off screen.
+    /// Whether this overlay's geometry survives a viewport resize. The
+    /// pointer-pinned context menu does not, and is dropped on SIGWINCH.
     fn survives_resize(&self) -> bool {
         true
     }

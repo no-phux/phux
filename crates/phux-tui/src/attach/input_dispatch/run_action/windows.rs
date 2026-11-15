@@ -106,11 +106,8 @@ pub(in crate::attach) fn reopen_views(
     effects.set_metadata = true;
 }
 
-/// `kill-window`: without a target set, open the confirm naming how many
-/// terminals the active window's kill ends and which are also shown
-/// elsewhere; with the `terminals` set the confirm committed, kill exactly
-/// those, one correlated `KILL_RESOURCE` each, and let the closes fold the
-/// window away.
+/// `kill-window`: without a target, confirm what the active window's kill
+/// ends; with the confirmed `terminals`, one `KILL_RESOURCE` each.
 pub(in crate::attach) fn kill_window(
     ActionCall {
         resolved,

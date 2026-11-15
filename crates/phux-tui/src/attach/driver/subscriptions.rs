@@ -132,11 +132,8 @@ impl PeerWatch {
         }
     }
 
-    /// GET and SUBSCRIBE each peer session's legacy layout key (every
-    /// session but the focused one), correlated through
-    /// `foreign_layout_pending`, for the picker's one-step rows. Only against
-    /// a server without `ORGANIZATION`; the arrangement link reads peers
-    /// otherwise.
+    /// GET and SUBSCRIBE each peer session's legacy layout key for the
+    /// picker's one-step rows (without `ORGANIZATION` only).
     pub(super) async fn sweep_layouts(
         &mut self,
         conn: &mut Connection,

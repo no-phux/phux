@@ -1,9 +1,8 @@
-//! Paste protection, as Ghostty's default `clipboard-paste-bracketed-safe`:
-//! a paste into a pane with bracketed paste on is delivered; one that would
-//! arrive as typed input asks first when it carries a line break (each is an
-//! Enter; a bare CR counts). A paste carrying `ESC [ 201 ~` always asks,
-//! since it could close the bracket early. Unknown bracketed mode counts as
-//! off.
+//! Paste protection, as Ghostty's default `clipboard-paste-bracketed-safe`.
+//!
+//! A bracketed paste is delivered; one arriving as typed input asks first
+//! when it carries a line break (each is an Enter). A paste carrying
+//! `ESC [ 201 ~` always asks. Unknown bracketed mode counts as off.
 
 const BRACKET_END: &[u8] = b"\x1b[201~";
 

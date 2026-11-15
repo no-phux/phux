@@ -1,8 +1,5 @@
-//! The sidebar Agents panel's filter, kept across attaches and session
-//! switches: per-user client state under the profile's state dir, never on
-//! the server. Best effort, like `project_collapse`: an unreadable file
-//! or one from a newer format reads as the default (every agent) and a failed
-//! write is logged.
+//! The sidebar Agents filter, kept across attaches in the profile's state
+//! dir. Best effort: an unreadable or newer file reads as the default.
 
 use std::path::{Path, PathBuf};
 

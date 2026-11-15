@@ -471,11 +471,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// Drag-to-copy (tmux): a left press on a pane whose app does not track
-    /// the mouse, or any Ctrl-left press, starts a copy-mode selection;
-    /// motion and release then route through the overlay stage. As in
-    /// Ghostty, a double-click copies the word, a triple-click the line, and
-    /// an Alt-drag selects a rectangle.
+    /// Drag-to-copy (tmux): a left press on a pane that does not track the
+    /// mouse, or any Ctrl-left press, starts a selection. Double-click copies
+    /// a word, triple a line; Alt-drag selects a rectangle.
     fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &ResourceId) -> bool {
         let force_copy = routed.mods.contains(ModSet::CTRL);
         if !is_left_press(routed)

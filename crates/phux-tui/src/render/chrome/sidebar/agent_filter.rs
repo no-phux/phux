@@ -227,11 +227,8 @@ pub enum FilterChip {
 /// single spaces between them.
 pub const MIN_FILTER_COLS: u16 = 13;
 
-/// The filter row's chips as `(start, width, chip)` in text-area columns.
-///
-/// The scope chips sit at fixed offsets, then the `@` chip takes whatever
-/// the row has left once `host_chip` asks for it. Each chip's click target
-/// is its label; the separating spaces are inert. Empty below
+/// The filter row's chips as `(start, width, chip)`: scope chips at fixed
+/// offsets, then the `@` chip; each label is its click target. Empty below
 /// [`MIN_FILTER_COLS`].
 #[must_use]
 pub fn filter_chips(text_w: u16, host_chip: bool) -> Vec<(u16, u16, FilterChip)> {

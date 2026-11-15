@@ -1,8 +1,6 @@
-//! Placeholder overlay for a picker whose data is still in flight.
-//!
-//! Used for the `go-to-directory` listing: it swallows keys, Escape cancels, and the
-//! real picker replaces it only while it is still on top
-//! ([`OverlayState::replace_pending`](super::OverlayState::replace_pending)).
+//! Placeholder overlay for a picker whose data is still in flight: it
+//! swallows keys, Escape cancels, and the real picker replaces it only
+//! while it is on top.
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use ratatui::buffer::Buffer;

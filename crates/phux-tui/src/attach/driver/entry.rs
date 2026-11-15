@@ -152,10 +152,7 @@ pub async fn run_connection(
 }
 
 /// UDS attach that writes the whole composited output stream to a sink.
-///
-/// Covers alt screen, panes, chrome, overlays, and cleanup. Tests and
-/// the headless surface capture the VT through it; signal and termios
-/// cleanup still target real stdout.
+/// Signal and termios cleanup still target real stdout.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -210,12 +207,9 @@ async fn handshake(
     Ok((conn, attached, output_mode))
 }
 
-/// Establish the production TUI HELLO contract without attaching.
-///
-/// A reconnect probe's connection can be handed to
-/// [`run_connection`] without downgrading capabilities. Colors
-/// are not re-probed (a second OSC 10/11 query can print on the cooked
-/// terminal).
+/// Establish the production TUI HELLO contract without attaching, so a
+/// reconnect probe's connection can go to [`run_connection`]. Colors are not
+/// re-probed (the query could print on the cooked terminal).
 pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {
     connect_attach_dial(dial, false).await
 }
@@ -286,10 +280,8 @@ async fn switch_session(
 }
 
 /// The attach session body shared by the production and test entry points.
-///
-/// `resync` is the stdout writer's backpressure flag and `writer` its handle
-/// (both `None` for the synchronous test sink); the writer is stopped/joined before
-/// every terminal reset.
+/// The stdout writer (`None` for a synchronous sink) is joined before every
+/// terminal reset.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -469,11 +461,8 @@ async fn reattach_on_same_connection(
     Ok(attached)
 }
 
-/// The `CreateIfMissing` target for an in-TUI session create.
-///
-/// `directory` is the focused pane's cwd or an explicit pick.
-/// `None` leaves the server default. This does not read the client
-/// process's working directory.
+/// The `CreateIfMissing` target for an in-TUI session create, in
+/// `directory` (never the client process's cwd).
 pub(super) fn create_session_target(name: String, directory: Option<String>) -> AttachTarget {
     AttachTarget::CreateIfMissing {
         name,

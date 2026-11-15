@@ -36,12 +36,8 @@ impl NoticeSeverity {
     }
 }
 
-/// A transient, self-expiring status-bar message (input handovers, degraded
-/// federation, pane exits).
-///
-/// One newest-wins slot restarting the
-/// [`NOTICE_TTL`] clock, painted as a right-aligned chip over the bar; the
-/// persistent error line outranks it.
+/// A transient status-bar message: one newest-wins slot that restarts the
+/// [`NOTICE_TTL`] clock, painted right-aligned; the error line outranks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     /// Render severity; see [`NoticeSeverity`].

@@ -117,12 +117,9 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The selected theme (`[theme] name` / `file`, ADR-0157) or the shipped
-    /// palette, with the remaining `[theme]` slot overrides layered on.
-    /// Tolerant: a theme that does not load is warned about and the shipped
-    /// palette stands in. Values parse like ratatui's `Color` (`"cyan"`,
-    /// `"#cdd6f4"`, `"12"`); unknown keys and unparseable values keep the
-    /// default (warned).
+    /// The selected theme (ADR-0157) or the shipped palette, with `[theme]`
+    /// slot overrides layered on. Tolerant: what does not load or parse is
+    /// warned about and the default stands.
     #[must_use]
     pub fn from_cfg(cfg: &phux_config::ThemeCfg, plugins: &[PluginManifest]) -> Self {
         let base = match phux_config::theme::resolve_selected(cfg, plugins) {

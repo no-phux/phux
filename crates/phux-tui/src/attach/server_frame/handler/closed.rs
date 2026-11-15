@@ -148,12 +148,9 @@ pub(super) fn resolve_resource_op<W: crate::attach::RenderSink>(
     (code == Some(ErrorCode::TerminalNotFound)).then(|| fold_missing_resource(ctx, &terminal_id))
 }
 
-/// A resource close left nothing arranged. The attach policy (R15): detach
-/// only when the session itself ends, which for an ephemeral session is the
-/// moment its last member is gone. Otherwise stay attached and paint the
-/// empty state, which counts members still running with no view.
-/// `emptied` is true when this close folded the last leaf, so the stored
-/// arrangement changes with it.
+/// A resource close left nothing arranged (R15): detach only when the
+/// session itself ends, else paint the empty state. `emptied` means this
+/// close folded the last leaf.
 fn arrangement_empty<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     exit_status: Option<i32>,

@@ -261,11 +261,9 @@ impl Rig {
             .any(|s| s.sync_output_since.is_some())
     }
 
-    /// The compose invariant: at a settled point (no overlay, no open
-    /// synchronized-output transaction) the glass must equal the reference
-    /// compose of the active window — each visible pane's mirror grid
-    /// letterbox-placed in its rect, blank elsewhere in the rect. Cells
-    /// outside pane rects (dividers, sidebar strip) are not checked.
+    /// The compose invariant: at a settled point the glass equals the
+    /// reference compose of the active window (each mirror letterboxed in
+    /// its rect). Cells outside pane rects are not checked.
     fn assert_consistent(&self, label: &str) {
         assert!(!self.overlay_active, "{label}: assert while overlay active");
         assert!(!self.sync_active(), "{label}: assert while sync suppressed");

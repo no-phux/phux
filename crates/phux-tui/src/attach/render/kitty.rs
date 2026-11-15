@@ -113,12 +113,9 @@ impl super::TerminalRenderer<'_> {
 }
 
 impl<'alloc> PaneKitty<'alloc> {
-    /// Bring the outer terminal's copy of the pane's kitty graphics up to
-    /// date, emitting only what the residency says it lacks. Returns whether
-    /// a classic placement was written or removed: that moved the cursor and
-    /// drew over cells, so it forgets the front buffer. Unchanged images,
-    /// payload uploads and Unicode-placeholder placements leave cells and
-    /// front alone.
+    /// Bring the outer terminal's kitty graphics up to date, emitting only
+    /// what residency says it lacks. Returns whether a classic placement was
+    /// written or removed, which drew over cells and forgets the front.
     pub(super) fn replay(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,

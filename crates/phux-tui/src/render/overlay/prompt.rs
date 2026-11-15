@@ -1,8 +1,5 @@
-//! Prompt overlay: a single-line text input committing `action { arg_key:
-//! <text> }` through `run_action` on Enter ([`OverlayCommand::Commit`]); Esc
-//! cancels.
-//!
-//! Editing is the shared [`LineEdit`] (the readline keys).
+//! Prompt overlay: a [`LineEdit`] committing `action { arg_key: <text> }`
+//! on Enter; Esc cancels.
 
 use std::collections::BTreeMap;
 

@@ -1,9 +1,5 @@
-//! Server-to-client frame handling: dispatches `FrameKind` variants to
-//! the right state mutations and rendering.
-//!
-//! Returns a `FrameOutcome` describing the follow-up the async driver
-//! should take (e.g. exit on `DETACHED`, send `GET_METADATA` after
-//! `ATTACHED`, repaint after a layout-replacing frame).
+//! Server-to-client frame handling: frames to state mutations and
+//! rendering, returning a `FrameOutcome` for the async driver's follow-ups.
 
 mod engine_route;
 mod handler;

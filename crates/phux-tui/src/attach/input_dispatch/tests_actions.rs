@@ -1156,11 +1156,9 @@ fn window_picker_groups_windows_under_their_session() {
     }
 }
 
-/// A peer with no cached arrangement offers one switch row. When the graph
-/// reports resource sessions (an `ORGANIZATION` server, whose window count
-/// is synthesized) its tab count is its terminal count, and a peer the graph
-/// lists no terminal for opens empty; before such a graph is cached, or
-/// from an older server, it is the reported window count.
+/// A peer with no cached arrangement offers one switch row, its tab count
+/// the terminal count once the graph reports resource sessions, else the
+/// reported window count.
 #[test]
 fn window_picker_counts_tabs_from_terminals_when_the_graph_reports_sessions() {
     let workspace = ArrangementDoc::single(tid(1));

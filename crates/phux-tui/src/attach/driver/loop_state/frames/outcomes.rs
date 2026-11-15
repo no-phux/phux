@@ -260,12 +260,9 @@ impl super::super::SessionLoop {
         if outcome.clear_layout {
             self.clear_stored_layout(conn).await?;
         }
-        // `ATTACHED` initially exposes a one-pane fallback. The persisted
-        // multi-window layout lands later as this correlated metadata reply.
-        // Reflow every restored window here, before `settle_frame_view`
-        // schedules its full paint. Doing it earlier can only see the fallback;
-        // doing it on first window selection turns that selection into a
-        // corrective resize instead of an ordinary paint.
+        // The persisted layout lands after `ATTACHED`'s one-pane fallback:
+        // reflow every restored window here, before the full paint, so the
+        // first window selection is a paint rather than a corrective resize.
         let bind_reflow_owed = std::mem::take(&mut self.bind_reflow_owed);
         if outcome.layout_get_answered || bind_reflow_owed {
             self.size_workspace_panes(conn, sidebar).await?;

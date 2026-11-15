@@ -220,12 +220,9 @@ impl<'a, 'alloc, 'cb> ReplicaWalk<'a, 'alloc, 'cb> {
     }
 }
 
-/// Per-pane render scaffolding.
-///
-/// A [`RenderPool`] (the libghostty render trio, rebuilt on geometry or generation change) plus the front buffer. Walks
-/// take a [`ReplicaWalk`] so the generation token always arrives with the
-/// terminal. The dirty policy (clear each drawn row, then the snapshot bit)
-/// is this renderer's own (ADR-0086).
+/// Per-pane render scaffolding: a [`RenderPool`] (rebuilt on geometry or
+/// generation change) plus the front buffer, walked through a
+/// [`ReplicaWalk`] (ADR-0086).
 #[derive(Debug)]
 pub struct TerminalRenderer<'alloc> {
     /// Pooled render state + row/cell iterators.
@@ -559,11 +556,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 
     /// Project this pane into a region of a dense [`RenderedFrame`] instead
-    /// of emitting VT, walking the same snapshot and clipping the same way.
-    ///
-    /// A wide glyph's `SpacerTail` column is the empty grapheme so widths
-    /// reconstruct exactly. Selection inversion is not applied. Returns the
-    /// frame-absolute cursor, or `None` when off-viewport or clipped.
+    /// of emitting VT. Spacer tails are empty graphemes; selection is not
+    /// applied. Returns the frame cursor, `None` when clipped.
     pub fn render_at_cells(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -597,11 +591,9 @@ impl<'alloc> TerminalRenderer<'alloc> {
         clipped_frame_cursor(&snapshot, origin, extent)
     }
 
-    /// Render into the rect at `rect_origin` spanning `rect_clip`,
-    /// **letterboxed**: a mirror smaller than the rect on an axis is centred
-    /// with blanked margin bars (floor split, extra cell bottom/right); a
-    /// larger or equal one clamps exactly like [`Self::render_at_full`], byte
-    /// for byte. ADR-0027's single-view letterbox.
+    /// Render letterboxed into the rect (ADR-0027): a smaller mirror is
+    /// centred with blanked margins; a larger one clamps exactly like
+    /// [`Self::render_at_full`].
     pub fn render_at_letterboxed(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -798,11 +790,8 @@ impl<'m> PaintPass<'m> {
         record: bool,
         kitty: &'m mut kitty_replay::KittyResidency,
     ) -> Self {
-        // The outer pen is unknown at the start of every pane paint: chrome,
-        // another pane, or an overlay may have written anything since this
-        // pane last emitted. From here on nothing else writes until the paint
-        // ends, so the pen each span leaves carries to the next, across jumps
-        // and rows.
+        // The outer pen is unknown at the start of every pane paint; from
+        // here on nothing else writes, so each span's pen carries over.
         Self {
             marks,
             record,
@@ -910,11 +899,8 @@ fn emit_and_record(
 }
 
 /// Emit a whole row straight from its batched read, recording nothing (the
-/// forced-paint path). A cell sharing its predecessor's [`PenKey`] skips to
-/// its glyphs; a spacer tail writes nothing.
-///
-/// Must stay byte-identical to [`record_row`]'s emitting mode;
-/// `whole_row_paints_agree_and_reconstruct_the_grid` holds the two together.
+/// forced-paint path). Must stay byte-identical to [`record_row`]'s emitting
+/// mode (`whole_row_paints_agree_and_reconstruct_the_grid`).
 fn emit_unrecorded_row(
     buf: &mut Vec<u8>,
     batch: &RowCells<'_>,
@@ -1036,11 +1022,8 @@ fn begin_full_row(buf: &mut Vec<u8>, at: RowAt, pen: &mut SpanPen) -> io::Result
 }
 
 /// Emit only the cells of `next` that differ from `front`, as positioned
-/// spans. A span never half-writes a wide glyph (it backs onto a base and
-/// runs through a trailing tail). Between spans the cursor jumps (`CUP`) or
-/// the unchanged gap is rewritten, whichever is fewer bytes ([`bridge_gap`]).
-/// A `CUP` leaves the pen alone, so `pen` carries across jumps; only a pane
-/// paint's first cell emits a complete SGR.
+/// spans that never half-write a wide glyph. Gaps are jumped or rewritten,
+/// whichever is fewer bytes ([`bridge_gap`]); `pen` carries across jumps.
 fn emit_row_diff(
     buf: &mut Vec<u8>,
     front: &FrontRow,
@@ -3020,12 +3003,9 @@ mod tests {
         }
     }
 
-    /// The property: any edit sequence painted through the diff, with modals,
-    /// forgotten predictions, stray pens, and forced repaints after clears,
-    /// leaves the glass matching the whole-row painter and, whenever that
-    /// painter agrees with one, a full repaint of the final grid. (If
-    /// libghostty changes a cell without dirtying its row no dirty-bit painter
-    /// can see it; those steps re-sync and are counted.)
+    /// Any edit sequence painted through the diff (with modals, forgotten
+    /// predictions, stray pens, forced repaints) leaves the glass matching
+    /// the whole-row painter and a full repaint of the final grid.
     #[test]
     fn random_edits_through_the_diff_painter_match_a_full_repaint() {
         let mut tally = Tally::default();

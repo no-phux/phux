@@ -44,11 +44,8 @@ pub(super) struct PendingDirectory {
     pub(super) host: ListingHost,
 }
 
-/// The picker's modal title: the label its chord and palette row carry,
-/// naming the host whenever it is not simply the attached server's. The
-/// directory itself is the footer status ([`picker_status`]), where a
-/// long path clips from the left instead of pushing the title off the
-/// border.
+/// The picker's modal title, naming the host when it is not the attached
+/// server's. The directory is the footer status ([`picker_status`]).
 pub(super) fn picker_title(host: &ListingHost) -> String {
     match host {
         ListingHost::Attached => "New tab in folder".to_owned(),

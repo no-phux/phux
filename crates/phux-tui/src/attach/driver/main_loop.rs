@@ -1,8 +1,6 @@
-//! The attach session's entry point and its frame-coalescing policy.
-//!
-//! [`main_loop`] builds the session state ([`SessionLoop`]), replays the
-//! `ATTACHED` bootstrap through it, and then turns the crank: one
-//! [`SessionLoop::step`] per wake-up until the session detaches or switches.
+//! The attach session's entry point: [`main_loop`] builds the
+//! [`SessionLoop`], replays the `ATTACHED` bootstrap, then runs one
+//! [`SessionLoop::step`] per wake-up until detach or switch.
 
 use std::collections::HashSet;
 

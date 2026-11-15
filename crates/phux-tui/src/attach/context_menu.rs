@@ -70,11 +70,9 @@ pub(super) fn active_window_menu(ctx: &crate::attach::input_dispatch::DispatchCt
     )
 }
 
-/// The menu for a tab, titled `label` (the tab as the bar names it: its
-/// name, or `Tab N` for an auto-named one). The caller has already made
-/// that tab active (a right-click on a tab selects it first, exactly as a
-/// left click does), so the rows act on the active tab with no target arg.
-/// A `locked` tab offers Unlock and no Kill.
+/// The menu for a tab, titled `label`. The right-click already made it
+/// active, so rows act on the active tab; a `locked` tab offers Unlock and
+/// no Kill.
 pub(super) fn window_menu(
     keybindings: Option<&KeybindingsCfg>,
     label: &str,

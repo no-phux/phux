@@ -202,12 +202,9 @@ const fn concat_rows() -> [ActionSpec; PALETTE_ROWS.len() + HIDDEN_ROWS.len()] {
     rows
 }
 
-/// The palette rows.
-///
-/// The [`ACTIONS`] with a [`Palette::Row`] grouped under [`Category`] headers, each row annotated by its
-/// bound chord (nothing without one or without a config: a menu is not a
-/// table), then enabled plugins' actions and panes under a trailing
-/// **Plugin** header.
+/// The palette rows: [`ACTIONS`] with a [`Palette::Row`] under [`Category`]
+/// headers, each annotated by its bound chord, then plugin actions and panes
+/// under a trailing **Plugin** header.
 #[must_use]
 pub fn palette_items(
     keybindings: Option<&KeybindingsCfg>,
