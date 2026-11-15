@@ -153,27 +153,9 @@ fn names_the_apps(line: &str) -> bool {
 /// `state` sits below the runtime: an app may name it, never the reverse.
 #[test]
 fn state_never_reaches_up_into_the_apps() {
-    fn scan(dir: &Path, root: &Path, hits: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let path = entry.expect("entry").path();
-            let relative = path.strip_prefix(root).expect("under src");
-            if path.is_dir() {
-                scan(&path, root, hits);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !is_test_source(&relative.to_string_lossy())
-                && std::fs::read_to_string(&path)
-                    .expect("read source")
-                    .lines()
-                    .any(names_the_apps)
-            {
-                hits.push(relative.display().to_string());
-            }
-        }
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
-    let src = Path::new(&manifest).join("src");
-    let mut hits = Vec::new();
-    scan(&src.join("state"), &src, &mut hits);
+    let hits = crossings_under("state", |_, source| {
+        usize::from(source.lines().any(names_the_apps))
+    });
     assert!(hits.is_empty(), "state depends on the apps: {hits:?}");
 }
 
@@ -186,10 +168,15 @@ fn the_apps_check_reads_code_not_comments() {
 }
 
 fn crossings(crossings_in: fn(&str, &str) -> usize) -> BTreeMap<String, usize> {
+    crossings_under("", crossings_in)
+}
+
+/// [`walk`] over `src/<dir>`, keyed by path under `src/`.
+fn crossings_under(dir: &str, crossings_in: fn(&str, &str) -> usize) -> BTreeMap<String, usize> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the test runner");
     let src = Path::new(&manifest).join("src");
     let mut found = BTreeMap::new();
-    walk(&src, &src, crossings_in, &mut found);
+    walk(&src.join(dir), &src, crossings_in, &mut found);
     found
 }
 
@@ -205,29 +192,12 @@ fn connections_hand_resource_frames_to_the_app() {
         "route_client_input",
         "ResourceKind::",
     ];
-    fn scan(dir: &Path, root: &Path, hits: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let path = entry.expect("entry").path();
-            let relative = path.strip_prefix(root).expect("under src");
-            if path.is_dir() {
-                scan(&path, root, hits);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !is_test_source(&relative.to_string_lossy())
-            {
-                let source = std::fs::read_to_string(&path).expect("read source");
-                hits.extend(
-                    HELPERS
-                        .iter()
-                        .filter(|helper| source.contains(**helper))
-                        .map(|helper| format!("{}: {helper}", relative.display())),
-                );
-            }
-        }
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
-    let src = Path::new(&manifest).join("src");
-    let mut hits = Vec::new();
-    scan(&src.join("runtime/connections"), &src, &mut hits);
+    let hits = crossings_under("runtime/connections", |_, source| {
+        HELPERS
+            .iter()
+            .filter(|helper| source.contains(**helper))
+            .count()
+    });
     assert!(hits.is_empty(), "connections routes by kind: {hits:?}");
 }
 
