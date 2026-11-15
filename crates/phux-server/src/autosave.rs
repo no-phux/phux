@@ -1,21 +1,14 @@
 //! Crash-safe workspace autosave (ADR-0150).
 //!
-//! `phux server --autosave PATH` keeps a workspace archive at `PATH` that a
-//! crash, `SIGKILL`, `panic = "abort"`, or power loss cannot leave missing,
-//! torn, or minutes stale. Two halves:
-//!
-//! - **Probe** (the server thread): once a second it hashes the restorable
-//!   topology ([`crate::state::ServerState::workspace_revision`], in memory,
-//!   no I/O) and publishes the value when it moved.
-//! - **Saver** (its own OS thread): on a cold start it restores `PATH` once,
-//!   then debounces revision changes ([`Debounce`]) and writes the archive
-//!   atomically ([`write_atomic`]: temp, `fsync`, rename, directory `fsync`),
-//!   with a periodic floor for drift the revision does not cover.
-//!
-//! What an archive *is* belongs to the embedder's [`WorkspaceArchiver`] (the
-//! `phux` binary passes its `workspace save` / `restore` composition), so the
-//! autosaved file and `phux workspace save` cannot drift. The saver dials the
-//! server's own socket like any client; it never touches server state.
+//! `phux server --autosave PATH` keeps an archive at `PATH` that a crash,
+//! `SIGKILL` or power loss cannot leave missing, torn, or minutes stale. The
+//! server thread probes [`ServerState::workspace_revision`] once a second (in
+//! memory, no I/O); a saver thread restores `PATH` once on a cold start, then
+//! debounces revision changes ([`Debounce`]) into [`write_atomic`] saves, with
+//! a periodic floor for drift the revision does not cover. The archive format
+//! is the embedder's [`WorkspaceArchiver`], so it cannot drift from
+//! `phux workspace save`; the saver dials the server's own socket like any
+//! client.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};

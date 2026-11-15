@@ -1,21 +1,14 @@
 //! Host-originated background push (ADR-0155).
 //!
-//! A phone that wants to hear about an ask while it is suspended registers a
-//! *push grant* under `phux.push/v1/<device>`
+//! A suspended phone registers a *push grant* under `phux.push/v1/<device>`
 //! ([background push](../../../docs/protocol/host-operations.md#background-push)):
-//! the gateway it trusts, a bearer secret that gateway minted for it,
-//! and the id the phone knows this server by. When an agent asks and the
-//! connection that wrote a grant is gone, the server posts a content-free
-//! notice (host, pane, question id, action) to that gateway, which forwards it
-//! to APNs. An agent whose block is known only from its screen (no ask
-//! behind it) is pushed the same way when its record turns `blocked`. A
-//! grant that opts in (`"finished": true`) also hears that an agent finished
-//! the turn it was working on. A held action
-//! ([held actions](../../../docs/approvals.md)) reaches every grant as an
-//! `approve` notice naming its approval id. The server never
-//! holds APNs credentials; the gateway never sees terminal bytes; a phone
-//! that is still connected gets nothing here, because it already sees both
-//! itself.
+//! its gateway, a bearer that gateway minted, and the id the phone knows this
+//! server by. When an agent asks (or turns `blocked` on screen evidence), a
+//! held action waits, or an opted-in turn finishes, and the grant's writing
+//! connection is gone, the server posts a content-free notice to the gateway,
+//! which forwards it to APNs. The server never holds APNs credentials, the
+//! gateway never sees terminal bytes, and a still-connected phone gets
+//! nothing.
 
 #![allow(
     clippy::redundant_pub_crate,
