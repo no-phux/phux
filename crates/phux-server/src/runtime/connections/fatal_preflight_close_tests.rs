@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use phux_protocol::caps::{
     BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
 };
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, ErrorCode, FrameKind, ViewportInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -65,17 +65,7 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
                 .register_resource_handle(terminal, handle, CancellationToken::new())
                 .unwrap();
             let client_id = server.new_client_id();
-            server.set_peer_identity(
-                client_id,
-                PeerIdentity {
-                    uid: nix::unistd::geteuid().as_raw(),
-                    pid: None,
-                    exe_path: None,
-                    mcp_host_key: None,
-                    transport: TransportType::UnixSocket,
-                    source_addr: None,
-                },
-            );
+            server.set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
             client_id
         });
 

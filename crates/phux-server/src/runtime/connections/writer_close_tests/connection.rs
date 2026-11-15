@@ -42,17 +42,7 @@ async fn negotiated(frames: impl IntoIterator<Item = FrameKind>) -> (Vec<FrameKi
     let state = SharedState::new();
     let client_id = state.with_mut(|server| {
         let client_id = server.new_client_id();
-        server.set_peer_identity(
-            client_id,
-            phux_protocol::policy::PeerIdentity {
-                uid: nix::unistd::geteuid().as_raw(),
-                pid: None,
-                exe_path: None,
-                mcp_host_key: None,
-                transport: TransportType::UnixSocket,
-                source_addr: None,
-            },
-        );
+        server.set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
         client_id
     });
     let hello = FrameKind::Hello {

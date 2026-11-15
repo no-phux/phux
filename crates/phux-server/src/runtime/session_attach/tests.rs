@@ -3,7 +3,7 @@
 use bytes::{Bytes, BytesMut};
 use phux_core::{Actor, LaunchSpec, SessionLifetime};
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapStreamProfile};
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_tree::{
     DocumentActor, DocumentKind, DocumentResource as _, SurfaceDocument, TreeDocument,
 };
@@ -71,17 +71,7 @@ impl Connection {
     ) -> Self {
         let client = state.with_mut(|s| {
             let client = s.new_client_id();
-            s.set_peer_identity(
-                client,
-                PeerIdentity {
-                    uid: nix::unistd::geteuid().as_raw(),
-                    pid: None,
-                    exe_path: None,
-                    mcp_host_key: None,
-                    transport: TransportType::UnixSocket,
-                    source_addr: None,
-                },
-            );
+            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
         let (tx, input) = mpsc::channel(64);
