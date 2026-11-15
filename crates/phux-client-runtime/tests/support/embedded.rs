@@ -7,7 +7,8 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    reason = "shared test support"
+    dead_code,
+    reason = "shared test support; each binary uses a different part"
 )]
 
 #[cfg(feature = "engine")]
@@ -21,7 +22,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
 #[cfg(feature = "engine")]
 use phux_protocol::wire::frame::AttachTarget;
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{CommandResult, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 pub const fn terminal() -> ResourceId {
@@ -135,4 +136,40 @@ pub fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_run
     });
     let _ = client.take_outbound();
     client
+}
+
+/// Shorthands for feeding a plane the frames a server would answer with.
+pub trait PlaneExt {
+    /// Answer `request_id` with `result`.
+    fn reply(&mut self, request_id: u32, result: CommandResult);
+    /// Drain the queued frames and return the `ATTACH` id among them.
+    fn queued_attach_id(&mut self) -> u32;
+}
+
+impl PlaneExt for ControlPlane {
+    fn reply(&mut self, request_id: u32, result: CommandResult) {
+        self.feed(FrameKind::CommandResult { request_id, result })
+            .expect("COMMAND_RESULT");
+    }
+
+    fn queued_attach_id(&mut self) -> u32 {
+        self.take_outbound()
+            .iter()
+            .find_map(|bytes| match decode(bytes) {
+                FrameKind::Attach { attach_id, .. } => Some(attach_id),
+                _ => None,
+            })
+            .expect("ATTACH")
+    }
+}
+
+impl PlaneExt for phux_client_runtime::Client {
+    fn reply(&mut self, request_id: u32, result: CommandResult) {
+        self.feed(FrameKind::CommandResult { request_id, result })
+            .expect("COMMAND_RESULT");
+    }
+
+    fn queued_attach_id(&mut self) -> u32 {
+        self.with_control(PlaneExt::queued_attach_id)
+    }
 }

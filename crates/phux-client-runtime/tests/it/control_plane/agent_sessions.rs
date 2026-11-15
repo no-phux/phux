@@ -22,14 +22,7 @@ fn subscribing_with_resume(subscribe_agent_sessions: bool, resume: bool) -> (Con
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(agent_hello(resume, 0xAB)).expect("HELLO_OK");
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .expect("ATTACH");
+    let attach_id = plane.queued_attach_id();
     (plane, attach_id)
 }
 
@@ -87,12 +80,7 @@ fn an_agent_session_is_subscribed_once_its_pane_is_streamed() {
         attach_resources(&mut plane),
         vec![(pane_request, ResourceId::local(8))]
     );
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: pane_request,
-            result: CommandResult::Ok,
-        })
-        .expect("pane attached");
+    plane.reply(pane_request, CommandResult::Ok);
     let subscribed = attach_resources(&mut plane);
     assert_eq!(subscribed.len(), 1);
     assert_eq!(subscribed[0].1, ResourceId::local(AGENT));
@@ -152,14 +140,7 @@ fn reconnect_agents(
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(agent_hello(resume, incarnation)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    let attach_id = plane.queued_attach_id();
     attach_ready_to(plane, attach_id, with_agent(terminal()));
     agent_requests(plane)
 }
@@ -271,12 +252,7 @@ fn commit_initial_agent(plane: &mut ControlPlane, request_id: u32) {
     agent_begin(plane, 1, None, 2);
     agent_chunk(plane, 1, 0, agent_payload(&[(1, "prompt"), (2, "ask")])).unwrap();
     agent_ready(plane, 1).unwrap();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     assert_eq!(take_agent_records(plane), [(vec![1, 2], true)]);
 }
 
@@ -511,12 +487,7 @@ fn resource_close_and_parent_detach_clear_the_committed_agent_cursor() {
                 .unwrap();
         } else {
             let request_id = plane.detach_terminal(&terminal());
-            plane
-                .feed(FrameKind::CommandResult {
-                    request_id,
-                    result: CommandResult::Ok,
-                })
-                .unwrap();
+            plane.reply(request_id, CommandResult::Ok);
         }
         assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
         assert!(
@@ -591,12 +562,10 @@ fn reconnect_to_beta(plane: &mut ControlPlane) -> u32 {
     // A caller can request inventory before ATTACHED. That read must not
     // turn an in-progress session attach into a ready browsing connection.
     let request_id = plane.refresh_topology().unwrap();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(beta_snapshot())),
+    );
     assert_eq!(plane.status(), Status::Negotiated);
     assert_eq!(close_count(plane), 0);
     attach_to(plane, attach_id, beta_snapshot());
@@ -616,24 +585,14 @@ fn followed_home() -> ControlPlane {
     attach_to(&mut plane, attach_id, with_agent(terminal()));
     let subscriptions = attach_resources(&mut plane);
     assert_eq!(subscriptions.len(), 1);
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: subscriptions[0].0,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(subscriptions[0].0, CommandResult::Ok);
     ready(&mut plane, attach_id, terminal());
     let _ = plane.take_outbound();
     assert_eq!(close_count(&mut plane), 0);
     assert!(!plane.attach_session(AttachTarget::ByName("beta".into())));
     let requests = attach_resources(&mut plane);
     for (request_id, _) in requests {
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(request_id, CommandResult::Ok);
     }
     assert_eq!(close_count(&mut plane), 0, "live switch retains home pumps");
     plane
@@ -650,21 +609,14 @@ fn reconnect_after_switch_retires_home_subscription_once_and_can_follow_it_again
 
     let request_id = plane.refresh_topology().unwrap();
     // ATTACHED fences its earlier inventory; answer that and then the fresh read.
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
+    );
     assert_eq!(close_count(&mut plane), 0);
     let request_id = plane.attach_terminal(&terminal());
     let _ = plane.take_outbound();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     let subscriptions = attach_resources(&mut plane);
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0].1, ResourceId::local(AGENT));
@@ -680,24 +632,14 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
         // Explicit geometry-preserving admission outside the attached session
         // survives reconnect, unlike an ordinary old home/spawn pump.
         let request_id = plane.attach_terminal_preserving_geometry(&terminal());
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(request_id, CommandResult::Ok);
         let subscriptions = attach_resources(&mut plane);
         let agent_request = subscriptions
             .iter()
             .find(|(_, id)| *id == ResourceId::local(AGENT))
             .unwrap()
             .0;
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: agent_request,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(agent_request, CommandResult::Ok);
         // Set the reconnect target to the current home session.
         assert!(!plane.attach_session(AttachTarget::ByName("beta".into())));
         let _ = plane.take_outbound();
@@ -710,21 +652,14 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
         // An inventory may optimistically subscribe the agent while its
         // parent's replay is pending; a refusal must still retire it.
         let inventory_request = plane.refresh_topology().unwrap();
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: inventory_request,
-                result: CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-            })
-            .unwrap();
+        plane.reply(
+            inventory_request,
+            CommandResult::OkWith(CommandValue::State(beta_snapshot())),
+        );
         let subscriptions = attach_resources(&mut plane);
         assert_eq!(subscriptions.len(), 1);
         assert_eq!(subscriptions[0].1, ResourceId::local(AGENT));
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: subscriptions[0].0,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(subscriptions[0].0, CommandResult::Ok);
         assert_eq!(close_count(&mut plane), 0);
         plane
             .feed(FrameKind::CommandResult {
@@ -751,24 +686,14 @@ fn refused_parent_detach_preserves_agent_subscription_and_success_releases_once(
         attach_to(&mut plane, attach_id, with_agent(ResourceId::local(8)));
         ready(&mut plane, attach_id, terminal());
         let request_id = plane.attach_terminal(&ResourceId::local(8));
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(request_id, CommandResult::Ok);
         let subscriptions = attach_resources(&mut plane);
         let agent_request = subscriptions
             .iter()
             .find(|(_, id)| *id == ResourceId::local(AGENT))
             .unwrap()
             .0;
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: agent_request,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(agent_request, CommandResult::Ok);
         assert_eq!(close_count(&mut plane), 0);
 
         let detach_request = plane.detach_terminal(&ResourceId::local(8));
@@ -834,24 +759,14 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
     attach_to(&mut plane, attach_id, with_agent(parent.clone()));
     ready(&mut plane, attach_id, terminal());
     let request_id = plane.attach_terminal(&parent);
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     let subscriptions = attach_resources(&mut plane);
     let agent_request = subscriptions
         .iter()
         .find(|(_, id)| *id == ResourceId::local(AGENT))
         .unwrap()
         .0;
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: agent_request,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(agent_request, CommandResult::Ok);
     assert_eq!(close_count(&mut plane), 0);
 
     let detach_request = plane.detach_terminal(&parent);
@@ -882,12 +797,10 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
     // Repeated reads must not attach it under the closed parent.
     for _ in 0..3 {
         let request_id = plane.refresh_topology().unwrap();
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::OkWith(CommandValue::State(with_agent(parent.clone()))),
-            })
-            .unwrap();
+        plane.reply(
+            request_id,
+            CommandResult::OkWith(CommandValue::State(with_agent(parent.clone()))),
+        );
         assert!(attach_resources(&mut plane).is_empty());
         assert_eq!(close_count(&mut plane), 0);
     }
@@ -897,14 +810,7 @@ fn replace_without_loss(plane: &mut ControlPlane) {
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(agent_hello(true, 0xAB)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    let attach_id = plane.queued_attach_id();
     attach_ready_to(plane, attach_id, with_agent(terminal()));
 }
 
@@ -949,12 +855,7 @@ fn close_and_detach_do_not_replay_undrained_publications() {
                 .unwrap();
         } else {
             let request_id = plane.detach_terminal(&terminal());
-            plane
-                .feed(FrameKind::CommandResult {
-                    request_id,
-                    result: CommandResult::Ok,
-                })
-                .unwrap();
+            plane.reply(request_id, CommandResult::Ok);
         }
         let closed: Vec<_> = plane
             .take_events()
@@ -979,14 +880,7 @@ fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(agent_hello(true, 0xAB)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    let attach_id = plane.queued_attach_id();
     attach_ready_to(plane, attach_id, snapshot);
 }
 
@@ -1114,20 +1008,16 @@ fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
     assert!(take_agent_records(&mut plane).is_empty());
     let request_id = plane.refresh_topology().unwrap();
     // ATTACHED fences the inventory queued before its admission barrier.
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
+    );
     let request_id = plane.refresh_topology().unwrap();
     let _ = plane.take_events();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
+    );
     let events = plane.take_events();
     let catalog = events
         .iter()

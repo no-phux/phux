@@ -33,12 +33,10 @@ fn metadata_id(frames: &[FrameKind]) -> u32 {
 }
 
 fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
 }
 
 fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {

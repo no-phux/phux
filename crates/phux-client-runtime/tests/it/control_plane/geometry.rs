@@ -12,12 +12,7 @@ fn browse(options: ControlOptions) -> ControlPlane {
 }
 
 fn confirm(plane: &mut ControlPlane, request_id: u32) {
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
 }
 
 fn bootstrap(plane: &mut ControlPlane, id: &ResourceId, generation: u64) {

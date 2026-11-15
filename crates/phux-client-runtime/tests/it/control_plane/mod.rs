@@ -332,12 +332,10 @@ fn view_scrolling_routes_history_requests_through_control_plane() {
 fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     let request_id = plane.refresh_topology().expect("negotiated topology read");
     let _ = plane.take_outbound();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .expect("GET_STATE reply");
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
     let _ = plane.take_events();
 }
 

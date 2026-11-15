@@ -22,12 +22,7 @@ fn published_surface() -> ControlPlane {
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
     let request_id = plane.attach_terminal(&surface());
     assert_ne!(request_id, 0);
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     let (stream_id, bootstrap_id) = generation(1);
     for frame in [
         FrameKind::BootstrapBegin {
@@ -107,12 +102,7 @@ fn answer_reattach(plane: &mut ControlPlane) -> usize {
         })
         .collect();
     for request_id in &attaches {
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: *request_id,
-                result: CommandResult::Ok,
-            })
-            .unwrap();
+        plane.reply(*request_id, CommandResult::Ok);
     }
     attaches.len()
 }
