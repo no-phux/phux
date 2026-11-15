@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "futures-util",
  "image",
