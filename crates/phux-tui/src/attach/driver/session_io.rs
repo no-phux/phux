@@ -154,14 +154,11 @@ pub(super) async fn wait_for_attached(
 
 /// Make the session `new-session` asked for persistent by creating it
 /// headless with that lifetime, as `phux new` does; the `CreateIfMissing`
-/// attach then opens it. Skipped without the organization plane.
+/// attach then opens it.
 pub(super) async fn create_persistent_session(conn: &mut Connection, target: &AttachTarget) {
     let AttachTarget::CreateIfMissing { name, cwd, .. } = target else {
         return;
     };
-    if !phux_client::org::supported(conn) {
-        return;
-    }
     let request = phux_client::session::CreateSessionRequest {
         name,
         command: None,

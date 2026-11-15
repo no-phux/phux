@@ -37,7 +37,6 @@ impl From<AttachError> for ToolError {
 fn kill_error(err: phux_client::kill::KillError) -> ToolError {
     use phux_client::kill::KillError;
     match err {
-        KillError::UnsupportedKeyedSignal => crate::pane_tools::unsupported_keyed_signal(),
         KillError::Unresolved {
             target,
             degradation,

@@ -9,10 +9,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::kill::KeyedError;
 use phux_client::read::Verb;
 use phux_client::signal::LeaseOutcome;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::TerminalSignal;
 use phux_server::runtime::default_socket_path;
@@ -201,10 +199,7 @@ pub(crate) fn run_signal(
             Err(phux_client::signal::SignalError::WrongKind(err)) => {
                 crate::commands::read_kind::wrong_kind(json, &err)
             }
-            Err(phux_client::signal::SignalError::Keyed(KeyedError::Unsupported)) => {
-                crate::commands::spawn::unsupported_server(json, ServerFeature::KeyedSignal)
-            }
-            Err(phux_client::signal::SignalError::Keyed(KeyedError::Attach(err))) => {
+            Err(phux_client::signal::SignalError::Attach(err)) => {
                 json_err::report_no_server(json, &err, &socket_path, "signal")
             }
         }

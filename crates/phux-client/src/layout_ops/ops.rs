@@ -1,4 +1,4 @@
-use phux_protocol::ids::{GroupId, SessionId};
+use phux_protocol::ids::SessionId;
 use phux_protocol::wire::frame::{Command, FrameKind, OrgFilter, Refusal, Scope};
 use tracing::{debug, info};
 
@@ -22,7 +22,6 @@ use crate::layout::leaves;
 pub struct LayoutOps<'a> {
     conn: &'a mut Connection,
     session: SessionId,
-    group: GroupId,
     key: String,
     /// A named projection never maps to the session arrangement (R17).
     projection: bool,
@@ -33,21 +32,9 @@ impl<'a> LayoutOps<'a> {
     /// Use the default layout Group and begin allocating at `first_request_id`.
     #[must_use]
     pub fn new(conn: &'a mut Connection, session: SessionId, first_request_id: u32) -> Self {
-        Self::in_group(conn, session, DEFAULT_LAYOUT_GROUP_ID, first_request_id)
-    }
-
-    /// Use an explicit Group (primarily useful to non-default server setups).
-    #[must_use]
-    pub fn in_group(
-        conn: &'a mut Connection,
-        session: SessionId,
-        group: GroupId,
-        first_request_id: u32,
-    ) -> Self {
         Self {
             conn,
             session,
-            group,
             key: layout_key(session),
             projection: false,
             next_request_id: first_request_id,
@@ -71,7 +58,6 @@ impl<'a> LayoutOps<'a> {
         Ok(Self {
             conn,
             session,
-            group: DEFAULT_LAYOUT_GROUP_ID,
             key,
             projection: true,
             next_request_id: first_request_id,
@@ -79,14 +65,14 @@ impl<'a> LayoutOps<'a> {
     }
 
     /// Whether this client edits the session's arrangement record rather
-    /// than legacy layout metadata.
+    /// than a named projection's layout metadata.
     #[must_use]
-    pub fn uses_arrangement(&self) -> bool {
-        !self.projection && org::supported(self.conn)
+    pub const fn uses_arrangement(&self) -> bool {
+        !self.projection
     }
 
-    /// Read this session's current layout: its arrangement record, or the v3
-    /// envelope from an older server (earlier schemas refuse).
+    /// Read this session's current layout: its arrangement record, or a
+    /// named projection's v3 envelope (earlier schemas refuse).
     ///
     /// # Errors
     ///
@@ -346,7 +332,11 @@ impl<'a> LayoutOps<'a> {
         let request_id = self.allocate_request_id();
         let reply = self
             .conn
-            .request_metadata(request_id, Scope::Group(self.group), self.key.clone())
+            .request_metadata(
+                request_id,
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                self.key.clone(),
+            )
             .await?;
         // A dedicated, unsubscribed connection: nothing can interleave.
         reply
@@ -384,7 +374,7 @@ impl<'a> LayoutOps<'a> {
         self.conn
             .send(&FrameKind::SetMetadata {
                 request_id: set_request_id,
-                scope: Scope::Group(self.group),
+                scope: Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
                 key: self.key.clone(),
                 value: bytes.clone(),
             })

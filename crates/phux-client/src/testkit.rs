@@ -41,6 +41,8 @@ pub use org::OrgFixture;
 mod reply;
 mod spec;
 
+pub use spec::baseline_features;
+
 use reply::reference_reply;
 
 const FIXTURE_STREAM_ID: StreamId =
@@ -114,10 +116,10 @@ pub struct ScriptSpec {
     /// The `COMMAND_RESULT` an `APPEND_RESOURCE_OUTPUT` is answered with
     /// (default a bare `Ok`).
     append_result: Option<CommandResult>,
-    /// The features `HELLO_OK` advertises; empty by default, so a verb that
-    /// needs a bit must refuse against `new()`.
+    /// The features `HELLO_OK` advertises; [`ScriptSpec::new`] starts from
+    /// the 1.x baseline, so a verb that needs a later bit refuses against it.
     server_features: ServerFeatureSet,
-    /// The extended features `HELLO_OK` advertises; empty by default.
+    /// The extended features `HELLO_OK` advertises; see `server_features`.
     server_features_ext: ServerFeatureExtSet,
     /// When set, `GET_SCREEN` is never answered: the connection stays open
     /// and silent. See [`ScriptSpec::wedge_screen_reads`].

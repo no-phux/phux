@@ -59,21 +59,6 @@ async fn connect(
 }
 
 #[tokio::test]
-async fn every_helper_refuses_without_the_bit_and_sends_nothing() {
-    let (mut conn, server, _dir) = connect(ScriptSpec::new()).await;
-    let err = fetch(&mut conn, OrgFilter::All, 1).await.unwrap_err();
-    assert!(matches!(err, OrgError::Unsupported));
-    drop(conn);
-    let seen = server.await.unwrap();
-    assert!(
-        !seen
-            .iter()
-            .any(|frame| matches!(frame, phux_protocol::wire::frame::FrameKind::Command { .. })),
-        "{seen:?}"
-    );
-}
-
-#[tokio::test]
 async fn placed_create_refuses_before_sending_to_an_older_organization_server() {
     let (mut conn, server, _dir) = connect(org_spec(OrgFixture::new())).await;
     let command = Command::ResourceCreate {

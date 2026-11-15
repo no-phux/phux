@@ -1,4 +1,3 @@
-use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
 use phux_protocol::ids::{SessionId, WindowId};
 use phux_protocol::wire::frame::{ExecState, FrameKind, Refusal, Scope, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
@@ -55,34 +54,16 @@ async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
     assert!(killed_one(&seen, 3), "sent {seen:?}");
 }
 
-/// A keyed kill is refused, with nothing sent, by a server that does not
-/// advertise `KEYED_SIGNAL`; one that does receives the key.
+/// A keyed kill carries its key.
 #[tokio::test]
-async fn a_keyed_kill_needs_keyed_signal_and_carries_its_key() {
-    async fn run(spec: ScriptSpec) -> (Result<(), KeyedError>, Vec<FrameKind>) {
-        let (_dir, mut conn, server) = crate::testkit::connect_one(spec).await;
-        let key = IdempotencyKey::new([7; 16]).expect("non-zero");
-        let sent = kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
-            .await
-            .map(|_| ());
-        drop(conn);
-        (sent, server.await.expect("scripted server task"))
-    }
-
-    let (sent, seen) = run(ScriptSpec::new()).await;
-    assert!(matches!(sent, Err(KeyedError::Unsupported)));
-    assert!(
-        !seen
-            .iter()
-            .any(|frame| matches!(frame, FrameKind::Command { .. })),
-        "nothing was sent to a server without the bit: {seen:?}"
-    );
-
-    let (sent, seen) =
-        run(ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::KeyedSignal])))
-        .await;
-    assert!(sent.is_ok());
+async fn a_keyed_kill_carries_its_key() {
+    let (_dir, mut conn, server) = crate::testkit::connect_one(ScriptSpec::new()).await;
+    let key = IdempotencyKey::new([7; 16]).expect("non-zero");
+    kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
+        .await
+        .expect("scripted server");
+    drop(conn);
+    let seen = server.await.expect("scripted server task");
     assert!(seen.iter().any(|frame| matches!(
         frame,
         FrameKind::Command {
@@ -257,12 +238,7 @@ async fn selected_splits_a_complete_miss_from_a_partial_view() {
 }
 
 fn org_spec(fixture: OrgFixture) -> ScriptSpec {
-    ScriptSpec::new()
-        .server_features_ext(ServerFeatureExtSet::with(&[
-            ServerFeatureExt::Organization,
-            ServerFeatureExt::SessionKill,
-        ]))
-        .organization(fixture)
+    ScriptSpec::new().organization(fixture)
 }
 
 fn commands(seen: &[FrameKind], pick: fn(&Command) -> bool) -> usize {
@@ -271,7 +247,7 @@ fn commands(seen: &[FrameKind], pick: fn(&Command) -> bool) -> usize {
         .count()
 }
 
-/// `phux kill work` against `SESSION_KILL`: one command, whatever the
+/// `phux kill work`: one `SESSION_KILL`, whatever the
 /// members are doing; no per-member traffic and no `KILL_RESOURCES`.
 #[tokio::test]
 async fn a_session_kill_is_one_command() {
@@ -353,10 +329,10 @@ fn emptiness_reads_the_session_facet() {
     assert!(session_is_empty(&state, "agent"), "no Terminal");
 }
 
-/// Without `ORGANIZATION`, an empty session cannot be deleted and
-/// nothing is written.
+/// A snapshot without the session's key cannot delete an empty session,
+/// and nothing is written.
 #[tokio::test]
-async fn an_empty_session_on_an_older_server_is_refused_without_writing() {
+async fn an_unkeyed_empty_session_is_refused_without_writing() {
     let session = SessionId::new(1);
     let state = SessionSnapshot::new(session, WindowId::new(10), ResourceId::local(1))
         .with_sessions(vec![

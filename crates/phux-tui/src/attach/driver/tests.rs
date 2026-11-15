@@ -581,19 +581,12 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
         next_cursor: next.map(bytes::Bytes::from_static),
         payload: bytes::Bytes::new(),
     };
-    let mut completion = HeadlessCompletion::new(Some(1));
+    let mut completion = HeadlessCompletion::default();
     completion.note_history_request(&id, stream_id, bootstrap_id);
     completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
     assert!(
         !completion.is_complete(false),
         "READY may precede history and metadata"
-    );
-    completion.observe_frame(
-        &FrameKind::MetadataValue {
-            request_id: 1,
-            value: None,
-        },
-        7,
     );
     assert!(
         !completion.is_complete(true),
@@ -610,7 +603,7 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
 
     // A page the engine does not follow up (its prefetch window is full)
     // settles the chain even though older history remains on the server.
-    let mut completion = HeadlessCompletion::new(None);
+    let mut completion = HeadlessCompletion::default();
     completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
     completion.note_history_request(&id, stream_id, bootstrap_id);
     completion.observe_frame(&page(b"newest", Some(b"older")), 7);
@@ -638,7 +631,7 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
             required_rows: 1,
         },
     ] {
-        let mut completion = HeadlessCompletion::new(None);
+        let mut completion = HeadlessCompletion::default();
         completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
         completion.note_history_request(&id, stream_id, bootstrap_id);
         completion.observe_frame(&frame, 7);

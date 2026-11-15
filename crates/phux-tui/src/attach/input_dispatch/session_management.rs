@@ -140,9 +140,6 @@ async fn manage(
         return Err("Attach to this session's host first; no local operation was sent.".to_owned());
     }
     let deleting = action.action == "delete-empty-session";
-    if !deleting && !phux_client::kill::session_kill_supported(conn) {
-        return Err("The server does not advertise SESSION_KILL; nothing sent.".to_owned());
-    }
     let view = phux_client::org::fetch(conn, OrgFilter::All, 1)
         .await
         .map_err(|err| err.to_string())?;
@@ -668,22 +665,6 @@ mod tests {
             edits(&server.await.unwrap()).as_slice(),
             [Command::SessionDelete { .. }, Command::SessionCreate { .. }]
         ));
-    }
-
-    #[tokio::test]
-    async fn session_management_legacy_server_refuses_without_commands() {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, server) = serve_one(dir.path(), ScriptSpec::new());
-        let mut conn = Connection::connect(&socket).await.unwrap();
-        assert!(
-            manage(&mut conn, action("kill-session"), &Theme::default())
-                .await
-                .err()
-                .unwrap()
-                .contains("SESSION_KILL")
-        );
-        drop(conn);
-        assert!(edits(&server.await.unwrap()).is_empty());
     }
 
     #[test]

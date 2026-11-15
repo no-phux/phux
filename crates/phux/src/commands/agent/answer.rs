@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::agent_prompt::{ApplyVerdict, supports_acknowledged_input};
+use phux_client::agent_prompt::ApplyVerdict;
 use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
 use phux_client::attach::connection::Connection;
 use phux_client::read::Verb;
@@ -318,19 +318,6 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
-        // An unknown APPLY_INPUT tag would be silence on an older server.
-        if !supports_acknowledged_input(&conn) {
-            return Refusal::new(
-                json_err::codes::SERVER_TOO_OLD,
-                "this server does not accept acknowledged input batches, which is how an \
-                 answer is delivered",
-                "nothing was typed. Upgrade the server (`phux update`), or answer the \
-                 pane manually with `phux send-keys`",
-                crate::exit_codes::EXIT_USAGE,
-            )
-            .emit(json);
-        }
-
         // The liveness read and the write are consecutive frames on one
         // connection, so nothing this client sends interleaves between them.
         // Degradation is irrelevant: the pane is already known to be local.

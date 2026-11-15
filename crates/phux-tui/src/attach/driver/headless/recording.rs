@@ -90,8 +90,7 @@ pub async fn record_composited(
     if let Err(err) = session.request_agent_records(&mut conn).await {
         return end_composited(conn, &mut recorder, Err(err)).await;
     }
-    let layout_get_request_id = match request_layout(
-        &mut conn,
+    if let Err(err) = request_layout(
         socket,
         &mut session,
         outcome.subscribe_layout,
@@ -99,10 +98,9 @@ pub async fn record_composited(
     )
     .await
     {
-        Ok(id) => id,
-        Err(err) => return end_composited(conn, &mut recorder, Err(err)).await,
-    };
-    let mut completion = HeadlessCompletion::new(layout_get_request_id);
+        return end_composited(conn, &mut recorder, Err(err)).await;
+    }
+    let mut completion = HeadlessCompletion::default();
 
     let started = Instant::now();
     let stop_at = capture
@@ -119,7 +117,6 @@ pub async fn record_composited(
             completion: &mut completion,
             attach_id: &mut attach_id,
             focused_session,
-            layout_get_request_id,
         };
         match link.settle(settle_until).await {
             Ok(()) => {
@@ -141,7 +138,6 @@ pub(super) struct RecordingLink<'a> {
     completion: &'a mut HeadlessCompletion,
     attach_id: &'a mut u32,
     focused_session: Option<SessionId>,
-    layout_get_request_id: Option<u32>,
 }
 
 impl RecordingLink<'_> {
@@ -223,9 +219,7 @@ impl RecordingLink<'_> {
     )]
     async fn absorb(&mut self, frame: FrameKind) -> Result<(), AttachError> {
         self.completion.observe_frame(&frame, *self.attach_id);
-        let outcome =
-            self.session
-                .ingest(frame, self.focused_session, self.layout_get_request_id)?;
+        let outcome = self.session.ingest(frame, self.focused_session, None)?;
         if outcome.resync_required {
             *self.attach_id = restart_attach(
                 self.conn,
