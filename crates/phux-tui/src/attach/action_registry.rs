@@ -176,6 +176,39 @@ pub fn find(name: &str) -> Option<&'static ActionSpec> {
     ACTIONS.iter().find(|spec| spec.name == name)
 }
 
+/// A palette row: name, handler, [`Category`], title, and the args it
+/// commits, then the reference page's description and params.
+macro_rules! row {
+    ($name:literal, $run:expr, $category:ident, $title:literal, [$($arg:expr),*],
+     $description:literal, $params:literal) => {
+        ActionSpec {
+            name: $name,
+            description: $description,
+            params: $params,
+            palette: Palette::Row {
+                title: $title,
+                category: Category::$category,
+                args: &[$($arg),*],
+            },
+            run: $run,
+        }
+    };
+}
+
+/// A row the palette omits: name, handler, and why, then the reference
+/// page's description and params.
+macro_rules! hidden {
+    ($name:literal, $run:expr, $reason:literal, $description:literal, $params:literal) => {
+        ActionSpec {
+            name: $name,
+            description: $description,
+            params: $params,
+            palette: Palette::Hidden { reason: $reason },
+            run: $run,
+        }
+    };
+}
+
 mod hidden_rows;
 mod palette_rows;
 
