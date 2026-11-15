@@ -232,6 +232,27 @@ impl WorkloadPaths {
         }
     }
 
+    /// Enroll `key` through a CSR with `*@global`, writing the issued chain
+    /// (leaf, then CA) to `chain_out`.
+    #[cfg(test)]
+    pub(crate) fn enroll_test_key(
+        &self,
+        key: &rcgen::KeyPair,
+        chain_out: &Path,
+    ) -> RegisteredCredential {
+        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
+            .unwrap()
+            .serialize_request(key)
+            .unwrap();
+        let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
+        let expires = chrono::Utc::now().timestamp() + 3600;
+        let prepared = prepare_enrollment(self, &material, expires).unwrap();
+        std::fs::write(chain_out, prepared.issued_chain_pem().unwrap()).unwrap();
+        prepared
+            .commit(&self.registry, vec!["*@global".to_owned()], expires)
+            .unwrap()
+    }
+
     /// The default file names under `dir`.
     #[cfg(test)]
     pub(crate) fn in_dir(dir: &Path) -> Self {

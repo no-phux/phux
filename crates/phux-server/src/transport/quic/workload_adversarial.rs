@@ -40,8 +40,8 @@ use super::super::Incoming as _;
 use super::super::tls::{QUIC_ALPN, ensure_self_signed};
 use super::{QuicAdmission, QuicListener};
 use crate::workload::{
-    ClientMaterial, ClientRoots, RegisteredCredential, ReloadingWorkloadRegistry, TestOrg,
-    WorkloadPaths, WorkloadRegistry, managed_entry,
+    ClientRoots, RegisteredCredential, ReloadingWorkloadRegistry, TestOrg, WorkloadPaths,
+    WorkloadRegistry, managed_entry,
 };
 
 /// The pairing token a [`Authority::paired_listener`] admits.
@@ -64,18 +64,7 @@ impl Authority {
     /// Enroll `key` through a CSR: the issued chain (leaf, then CA) written
     /// to `out`, and the registry record committed.
     fn enroll(&self, key: &rcgen::KeyPair, out: &Path) -> RegisteredCredential {
-        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
-            .unwrap()
-            .serialize_request(key)
-            .unwrap();
-        let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
-        let expires = chrono::Utc::now().timestamp() + 3600;
-        let prepared =
-            crate::workload::prepare_enrollment(&self.paths, &material, expires).unwrap();
-        std::fs::write(out, prepared.issued_chain_pem().unwrap()).unwrap();
-        prepared
-            .commit(&self.paths.registry, vec!["*@global".to_owned()], expires)
-            .unwrap()
+        self.paths.enroll_test_key(key, out)
     }
 
     /// A listener with no bearer preamble, a client certificate verified
