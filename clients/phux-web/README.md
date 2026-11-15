@@ -166,8 +166,8 @@ server fixture.
 `HostedClient.set_glass_mode(true)` opts one existing client into a transparent
 canvas backdrop, no native pane borders, and transparent cells where the
 terminal has no explicit background. Opaque rendering remains the default;
-`set_glass_mode(false)` restores it. The public `render`, `render_selected`,
-and `render_cursor_row` functions keep their signatures and opaque defaults.
+`set_glass_mode(false)` restores it. The Rust `render` and
+`render_cursor_row` functions take the same choice as a `glass` flag.
 
 Explicit ANSI backgrounds stay opaque even when black or identical to the
 terminal's default RGB. Inverse cells, selection/search overlays and cursor
