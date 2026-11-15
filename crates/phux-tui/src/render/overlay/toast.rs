@@ -144,23 +144,9 @@ impl RenderOverlay for ToastOverlay {
 mod tests {
     use super::*;
     use crate::render::overlay::{OverlayState, SelectList};
-    use crate::test_keys::press as key;
+    use crate::test_util::press as key;
 
-    fn render_to_string(overlay: &ToastOverlay, width: u16, height: u16) -> String {
-        let area = Rect::new(0, 0, width, height);
-        let mut buf = Buffer::empty(area);
-        overlay.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_to_string;
 
     #[test]
     fn any_key_dismisses() {

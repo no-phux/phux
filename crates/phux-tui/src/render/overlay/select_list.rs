@@ -937,7 +937,7 @@ mod tests {
         }
     }
 
-    use crate::test_keys::press_text as press;
+    use crate::test_util::press_text as press;
 
     fn key(sl: &mut SelectList, key: PhysicalKey) -> OverlayCommand {
         sl.handle_key(&press(key, None))
@@ -1001,16 +1001,7 @@ mod tests {
         buf
     }
 
-    fn render_to_string(sl: &SelectList, w: u16, h: u16) -> String {
-        let buf = render_buf(sl, w, h);
-        let mut out = String::new();
-        for y in 0..h {
-            let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_to_string;
 
     /// The label of the row painted on the selection surface, or `None` when
     /// no row is highlighted on screen (the cursor walked off the box).

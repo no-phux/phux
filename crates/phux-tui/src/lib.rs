@@ -27,7 +27,7 @@ pub mod settings;
 pub(crate) mod bench_support;
 
 #[cfg(test)]
-mod test_keys;
+mod test_util;
 
 // Pane-interior substrate, re-exported so the `ratatui`-free boundary stays
 // compiler-enforced (ADR-0020).

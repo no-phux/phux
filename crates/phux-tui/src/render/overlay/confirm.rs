@@ -233,7 +233,7 @@ mod tests {
     use phux_protocol::input::paste::PasteTrust;
 
     use super::*;
-    use crate::test_keys::press;
+    use crate::test_util::press;
 
     fn paste(data: &[u8]) -> PasteEvent {
         PasteEvent {

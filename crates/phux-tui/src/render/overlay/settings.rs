@@ -1636,21 +1636,7 @@ mod tests {
         std::fs::read_to_string(dir.path().join("config.toml")).expect("read config")
     }
 
-    fn render_text(page: &SettingsOverlay, cols: u16, rows: u16) -> String {
-        let area = Rect::new(0, 0, cols, rows);
-        let mut buf = Buffer::empty(area);
-        page.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_text;
 
     /// The bottom border row of the rendered modal.
     fn bottom_border(page: &SettingsOverlay, cols: u16) -> String {

@@ -137,7 +137,7 @@ impl LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_keys::key_event as key;
+    use crate::test_util::key_event as key;
 
     fn ctrl(k: PhysicalKey) -> KeyEvent {
         key(k, ModSet::CTRL, None)

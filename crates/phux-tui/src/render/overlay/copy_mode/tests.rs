@@ -8,7 +8,7 @@ use super::super::selection::SearchMatch;
 use super::click::REPEAT_CLICK;
 use super::*;
 
-use crate::test_keys::press_mods as press;
+use crate::test_util::press_mods as press;
 
 fn mouse(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
     MouseEvent {
