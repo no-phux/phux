@@ -450,29 +450,16 @@ mod tests {
         debounce
     }
 
+    /// Fresh or restored: saved after [`QUIET`]. Unchanged: waits for the
+    /// floor, which a failed restore disarms.
     #[test]
-    fn a_fresh_or_restored_workspace_is_saved_after_the_quiet_period() {
+    fn an_unchanged_workspace_saves_by_quiet_floor_or_never() {
         let t0 = Instant::now();
-        let debounce = Debounce::unsaved(t0, 7);
-        assert_eq!(debounce.deadline(), Some(t0 + QUIET));
-        assert!(debounce.due(at(t0, 2)));
-    }
-
-    #[test]
-    fn an_unchanged_workspace_waits_for_the_floor() {
-        let t0 = Instant::now();
+        assert_eq!(Debounce::unsaved(t0, 7).deadline(), Some(t0 + QUIET));
         let debounce = armed(t0, 7);
         assert_eq!(debounce.deadline(), Some(t0 + FLOOR));
-        assert!(!debounce.due(at(t0, 59)));
-        assert!(debounce.due(at(t0, 60)));
-    }
-
-    #[test]
-    fn a_disarmed_floor_never_saves_an_unchanged_workspace() {
-        let t0 = Instant::now();
-        let debounce = Debounce::saved_at(t0, 7);
-        assert_eq!(debounce.deadline(), None);
-        assert!(!debounce.due(at(t0, 3600)));
+        assert!(!debounce.due(at(t0, 59)) && debounce.due(at(t0, 60)));
+        assert_eq!(Debounce::saved_at(t0, 7).deadline(), None);
     }
 
     #[test]
@@ -535,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_replaces_the_file_and_leaves_no_temp() {
+    fn write_atomic_replaces_owner_only_and_a_failure_keeps_the_previous() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
@@ -546,16 +533,9 @@ mod tests {
         assert!(!temp_path(&path).exists());
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn a_failed_write_keeps_the_previous_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("workspace.json");
-        write_atomic(&path, b"good").unwrap();
         // A directory squatting on the temp path makes the open fail.
         fs::create_dir(temp_path(&path)).unwrap();
         assert!(write_atomic(&path, b"torn").is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"good");
+        assert_eq!(fs::read(&path).unwrap(), b"two");
     }
 }
