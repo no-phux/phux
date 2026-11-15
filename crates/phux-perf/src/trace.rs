@@ -13,8 +13,7 @@
 //! past the budget are dropped and counted, never blocked on.
 //!
 //! Timestamps are microseconds since the Unix epoch, anchored once per
-//! capture, so captures from the server and the desktop line up on one
-//! timeline when [`merge_chrome_json`] puts them in one file.
+//! capture, so captures from different processes line up on one timeline.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
