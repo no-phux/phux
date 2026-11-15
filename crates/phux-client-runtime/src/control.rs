@@ -26,7 +26,7 @@ use phux_client_core::input_replay::{
 use phux_client_core::session::{
     HistoryRejectionReason, HistoryUnavailableReason, KernelEffect, KernelSend, KernelStatus,
 };
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, ServerFeature};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::{ClientId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;

@@ -3,7 +3,7 @@
 
 use super::{
     ControlPlane, DeliveryOutcome, ErrorCode, Event, INPUT_RETRY_HORIZON, InputEvent, Instant,
-    ReplayDisposition, ReplayReport, ResourceId, ServerFeature, mint_input_operation_id,
+    ReplayDisposition, ReplayReport, ResourceId, mint_input_operation_id,
 };
 use phux_client_core::input_replay::operation_id_hex;
 
@@ -153,11 +153,10 @@ impl ControlPlane {
         let Some(server) = &self.server else {
             return;
         };
-        let acknowledged = server.has(ServerFeature::AcknowledgedInput);
         let server_id = server.id.clone();
         let reports = self
             .input_replay
-            .begin_connection_at(Some(&server_id), acknowledged, now_ms);
+            .begin_connection_at(Some(&server_id), true, now_ms);
         self.publish_replay_reports(reports, None);
     }
 

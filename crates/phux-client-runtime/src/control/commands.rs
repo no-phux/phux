@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::InputMode;
 
 use super::{
     AttachTarget, Command, ControlPlane, Event, FrameKind, Observation, Pending, ResourceId,
-    ServerFeature, Status, StreamRecovery, ViewportInfo, encode,
+    Status, StreamRecovery, ViewportInfo, encode,
 };
 
 impl ControlPlane {
@@ -415,15 +415,13 @@ impl ControlPlane {
     /// Close a batch of terminals. Against a server that advertises
     /// `ORGANIZATION`, each is terminated (`RESOURCE_TERMINATE`), leaving
     /// membership and arrangement to the server; otherwise one atomic
-    /// `CLOSE_TAB_RESOURCES`. `None` when neither is available. The reply is
+    /// `CLOSE_TAB_RESOURCES`. `None` before the handshake. The reply is
     /// [`Event::TerminalsClosed`].
     pub fn close_terminals(&mut self, ids: Vec<ResourceId>) -> Option<u32> {
         if let Some(request_id) = self.close_terminals_by_record(&ids) {
             return Some(request_id);
         }
-        if !self.server_has(ServerFeature::CloseTabResources) {
-            return None;
-        }
+        self.server.as_ref()?;
         let request_id = self.next_request_id();
         self.pending.insert(request_id, Pending::Close);
         self.queue_frame(&FrameKind::Command {
@@ -443,12 +441,10 @@ impl ControlPlane {
     }
 
     /// Subscribe to the server-wide event stream from `after_seq`
-    /// (ADR-0123); the cursor is honored only on a server that advertises
-    /// `EVENT_JOURNAL`.
+    /// (ADR-0123).
     pub fn subscribe_events(&mut self, after_seq: Option<u64>) {
         self.options.event_after_seq = after_seq;
         if self.handshake_ready {
-            let after_seq = after_seq.filter(|_| self.server_has(ServerFeature::EventJournal));
             self.queue_frame(&FrameKind::SubscribeEvents {
                 terminal: None,
                 after_seq,

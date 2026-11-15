@@ -351,16 +351,12 @@ fn same_incarnation_reconnect_requests_the_kernel_committed_agent_cursor() {
 }
 
 #[test]
-fn missing_resume_feature_requests_a_full_agent_bootstrap_and_eviction_replaces() {
+fn a_full_bootstrap_answering_an_evicted_resume_cursor_replaces() {
     let (mut plane, attach_id) = subscribing_with_resume(true, true);
     attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
     let requests = agent_requests(&mut plane);
     commit_initial_agent(&mut plane, requests[0].0);
-    let requests = reconnect_agents(&mut plane, false, 0xAB);
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].1, None);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
-    // Also the response to a resume request whose cursor was evicted.
+    assert_eq!(reconnect_agents(&mut plane, true, 0xAB).len(), 1);
     agent_begin(&mut plane, 2, None, 5);
     agent_chunk(
         &mut plane,

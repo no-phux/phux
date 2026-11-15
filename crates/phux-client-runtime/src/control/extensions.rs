@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ControlPlane, Pending, ServerFeature};
+use super::{ControlPlane, Pending};
 
 mod types;
 mod uploads;
