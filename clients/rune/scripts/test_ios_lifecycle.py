@@ -78,6 +78,23 @@ class LifecycleTests(unittest.TestCase):
                     lane.cycle_scene(documents, 123)
                 self.assertFalse((lane.out / "rune-lifecycle.json").exists())
 
+    def test_foreground_without_a_new_presented_frame_receipt_times_out(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lane, documents = self.lane(Path(temporary))
+            (documents / "rune-lifecycle.json").write_text('{"stale":true}')
+            def launch(*args):
+                if args[-1] == "com.apple.springboard":
+                    (documents / "rune-background.json").write_text('{"background_frames":7}')
+                return ""
+            lane.simctl = Mock(side_effect=launch)
+            with patch.object(qualify.time, "monotonic", side_effect=[0, 1, 32]), \
+                    self.assertRaisesRegex(TimeoutError, "no presented frame"):
+                lane.cycle_scene(documents, 123)
+            self.assertEqual(lane.simctl.call_count, 2)
+            self.assertEqual(lane.require_alive.call_count, 2)
+            self.assertFalse((documents / "rune-lifecycle.json").exists())
+            self.assertFalse((lane.out / "rune-lifecycle.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
