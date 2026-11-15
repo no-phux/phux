@@ -1,11 +1,7 @@
-//! Which agents the sidebar's Agents panel lists: a scope (every agent, this
-//! session's, or only the ones that need you) crossed with a machine.
+//! Which agents the sidebar's Agents panel lists: a scope crossed with a
+//! machine, picked from a chip row under its header or by `agents-filter`.
 //!
-//! The panel paints the filter as a chip row under its header; one click on
-//! a chip picks that scope and a click on the `@` chip steps through the
-//! machines that have agents. `agents-filter` drives the same state from a
-//! key or the palette. [`filter_chips`] is the one layout both the painter
-//! and the hit test read, so a chip's paint and its click target agree.
+//! [`filter_chips`] is the one layout the painter and hit test read.
 
 use super::AgentEntry;
 
@@ -231,11 +227,8 @@ pub enum FilterChip {
 /// single spaces between them.
 pub const MIN_FILTER_COLS: u16 = 13;
 
-/// The filter row's chips as `(start, width, chip)` in text-area columns.
-///
-/// The scope chips sit at fixed offsets, then the `@` chip takes whatever
-/// the row has left once `host_chip` asks for it. Each chip's click target
-/// is its label; the separating spaces are inert. Empty below
+/// The filter row's chips as `(start, width, chip)`: scope chips at fixed
+/// offsets, then the `@` chip; each label is its click target. Empty below
 /// [`MIN_FILTER_COLS`].
 #[must_use]
 pub fn filter_chips(text_w: u16, host_chip: bool) -> Vec<(u16, u16, FilterChip)> {

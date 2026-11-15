@@ -1,15 +1,8 @@
-//! Paste protection: which user pastes ask before they reach a pane.
+//! Paste protection, as Ghostty's default `clipboard-paste-bracketed-safe`.
 //!
-//! Ghostty's `clipboard-paste-protection` with its default
-//! `clipboard-paste-bracketed-safe`, as Cockpit's `paste_safety.zig` applies
-//! it: a paste the pane's program will see as a paste (DEC 2004 bracketed
-//! paste on) is delivered; one that would arrive as typed input asks first
-//! when it carries a line break, because each line break is an Enter. A paste
-//! carrying the bracket terminator `ESC [ 201 ~` always asks, since it could
-//! close the bracket early and type the rest.
-//!
-//! Like Cockpit, a bare carriage return counts as a line break, and a pane
-//! whose bracketed mode cannot be read counts as unbracketed.
+//! A bracketed paste is delivered; one arriving as typed input asks first
+//! when it carries a line break (each is an Enter). A paste carrying
+//! `ESC [ 201 ~` always asks. Unknown bracketed mode counts as off.
 
 const BRACKET_END: &[u8] = b"\x1b[201~";
 

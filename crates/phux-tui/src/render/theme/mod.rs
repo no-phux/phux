@@ -1,26 +1,11 @@
-//! Chrome + overlay color theme: every chrome and overlay color resolves
-//! through one [`Theme`] of named semantic slots, owned by the attach driver
-//! and threaded into the paint path.
+//! Chrome and overlay color theme: every color resolves through one
+//! [`Theme`] of named semantic slots ([`SLOT_SPECS`], pinned to the fields by
+//! tests).
 //!
-//! [`SLOT_SPECS`] (owned by [`phux_config::theme_slots`], the slot
-//! vocabulary `phux config check` validates against) documents each slot;
-//! tests pin it to [`Theme`]'s fields.
-//!
-//! ## Contrast
-//!
-//! Every slot that paints text or a rule clears WCAG AA **4.5:1** against
-//! [`Theme::surface`] (the shipped dark panel fill): a rule you cannot see
-//! is missing, not subtle. "Recessive" is a relationship expressed as three
-//! rungs that all clear the floor: structure (`border`/`divider`) < recessive
-//! text (`dim`) < focus (`accent`, plus bold, in a saturated hue). Tests pin
-//! the floor and the ordering. On a light terminal the recessive rungs land
-//! near 3.5:1; every slot is overridable.
-//!
-//! ## Overrides
-//!
-//! [`Theme::from_cfg`] layers `[theme]` ([`phux_config::ThemeCfg`], a
-//! `slot -> color` map) over the defaults; unknown keys and unparseable
-//! colors are ignored with a warning (and flagged by `phux config check`).
+//! Every text or rule slot clears WCAG AA 4.5:1 against [`Theme::surface`],
+//! ordered structure < recessive text < focus. [`Theme::from_cfg`] layers
+//! `[theme]` over the defaults; unknown keys and bad colors are ignored with
+//! a warning.
 
 use std::str::FromStr;
 
@@ -132,12 +117,9 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The selected theme (`[theme] name` / `file`, ADR-0157) or the shipped
-    /// palette, with the remaining `[theme]` slot overrides layered on.
-    /// Tolerant: a theme that does not load is warned about and the shipped
-    /// palette stands in. Values parse like ratatui's `Color` (`"cyan"`,
-    /// `"#cdd6f4"`, `"12"`); unknown keys and unparseable values keep the
-    /// default (warned).
+    /// The selected theme (ADR-0157) or the shipped palette, with `[theme]`
+    /// slot overrides layered on. Tolerant: what does not load or parse is
+    /// warned about and the default stands.
     #[must_use]
     pub fn from_cfg(cfg: &phux_config::ThemeCfg, plugins: &[PluginManifest]) -> Self {
         let base = match phux_config::theme::resolve_selected(cfg, plugins) {

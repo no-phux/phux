@@ -73,21 +73,12 @@ pub(in crate::attach) struct ActionEffects {
     pub(in crate::attach) command_frames: Vec<FrameKind>,
     /// An in-process re-attach (switch or create) for the driver.
     pub(in crate::attach) reattach: Option<ReattachTarget>,
-    /// ADR-0140: `switch-host { host, name }` committed. Unlike
-    /// [`Self::reattach`] this leaves the server: the batch detaches, then
-    /// the process becomes `phux attach` against that machine
-    /// ([`crate::attach::hosts::exec_switch_host`]). `(host, session)`.
+    /// ADR-0140: `switch-host { host, name }`: the batch detaches and the
+    /// process becomes `phux attach` there. `(host, session)`.
     pub(in crate::attach) switch_host: Option<(String, String)>,
-    /// rename-session: a committed rename. Carries the new name. The async
-    /// caller ([`apply_action_effects`]) sends a `SESSION_RENAME` for the
-    /// *current* session against an `ORGANIZATION` server, else a
-    /// `SET_METADATA` write of `SESSION_NAME_KEY` plus a correlated
-    /// `GET_STATE` barrier, and parks [`PendingSessionRename`] so the driver
-    /// can apply or refuse from the reply. The local status name stays
-    /// unchanged until that confirmation (or the `SESSION_RENAMED` event or
-    /// `METADATA_CHANGED` broadcast) so a rejected rename cannot lie. Peers
-    /// learn the new name from the same event or broadcast rather than
-    /// waiting for a re-attach.
+    /// rename-session: the committed new name. The caller sends it and parks
+    /// [`PendingSessionRename`]; the status name changes only once the
+    /// server confirms, so a rejected rename cannot lie.
     pub(in crate::attach) rename_session: Option<String>,
     /// A requested live config reload, run by the driver after the batch.
     pub(in crate::attach) reload_config: bool,

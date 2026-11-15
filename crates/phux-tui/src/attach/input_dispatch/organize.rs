@@ -1,9 +1,6 @@
-//! `organize`, `organize-session`, and `organize-undo`: the magic button
-//! (ADR-0174). The same [`phux_client::organize`] path `phux organize` runs,
-//! on the attached server's dedicated control dial, never on the
-//! output-bearing attach connection. The run is a background job
-//! (ADR-0172): a passthrough notice now, the result as a toast when it
-//! lands, then a host inventory refresh.
+//! `organize`, `organize-session`, `organize-undo` (ADR-0174): the
+//! [`phux_client::organize`] path `phux organize` runs, on the control dial,
+//! as a background job (ADR-0172) that toasts its result.
 
 use phux_client::organize::{self, Options, Outcome};
 use phux_config::keybind::ResolvedAction;

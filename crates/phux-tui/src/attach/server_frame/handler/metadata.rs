@@ -107,10 +107,8 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
     }
 }
 
-/// A pending metadata GET answered with a correlated `ERROR` (a newer
-/// server's `UNSUPPORTED`, or a reply this build cannot read). The request
-/// settles; nothing was read, so no stored record or layout is replaced and
-/// the layout write fence stays up. `None` when no GET waits on the id.
+/// A pending metadata GET answered with a correlated `ERROR`: the request
+/// settles, nothing is replaced, and the layout write fence stays up.
 pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,

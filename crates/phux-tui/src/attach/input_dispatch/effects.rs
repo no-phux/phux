@@ -133,10 +133,8 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     Ok(layout_changed)
 }
 
-/// Paste a picked path into its target pane as untrusted input, never a
-/// shell command or an Enter key. A placeholder leaf takes no paste, and a
-/// Terminal with no stream yet cannot carry one: bell instead of failing
-/// the send.
+/// Paste a picked path into its pane as untrusted input, never a command or
+/// an Enter; a placeholder or stream-less pane bells instead.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"

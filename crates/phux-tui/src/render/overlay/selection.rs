@@ -1,9 +1,5 @@
-//! The shared copy-mode selection contract (ADR-0045).
-//!
-//! Plain data the selection UX (`copy_mode`) and the pane renderer (`attach::render`) both
-//! import, so the highlight and the copy path can never disagree about which
-//! cells a selection covers. Selection is a client-local projection, never a
-//! wire tier (ADR-0030).
+//! The shared copy-mode selection contract (ADR-0045), imported by both
+//! `copy_mode` and `attach::render` so the highlight and the copy agree.
 
 /// How copy-mode interprets the selection rectangle.
 ///
@@ -19,11 +15,8 @@ pub enum SelectionMode {
     Rect,
 }
 
-/// A copy-mode selection in pane-local viewport cells.
-///
-/// Inclusive, zero-based, `start <= end`: what the renderer inverts and the copy path resolves.
-/// `rectangle` false is linear (partial first/last rows), true is a column
-/// band on every row.
+/// A copy-mode selection in pane-local viewport cells, inclusive and
+/// zero-based; `rectangle` makes it a column band instead of linear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionRect {
     /// First selected row (inclusive).
@@ -87,11 +80,8 @@ impl SelectionRect {
     }
 }
 
-/// How the dispatcher derives the selection from a [`CopyRequest`].
-///
-/// `Rect` uses the two corners; the others are engine-derived at the overlay cursor
-/// (libghostty `select_*`), resolved in `attach/copy.rs` so this layer never
-/// imports the engine.
+/// How the dispatcher derives the selection from a [`CopyRequest`]: two
+/// corners for `Rect`, else libghostty `select_*` at the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionGrab {
     /// Two-corner rectangle: `start`/`end` corners, block when

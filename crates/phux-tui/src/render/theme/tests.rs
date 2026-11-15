@@ -337,14 +337,8 @@ fn contrast(a: Color, b: Color) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// The palette's accessibility floor, as a test rather than a
-/// comment: every slot that paints text or a rule clears WCAG AA
-/// (4.5:1) against the shipped `surface`.
-///
-/// This exists because the first cut of the structural roles shipped
-/// a `divider` at 1.7:1 and a `pane_title` at 2.8:1 — recessive to
-/// the point of being absent for anyone without excellent contrast
-/// vision on a well-calibrated display.
+/// The accessibility floor: every text or rule slot clears WCAG AA (4.5:1)
+/// against `surface` (a first cut shipped a 1.7:1 divider).
 #[test]
 fn contrast_floor_is_met() {
     let t = Theme::default();

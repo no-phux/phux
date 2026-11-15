@@ -141,11 +141,9 @@ fn primary_scrollback_vt(lines: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Wheel routing by the pane's screen and mode state: the alt screen (even
-/// with prior primary history) synthesizes 3 arrows per notch unless the app
-/// turned alternate scroll off or tracks the mouse (then it forwards); the
-/// primary screen scrolls locally, forwarding when there is nothing to
-/// scroll (no history, or already at the live tail).
+/// Wheel routing: the alt screen synthesizes 3 arrows per notch unless the
+/// app turned alternate scroll off or tracks the mouse; the primary screen
+/// scrolls locally, forwarding when there is nothing to scroll.
 #[tokio::test]
 async fn wheel_routing_follows_the_panes_screen_and_modes() {
     enum Want {
@@ -213,10 +211,8 @@ async fn ctrl_left_press_in_mouse_tracking_pane_starts_host_copy() {
     assert!(sent.frames.is_empty() && env.fx.overlays.is_active());
 }
 
-/// ADR-0058: a right press over a pane that has not asked for the mouse
-/// focuses it and opens the hover-tracking pane menu; a mouse-tracking app
-/// owns the button, so it forwards instead. Clicking away closes the menu
-/// and schedules the repaint that erases it.
+/// ADR-0058: a right press over a non-tracking pane focuses it and opens the
+/// pane menu; a mouse-tracking app gets the button instead.
 #[tokio::test]
 async fn right_press_opens_the_pane_menu_unless_the_app_owns_the_mouse() {
     let mut env = two_pane_env(&[(tid(2), b"")], (1, 1));

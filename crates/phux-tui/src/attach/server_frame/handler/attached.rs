@@ -100,14 +100,9 @@ pub(super) fn handle_attached<W: crate::attach::RenderSink>(
     })
 }
 
-/// ADR-0105: the focused session holds no terminals (none listed AND a focus
-/// the graph does not list, so an unreported count does not read as empty).
-///
-/// A server that reports each resource's session (some local resource
-/// carries the `session` facet, ADR-0161 §7; the rule of
-/// `phux_client::resource::reports_sessions`) synthesizes its windows: the
-/// session is empty when no Terminal names it, as its synthesized window
-/// count would say. An older server reports only its window count.
+/// ADR-0105: the focused session holds no terminals. When resources carry
+/// their session (ADR-0161), empty means no Terminal names it; an older
+/// server reports only its window count.
 fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> bool {
     let focus_is_listed = snapshot
         .resources

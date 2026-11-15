@@ -3,17 +3,7 @@
 
 use super::*;
 
-fn press_key(key: phux_protocol::input::key::PhysicalKey) -> phux_protocol::input::key::KeyEvent {
-    phux_protocol::input::key::KeyEvent {
-        action: phux_protocol::input::key::KeyAction::Press,
-        key,
-        mods: phux_protocol::input::key::ModSet::empty(),
-        consumed_mods: phux_protocol::input::key::ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
+use crate::test_util::press as press_key;
 
 /// kill-pane kills nothing on its own: it opens a confirm naming the
 /// focused pane. Committing it kills that leaf, correlated and expected,

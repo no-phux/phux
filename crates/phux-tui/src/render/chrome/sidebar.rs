@@ -1,18 +1,10 @@
 //! Fixed-area Agents and Sessions sidebar painter.
 //!
-//! Agents lists every agent in caller-supplied stable order, narrowed by a
-//! one-click filter row under its header (every agent, this session's, or
-//! only the ones that need you, crossed with a machine; see
-//! [`agent_filter`]), and keeps a fixed share (`[sidebar] agents-share`) of
-//! the body whatever its population; an empty list paints a quiet
-//! placeholder.
-//! Sessions fill the rest, with a host line
-//! per machine when more than one is known, the active session expanding its
-//! tabs beneath it. Plugin sections (ADR-0148) sit between them at fixed
-//! heights. The last
-//! row holds New tab with a collapse chevron in the corner; a rule on the
-//! pane-facing column separates the strip from the panes. [`hit_test`] reads
-//! the same row model as the painter, and an unchanged repaint emits nothing.
+//! Agents keeps a fixed share (`[sidebar] agents-share`) of the body, under a
+//! filter row ([`agent_filter`]); Sessions fill the rest, grouped by machine,
+//! the active session expanding its tabs. Plugin sections (ADR-0148) sit
+//! between them. [`hit_test`] reads the same row model as the painter, and an
+//! unchanged repaint emits nothing.
 
 use crate::render::chrome::sidebar_sections::PluginShape;
 use phux_client::agent_meta::AgentMetaState;
@@ -39,10 +31,8 @@ pub use rows::{
 pub const NEW_LABEL: &str = "+ new tab";
 /// Agents header.
 pub const NEEDS_YOU_HEADER: &str = "Agents";
-/// Quiet placeholder under the `need` filter when no agent needs a human.
-///
-/// Short enough for a 20-column strip, and free of the word "agent" so a
-/// row search by agent name cannot match it.
+/// Placeholder under the `need` filter when no agent needs a human: short,
+/// and without "agent" so a search by agent name cannot match it.
 pub const AGENTS_EMPTY_LABEL: &str = "none need you";
 /// The same placeholder under any other filter: nothing it admits is running.
 pub const AGENTS_NONE_LABEL: &str = "none running";
@@ -112,15 +102,9 @@ impl AgentEntry {
     }
 }
 
-/// An agent's rung on the attention ladder (higher wants a human sooner);
-/// drives badges and session summaries, not display order.
-///
-/// ```text
-/// blocked  >  done AND !seen  >  working  >  done/idle AND seen  >  unknown
-/// ```
-///
-/// `attention` (declared high attention, or an ADR-0035 ask) pins the top
-/// rung: an agent that asked for a human is blocked on one.
+/// An agent's rung on the attention ladder (higher wants a human sooner):
+/// blocked > done unseen > working > done/idle seen > unknown. `attention`
+/// pins the top rung.
 #[must_use]
 pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) -> u8 {
     if attention {
@@ -243,9 +227,7 @@ pub struct SidebarCounts {
     /// for room still shows it.
     pub active_window: Option<usize>,
     /// ADR-0140: bit `j` is set when roster entry `j` opens a machine
-    /// segment (its host differs from entry `j - 1`'s), so a host header row
-    /// precedes it. A bitmask keeps the shape `Copy`; entries past the 128th
-    /// open no segment, which a strip never has the rows to show anyway.
+    /// segment; entries past the 128th open none.
     pub host_starts: u128,
     /// ADR-0168: bit `j` is set when the segment opening at roster entry `j`
     /// is a project group, whose header toggles it rather than switching.

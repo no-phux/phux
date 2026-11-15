@@ -25,9 +25,7 @@ use phux_client::agent_meta::RESOURCE_AGENT_KEY;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{agent_entries, window_infos};
-use super::session_io::{
-    attach_client_caps, attach_client_name, send_attach_without_size_vote, wait_for_attached,
-};
+use super::session_io::{attach_client_caps, attach_client_name, send_attach, wait_for_attached};
 use crate::settings::TuiSettings;
 
 /// Hard cap on waiting for the matching aggregate attach barrier.
@@ -251,13 +249,10 @@ impl HeadlessSession {
 /// Request id of the layout read the completion barrier waits on.
 const LAYOUT_REQUEST_ID: u32 = 1;
 
-/// Read (never watch) this session's layout. Against an `ORGANIZATION`
-/// server it is the session's arrangement record, read over a second
-/// connection within [`ATTACH_READY_DEADLINE`] and ingested here as the
-/// layout reply (none when that read fails: the legacy key is never used
-/// there); `Ok(None)` then means nothing is left to wait for. Against an
-/// older server this GETs the layout key and returns the request id the
-/// completion barrier waits on, or `None` with nothing to ask for.
+/// Read (never watch) this session's layout: on an `ORGANIZATION` server its
+/// arrangement record over a second connection, ingested here (`Ok(None)`:
+/// nothing left to wait for); otherwise a GET of the layout key, returning
+/// the request id to wait on.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -324,8 +319,7 @@ async fn restart_attach(
             "engine requested rebootstrap before ATTACHED named the session".to_owned(),
         ));
     }
-    let attach_id =
-        send_attach_without_size_vote(conn, AttachTarget::ByName(session_name.to_owned())).await?;
+    let attach_id = send_attach(conn, AttachTarget::ByName(session_name.to_owned())).await?;
     completion.restart_attach();
     Ok(attach_id)
 }
@@ -384,14 +378,11 @@ async fn drain_until_settled(
     }
 }
 
-/// Headless one-shot (`phux snapshot --rendered`): the composited view as cells.
+/// Headless one-shot (`phux snapshot --rendered`): the composited view as
+/// cells, through the live render path with no raw mode, alt screen, or VT.
 ///
-/// Attaches and ingests the session and its layout through the live client
-/// render path. No raw mode, no alt screen, no
-/// VT: mirrors ingest with `defer_paint`, then one compose pass at the
-/// caller's viewport. Completion waits for `ATTACH_READY`, every requested
-/// history chain, and every metadata reply; the deadline is an error, never
-/// a partial frame.
+/// Waits for `ATTACH_READY`, every requested history chain, and every metadata
+/// reply; the deadline is an error, never a partial frame.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -419,7 +410,7 @@ pub async fn run_headless_rendered(
         negotiated.profile,
         history_config,
     );
-    let mut attach_id = send_attach_without_size_vote(&mut conn, target).await?;
+    let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));

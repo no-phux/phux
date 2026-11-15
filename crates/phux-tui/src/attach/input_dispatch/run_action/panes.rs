@@ -7,7 +7,6 @@ use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
 use crate::attach::actions::{self, ActionError, Adopt, PendingSplit, SplitHost};
-use crate::attach::directory_picker::DirectorySupport;
 use crate::attach::input_dispatch::args::{
     PaneMouseArg, amount_arg, direction_arg, kill_resource_frame, mouse_arg, resource_id_arg,
     signal_arg, split_dir_arg,
@@ -131,18 +130,12 @@ pub(in crate::attach) fn split_pane(
     // `split-pane { host }` spawns there with no owner; else follow the pane.
     let place = spawn_place(resolved, Some(&focused_id), panes);
     let wanted = place.host.clone().map(SatelliteHost::new);
-    let host = split_host(wanted, ctx.directory_support);
+    let host = split_host(wanted);
     let satellite = match &host {
         SplitHost::Satellite(satellite) => Some(satellite.clone()),
-        SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
+        SplitHost::Attached => None,
     };
-    // A directory is only sent to the host that owns it. An older hub that
-    // cannot spawn on the satellite must not receive that satellite's path.
-    let cwd = match &host {
-        SplitHost::Satellite(_) => place.directory,
-        SplitHost::Attached if place.host.is_none() => place.directory,
-        SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
-    };
+    let cwd = place.directory;
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
@@ -190,7 +183,7 @@ fn open_existing_pane(
         return;
     }
     let request_id = ctx.take_request_id();
-    let host = split_host(target.host().cloned(), ctx.directory_support);
+    let host = split_host(target.host().cloned());
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
@@ -201,23 +194,14 @@ fn open_existing_pane(
     effects.spawn_terminal = Some((request_id, pending, attach_frame(request_id, target)));
 }
 
-/// Where a split onto `host` (`None`: the attached server) spawns. Only a
-/// hub advertising `LIST_DIRECTORY_HOST` (shipped with host-aware spawns)
-/// honors `SPAWN_RESOURCE.satellite`; an older one would skip the field and
-/// spawn on itself, so the split stays there and says so.
-fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHost {
-    match host {
-        None => SplitHost::Attached,
-        Some(host) if support == DirectorySupport::HostAware => SplitHost::Satellite(host),
-        Some(host) => SplitHost::AttachedInsteadOf(host),
-    }
+/// Where a split onto `host` (`None`: the attached server) spawns.
+fn split_host(host: Option<SatelliteHost>) -> SplitHost {
+    host.map_or(SplitHost::Attached, SplitHost::Satellite)
 }
 
-/// `kill-pane`: without a target, open the confirm naming the focused
-/// pane; with the `terminals` target the confirm committed, close it with
-/// one correlated `KILL_RESOURCE`. A `TerminalNotFound` refusal folds the
-/// leaf out too, so a pane whose resource died under us can still be
-/// dismissed.
+/// `kill-pane`: without a target, confirm the focused pane; with the
+/// confirmed `terminals`, one correlated `KILL_RESOURCE`. A
+/// `TerminalNotFound` refusal folds the leaf out too.
 pub(in crate::attach) fn kill_focused_pane(call: ActionCall<'_, '_>) {
     if crate::attach::input_dispatch::tab_lock::refuse_locked(call.ctx, call.effects, true) {
         return;

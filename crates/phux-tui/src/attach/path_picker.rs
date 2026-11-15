@@ -1,6 +1,5 @@
 //! Correlation and input-safety state for the literal path insertion picker.
 
-use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::PathQueryResult;
 
@@ -8,24 +7,6 @@ use crate::render::overlay::OverlayState;
 
 use super::pane_state::{PaneSlot, pane_exited, pane_satellite_down};
 use std::collections::HashMap;
-
-/// The picker's per-connection state, owned by the attach loop.
-#[derive(Debug)]
-pub(super) struct PickerState {
-    /// Whether the server negotiated `PATH_QUERY`.
-    pub supported: bool,
-    /// The query in flight; a reply with any other id is stale.
-    pub pending: Option<PendingPath>,
-}
-
-impl PickerState {
-    pub(super) const fn new(features: ServerFeatureExtSet) -> Self {
-        Self {
-            supported: supported(features),
-            pending: None,
-        }
-    }
-}
 
 /// Apply a `PATH_RESULTS` reply to the open picker when it still answers the
 /// request in flight; `true` when the overlay changed and needs a repaint.
@@ -55,10 +36,6 @@ pub(super) struct PendingPath {
     pub request_id: u32,
     pub root: String,
     pub query: String,
-}
-
-pub(super) const fn supported(features: ServerFeatureExtSet) -> bool {
-    features.contains(ServerFeatureExt::PathQuery)
 }
 
 pub(super) fn may_insert(
@@ -97,13 +74,6 @@ pub(super) fn reply_matches(pending: &PendingPath, id: u32, root: &str, query: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn only_negotiated_path_query_extension_enables_picker() {
-        assert!(!supported(ServerFeatureExtSet::new()));
-        assert!(supported(ServerFeatureExtSet::with(&[
-            ServerFeatureExt::PathQuery
-        ])));
-    }
     #[test]
     fn quoting_never_submits_or_evaluates_shell_syntax() {
         assert_eq!(shell_quote("/a b/it's $(evil)"), "'/a b/it'\\''s $(evil)'");

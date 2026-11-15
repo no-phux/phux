@@ -80,10 +80,8 @@ fn sidebar_plugin_rows_commit_focus_pane() {
     );
 }
 
-/// A queue row commits a LOCAL focus or a CROSS-SESSION re-attach (a
-/// graph row by resource identity, never fabricated indices); a roster row
-/// switches session (by host when it has one; unreachable is inert); an
-/// overflow row opens the fleet dashboard.
+/// Queue rows commit a local focus or cross-session re-attach, roster rows
+/// switch session, and the overflow row opens the fleet dashboard.
 #[test]
 fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     let t = targets(2, 2, 0);

@@ -6,19 +6,10 @@ pub(super) fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
 }
 
-pub(super) fn test_engine_kernel() -> AttachKernel {
-    phux_client_core::session::SessionKernel::new(
-        phux_client_core::engine::ghostty::GhosttyAdapter::new(
-            phux_protocol::BootstrapLimits::default(),
-        ),
-        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-    )
-}
+pub(super) use crate::test_util::kernel as test_engine_kernel;
 
-/// Owned backing state for a test [`DispatchCtx`]: set the fields a test
-/// cares about, lend it with [`CtxFixture::ctx`], read results back after.
-/// Borrow-only fields (`control_dial`, `resolver`, `input_replay`,
-/// `keybindings`) start `None` on the lent context.
+/// Owned backing state for a test [`DispatchCtx`], lent with
+/// [`CtxFixture::ctx`]; borrow-only fields start `None`.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "mirrors DispatchCtx's independent driver flags one-to-one"
@@ -34,15 +25,12 @@ pub(super) struct CtxFixture {
     pub(super) viewport: (u16, u16),
     pub(super) cell_px: (u16, u16),
     pub(super) next_request_id: u32,
-    pub(super) spawn_initial_size_supported: bool,
     pub(super) organization_supported: bool,
     pub(super) pending_splits: HashMap<u32, PendingSplit>,
     pub(super) pending_windows: HashMap<u32, PendingWindow>,
     pub(super) pending_floating: HashMap<u32, String>,
-    pub(super) directory_support: DirectorySupport,
     pub(super) pending_directory: Option<PendingDirectory>,
     pub(super) pending_path: Option<crate::attach::path_picker::PendingPath>,
-    pub(super) path_query_supported: bool,
     pub(super) expected_closes: HashSet<ResourceId>,
     pub(super) session_members: HashSet<ResourceId>,
     pub(super) pending_kills: HashMap<u32, ResourceId>,
@@ -104,15 +92,12 @@ impl Default for CtxFixture {
             viewport: (80, 24),
             cell_px: (1, 1),
             next_request_id: 1,
-            spawn_initial_size_supported: true,
             organization_supported: false,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             pending_floating: HashMap::new(),
-            directory_support: DirectorySupport::HostAware,
             pending_directory: None,
             pending_path: None,
-            path_query_supported: true,
             expected_closes: HashSet::new(),
             session_members: HashSet::new(),
             pending_kills: HashMap::new(),
@@ -180,15 +165,12 @@ impl CtxFixture {
             cell_px: self.cell_px,
             next_request_id: &mut self.next_request_id,
             input_replay: None,
-            spawn_initial_size_supported: self.spawn_initial_size_supported,
             organization_supported: self.organization_supported,
             pending_splits: &mut self.pending_splits,
             pending_windows: &mut self.pending_windows,
             pending_floating: &mut self.pending_floating,
-            directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             pending_path: &mut self.pending_path,
-            path_query_supported: self.path_query_supported,
             own_client_id: None,
             expected_closes: &mut self.expected_closes,
             session_members: &self.session_members,

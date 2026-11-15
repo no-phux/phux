@@ -1,11 +1,7 @@
-//! Regression: rapid window switching / control spam must never leave
-//! doubled or ghosted text. The snapshot and live-output paths once pinned an
-//! undersized mirror at the rect origin while the full frame letterboxed it,
-//! putting the same text at two offsets.
-//!
-//! These drive the real `handle_server_frame` / `paint_full_frame` in the
-//! driver's sequencing, replay every emitted byte into a "glass" terminal,
-//! and diff it against a reference compose of the pane mirrors.
+//! Regression: rapid window switching and control spam must never leave
+//! doubled text. These drive the real `handle_server_frame` and
+//! `paint_full_frame`, replay every byte into a "glass" terminal, and diff it
+//! against a reference compose of the pane mirrors.
 
 use std::collections::HashMap;
 
@@ -33,13 +29,8 @@ const fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
 }
 
-/// A driver-shaped rig: the attach loop's paint-relevant state, plus a
-/// "glass" terminal that parses every emitted byte the way a real terminal
-/// would. Methods mirror the `main_loop` arms one-to-one:
-/// server frames go through the real `handle_server_frame`, and every
-/// layout-changing control (window switch, sidebar toggle, overlay dismiss)
-/// triggers the same `paint_full_frame` the driver runs on
-/// `layout_changed`.
+/// A driver-shaped rig: the loop's paint state plus a "glass" terminal that
+/// parses every emitted byte; methods mirror the `main_loop` arms.
 struct Rig {
     mirror: SessionMirror,
     sidebar: Option<SidebarReservation>,
@@ -270,11 +261,9 @@ impl Rig {
             .any(|s| s.sync_output_since.is_some())
     }
 
-    /// The compose invariant: at a settled point (no overlay, no open
-    /// synchronized-output transaction) the glass must equal the reference
-    /// compose of the active window — each visible pane's mirror grid
-    /// letterbox-placed in its rect, blank elsewhere in the rect. Cells
-    /// outside pane rects (dividers, sidebar strip) are not checked.
+    /// The compose invariant: at a settled point the glass equals the
+    /// reference compose of the active window (each mirror letterboxed in
+    /// its rect). Cells outside pane rects are not checked.
     fn assert_consistent(&self, label: &str) {
         assert!(!self.overlay_active, "{label}: assert while overlay active");
         assert!(!self.sync_active(), "{label}: assert while sync suppressed");
@@ -394,10 +383,8 @@ fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
     rig.assert_consistent("non-focused snapshot resync");
 }
 
-/// The dogfood stress: continuous output and synchronized-output bursts on
-/// every pane while windows cycle, the sidebar toggles, and a palette opens
-/// and closes, with lagging snapshot resyncs landing mid-spam. Every settled
-/// step must match the mirror compose.
+/// The dogfood stress: continuous output and synchronized bursts while
+/// windows cycle, the sidebar toggles, and a palette opens and closes.
 #[test]
 fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
     let p = tid(1);
@@ -440,10 +427,8 @@ fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
         }
         rig.assert_consistent(&format!("iter {i}: after control spam"));
 
-        // Server resyncs racing the spam: R's snapshot still carries the
-        // lagging 21x24 grid; every third iteration P resyncs at a lagging
-        // 40x24 grid too (the attach-from-a-bigger-terminal shape), then
-        // catches back up to the full 80x24.
+        // Lagging server resyncs race the spam (R at 21x24, P every third
+        // iteration at 40x24), then catch back up to 80x24.
         rig.snapshot(&r, 21, 24, format!("\x1b[2J\x1b[Hr: resync {i}").as_bytes());
         rig.assert_consistent(&format!("iter {i}: after r resync"));
         if i % 3 == 0 {

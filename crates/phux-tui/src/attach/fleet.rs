@@ -1,27 +1,12 @@
-//! Agent-fleet dashboard model: a pure client-side projection (ADR-0030) of
-//! every pane with its agent identity (ADR-0040), asked state (ADR-0035),
-//! and branch/cwd, grouped under session headers and committing focus
-//! through `run_action`.
+//! Agent-fleet dashboard model: a client-side projection (ADR-0030) of every
+//! pane with its agent identity (ADR-0040), state (ADR-0035), and branch/cwd,
+//! grouped under session headers, committing focus through `run_action`.
 //!
-//! Foreign sessions come from two existing, subscribed L3 keys: the peer's
-//! persisted `phux.tui.layout/v1/<session>` pane tree and each pane's
-//! `phux.agent/v1` record; server-wide spawn/close events keep the set
-//! current. A peer row commits a one-step `switch-session { name, window,
-//! pane }`; a peer with no cached layout gets one "switch to session" row.
-//! Satellite agents are listed by agent name with a host badge (ADR-0136).
-//! Foreign rows carry no branch/cwd (no local slot).
-//!
-//! ```text
-//! work (current)                                   <- session header
-//!   ● 0:main.0 reviewer [claude]  blocked · main   <- pane row
-//!   ○ 1:logs.0 tail -f                       logs
-//! scratch                                          <- foreign session
-//!   ◐ 0:main.0 packer [codex]     working
-//! ```
-//!
-//! Glyphs are the chrome's badge vocabulary (`●` blocked, `◐` working, `◆`
-//! done, `○` idle/unknown); a pane with no record falls back to its OSC
-//! title. Attention rows use the theme's `attention` slot.
+//! Foreign sessions come from each peer's persisted layout and pane agent
+//! records; a peer row commits `switch-session { name, window, pane }`, and a
+//! peer with no cached layout gets one "switch to session" row. Satellite
+//! agents carry a host badge (ADR-0136). Glyphs are the chrome's badge
+//! vocabulary; a pane with no record falls back to its OSC title.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -104,12 +89,10 @@ pub(super) struct ForeignSessions<'a> {
     pub terminals: &'a HashMap<SessionId, usize>,
 }
 
-/// Build the dashboard rows. Sessions are headers, current first, then in
-/// the stored session `order`, then by name. Current-session panes (windows in order, DFS leaves) commit
-/// `focus-pane { window, pane }`; a foreign session with a cached layout
-/// lists its panes committing `switch-session { name, window, pane }`, else
-/// one `switch-session { name }` row. Before any session graph, local panes
-/// list flat.
+/// Build the dashboard rows: sessions as headers (current first, then stored
+/// order, then name). Current panes commit `focus-pane { window, pane }`; a
+/// foreign session lists `switch-session` rows from its cached layout, else
+/// one. Before any session graph, local panes list flat.
 pub(super) fn fleet_items(
     workspace: &ArrangementDoc,
     sessions: &[SessionInfo],
@@ -264,10 +247,7 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
     );
     let mut item = SelectItem::new(
         format!("{} {host}", agent_state_glyph(record.state)),
-        phux_config::keybind::ResolvedAction {
-            action: "split-pane".to_owned(),
-            args,
-        },
+        crate::attach::resolved("split-pane", args),
     )
     .indented()
     .secondary(record.state.as_str().to_owned());
@@ -332,10 +312,8 @@ fn current_session_pane_rows(
     rows
 }
 
-/// One pane's row, or one of its `AgentSession` rows. The stream (or else
-/// the `phux.agent/v1` record) supplies state and name; with neither, the
-/// OSC title and `○`. The secondary is `state · place` (branch, else cwd
-/// leaf). Asked, blocked, or high declared attention highlight the row.
+/// One pane's row, or one of its `AgentSession` rows: state and name from
+/// the stream or record, else the OSC title; secondary `state · place`.
 fn pane_row(
     w: usize,
     window_name: &str,
@@ -402,14 +380,7 @@ fn pane_row(
         "pane".to_owned(),
         toml::Value::Integer(i64::try_from(p).unwrap_or(i64::MAX)),
     );
-    let mut item = SelectItem::new(
-        label,
-        phux_config::keybind::ResolvedAction {
-            action: "focus-pane".to_owned(),
-            args,
-        },
-    )
-    .indented();
+    let mut item = SelectItem::new(label, crate::attach::resolved("focus-pane", args)).indented();
     if let Some(sec) = secondary {
         item = item.secondary(sec);
     }
@@ -437,10 +408,7 @@ fn foreign_session_row(session: &SessionInfo, terminals: Option<usize>) -> Selec
     );
     let row = SelectItem::new(
         "switch to this session",
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
+        crate::attach::resolved("switch-session", args),
     );
     match count {
         Some(count) => row.secondary(count),
@@ -511,14 +479,8 @@ fn foreign_pane_row(
         "pane".to_owned(),
         toml::Value::Integer(i64::try_from(p).unwrap_or(i64::MAX)),
     );
-    let mut item = SelectItem::new(
-        label,
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
-    )
-    .indented();
+    let mut item =
+        SelectItem::new(label, crate::attach::resolved("switch-session", args)).indented();
     if let Some(state) = state_word {
         item = item.secondary(state.to_owned());
     }

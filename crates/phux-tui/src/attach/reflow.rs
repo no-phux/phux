@@ -1,12 +1,6 @@
-//! Pure reflow computation for the multi-pane TUI: which leaves changed
-//! SHAPE, so a `RESIZE_TERMINAL` is sent for exactly those.
-//!
-//! A leaf is in [`ReflowDiff::changed`] iff its `(w, h)` differs from the
-//! previous snapshot or it is new; x/y movement alone is silent (a PTY cares
-//! about its size, not where it is drawn). Rects come from
-//! [`crate::multi_pane::pane_rects_in`], the same tiling paint uses, so a PTY
-//! is always sized to exactly the rect it is painted into. The caller passes
-//! the content rect left after the status bar and sidebar (ADR-0019).
+//! Which leaves changed shape, so `RESIZE_TERMINAL` goes to exactly those:
+//! a new leaf or a changed `(w, h)`; movement alone is silent. Rects come
+//! from [`crate::multi_pane::pane_rects_in`], the tiling paint uses.
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;

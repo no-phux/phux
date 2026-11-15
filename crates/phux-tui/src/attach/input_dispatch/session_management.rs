@@ -41,15 +41,7 @@ pub(in crate::attach) fn push_actions(
         ("Delete empty session…", "delete-empty-session"),
     ]
     .into_iter()
-    .map(|(label, verb)| {
-        SelectItem::new(
-            label,
-            ResolvedAction {
-                action: verb.to_owned(),
-                args: action.args.clone(),
-            },
-        )
-    })
+    .map(|(label, verb)| SelectItem::new(label, crate::attach::resolved(verb, action.args.clone())))
     .collect();
     ctx.overlays.push(Box::new(SelectList::new(
         format!("Session {name:?}"),
@@ -311,10 +303,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn action(verb: &str) -> ResolvedAction {
-        ResolvedAction {
-            action: verb.to_owned(),
-            args: BTreeMap::from([("name".to_owned(), toml::Value::String("work".to_owned()))]),
-        }
+        crate::attach::resolved(
+            verb,
+            BTreeMap::from([("name".to_owned(), toml::Value::String("work".to_owned()))]),
+        )
     }
 
     async fn connect(
@@ -342,17 +334,7 @@ mod tests {
         }
     }
 
-    fn key(key: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press as key;
 
     fn edits(seen: &[FrameKind]) -> Vec<&Command> {
         seen.iter()
