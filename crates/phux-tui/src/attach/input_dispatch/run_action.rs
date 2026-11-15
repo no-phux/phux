@@ -97,8 +97,8 @@ pub(super) fn run_action(
 }
 
 /// ADR-0109: ask a satellite spawn to bind to the satellite's instance
-/// token, so a stranded pane can later be killed conditionally. Peers
-/// without `CONDITIONAL_KILL` skip the field; local spawns are unchanged.
+/// token, so a stranded pane can later be killed conditionally; local
+/// spawns are unchanged.
 fn bind_satellite_spawn(frame: &mut FrameKind) {
     if matches!(
         frame,
