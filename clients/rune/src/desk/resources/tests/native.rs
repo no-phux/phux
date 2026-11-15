@@ -84,26 +84,7 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
         let records = [moved, reused];
         let attach_id = seed(&client, &records).expect("reconnect attach");
         install_arrangement(&client, &records, &doc(split(9, 1)));
-        let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-            .with_sessions(vec![
-                SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-            ])
-            .with_resources(
-                records
-                    .iter()
-                    .map(|r| {
-                        ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                            .with_session(Some(SessionId::new(1)))
-                    })
-                    .collect(),
-            );
-        client
-            .feed(FrameKind::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id: ClientId::new(1),
-            })
-            .unwrap();
+        attach_records(&client, attach_id, &records);
         client.feed(FrameKind::AttachReady { attach_id }).unwrap();
         publish(
             &client,

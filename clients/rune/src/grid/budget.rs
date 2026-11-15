@@ -19,7 +19,7 @@ use std::time::Instant;
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
 use phux_client_runtime::{Client, Runtime as ClientRuntime, ViewId};
 use phux_perf::{MetricValue, PerfReport};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{BootstrapId, ResourceId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use rune::{Cx, El, Env, Runtime, row};
@@ -76,13 +76,7 @@ impl Replica {
                     .with_active_resource(Some(ids[0].clone())),
             ])
             .with_resources(resources);
-        client
-            .feed(FrameKind::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id: ClientId::new(1),
-            })
-            .expect("attached");
+        crate::wire_fixture::attached(&client, attach_id, snapshot);
         let payload = (0..rows)
             .map(|row| format!("{row:02} {FILL}"))
             .collect::<Vec<_>>()

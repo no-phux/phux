@@ -47,12 +47,11 @@ fn replace_records(client: &Client, records: Vec<ResourceRecord>) {
             .with_live(Some(SessionId::new(1))),
     ])
     .with_resources(records);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 fn accept_hide(

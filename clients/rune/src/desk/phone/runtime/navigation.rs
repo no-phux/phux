@@ -2,7 +2,7 @@ use super::*;
 use crate::desk::phone::navigation::Page;
 use phux_client_runtime::control::Topology;
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
-use phux_protocol::wire::frame::{CommandResult, CommandValue};
+use phux_protocol::wire::frame::CommandValue;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 mod layout;
@@ -28,12 +28,7 @@ fn inventory(rt: &mut Runtime<Desk>) {
 fn set_inventory(rt: &mut Runtime<Desk>, snapshot: SessionSnapshot) {
     let client = rt.state.client.clone().unwrap();
     let request_id = client.refresh_topology().unwrap();
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request_id, CommandValue::State(snapshot.clone()));
     rt.update(|d, _| d.topology = Some(Topology::from_snapshot(&snapshot)));
 }
 

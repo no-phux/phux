@@ -52,26 +52,7 @@ fn reattach(client: &Client, server: u8) {
     let records = [record(1, ResourceKind::AccessibilityTree), terminal];
     let attach_id = seed(client, &records).unwrap();
     install_arrangement(client, &records, &doc(LayoutNode::Leaf(id(1))));
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-        ])
-        .with_resources(
-            records
-                .iter()
-                .map(|r| {
-                    ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                        .with_session(Some(SessionId::new(1)))
-                })
-                .collect(),
-        );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    attach_records(client, attach_id, &records);
     publish(client, 2, ResourceKind::Terminal, b"spawned terminal");
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
     outbound(client);
@@ -89,12 +70,11 @@ fn advertise_spawn(client: &Client) {
             record(1, ResourceKind::AccessibilityTree),
             record(2, ResourceKind::Terminal),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 fn pending_layout(client: &Client, rt: &mut Runtime<Desk>) -> (OperationId, u32) {

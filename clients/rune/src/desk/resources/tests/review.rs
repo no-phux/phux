@@ -11,29 +11,6 @@ fn window(client: &Arc<Client>) -> Runtime<Desk> {
     rt
 }
 
-fn attached(client: &Client, attach_id: u32, records: &[ResourceRecord]) {
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-        ])
-        .with_resources(
-            records
-                .iter()
-                .map(|r| {
-                    ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                        .with_session(Some(SessionId::new(1)))
-                })
-                .collect(),
-        );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
-}
-
 #[test]
 fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() {
     for include_lost in [true, false] {
@@ -68,7 +45,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         let records = [record(2, ResourceKind::AccessibilityTree).with_live(Some(id(1)))];
         let attach_id = seed(&client, &records).unwrap();
         install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
-        attached(&client, attach_id, &records);
+        attach_records(&client, attach_id, &records);
         publish(
             &client,
             1,
@@ -122,7 +99,7 @@ fn first_connection_cut_before_attach_ready_survives_server_identity_establishme
     let records = [record(1, ResourceKind::AccessibilityTree)];
     let attach_id = seed(&client, &records).unwrap();
     install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
-    attached(&client, attach_id, &records);
+    attach_records(&client, attach_id, &records);
     publish(
         &client,
         1,
@@ -157,12 +134,11 @@ fn foreign_fixture() -> (Arc<Client>, Runtime<Desk>) {
                 .with_live(Some(SessionId::new(2))),
         ])
         .with_resources(vec![record(1, ResourceKind::AccessibilityTree), second]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        &client,
+        request,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
     // GET_STATE advertises B's session/resource without subscribing its pump.
     // The home ATTACHED snapshot above intentionally contained only A.
     let refresh = client.with_control(ControlPlane::refresh_topology).unwrap();
@@ -177,12 +153,7 @@ fn foreign_fixture() -> (Arc<Client>, Runtime<Desk>) {
             ResourceInfo::resource(id(2), ResourceKind::AccessibilityTree)
                 .with_session(Some(SessionId::new(2))),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: refresh,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, refresh, CommandValue::State(snapshot));
     step(&mut rt);
     outbound(&client);
     (client, rt)

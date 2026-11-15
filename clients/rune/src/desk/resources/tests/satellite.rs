@@ -45,12 +45,7 @@ fn a_satellite_surface_on_a_hub_is_listed_shown_and_streamed() {
                 .with_title(Some("display".to_owned()))
                 .with_control(Some(phux_protocol::wire::frame::ControlClass::Display)),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request, CommandValue::State(snapshot));
     step(&mut rt);
     assert!(rt.state.is_document(&surface), "the surface is a document");
     let hit = rt

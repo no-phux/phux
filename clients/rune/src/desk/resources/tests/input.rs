@@ -34,12 +34,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
         ])
         .with_resources(vec![surface]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request, CommandValue::State(snapshot));
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
     outbound(&client);
@@ -103,12 +98,11 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     // The host's clipboard lands on this machine's.
     let (copy, _) = sent[5].clone();
     let (paste, _) = sent[6].clone();
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: copy,
-            result: CommandResult::OkWith(CommandValue::Bytes(b"from the host".to_vec())),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        &client,
+        copy,
+        CommandValue::Bytes(b"from the host".to_vec()),
+    );
     step(&mut rt);
     assert_eq!(
         board.text().as_deref().map(String::as_str),

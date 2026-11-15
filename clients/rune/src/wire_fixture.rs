@@ -6,8 +6,9 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
     ServerFeatureExt, ServerFeatureExtSet,
 };
-use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
+use phux_protocol::wire::info::SessionSnapshot;
 
 /// What the client has sent since last asked.
 pub fn outbound(client: &Client) -> Vec<FrameKind> {
@@ -118,4 +119,15 @@ pub fn bootstrap(
     for frame in bootstrap_frames(terminal, ids, profile, size, payload) {
         client.feed(frame).unwrap();
     }
+}
+
+/// The server's answer to attach `attach_id`: `snapshot`, as client 1.
+pub fn attached(client: &Client, attach_id: u32, snapshot: SessionSnapshot) {
+    client
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
 }

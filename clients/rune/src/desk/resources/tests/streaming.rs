@@ -372,12 +372,11 @@ fn replace_record(client: &Client, record: ResourceRecord) {
                 .with_live(Some(SessionId::new(1))),
         ])
         .with_resources(vec![record]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 #[test]

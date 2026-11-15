@@ -10,8 +10,8 @@ use phux_client_runtime::{
 use phux_protocol::{
     ResourceKind,
     ids::{
-        ArrangementKey, AuthorityId, BootstrapId, ClientId, ResourceKey, Revision, SessionId,
-        SessionKey, StreamId, WindowId,
+        ArrangementKey, AuthorityId, BootstrapId, ResourceKey, Revision, SessionId, SessionKey,
+        StreamId, WindowId,
     },
     wire::{
         frame::{
@@ -147,13 +147,7 @@ fn boot(client: &Client) {
                 })
                 .collect(),
         );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    crate::wire_fixture::attached(client, attach_id, snapshot);
     for record in records()
         .iter()
         .filter(|r| r.kind == ResourceKind::Terminal)

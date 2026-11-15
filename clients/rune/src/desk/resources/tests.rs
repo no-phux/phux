@@ -9,8 +9,8 @@ use phux_client_runtime::{
 use phux_protocol::{
     caps::BootstrapStreamProfile,
     ids::{
-        ArrangementKey, AuthorityId, BootstrapId, ClientId, ResourceKind, Revision, SessionId,
-        SessionKey, StreamId, WindowId,
+        ArrangementKey, AuthorityId, BootstrapId, ResourceKind, Revision, SessionId, SessionKey,
+        StreamId, WindowId,
     },
     wire::{
         frame::{
@@ -117,13 +117,7 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
             })
             .collect(),
     );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    crate::wire_fixture::attached(&client, attach_id, snapshot);
     for record in records.iter().filter(|r| r.kind == ResourceKind::Terminal) {
         publish(
             &client,
@@ -207,6 +201,24 @@ fn remove(client: &Client, n: u8, kind: ResourceKind) {
             },
         })
         .unwrap();
+}
+
+/// Attach `attach_id` with a snapshot of `records`, the first in front.
+fn attach_records(client: &Client, attach_id: u32, records: &[ResourceRecord]) {
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
+        ])
+        .with_resources(
+            records
+                .iter()
+                .map(|r| {
+                    ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
+                        .with_session(Some(SessionId::new(1)))
+                })
+                .collect(),
+        );
+    crate::wire_fixture::attached(client, attach_id, snapshot);
 }
 
 #[test]

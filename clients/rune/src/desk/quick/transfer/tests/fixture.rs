@@ -4,7 +4,7 @@ use phux_client_runtime::{
     control::{ControlOptions, ControlPlane},
 };
 use phux_protocol::{
-    ids::{ArrangementKey, AuthorityId, ClientId, ResourceKey, ResourceKind, Revision, WindowId},
+    ids::{ArrangementKey, AuthorityId, ResourceKey, ResourceKind, Revision, WindowId},
     wire::{
         frame::{
             Command, CommandValue, FrameKind, OrganizationPage, ResourceRecord, SessionRecord,
@@ -65,13 +65,7 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
             ResourceInfo::new(terminal(), WindowId::new(1), 80, 24)
                 .with_session(Some(SessionId::new(2))),
         ]);
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    crate::wire_fixture::attached(&client, attach_id, snapshot);
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
     let mut desk = Desk::settings_test_fixture();
     desk.status = Status::Attached;
