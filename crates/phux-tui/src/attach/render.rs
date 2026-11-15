@@ -18,9 +18,10 @@ use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
+    color::Rgb,
     render::{CellIterator, CursorVisualStyle, Dirty, RowIteration, Snapshot},
     screen::CellWide,
-    style::{RgbColor, Style, StyleColor, Underline},
+    style::{Style, StyleColor, Underline},
 };
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
 use phux_protocol::{
@@ -61,8 +62,8 @@ struct RowBuf {
 struct OwnedRowCell {
     text: String,
     style_index: u32,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     wide: CellWide,
 }
 
@@ -78,8 +79,8 @@ struct RowCells<'buf> {
 struct RowCell<'buf> {
     text: &'buf str,
     style_index: u32,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     wide: CellWide,
 }
 
@@ -171,8 +172,8 @@ fn style_run_index(
     buf: &RowBuf,
     index: usize,
     style: &Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) -> Option<u32> {
     if index == 0 {
         return None;
@@ -1253,8 +1254,8 @@ fn emit_sgr_absolute(
     out: &mut Vec<u8>,
     emitted: &mut Option<EmittedStyle>,
     style: Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) {
     if is_default_render(&style, fg, bg) {
         out.extend_from_slice(b"\x1b[0m");
@@ -1493,7 +1494,7 @@ fn render_clean_frame_cursor(
 /// rendered-frame path. Mirrors the server synthesizer's `collect_cell` and
 /// `phux-record`'s `replay::project_cell`; the cell-projection conformance
 /// test in `crates/phux/tests/conformance` holds all three to one corpus.
-fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> CellStyle {
+fn to_cell_style(style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) -> CellStyle {
     CellStyle {
         bold: style.bold,
         faint: style.faint,
@@ -1512,7 +1513,7 @@ fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> C
 /// Project a cell color to [`CellColor`], preferring the explicit per-cell
 /// [`StyleColor`] so a palette index keeps its identity, and falling back to
 /// the iteration's resolved RGB. Mirrors the synthesizer's `cell_color`.
-fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
+fn cell_color(resolved: Option<Rgb>, raw: StyleColor) -> CellColor {
     match raw {
         StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
         StyleColor::Rgb(rgb) => CellColor::Rgb {
@@ -1547,7 +1548,7 @@ pub(super) fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<
 
 /// The pen active on the outer terminal. `fg`/`bg` are the resolved RGB
 /// colours from the cell iterator, not `Style`'s palette fields.
-type EmittedStyle = (Style, Option<RgbColor>, Option<RgbColor>);
+type EmittedStyle = (Style, Option<Rgb>, Option<Rgb>);
 
 /// A cell's pen identity within ONE row read, in 20 bytes.
 ///
@@ -1562,9 +1563,9 @@ struct PenKey {
     /// `read_row` that produced it.
     style_index: u32,
     /// The cell's resolved foreground.
-    fg: Option<RgbColor>,
+    fg: Option<Rgb>,
     /// The cell's resolved background.
-    bg: Option<RgbColor>,
+    bg: Option<Rgb>,
     /// How copy-mode restyles this cell (selection or search hit).
     mark: CellMark,
 }
@@ -1573,7 +1574,7 @@ struct PenKey {
 /// attributes and no explicit colors. Such a run needs only a plain `\x1b[0m`
 /// reset (which `emit_sgr_set` already produces), and at row start the active
 /// state is already default, so it emits nothing at all.
-fn is_default_render(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> bool {
+fn is_default_render(style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) -> bool {
     fg.is_none() && bg.is_none() && *style == Style::default()
 }
 
@@ -1584,8 +1585,8 @@ fn emit_sgr_if_changed(
     out: &mut Vec<u8>,
     emitted: &mut Option<EmittedStyle>,
     style: Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) {
     if is_default_render(&style, fg, bg) {
         // Returning to default mid-row needs an explicit reset; at row start
@@ -1606,7 +1607,7 @@ fn emit_sgr_if_changed(
 }
 
 /// Write `\x1b[0m` followed by the SGR set for `(style, fg, bg)`.
-fn emit_sgr_set(out: &mut Vec<u8>, style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) {
+fn emit_sgr_set(out: &mut Vec<u8>, style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) {
     // Encode via the shared server/client SGR emitter (phux-protocol) so the
     // two ends cannot drift.
     // It appends straight to the row buffer, so a style run costs no scratch
@@ -2477,8 +2478,8 @@ mod tests {
     struct Seen {
         text: String,
         wide: CellWide,
-        fg: Option<RgbColor>,
-        bg: Option<RgbColor>,
+        fg: Option<Rgb>,
+        bg: Option<Rgb>,
         attrs: VisAttrs,
     }
 

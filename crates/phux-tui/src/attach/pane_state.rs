@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::terminal::Mode;
+use libghostty_vt::mode::Mode;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 #[cfg(test)]
 use phux_client_core::session::EffectBuffer as KernelEffectBuffer;

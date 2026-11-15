@@ -38,7 +38,7 @@ fn history_row_wrapped(
 }
 
 pub(super) fn grid_ref_graphemes(
-    grid_ref: &libghostty_vt::screen::GridRef<'_>,
+    grid_ref: &libghostty_vt::grid_ref::GridRef<'_>,
 ) -> Result<Vec<char>, GhosttyEngineError> {
     let mut inline = ['\0'; 8];
     match grid_ref.graphemes(&mut inline) {

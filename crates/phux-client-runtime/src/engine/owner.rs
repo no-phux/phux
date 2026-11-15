@@ -20,11 +20,11 @@ use super::{
     SearchResults, SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
 };
 #[cfg(feature = "engine")]
+use libghostty_vt::point::{Coordinate as PointCoordinate, Point, Space as PointSpace};
+#[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
     Behavior, Behaviors, DragEvent, Geometry, Gesture, PressEvent,
 };
-#[cfg(feature = "engine")]
-use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
 #[cfg(feature = "engine")]
 use libghostty_vt::{fmt::Formatter, selection::Selection};
 
@@ -337,8 +337,8 @@ fn viewport_scroll(scroll: Scroll) -> Result<ScrollViewport, EngineError> {
 fn terminal_defaults(
     terminal: &libghostty_vt::Terminal<'_, '_>,
 ) -> Result<(Option<Rgb>, Option<Rgb>, bool), EngineError> {
-    use libghostty_vt::terminal::Mode;
-    let map = |color: libghostty_vt::style::RgbColor| Rgb {
+    use libghostty_vt::mode::Mode;
+    let map = |color: libghostty_vt::color::Rgb| Rgb {
         r: color.r,
         g: color.g,
         b: color.b,
@@ -436,7 +436,7 @@ fn apply_terminal_selection(
 #[cfg(feature = "engine")]
 fn apply_gesture_event<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {
@@ -450,7 +450,7 @@ fn apply_gesture_event<'terminal>(
 #[cfg(feature = "engine")]
 fn apply_gesture_press<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {
@@ -474,7 +474,7 @@ fn apply_gesture_press<'terminal>(
 #[cfg(feature = "engine")]
 fn apply_gesture_drag<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {

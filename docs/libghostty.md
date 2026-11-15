@@ -40,16 +40,18 @@ writes VT bytes, and reads the styled grid.
 Embedding runs this replica in the app's process
 ([embed phux](./embedding.md)).
 
-The engine is based on [libghostty-vt 1.0](https://lib.ghostty.org/vt/1.0.0/).
+The engine is Ghostty main past [libghostty-vt 1.0.1](https://lib.ghostty.org/vt/1.0.0/)
+(it reports `1.0.2`), plus phux's extensions, from
+[phall1/ghostty](https://github.com/phall1/ghostty).
 The Rust bindings track upstream, with phux extensions for staged decoding,
 input-option snapshots, parser-safe display clearing, image replay metadata,
 and safe formatter/PNG integration. Capture uses the stock snapshot encoder;
 phux bounds and indexes the resulting immutable bytes.
 Upstream terminal semantics and image placement resolution remain authoritative.
 
-The new pin builds from source with Zig 0.17 and shares the resulting native
-build across worktrees. No matching native prebuilt archives have been published;
-see [development](./development.md#libghostty-vt).
+Native builds link verified prebuilt archives of that pin on Linux and macOS;
+other targets build it from source with Zig 0.17
+([development](./development.md#libghostty-vt)).
 
 ## Snapshot compatibility
 
@@ -184,20 +186,17 @@ interface.
 
 ## Upstream correctness backports
 
-Native and browser engines share the same 1.0 source revision and include the
-post-1.0 upstream fixes without switching to the development 1.1 interface:
+Native and browser engines share one source revision. Upstream now carries
+the [partial resize backfill](https://github.com/ghostty-org/ghostty/commit/1b8b3f55bcc93d2685f7771948516af1222dcc46)
+and [render allocation recovery](https://github.com/ghostty-org/ghostty/commit/3e29fcd628a50757ad24988c721340e56f392485)
+fixes. phux keeps one change on top:
 
-- [Partial resize backfill](https://github.com/ghostty-org/ghostty/commit/1b8b3f55bcc93d2685f7771948516af1222dcc46):
-  remap references to copied rows before destroying their old page, even
-  when a later row does not fit. Release the failed row's partial allocation.
-- [Combined row growth and column shrink](https://github.com/ghostty-org/ghostty/commit/321a32a42393ab12721d2308ffff8957ce6853ad):
-  adjust the cursor's active-area coordinates before reflow so scrollback
-  pulled into view is not pushed back out. Resolve the coordinate through a
-  tracked cursor reference so pruning an old page during row growth is not
-  mistaken for cursor movement.
-- [Render allocation recovery](https://github.com/ghostty-org/ghostty/commit/3e29fcd628a50757ad24988c721340e56f392485):
-  keep failed and unprocessed rows dirty until rebuilding succeeds, so a
-  later update retries rather than exposing partially initialized cells.
+- Combined row growth and column shrink: upstream adjusts the cursor's
+  active-area row from absolute row offsets taken before the row resize,
+  which pruning an old page during that resize invalidates. phux tracks the
+  cursor through the row resize and reads its row back, with a regression
+  test (`PageList combined resize keeps cursor when row growth prunes
+  history`).
 
 ## What it does not do
 

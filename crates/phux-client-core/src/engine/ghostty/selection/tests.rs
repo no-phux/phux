@@ -3,7 +3,7 @@ use crate::engine::{
     BoundedSelectionText, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineDocumentSelection,
 };
 use crate::session::{EffectBuffer, KernelInput, SessionKernel};
-use libghostty_vt::terminal::PointSpace;
+use libghostty_vt::point::Space as PointSpace;
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId,
 };

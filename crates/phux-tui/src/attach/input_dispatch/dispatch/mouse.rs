@@ -580,7 +580,7 @@ pub(super) fn pane_scroll_modes(
         wants_mouse_tracking: terminal_wants_mouse_tracking(terminal),
         alt_screen: terminal_in_alt_screen(terminal),
         alt_scroll: terminal
-            .mode(libghostty_vt::terminal::Mode::ALT_SCROLL)
+            .mode(libghostty_vt::mode::Mode::ALT_SCROLL)
             .unwrap_or(false),
     })
 }

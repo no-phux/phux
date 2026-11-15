@@ -1,12 +1,18 @@
 //! The walk from libghostty's row and cell iterators to [`Cell`] records.
 
 use libghostty_vt::Terminal;
+use libghostty_vt::point::{Coordinate as PointCoordinate, Point};
 use libghostty_vt::render::{
     CellIteration, CellIterator, Colors, RowIteration, RowIterator, Snapshot,
 };
-use libghostty_vt::screen::{Cell as RawCell, CellContentTag, GridRef};
-use libghostty_vt::style::{RgbColor, Style, StyleColor};
-use libghostty_vt::terminal::{Point, PointCoordinate};
+use libghostty_vt::{
+    color::Rgb as RgbColor,
+    style::{Style, StyleColor},
+};
+use libghostty_vt::{
+    grid_ref::GridRef,
+    screen::{Cell as RawCell, CellContentTag},
+};
 
 use super::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,

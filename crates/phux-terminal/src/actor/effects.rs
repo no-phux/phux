@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::terminal::{
+use libghostty_vt::effect::{
     ProgramStatus, ProgramStatusKind, ProgramStatusState, ProgressReport, ProgressState,
     SemanticPrompt, SemanticPromptKind,
 };

@@ -17,12 +17,15 @@ use std::{
 
 use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
+    color::{Palette, PaletteIndex, Rgb as RgbColor},
+    effect::ClipboardWrite,
     fmt::Formatter,
-    screen::{CellContentTag, CellWide, TrackedGridRef},
+    grid_ref::TrackedGridRef,
+    point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
+    screen::{CellContentTag, CellWide},
     selection::Selection,
     snapshot::{FeedDecoder, FeedIncrementalDecoder},
-    style::{Palette, PaletteIndex, RgbColor},
-    terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},
+    terminal::ScrollViewport,
 };
 use phux_protocol::{
     BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,

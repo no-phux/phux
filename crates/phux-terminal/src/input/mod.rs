@@ -16,7 +16,7 @@ pub use key::PerTerminalKeyEncoder;
 pub use mouse::PerTerminalMouseEncoder;
 pub use paste::{PasteOutcome, PerTerminalPasteEncoder};
 
-use libghostty_vt::{Error, Terminal as GhosttyTerminal, terminal::Mode};
+use libghostty_vt::{Error, Terminal as GhosttyTerminal, mode::Mode};
 
 /// Complete `Send` snapshot of terminal state consulted by input encoders.
 ///

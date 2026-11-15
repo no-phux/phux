@@ -1,7 +1,7 @@
 //! Focus reports, gated on the pane's DEC 1004 mode. `FocusEvent` is
 //! libghostty's own type (ADR-0008).
 
-use libghostty_vt::{Error, Terminal as GhosttyTerminal, terminal::Mode};
+use libghostty_vt::{Error, Terminal as GhosttyTerminal, mode::Mode};
 use phux_protocol::input::focus::FocusEvent;
 
 /// Per-pane focus encoder; owns the reusable output buffer.

@@ -245,7 +245,7 @@ fn scan_blank_columns(scan: &mut NeedleScan<'_>, blanks: &mut Vec<u16>, y: u32) 
 
 /// Wide continuation cells occupy columns but contribute no searchable text.
 fn search_cell_graphemes(
-    grid_ref: &libghostty_vt::screen::GridRef<'_>,
+    grid_ref: &libghostty_vt::grid_ref::GridRef<'_>,
 ) -> Result<Option<Vec<char>>, GhosttyEngineError> {
     if matches!(
         grid_ref.cell()?.wide()?,

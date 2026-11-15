@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use bytes::Bytes;
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::terminal::SizeReportSize;
+use libghostty_vt::report::SizeReportSize;
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{
     AgentEvent, ControlAction, FrameKind, ResourceLifecycle, TerminalSignal,

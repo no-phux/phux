@@ -221,7 +221,7 @@ impl Owner {
     #[cfg(feature = "engine")]
     pub(super) fn bracketed_paste(&self, id: &ResourceId) -> Result<bool, EngineError> {
         self.terminal(id)?
-            .mode(libghostty_vt::terminal::Mode::BRACKETED_PASTE)
+            .mode(libghostty_vt::mode::Mode::BRACKETED_PASTE)
             .map_err(|error| engine_error(error.to_string()))
     }
 }

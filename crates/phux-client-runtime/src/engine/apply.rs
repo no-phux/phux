@@ -9,7 +9,7 @@ use super::{FrameColors, Rgb};
 
 #[cfg(feature = "engine")]
 pub(super) fn frame_colors(colors: &libghostty_vt::render::Colors) -> FrameColors {
-    let rgb = |color: libghostty_vt::style::RgbColor| Rgb {
+    let rgb = |color: libghostty_vt::color::Rgb| Rgb {
         r: color.r,
         g: color.g,
         b: color.b,

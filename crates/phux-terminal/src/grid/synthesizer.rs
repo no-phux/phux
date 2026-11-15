@@ -20,14 +20,17 @@ use phux_protocol::{
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
+    color::Rgb as RgbColor,
     fmt::{Format, Formatter},
+    grid_ref::GridRef,
+    mode::Mode,
+    point::{Coordinate as PointCoordinate, Point},
     render::{
         CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
     },
-    screen::{CellSemanticContent, CellWide, GridRef},
+    screen::{CellSemanticContent, CellWide},
     selection::Selection,
-    style::{RgbColor, Style, StyleColor},
-    terminal::{Mode, Point, PointCoordinate},
+    style::{Style, StyleColor},
 };
 
 use super::reference::{ConsumerReference, ReferenceCursorMode};
