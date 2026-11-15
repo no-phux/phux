@@ -614,10 +614,9 @@ fn ensure_remote_listener(
     }
 }
 
-/// Ask the server to re-exec so the config just written takes effect, then
-/// wait until it answers again. Panes stay attached across that re-exec
-/// (`phux upgrade`).
-fn rebind_server(socket: &Path) -> Result<(), String> {
+/// Re-exec the server so the config just written takes effect, then wait
+/// until it answers again. Panes stay attached (`phux upgrade`).
+pub(crate) fn rebind_server(socket: &Path) -> Result<(), String> {
     let outcome = super::upgrade::LiveUpgrade::new(socket, false).and_then(|mut env| {
         // Same consent as `phux upgrade` with no `--close-agent-sessions`:
         // a current server re-binds without a second question. Only a

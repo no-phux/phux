@@ -15,6 +15,7 @@ use crate::commands::sh_quote;
 
 mod adoption;
 mod linger;
+mod live_unit;
 mod reconcile;
 pub(crate) mod supervision;
 mod unit;
@@ -28,6 +29,7 @@ use adoption::{
     probe_unit, supervision_state, unit_is_running, unit_supervises,
 };
 pub(crate) use linger::probe_linger;
+pub(crate) use live_unit::listeners_on_resume;
 
 pub(crate) use reconcile::{Reconcile, reconcile_unit};
 use reconcile::{plist_container_end, settled};
@@ -243,24 +245,7 @@ fn reconcile_wrapper(quiet: bool) {
 /// The `PHUX_SOCKET` a unit pins, if any. Read from the unit because the
 /// question is whether the server *this unit* supervises is alive.
 fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
-    match manager {
-        Manager::Launchd => {
-            let key = body
-                .lines()
-                .position(|line| line.trim() == "<key>PHUX_SOCKET</key>")?;
-            let value = body.lines().nth(key + 1)?.trim();
-            let inner = value.strip_prefix("<string>")?.strip_suffix("</string>")?;
-            Some(PathBuf::from(xml_unescape(inner)))
-        }
-        Manager::Systemd => {
-            let value = body.lines().find_map(|line| {
-                line.trim()
-                    .strip_prefix("Environment=\"PHUX_SOCKET=")?
-                    .strip_suffix('"')
-            })?;
-            Some(PathBuf::from(systemd_unquote(value)))
-        }
-    }
+    live_unit::unit_env(manager, body, "PHUX_SOCKET").map(PathBuf::from)
 }
 
 // In-place `--hub`: `phux host add --role satellite` patches `--hub` into the
@@ -1025,7 +1010,7 @@ pub(crate) fn run_install(
     }
 
     if incumbent_live && already_supervised(manager, &plan) {
-        return ExitCode::SUCCESS;
+        return live_unit::refresh_running(manager, &plan);
     }
 
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
@@ -1157,7 +1142,10 @@ pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
         phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
     )
     .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
-    Ok(())
+    // A paired server refuses to start on a state directory others can write.
+    let state = phux_server::telemetry::state_dir();
+    phux_server::owner_dir::tighten(&state)
+        .map_err(|err| format!("could not make {} owner-only: {err}", state.display()))
 }
 
 /// A unit whose server opens a remote entry point starts only under

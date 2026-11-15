@@ -12,6 +12,10 @@ use super::ssh::{COMMAND_NOT_FOUND, SSH_FAILED, ssh_hostname, ssh_run};
 /// (002 on stock Ubuntu). The remote shell runs ssh's joined words.
 const OWNER_ONLY: &str = "umask 077;";
 
+/// What `phux service install --adopt` prints over the server its unit
+/// already runs.
+const SERVICE_ALREADY_RUNNING: &str = "phux service already running";
+
 /// Make sure a server is running on `ssh_host` and, under
 /// [`ServicePolicy::Install`], that it keeps running. Confirms `phux` first so a
 /// lost install is reported as that.
@@ -69,7 +73,12 @@ pub(super) fn ensure_remote_server_after_version(
                     ],
                 )?;
                 if adopt.status.success() {
-                    return Ok(Supervision::Adopted);
+                    // The incumbent was the unit's own server: nothing armed.
+                    return Ok(if adopt.stdout.contains(SERVICE_ALREADY_RUNNING) {
+                        Supervision::Service
+                    } else {
+                        Supervision::Adopted
+                    });
                 }
                 Some(adopt.failure_detail())
             } else {

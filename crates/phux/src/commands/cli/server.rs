@@ -264,6 +264,10 @@ pub(crate) enum ServiceAction {
         /// socket. With it, nothing is stopped and nothing crash-loops. The
         /// running process itself is never adopted: neither launchd nor
         /// systemd can restart-supervise a process it did not start.
+        ///
+        /// When the live server is the one this systemd unit already runs,
+        /// the unit is rewritten, and a listener it gains comes up by
+        /// restarting that server in place, panes kept (`phux upgrade`).
         #[usage(long)]
         adopt: bool,
 
