@@ -3,9 +3,8 @@
 
 use super::*;
 
-#[test]
-fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
-    use phux_protocol::wire::frame::{ControlClass, DocumentInput, DocumentKey, ErrorCode};
+fn controlled_fixture() -> (Arc<Client>, Runtime<Desk>) {
+    use phux_protocol::wire::frame::ControlClass;
     let (client, mut rt) = fixture(
         &[record(1, ResourceKind::PixelSurface)],
         &doc(LayoutNode::Leaf(id(1))),
@@ -42,6 +41,13 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         .unwrap();
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
+    (client, rt)
+}
+
+#[test]
+fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
+    use phux_protocol::wire::frame::{DocumentInput, DocumentKey, ErrorCode};
+    let (client, mut rt) = controlled_fixture();
     outbound(&client);
     assert_touch_ownership(&client, &mut rt);
     let board = rune::clipboard::memory();
@@ -162,6 +168,47 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         )),
         "a view-only pane sends nothing"
     );
+}
+
+#[test]
+fn a_delayed_document_paste_respects_new_surface_and_runtime_owners() {
+    use phux_protocol::wire::frame::DocumentInput;
+    for replace in [false, true] {
+        let (old, mut rt) = controlled_fixture();
+        let (new, mut next) = controlled_fixture();
+        let board = rune::clipboard::memory();
+        board.set_text("private clipboard text");
+        rt.use_clipboard(&board);
+        outbound(&old);
+        outbound(&new);
+        rt.update(|desk, tx| {
+            assert!(desk.paste_into_document(tx));
+            if replace {
+                desk.replace_connection(crate::desk::link::Replacement::Retry);
+                // The next real client has the same numeric resource handle
+                // and a fully decoded, admitted surface. It is not our owner.
+                std::mem::swap(&mut desk.connection, &mut next.state.connection);
+            } else {
+                desk.toggle_settings();
+            }
+        });
+        rt.frame(0.0);
+        for client in [&old, &new] {
+            assert!(
+                outbound(client).iter().all(|frame| !matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: Command::SendDocumentInput {
+                            intent: DocumentInput::Paste { .. },
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "a queued paste cannot address a hidden or replacement surface"
+            );
+        }
+    }
 }
 
 fn assert_touch_ownership(client: &Client, rt: &mut Runtime<Desk>) {

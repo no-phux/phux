@@ -38,6 +38,13 @@ pub fn paste_needs_confirmation(bracketed: bool, text: &str) -> bool {
 }
 
 impl Desk {
+    /// Recheck queued clipboard work against today's foreground owner.
+    /// A paste must never replace a held question or address a hidden pane.
+    pub(super) fn pastes_allowed(&self) -> bool {
+        self.modal()
+            .is_none_or(|modal| modal.allows(Shortcut::Paste))
+    }
+
     /// What has the keyboard instead of the terminal, if anything: the one
     /// rule for keys, the input method and the IME's anchor in the grid.
     pub fn modal(&self) -> Option<Modal> {

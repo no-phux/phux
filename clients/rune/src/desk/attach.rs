@@ -10,7 +10,6 @@ use phux_protocol::ids::ResourceId;
 use rune::{ClipboardContent, Tx};
 
 use super::{Desk, NoticeKind};
-use crate::keys::Shortcut;
 
 /// `path` as one shell word.
 pub fn quoted(path: &Path) -> String {
@@ -90,13 +89,6 @@ impl Desk {
             return self.say(NoticeKind::Error, "Nothing was pasted.");
         }
         self.paste_content(terminal, content);
-    }
-
-    /// Whether what has the keyboard lets a paste through. A paste is a
-    /// command like any other, and it must not replace a held question.
-    fn pastes_allowed(&self) -> bool {
-        self.modal()
-            .is_none_or(|modal| modal.allows(Shortcut::Paste))
     }
 
     /// A paste of any kind: files, then an image, then text.

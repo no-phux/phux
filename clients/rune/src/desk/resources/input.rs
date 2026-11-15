@@ -106,6 +106,7 @@ impl Desk {
             if !fence
                 .as_ref()
                 .is_some_and(|fence| fence.is_current(&desk.connection))
+                || !desk.pastes_allowed()
             {
                 return;
             }
