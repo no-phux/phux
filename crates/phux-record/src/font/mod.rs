@@ -5,55 +5,79 @@
 //! palettes stay exact. The accepted cost is narrow coverage; CJK and emoji
 //! render as tofu.
 //!
-//! `spleen_8x16` is generated from `assets/spleen-8x16.bdf` by
-//! `bun tools/main.ts gen-bitmap-font` and committed; there is no build-time
-//! codegen.
-//! [`boxdraw`] draws box/block glyphs before the face and a small set of
-//! missing symbols after it.
+//! The face is parsed from the vendored `assets/spleen-8x16.bdf` on first
+//! use. [`boxdraw`] draws box/block glyphs before the face and a small set
+//! of missing symbols after it.
+
+use std::sync::LazyLock;
 
 pub(crate) mod boxdraw;
-mod spleen_8x16;
 
-/// A monospaced 1-bit bitmap face.
-///
-/// `ranges` is sorted and non-overlapping: each entry maps an inclusive
-/// codepoint range onto dense glyph bitmaps, one byte per pixel row, MSB
-/// leftmost.
+/// Spleen 2.1.0 (BSD-2-Clause; its notice is in `/THIRD-PARTY-NOTICES.md`),
+/// chosen for its box drawing and Powerline coverage. Every glyph is 8x16.
+const SPLEEN_BDF: &str = include_str!("../../assets/spleen-8x16.bdf");
+
+/// Holes up to this many codepoints between glyphs read as blank glyphs, not
+/// as missing ones.
+const MAX_GAP: u32 = 8;
+
+/// A monospaced 1-bit bitmap face: glyphs sorted by codepoint, one byte per
+/// pixel row, MSB leftmost.
 #[derive(Debug)]
 pub(crate) struct BitmapFont {
     pub(crate) cell_w: u32,
     pub(crate) cell_h: u32,
-    ranges: &'static [(u32, u32, &'static [[u8; 16]])],
+    glyphs: LazyLock<Vec<(u32, [u8; 16])>>,
 }
 
 impl BitmapFont {
     /// The bitmap for `ch`, or `None` when the face has no glyph for it.
-    pub(crate) fn glyph(&self, ch: char) -> Option<&'static [u8; 16]> {
-        let code = ch as u32;
-        let idx = self
-            .ranges
-            .binary_search_by(|(start, end, _)| {
-                if code < *start {
-                    std::cmp::Ordering::Greater
-                } else if code > *end {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
+    pub(crate) fn glyph(&self, ch: char) -> Option<&[u8; 16]> {
+        let index = self
+            .glyphs
+            .binary_search_by_key(&(ch as u32), |(code, _)| *code)
             .ok()?;
-        let (start, _, bitmaps) = self.ranges.get(idx)?;
-        bitmaps.get((code - start) as usize)
+        Some(&self.glyphs[index].1)
     }
 }
 
-/// The vendored face: Spleen 8x16, BSD-2-Clause, chosen for its box drawing
-/// and Powerline coverage.
 pub(crate) static SPLEEN_8X16: BitmapFont = BitmapFont {
     cell_w: 8,
     cell_h: 16,
-    ranges: &spleen_8x16::RANGES,
+    glyphs: LazyLock::new(|| parse_bdf(SPLEEN_BDF)),
 };
+
+/// Every encoded glyph's `BITMAP` rows, with small holes padded blank.
+fn parse_bdf(bdf: &str) -> Vec<(u32, [u8; 16])> {
+    let mut parsed = Vec::new();
+    let mut code = None;
+    let mut lines = bdf.lines();
+    while let Some(line) = lines.next() {
+        if let Some(value) = line.strip_prefix("ENCODING ") {
+            code = value.trim().parse::<u32>().ok();
+        } else if line == "BITMAP" {
+            let mut rows = [0; 16];
+            for row in &mut rows {
+                let hex = lines.next().unwrap_or_default().trim();
+                *row = u8::from_str_radix(hex, 16).unwrap_or(0);
+            }
+            if let Some(code) = code.take() {
+                parsed.push((code, rows));
+            }
+        }
+    }
+    parsed.sort_unstable_by_key(|(code, _)| *code);
+    let mut glyphs: Vec<(u32, [u8; 16])> = Vec::with_capacity(parsed.len());
+    for (code, rows) in parsed {
+        if let Some(&(last, _)) = glyphs.last()
+            && code - last - 1 <= MAX_GAP
+        {
+            glyphs.extend((last + 1..code).map(|blank| (blank, [0; 16])));
+        }
+        glyphs.push((code, rows));
+    }
+    glyphs
+}
 
 /// Synthesize bold by OR-ing a pixel row with itself shifted one column.
 /// Bold changes weight only, never colour, matching libghostty.
@@ -87,17 +111,22 @@ mod tests {
     }
 
     #[test]
-    fn ranges_are_sorted_and_non_overlapping() {
-        // `glyph` binary-searches.
-        let mut prev_end = None;
-        for (start, end, bitmaps) in SPLEEN_8X16.ranges {
-            assert!(start <= end);
-            assert!(
-                prev_end.is_none_or(|prev| *start > prev),
-                "U+{start:04X} overlaps"
-            );
-            assert_eq!(bitmaps.len(), (end - start + 1) as usize, "U+{start:04X}");
-            prev_end = Some(*end);
-        }
+    fn every_glyph_is_one_full_cell() {
+        let cells: Vec<&str> = SPLEEN_BDF
+            .lines()
+            .filter(|line| line.starts_with("BBX ") || line.starts_with("FONTBOUNDINGBOX "))
+            .collect();
+        assert_eq!(cells.len(), 970);
+        assert!(
+            cells.iter().all(|line| line.ends_with(" 8 16 0 -4")),
+            "{cells:?}"
+        );
+        assert_eq!(
+            SPLEEN_8X16.glyph('A'),
+            Some(&[
+                0x00, 0x00, 0x7c, 0xc6, 0xc6, 0xc6, 0xfe, 0xc6, 0xc6, 0xc6, 0xc6, 0xc6, 0x00, 0x00,
+                0x00, 0x00
+            ])
+        );
     }
 }
