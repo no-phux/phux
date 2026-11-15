@@ -73,13 +73,13 @@ impl Desk {
     /// Select a session when none is selected. True when that changed
     /// anything on screen.
     pub(super) fn settle_home(&mut self, client: &Client) -> bool {
-        if self.status != Status::Attached {
+        if self.connection.status != Status::Attached {
             return false;
         }
         if self.settle_bare(client) {
             return true;
         }
-        let Some(topology) = &self.topology else {
+        let Some(topology) = &self.connection.topology else {
             return false;
         };
         let selected = client.selected_session();
@@ -100,7 +100,9 @@ impl Desk {
             }
             return false;
         }
-        if self.pending_session.is_some() || !link::seeded(client, self.link.org_unavailable) {
+        if self.connection.pending_session.is_some()
+            || !link::seeded(client, self.link.org_unavailable)
+        {
             return false;
         }
         let back = self.link.home.as_ref().and_then(|(name, key)| {
@@ -255,8 +257,8 @@ mod tests {
         let items = crate::palette::session_items(Some(&graph), &[]);
         let titles: Vec<_> = items.into_iter().map(|item| item.title).collect();
         assert_eq!(titles, ["work"], "the palette");
-        let mut desk = Desk::settings_test_fixture();
-        desk.topology = Some(graph);
+        let mut desk = crate::test_support::settings_window();
+        desk.connection.topology = Some(graph);
         let names: Vec<_> = desk
             .ordered_sessions()
             .iter()

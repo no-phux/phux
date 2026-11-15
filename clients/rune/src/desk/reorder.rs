@@ -81,11 +81,16 @@ impl Desk {
     /// The sessions as the sidebar lists them: the stored order, then the
     /// rest as the server lists them. The quick terminal's is the panel's.
     pub fn ordered_sessions(&self) -> Vec<&SessionDescriptor> {
-        let all = self.topology.iter().flat_map(|t| &t.sessions);
+        let all = self.connection.topology.iter().flat_map(|t| &t.sessions);
         let listed =
             |s: &&SessionDescriptor| self.quick.is_some() || !super::quick::hidden(&s.name);
         let mut sessions: Vec<_> = all.filter(listed).collect();
-        session_order::list(&mut sessions, &self.reorder.order, |s| s.key, |s| s.touched);
+        session_order::list(
+            &mut sessions,
+            &self.connection.reorder.order,
+            |s| s.key,
+            |s| s.touched,
+        );
         sessions
     }
 
@@ -93,23 +98,24 @@ impl Desk {
     /// and on release move the held item there.
     pub fn drag_reorder(&mut self, grab: Grab, drag: &Drag) {
         if drag.phase == Phase::Down {
-            self.reorder.held = None;
+            self.connection.reorder.held = None;
             return;
         }
         let [x, y] = drag.window_point();
         let strip: Vec<(Grab, f32)> = match grab {
             Grab::Tab(_) => self
+                .connection
                 .tabs
                 .list
                 .iter()
                 .map(|tab| Grab::Tab(tab.id))
-                .filter_map(|g| Some((g, self.reorder.rects.get(&g)?[0])))
+                .filter_map(|g| Some((g, self.connection.reorder.rects.get(&g)?[0])))
                 .collect(),
             Grab::Session(_) => self
                 .ordered_sessions()
                 .iter()
                 .filter_map(|s| Some(Grab::Session(s.key?)))
-                .filter_map(|g| Some((g, self.reorder.rects.get(&g)?[1])))
+                .filter_map(|g| Some((g, self.connection.reorder.rects.get(&g)?[1])))
                 .collect(),
         };
         let at = if matches!(grab, Grab::Tab(_)) { x } else { y };
@@ -117,10 +123,10 @@ impl Desk {
             return;
         };
         if drag.phase == Phase::Move {
-            self.reorder.held = Some((grab, over));
+            self.connection.reorder.held = Some((grab, over));
             return;
         }
-        self.reorder.held = None;
+        self.connection.reorder.held = None;
         if drag.cancelled() || over == grab {
             return;
         }
@@ -133,7 +139,7 @@ impl Desk {
 
     /// Move a tab's group to where `to`'s is, in the session's arrangement.
     fn move_tab(&mut self, from: [u8; 16], to: [u8; 16]) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let Some((session, mut doc)) = self.arrangement(&client) else {
@@ -149,7 +155,7 @@ impl Desk {
 
     /// Move a session to where `to` is, writing the whole order back.
     fn move_session(&mut self, from: SessionKey, to: SessionKey) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let keys = self
@@ -173,15 +179,15 @@ impl Desk {
     /// ask for. True when either changed.
     pub(super) fn take_globals(&mut self, client: &Arc<Client>) -> bool {
         let mut changed = false;
-        if !Weak::ptr_eq(&self.reorder.watching, &Arc::downgrade(client)) {
+        if !Weak::ptr_eq(&self.connection.reorder.watching, &Arc::downgrade(client)) {
             // Remembered by the runtime, and asked again on every attach.
             let _ = client.watch_global_metadata(SESSION_ORDER_KEY.to_owned());
-            self.reorder.watching = Arc::downgrade(client);
-            changed = !std::mem::take(&mut self.reorder.order).is_empty();
+            self.connection.reorder.watching = Arc::downgrade(client);
+            changed = !std::mem::take(&mut self.connection.reorder.order).is_empty();
         }
         for value in client.take_global_metadata() {
             if value.key == SESSION_ORDER_KEY {
-                self.reorder.order = session_order::decode(value.value.as_deref());
+                self.connection.reorder.order = session_order::decode(value.value.as_deref());
                 changed = true;
             } else if value.key == creature::KEY {
                 self.fleet.here = Stats::parse(value.value.as_deref(), self.clock);

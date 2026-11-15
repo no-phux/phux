@@ -1,4 +1,4 @@
-//! What the reef paints with: Rune's shapes, which are flat fills and
+//! What playground scenes paint with: Rune's shapes, which are flat fills and
 //! strokes, standing in for the prototype's canvas. A gradient is bands, a
 //! radial glow is rings of discs, and a clip is a polygon cut to shape.
 //!
@@ -13,7 +13,7 @@ use std::f32::consts::TAU;
 use rune::color::srgb_decode;
 use rune::{Color, LineCap, Shape};
 
-use crate::reef::{Pt, Reef, Rgb};
+use crate::playground::{Pt, Rgb};
 
 /// The prototype's `rgba()`: sRGB 0–255 with straight alpha.
 pub fn rgba(c: Rgb, a: f32) -> Color {
@@ -44,13 +44,6 @@ impl Pen {
             z: 1.0,
             o: [0.0, 0.0],
         }
-    }
-
-    /// Follow the camera with parallax `p` (1 is the scene itself).
-    pub fn set(&mut self, reef: &Reef, p: f32) {
-        self.z = 1.0 + (reef.cam.z - 1.0) * p;
-        let to = reef.to_screen(p);
-        self.o = to([0.0, 0.0]);
     }
 
     /// Paint through a camera of its own: screen is `world * z + o`.
@@ -339,6 +332,33 @@ pub fn cubic(a: Pt, c1: Pt, c2: Pt, b: Pt, n: usize) -> impl Iterator<Item = Pt>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colours_and_world_transforms_keep_their_original_units() {
+        let c = rgba([-10.0, 127.5, 300.0], 2.0);
+        assert_eq!((c.r, c.b, c.a), (0.0, 1.0, 1.0));
+        assert!((c.g - 0.21404114).abs() < 1e-6);
+        assert_eq!(rgba([255.0; 3], -1.0).a, 0.0);
+        let mut pen = Pen::new();
+        pen.view(2.0, [10.0, -3.0]);
+        assert_eq!(pen.at([4.0, 5.0]), [18.0, 7.0]);
+        pen.screen();
+        assert_eq!(pen.at([4.0, 5.0]), [4.0, 5.0]);
+        let xf = Xf::new([10.0, 20.0], 0.0, -2.0);
+        assert_eq!(xf.p([3.0, 4.0]), [4.0, 24.0]);
+    }
+
+    #[test]
+    fn curves_keep_the_endpoint_and_omit_the_start() {
+        assert_eq!(
+            quad([0.0, 0.0], [2.0, 4.0], [4.0, 0.0], 2).collect::<Vec<_>>(),
+            [[2.0, 2.0], [4.0, 0.0]]
+        );
+        assert_eq!(
+            cubic([0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0], 2).collect::<Vec<_>>(),
+            [[2.0, 3.0], [4.0, 0.0]]
+        );
+    }
 
     fn area(poly: &[Pt]) -> f32 {
         (0..poly.len())

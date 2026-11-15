@@ -26,7 +26,7 @@ fn inventory(rt: &mut Runtime<Desk>) {
 }
 
 fn set_inventory(rt: &mut Runtime<Desk>, snapshot: SessionSnapshot) {
-    let client = rt.state.client.clone().unwrap();
+    let client = rt.state.connection.client.clone().unwrap();
     let request_id = client.refresh_topology().unwrap();
     client
         .feed(FrameKind::CommandResult {
@@ -34,7 +34,7 @@ fn set_inventory(rt: &mut Runtime<Desk>, snapshot: SessionSnapshot) {
             result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
         })
         .unwrap();
-    rt.update(|d, _| d.topology = Some(Topology::from_snapshot(&snapshot)));
+    rt.update(|d, _| d.connection.topology = Some(Topology::from_snapshot(&snapshot)));
 }
 
 fn detailed_inventory(rt: &mut Runtime<Desk>) {
@@ -137,15 +137,18 @@ fn selecting_an_empty_session_switches_the_runtime_and_clears_the_old_terminal()
     let _ = client.take_outbound();
     tap(&mut rt, "phone-session-2", 0.1);
     assert!(rt.state.phone_page().is_none());
-    assert_eq!(rt.state.pending_session.as_deref(), Some("empty"));
+    assert_eq!(
+        rt.state.connection.pending_session.as_deref(),
+        Some("empty")
+    );
     assert_eq!(client.selected_session(), Some(2));
     rt.update(|d, _| {
         d.open_wanted(&client);
         d.refresh_layout(&client);
     });
-    assert!(rt.state.pending_session.is_none());
-    assert!(rt.state.shown.is_none());
-    assert!(rt.state.tabs.list.is_empty());
+    assert!(rt.state.connection.pending_session.is_none());
+    assert!(rt.state.connection.shown.is_none());
+    assert!(rt.state.connection.tabs.list.is_empty());
     no_terminal_input(&client);
 }
 

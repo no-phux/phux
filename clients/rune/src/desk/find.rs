@@ -43,6 +43,7 @@ impl Desk {
     /// Open find on the focused pane, or focus its field again.
     pub fn open_find(&mut self) {
         let Some((terminal, view)) = self
+            .connection
             .shown
             .as_ref()
             .and_then(|s| Some((s.resource.clone(), s.view?)))
@@ -50,13 +51,20 @@ impl Desk {
             return;
         };
         // Reopening keeps the query, selected so typing replaces it.
-        self.find_query.focused = true;
-        self.find_query.set_selection(0, self.find_query.text.len());
-        if self.find.as_ref().is_some_and(|f| f.terminal == terminal) {
+        self.connection.find_query.focused = true;
+        self.connection
+            .find_query
+            .set_selection(0, self.connection.find_query.text.len());
+        if self
+            .connection
+            .find
+            .as_ref()
+            .is_some_and(|f| f.terminal == terminal)
+        {
             return;
         }
         self.close_find();
-        self.find = Some(Find {
+        self.connection.find = Some(Find {
             terminal,
             view,
             matches: Vec::new(),
@@ -77,18 +85,20 @@ impl Desk {
         };
         let line: String = line.chars().take(512).collect();
         self.open_find();
-        self.find_query = TextEdit::new(line);
-        self.find_query.focused = true;
+        self.connection.find_query = TextEdit::new(line);
+        self.connection.find_query.focused = true;
         self.run_search();
     }
 
     /// Search again for the field's text, landing on the newest match.
     pub fn run_search(&mut self) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
-        let Some(find) = &mut self.find else { return };
-        let query = self.find_query.text.clone();
+        let Some(find) = &mut self.connection.find else {
+            return;
+        };
+        let query = self.connection.find_query.text.clone();
         let Some(engine) = client.engine() else {
             return;
         };
@@ -112,7 +122,7 @@ impl Desk {
 
     /// Older (`-1`) or newer (`1`) match, wrapping. With none, searches again.
     pub fn step_find(&mut self, delta: isize) {
-        let Some(find) = &mut self.find else {
+        let Some(find) = &mut self.connection.find else {
             return self.open_find();
         };
         let Some(index) = find.index else {
@@ -124,14 +134,14 @@ impl Desk {
     }
 
     pub fn toggle_find_case(&mut self) {
-        if let Some(find) = &mut self.find {
+        if let Some(find) = &mut self.connection.find {
             find.case_sensitive = !find.case_sensitive;
         }
         self.run_search();
     }
 
     fn show_match(&mut self) {
-        let (Some(client), Some(find)) = (&self.client, &self.find) else {
+        let (Some(client), Some(find)) = (&self.connection.client, &self.connection.find) else {
             return;
         };
         let Some(engine) = client.engine() else {
@@ -151,9 +161,11 @@ impl Desk {
 
     /// Close find, leaving the history where the last match put it.
     pub fn close_find(&mut self) {
-        let Some(find) = self.find.take() else { return };
-        self.find_query.focused = false;
-        if let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) {
+        let Some(find) = self.connection.find.take() else {
+            return;
+        };
+        self.connection.find_query.focused = false;
+        if let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) {
             let _ = engine.clear_view_selection(find.view);
             let _ = engine.clear_view_search(find.view);
         }
@@ -182,9 +194,10 @@ impl Desk {
 
     /// Find belongs to one view; it closes when that pane loses its view.
     pub(super) fn keep_find(&mut self) {
-        let alive = self.find.as_ref().is_none_or(|find| {
+        let alive = self.connection.find.as_ref().is_none_or(|find| {
             self.view_of(&find.terminal) == Some(find.view)
                 && self
+                    .connection
                     .shown
                     .as_ref()
                     .is_some_and(|s| s.resource == find.terminal)
@@ -205,7 +218,7 @@ mod tests {
         use crate::desk::input::Modal;
         use rune::Mods;
         let mut desk = Desk::new(&crate::launch::Resolved::offline("not launched"));
-        desk.find_query.focused = true;
+        desk.connection.find_query.focused = true;
         assert_eq!(desk.modal(), Some(Modal::FindField));
         desk.pending = Some(Pending::Close(phux_protocol::ids::ResourceId::local(1)));
         assert_eq!(desk.modal(), Some(Modal::Confirm));

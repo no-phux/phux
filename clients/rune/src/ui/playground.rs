@@ -5,22 +5,26 @@ use rune::{Cx, El, text};
 
 use super::{CAPTION, FROST, Ink, galaxy, hive, keycap, kitchen, pitch, pitlane, pressable, reef};
 use crate::desk::Desk;
+use crate::desk::surfaces::Playground;
+
+pub(super) mod edges;
+pub(super) mod labels;
+pub(super) mod pen;
 
 /// A playground view: whether it is open, how it draws, how it closes.
-type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
+type View = (fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
 
 /// The open playground view, if any, with the way out every one of them
 /// shows. A new view is one more row here.
 pub(super) fn open(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
-    let views: [View; 6] = [
-        (desk.galaxy.open, galaxy::view, Desk::close_galaxy),
-        (desk.reef.open, reef::view, Desk::close_reef),
-        (desk.pitch.open, pitch::view, Desk::close_pitch),
-        (desk.kitchen.open, kitchen::view, Desk::close_kitchen),
-        (desk.pitlane.open, pitlane::view, Desk::close_pitlane),
-        (desk.hive.open, hive::view, Desk::close_hive),
-    ];
-    let (_, view, close) = views.into_iter().find(|v| v.0)?;
+    let (view, close): View = match desk.playground? {
+        Playground::Galaxy => (galaxy::view, Desk::close_galaxy),
+        Playground::Reef => (reef::view, Desk::close_reef),
+        Playground::Pitch => (pitch::view, Desk::close_pitch),
+        Playground::Kitchen => (kitchen::view, Desk::close_kitchen),
+        Playground::PitLane => (pitlane::view, Desk::close_pitlane),
+        Playground::Hive => (hive::view, Desk::close_hive),
+    };
     // A child of the view: the view is modal, so anything beside it is inert.
     let right = cx.chrome_insets().trailing;
     Some(view(desk, p, cx).child(esc_chip(p, close, right)))

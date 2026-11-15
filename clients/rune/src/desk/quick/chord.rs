@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn without_a_panel_nothing_registers_or_keeps_the_app() {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         assert!(!desk.quick_chord.available());
         assert_eq!(
             desk.record_quick_chord(Some(&DEFAULT.parse().expect("chord"))),

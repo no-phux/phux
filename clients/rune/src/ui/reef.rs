@@ -10,33 +10,26 @@
 
 use rune::{Cx, El, canvas, col, el, row, text};
 
+use super::playground::labels::{Label, pill};
+use super::playground::pen::Pen;
 use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
 use crate::creature;
 use crate::desk::Desk;
-use crate::reef::{Mood, Pt, Reef, TILE};
+use crate::playground::Mood;
+use crate::reef::{Reef, TILE};
 
-pub(super) mod drift;
+mod drift;
 mod fish;
 mod forms;
-pub(super) mod pen;
 mod scene;
 
-use pen::Pen;
-pub(super) use pen::rgba;
-
-/// A pill over the scene, at a world point.
-pub(super) struct Label {
-    pub at: Pt,
-    pub text: String,
-    /// The amber count a buoy shows of agents needing you.
-    pub badge: Option<usize>,
-    pub amber: bool,
-    /// A buoy's machine, whose colour leads the pill.
-    pub host: Option<String>,
+impl Pen {
+    /// Reef's camera with parallax `p` (1 is the scene itself).
+    fn set(&mut self, reef: &Reef, p: f32) {
+        let z = 1.0 + (reef.cam.z - 1.0) * p;
+        self.view(z, reef.to_screen(p)([0.0, 0.0]));
+    }
 }
-
-const AMBER: [f32; 3] = [255.0, 181.0, 71.0];
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.reef.night.set(p.bg.luminance() < 0.5);
@@ -181,50 +174,6 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
                 .children(tiles)
         })
         .collect()
-}
-
-/// A label pill centred on `at`, kept inside the view.
-pub(super) fn pill(l: &Label, at: Pt, w: f32) -> El {
-    // ponytail: an estimated width keeps a pill inside the view; measure the
-    // text if pills ever clip at the edges.
-    let est =
-        l.text.chars().count() as f32 * 6.6 + 14.0 + if l.badge.is_some() { 18.0 } else { 0.0 };
-    let x = if w > est + 12.0 {
-        at[0].clamp(6.0 + est / 2.0, w - 6.0 - est / 2.0)
-    } else {
-        at[0]
-    };
-    let (fill, ink) = if l.amber {
-        (rgba(AMBER, 0.95), rgba(ON_AMBER, 1.0))
-    } else {
-        (
-            rgba([4.0, 20.0, 34.0], 0.72),
-            rgba([228.0, 245.0, 247.0], 1.0),
-        )
-    };
-    let host = (l.host.as_deref()).map(|host| crate::host_color::dot(host, 7.0, fill.alpha(1.0)));
-    row()
-        .absolute(x - 160.0, at[1] - 9.5)
-        .w(320.0)
-        .justify_center()
-        .child(
-            row()
-                .h(19.0)
-                .px(7.0)
-                .gap(5.0)
-                .radius(9.5)
-                .items_center()
-                .fill(fill)
-                .children(host)
-                .child(text(l.text.clone()).font(CAPTION).color(ink))
-                .children(l.badge.map(|n| {
-                    el().size(14.0, 14.0)
-                        .radius(7.0)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(text(n.to_string()).font(CAPTION).color(rgba(ON_AMBER, 1.0)))
-                })),
-        )
 }
 
 fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {

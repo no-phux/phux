@@ -58,7 +58,7 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     // A popup covers this place and asks in its own box.
-    if desk.popup.command().is_some() {
+    if desk.connection.popup.command().is_some() {
         return None;
     }
     question_bar(desk, p)

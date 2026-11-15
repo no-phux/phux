@@ -10,8 +10,8 @@ use crate::desk::Desk;
 const SHARE: f32 = 0.8;
 
 pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
-    let command = desk.popup.command()?;
-    let body = match desk.popup.terminal() {
+    let command = desk.connection.popup.command()?;
+    let body = match desk.connection.popup.terminal() {
         Some(id) => panes::pane(desk, id, false, p),
         // Laid out first, so the command starts at the size it will have.
         None => el()

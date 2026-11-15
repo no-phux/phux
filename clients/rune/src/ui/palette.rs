@@ -57,11 +57,13 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
         results = results.child(hit_row(hit, index, index == picked, phone, ink));
     }
-    let search = desk.paths.as_ref();
+    let search = desk.connection.paths.as_ref();
     let empty = match search {
         Some(s) if s.searching() => "Searching…",
         Some(s) if s.note.is_some() && hits.is_empty() => s.note.as_deref().unwrap_or_default(),
-        _ if mode == Mode::Screens && hits.is_empty() => desk.resources.screens.empty_text(),
+        _ if mode == Mode::Screens && hits.is_empty() => {
+            desk.connection.resources.screens.empty_text()
+        }
         _ => "Nothing matches",
     };
     if hits.is_empty() {
@@ -199,7 +201,12 @@ pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
         .fill(ink.raised)
         .border(1.0, ink.separator)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.4));
-    let locked = desk.tabs.list.iter().any(|tab| tab.active && tab.locked);
+    let locked = desk
+        .connection
+        .tabs
+        .list
+        .iter()
+        .any(|tab| tab.active && tab.locked);
     for &action in actions {
         rows = rows.children(context_row(action, locked, ink));
     }

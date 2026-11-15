@@ -11,17 +11,16 @@ use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::Desk;
-use super::galaxy::Planet;
+use super::fleet::Machine;
 use crate::machines::LOCAL;
 use crate::pitch::{self, Agent, Mood, ground};
-use crate::reef;
+use crate::playground;
 
 /// How often the pitch redraws while open: every frame.
 const FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Default)]
 pub struct Pitch {
-    pub open: bool,
     pub scene: pitch::Pitch,
     /// The view's size in points, from its last layout.
     pub viewport: [f32; 2],
@@ -43,18 +42,13 @@ pub struct Pitch {
 
 impl Desk {
     pub fn toggle_pitch(&mut self) {
-        if self.pitch.open {
+        if self.playground == Some(super::surfaces::Playground::Pitch) {
             self.close_pitch();
             return;
         }
         self.close_inbox();
-        self.close_galaxy();
-        self.close_reef();
-        self.close_kitchen();
-        self.close_pitlane();
-        self.close_hive();
         self.settings_open = false;
-        self.pitch.open = true;
+        self.playground = Some(super::surfaces::Playground::Pitch);
         self.pitch.last = None;
         self.pitch.scene.selected = None;
         if self.pitch.cloud.size() == (0, 0) {
@@ -65,12 +59,12 @@ impl Desk {
     }
 
     pub fn close_pitch(&mut self) {
-        self.pitch.open = false;
+        self.close_playground(super::surfaces::Playground::Pitch);
     }
 
     /// Keep the players in step with the fleet and the scene moving while open.
     pub(super) fn tick_pitch(&mut self, tx: &mut Tx) -> bool {
-        if !self.pitch.open {
+        if self.playground != Some(super::surfaces::Playground::Pitch) {
             return false;
         }
         self.refresh_pitch();
@@ -122,7 +116,7 @@ impl Desk {
     /// Machines as squads in the galaxy's order, every agent it knows of as
     /// a player.
     fn refresh_pitch(&mut self) {
-        let mut planets = self.planets();
+        let mut planets = self.fleet_machines();
         in_machine_order(
             &mut planets,
             self.machines.current.as_deref(),
@@ -133,17 +127,17 @@ impl Desk {
         let agents = planets
             .iter()
             .enumerate()
-            .flat_map(|(at, p)| p.stars.iter().map(move |s| (at, s)))
+            .flat_map(|(at, p)| p.agents.iter().map(move |s| (at, s)))
             .map(|(at, s)| Agent {
                 id: s.id.clone(),
                 name: s.name.clone(),
                 host: at,
                 mood: Mood::of(s.mark),
-                species: reef::species(s.kind.as_deref(), &s.name),
+                species: playground::species(s.kind.as_deref(), &s.name),
                 number: s
                     .terminal
                     .local_id()
-                    .unwrap_or_else(|| reef::hash(&s.name) % 98 + 1),
+                    .unwrap_or_else(|| playground::hash(&s.name) % 98 + 1),
                 work: s.work,
             })
             .collect();
@@ -215,13 +209,13 @@ impl Desk {
         };
         let id = p.who.id.clone();
         self.close_pitch();
-        self.go_to_star(&id);
+        self.go_to_agent(&id);
     }
 }
 
 /// The galaxy lists machines needing you first; a squad keeps its third
 /// instead: the connected machine, this computer, then the paired hosts.
-fn in_machine_order(planets: &mut [Planet], current: Option<&str>, hosts: &[String]) {
+fn in_machine_order(planets: &mut [Machine], current: Option<&str>, hosts: &[String]) {
     let order: Vec<&str> = std::iter::once(current.unwrap_or(LOCAL))
         .chain(std::iter::once(LOCAL))
         .chain(hosts.iter().map(String::as_str))
@@ -238,11 +232,11 @@ fn in_machine_order(planets: &mut [Planet], current: Option<&str>, hosts: &[Stri
 mod tests {
     use super::*;
 
-    fn planet(name: &str) -> Planet {
-        Planet {
+    fn planet(name: &str) -> Machine {
+        Machine {
             name: name.to_owned(),
             online: true,
-            stars: Vec::new(),
+            agents: Vec::new(),
             known: true,
             note: None,
         }

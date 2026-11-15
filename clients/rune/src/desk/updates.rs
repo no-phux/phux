@@ -487,8 +487,11 @@ impl Desk {
         };
         let phux = updater.cli.as_ref().map(|cli| cli.current.clone());
         let facts = [
-            ("connection", format!("{:?}", self.status)),
-            ("connection error", self.error.clone().unwrap_or_default()),
+            ("connection", format!("{:?}", self.connection.status)),
+            (
+                "connection error",
+                self.connection.error.clone().unwrap_or_default(),
+            ),
             ("install", install),
             ("protocol", updates::own_protocol()),
             ("phux", phux.unwrap_or_default()),

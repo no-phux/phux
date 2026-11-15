@@ -25,7 +25,7 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
     let blocked = Arc::new((Mutex::new(false), Condvar::new()));
     let barrier = Arc::clone(&blocked);
     let (tx, wake) = mpsc::channel();
-    rt.state.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
+    rt.state.connection.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
         let _ = tx.send(());
         let guard = barrier.0.lock().unwrap();
         drop(barrier.1.wait_while(guard, |released| !*released).unwrap());
@@ -41,6 +41,7 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
         // Warmers deliberately bypass the application's admission gate: they
         // occupy all actual workers before the application's first PNG job.
         rt.state
+            .connection
             .resources
             .images
             .as_ref()
@@ -60,7 +61,7 @@ fn decoded_after_scene_build_is_not_yet_render_eligible() {
     let (release, wake) = busy_cache(&mut rt, &base);
     publish(&client, 1, ResourceKind::PixelSurface, &base);
     step(&mut rt); // Builds the placeholder while every worker is blocked.
-    let image = rt.state.resources.entries[&id(1)]
+    let image = rt.state.connection.resources.entries[&id(1)]
         .surface
         .flight
         .as_ref()
@@ -132,29 +133,30 @@ fn churn(mode: &str, client: &Arc<Client>, rt: &mut Runtime<Desk>, base: &[u8]) 
         } else {
             replace_record(client, resource.clone());
             if mode == "renew" {
-                let mut next = Desk::new(&Resolved::offline("cache renewal fixture"));
                 rt.update(|d, _| {
-                    d.carry_into(&mut next); // the real same-cache window handoff.
-                    next.client = Some(Arc::clone(client));
-                    *d = next;
+                    d.replace_connection(crate::desk::link::Replacement::Retry);
+                    d.connection.client = Some(Arc::clone(client));
                 });
             }
             update(client, u64::from(n), &bytes);
         }
         observe(rt, client); // no waiting for any application decoder job.
-        let document = &rt.state.resources.entries[&id(1)];
+        let document = &rt.state.connection.resources.entries[&id(1)];
         assert_eq!(
             document.record, resource,
             "the new identity is actually installed"
         );
         assert!(ready(rt).is_none(), "retired pixels must never return");
         assert!(
-            rt.state.resources.decodes.started <= surface::MAX_DECODES,
+            rt.state.connection.resources.decodes.started <= surface::MAX_DECODES,
             "64 turnovers cannot create 64 queued cache jobs"
         );
     }
-    assert_eq!(rt.state.resources.decodes.started, surface::MAX_DECODES);
-    let document = &rt.state.resources.entries[&id(1)];
+    assert_eq!(
+        rt.state.connection.resources.decodes.started,
+        surface::MAX_DECODES
+    );
+    let document = &rt.state.connection.resources.entries[&id(1)];
     assert!(document.surface.flight.is_none());
     assert!(document.surface.pending.is_some());
     assert!(matches!(document.body, Body::Decoding));
@@ -168,7 +170,7 @@ fn run_case(mode: &str, latest: &str) {
     publish(&client, 1, ResourceKind::PixelSurface, &base);
     observe(&mut rt, &client);
     let stream = churn(mode, &client, &mut rt, &base);
-    let pending = rt.state.resources.entries[&id(1)]
+    let pending = rt.state.connection.resources.entries[&id(1)]
         .surface
         .pending
         .as_ref()
@@ -176,7 +178,7 @@ fn run_case(mode: &str, latest: &str) {
         .as_ptr();
     rt.state.finish_document_images();
     assert_eq!(
-        rt.state.resources.entries[&id(1)]
+        rt.state.connection.resources.entries[&id(1)]
             .surface
             .pending
             .as_ref()
@@ -189,10 +191,15 @@ fn run_case(mode: &str, latest: &str) {
         update_on(&client, stream, 1000, b"malformed latest PNG");
         observe(&mut rt, &client);
         assert!(matches!(
-            rt.state.resources.entries[&id(1)].body,
+            rt.state.connection.resources.entries[&id(1)].body,
             Body::Invalid(_)
         ));
-        assert!(rt.state.resources.entries[&id(1)].surface.pending.is_none());
+        assert!(
+            rt.state.connection.resources.entries[&id(1)]
+                .surface
+                .pending
+                .is_none()
+        );
     }
     drop(release);
     if latest == "newer" {
@@ -203,16 +210,27 @@ fn run_case(mode: &str, latest: &str) {
         }
         update_on(&client, stream, 1000, &stamped(&png(197), 1000));
         observe(&mut rt, &client);
-        assert!(rt.state.resources.entries[&id(1)].surface.pending.is_none());
+        assert!(
+            rt.state.connection.resources.entries[&id(1)]
+                .surface
+                .pending
+                .is_none()
+        );
     } else if latest == "invalid" {
         for _ in 0..surface::MAX_DECODES {
             finish(&mut rt, &wake);
         }
         assert!(
-            matches!(rt.state.resources.entries[&id(1)].body, Body::Invalid(_)),
+            matches!(
+                rt.state.connection.resources.entries[&id(1)].body,
+                Body::Invalid(_)
+            ),
             "retired completions cannot conceal the latest error"
         );
-        assert_eq!(rt.state.resources.decodes.started, surface::MAX_DECODES);
+        assert_eq!(
+            rt.state.connection.resources.decodes.started,
+            surface::MAX_DECODES
+        );
         update_on(&client, stream, 1001, &stamped(&png(173), 1001));
         observe(&mut rt, &client);
     }
@@ -220,7 +238,7 @@ fn run_case(mode: &str, latest: &str) {
         finish(&mut rt, &wake);
     }
     assert!(
-        rt.state.resources.decodes.started <= surface::MAX_DECODES + 1,
+        rt.state.connection.resources.decodes.started <= surface::MAX_DECODES + 1,
         "only the current latest cut may follow the bounded retired jobs"
     );
     let (color, seq) = match latest {
@@ -230,6 +248,7 @@ fn run_case(mode: &str, latest: &str) {
     };
     let expected = rt
         .state
+        .connection
         .resources
         .images
         .as_ref()
@@ -255,7 +274,7 @@ fn run_case(mode: &str, latest: &str) {
     );
     eprintln!(
         "retirement acceptance: {mode}/{latest}, 64 turnovers, {} document decoder submissions (limit {} outstanding)",
-        rt.state.resources.decodes.started,
+        rt.state.connection.resources.decodes.started,
         surface::MAX_DECODES
     );
 }
@@ -275,12 +294,19 @@ fn waiting_surface_gets_a_freed_slot_before_busy_surfaces_restart() {
     let (_, mut rt, _, _) = live();
     let (release, wake) = busy_cache(&mut rt, &base);
     for n in 2..=5 {
-        rt.state.resources.entries.insert(
+        rt.state.connection.resources.entries.insert(
             id(n),
             Document::new(record(n as u8, ResourceKind::PixelSurface)),
         );
     }
-    let ids: Vec<_> = rt.state.resources.entries.keys().cloned().collect();
+    let ids: Vec<_> = rt
+        .state
+        .connection
+        .resources
+        .entries
+        .keys()
+        .cloned()
+        .collect();
     let publication = |resource: &ResourceId, seq, stamp| {
         Arc::new(DocumentPublication {
             resource_id: resource.clone(),
@@ -298,14 +324,22 @@ fn waiting_surface_gets_a_freed_slot_before_busy_surfaces_restart() {
     }
     let waiting = &ids[4]; // deliberately last in the stable map iteration.
     rt.state.publish_document(&publication(waiting, 0, 300));
-    assert_eq!(rt.state.resources.entries[waiting].surface.started, 0);
+    assert_eq!(
+        rt.state.connection.resources.entries[waiting]
+            .surface
+            .started,
+        0
+    );
     drop(release);
     for _ in 0..surface::MAX_DECODES {
         wake.recv_timeout(Duration::from_secs(10)).unwrap();
     }
     rt.state.finish_document_images();
     assert_eq!(
-        rt.state.resources.entries[waiting].surface.started, 1,
+        rt.state.connection.resources.entries[waiting]
+            .surface
+            .started,
+        1,
         "a fifth surface cannot starve behind four continuously updating surfaces"
     );
 }

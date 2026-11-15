@@ -71,7 +71,11 @@ fn clamp_surface(point: f32, extent: u32) -> f64 {
 impl Desk {
     /// The focused view's selection, bounded.
     pub(in crate::desk) fn selected(&self) -> Selected {
-        let engine = self.client.as_ref().and_then(|client| client.engine());
+        let engine = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|client| client.engine());
         let (Some(engine), Some((_, Some(view)))) = (engine, self.keyboard()) else {
             return Selected::Nothing;
         };
@@ -106,8 +110,14 @@ impl Desk {
             tx.select_all_text(key);
             return;
         }
-        let engine = self.client.as_ref().and_then(|client| client.engine());
-        if let (Some(engine), Some(view)) = (engine, self.shown.as_ref().and_then(|s| s.view)) {
+        let engine = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|client| client.engine());
+        if let (Some(engine), Some(view)) =
+            (engine, self.connection.shown.as_ref().and_then(|s| s.view))
+        {
             let _ = engine.select_all_view(view);
             self.generation += 1;
         }
@@ -118,7 +128,7 @@ impl Desk {
         let Some(view) = self.view_of(terminal) else {
             return;
         };
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let Some(frame) = client.acquire_view(view) else {
@@ -146,7 +156,7 @@ impl Desk {
         let event = SelectionGestureEvent {
             phase,
             clicks: clicks.clamp(1, 3),
-            handle: self.gesture,
+            handle: self.connection.gesture,
             column: col,
             rectangle: false,
             row: u32::from(row),
@@ -158,7 +168,7 @@ impl Desk {
             padding_left: 0,
         };
         // A refused step ended the gesture, as a release does.
-        self.gesture = match engine.view_selection_gesture(view, event) {
+        self.connection.gesture = match engine.view_selection_gesture(view, event) {
             Ok(result) if phase != 2 => result.handle,
             _ => 0,
         };
@@ -169,7 +179,7 @@ impl Desk {
     fn rows_past_edge(&self, terminal: &ResourceId, y: f32) -> i64 {
         let frame = self
             .view_of(terminal)
-            .zip(self.client.as_ref())
+            .zip(self.connection.client.as_ref())
             .and_then(|(view, client)| client.acquire_view(view));
         let cell_h = self.metrics().cell_h;
         frame.map_or(0, |f| {
@@ -207,11 +217,11 @@ impl Desk {
     /// Finish a selection drag whose release won't come, where it last was.
     pub(in crate::desk) fn end_drag(&mut self) {
         if let Some(held) = self.pointer.held.take()
-            && self.gesture != 0
+            && self.connection.gesture != 0
         {
             self.select(&held.terminal, Phase::Up, held.x, held.y, held.clicks);
         }
-        self.gesture = 0;
+        self.connection.gesture = 0;
     }
 
     /// End what Rune will never release: its pane closed, so no handler hears
@@ -237,7 +247,7 @@ impl Desk {
         let Some(held) = self.pointer.held.clone() else {
             return false;
         };
-        if self.gesture == 0 {
+        if self.connection.gesture == 0 {
             self.pointer.held = None;
             return false;
         }
@@ -265,7 +275,8 @@ impl Desk {
     /// a pointer parked there costs no runtime turn.
     fn scroll_toward(&self, held: &Held) -> bool {
         let rows = self.rows_past_edge(&held.terminal, held.y);
-        let (Some(client), Some(view)) = (&self.client, self.view_of(&held.terminal)) else {
+        let (Some(client), Some(view)) = (&self.connection.client, self.view_of(&held.terminal))
+        else {
             return false;
         };
         let at_end = client.acquire_view(view).is_none_or(|frame| {

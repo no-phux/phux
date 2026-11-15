@@ -10,7 +10,7 @@
 use phux_protocol::ids::ResourceId;
 
 use crate::creature::Work;
-use crate::reef::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
+use crate::playground::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
 
 mod sim;
 

@@ -28,13 +28,13 @@ const BUTTON: TextStyle = TextStyle::new(11.0, 650.0).mono().tracking(1.5);
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.galaxy.still.set(cx.is_reduced_motion());
-    let planets = desk.planets();
+    let planets = desk.fleet_machines();
     let plan = Desk::galaxy_plan(&planets);
     let camera = desk.galaxy.camera;
     let time = desk.galaxy_time();
     let waiting = planets
         .iter()
-        .flat_map(|planet| &planet.stars)
+        .flat_map(|planet| &planet.agents)
         .filter(|star| star.mark.needs_you())
         .count();
     let needs = p.marks.alert;
@@ -48,7 +48,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             .zip(&plan.systems)
             .enumerate()
             .flat_map(|(at, (planet, system))| {
-                planet.stars.iter().enumerate().map(move |(i, star)| {
+                planet.agents.iter().enumerate().map(move |(i, star)| {
                     (at, i, system.point(i, time, star.mark == Mark::Working))
                 })
             })
@@ -56,7 +56,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let kin: Vec<Kin<'_>> = placed
         .iter()
         .map(|&(at, i, _)| {
-            let star = &planets[at].stars[i];
+            let star = &planets[at].agents[i];
             Kin {
                 host: &planets[at].name,
                 session: &star.session,
@@ -84,7 +84,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .iter()
         .map(|planet| match planet {
             _ if !planet.online => p.dim,
-            _ if planet.stars.iter().any(|star| star.mark.needs_you()) => needs,
+            _ if planet.agents.iter().any(|star| star.mark.needs_you()) => needs,
             _ => crate::host_color::on(&planet.name, p.bg),
         })
         .collect();
@@ -96,7 +96,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     }
     let mut picked_at = None;
     for &(at, i, point) in &placed {
-        let star = &planets[at].stars[i];
+        let star = &planets[at].agents[i];
         let color = mark_color(star.mark, p);
         sky = sky.beam(
             plan.systems[at].centre,
@@ -113,11 +113,11 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         sky = sky.planet(system.centre, time, *tint, planet.online);
     }
     for &(at, i, point) in &placed {
-        let star = &planets[at].stars[i];
-        let species = crate::reef::species(star.kind.as_deref(), &star.name);
+        let star = &planets[at].agents[i];
+        let species = crate::playground::species(star.kind.as_deref(), &star.name);
         let grown = Grown {
             tier: creature::tier(star.work.as_ref()),
-            harness: super::reef::rgba(species.body, 1.0),
+            harness: super::playground::pen::rgba(species.body, 1.0),
             level_up: desk.level_up(&star.id),
         };
         if grown.tier == 4 {
@@ -147,7 +147,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         // A machine whose agents aren't known (not watched yet, or not
         // dialable) says what its session listing says, or nothing.
         let note = if planet.known {
-            Some(format!("{} agents", planet.stars.len()))
+            Some(format!("{} agents", planet.agents.len()))
         } else if !planet.online {
             Some("offline".to_owned())
         } else {
@@ -175,7 +175,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         );
     }
     for &(at, i, point) in &placed {
-        let star = &planets[at].stars[i];
+        let star = &planets[at].agents[i];
         let s = camera.screen(point);
         let id = star.id.clone();
         let word = word(star.mark);
@@ -186,10 +186,10 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         let worded = detail == Detail::Full || (named && detail == Detail::Urgent);
         // Its form and work, when its machine publishes agent stats.
         let card = star.work.map(|w| {
-            let species = crate::reef::species(star.kind.as_deref(), &star.name);
+            let species = crate::playground::species(star.kind.as_deref(), &star.name);
             let tier = creature::tier(Some(&w));
             (
-                creature::form_name(tier, species.form),
+                creature::form_name(tier, creature::Form::of(species.harness)),
                 creature::work_line(&w),
             )
         });
@@ -236,7 +236,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let agents = placed.len();
     let working = planets
         .iter()
-        .flat_map(|planet| &planet.stars)
+        .flat_map(|planet| &planet.agents)
         .filter(|star| star.mark == Mark::Working)
         .count();
     let block = col()

@@ -23,7 +23,7 @@ fn refused(desk: &mut Desk) -> String {
         .try_recv()
         .expect("failure answered immediately")
         .unwrap_err();
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.quick_move.is_none());
     assert!(!desk.splits_waiting());
     error
 }
@@ -34,10 +34,10 @@ fn remote_disconnected_and_unselected_main_windows_answer_the_panel() {
     desk.machines.current = Some("remote".to_owned());
     assert!(refused(&mut desk).contains("another machine"));
     desk.machines.current = None;
-    desk.client = None;
+    desk.connection.client = None;
     assert!(refused(&mut desk).contains("Connect the main window"));
     let (_, mut desk) = connected();
-    desk.topology.as_mut().unwrap().sessions.clear();
+    desk.connection.topology.as_mut().unwrap().sessions.clear();
     assert!(refused(&mut desk).contains("Open a session"));
 }
 
@@ -48,7 +48,7 @@ fn a_stale_connection_and_the_quick_session_itself_are_not_destinations() {
     assert!(refused(&mut desk).contains("Open a session"));
     client.with_control(|control| control.connection_lost(Some("offline".into())));
     assert_eq!(
-        desk.status,
+        desk.connection.status,
         Status::Attached,
         "the window has not polled yet"
     );
@@ -75,7 +75,7 @@ fn queuing_and_unrelated_receipts_do_not_place_or_complete_the_move() {
     let (_, operation, result) = begin(&mut desk, &client);
     assert!(result.try_recv().is_err(), "Ok from submit is not success");
     assert!(!desk.splits_waiting());
-    assert!(desk.quick_move.is_some());
+    assert!(desk.connection.quick_move.is_some());
     let other = OperationId::new([99; 16]).unwrap();
     assert!(!desk.quick_move_outcome(&client, other, &OrgOutcome::Accepted));
     assert!(result.try_recv().is_err());
@@ -116,8 +116,8 @@ fn a_server_refusal_reports_the_error_without_placing_or_refilling() {
             .contains("move refused")
     );
     assert!(!desk.splits_waiting());
-    assert!(desk.pending_spawns.is_empty());
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.pending_spawns.is_empty());
+    assert!(desk.connection.quick_move.is_none());
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn an_organization_conflict_keeps_the_terminal_out_of_the_layout() {
     );
     assert!(result.try_recv().unwrap().unwrap_err().contains("Conflict"));
     assert!(!desk.splits_waiting());
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.quick_move.is_none());
 }
 
 #[test]
@@ -154,8 +154,8 @@ fn only_the_successful_server_receipt_queues_the_tab_and_completes_once() {
     );
     assert_eq!(result.try_recv().unwrap(), Ok(()));
     assert_eq!(client.selected_session(), Some(1));
-    assert_eq!(desk.unplaced_splits.len(), 1);
-    assert_eq!(desk.unplaced_splits[0].terminal, terminal());
+    assert_eq!(desk.connection.unplaced_splits.len(), 1);
+    assert_eq!(desk.connection.unplaced_splits[0].terminal, terminal());
     assert!(!desk.quick_move_outcome(&client, operation, &OrgOutcome::Accepted));
     assert!(result.try_recv().is_err(), "no duplicate completion");
 }
@@ -174,7 +174,7 @@ fn an_uncertain_move_is_not_retried_or_presented_as_success() {
     let error = result.try_recv().unwrap().unwrap_err();
     assert!(error.contains("receipt expired") && error.contains("Check"));
     assert!(!desk.splits_waiting());
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.quick_move.is_none());
 }
 
 #[test]
@@ -182,8 +182,7 @@ fn replacing_the_connection_answers_the_move_and_keeps_panel_registration_state(
     let (client, mut desk) = connected();
     desk.quick_fixture(true);
     let (_, _, result) = begin(&mut desk, &client);
-    let mut next = Desk::settings_test_fixture();
-    desk.carry_into(&mut next);
+    desk.replace_connection(crate::desk::link::Replacement::Retry);
     assert!(
         result
             .try_recv()
@@ -191,9 +190,9 @@ fn replacing_the_connection_answers_the_move_and_keeps_panel_registration_state(
             .unwrap_err()
             .contains("connection was replaced")
     );
-    assert!(next.quick_chord.available());
-    assert!(next.quick_chord.on);
-    assert!(desk.quick_move.is_none());
+    assert!(desk.quick_chord.available());
+    assert!(desk.quick_chord.on);
+    assert!(desk.connection.quick_move.is_none());
 }
 
 #[test]
@@ -201,20 +200,23 @@ fn the_panel_keeps_its_terminal_and_renders_a_visible_error_without_native_windo
     // Handles belong to apps that never run: no desktop or global chord.
     let panel = rune::App::new(crate::app_spec((320.0, 160.0), (320.0, 160.0)));
     let main = rune::App::new(crate::app_spec((320.0, 160.0), (320.0, 160.0)));
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.quick = Some(Panel {
         me: panel.handle(),
         main: main.handle(),
         dialed: true,
         moving: true,
     });
-    desk.shown = Some(Shown {
+    desk.connection.shown = Some(Shown {
         resource: terminal(),
         view: None,
     });
     desk.quick_move_finished(Err("move refused".to_owned()));
-    assert_eq!(desk.shown.as_ref().unwrap().resource, terminal());
-    assert!(desk.pending_spawns.is_empty(), "failure never refills");
+    assert_eq!(desk.connection.shown.as_ref().unwrap().resource, terminal());
+    assert!(
+        desk.connection.pending_spawns.is_empty(),
+        "failure never refills"
+    );
     assert!(
         !desk.quick.as_ref().unwrap().moving,
         "the panel can try again"
@@ -266,7 +268,7 @@ fn a_success_before_a_new_connection_waits_for_identity_and_never_hides_on_failu
             .contains("could not be verified")
     );
     assert!(!desk.splits_waiting());
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.quick_move.is_none());
 }
 
 #[test]
@@ -291,7 +293,7 @@ fn an_old_failure_settles_even_while_the_new_connection_is_unverified() {
     ];
     desk.observe(&client, observation, &mut tx);
     assert!(result.try_recv().unwrap().unwrap_err().contains("not sent"));
-    assert!(desk.quick_move.is_none());
+    assert!(desk.connection.quick_move.is_none());
     assert!(!desk.splits_waiting());
 }
 
@@ -307,9 +309,9 @@ fn a_successful_panel_completion_refills_only_after_the_move_receipt() {
         dialed: true,
         moving: true,
     });
-    assert!(desk.pending_spawns.is_empty());
+    assert!(desk.connection.pending_spawns.is_empty());
     // Apps never run: hide/open only queue requests, never touch the desktop.
     desk.quick_move_finished(Ok(()));
-    assert_eq!(desk.pending_spawns.len(), 1);
+    assert_eq!(desk.connection.pending_spawns.len(), 1);
     assert!(!desk.quick.as_ref().unwrap().moving);
 }

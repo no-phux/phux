@@ -7,8 +7,8 @@ use std::f32::consts::{PI, TAU};
 
 use super::room::{BLACK, WHITE, hex, rr};
 use crate::kitchen::{Chef, Goal, HAT, Kitchen, Line, Part, PartKind};
-use crate::reef::{Mood, Pt, Rgb, mix};
-use crate::ui::reef::pen::Pen;
+use crate::playground::{Mood, Pt, Rgb, mix};
+use crate::ui::playground::pen::Pen;
 
 pub const AMBER: Rgb = [255.0, 181.0, 71.0];
 pub const MINT: Rgb = [98.0, 230.0, 180.0];
