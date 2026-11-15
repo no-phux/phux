@@ -14,8 +14,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, command, recv_typed, run_local, send_frame,
-    spawn_server, spawn_server_connected, spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, attach_by_name, command, recv_typed, run_local,
+    send_frame, spawn_server_connected, spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
 use super::common::{
@@ -109,10 +109,8 @@ fn failed_attach_is_recoverable_and_create_if_missing_creates() {
 fn last_follows_the_seed_then_focus_and_create_if_missing_reuses() {
     run_local(async {
         let seed = "phux-custom-project";
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server(socket.clone(), Some(seed));
-        let connect = || wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE);
+        let server = SpawnedServer::start(Some(seed), |_| {});
+        let connect = || wait_for_socket(&server.socket, SOCKET_CONNECT_DEADLINE);
 
         let mut first = connect().await;
         send_frame(&mut first, &attach(AttachTarget::Last, 80, 24)).await;

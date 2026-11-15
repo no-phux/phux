@@ -13,7 +13,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    attach_by_name, command, recv_until, recv_until_detached, run_local, send_frame, spawn_server,
+    SpawnedServer, attach_by_name, command, recv_until, recv_until_detached, run_local, send_frame,
+    spawn_server,
 };
 
 use super::common::connect_with;
@@ -33,10 +34,8 @@ async fn attach_then_detach(path: &std::path::Path, layers: LayerSet) -> UnixStr
 #[test]
 fn l1_only_consumer_still_fails_the_l3_gate_after_detach() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server(socket.clone(), Some("work"));
-        let mut stream = attach_then_detach(&socket, LayerSet::new()).await;
+        let server = SpawnedServer::start(Some("work"), |_| {});
+        let mut stream = attach_then_detach(&server.socket, LayerSet::new()).await;
 
         // A non-L3 consumer's GET_METADATA is dropped silently (§11.5); the
         // in-order PONG proves it was already dispatched.

@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_typed,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_typed,
     recv_until_deadline, run_local, send_frame, spawn_server_connected, spawn_server_with_seed_cmd,
     wait_for_socket,
 };
@@ -85,14 +85,9 @@ fn attach_returns_session_graph_and_round_trip_snapshot() {
 #[test]
 fn attach_resizes_seed_pty_to_client_viewport() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(
-            socket.clone(),
-            "default",
-            sh("while :; do stty size; sleep 0.05; done"),
-        );
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server =
+            SpawnedServer::seeded("default", sh("while :; do stty size; sleep 0.05; done"));
+        let mut stream = server.connect().await;
         send_frame(
             &mut stream,
             &attach(AttachTarget::ByName("default".to_owned()), 120, 40),

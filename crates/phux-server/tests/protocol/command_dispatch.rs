@@ -23,11 +23,11 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, assert_command_error, attach_by_name,
-    command, join_after_shutdown, recv_typed, recv_until, recv_until_deadline, recv_until_detached,
-    run_local, send_frame, spawn_resource, spawn_server_connected, spawn_server_seed_pty_no_cmd,
-    spawn_server_with_seed_cmd, try_recv_typed, wait_for_raw_socket, wait_for_server_screen_text,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, assert_command_error,
+    attach_by_name, command, join_after_shutdown, recv_typed, recv_until, recv_until_deadline,
+    recv_until_detached, run_local, send_frame, spawn_resource, spawn_server_connected,
+    spawn_server_seed_pty_no_cmd, spawn_server_with_seed_cmd, try_recv_typed,
+    wait_for_server_screen_text, wait_for_socket,
 };
 
 async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
@@ -261,10 +261,8 @@ fn read_verbs_answer_over_the_wire() {
 #[test]
 fn hello_ok_advertises_the_command_features() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, handle) = phux_server_testkit::spawn_server(socket.clone(), None);
-        let mut raw = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::start(None, |_| {});
+        let mut raw = server.connect_raw().await;
         send_frame(
             &mut raw,
             &FrameKind::Hello {
@@ -296,7 +294,7 @@ fn hello_ok_advertises_the_command_features() {
             );
         }
         drop(raw);
-        join_after_shutdown(shutdown, handle).await;
+        server.stop().await;
     });
 }
 
