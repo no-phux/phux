@@ -8,13 +8,12 @@ use super::rules::RuleSet;
 use super::identity::KernelIdentity;
 use super::{
     AgentDetector, AgentReport, Cadence, DetectedState, TICK_CONFIRMING, TICK_IDENTIFIED,
-    TICK_UNIDENTIFIED, live_session,
+    TICK_UNIDENTIFIED,
 };
 
 impl AgentDetector {
     /// Inject hook evidence. The actor marks the grid dirty afterwards, so the
-    /// next tick may supersede it with screen evidence.
-    /// detector tick re-evaluates screen evidence and may supersede the hook.
+    /// next detector tick re-evaluates screen evidence and may supersede it.
     pub(crate) fn report_hook_state(
         &mut self,
         state: DetectedState,
@@ -26,29 +25,15 @@ impl AgentDetector {
             self.pending_hook = Some((state, now));
             return None;
         }
-        let Some(kind) = self.identified_kind().map(str::to_owned) else {
-            self.pending_hook = Some((state, now));
-            return None;
-        };
-        let report = AgentReport {
-            name: self.manifest_name(&kind),
-            kind,
-            state,
-        };
-        self.pending_idle = None;
-        self.current = Some(state);
-        self.published_source = phux_agent_session::state::EvidenceSource::Hook;
-        if self.published.as_ref() == Some(&report) {
-            return None;
+        if self.identified.is_some() {
+            self.published_source = phux_agent_session::state::EvidenceSource::Hook;
         }
-        self.published = Some(report.clone());
-        Some(report)
+        self.publish_evidence(state, now)
     }
 
     /// Publish an `AgentSession` child's state at the `Stream` rank
     /// (ADR-0103 §5). `None` retracts: the rank drops and the next ordinary
-    /// tick derives what is true. Needs an identified pane; until then the
-    /// evidence waits in the pending slot.
+    /// tick derives what is true.
     pub(crate) fn report_stream_state(
         &mut self,
         state: Option<DetectedState>,
@@ -62,6 +47,12 @@ impl AgentDetector {
             return None;
         };
         self.published_source = phux_agent_session::state::EvidenceSource::Stream;
+        self.publish_evidence(state, now)
+    }
+
+    /// Publish out-of-band evidence for the identified pane, or hold it in
+    /// the pending slot until identity resolves. A repeat publishes nothing.
+    fn publish_evidence(&mut self, state: DetectedState, now: Instant) -> Option<AgentReport> {
         let Some(kind) = self.identified_kind().map(str::to_owned) else {
             self.pending_hook = Some((state, now));
             return None;
@@ -111,7 +102,10 @@ impl AgentDetector {
     }
 
     /// Wire the live-`AgentSession`-child probe (ADR-0103 §5).
-    pub(crate) fn set_live_session_probe(&mut self, probe: live_session::LiveSessionProbe) {
+    pub(crate) fn set_live_session_probe(
+        &mut self,
+        probe: phux_terminal_api::agent_detect::LiveSessionProbe,
+    ) {
         self.live_session = Some(probe);
     }
 

@@ -106,10 +106,7 @@ fn a_different_kind_in_the_same_pane_is_a_correction() {
     h.occupy(agent("u", 200));
     assert_eq!(
         h.identity_tick(),
-        DetectOutcome::Reidentified {
-            kind: "u".to_owned(),
-            name: "u-agent".to_owned(),
-        },
+        reidentified("u"),
         "the pane's occupant changed and someone has to be told",
     );
 }
@@ -133,10 +130,7 @@ fn a_same_kind_restart_is_a_new_occupant() {
     h.occupy(agent("t", 271));
     assert_eq!(
         h.identity_tick(),
-        DetectOutcome::Reidentified {
-            kind: "t".to_owned(),
-            name: "t-agent".to_owned(),
-        },
+        reidentified("t"),
         "a restart is an identity change, whatever the binary is called",
     );
 }

@@ -2,13 +2,7 @@ use super::*;
 
 /// Build a detached engine and drive it by hand, without the runtime.
 fn engine() -> (AgentSessionActor, AgentSessionHandle, ResourceHandle) {
-    let bundle = AgentSessionActor::build(
-        ResourceId::default(),
-        "claude",
-        Some("abc"),
-        CancellationToken::new(),
-        4096,
-    );
+    let bundle = build(4096);
     let facet = bundle
         .handle
         .facet::<AgentSessionHandle>()
@@ -17,15 +11,36 @@ fn engine() -> (AgentSessionActor, AgentSessionHandle, ResourceHandle) {
     (bundle.actor, facet, bundle.handle)
 }
 
+fn build(log_bytes: u32) -> AgentSessionBundle {
+    let token = CancellationToken::new();
+    AgentSessionActor::build(
+        ResourceId::default(),
+        "claude",
+        Some("abc"),
+        token,
+        log_bytes,
+    )
+}
+
+fn restore(carried: AgentSessionBootstrap) -> AgentSessionActor {
+    let token = CancellationToken::new();
+    AgentSessionActor::restore(ResourceId::default(), "claude", None, token, 4096, carried).actor
+}
+
+/// One append ships one live frame, sequenced by its last record, that is
+/// exactly the retained lines concatenated.
 #[test]
 fn one_batch_broadcast_is_the_concatenation_of_its_lines() {
     let (mut actor, _facet, handle) = engine();
     let mut subscriber = handle.output.subscribe();
-    append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
-    let super::ResourceOutput::Live { bytes, .. } = subscriber.try_recv().expect("broadcast")
+    let accepted =
+        append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
+    let super::ResourceOutput::Live { seq, bytes, .. } = subscriber.try_recv().expect("broadcast")
     else {
         panic!("append publishes a live batch");
     };
+    assert_eq!(seq, accepted.last_seq);
+    assert!(bytes.ends_with(b"\n"), "every record ends its line");
     let replay = actor.bootstrap(None);
     let mut joined = Vec::new();
     for record in &replay.records {
@@ -146,15 +161,9 @@ fn upgrade_cuts_ignore_consumer_cursors_and_preserve_the_full_stream() {
         Err(AppendRejection::Overflow(_))
     ));
     assert_eq!(cut(&mut actor, Some(2), Some(false)), full);
-    let mut restored = AgentSessionActor::restore(
-        ResourceId::default(),
-        "claude",
-        None,
-        CancellationToken::new(),
-        4096,
-        carried,
-    )
-    .actor;
+    let next = append(&mut actor, "{\"type\":\"stop\"}").expect("unsealed");
+    assert_eq!(next.first_seq, 3, "the refused append consumed nothing");
+    let mut restored = restore(carried);
     assert_eq!(cut(&mut restored, None, None), full);
     assert_eq!(
         append(&mut restored, "{\"type\":\"session_end\"}")
@@ -260,14 +269,7 @@ fn stamped_oversize_refuses_the_batch_before_any_mutation() {
 
 #[test]
 fn overflow_evicts_and_the_bootstrap_reports_the_toll() {
-    let bundle = AgentSessionActor::build(
-        ResourceId::default(),
-        "claude",
-        None,
-        CancellationToken::new(),
-        120,
-    );
-    let mut actor = bundle.actor;
+    let mut actor = build(120).actor;
     for _ in 0..8 {
         append(&mut actor, "{\"type\":\"tool_end\"}").expect("accepted");
     }
@@ -287,59 +289,19 @@ fn a_restored_engine_continues_the_carried_stream() {
     append(&mut old, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
     let mut carried = old.bootstrap(None);
     carried.dropped = 5;
-    let bundle = AgentSessionActor::restore(
-        ResourceId::default(),
-        "claude",
-        Some("abc"),
-        CancellationToken::new(),
-        4096,
-        carried.clone(),
-    );
-    let mut actor = bundle.actor;
+    let mut actor = restore(carried.clone());
     assert_eq!(actor.bootstrap(None), carried, "the cut replays unchanged");
     let next = append(&mut actor, "{\"type\":\"session_end\"}").expect("accepted");
     assert_eq!(next.first_seq, 3, "the sequence continues");
 
     let ended = actor.bootstrap(None);
     assert!(ended.ended);
-    let bundle = AgentSessionActor::restore(
-        ResourceId::default(),
-        "claude",
-        None,
-        CancellationToken::new(),
-        4096,
-        ended,
-    );
-    let mut actor = bundle.actor;
+    let mut actor = restore(ended);
     assert_eq!(
         append(&mut actor, "{\"type\":\"prompt\"}"),
         Err(AppendRejection::Invalid(RecordError::AfterSessionEnd)),
         "an ended stream stays ended"
     );
-}
-
-#[test]
-fn a_sealed_stream_refuses_appends_until_unsealed() {
-    let (mut actor, _facet, _handle) = engine();
-    append(&mut actor, "{\"type\":\"prompt\"}").expect("accepted");
-    let (reply, mut rx) = oneshot::channel();
-    actor.handle_bootstrap(BootstrapRequest {
-        reply,
-        seal: Some(true),
-        after_seq: None,
-    });
-    assert_eq!(rx.try_recv().expect("the cut").base_seq, 1);
-    assert!(matches!(
-        append(&mut actor, "{\"type\":\"stop\"}"),
-        Err(AppendRejection::Overflow(_))
-    ));
-    actor.handle_bootstrap(BootstrapRequest {
-        reply: oneshot::channel().0,
-        seal: Some(false),
-        after_seq: None,
-    });
-    let next = append(&mut actor, "{\"type\":\"stop\"}").expect("unsealed");
-    assert_eq!(next.first_seq, 2, "the refused append consumed nothing");
 }
 
 /// `AgentSessionSeal::drop` cannot await the actor: all it can do is queue
@@ -351,13 +313,7 @@ async fn a_queued_unseal_is_applied_before_the_append_queued_behind_it() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bundle = AgentSessionActor::build(
-                ResourceId::default(),
-                "claude",
-                Some("abc"),
-                CancellationToken::new(),
-                4096,
-            );
+            let bundle = build(4096);
             let facet = bundle
                 .handle
                 .facet::<AgentSessionHandle>()
@@ -403,21 +359,4 @@ async fn a_queued_unseal_is_applied_before_the_append_queued_behind_it() {
             );
         })
         .await;
-}
-
-#[test]
-fn live_output_carries_whole_records_sequenced_by_the_last() {
-    let (mut actor, _facet, handle) = engine();
-    let mut subscriber = handle.output.subscribe();
-    let accepted =
-        append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
-    match subscriber.try_recv().expect("one live frame") {
-        ResourceOutput::Live { seq, bytes, .. } => {
-            assert_eq!(seq, accepted.last_seq);
-            let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
-            assert_eq!(text.lines().count(), 2);
-            assert!(text.ends_with('\n'), "every record ends its line");
-        }
-        other => panic!("expected live output, got {other:?}"),
-    }
 }

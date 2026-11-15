@@ -9,79 +9,98 @@ use super::*;
 /// content) as a `Resync` carrying the new dims.
 #[tokio::test]
 async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let bundle = TerminalActor::new_with_seed(80, 24, b"phux8v1-marker").expect("seed");
-            let handle = bundle.handle.clone();
-            let token = bundle.token;
-            // Subscribe BEFORE the actor runs so we don't miss the
-            // resize broadcast.
-            let mut out = handle.output.subscribe();
-            let join = tokio::task::spawn_local(bundle.actor.run());
+    on_local!(async {
+        let bundle = TerminalActor::new_with_seed(80, 24, b"phux8v1-marker").expect("seed");
+        let handle = bundle.handle.clone();
+        let token = bundle.token;
+        // Subscribe BEFORE the actor runs so we don't miss the
+        // resize broadcast.
+        let mut out = handle.output.subscribe();
+        let join = tokio::task::spawn_local(bundle.actor.run());
 
-            handle
-                .terminal()
-                .expect("terminal facet")
-                .resize
-                .send(ResizeRequest {
-                    cols: 40,
-                    rows: 10,
-                    cell_px: None,
-                    resync_clients: true,
-                    resync_only: false,
-                    resync_for: None,
-                })
-                .await
-                .expect("send resize");
+        resize(&handle, grid_resize(40, 10)).await;
 
-            // Collect broadcast bytes and the resync's dims.
-            let mut acc: Vec<u8> = Vec::new();
-            let mut resync_dims: Option<(u16, u16)> = None;
-            let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
-            while tokio::time::Instant::now() < deadline {
-                match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                    Ok(Ok(ResourceOutput::Resync {
-                        cols, rows, bytes, ..
-                    })) => {
-                        resync_dims = Some((cols, rows));
-                        acc.extend_from_slice(&bytes);
-                        if contains_subslice(&acc, b"\x1b[!p")
-                            && contains_subslice(&acc, b"phux8v1-marker")
-                        {
-                            break;
-                        }
-                    }
-                    Ok(Ok(ResourceOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
-                    Ok(Ok(ResourceOutput::Control { .. })) => {}
-                    Ok(Err(_)) => break,                      // channel closed
-                    Err(_) => tokio::task::yield_now().await, // poll tick
+        let (dims, acc) = await_resync_with(&mut out, b"phux8v1-marker").await;
+        assert_eq!(
+            dims,
+            Some((40, 10)),
+            "resize resync must carry the post-reflow grid dims (phux-3ns5)",
+        );
+        assert_resync_bytes(&acc, b"phux8v1-marker");
+
+        stop(&token, join).await;
+    })
+    .await;
+}
+
+/// Collect output until a resync has re-sent the snapshot preamble and
+/// `marker`, or the deadline passes. Returns the last resync's grid and
+/// every byte seen.
+async fn await_resync_with(
+    out: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    marker: &[u8],
+) -> (Option<(u16, u16)>, Vec<u8>) {
+    let mut acc: Vec<u8> = Vec::new();
+    let mut dims = None;
+    let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
+            Ok(Ok(ResourceOutput::Resync {
+                cols, rows, bytes, ..
+            })) => {
+                dims = Some((cols, rows));
+                acc.extend_from_slice(&bytes);
+                if contains_subslice(&acc, b"\x1b[!p") && contains_subslice(&acc, marker) {
+                    break;
                 }
             }
-            assert_eq!(
-                resync_dims,
-                Some((40, 10)),
-                "resize resync must carry the post-reflow grid dims (phux-3ns5)",
-            );
+            Ok(Ok(ResourceOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+            Ok(Ok(ResourceOutput::Control { .. })) => {}
+            Ok(Err(_)) => break,
+            Err(_) => tokio::task::yield_now().await,
+        }
+    }
+    (dims, acc)
+}
 
-            assert!(
-                contains_subslice(&acc, b"\x1b[!p"),
-                "resize broadcast missing DECSTR snapshot preamble; got {:?}",
-                String::from_utf8_lossy(&acc),
-            );
-            assert!(
-                contains_subslice(&acc, b"phux8v1-marker"),
-                "resize broadcast did not re-send pre-resize grid content; got {:?}",
-                String::from_utf8_lossy(&acc),
-            );
+/// A resync re-sent the DECSTR snapshot preamble and the grid's `marker`.
+fn assert_resync_bytes(acc: &[u8], marker: &[u8]) {
+    let text = String::from_utf8_lossy(acc);
+    assert!(
+        contains_subslice(acc, b"\x1b[!p"),
+        "no DECSTR preamble: {text:?}"
+    );
+    assert!(
+        contains_subslice(acc, marker),
+        "grid content not re-sent: {text:?}"
+    );
+}
 
-            token.cancel();
-            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
-                .await
-                .expect("actor did not exit after cancel")
-                .expect("actor task panicked");
-        })
-        .await;
+type SharedMaster = std::sync::Arc<std::sync::Mutex<Box<dyn portable_pty::MasterPty + Send>>>;
+
+/// The kernel winsize: `(cols, rows, pixel_width, pixel_height)`.
+fn winsize(master: &SharedMaster) -> (u16, u16, u16, u16) {
+    let got = master
+        .lock()
+        .expect("master lock")
+        .get_size()
+        .expect("size");
+    (got.cols, got.rows, got.pixel_width, got.pixel_height)
+}
+
+/// Poll the kernel winsize until it reaches `want` (the resize mailbox is
+/// async), failing after a bounded wait.
+async fn wait_for_winsize(master: &SharedMaster, want: (u16, u16, u16, u16)) {
+    for _ in 0..200 {
+        if winsize(master) == want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!(
+        "winsize never reached {want:?}; kernel reports {:?}",
+        winsize(master)
+    );
 }
 
 /// Advance paused time past the resync debounce, yielding first so the

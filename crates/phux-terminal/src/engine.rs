@@ -114,14 +114,7 @@ impl TerminalEngineFactory for TerminalEngine {
         })
     }
     fn bootstrap_capabilities(&self) -> phux_protocol::caps::BootstrapCapabilities {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            crate::native_state::native_bootstrap_capabilities()
-        }
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        {
-            phux_protocol::caps::BootstrapCapabilities::new()
-        }
+        crate::native_state::native_bootstrap_capabilities()
     }
     fn metrics(&self) -> &'static [phux_perf::Metric] {
         crate::perf::TABLE

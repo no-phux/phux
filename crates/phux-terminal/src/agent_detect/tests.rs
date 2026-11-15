@@ -210,6 +210,14 @@ fn agent_started(kind: &str, pgid: i32, started: Option<u64>) -> Occupancy {
     }
 }
 
+/// The correction naming a new `kind` occupant (its manifest is `<kind>-agent`).
+fn reidentified(kind: &str) -> DetectOutcome {
+    DetectOutcome::Reidentified {
+        kind: kind.to_owned(),
+        name: format!("{kind}-agent"),
+    }
+}
+
 fn published(outcome: &DetectOutcome) -> DetectedState {
     match outcome {
         DetectOutcome::Publish(report) => report.state,

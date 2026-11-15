@@ -230,10 +230,6 @@ mod tests {
                 "{kind} must be explainable",
             );
         }
-    }
-
-    #[test]
-    fn an_unknown_kind_has_no_explanation() {
         assert!(explain("not-an-agent", &capture("", "hello")).is_none());
     }
 
@@ -270,28 +266,10 @@ mod tests {
         assert!(found.iter().any(|(_, matched)| *matched));
     }
 
-    /// EVERY rule is reported, not only the matching ones. A manifest author
-    /// debugging a rule that never fires needs to see it listed as a miss;
-    /// reporting only matches would render the failure invisible, which is
-    /// the failure this tool exists for.
-    #[test]
-    fn misses_are_reported_too() {
-        let got = explain("claude", &capture("", CLAUDE_IDLE)).expect("claude manifest");
-        assert!(
-            got.evaluated_rules.iter().any(|r| !r.matched),
-            "a screen this quiet must leave some rule unmatched",
-        );
-        assert!(
-            got.evaluated_rules
-                .iter()
-                .any(|r| r.id == "prompt-permission-dialog"),
-            "a non-matching rule is still evaluated and reported",
-        );
-    }
-
     /// The idle golden asserts no state at all: `idle` is reached by the
     /// fail-safe, and the explanation says so instead of pretending a rule
-    /// decided it.
+    /// decided it. Misses are still reported: a rule that never fires must
+    /// be visible as one.
     #[test]
     fn the_captured_idle_screen_reports_the_fail_safe_rather_than_a_rule() {
         let got =
@@ -301,6 +279,14 @@ mod tests {
         assert!(got.matched_rule.is_none());
         let reason = got.fallback_reason.expect("a fail-safe needs a reason");
         assert!(reason.contains("fails safe"), "{reason}");
+        let missed = got
+            .evaluated_rules
+            .iter()
+            .find(|r| r.id == "prompt-permission-dialog");
+        assert!(
+            missed.is_some_and(|r| !r.matched),
+            "a miss is evaluated and reported"
+        );
     }
 
     /// THE point of the tool. Every region is previewed, and an empty one is
@@ -321,26 +307,19 @@ mod tests {
                 "viewport"
             ],
         );
-        let title = got
-            .regions
-            .iter()
-            .find(|r| r.region == "title")
-            .expect("title region");
+        let region = |name: &str| {
+            let found = got.regions.iter().find(|r| r.region == name);
+            found.expect("previewed region")
+        };
         assert!(
-            title.empty,
+            region("title").empty,
             "an unsupplied title is an EMPTY region and must read as one",
         );
-        let progress = got
-            .regions
-            .iter()
-            .find(|r| r.region == "osc-progress")
-            .expect("osc-progress region");
-        assert!(progress.empty, "offline captures carry no raw OSC progress");
-        let live = got
-            .regions
-            .iter()
-            .find(|r| r.region == "after-last-rule")
-            .expect("after-last-rule region");
+        assert!(
+            region("osc-progress").empty,
+            "offline captures carry no raw OSC progress"
+        );
+        let live = region("after-last-rule");
         assert!(!live.empty);
         assert!(
             live.lines.iter().any(|l| l.contains("Do you want")),

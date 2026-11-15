@@ -5,48 +5,45 @@ use futures_util::FutureExt;
 
 use super::*;
 use crate::ControlRequest;
-use crate::actor::test_support::dummy_outbound;
-use crate::actor::{
-    ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest, SnapshotRequest,
-};
+use crate::actor::test_support::{dummy_outbound, on_local, whole_snapshot};
+use crate::actor::{ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest};
 use phux_agent_session::parent::{AgentParent, AgentParentRequest};
 use phux_protocol::ClientId;
 use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn idle_subscribed_actors_do_not_consume_tick_deadlines() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            for count in [1, 32, 128] {
-                let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(count);
-                let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-                let actors: Vec<_> = (0..count)
-                    .map(|_| {
-                        tokio::task::spawn_local(idle_subscribed_actor(
-                            ready_tx.clone(),
-                            stop_rx.clone(),
-                        ))
-                    })
-                    .collect();
-                drop(ready_tx);
-                for _ in 0..count {
-                    ready_rx
-                        .recv()
-                        .await
-                        .expect("every actor has entered its loop");
-                }
-                assert!(
-                    actors.iter().all(|actor| !actor.is_finished()),
-                    "all actors remain active together"
-                );
-                tokio::time::advance(std::time::Duration::from_secs(1)).await;
-                stop_tx.send(true).expect("stop observation");
-                for actor in actors {
-                    actor.await.expect("idle actor assertion");
-                }
+    on_local!(async {
+        for count in [1, 32, 128] {
+            let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(count);
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let actors: Vec<_> = (0..count)
+                .map(|_| {
+                    tokio::task::spawn_local(idle_subscribed_actor(
+                        ready_tx.clone(),
+                        stop_rx.clone(),
+                    ))
+                })
+                .collect();
+            drop(ready_tx);
+            for _ in 0..count {
+                ready_rx
+                    .recv()
+                    .await
+                    .expect("every actor has entered its loop");
             }
-        })
-        .await;
+            assert!(
+                actors.iter().all(|actor| !actor.is_finished()),
+                "all actors remain active together"
+            );
+            tokio::time::advance(std::time::Duration::from_secs(1)).await;
+            stop_tx.send(true).expect("stop observation");
+            for actor in actors {
+                actor.await.expect("idle actor assertion");
+            }
+        }
+    })
+    .await;
 }
 
 #[allow(
@@ -97,7 +94,6 @@ async fn idle_subscribed_actor(
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
     use crate::actor::{NATIVE_HISTORY_TTL, NativeCursorKey, NativeCursorOwner};
@@ -170,14 +166,7 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         let (reply, replied) = oneshot::channel();
         facet
             .snapshot
-            .try_send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply,
-            })
+            .try_send(whole_snapshot(reply))
             .expect("snapshot");
         snapshots.push(replied);
     }
@@ -257,23 +246,13 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
     let bundle = TerminalActor::new(20, 5).expect("actor");
     let mut actor = bundle.actor;
     let mut state = actor.arm_run_loop().await;
     let (reply, _capture) = oneshot::channel();
-    actor.start_native_bootstrap(crate::actor::NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
-    });
+    actor.start_native_bootstrap(crate::actor::test_support::native_bootstrap(31, reply));
     assert!(
         actor.native_bootstrap_pending(),
         "real capture owns the grid"
@@ -284,14 +263,7 @@ async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
         .terminal()
         .expect("terminal")
         .snapshot
-        .try_send(SnapshotRequest {
-            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-            scrollback: None,
-            max_bytes: usize::MAX,
-            max_frames: usize::MAX,
-            chunk_bytes: 1,
-            reply,
-        })
+        .try_send(whole_snapshot(reply))
         .expect("snapshot");
     let (reply, mut cwd) = oneshot::channel();
     bundle
@@ -337,14 +309,7 @@ async fn service_rotation_services_due_state_tick_under_request_pressure() {
             .terminal()
             .expect("terminal")
             .snapshot
-            .try_send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply,
-            })
+            .try_send(whole_snapshot(reply))
             .expect("snapshot");
         actor.service_pending_turn(&mut state, deadline.as_mut());
     }
