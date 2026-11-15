@@ -102,30 +102,6 @@ fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec
         .transpose()
 }
 
-/// The fully-parsed inputs of `phux attach`, carried as one value so the
-/// verb's body can live in [`run_attach`] rather than inline in the dispatch
-/// table. The field names mirror the clap variant's, so the arm builds this
-/// by field shorthand.
-struct AttachInvocation {
-    session: Option<String>,
-    quic: Option<String>,
-    ws: Option<String>,
-    token: Option<String>,
-    cert_fingerprint: Option<String>,
-    tls_server_name: Option<String>,
-    ca_fingerprint: Option<String>,
-    remote: Option<String>,
-    code: Option<String>,
-    no_enroll: bool,
-    ssh: Option<String>,
-    remote_phux: String,
-    udp_ports: Option<String>,
-    viewer: bool,
-    take: bool,
-    rec: commands::RecOpts,
-    socket: Option<std::path::PathBuf>,
-}
-
 /// The attach role `--viewer` / `--take` declare (ADR-0127); the parser
 /// already refuses both at once.
 pub(crate) const fn declared_attach_role(
@@ -144,8 +120,8 @@ pub(crate) const fn declared_attach_role(
 
 /// Run `phux attach`: resolve the recording plan, then dial whichever
 /// transport the flags named.
-fn run_attach(invocation: AttachInvocation) -> ExitCode {
-    let AttachInvocation {
+pub(super) fn attach(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCode {
+    let commands::AttachArgs {
         session,
         quic,
         ws,
@@ -162,8 +138,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         viewer,
         take,
         rec,
-        socket,
-    } = invocation;
+    } = args;
     // Every ATTACH this process sends carries it, whichever transport the
     // flags below pick, so a reconnect keeps the role too.
     phux_tui::attach::set_attach_role(declared_attach_role(viewer, take));
@@ -245,7 +220,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
 pub(crate) fn run_naked_invocation(
     root_rec: &commands::RecOpts,
     root_remote: Option<String>,
-    socket: Option<std::path::PathBuf>,
+    socket: Option<PathBuf>,
 ) -> ExitCode {
     let rec_spec = match plan_rec(root_rec) {
         Ok(spec) => spec,
@@ -256,44 +231,4 @@ pub(crate) fn run_naked_invocation(
         return attach_remote_target(&target, None, None, false, rec_spec.as_ref());
     }
     commands::attach::run_naked(socket, rec_spec.as_ref())
-}
-
-pub(super) fn attach(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCode {
-    let commands::AttachArgs {
-        session,
-        quic,
-        ws,
-        token,
-        cert_fingerprint,
-        tls_server_name,
-        ca_fingerprint,
-        remote,
-        code,
-        no_enroll,
-        ssh,
-        remote_phux,
-        udp_ports,
-        viewer,
-        take,
-        rec,
-    } = args;
-    run_attach(AttachInvocation {
-        session,
-        quic,
-        ws,
-        token,
-        cert_fingerprint,
-        tls_server_name,
-        ca_fingerprint,
-        remote,
-        code,
-        no_enroll,
-        ssh,
-        remote_phux,
-        udp_ports,
-        viewer,
-        take,
-        rec,
-        socket,
-    })
 }

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+
 use std::cell::RefCell;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -243,10 +248,6 @@ fn default_lookup_target(default_name: &str) -> AttachTarget {
 
 /// Drive one attach attempt against `socket_path` with `target`, picking
 /// the predict-enabled entry point iff the user opted in.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 pub(crate) async fn run_attach_once(
     dial: &Dial,
     target: AttachTarget,
@@ -257,10 +258,6 @@ pub(crate) async fn run_attach_once(
 
 /// [`run_attach_once`] with an optional live recorder and an optional
 /// status-bar notice (the reconnect loop's "re-attached" message).
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 pub(crate) async fn run_attach_once_rec(
     dial: &Dial,
     target: AttachTarget,
@@ -275,10 +272,6 @@ pub(crate) async fn run_attach_once_rec(
     attach::run_dial(dial, target, predict_cfg, rec, initial_notice, input_replay).await
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 async fn run_attach_connection_rec(
     connection: Connection,
     dial: &Dial,
@@ -300,14 +293,11 @@ async fn run_attach_connection_rec(
     .await
 }
 
-/// Attach to the user's default session via `Last`; if an older server
-/// refuses it, make exactly one lookup-only retry by name (never
-/// `CreateIfMissing`).
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub(crate) async fn attach_default_with_fallback(
+/// Attach to the user's default session via `Last` (over `connection` when
+/// one is already open); if an older server refuses it, make exactly one
+/// lookup-only retry by name (never `CreateIfMissing`).
+async fn attach_default_with_fallback(
+    connection: Option<Connection>,
     dial: &Dial,
     default_name: &str,
     predict_cfg: PredictiveConfig,
@@ -315,17 +305,32 @@ pub(crate) async fn attach_default_with_fallback(
     initial_notice: Option<Notice>,
     input_replay: Option<&ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
-    match run_attach_once_rec(
-        dial,
-        AttachTarget::Last,
-        predict_cfg,
-        rec.map(Rc::clone),
-        initial_notice.clone(),
-        input_replay.map(Rc::clone),
-    )
-    .await
-    {
-        Ok(end) => Ok(end),
+    let first = match connection {
+        Some(connection) => {
+            Box::pin(run_attach_connection_rec(
+                connection,
+                dial,
+                AttachTarget::Last,
+                predict_cfg,
+                rec.map(Rc::clone),
+                initial_notice.clone(),
+                input_replay.map(Rc::clone),
+            ))
+            .await
+        }
+        None => {
+            run_attach_once_rec(
+                dial,
+                AttachTarget::Last,
+                predict_cfg,
+                rec.map(Rc::clone),
+                initial_notice.clone(),
+                input_replay.map(Rc::clone),
+            )
+            .await
+        }
+    };
+    match first {
         // A live old server will not grow a session if asked again.
         Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
         Err(AttachError::Refused(message)) => {
@@ -342,52 +347,7 @@ pub(crate) async fn attach_default_with_fallback(
             )
             .await
         }
-        Err(err) => Err(err),
-    }
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-async fn attach_default_with_connection_fallback(
-    connection: Connection,
-    dial: &Dial,
-    default_name: &str,
-    predict_cfg: PredictiveConfig,
-    rec: Option<&RecorderHandle>,
-    initial_notice: Option<Notice>,
-    input_replay: Option<&ReplayHandle>,
-) -> Result<AttachEnd, AttachError> {
-    match Box::pin(run_attach_connection_rec(
-        connection,
-        dial,
-        AttachTarget::Last,
-        predict_cfg,
-        rec.map(Rc::clone),
-        initial_notice.clone(),
-        input_replay.map(Rc::clone),
-    ))
-    .await
-    {
-        Ok(end) => Ok(end),
-        // A live old server will not grow a session if asked again.
-        Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
-        Err(AttachError::Refused(message)) => {
-            warn!(
-                "server could not resolve the last session ({message}); trying existing `{default_name}`"
-            );
-            run_attach_once_rec(
-                dial,
-                default_lookup_target(default_name),
-                predict_cfg,
-                rec.map(Rc::clone),
-                initial_notice,
-                input_replay.map(Rc::clone),
-            )
-            .await
-        }
-        Err(err) => Err(err),
+        other => other,
     }
 }
 
@@ -401,59 +361,48 @@ struct AttachAttempt<'a> {
 }
 
 impl AttachAttempt<'_> {
-    #[allow(
-        clippy::future_not_send,
-        reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-    )]
     async fn run(
         &self,
         connection: Option<Box<Connection>>,
         initial_notice: Option<Notice>,
     ) -> Result<AttachEnd, AttachError> {
-        match (connection, self.default_name) {
-            (Some(connection), Some(name)) => {
-                Box::pin(attach_default_with_connection_fallback(
-                    *connection,
-                    self.dial,
-                    name,
-                    self.predict_cfg,
-                    self.recorder,
-                    initial_notice,
-                    self.input_replay,
-                ))
-                .await
-            }
-            (Some(connection), None) => {
+        if let Some(name) = self.default_name {
+            return Box::pin(attach_default_with_fallback(
+                connection.map(|connection| *connection),
+                self.dial,
+                name,
+                self.predict_cfg,
+                self.recorder,
+                initial_notice,
+                self.input_replay,
+            ))
+            .await;
+        }
+        let (recorder, replay) = (
+            self.recorder.map(Rc::clone),
+            self.input_replay.map(Rc::clone),
+        );
+        match connection {
+            Some(connection) => {
                 Box::pin(run_attach_connection_rec(
                     *connection,
                     self.dial,
                     self.target.clone(),
                     self.predict_cfg,
-                    self.recorder.map(Rc::clone),
+                    recorder,
                     initial_notice,
-                    self.input_replay.map(Rc::clone),
+                    replay,
                 ))
                 .await
             }
-            (None, Some(name)) => {
-                Box::pin(attach_default_with_fallback(
-                    self.dial,
-                    name,
-                    self.predict_cfg,
-                    self.recorder,
-                    initial_notice,
-                    self.input_replay,
-                ))
-                .await
-            }
-            (None, None) => {
+            None => {
                 Box::pin(run_attach_once_rec(
                     self.dial,
                     self.target.clone(),
                     self.predict_cfg,
-                    self.recorder.map(Rc::clone),
+                    recorder,
                     initial_notice,
-                    self.input_replay.map(Rc::clone),
+                    replay,
                 ))
                 .await
             }
