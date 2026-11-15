@@ -2,7 +2,8 @@
 //!
 //! Native bootstrap is the official GHOSTSNP snapshot codec: the server sends
 //! the READY prefix, this adapter reconstructs a live terminal, then history
-//! units are pulled and authenticated by the engine-owned staged decoder.
+//! units are checked by phux's framing/CRC preflight, then decoded through the
+//! stock engine API with application-owned record boundaries.
 //!
 //! Replicas never answer terminal queries: the server's canonical terminal is
 //! the sole query answerer (`docs/protocol.md#terminal-queries`), so no `on_pty_write`
@@ -52,7 +53,9 @@ mod replica;
 pub mod snapshot;
 
 use document::enforce_history_budget;
-use native::{PendingEffects, finish_native, install_effect_hooks, push_history, push_native};
+use native::{
+    PendingEffects, finish_native, install_effect_hooks, push_history, push_native, start_native,
+};
 use projection::{grid_ref_graphemes, to_ghostty_point, to_ghostty_space};
 pub use replica::GhosttyReplica;
 use replica::{NativeDecoderState, NativeReplica, ReplicaState};
@@ -316,6 +319,11 @@ pub enum GhosttyEngineError {
     /// The native decoder has already failed and cannot be driven again.
     #[error("native checkpoint decoder is no longer usable")]
     DecoderFailed,
+    /// Pending input exceeded tracking limits and cannot be safely replayed.
+    #[error(
+        "cannot clear while parser continuation is unavailable; retry after the pending sequence completes"
+    )]
+    ClearContinuationUnavailable,
 }
 
 impl GhosttyEngineError {

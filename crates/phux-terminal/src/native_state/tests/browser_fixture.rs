@@ -105,6 +105,7 @@ fn decode_browser_fixture(transcript: &[u8]) -> DecodedFixture {
     let mut units = Vec::new();
     let mut decoder = None;
     let mut terminal = None;
+    let mut framing = phux_protocol::snapshot_framing::HistoryFraming::default();
     let mut offset = 12;
     while offset < transcript.len() {
         let (kind, unit_rows) = (transcript[offset], u32_at(offset + 1));
@@ -126,10 +127,12 @@ fn decode_browser_fixture(transcript: &[u8]) -> DecodedFixture {
             continue;
         }
         let ready = decoder.as_mut().expect("READY precedes history");
-        ready.feed(bytes).expect("stage history unit");
-        let progress = ready
-            .next_checked(usize::try_from(unit_rows).expect("rows"))
-            .expect("decode history unit");
+        let (unit, suffix) = framing.prepare(bytes).expect("framing and CRCs");
+        assert_eq!(unit.rows(), usize::try_from(unit_rows).expect("rows"));
+        ready
+            .feed_parts(bytes, suffix.as_ref().map_or(&[][..], |bytes| &bytes[..]))
+            .expect("stage history unit and reader-local placements");
+        let progress = ready.next().expect("decode history unit");
         assert_eq!(progress.is_none(), kind == 2, "FINISH ends the stream");
         if kind == 2 {
             terminal = decoder.take().map(FeedIncrementalDecoder::into_terminal);

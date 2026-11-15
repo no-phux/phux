@@ -50,8 +50,16 @@ impl PerTerminalKeyEncoder {
         event: &KeyEvent,
         terminal: &GhosttyTerminal<'_, '_>,
     ) -> Result<&[u8], Error> {
-        let options = libghostty_vt::key::EncoderOptions::from_terminal(terminal)?;
+        let options = self.options_from_terminal(terminal)?;
         self.encode_with_options(event, options)
+    }
+
+    pub(crate) fn options_from_terminal(
+        &mut self,
+        terminal: &GhosttyTerminal<'_, '_>,
+    ) -> Result<EncoderOptions, Error> {
+        self.encoder.set_options_from_terminal(terminal);
+        self.encoder.options()
     }
 
     /// Encode from an exact terminal-derived `Send` option snapshot.

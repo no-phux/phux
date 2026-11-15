@@ -84,9 +84,15 @@ fn stock_bytes_are_unchanged_with_images_both_screens_and_continuation() {
         decoder.feed(&snapshot.bytes[range.clone()]).unwrap();
     }
     let mut decoder = decoder.ready().unwrap();
+    let mut framing = phux_protocol::snapshot_framing::HistoryFraming::default();
     for unit in &snapshot.history {
-        decoder.feed(&snapshot.bytes[unit.range.clone()]).unwrap();
-        let progress = decoder.next_checked(unit.rows).unwrap();
+        let bytes = &snapshot.bytes[unit.range.clone()];
+        let (kind, suffix) = framing.prepare(bytes).unwrap();
+        assert_eq!(kind.rows(), unit.rows);
+        decoder
+            .feed_parts(bytes, suffix.as_ref().map_or(&[][..], |bytes| &bytes[..]))
+            .unwrap();
+        let progress = decoder.next().unwrap();
         assert_eq!(progress.is_none(), unit.finish);
     }
 }

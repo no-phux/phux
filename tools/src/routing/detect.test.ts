@@ -96,6 +96,8 @@ test("a rename reports both sides", () => {
   });
 });
 
+// Exercises every standalone lock and several real Git checkouts; keep a
+// bounded integration-test deadline rather than the five-second unit default.
 test("PR2406's root and OpenCode release metadata requests no compile lane", () => {
   const lock = 'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.145.0"\n';
   const skill = '  version: "0.145.0" # x-release-please-version\n';
@@ -151,4 +153,4 @@ test("PR2406's root and OpenCode release metadata requests no compile lane", () 
   // A bump that leaves a lock behind fails --locked builds: run them.
   const stale = commitFiles({ ...bumped, "clients/rune/Cargo.lock": lock }, before);
   expect(push(before, stale).kind).toBe("paths");
-});
+}, 15_000);

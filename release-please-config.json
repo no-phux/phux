@@ -87,6 +87,11 @@
         },
         {
           "type": "toml",
+          "path": "clients/phux-vt-web/Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-protocol'))].version"
+        },
+        {
+          "type": "toml",
           "path": "clients/phux-web/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-perf' || @.name.value=='phux-protocol'))].version"
         },

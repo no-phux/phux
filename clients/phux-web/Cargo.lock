@@ -383,6 +383,7 @@ name = "phux-vt-web"
 version = "0.0.0"
 dependencies = [
  "js-sys",
+ "phux-protocol",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

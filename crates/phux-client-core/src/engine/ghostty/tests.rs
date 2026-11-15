@@ -1,5 +1,7 @@
 //! Adapter tests: shared snapshot fixtures and helpers.
 
+mod clear;
+mod framing;
 mod native;
 mod projection;
 mod synthesized;
