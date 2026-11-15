@@ -19,16 +19,17 @@
 
 pub mod builder;
 pub mod embedder;
-mod framing;
 mod frames;
+mod framing;
 pub use frames::*;
 pub mod relay;
 pub mod screen;
 mod server;
 pub mod tracing_capture;
 pub use server::{
-    ServerHandles, SpawnedServer, spawn_server_connected, hangup_proof_script, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd,
-    spawn_server_with, spawn_server_with_seed_cmd, terminal_server,
+    ServerHandles, SpawnedServer, hangup_proof_script, seed_pty, spawn_server,
+    spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
+    spawn_server_with_seed_cmd, terminal_server,
 };
 
 use std::future::Future;
@@ -44,8 +45,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind,
-    SpawnResource,
-    SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    SpawnResource, SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK,
+    ViewportInfo,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::ServerError;

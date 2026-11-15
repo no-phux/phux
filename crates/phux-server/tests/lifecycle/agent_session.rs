@@ -243,7 +243,6 @@ fn ring_overflow_evicts_oldest_but_keeps_counting() {
 fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
     phux_server_testkit::run_local(async {
         use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, ClientCapabilities};
-        use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, wait_for_raw_socket};
 
         let (server, mut owner) = start(|_| {}).await;
         let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
@@ -272,7 +271,7 @@ fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
 
         // Reconnect twice with a budget that splits both JSON and UTF-8.
         for _ in 0..2 {
-            let mut late = wait_for_raw_socket(&server.socket, SOCKET_CONNECT_DEADLINE).await;
+            let mut late = server.connect_raw().await;
             let version = phux_protocol::PROTOCOL_VERSION;
             send_frame(
                 &mut late,

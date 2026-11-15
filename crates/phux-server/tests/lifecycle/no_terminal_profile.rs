@@ -7,8 +7,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, SpawnResource};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, assert_command_error, attach_by_name, command, recv_typed,
-    send_frame, wait_for_raw_socket,
+    Spawn, assert_command_error, attach_by_name, command, recv_typed, send_frame,
 };
 use tokio::net::UnixStream;
 
@@ -17,7 +16,7 @@ use crate::common::{Server, bootstrap_ready, demo_parent, next_output, send_comm
 /// A connection whose `HELLO` withholds every Terminal profile; returns it
 /// once `HELLO_OK` has confirmed no profile was selected.
 async fn connect_without_terminal_profile(server: &Server) -> UnixStream {
-    let mut viewer = wait_for_raw_socket(&server.socket, SOCKET_CONNECT_DEADLINE).await;
+    let mut viewer = server.connect_raw().await;
     send_frame(
         &mut viewer,
         &phux_server_testkit::hello(

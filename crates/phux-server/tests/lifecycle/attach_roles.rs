@@ -184,11 +184,7 @@ fn attach_without_role_policy_is_byte_identical_and_behaves_as_before() {
     phux_server_testkit::run_local(async {
         let server = Server::start(Some(SESSION), |_| {});
         // The server advertises the feature in HELLO_OK.
-        let mut client = phux_server_testkit::wait_for_raw_socket(
-            &server.socket,
-            phux_server_testkit::SOCKET_CONNECT_DEADLINE,
-        )
-        .await;
+        let mut client = server.connect_raw().await;
         let hello = phux_server_testkit::hello("roles", ClientCapabilities::new());
         send_frame(&mut client, &hello).await;
         let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut client).await.1 else {
