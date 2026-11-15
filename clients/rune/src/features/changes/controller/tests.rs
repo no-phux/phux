@@ -31,6 +31,9 @@ fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(Arc::clone(&client));
     desk.connection.status = Status::Attached;
+    // Replica starts with its activity drained. Adopt the retained inventory
+    // before polling so reconnect reconciliation can reopen the shown view.
+    desk.connection.topology = client.topology();
     desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(terminal.clone()));
     desk.connection.shown = Some(Shown {
         view: Some(replica.views[0]),
@@ -40,6 +43,10 @@ fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     poll(&mut rt);
+    assert!(
+        rt.state.connection.shown.is_some(),
+        "fixture has a live focused pane"
+    );
     let _ = client.take_outbound();
     (client, rt)
 }
