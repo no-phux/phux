@@ -1,39 +1,20 @@
 //! The double-buffered grid (ADR-0133 decision 4).
 //!
 //! The engine owner thread projects a terminal's viewport into a back
-//! [`GridBuffer`] after every render and publishes it here behind an `Arc`.
-//! A consumer on any thread calls [`Publication::acquire`] and receives an
-//! immutable [`GridFrame`] it may hold for as long as it likes: the next
-//! publish swaps a new frame in and never touches the one already handed
-//! out. There is no "valid until the next call" contract anywhere.
+//! [`GridBuffer`] and publishes it behind an `Arc`; [`Publication::acquire`]
+//! hands any thread an immutable [`GridFrame`] it may hold indefinitely.
+//! Each publish bumps a per-presentation generation
+//! ([`TerminalPublication::generation`]) and carries libghostty's dirty rows
+//! ([`GridFrame::dirty_rows`]); a first or full projection marks every row.
 //!
-//! Every frame carries a per-presentation generation that increases by one per
-//! publish, so a consumer that remembers the generation it last painted
-//! skips unchanged terminals for the cost of one atomic load
-//! ([`TerminalPublication::generation`]), and the rows libghostty reported
-//! dirty for this generation ([`GridFrame::dirty_rows`]) so it can repaint
-//! incrementally. A full or first projection marks every row dirty.
+//! Publication is paced by reads: while the current frame is unread the owner
+//! defers projection and marks the slot stale, and the next acquire catches
+//! it up first. A consumer never gets a frame older than the replica when it
+//! asked, the owner never projects faster than consumers read, and dirty rows
+//! accumulate across a deferral.
 //!
-//! Publication is paced by reads. The owner projects a damaged presentation
-//! at once when a consumer has acquired its current frame, so a keystroke's
-//! echo into a caught-up consumer publishes with no added delay. While the
-//! current frame is still unread, a projection would only replace a frame
-//! nobody looked at, so the owner defers it and marks the slot stale; the
-//! next acquire of that slot has the owner project the latest state before
-//! it returns. A consumer therefore never receives a frame older than the
-//! replica at the moment it asked, and the owner never projects faster than
-//! consumers read. Deferral holds the generation still, and it only happens
-//! while the current generation is unread, so a consumer that polls
-//! generations still sees a change it has not painted. libghostty keeps
-//! accumulating dirty rows across a deferral, so the caught-up frame's
-//! [`GridFrame::dirty_rows`] cover everything since the frame before it.
-//!
-//! A document resource (`docs/resource-kinds.md`) publishes into the same
-//! table: its slot holds the newest whole [`DocumentPublication`] and shares
-//! the generation counter, so a publish bumps it exactly as a grid's does.
-//! A document is never projected, so it is never deferred or caught up.
-//! [`Publication::acquire_document`] reads it; [`Publication::acquire`]
-//! stays grid-only.
+//! A document resource shares the table and generation counter but is never
+//! projected or deferred; [`Publication::acquire_document`] reads it.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
