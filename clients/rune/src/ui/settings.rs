@@ -4,6 +4,7 @@ use rune::{Color, El, TextStyle, col, el, row, text, text_input};
 
 use super::{CAPTION, Ink, icons, pressable, updates};
 use crate::desk::{Desk, SettingsCategory as Category};
+use crate::ui::Cover;
 
 mod controls;
 mod entries;
@@ -413,9 +414,7 @@ fn desktop(desk: &Desk, ink: &Ink) -> El {
         );
     col()
         .key("settings-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .padding(32.0)
         .center()
         .fill(Color::BLACK.alpha(0.20))

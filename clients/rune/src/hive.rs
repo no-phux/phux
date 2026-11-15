@@ -11,10 +11,11 @@ use std::f32::consts::TAU;
 
 use phux_protocol::ids::ResourceId;
 
-use crate::creature::Work;
-use crate::reef::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
+use crate::creature::Agent;
+use crate::reef::{Mood, Pt, Rgb, Rng, hash, lerp};
 
 mod sim;
+pub use crate::reef::Cam;
 pub use sim::STEP;
 
 pub const AMBER: Rgb = [255.0, 181.0, 71.0];
@@ -101,20 +102,6 @@ pub struct Firefly {
     pub sp: f32,
 }
 
-/// An agent as the hive needs it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Forager {
-    pub id: ResourceId,
-    pub name: String,
-    /// Its machine's frame.
-    pub host: usize,
-    pub mood: Mood,
-    pub species: &'static Species,
-    /// Its [`crate::creature`] tier, 0 to 4.
-    pub tier: usize,
-    pub work: Option<Work>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
     ToFlower,
@@ -126,7 +113,7 @@ pub enum Task {
 /// An agent as a bee: who it is, and how it moves.
 #[derive(Debug, Clone)]
 pub struct Bee {
-    pub who: Forager,
+    pub who: Agent,
     /// Its cell in its frame, once laid out.
     pub home: usize,
     pub x: f32,
@@ -180,13 +167,6 @@ pub fn flourish(tier: usize) -> Flourish {
 
 /// The rank a card names, by tier.
 pub const RANKS: [&str; 5] = ["Rookie", "Regular", "Veteran", "Star", "Legend"];
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Cam {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
 
 /// The whole hive: layout, bees and camera.
 #[derive(Debug, Clone)]
@@ -369,32 +349,6 @@ pub fn claim(f: &mut Frame, rad: f32, r: &mut Rng) -> usize {
         c.home = true;
     }
     at
-}
-
-/// Pills `(at, chars)` laid out the prototype's way (`pill()`): centred over
-/// `at` and kept inside `w`; one that would overlap a pill already placed
-/// moves up past it, at most six times. Give them bottom-most first, so
-/// stacks grow upward. Each is its left edge, centre y and width.
-pub fn place_pills(pills: &[(Pt, usize)], w: f32) -> Vec<[f32; 3]> {
-    const H: f32 = 19.0;
-    let mut placed: Vec<[f32; 3]> = Vec::new();
-    for &(at, chars) in pills {
-        // ponytail: an estimated width; measure the text if pills clip.
-        let pw = chars as f32 * 6.6 + 14.0;
-        let x = (at[0] - pw / 2.0).clamp(6.0, (w - pw - 6.0).max(6.0));
-        let mut y = at[1];
-        for _ in 0..6 {
-            let hit = placed.iter().any(|p| {
-                (p[1] - y).abs() < H + 2.0 && x < p[0] + p[2] + 4.0 && p[0] < x + pw + 4.0
-            });
-            if !hit {
-                break;
-            }
-            y -= H + 3.0;
-        }
-        placed.push([x, y, pw]);
-    }
-    placed
 }
 
 impl Hive {

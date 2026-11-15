@@ -98,13 +98,7 @@ fn reattach(client: &Client, resource: ResourceRecord, bytes: &[u8]) -> StreamId
             ResourceInfo::resource(id(1), ResourceKind::PixelSurface)
                 .with_session(Some(SessionId::new(1))),
         ]);
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    crate::wire_fixture::attached(client, attach_id, snapshot);
     let stream = StreamId::new(u64::from(attach_id) + 1).unwrap();
     publish_on(client, 1, stream, ResourceKind::PixelSurface, bytes);
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();

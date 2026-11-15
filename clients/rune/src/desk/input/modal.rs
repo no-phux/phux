@@ -3,6 +3,7 @@
 
 use crate::desk::Desk;
 use crate::keys::Shortcut;
+use crate::{hive::Hive, kitchen::Kitchen, pitch::Pitch, pitlane::PitLane, reef::Reef};
 
 /// What has the keyboard instead of the terminal, in the order they claim it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,16 +86,16 @@ impl Desk {
         match (modal, &event.key) {
             (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
             (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
-            (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
-            (Modal::Reef, rune::Key::Enter) => self.open_fish(),
-            (Modal::Pitch, rune::Key::Escape) => self.pitch_escape(),
-            (Modal::Pitch, rune::Key::Enter) => self.open_player(),
-            (Modal::Kitchen, rune::Key::Escape) => self.kitchen_escape(),
-            (Modal::Kitchen, rune::Key::Enter) => self.open_chef(),
-            (Modal::PitLane, rune::Key::Escape) => self.pitlane_escape(),
-            (Modal::PitLane, rune::Key::Enter) => self.open_car(),
-            (Modal::Hive, rune::Key::Escape) => self.hive_escape(),
-            (Modal::Hive, rune::Key::Enter) => self.open_bee(),
+            (Modal::Reef, rune::Key::Escape) => self.scene_escape::<Reef>(),
+            (Modal::Reef, rune::Key::Enter) => self.open_agent::<Reef>(),
+            (Modal::Pitch, rune::Key::Escape) => self.scene_escape::<Pitch>(),
+            (Modal::Pitch, rune::Key::Enter) => self.open_agent::<Pitch>(),
+            (Modal::Kitchen, rune::Key::Escape) => self.scene_escape::<Kitchen>(),
+            (Modal::Kitchen, rune::Key::Enter) => self.open_agent::<Kitchen>(),
+            (Modal::PitLane, rune::Key::Escape) => self.scene_escape::<PitLane>(),
+            (Modal::PitLane, rune::Key::Enter) => self.open_agent::<PitLane>(),
+            (Modal::Hive, rune::Key::Escape) => self.scene_escape::<Hive>(),
+            (Modal::Hive, rune::Key::Enter) => self.open_agent::<Hive>(),
             _ => return false,
         }
         true

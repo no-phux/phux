@@ -89,7 +89,6 @@ fn paths_read_below_their_origin() {
 
 #[test]
 fn sessions_group_by_project_with_linked_worktrees_marked() {
-    use phux_client_core::layout::wire::HandleMap;
     use phux_client_runtime::project_identity::SessionProject;
     let project = |linked| SessionProject {
         id: "github.com/no-phux/phux".to_owned(),
@@ -115,23 +114,14 @@ fn sessions_group_by_project_with_linked_worktrees_marked() {
         project,
         project_link: None,
     };
-    let mut topology = Topology {
-        sessions: vec![
+    let mut topology = crate::desk::topology(
+        vec![
             session(1, "scratch", None),
             session(2, "feat", Some(project(true))),
             session(3, "phux", Some(project(false))),
         ],
-        resources: Vec::new(),
-        panes: Vec::new(),
-        agent_sessions: Vec::new(),
-        documents: Vec::new(),
-        satellite_sessions: Vec::new(),
-        focused_session: 0,
-        focused_pane: ResourceId::local(0),
-        authority: None,
-        inbox: None,
-        handles: HandleMap::new(),
-    };
+        Vec::new(),
+    );
     let rows: Vec<_> = session_items(Some(&topology), &[])
         .into_iter()
         .map(|item| (item.title, item.detail))

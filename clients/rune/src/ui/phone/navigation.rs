@@ -10,6 +10,7 @@ use crate::keys::{self, Shortcut};
 use crate::ui::{icons, pressable};
 
 mod resource;
+use crate::ui::Cover;
 use resource::resource_row;
 
 // One inset and rhythm for the page, cards and their touch rows. Colors and
@@ -60,9 +61,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
     Some(
         col()
             .key("phone-navigation-page")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .items_center()
             .pt(top)
             .fill(p.bg)

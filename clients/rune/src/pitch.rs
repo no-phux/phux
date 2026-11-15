@@ -12,8 +12,8 @@
 
 use phux_protocol::ids::ResourceId;
 
-use crate::creature::Work;
-pub use crate::reef::{Mood, Pt, Rgb, Rng, Species, hash, lerp, mix};
+pub use crate::creature::Agent;
+pub use crate::reef::{Mood, Pt, Rgb, Rng, hash, lerp, mix};
 
 pub mod ground;
 mod sim;
@@ -116,21 +116,6 @@ pub struct Rect {
     pub y: f32,
     pub w: f32,
     pub h: f32,
-}
-
-/// An agent as the pitch needs it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Agent {
-    pub id: ResourceId,
-    pub name: String,
-    /// Its machine's zone.
-    pub host: usize,
-    pub mood: Mood,
-    pub species: &'static Species,
-    /// The shirt number: its terminal's `@N`.
-    pub number: u32,
-    /// Its work from its machine's agent stats, when published.
-    pub work: Option<Work>,
 }
 
 /// What a tier adds to the kit.

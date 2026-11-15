@@ -1,12 +1,7 @@
 //! The geometry and semantics behind the visual hierarchy, not pixel goldens.
 use super::*;
 
-fn element(rt: &Runtime<Desk>, key: &str) -> rune::ElementInfo {
-    rt.elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key))
-        .unwrap_or_else(|| panic!("missing {key}"))
-}
+use crate::ui::element;
 
 #[test]
 fn long_names_and_attention_fit_without_displacing_the_pane_column() {

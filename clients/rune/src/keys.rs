@@ -147,6 +147,14 @@ impl Shortcut {
     }
 }
 
+/// `key` pressed with no modifier held.
+pub fn plain(key: Key) -> rune::KeyEvent {
+    rune::KeyEvent {
+        key,
+        mods: Mods::default(),
+    }
+}
+
 pub fn mods(mods: Mods) -> ModSet {
     let mut set = ModSet::empty();
     set.set(ModSet::SHIFT, mods.shift);

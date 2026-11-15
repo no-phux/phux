@@ -237,13 +237,8 @@ fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
         return root.fill(tint);
     }
     let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
-    root.system_material(rune::SystemMaterial::Glass).child(
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(tint.alpha(alpha))
-            .inert(),
-    )
+    root.system_material(rune::SystemMaterial::Glass)
+        .child(el().cover().fill(tint.alpha(alpha)).inert())
 }
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every
@@ -379,9 +374,7 @@ impl Sheet {
             .child(el().w_full().px(14.0).py(10.0).child(foot));
         col()
             .key(format!("{}-scrim", self.key))
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .py(MARGIN)
             .px(MARGIN)
             .items_center()
@@ -416,6 +409,17 @@ pub(crate) fn icon_press(
                 .a11y_hidden(),
         )
         .hover_group()
+}
+
+/// Covering the whole of its parent, over what came before it.
+pub(crate) trait Cover {
+    fn cover(self) -> Self;
+}
+
+impl Cover for El {
+    fn cover(self) -> El {
+        self.absolute(0.0, 0.0).w_full().h_full()
+    }
 }
 
 /// Something to press: a wash under the pointer that deepens while held, and
@@ -470,6 +474,40 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 /// and the wheel with it, reaching the pane underneath, without calling the
 /// surface a button as `on_press` would.
 pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
+
+/// The element keyed `key` in `rt`'s last frame.
+#[cfg(test)]
+pub fn element(rt: &rune::Runtime<Desk>, key: &str) -> rune::ElementInfo {
+    rt.elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(key))
+        .unwrap_or_else(|| panic!("no {key}"))
+}
+
+/// `rt`'s last frame painted `size` pixels big through Rune's real
+/// renderer, as RGBA.
+#[cfg(test)]
+pub fn offscreen(
+    gpu: &rune::render::Gpu,
+    renderer: &mut rune::render::Renderer,
+    rt: &mut rune::Runtime<Desk>,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
+    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
+    renderer.prepare(
+        &gpu.device,
+        &gpu.queue,
+        &mut rt.text.atlas,
+        &rt.instances,
+        size,
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.draw(&mut encoder, &target.view, [0.0; 4]);
+    target.copy(&mut encoder);
+    renderer.submit(&gpu.queue, encoder);
+    target.read(&gpu.device)
+}
 
 #[cfg(test)]
 mod tests {

@@ -50,6 +50,7 @@ pub use pending::Pending;
 pub mod phone;
 pub mod pitch;
 pub mod pitlane;
+pub mod playground;
 pub mod popup;
 pub mod questions;
 pub mod quick;
@@ -457,11 +458,11 @@ impl Desk {
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         changed |= self.tick_galaxy(tx);
-        changed |= self.tick_reef(tx);
-        changed |= self.tick_pitch(tx);
-        changed |= self.tick_kitchen(tx);
-        changed |= self.tick_pitlane(tx);
-        changed |= self.tick_hive(tx);
+        changed |= self.tick_scene::<crate::reef::Reef>(tx);
+        changed |= self.tick_scene::<crate::pitch::Pitch>(tx);
+        changed |= self.tick_scene::<crate::kitchen::Kitchen>(tx);
+        changed |= self.tick_scene::<crate::pitlane::PitLane>(tx);
+        changed |= self.tick_scene::<crate::hive::Hive>(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         changed |= self.phone_touch_tick(tx);
@@ -471,5 +472,26 @@ impl Desk {
         self.fit();
         self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
+    }
+}
+
+/// A topology of just `sessions` and `panes`.
+#[cfg(test)]
+pub fn topology(
+    sessions: Vec<phux_client_runtime::control::SessionDescriptor>,
+    panes: Vec<phux_client_runtime::control::PaneDescriptor>,
+) -> Topology {
+    Topology {
+        sessions,
+        resources: Vec::new(),
+        panes,
+        agent_sessions: Vec::new(),
+        documents: Vec::new(),
+        satellite_sessions: Vec::new(),
+        focused_session: 0,
+        focused_pane: ResourceId::local(0),
+        authority: None,
+        inbox: None,
+        handles: phux_client_core::layout::wire::HandleMap::new(),
     }
 }

@@ -172,10 +172,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
         settle(&mut rt);
         tap(&mut rt, "settings-query", 0.1);
         rt.paste("clipboard");
-        rt.key(KeyEvent {
-            key: Key::Enter,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Enter));
         settle(&mut rt);
         assert!(!rt.state.settings_search_focused());
         assert_eq!(rt.state.settings_ui.query.text, "clipboard");
@@ -185,10 +182,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
                 .any(|e| e.key.as_deref() == Some("settings-query") && e.focused)
         );
         tap(&mut rt, "settings-query", 0.3);
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         settle(&mut rt);
         assert!(rt.state.settings_open);
         assert!(rt.state.settings_search_focused());
@@ -213,10 +207,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
             rt.state.settings_ui.query.focused
         );
         tap(&mut rt, "settings-terminal", 0.5);
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         settle(&mut rt);
         assert_eq!(
             rt.state.settings_open, phone,

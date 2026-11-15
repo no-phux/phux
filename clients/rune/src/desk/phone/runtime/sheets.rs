@@ -10,11 +10,7 @@ fn phone(size: (f32, f32)) -> (std::sync::Arc<Client>, Runtime<Desk>) {
 }
 
 fn visible_editor(rt: &Runtime<Desk>, key: &str) {
-    let editor = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key))
-        .unwrap();
+    let editor = crate::ui::element(rt, key);
     let keyboard = rt.presented("phone-keyboard").unwrap().0;
     assert!(
         editor.label.as_ref().is_some_and(|label| !label.is_empty()),
@@ -31,11 +27,7 @@ fn visible_editor(rt: &Runtime<Desk>, key: &str) {
         "{key} behind keyboard: {:?}, {keyboard:?}",
         editor.rect
     );
-    let cap = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some("phone-cap-120"))
-        .unwrap();
+    let cap = crate::ui::element(rt, "phone-cap-120");
     assert!(!cap.inert, "the sheet must not block the keyboard");
 }
 

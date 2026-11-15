@@ -331,11 +331,7 @@ mod tests {
             rune::Env::new(false, 1.0),
         );
         rt.frame(0.0);
-        let action = rt
-            .elements()
-            .into_iter()
-            .find(|el| el.key.as_deref() == Some("update-act"))
-            .unwrap();
+        let action = crate::ui::element(&rt, "update-act");
         assert!(
             !action.focusable,
             "only the Settings update action participates in Tab order"

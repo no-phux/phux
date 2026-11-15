@@ -174,9 +174,8 @@ mod tests {
 
     #[test]
     fn names_skip_sessions_that_exist() {
-        use phux_client_core::layout::wire::HandleMap;
         use phux_client_runtime::control::SessionDescriptor;
-        use phux_protocol::ids::ResourceId;
+
         let session = |id, name: &str| SessionDescriptor {
             id,
             name: name.to_owned(),
@@ -193,19 +192,8 @@ mod tests {
             project: None,
             project_link: None,
         };
-        let topology = Topology {
-            sessions: vec![session(1, "tui"), session(2, "tui-2")],
-            resources: Vec::new(),
-            panes: Vec::new(),
-            agent_sessions: Vec::new(),
-            documents: Vec::new(),
-            satellite_sessions: Vec::new(),
-            focused_session: 0,
-            focused_pane: ResourceId::local(0),
-            authority: None,
-            inbox: None,
-            handles: HandleMap::new(),
-        };
+        let topology =
+            crate::desk::topology(vec![session(1, "tui"), session(2, "tui-2")], Vec::new());
         assert_eq!(unused_name(None, "tui"), "tui");
         assert_eq!(unused_name(Some(&topology), "tui"), "tui-3");
         assert_eq!(unused_name(Some(&topology), "work"), "work");

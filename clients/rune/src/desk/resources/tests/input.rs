@@ -34,12 +34,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
         ])
         .with_resources(vec![surface]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request, CommandValue::State(snapshot));
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
     outbound(&client);
@@ -103,27 +98,23 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     // The host's clipboard lands on this machine's.
     let (copy, _) = sent[5].clone();
     let (paste, _) = sent[6].clone();
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: copy,
-            result: CommandResult::OkWith(CommandValue::Bytes(b"from the host".to_vec())),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        &client,
+        copy,
+        CommandValue::Bytes(b"from the host".to_vec()),
+    );
     step(&mut rt);
     assert_eq!(
         board.text().as_deref().map(String::as_str),
         Some("from the host")
     );
     // A paste the host could not press says why.
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: paste,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "nothing here can press the paste chord".into(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        paste,
+        ErrorCode::Unavailable,
+        "nothing here can press the paste chord",
+    );
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the paste failure is said");
     assert!(
@@ -132,24 +123,18 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         notice.text
     );
     for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
-        client
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    message: "the surface's producer is not connected".into(),
-                },
-            })
-            .unwrap();
+        crate::wire_fixture::refuse(
+            &client,
+            request_id,
+            ErrorCode::NotProducer,
+            "the surface's producer is not connected",
+        );
     }
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the refusal is said");
     assert!(notice.text.contains("producer is not connected"));
     assert_eq!(rt.state.document_input_frame(&id(1)), None, "view only now");
-    rt.key(KeyEvent {
-        key: Key::Text("x".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("x".into())));
     step(&mut rt);
     let sent = outbound(&client);
     assert!(

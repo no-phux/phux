@@ -1,90 +1,31 @@
-//! The reef view's state and what it does: the fleet as fish, kept in step
-//! each frame, and the way from a fish to its terminal. The scene is
-//! `crate::reef`; the painter is `ui::reef`.
-
-use std::cell::Cell;
-use std::time::Duration;
-
-use phux_protocol::ids::ResourceId;
-use rune::Tx;
+//! The reef view: the fleet as fish, machines as reefs in the galaxy's order.
 
 use super::Desk;
 use super::galaxy::Star;
+use super::playground::{Playground, Scene, creatures};
 use crate::galaxy::{self, Kin};
 use crate::reef::{self, Mood, Swimmer};
 
-/// How often the reef redraws while open: every frame.
-const FRAME: Duration = Duration::from_millis(16);
+/// Its paint: the caustic tile the sand's light is drawn with, made once.
+pub type Reef = Playground<reef::Reef, rune::Pixels>;
 
-#[derive(Debug, Default)]
-pub struct Reef {
-    pub open: bool,
-    pub scene: reef::Reef,
-    /// The view's size in points, from its last layout.
-    pub viewport: [f32; 2],
-    /// App clock seconds at the last frame.
-    last: Option<f64>,
-    /// Whether the theme is dark, as the last view build saw it: night.
-    pub night: Cell<bool>,
-    /// Reduced motion, as the last view build saw it.
-    pub still: Cell<bool>,
-    /// The caustic tile the sand's light is drawn with, made once.
-    pub caustic: rune::Pixels,
-}
+impl Scene for reef::Reef {
+    type Paint = rune::Pixels;
 
-impl Desk {
-    pub fn toggle_reef(&mut self) {
-        if self.reef.open {
-            self.close_reef();
-            return;
-        }
-        self.close_inbox();
-        self.close_galaxy();
-        self.close_pitch();
-        self.close_kitchen();
-        self.close_pitlane();
-        self.close_hive();
-        self.settings_open = false;
-        self.reef.open = true;
-        self.reef.last = None;
-        self.reef.scene.selected = None;
-        if self.reef.caustic.size() == (0, 0) {
-            self.reef
-                .caustic
-                .set(reef::TILE, reef::TILE, reef::caustic_tile());
+    fn of(desk: &mut Desk) -> &mut Reef {
+        &mut desk.reef
+    }
+
+    fn opened(desk: &mut Desk) {
+        let caustic = &desk.reef.paint;
+        if caustic.size() == (0, 0) {
+            caustic.set(reef::TILE, reef::TILE, reef::caustic_tile());
         }
     }
 
-    pub fn close_reef(&mut self) {
-        self.reef.open = false;
-    }
-
-    /// Keep the fish in step with the fleet and the scene moving while open.
-    pub(super) fn tick_reef(&mut self, tx: &mut Tx) -> bool {
-        if !self.reef.open {
-            return false;
-        }
-        self.refresh_reef();
-        let dt = self
-            .reef
-            .last
-            .map_or(0.0, |last| (self.clock - last) as f32);
-        self.reef.last = Some(self.clock);
-        self.reef.scene.advance(dt);
-        tx.wake_after(FRAME);
-        true
-    }
-
-    /// The view laid out at `w` by `h`.
-    pub fn reef_laid_out(&mut self, w: f32, h: f32) {
-        self.reef.viewport = [w, h];
-        self.refresh_reef();
-    }
-
-    /// Machines as reefs in the galaxy's order, every agent it knows of as a
-    /// fish; schools are the galaxy's related agents.
-    fn refresh_reef(&mut self) {
-        let planets = self.planets();
+    /// Schools are the galaxy's related agents.
+    fn refresh(desk: &mut Desk) {
+        let planets = desk.planets();
         let hosts: Vec<(String, bool)> =
             planets.iter().map(|p| (p.name.clone(), p.known)).collect();
         let stars: Vec<(usize, &Star)> = planets
@@ -132,72 +73,13 @@ impl Desk {
                 work: s.work,
             })
             .collect();
-        let scene = &mut self.reef.scene;
-        scene.nt_target = if self.reef.night.get() { 1.0 } else { 0.0 };
-        scene.reduce = self.reef.still.get();
-        scene.sync(swimmers);
-        let [w, h] = self.reef.viewport;
-        scene.layout(w, h, &hosts);
+        let v = &mut desk.reef;
+        v.scene.sync(swimmers);
+        let [w, h] = v.viewport;
+        v.scene.layout(w, h, &hosts);
     }
 
-    /// A press on a fish selects it; a press on the selected one opens its
-    /// terminal, as the galaxy opens a star.
-    pub fn reef_press(&mut self, id: ResourceId) {
-        if self.reef.scene.selected.as_ref() == Some(&id) {
-            self.open_fish();
-        } else {
-            self.reef.scene.selected = Some(id);
-        }
-    }
-
-    pub fn reef_deselect(&mut self) {
-        self.reef.scene.selected = None;
-    }
-
-    pub fn reef_hover(&mut self, id: ResourceId, on: bool) {
-        let hovered = &mut self.reef.scene.hovered;
-        if on {
-            *hovered = Some(id);
-        } else if hovered.as_ref() == Some(&id) {
-            *hovered = None;
-        }
-    }
-
-    /// The waiting fish after the selected one, round again at the end.
-    pub fn reef_next_waiting(&mut self) {
-        let scene = &self.reef.scene;
-        let waiting: Vec<ResourceId> = scene
-            .fish
-            .iter()
-            .filter(|f| f.who.mood == Mood::Waiting)
-            .map(|f| f.who.id.clone())
-            .collect();
-        if waiting.is_empty() {
-            return;
-        }
-        let next = waiting
-            .iter()
-            .position(|id| Some(id) == scene.selected.as_ref())
-            .map_or(0, |at| (at + 1) % waiting.len());
-        self.reef.scene.selected = Some(waiting[next].clone());
-    }
-
-    /// Escape lets go of a fish first, then closes.
-    pub fn reef_escape(&mut self) {
-        if self.reef.scene.selected.take().is_none() {
-            self.close_reef();
-        }
-    }
-
-    /// Close the reef on the selected fish's terminal.
-    pub fn open_fish(&mut self) {
-        let Some(f) = self.reef.scene.selected_fish() else {
-            return;
-        };
-        let id = f.who.id.clone();
-        self.close_reef();
-        self.go_to_star(&id);
-    }
+    creatures!(fish);
 }
 
 /// A school per connected group of `pairs` over `n` agents.

@@ -2,7 +2,7 @@
 //! The system keyboard owns native field shift/control editing traits.
 use super::super::{Desk, input::Modal, phone::Soft};
 use super::target::Field;
-use rune::{KeyEvent, Mods, Runtime, Tx};
+use rune::{KeyEvent, Runtime, Tx};
 use std::collections::HashSet;
 
 pub(crate) fn editing(d: &Desk) -> bool {
@@ -80,10 +80,7 @@ fn inbox(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
     let Some(phone) = &mut d.phone else {
         return true;
     };
-    let event = KeyEvent {
-        key: phone.for_field(soft.clone()),
-        mods: Mods::default(),
-    };
+    let event = crate::keys::plain(phone.for_field(soft.clone()));
     // Navigation/close still works without a mounted reply editor. Other
     // keys are consumed, never inserted into a hidden draft or terminal.
     d.inbox_key(&event, tx);
@@ -92,10 +89,7 @@ fn inbox(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
 
 fn send(d: &mut Desk, field: Field, soft: &Soft, tx: &mut Tx) {
     let Some(phone) = &mut d.phone else { return };
-    let event = KeyEvent {
-        key: phone.for_field(soft.clone()),
-        mods: Mods::default(),
-    };
+    let event = crate::keys::plain(phone.for_field(soft.clone()));
     field.key(d, &event, tx);
 }
 

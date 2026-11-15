@@ -1,16 +1,5 @@
 use super::*;
-use crate::reef::CLAUDE;
-
-fn cook(n: u32, host: usize, mood: Mood) -> Cook {
-    Cook {
-        id: ResourceId::local(n),
-        name: format!("agent-{n}"),
-        host,
-        mood,
-        species: &CLAUDE,
-        work: None,
-    }
-}
+use crate::creature::Work;
 
 fn hosts(names: &[&str]) -> Vec<(String, bool)> {
     names
@@ -20,7 +9,7 @@ fn hosts(names: &[&str]) -> Vec<(String, bool)> {
         .collect()
 }
 
-fn kitchen(w: f32, h: f32, cooks: Vec<Cook>) -> Kitchen {
+fn kitchen(w: f32, h: f32, cooks: Vec<Agent>) -> Kitchen {
     let mut k = Kitchen::default();
     k.layout(w, h, &hosts(&["mini", "macbook", "powerhouse-1"]));
     k.sync(cooks);
@@ -129,14 +118,20 @@ fn a_chef_walks_to_its_new_spot_and_stays_in_its_line() {
     let mut k = kitchen(
         1280.0,
         800.0,
-        vec![cook(1, 1, Mood::Idle), cook(2, 1, Mood::Working)],
+        vec![
+            Agent::test(1, 1, Mood::Idle),
+            Agent::test(2, 1, Mood::Working),
+        ],
     );
     assert!(
         k.chefs.iter().all(|c| c.arrived()),
         "new chefs start at their spots"
     );
     let start = [k.chefs[0].x, k.chefs[0].y];
-    k.sync(vec![cook(1, 1, Mood::Waiting), cook(2, 1, Mood::Working)]);
+    k.sync(vec![
+        Agent::test(1, 1, Mood::Waiting),
+        Agent::test(2, 1, Mood::Working),
+    ]);
     assert!(!k.chefs[0].arrived());
     assert!(k.chefs[0].ring0 > k.t, "the bell starts as it arrives");
     for _ in 0..600 {
@@ -150,16 +145,19 @@ fn a_chef_walks_to_its_new_spot_and_stays_in_its_line() {
     assert_eq!(c.goal, Goal::Pass(0));
     assert_eq!([c.x, c.y], k.lines[1].at(Goal::Pass(0)));
     // Done: a mint burst where it stands.
-    k.sync(vec![cook(1, 1, Mood::Done), cook(2, 1, Mood::Working)]);
+    k.sync(vec![
+        Agent::test(1, 1, Mood::Done),
+        Agent::test(2, 1, Mood::Working),
+    ]);
     assert!(k.parts.iter().filter(|p| p.kind == PartKind::Mint).count() >= 12);
 }
 
 #[test]
 fn the_toque_grows_with_rank_and_absent_stats_are_a_cook() {
-    let mut k = kitchen(1280.0, 800.0, vec![cook(1, 0, Mood::Working)]);
+    let mut k = kitchen(1280.0, 800.0, vec![Agent::test(1, 0, Mood::Working)]);
     assert_eq!(k.chefs[0].tier, 1);
     assert_eq!(RANK[k.chefs[0].tier], "Cook");
-    let mut star = cook(1, 0, Mood::Working);
+    let mut star = Agent::test(1, 0, Mood::Working);
     star.work = Some(Work {
         turns: 40,
         working_s: 0.0,
@@ -178,7 +176,7 @@ fn the_scene_is_deterministic() {
             1280.0,
             800.0,
             (0..12)
-                .map(|n| cook(n, n as usize % 3, Mood::Working))
+                .map(|n| Agent::test(n, n as usize % 3, Mood::Working))
                 .collect(),
         );
         k.nt_target = 1.0;
