@@ -1,8 +1,12 @@
 # Held actions
 
+For mandatory per-request credential approvals, including owner-socket
+requests, see [1Password credentials](./onepassword.md). Those are separate
+from the grant-driven held actions below.
+
 A device or automation key enrolled with a held verb in its scope has those
-actions held by the server until a person approves or denies them. Nothing
-on this machine's own socket is ever held. Keys and scopes are in
+actions held by the server until a person approves or denies them. These
+grant-driven holds do not apply to this machine's own socket. Keys and scopes are in
 [Remote machines](./remote.md#who-can-do-what).
 
 ```sh
@@ -38,3 +42,6 @@ A phone with [background push](./protocol/host-operations.md#background-push)
 set up hears each hold while it is away and can approve or deny from the
 notification. A connected client sees the pending record live under
 `phux.approval/v1/<id>`.
+`approve --yes` supports unattended noncredential decisions without requiring
+Global observation. It cannot release credentials: [credential requests](./onepassword.md)
+require review of their exact references and identities in a supported client.

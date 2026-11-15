@@ -381,7 +381,8 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
                         server: Some("192.0.2.2:22".parse().unwrap()),
                     })
                     .with_quic_streams(true)
-                    .with_platform(crate::caps::ClientPlatform::parse("macos")),
+                    .with_platform(crate::caps::ClientPlatform::parse("macos"))
+                    .with_credential_approvals(true),
             },
             &F_HELLO,
         ),

@@ -58,6 +58,14 @@ impl ControlPlane {
         }
     }
 
+    /// Reconcile pending records on the live connection without repeating a decision.
+    pub fn refresh_approvals(&mut self) {
+        self.approvals.watching = true;
+        if self.handshake_ready {
+            self.list_approvals();
+        }
+    }
+
     /// Whether the negotiated server holds actions for approval.
     #[must_use]
     pub const fn approvals_supported(&self) -> bool {

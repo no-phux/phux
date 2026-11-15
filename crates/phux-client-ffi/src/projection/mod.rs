@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod agent_records;
+pub mod approvals;
 pub mod grid;
 pub mod id;
 pub mod organization;

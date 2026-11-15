@@ -26,13 +26,13 @@ import { Failure } from "../lib/command.ts";
 import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { AgentFixture } from "./fixture.ts";
-import { BROWSER_SUITES, REQUIRED_TESTS } from "./suites.ts";
+import { BROWSER_SUITES } from "./suites.ts";
+import { AUTH_REQUIRED_TESTS, REQUIRED_TESTS } from "./required-tests.ts";
 
 export { REQUIRED_TESTS };
 
 type Env = Record<string, string>;
 
-const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];
 const TEST_TOKEN = "11".repeat(32);
 
 /** SIGTERM/SIGINT: unwind through every cleanup, then exit 128 + signum. */

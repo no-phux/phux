@@ -210,6 +210,9 @@ rule_table! {
     // Which grants the host's server holds says what its panes can read: owner,
     // Unix socket only.
     C_PRIVACY_STATUS = verbs("`PRIVACY_STATUS`", [Inventory], GlobalOwnerUds);
+    // Full Global control, never pane-scoped agent keys or control-class grants.
+    // Every Request also goes through the mandatory per-exchange approval gate.
+    C_CREDENTIALS = verbs("`CREDENTIALS`", [Bind, Input], Global);
     // What works on the host, for a person deciding what to fix: inventory, so a
     // paired phone reads it like `GET_STATE`.
     C_HOST_CHECKLIST = verbs("`HOST_CHECKLIST`", [Inventory], Global);

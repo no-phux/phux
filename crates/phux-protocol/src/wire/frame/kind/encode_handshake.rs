@@ -229,6 +229,9 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
     if let Some(platform) = caps.platform {
         enc.write_field(field::hello::PLATFORM, platform.as_str().as_bytes());
     }
+    if caps.credential_approvals {
+        u8_field(enc, field::hello::CREDENTIAL_APPROVALS, 1);
+    }
 }
 
 /// Write `HELLO_OK.server_caps`: layers, then the feature words only as far

@@ -43,6 +43,7 @@ phux-client-runtime.workspace = true
 phux-protocol.workspace = true
 # The surface carries the kernel's decoded agent records as JSON lines again.
 serde_json.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 uniffi = "0.32"
 

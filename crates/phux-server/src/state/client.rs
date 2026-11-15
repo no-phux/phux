@@ -80,6 +80,14 @@ pub enum AttachError {
 }
 
 impl ServerState {
+    /// The authenticated event identity of a live connection.
+    pub(crate) fn client_actor_ref(
+        &self,
+        client: ClientId,
+    ) -> phux_protocol::wire::frame::ActorRef {
+        self.clients.actor_ref(client)
+    }
+
     /// The attached clients, read-only (writes stay in `state`).
     #[must_use]
     pub const fn attached(&self) -> &HashMap<ClientId, AttachedClient> {

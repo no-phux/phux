@@ -4,9 +4,11 @@ use super::ArgValue::{Int, Str};
 use super::{ActionSpec, Category, Palette};
 use crate::attach::input_dispatch::run_action as run;
 use crate::attach::input_dispatch::{organize, session_management, tab_lock};
+mod approvals;
 
 /// The actions with a palette row, in the order the palette lists them.
 pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
+    approvals::REVIEW,
     row! { "split-pane", run::split_pane, Pane, "Split right", [("direction", Str("vertical"))],
     "Split the focused pane side-by-side (vertical divider)",
     "`direction` = `horizontal` | `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`)" },

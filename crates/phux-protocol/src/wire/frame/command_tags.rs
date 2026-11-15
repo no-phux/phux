@@ -10,8 +10,8 @@ use super::tag_registry;
 use super::{Command, CommandResult};
 
 // `Command` tags (`docs/protocol.md#commands-events-resources`). `0x0a`,
-// `0x0b`, and `0x2a` (`RESOURCE_ABANDON`) are freed and never reused; `0x4e`
-// is left free for concurrent work. `0x00`, `0x04`, and `0x06` are reserved
+// `0x0b`, and `0x2a` (`RESOURCE_ABANDON`) are freed and never reused.
+// `0x00`, `0x04`, and `0x06` are reserved
 // catalog slots and decode as `UnknownEnumValue`.
 wire_tags! { Command;
 pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = 0x01;
@@ -73,6 +73,8 @@ pub(crate) const COMMAND_TAG_MIRROR: u8 = 0x4a;
 pub(crate) const COMMAND_TAG_MIRROR_PROVIDE: u8 = 0x4b;
 pub(crate) const COMMAND_TAG_HOST_CHECKLIST: u8 = 0x43;
 pub(crate) const COMMAND_TAG_PRIVACY_STATUS: u8 = 0x4c;
+/// Wire tag for [`Command::Credentials`].
+pub(crate) const COMMAND_TAG_CREDENTIALS: u8 = 0x4e;
 /// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on
 /// `KILL_RESOURCE`, so a peer without `CONDITIONAL_KILL` fails to decode it
 /// instead of killing unconditionally (ADR-0109).
@@ -167,7 +169,8 @@ pub(crate) const COMMAND_VALUE_TAG_FILE_CHUNK: u8 = 0x0a;
 pub(crate) const COMMAND_VALUE_TAG_CHECKOUT: u8 = 0x0b;
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_HEAD: u8 = 0x0c;
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK: u8 = 0x0d;
-// 0x0e left free for concurrent work.
+/// One-use, redacted credential values.
+pub(crate) const COMMAND_VALUE_TAG_CREDENTIAL_SECRETS: u8 = 0x0e;
 pub(crate) const COMMAND_VALUE_TAG_FORWARD_OPENED: u8 = 0x0f;
 pub(crate) const COMMAND_VALUE_TAG_FORWARD_CHUNK: u8 = 0x10;
 }

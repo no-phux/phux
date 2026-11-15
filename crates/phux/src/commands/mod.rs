@@ -32,6 +32,9 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Upload(UploadArgs { remote, .. })
         | Command::Download(DownloadArgs { remote, .. })
         | Command::Forward(ForwardArgs { remote, .. })
+        | Command::Credentials(CredentialsArgs {
+            action: CredentialsAction::Serve { remote, .. } | CredentialsAction::Run { remote, .. },
+        })
         | Command::Project(ProjectArgs {
             action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
         }) => remote.remote.as_deref(),
@@ -53,6 +56,7 @@ pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod confirm;
 pub(crate) mod coord;
+pub(crate) mod credentials;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod download;

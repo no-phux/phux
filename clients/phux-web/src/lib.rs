@@ -22,6 +22,7 @@ pub mod touch;
 
 pub use panes::PaneRect;
 
+pub use session::approvals::{Approval, CredentialApproval, Requester as ApprovalRequester};
 pub use session::{AgentBadge, AttachPreference, Connection, Outcome, WebDocument};
 
 use std::cell::RefCell;

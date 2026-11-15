@@ -256,6 +256,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::Mirrors,
         ServerFeatureExt::PrivacyStatus,
         ServerFeatureExt::ClipboardRead,
+        ServerFeatureExt::Credentials,
         ServerFeatureExt::HostChecklist,
         ServerFeatureExt::ForwardTcp,
         ServerFeatureExt::ForwardAgent,

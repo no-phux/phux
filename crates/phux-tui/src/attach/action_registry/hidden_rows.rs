@@ -7,6 +7,14 @@ use crate::attach::input_dispatch::session_management;
 
 /// The actions with no palette row.
 pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
+    hidden! { "approval-review", crate::attach::input_dispatch::approvals::queue,
+    "opened from the approvals picker",
+    "Read and review one pending approval before deciding",
+    "`id` (approval identity)" },
+    hidden! { "approval-decide", crate::attach::input_dispatch::approvals::queue,
+    "committed by the approval review overlay",
+    "Submit one explicit approval decision without retrying",
+    "`id`, `decision` = `approve` | `deny`" },
     hidden! { "copy-mode-key", run::copy_mode_key,
     "it only means something as an entry of `[keybindings.modes.copy-mode]`",
     "In the `copy-mode` key mode, make a key stand for a built-in copy-mode key",

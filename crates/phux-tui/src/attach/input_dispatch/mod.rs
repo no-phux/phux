@@ -2,6 +2,7 @@
 //! including the predictive-echo feed and the parked spawns that bridge a
 //! `split-pane` / `new-window` to its `SPAWN_RESOURCE` reply.
 
+pub(in crate::attach) mod approvals;
 mod args;
 mod chrome_drag;
 mod ctx;
