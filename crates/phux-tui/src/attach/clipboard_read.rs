@@ -20,7 +20,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 
-use crate::render::overlay::widgets::{Modal, centered_panel};
+use crate::render::overlay::widgets::Modal;
 use crate::render::overlay::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -260,10 +260,7 @@ impl ClipboardReadOverlay {
     }
 
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        let wide = centered_panel(outer, 5, 20, 3, bp);
-        let h = 3.min(outer.height);
-        let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-        Rect::new(wide.x, y, wide.width, h)
+        crate::render::overlay::confirm::lines_modal_area(outer, 1, bp)
     }
 
     fn decide(&self, choice: Choice) -> OverlayCommand {

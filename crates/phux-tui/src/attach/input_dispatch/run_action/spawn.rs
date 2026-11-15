@@ -12,7 +12,7 @@ use crate::attach::directory_picker::{ListingHost, PendingDirectory};
 use crate::attach::input_dispatch::args::str_arg;
 use crate::attach::input_dispatch::dispatch::spawn_initial_size;
 use crate::attach::pane_state::PaneSlot;
-use crate::render::overlay::PendingOverlay;
+use crate::render::overlay::ToastOverlay;
 
 use super::{ActionCall, bind_satellite_spawn, spawn_place};
 
@@ -71,7 +71,7 @@ pub(in crate::attach) fn go_to_directory(
     // Modal from the moment the request leaves: the placeholder swallows
     // keystrokes and Escape cancels, so nothing typed during a slow listing
     // reaches the pane and a cancelled listing never opens late.
-    ctx.overlays.push(Box::new(PendingOverlay::listing(
+    ctx.overlays.push(Box::new(ToastOverlay::listing(
         &placeholder_label(&host, &path),
         request_id,
         ctx.theme,

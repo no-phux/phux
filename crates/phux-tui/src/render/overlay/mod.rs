@@ -18,7 +18,6 @@ pub mod copy_mode;
 pub mod line_edit;
 pub mod menu;
 pub mod path_picker;
-pub mod pending;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
@@ -34,7 +33,6 @@ pub use copy_mode::{
 };
 pub use menu::{ContextMenu, MenuRow};
 pub use path_picker::PathPicker;
-pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
 pub use settings::SettingsOverlay;
@@ -160,7 +158,7 @@ pub trait RenderOverlay {
         false
     }
 
-    /// The request id this placeholder overlay ([`PendingOverlay`]) awaits.
+    /// The request id this placeholder overlay ([`ToastOverlay::listing`]) awaits.
     fn pending_request(&self) -> Option<u32> {
         None
     }
