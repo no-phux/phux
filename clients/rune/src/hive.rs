@@ -15,6 +15,7 @@ use crate::creature::Agent;
 use crate::reef::{Mood, Pt, Rgb, Rng, hash, lerp};
 
 mod sim;
+pub use crate::reef::Cam;
 pub use sim::STEP;
 
 pub const AMBER: Rgb = [255.0, 181.0, 71.0];
@@ -166,13 +167,6 @@ pub fn flourish(tier: usize) -> Flourish {
 
 /// The rank a card names, by tier.
 pub const RANKS: [&str; 5] = ["Rookie", "Regular", "Veteran", "Star", "Legend"];
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Cam {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
 
 /// The whole hive: layout, bees and camera.
 #[derive(Debug, Clone)]

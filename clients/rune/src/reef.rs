@@ -18,7 +18,7 @@ mod coral;
 mod sim;
 pub use colors::Pal;
 pub use coral::{TILE, Zone, caustic_tile, sand_y, zone};
-pub use sim::Swimmer;
+pub use sim::{Swimmer, ease};
 
 pub type Rgb = [f32; 3];
 pub type Pt = [f32; 2];

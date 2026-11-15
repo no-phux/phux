@@ -6,14 +6,10 @@ use std::f32::consts::{PI, TAU};
 use phux_protocol::ids::ResourceId;
 
 use super::{Agent, Bee, Cam, Hive, Pt, Task};
-use crate::reef::{Mood, Rng, hash};
+use crate::reef::{Mood, Rng, ease, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;
-
-fn ease(dt: f32, rate: f32) -> f32 {
-    1.0 - (-dt * rate).exp()
-}
 
 /// Turn angle `a` toward `b` by `k`, the short way round.
 fn ang_to(a: f32, b: f32, k: f32) -> f32 {
@@ -106,7 +102,7 @@ impl Hive {
             self.carry -= STEP;
             self.step(STEP);
         }
-        self.update_camera(dt);
+        self.cam.follow(self.camera_target(), dt, self.reduce);
     }
 
     /// The prototype's motion for one step: flowers sway, each bee acts out
@@ -261,30 +257,9 @@ impl Hive {
         self.bees.iter().find(|b| &b.who.id == id)
     }
 
-    /// The selected bee at about 1.8×, kept inside the scene; else the
-    /// whole scene. The reef's camera.
+    /// The reef's camera, on the selected bee.
     pub fn camera_target(&self) -> Cam {
-        let (w, h) = (self.w, self.h);
-        let (mut x, mut y, mut z) = (w / 2.0, h / 2.0, 1.0);
-        if let Some(b) = self.selected_bee() {
-            z = if w < 640.0 { 1.6 } else { 1.85 };
-            x = b.x;
-            y = b.y;
-        }
-        let (hw, hh) = (w / (2.0 * z), h / (2.0 * z));
-        Cam {
-            x: x.clamp(hw, (w - hw).max(hw)),
-            y: y.clamp(hh, (h - hh).max(hh)),
-            z,
-        }
-    }
-
-    fn update_camera(&mut self, dt: f32) {
-        let to = self.camera_target();
-        let k = ease(dt, if self.reduce { 12.0 } else { 2.6 });
-        self.cam.x += (to.x - self.cam.x) * k;
-        self.cam.y += (to.y - self.cam.y) * k;
-        self.cam.z += (to.z - self.cam.z) * k;
+        Cam::on(self.w, self.h, self.selected_bee().map(|b| [b.x, b.y]))
     }
 
     /// World to screen through the camera: `world * z + o`.
