@@ -273,8 +273,11 @@ mod tests {
         );
     }
 
+    /// Ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
+    /// (htop) push kitty flags they cannot parse back (phux-7vx).
     #[test]
     fn default_shells_start_on_the_baseline_term() {
+        assert_eq!(DEFAULT_TERM, "xterm-256color");
         for command in [
             default_shell_command("/bin/sh", false),
             shell_command("/bin/sh", "true", true),
