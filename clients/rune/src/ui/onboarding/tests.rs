@@ -208,16 +208,10 @@ fn picks_apply_to_the_window_and_keys_move_on() {
     assert!(rt.accessibility_action("look-auto", Action::Click, None));
     rt.frame(3.5);
     assert_eq!(rt.state.settings.theme, None, "Auto follows the system");
-    rt.key(KeyEvent {
-        key: Key::Enter,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Enter));
     rt.frame(4.0);
     assert_eq!(rt.state.onboarding.step, Step::Agents);
-    rt.key(KeyEvent {
-        key: Key::Escape,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Escape));
     rt.frame(4.5);
     assert_eq!(rt.state.onboarding.step, Step::Look);
 }
@@ -266,10 +260,7 @@ fn the_glass_slider_steps_and_clamps() {
         Step::Look,
         "arrows don't change step"
     );
-    rt.key(KeyEvent {
-        key: Key::End,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::End));
     rt.frame(0.3);
     assert_eq!(rt.state.settings.glass, 100);
     snap(&mut rt, "2b-look-glass");

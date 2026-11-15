@@ -146,10 +146,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     let notice = rt.state.notice.as_ref().expect("the refusal is said");
     assert!(notice.text.contains("producer is not connected"));
     assert_eq!(rt.state.document_input_frame(&id(1)), None, "view only now");
-    rt.key(KeyEvent {
-        key: Key::Text("x".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("x".into())));
     step(&mut rt);
     let sent = outbound(&client);
     assert!(

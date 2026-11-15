@@ -363,10 +363,7 @@ fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack(
         &doc(LayoutNode::Leaf(id(1))),
     );
     outbound(&client);
-    rt.key(KeyEvent {
-        key: Key::Text("x".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("x".into())));
     rt.update(|d, tx| {
         d.ime(&rune::Ime::Commit("typed".into()));
         d.paste(&id(1), "unsafe\n");

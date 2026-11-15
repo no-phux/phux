@@ -81,10 +81,7 @@ fn minimum_desktop_rail_reveals_every_destination_by_tab_and_activates_it() {
             "{} stays between panel header and bottom",
             category.name()
         );
-        rt.key(KeyEvent {
-            key: Key::Text(" ".into()),
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Text(" ".into())));
         rt.frame(1.0);
         assert_eq!(rt.state.settings_ui.category, Some(category));
         rt.frame(1.0);
@@ -99,10 +96,7 @@ fn minimum_desktop_rail_reveals_every_destination_by_tab_and_activates_it() {
             category.name(),
             selected.visible
         );
-        rt.key(KeyEvent {
-            key: Key::Tab,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Tab));
     }
 }
 
@@ -139,17 +133,11 @@ fn native_search_editing_and_tab_do_not_change_preferences() {
     let mut rt = runtime((1100.0, 720.0), false);
     let before = rt.state.settings;
     assert!(rt.accessibility_action("settings-query", Action::Focus, None));
-    rt.key(KeyEvent {
-        key: Key::Text("clipboard".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("clipboard".into())));
     rt.frame(0.0);
     assert_eq!(rt.state.settings_ui.query.text, "clipboard");
     assert!(rt.find("set-copy-select").is_some());
-    rt.key(KeyEvent {
-        key: Key::Tab,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Tab));
     rt.frame(0.0);
     assert_eq!(rt.state.settings, before);
     assert_eq!(rt.state.settings_ui.query.text, "clipboard");
@@ -184,10 +172,7 @@ fn search_placeholder_and_typed_caret_are_centered_in_the_full_touch_field() {
         assert!(rt.accessibility_action("settings-query", Action::Focus, None));
         rt.frame(0.0);
         assert_search_caret_centered(&rt);
-        rt.key(KeyEvent {
-            key: Key::Text("clipboard".into()),
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
         assert_eq!(rt.state.settings_ui.query.text, "clipboard");
         assert_search_caret_centered(&rt);
@@ -198,10 +183,7 @@ fn search_placeholder_and_typed_caret_are_centered_in_the_full_touch_field() {
 fn touching_clear_keeps_the_search_keyboard_and_draft_blur_preserves_text() {
     let mut rt = runtime((393.0, 852.0), true);
     assert!(rt.accessibility_action("settings-query", Action::Focus, None));
-    rt.key(KeyEvent {
-        key: Key::Text("clipboard".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("clipboard".into())));
     rt.frame(0.0);
     let (x, y) = rt.find("settings-clear").unwrap();
     rt.touch(1, rune::TouchPhase::Started, x, y, 0.0);
@@ -210,13 +192,7 @@ fn touching_clear_keeps_the_search_keyboard_and_draft_blur_preserves_text() {
     assert!(rt.state.settings_ui.query.text.is_empty());
     assert!(rt.state.settings_search_focused());
     rt.update(|d, tx| {
-        d.settings_soft(
-            &KeyEvent {
-                key: Key::Text("copy".into()),
-                mods: Mods::default(),
-            },
-            tx,
-        );
+        d.settings_soft(&crate::keys::plain(Key::Text("copy".into())), tx);
         d.blur_settings_search(tx);
     });
     rt.frame(0.0);
@@ -374,10 +350,7 @@ fn settings_native_render_frames() {
         rt.frame(0.0);
         render(&gpu, &mut renderer, &mut rt, size, &format!("{name}-dark"));
         assert!(rt.accessibility_action("settings-query", Action::Focus, None));
-        rt.key(KeyEvent {
-            key: Key::Text("clipboard".into()),
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
         render(
             &gpu,
@@ -396,17 +369,11 @@ fn settings_native_render_frames() {
             assert!(rt.accessibility_action("settings-appearance", Action::Focus, None));
             rt.frame(1.0);
             for _ in 1..Category::ALL.len() {
-                rt.key(KeyEvent {
-                    key: Key::Tab,
-                    mods: Mods::default(),
-                });
+                rt.key(crate::keys::plain(Key::Tab));
                 rt.frame(1.0);
                 rt.frame(1.0);
             }
-            rt.key(KeyEvent {
-                key: Key::Text(" ".into()),
-                mods: Mods::default(),
-            });
+            rt.key(crate::keys::plain(Key::Text(" ".into())));
             rt.frame(1.0);
             assert_eq!(rt.state.settings_ui.category, Some(Category::About));
             render(
@@ -505,10 +472,7 @@ fn theme_query(rt: &mut Runtime<Desk>) {
     assert!(rt.accessibility_action("settings-theme", Action::Click, None));
     rt.frame(1.0);
     assert!(rt.state.palette_open);
-    rt.key(KeyEvent {
-        key: Key::Text("nord".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("nord".into())));
     rt.frame(1.0);
     assert_eq!(rt.state.settings.theme, crate::theme::find("nord"));
 }
@@ -545,10 +509,7 @@ fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
             size,
             &format!("{name}-appearance-chooser"),
         );
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         rt.frame(1.0);
         assert!(rt.state.settings_open);
         assert!(!rt.state.palette_open);
@@ -561,10 +522,7 @@ fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
             &format!("{name}-appearance-cancel"),
         );
         theme_query(&mut rt);
-        rt.key(KeyEvent {
-            key: Key::Enter,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Enter));
         rt.frame(1.0);
         assert!(rt.state.settings_open);
         assert!(!rt.state.palette_open);
@@ -585,10 +543,7 @@ fn typing_with_no_field_focused_starts_a_search() {
     rt.frame(0.0);
     assert!(!rt.state.settings_ui.query.focused);
     for c in ["c", "l", "i", "p"] {
-        rt.key(KeyEvent {
-            key: Key::Text(c.into()),
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Text(c.into())));
         rt.frame(0.0);
     }
     assert_eq!(rt.state.settings_ui.query.text, "clip");

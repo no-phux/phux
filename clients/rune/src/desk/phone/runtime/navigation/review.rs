@@ -79,18 +79,12 @@ fn hardware_search_and_escape_release_focus_without_typing_behind_navigation() {
     settle(&mut rt);
     tap(&mut rt, "phone-session-query", 0.1);
     let _ = client.take_outbound();
-    rt.key(rune::KeyEvent {
-        key: Key::Text("review".into()),
-        mods: rune::Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("review".into())));
     settle(&mut rt);
     assert_eq!(rt.state.phone.as_ref().unwrap().query.text, "review");
     assert!(rt.find("phone-session-pane-@2").is_some());
     assert!(rt.find("phone-session-pane-@1").is_none());
-    rt.key(rune::KeyEvent {
-        key: Key::Escape,
-        mods: rune::Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Escape));
     settle(&mut rt);
     assert!(rt.state.phone_page().is_none());
     assert!(!rt.state.phone.as_ref().unwrap().query.focused);

@@ -80,10 +80,7 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
         d.ime(&rune::Ime::Preedit("composing".into(), None, Vec::new()));
         d.ime(&rune::Ime::Commit("IME sentinel".into()));
         d.key(
-            &KeyEvent {
-                key: Key::Text("direct key sentinel".into()),
-                mods: Mods::default(),
-            },
+            &crate::keys::plain(Key::Text("direct key sentinel".into())),
             tx,
         );
     });
