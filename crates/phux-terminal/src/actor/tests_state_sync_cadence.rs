@@ -197,13 +197,7 @@ fn ack_without_emit_instant_produces_no_sample() {
 /// `MAX_EMIT_INSTANTS`, keeping the newest.
 #[test]
 fn emit_instants_is_capped_for_never_acking_consumer() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
 
     // Distinct content per tick and a drained mailbox keep every tick
     // emitting.

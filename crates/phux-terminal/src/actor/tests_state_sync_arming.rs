@@ -213,13 +213,7 @@ fn osc_progress_is_mirrored_without_event_listeners() {
 /// human TUI attach stays on the immediate raw PTY broadcast path.
 #[test]
 fn tick_emit_gate_defaults_off_for_human_attach() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, false)
-        .expect("register");
+    let (mut actor, _client, mut rx) = actor_with_consumer(false);
     actor.vt_write_for_test(b"dirty-content");
 
     actor.tick_emit();

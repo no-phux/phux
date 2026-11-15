@@ -5,7 +5,7 @@ use futures_util::FutureExt;
 
 use super::*;
 use crate::ControlRequest;
-use crate::actor::test_support::dummy_outbound;
+use crate::actor::test_support::{dummy_outbound, on_local};
 use crate::actor::{
     ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest, SnapshotRequest,
 };
@@ -15,38 +15,37 @@ use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn idle_subscribed_actors_do_not_consume_tick_deadlines() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            for count in [1, 32, 128] {
-                let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(count);
-                let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-                let actors: Vec<_> = (0..count)
-                    .map(|_| {
-                        tokio::task::spawn_local(idle_subscribed_actor(
-                            ready_tx.clone(),
-                            stop_rx.clone(),
-                        ))
-                    })
-                    .collect();
-                drop(ready_tx);
-                for _ in 0..count {
-                    ready_rx
-                        .recv()
-                        .await
-                        .expect("every actor has entered its loop");
-                }
-                assert!(
-                    actors.iter().all(|actor| !actor.is_finished()),
-                    "all actors remain active together"
-                );
-                tokio::time::advance(std::time::Duration::from_secs(1)).await;
-                stop_tx.send(true).expect("stop observation");
-                for actor in actors {
-                    actor.await.expect("idle actor assertion");
-                }
+    on_local!(async {
+        for count in [1, 32, 128] {
+            let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(count);
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let actors: Vec<_> = (0..count)
+                .map(|_| {
+                    tokio::task::spawn_local(idle_subscribed_actor(
+                        ready_tx.clone(),
+                        stop_rx.clone(),
+                    ))
+                })
+                .collect();
+            drop(ready_tx);
+            for _ in 0..count {
+                ready_rx
+                    .recv()
+                    .await
+                    .expect("every actor has entered its loop");
             }
-        })
-        .await;
+            assert!(
+                actors.iter().all(|actor| !actor.is_finished()),
+                "all actors remain active together"
+            );
+            tokio::time::advance(std::time::Duration::from_secs(1)).await;
+            stop_tx.send(true).expect("stop observation");
+            for actor in actors {
+                actor.await.expect("idle actor assertion");
+            }
+        }
+    })
+    .await;
 }
 
 #[allow(

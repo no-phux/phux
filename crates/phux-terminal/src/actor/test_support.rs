@@ -74,6 +74,42 @@ impl TerminalActor {
 /// survive a saturated machine.
 pub(super) const ACTOR_EXIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Run a future on a fresh `LocalSet`, where the `!Send` actor can be
+/// spawned. A macro, so large test futures stay inline rather than moved.
+macro_rules! on_local {
+    ($body:expr) => {
+        tokio::task::LocalSet::new().run_until($body)
+    };
+}
+pub(super) use on_local;
+
+/// Cancel an actor and join its task, failing on a hang or a panic.
+pub(super) async fn stop(token: &CancellationToken, join: tokio::task::JoinHandle<()>) {
+    token.cancel();
+    tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
+        .await
+        .expect("actor did not exit after cancel")
+        .expect("actor task panicked");
+}
+
+/// A grid resize that resyncs clients and keeps the last cell size.
+pub(super) const fn grid_resize(cols: u16, rows: u16) -> ResizeRequest {
+    ResizeRequest {
+        cols,
+        rows,
+        cell_px: None,
+        resync_clients: true,
+        resync_only: false,
+        resync_for: None,
+    }
+}
+
+/// Deliver `request` to the actor's resize mailbox.
+pub(super) async fn resize(handle: &ResourceHandle, request: ResizeRequest) {
+    let terminal = handle.terminal().expect("terminal facet");
+    terminal.resize.send(request).await.expect("send resize");
+}
+
 /// Poll granularity for drain loops, which run until
 /// [`ACTOR_EXIT_DEADLINE`].
 pub(super) const DRAIN_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(100);
@@ -82,6 +118,20 @@ pub(super) const DRAIN_POLL_TICK: std::time::Duration = std::time::Duration::fro
 /// receiver so sends do not see a closed channel.
 pub(super) fn dummy_outbound() -> (mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
     mpsc::channel(16)
+}
+
+/// A PTY-less 20x5 actor with `ClientId(1)` registered (tick-managed when
+/// `state_sync`), and that consumer's mailbox.
+pub(super) fn actor_with_consumer(
+    state_sync: bool,
+) -> (TerminalActor, ClientId, mpsc::Receiver<Outbound>) {
+    let mut actor = TerminalActor::new(20, 5).expect("new").actor;
+    let client = ClientId(1);
+    let (tx, rx) = dummy_outbound();
+    actor
+        .register_consumer(client, tx, 11, state_sync)
+        .expect("register");
+    (actor, client, rx)
 }
 
 /// The viewport as right-trimmed rows, skipping wide-cell tails.
