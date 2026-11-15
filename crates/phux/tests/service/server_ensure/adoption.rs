@@ -8,7 +8,6 @@ use super::*;
 
 /// Real adoption inputs, but every init-system executable is a private fake.
 fn arm_fake_service(fixture: &Fixture, script: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
     let unit = if cfg!(target_os = "macos") {
         fixture
             .dir
@@ -25,9 +24,7 @@ fn arm_fake_service(fixture: &Fixture, script: &str) -> PathBuf {
     let bin = fixture.dir.path().join("bin");
     std::fs::create_dir(&bin).expect("bin");
     for name in ["launchctl", "systemctl"] {
-        let tool = bin.join(name);
-        std::fs::write(&tool, script).expect("fake tool");
-        std::fs::set_permissions(tool, std::fs::Permissions::from_mode(0o755)).expect("executable");
+        crate::common::write_executable(bin.join(name), script);
     }
     bin
 }

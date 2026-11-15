@@ -224,13 +224,8 @@ impl Drop for Follower {
 
 /// Write an executable `claude` that paints one clear-screen and holds.
 fn write_quiet_claude(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join("claude");
-    std::fs::write(&path, "#!/bin/sh\nprintf '\\033[2J\\033[H'\nsleep 300\n")
-        .expect("write quiet claude");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod quiet claude");
+    crate::common::write_executable(&path, "#!/bin/sh\nprintf '\\033[2J\\033[H'\nsleep 300\n");
     path
 }
 

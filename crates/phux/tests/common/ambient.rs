@@ -165,6 +165,15 @@ fn xdg_root() -> PathBuf {
         .join("phux-test-xdg")
 }
 
+/// Write `body` to `path` as an executable (0755) script.
+pub fn write_executable(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = path.as_ref();
+    std::fs::write(path, body).expect("write executable fixture");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("make fixture executable");
+}
+
 /// Run the crate's `phux` binary with `args` under `XDG_CONFIG_HOME` and
 /// return `(exit_code, stdout, stderr)`.
 ///

@@ -274,8 +274,6 @@ fn agent_session_and_its_log_survive_graceful_upgrade() {
 /// until `trigger` exists, then rings the bell and paints the permission
 /// dialog only `rules/claude.toml` reads as `blocked`, and holds.
 fn write_gated_claude(dir: &std::path::Path, trigger: &std::path::Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let rule = "\\342\\224\\200".repeat(20);
     let script = format!(
         concat!(
@@ -303,9 +301,7 @@ fn write_gated_claude(dir: &std::path::Path, trigger: &std::path::Path) -> std::
         rule = rule,
     );
     let path = dir.join("claude");
-    std::fs::write(&path, script).expect("write fake claude");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod fake claude");
+    crate::common::write_executable(&path, script);
     path
 }
 
