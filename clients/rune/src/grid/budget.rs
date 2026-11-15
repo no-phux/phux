@@ -22,16 +22,13 @@ use phux_perf::{MetricValue, PerfReport};
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities},
-};
 use rune::{Cx, El, Env, Runtime, row};
 
 use super::{DEFAULT_FONT_SIZE, Metrics, paint};
 use crate::desk::{Desk, Shown};
 use crate::launch::Resolved;
 use crate::perf;
+use crate::wire_fixture;
 
 const FILL: &str = "terminal workload terminal workload terminal workload terminal workload ";
 const SCALE: f32 = 2.0;
@@ -63,25 +60,9 @@ impl Replica {
         });
         client.with_control(ControlPlane::connection_opened);
         let _ = client.take_outbound();
-        client
-            .feed(FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new(),
-                server_id: vec![1; 16],
-                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-                bootstrap_limits: BootstrapLimits::default(),
-            })
-            .expect("hello");
-        let attach_id = client
-            .take_outbound()
-            .iter()
-            .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
-                FrameKind::Attach { attach_id, .. } => Some(attach_id),
-                _ => None,
-            })
-            .expect("attach request");
+        client.feed(wire_fixture::hello(1, false)).expect("hello");
+        let attach_id =
+            wire_fixture::attach_id(&wire_fixture::outbound(&client)).expect("attach request");
         let ids: Vec<ResourceId> = (1..=terminals).map(ResourceId::local).collect();
         let (session, window) = (SessionId::new(1), WindowId::new(1));
         let resources = ids
@@ -108,34 +89,7 @@ impl Replica {
             .join("\r\n");
         for (index, id) in ids.iter().enumerate() {
             let number = index as u64 + 1;
-            let stream_id = StreamId::new(number).expect("a stream id");
-            let bootstrap_id = BootstrapId::new(number).expect("a bootstrap id");
-            for frame in [
-                FrameKind::BootstrapBegin {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                    cols,
-                    rows,
-                    base_seq: 0,
-                },
-                FrameKind::BootstrapChunk {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: payload.clone().into_bytes().into(),
-                },
-                FrameKind::BootstrapReady {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                },
-            ] {
-                client.feed(frame).expect("bootstrap");
-            }
+            wire_fixture::bootstrap(&client, id, [number; 2], [cols, rows], payload.as_bytes());
         }
         client
             .feed(FrameKind::AttachReady { attach_id })

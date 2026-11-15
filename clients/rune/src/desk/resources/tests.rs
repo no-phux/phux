@@ -7,11 +7,7 @@ use phux_client_runtime::{
     control::{ControlOptions, ControlPlane},
 };
 use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{
-        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
-        ServerFeatureExt, ServerFeatureExtSet,
-    },
+    caps::BootstrapStreamProfile,
     ids::{
         ArrangementKey, AuthorityId, BootstrapId, ClientId, ResourceKind, Revision, SessionId,
         SessionKey, StreamId, WindowId,
@@ -25,6 +21,8 @@ use phux_protocol::{
     },
 };
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
+
+use crate::wire_fixture::{answer, attach_id, bootstrap_frames, organization_request, outbound};
 
 // A complete 4×2 RGBA PNG: left red, right blue. CRCs and IDAT are real,
 // unlike the header-only fixtures used by some server protocol tests.
@@ -56,42 +54,12 @@ fn record(n: u8, kind: ResourceKind) -> ResourceRecord {
 }
 
 fn hello(server: u8) -> FrameKind {
-    FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        server_caps: ServerCapabilities::new()
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
-        server_id: vec![server; 16],
-        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-        bootstrap_limits: BootstrapLimits::default(),
-    }
-}
-
-fn outbound(client: &Client) -> Vec<FrameKind> {
-    client
-        .take_outbound()
-        .iter()
-        .map(|bytes| FrameKind::decode(bytes).unwrap().0)
-        .collect()
+    crate::wire_fixture::hello(server, true)
 }
 
 fn seed(client: &Client, records: &[ResourceRecord]) -> Option<u32> {
     let sent = outbound(client);
-    let attach = sent.iter().find_map(|frame| match frame {
-        FrameKind::Attach { attach_id, .. } => Some(*attach_id),
-        _ => None,
-    });
-    let request = sent
-        .into_iter()
-        .find_map(|frame| match frame {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetOrganization { .. },
-            } => Some(request_id),
-            _ => None,
-        })
-        .expect("organization seed requested");
+    let request = organization_request(&sent).expect("organization seed requested");
     let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(1), 0)
         .with_sessions(vec![
             SessionRecord::new(session(), "work", Revision::new(1))
@@ -100,13 +68,12 @@ fn seed(client: &Client, records: &[ResourceRecord]) -> Option<u32> {
                 .with_live(Some(SessionId::new(1))),
         ])
         .with_resources(records.to_vec());
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
-    attach
+    answer(
+        client,
+        request,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
+    attach_id(&sent)
 }
 
 fn install_arrangement(client: &Client, records: &[ResourceRecord], doc: &ArrangementDoc) {
@@ -119,12 +86,7 @@ fn install_arrangement(client: &Client, records: &[ResourceRecord], doc: &Arrang
         Revision::new(1),
         document,
     );
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::Arrangement(Box::new(value))),
-        })
-        .unwrap();
+    answer(client, request, CommandValue::Arrangement(Box::new(value)));
 }
 
 fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Runtime<Desk>) {
@@ -223,38 +185,12 @@ fn publish_on(client: &Client, n: u32, stream_id: StreamId, kind: ResourceKind, 
         ResourceKind::Terminal => BootstrapStreamProfile::SynthesizedVtRaw,
         _ => BootstrapStreamProfile::AccessibilityTreeJsonV1,
     };
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: id(n),
-            stream_id,
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            profile,
-            cols: if kind == ResourceKind::Terminal {
-                80
-            } else {
-                0
-            },
-            rows: if kind == ResourceKind::Terminal {
-                24
-            } else {
-                0
-            },
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id(n),
-            stream_id,
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id(n),
-            stream_id,
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            history_cursor: None,
-        },
-    ] {
+    let size = if kind == ResourceKind::Terminal {
+        [80, 24]
+    } else {
+        [0, 0]
+    };
+    for frame in bootstrap_frames(&id(n), [stream_id.get(), 1], profile, size, bytes) {
         client.feed(frame).unwrap();
     }
 }

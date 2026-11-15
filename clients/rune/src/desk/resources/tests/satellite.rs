@@ -7,32 +7,8 @@ use super::*;
 use rune::accesskit::Action;
 
 fn satellite_frames(id: &ResourceId, bytes: &[u8]) -> [FrameKind; 3] {
-    let stream_id = StreamId::new(70).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    [
-        FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::PixelSurfacePngV1,
-            cols: 0,
-            rows: 0,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ]
+    let profile = BootstrapStreamProfile::PixelSurfacePngV1;
+    bootstrap_frames(id, [70, 1], profile, [0, 0], bytes)
 }
 
 #[test]

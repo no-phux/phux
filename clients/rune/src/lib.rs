@@ -44,6 +44,8 @@ mod system_settings;
 mod theme;
 mod ui;
 mod updates;
+#[cfg(test)]
+mod wire_fixture;
 
 use desk::Desk;
 use rune::{AppSpec, Chrome};
