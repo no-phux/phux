@@ -1,23 +1,9 @@
 //! `phux mission --json` goldens, checked against the `phux.mission/v1` schema.
 
-#![cfg(unix)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "assertions in an integration test"
-)]
-
-#[path = "common/runner.rs"]
-mod runner;
-
-#[path = "common/ambient.rs"]
-mod common;
-
-#[path = "mission_json/golden.rs"]
-mod golden;
-
-use golden::{assert_valid, check, schema_validator};
+use crate::common;
+use crate::golden::{assert_valid, check, schema_validator};
+use crate::runner;
+use crate::support::git;
 use std::process::Output;
 
 use serde_json::Value;
@@ -401,18 +387,6 @@ fn expect_exit(xdg: &common::XdgDirs, args: &[&str], code: i32) -> (String, Stri
         stderr(&output)
     );
     (stdout, stderr(&output))
-}
-
-fn git(dir: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("run git");
-    assert!(status.status.success(), "git {args:?}: {}", stderr(&status));
 }
 
 fn assert_success(verb: &str, output: &Output) {

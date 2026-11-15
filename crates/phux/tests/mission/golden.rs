@@ -1,9 +1,6 @@
 //! Schema checks and deterministic golden rendering for mission JSON.
 
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "parent-only test helpers; pub would violate unreachable_pub"
-)]
+#![allow(unreachable_pub, reason = "shared by sibling suite modules")]
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -12,7 +9,7 @@ use serde_json::Value;
 
 use crate::runner::manifest_dir;
 
-pub(super) fn check(schema: &jsonschema::Validator, verb: &str, output: &Output) {
+pub fn check(schema: &jsonschema::Validator, verb: &str, output: &Output) {
     let value = serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|err| {
         panic!(
             "{verb} stdout is not JSON ({err}): {}",
@@ -41,7 +38,7 @@ pub(super) fn check(schema: &jsonschema::Validator, verb: &str, output: &Output)
     assert_eq!(pretty, expected, "{verb} golden drifted");
 }
 
-pub(super) fn assert_valid(schema: &jsonschema::Validator, value: &Value) {
+pub fn assert_valid(schema: &jsonschema::Validator, value: &Value) {
     let errors: Vec<_> = schema
         .iter_errors(value)
         .map(|err| err.to_string())
@@ -52,7 +49,7 @@ pub(super) fn assert_valid(schema: &jsonschema::Validator, value: &Value) {
     );
 }
 
-pub(super) fn schema_validator() -> jsonschema::Validator {
+pub fn schema_validator() -> jsonschema::Validator {
     let path = manifest_dir().join("../phux-mission/schema/phux.mission.v1.schema.json");
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));

@@ -1,22 +1,11 @@
 //! Keeper projection of agent state into task state.
 
-#![cfg(unix)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "assertions in an integration test"
-)]
-
-mod common;
-#[path = "common/runner.rs"]
-mod runner;
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use common::ServerGuard;
+use crate::common::ServerGuard;
+use crate::support::{assert_valid, init_repo, mission, write_plugin};
 use serde_json::Value;
 
 struct StopKeeper(PathBuf);
@@ -355,81 +344,6 @@ fn write_server_config(cmd: &Command, plugin: &Path, journal_entries: Option<u32
     std::fs::write(dir.join("config.toml"), text).unwrap();
 }
 
-fn write_plugin(root: &Path, script: &Path, log_dir: &Path, body: &str) -> PathBuf {
-    let plugin = root.join("plugin");
-    std::fs::create_dir_all(plugin.join("integrations")).unwrap();
-    let manifest = plugin.join("phux-plugin.toml");
-    std::fs::write(
-        &manifest,
-        "id = \"com.phux.test.mission-project\"\nname = \"mission project\"\nversion = \"0.0.1\"\nmin_phux_version = \"0.0.1\"\ndescription = \"test\"\nplatforms = [\"linux\"]\n",
-    )
-    .unwrap();
-    std::fs::write(
-        plugin.join("integrations/fake.toml"),
-        format!(
-            "schema_version = 1\nid = \"fake\"\ndisplay_name = \"Fake\"\nkind = \"terminal-agent\"\n\n[launch]\ncommand = [\"/bin/sh\", \"{}\"]\nworking_directory = \"workspace\"\n",
-            script.display()
-        ),
-    )
-    .unwrap();
-    let log = log_dir.display();
-    std::fs::write(
-        script,
-        format!(
-            "#!/bin/sh\nmkdir -p \"{log}\"\n{{\n  echo \"ARGS:$*\"\n}} > \"{log}/launch-$$.txt\"\n{body}"
-        ),
-    )
-    .unwrap();
-    manifest
-}
-
-fn init_repo(repo: &Path, origin: &Path) {
-    git(repo, &["init", "-b", "main"]);
-    git(repo, &["config", "user.email", "t@example.com"]);
-    git(repo, &["config", "user.name", "test"]);
-    git(repo, &["commit", "--allow-empty", "-m", "init"]);
-    git(repo, &["init", "--bare", origin.to_str().unwrap()]);
-    git(repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
-    git(repo, &["push", "-u", "origin", "main"]);
-    git(repo, &["remote", "set-head", "origin", "main"]);
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()
-        .expect("git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn mission(
-    guard: &ServerGuard,
-    repo: &Path,
-    args: &[&str],
-    env: &[(&str, &str)],
-) -> (i32, String, String) {
-    let mut cmd = guard.cmd(args);
-    cmd.current_dir(repo);
-    for (key, value) in env {
-        cmd.env(key, value);
-    }
-    let output = cmd.output().expect("phux");
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
-}
-
 fn mission_json(guard: &ServerGuard, repo: &Path, args: &[&str], env: &[(&str, &str)]) -> Value {
     let (code, stdout, stderr) = mission(guard, repo, args, env);
     assert_eq!(code, 0, "stdout={stdout}\nstderr={stderr}");
@@ -589,16 +503,4 @@ fn kill_keeper(state_home: &Path) {
     while path.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn assert_valid(value: &Value) {
-    let path = runner::manifest_dir().join("../phux-mission/schema/phux.mission.v1.schema.json");
-    let schema: Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).expect("schema");
-    let validator = jsonschema::validator_for(&schema).expect("schema");
-    let errors: Vec<_> = validator
-        .iter_errors(value)
-        .map(|err| err.to_string())
-        .collect();
-    assert!(errors.is_empty(), "{value} schema errors: {errors:?}");
 }
