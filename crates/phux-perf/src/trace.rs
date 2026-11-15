@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{Metric, MetricSource};
 
@@ -488,32 +488,6 @@ struct OutEvent<'a> {
 enum Args<'a> {
     Name { name: &'a str },
     Value { value: f64 },
-}
-
-/// Merge Chrome trace-event documents (from [`Capture::to_chrome_json`],
-/// one per process) into one, so Perfetto shows every process on one
-/// timeline. Inputs that do not parse are skipped.
-#[must_use]
-pub fn merge_chrome_json<'a>(docs: impl IntoIterator<Item = &'a str>) -> String {
-    let mut events = Vec::new();
-    let mut processes = Vec::new();
-    for doc in docs {
-        let Ok(mut value) = serde_json::from_str::<Value>(doc) else {
-            continue;
-        };
-        if let Some(Value::Array(list)) = value.get_mut("traceEvents").map(Value::take) {
-            events.extend(list);
-        }
-        if let Some(other) = value.get_mut("otherData").map(Value::take) {
-            processes.push(other);
-        }
-    }
-    json!({
-        "traceEvents": events,
-        "displayTimeUnit": "ns",
-        "otherData": { "processes": processes },
-    })
-    .to_string()
 }
 
 /// Every histogram in `tables`, by address.
