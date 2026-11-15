@@ -168,13 +168,13 @@ pub async fn run_log_rotation_task() {
     }
 }
 
-/// A non-blocking appender at `path` (parent created), plus its
+/// A non-blocking appender at `path` (parent made), plus its
 /// [`WorkerGuard`]. Rotates at open.
 fn file_writer(
     path: &Path,
 ) -> std::io::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::owner_dir::create(parent)?;
     }
     let _ = rotate_log(path, LOG_ROTATE_THRESHOLD_BYTES, LOG_ROTATE_MAX_GENERATIONS);
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
@@ -315,7 +315,7 @@ pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Synchronous writer: `std::process::exit` skips guard flushes.
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::owner_dir::create(parent)?;
     }
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let file_name = path.file_name().ok_or_else(|| {
