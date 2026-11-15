@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
     INPUT_RETRY_HORIZON, InputReplayJournal, ReplayDisposition, ReplayReport,
@@ -95,8 +95,7 @@ pub use geometry::TerminalResizeOutcome;
 pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
 pub use mirror::{MirrorCall, MirrorError};
-pub use options::{ControlOptions, InboundDelivery, PredictionStyle, SessionRecovery};
-use options::{MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES};
+pub use options::{ControlOptions, PredictionStyle, SessionRecovery};
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
@@ -212,10 +211,6 @@ pub struct ControlPlane {
     connection_epoch: u64,
     /// The epoch authorized to deliver inbound frames; absent after loss.
     live_connection_epoch: Option<u64>,
-    /// Frames read off the socket and not yet drained, under
-    /// [`InboundDelivery::Queued`].
-    inbound: Vec<Bytes>,
-    inbound_bytes: usize,
     offered_caps: ClientCapabilities,
     status: Status,
     handshake_ready: bool,

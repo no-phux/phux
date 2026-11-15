@@ -17,15 +17,6 @@ pub(super) struct EngineApply {
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
 
-    /// Apply one normalized engine event on the owner thread.
-    ///
-    /// Bindings normally use [`ControlPlane::feed`](super::ControlPlane::feed),
-    /// which performs protocol validation first. This lower-level entry point
-    /// exists for native embedders that already hold typed runtime events.
-    pub fn apply_engine_event(&mut self, event: EngineEvent) -> Result<(), ControlError> {
-        self.apply_engine_events(vec![event])
-    }
-
     /// Apply a pump's queued typed events in order and project each damaged
     /// terminal once after the whole batch. Every outcome is still processed
     /// in event order, including acknowledgements and resync evidence.

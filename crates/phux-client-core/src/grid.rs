@@ -46,7 +46,7 @@ pub const CELL_OVERLINE: u32 = 1 << 7;
 /// `Cell::flags` bit: the cell is inside the active selection.
 pub const CELL_SELECTED: u32 = 1 << 8;
 /// `Cell::flags` bit: the cell is protected (DECSCA).
-pub const CELL_PROTECTED: u32 = 1 << 9;
+pub(crate) const CELL_PROTECTED: u32 = 1 << 9;
 /// `Cell::flags` bit: the cell carries an OSC 8 hyperlink; see
 /// `Cell::hyperlink_offset` and `Cell::hyperlink_len`.
 pub const CELL_HYPERLINK: u32 = 1 << 10;

@@ -254,32 +254,6 @@ impl ControlPlane {
         request_id
     }
 
-    /// Query with an embedder-owned correlation. The caller must reserve the
-    /// ID in its explicit request ledger. False means no frame was sent.
-    pub fn path_query_with_id(
-        &mut self,
-        request_id: u32,
-        root: String,
-        query: String,
-        recursive: bool,
-        host: Option<SatelliteHost>,
-    ) -> bool {
-        if request_id == 0
-            || !self.path_query_ready()
-            || self.pending.contains_key(&request_id)
-            || self.extensions.pending_listings.contains_key(&request_id)
-            || self.input_replay.owns(request_id)
-            || self.extensions.pending_paths.contains_key(&request_id)
-        {
-            return false;
-        }
-        if request_id >= self.request_seq {
-            self.request_seq = request_id.wrapping_add(1).max(1);
-        }
-        self.queue_path_query(request_id, root, query, recursive, host);
-        true
-    }
-
     fn path_query_ready(&self) -> bool {
         self.handshake_ready
             && self.method_advertised("PATH_QUERY")

@@ -250,8 +250,6 @@ pub struct ReplicaInfo {
     pub last_seq: u64,
     /// Progressive history state, when enabled.
     pub history: Option<HistoryStatus>,
-    /// Revision of the document visible to document handles.
-    pub document_revision: u64,
     /// Whether the terminal accepts input now, as [`EngineHandle::input_ready`]
     /// answers, read in the same owner turn so a consumer validating a
     /// presentation needs one round trip, not two.

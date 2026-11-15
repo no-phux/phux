@@ -42,15 +42,7 @@ impl ControlPlane {
     /// after `ATTACH_READY`. An explicit same-size submission reasserts intent;
     /// queuing is not application, and published grids remain authoritative.
     pub fn resize_viewport(&mut self, cols: u16, rows: u16) {
-        self.resize_viewport_info(ViewportInfo::new(cols, rows));
-    }
-
-    /// Submit desired viewport cells and optional coherent pixel dimensions.
-    /// Has the same lifecycle and authority semantics as [`Self::resize_viewport`].
-    pub fn resize_viewport_info(&mut self, mut viewport: ViewportInfo) {
-        viewport.cols = viewport.cols.max(1);
-        viewport.rows = viewport.rows.max(1);
-        self.viewport.desired = viewport;
+        self.viewport.desired = ViewportInfo::new(cols.max(1), rows.max(1));
         self.viewport.pending = true;
         self.publish_viewport();
     }

@@ -9,7 +9,6 @@ use super::{
     SessionRecovery, Status, Topology, ViewportInfo, agent_delivery, approvals, extensions,
     geometry, global_metadata, org_plane, organization, roster, topology,
 };
-use phux_protocol::ids::ResourceKind;
 
 impl ControlPlane {
     /// A control plane that has opened no connection.
@@ -26,8 +25,6 @@ impl ControlPlane {
             offered_caps,
             connection_epoch: 0,
             live_connection_epoch: None,
-            inbound: Vec::new(),
-            inbound_bytes: 0,
             status: Status::Idle,
             handshake_ready: false,
             attached_once: false,
@@ -92,7 +89,7 @@ impl ControlPlane {
 
     /// The same override, for a binding that reaches an already-built plane
     /// through its runtime client rather than a builder.
-    pub fn set_history_config(&mut self, config: HistoryCacheConfig) {
+    pub(crate) fn set_history_config(&mut self, config: HistoryCacheConfig) {
         self.history_config = Some(config.normalized());
     }
 
@@ -114,13 +111,6 @@ impl ControlPlane {
     #[must_use]
     pub const fn connection_epoch(&self) -> u64 {
         self.connection_epoch
-    }
-
-    /// Whether a drained queued batch still belongs to the active transport.
-    /// Check while holding the same control guard used to feed its frame.
-    #[must_use]
-    pub const fn accepts_inbound(&self, epoch: u64) -> bool {
-        matches!(self.live_connection_epoch, Some(current) if current == epoch)
     }
 
     /// The options this plane was built with.
@@ -156,12 +146,6 @@ impl ControlPlane {
     #[must_use]
     pub const fn server(&self) -> Option<&ServerInfo> {
         self.server.as_ref()
-    }
-
-    /// Whether `HELLO_OK` has been accepted on the current connection.
-    #[must_use]
-    pub const fn handshake_ready(&self) -> bool {
-        self.handshake_ready
     }
 
     /// Whether any connection ever attached: after that, drops reconnect
@@ -270,7 +254,7 @@ impl ControlPlane {
 
     /// The payload limits inbound frames must be decoded under.
     #[must_use]
-    pub fn decode_limits(&self) -> Option<BootstrapLimits> {
+    pub(crate) fn decode_limits(&self) -> Option<BootstrapLimits> {
         self.server.as_ref().map(|server| server.limits)
     }
 
@@ -287,17 +271,6 @@ impl ControlPlane {
     }
 
     // ----- connection lifecycle ---------------------------------------
-
-    /// Open a manually driven plane with the embedder's client name.
-    /// Returns `false` after the plane has already left `Idle`.
-    pub fn open_explicit(&mut self, client_name: String) -> bool {
-        if self.options.automatic_lifecycle || self.status != Status::Idle {
-            return false;
-        }
-        self.options.client_name = client_name;
-        self.connection_opened();
-        true
-    }
 
     /// Whether `terminal_id` belongs to the active session attach.
     #[must_use]
@@ -336,15 +309,6 @@ impl ControlPlane {
             .insert(terminal_id, kind, Origin::AttachResource)
     }
 
-    /// Record a server pump created by a manual binding's successful spawn.
-    pub fn admit_external_spawn(&mut self, terminal_id: &ResourceId) -> bool {
-        if self.terminal_is_admitted(terminal_id) {
-            return false;
-        }
-        self.subscriptions
-            .insert(terminal_id, ResourceKind::Terminal, Origin::OwnSpawn)
-    }
-
     /// Release one explicitly withdrawn terminal from both the attach
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
@@ -369,11 +333,6 @@ impl ControlPlane {
         known || detached
     }
 
-    /// Update the cursor carried by runtime-generated event subscriptions.
-    pub const fn set_event_after_seq(&mut self, after_seq: Option<u64>) {
-        self.options.event_after_seq = after_seq;
-    }
-
     /// A transport is up: reset every per-connection correlation and queue
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
@@ -392,7 +351,6 @@ impl ControlPlane {
         // Anything the consumer has not drained belongs to the connection
         // that just ended, and feeding it against fresh per-connection
         // state would be a protocol error.
-        let _ = self.take_inbound();
         self.subscriptions.clear(Origin::AttachResource);
         self.terminal_roles.clear();
         self.stream_recoveries.clear();
@@ -423,7 +381,6 @@ impl ControlPlane {
     pub fn connection_lost(&mut self, message: Option<String>) {
         self.park_agent_delivery();
         self.live_connection_epoch = None;
-        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.input_replay.connection_lost();
         self.org_connection_lost();
@@ -442,7 +399,6 @@ impl ControlPlane {
     /// The session ends in failure: no retry can help.
     pub fn fail(&mut self, message: impl Into<String>) {
         self.live_connection_epoch = None;
-        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
@@ -458,7 +414,6 @@ impl ControlPlane {
         self.discard_agent_delivery();
         self.live_connection_epoch = None;
         self.handshake_ready = false;
-        let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");
         self.org_strand("the client closed before the operation completed");
         self.strand_extensions("the client closed before the operation completed");

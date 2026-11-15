@@ -57,12 +57,10 @@ fn inventory_read(plane: &mut ControlPlane) -> u32 {
 }
 
 fn answer_inventory(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
 }
 
 /// An empty session emits no terminal-close event to refresh the inventory.
@@ -201,12 +199,10 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
             _ => None,
         })
         .expect("inventory before selecting work");
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
+    );
     let _ = plane.take_outbound();
     assert!(!plane.attach_session(AttachTarget::ById(SessionId::new(1))));
     let _ = plane.take_outbound();
@@ -367,13 +363,7 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
             .with_parent(Some(terminal()))
             .with_agent(Some(phux_protocol::AgentFacet::new("claude", "working"))),
     );
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot.clone(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot.clone());
     let stream_id = StreamId::new(u64::from(attach_id)).unwrap();
     let bootstrap_id = BootstrapId::new(u64::from(attach_id)).unwrap();
     plane
@@ -423,12 +413,10 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
         .unwrap();
     plane.watch_agent_sessions();
     assert!(plane.take_outbound().is_empty());
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
     let subscribed: Vec<_> = plane
         .take_outbound()
         .iter()
