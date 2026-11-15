@@ -82,7 +82,10 @@ impl Desk {
             return;
         }
         self.close_inbox();
-        self.close_scenes();
+        self.pitch.open = false;
+        self.kitchen.open = false;
+        self.pitlane.open = false;
+        self.hive.open = false;
         self.settings_open = false;
         self.galaxy.open = true;
         self.galaxy.placed = false;
@@ -368,6 +371,17 @@ fn session_project(topology: &Topology, client: Option<&Client>, session: u32) -
 #[cfg(test)]
 mod tests {
     use super::star_name;
+
+    #[test]
+    fn opening_the_galaxy_preserves_the_reef_state() {
+        let mut desk = super::Desk::new(&crate::launch::Resolved::offline("galaxy"));
+        desk.reef.open = true;
+        desk.pitch.open = true;
+        desk.toggle_galaxy();
+        assert!(desk.galaxy.open);
+        assert!(desk.reef.open);
+        assert!(!desk.pitch.open);
+    }
 
     #[test]
     fn a_star_is_named_for_its_work_when_its_agent_only_names_the_harness() {
