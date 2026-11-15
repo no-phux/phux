@@ -6,7 +6,7 @@ use std::f32::consts::{PI, TAU};
 use phux_protocol::ids::ResourceId;
 
 use super::{Bee, Cam, Forager, Hive, Pt, Task};
-use crate::reef::{Mood, Rng, hash};
+use crate::playground::{Mood, Rng, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;

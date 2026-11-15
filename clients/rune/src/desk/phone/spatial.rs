@@ -253,7 +253,7 @@ impl Desk {
             }
             return;
         }
-        let Some(focus) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(focus) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -286,7 +286,7 @@ impl Desk {
         let dir = direction(drag.dx, drag.dy);
         let next = self
             .navigation_tree()
-            .zip(self.shown.as_ref())
+            .zip(self.connection.shown.as_ref())
             .and_then(|(tree, shown)| toward(tree, &shown.resource, dir));
         let Some(phone) = self.phone.as_mut() else {
             return;

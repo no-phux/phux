@@ -114,7 +114,10 @@ fn pane_accessibility_action_still_requests_the_exact_resource() {
     settle(&mut rt);
     // This fixture has a replica only for @1. Opening @2 must retain that
     // exact request until its replica arrives, not show an unrelated pane.
-    assert_eq!(rt.state.wanted.as_ref().unwrap().0, ResourceId::local(2));
+    assert_eq!(
+        rt.state.connection.wanted.as_ref().unwrap().0,
+        ResourceId::local(2)
+    );
     assert!(rt.state.phone_page().is_none());
     no_terminal_input(&client);
 }

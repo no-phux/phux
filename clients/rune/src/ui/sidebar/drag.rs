@@ -15,7 +15,7 @@ pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, ink
     handle
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
-            d.reorder.laid_out(grab, rect);
+            d.connection.reorder.laid_out(grab, rect);
             tx.live_only();
         })
         .border(if target { 1.0 } else { 0.0 }, ink.accent)

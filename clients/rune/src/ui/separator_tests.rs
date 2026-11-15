@@ -33,7 +33,7 @@ fn sheet_palette_and_inbox_rules_take_whole_device_pixels() {
     for scale in [1.0_f32, 1.25, 1.5, 2.0, 3.0] {
         for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
             for (surface, name) in surfaces {
-                let desk = Desk::settings_test_fixture().with_phone(phone);
+                let desk = crate::test_support::settings_window().with_phone(phone);
                 let mut rt = Runtime::new(desk, surface, size, Env::new(false, scale));
                 rt.frame(0.0);
                 for edge in ["header", "footer"] {

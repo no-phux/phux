@@ -125,7 +125,7 @@ impl Desk {
         }
         let mut changed = false;
         if self.onboarding.fox.art.is_none() {
-            let Some(cache) = self.resources.images.as_ref() else {
+            let Some(cache) = self.connection.resources.images.as_ref() else {
                 return false;
             };
             self.onboarding.fox.art = Some(Art {

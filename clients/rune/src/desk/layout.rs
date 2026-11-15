@@ -26,6 +26,7 @@ impl Desk {
     pub(super) fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
         let selected = client.selected_session()?;
         let session = self
+            .connection
             .topology
             .as_ref()?
             .sessions
@@ -33,12 +34,12 @@ impl Desk {
             .find(|s| s.id == selected)?;
         let key = session.key?;
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
-            let shown = self.shown.as_ref().map(|s| &s.resource);
+            let shown = self.connection.shown.as_ref().map(|s| &s.resource);
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
         if let Some(arrangement) = session.arrangement
-            && self.fetched.insert(arrangement)
+            && self.connection.fetched.insert(arrangement)
         {
             let _ = client.fetch_arrangement(arrangement);
         }
@@ -52,13 +53,13 @@ impl Desk {
         if self.splits_waiting() {
             return true;
         }
-        match (self.navigation_tree(), &self.shown) {
+        match (self.navigation_tree(), &self.connection.shown) {
             (Some(tree), Some(shown)) => {
                 let on_screen = leaves(tree);
                 !on_screen.contains(&shown.resource)
                     || on_screen
                         .iter()
-                        .any(|id| id != &shown.resource && !self.others.contains_key(id))
+                        .any(|id| id != &shown.resource && !self.connection.others.contains_key(id))
             }
             (None, None) => false,
             _ => true,
@@ -68,10 +69,10 @@ impl Desk {
     /// Recompute what the terminal area shows: the arrangement's active
     /// group when it holds the focused pane, else the focused pane alone.
     pub(super) fn refresh_layout(&mut self, client: &Client) -> bool {
-        let Some(shown) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(shown) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             let listed = self.listed_resources();
             self.sync_tabs(client, &listed);
-            let changed = self.layout.take().is_some();
+            let changed = self.connection.layout.take().is_some();
             if let Some(phone) = self.phone.as_mut() {
                 phone.reconcile(None, None);
             }
@@ -101,25 +102,25 @@ impl Desk {
         } else {
             tree
         };
-        let tree = match (&self.zoomed, tree) {
+        let tree = match (&self.connection.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
                 LayoutNode::Leaf(zoomed.clone())
             }
             (_, Some(tree)) => tree,
             (_, None) => LayoutNode::Leaf(shown),
         };
-        let tree = match &self.dragging {
+        let tree = match &self.connection.dragging {
             Some((path, ratio)) => with_ratio(&tree, path, *ratio).unwrap_or(tree),
             None => tree,
         };
-        let changed = self.layout.as_ref() != Some(&tree);
+        let changed = self.connection.layout.as_ref() != Some(&tree);
         // Everything on screen counts as seen, not only the keyboard's pane.
         if self.focused {
             for id in leaves(&tree) {
                 self.activities.seen(&id);
             }
         }
-        self.layout = Some(tree);
+        self.connection.layout = Some(tree);
         changed | self.sync_views(client)
     }
 
@@ -127,9 +128,9 @@ impl Desk {
     /// ones that left it. Retaining a view does not make its pane seen.
     fn sync_views(&mut self, client: &Client) -> bool {
         let wanted: Vec<ResourceId> = self.navigation_tree().map(leaves).unwrap_or_default();
-        let shown = self.shown.as_ref().map(|s| s.resource.clone());
+        let shown = self.connection.shown.as_ref().map(|s| s.resource.clone());
         let mut changed = false;
-        self.others.retain(|id, view| {
+        self.connection.others.retain(|id, view| {
             let keep = wanted.contains(id) && Some(id) != shown.as_ref();
             if !keep {
                 if let Some(view) = view {
@@ -141,15 +142,15 @@ impl Desk {
         });
         for id in wanted {
             self.subscribe_document(client, &id);
-            if Some(&id) == shown.as_ref() || self.others.contains_key(&id) {
+            if Some(&id) == shown.as_ref() || self.connection.others.contains_key(&id) {
                 continue;
             }
             // Not streaming yet: the next drain tries again.
             if self.is_document(&id) {
-                self.others.insert(id, None);
+                self.connection.others.insert(id, None);
                 changed = true;
             } else if let Ok(view) = client.create_view(&id) {
-                self.others.insert(id, Some(view));
+                self.connection.others.insert(id, Some(view));
                 changed = true;
             }
         }
@@ -158,36 +159,41 @@ impl Desk {
 
     /// Move the keyboard to a pane in the active layout, keeping its view.
     pub fn focus_pane(&mut self, id: &ResourceId) {
-        if self.shown.as_ref().is_some_and(|s| &s.resource == id) {
-            self.resources.returning = None;
+        if self
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| &s.resource == id)
+        {
+            self.connection.resources.returning = None;
             return;
         }
-        let Some(view) = self.others.remove(id) else {
+        let Some(view) = self.connection.others.remove(id) else {
             return;
         };
-        self.resources.returning = None;
-        if let Some(old) = self.shown.take() {
-            self.others.insert(old.resource, old.view);
+        self.connection.resources.returning = None;
+        if let Some(old) = self.connection.shown.take() {
+            self.connection.others.insert(old.resource, old.view);
         }
         self.activities.seen(id);
-        self.shown = Some(super::Shown {
+        self.connection.shown = Some(super::Shown {
             resource: id.clone(),
             view,
         });
         if let Some(phone) = self.phone.as_mut() {
             phone.reset_navigation();
-            self.layout = Some(LayoutNode::Leaf(id.clone()));
+            self.connection.layout = Some(LayoutNode::Leaf(id.clone()));
             // Never propose a retained sibling's previous offscreen size.
-            self.areas.remove(id);
+            self.connection.areas.remove(id);
         }
-        self.painted.replace(None);
-        self.preedit = None;
+        self.connection.painted.replace(None);
+        self.connection.preedit = None;
         self.generation += 1;
     }
 
     /// Focus the pane beside the focused one.
     pub fn focus_toward(&mut self, direction: Direction) {
-        let (Some(tree), Some(shown)) = (self.navigation_tree(), &self.shown) else {
+        let (Some(tree), Some(shown)) = (self.navigation_tree(), &self.connection.shown) else {
             return;
         };
         let next = if self.phone.is_some() {
@@ -205,33 +211,33 @@ impl Desk {
         self.phone
             .as_ref()
             .and_then(|phone| phone.tree.as_ref())
-            .or(self.layout.as_ref())
+            .or(self.connection.layout.as_ref())
     }
 
     /// Show the focused pane alone, or the whole group again.
     pub fn toggle_zoom(&mut self) {
-        self.zoomed = match (&self.zoomed, &self.shown) {
+        self.connection.zoomed = match (&self.connection.zoomed, &self.connection.shown) {
             (Some(_), _) | (None, None) => None,
             (None, Some(shown)) => Some(shown.resource.clone()),
         };
-        if let Some(client) = self.client.clone() {
+        if let Some(client) = self.connection.client.clone() {
             self.refresh_layout(&client);
         }
     }
 
     /// A split's container moved or resized.
     pub fn split_laid_out(&mut self, path: SplitPath, size: [f32; 2]) {
-        self.split_sizes.insert(path, size);
+        self.connection.split_sizes.insert(path, size);
     }
 
     /// The whole split tree's size from its last layout, once it has one.
     pub fn split_area(&self) -> Option<[f32; 2]> {
-        self.split_sizes.get(&Vec::new()).copied()
+        self.connection.split_sizes.get(&Vec::new()).copied()
     }
 
     /// The length a divider at `path` travels along.
     pub fn split_span(&self, path: &SplitPath, horizontal: bool) -> f32 {
-        self.split_sizes
+        self.connection.split_sizes
             .get(path)
             // The divider's own width is not either side's.
             .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - crate::ui::DIVIDER)
@@ -240,15 +246,15 @@ impl Desk {
     /// A divider drag: preview the ratio locally, and write it on release.
     pub fn drag_divider(&mut self, path: SplitPath, ratio: f32, done: bool) {
         let ratio = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         if !done {
-            self.dragging = Some((path, ratio));
+            self.connection.dragging = Some((path, ratio));
             self.refresh_layout(&client);
             return;
         }
-        self.dragging = None;
+        self.connection.dragging = None;
         if let Some((session, mut doc)) = self.arrangement(&client)
             && let Some(group) = doc.active_group_mut()
             && let Some(tree) = group

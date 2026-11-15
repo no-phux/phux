@@ -21,8 +21,8 @@ fn skill(agent: &str, state: &str) -> AgentSkill {
 /// The real window on `step`, as a first run with Claude Code and Codex
 /// found and one permission granted would show it.
 fn window(step: Step) -> Runtime<Desk> {
-    let mut desk = Desk::settings_test_fixture();
-    desk.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+    let mut desk = crate::test_support::settings_window();
+    desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = theme::find("midnight");
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));

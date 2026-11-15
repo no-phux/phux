@@ -37,6 +37,7 @@ impl Desk {
     pub(crate) fn resume_link(&mut self, away: Option<Duration>) {
         self.link.tries = 0;
         let alive = self
+            .connection
             .client
             .as_ref()
             .filter(|client| !client.status().is_terminal());
@@ -97,7 +98,7 @@ mod tests {
     #[test]
     fn coming_back_retries_an_ended_connection_now_from_the_first_rung() {
         let mut desk = desk();
-        desk.status = Status::Failed;
+        desk.connection.status = Status::Failed;
         desk.link.tries = 6;
         desk.link.retry_at = Some(Instant::now() + Duration::from_secs(30));
         desk.resume_link(Some(Duration::from_secs(5)));
@@ -112,8 +113,8 @@ mod tests {
     #[test]
     fn coming_back_leaves_a_refusal_for_the_person() {
         let mut desk = desk();
-        desk.status = Status::Failed;
-        desk.error = Some("mini refused the pairing token (unauthorized)".to_owned());
+        desk.connection.status = Status::Failed;
+        desk.connection.error = Some("mini refused the pairing token (unauthorized)".to_owned());
         desk.link.tries = 3;
         desk.resume_link(Some(Duration::from_secs(120)));
         assert_eq!(desk.link.tries, 0);
@@ -124,8 +125,8 @@ mod tests {
     fn coming_back_to_a_running_client_keeps_it_and_its_schedule() {
         let mut desk = desk();
         let client = Arc::new(Runtime::embedded(ControlOptions::default()));
-        desk.client = Some(client.clone());
-        desk.status = Status::Attached;
+        desk.connection.client = Some(client.clone());
+        desk.connection.status = Status::Attached;
         desk.link.tries = 4;
         for away in [None, Some(Duration::from_secs(1)), Some(REAPED_AFTER)] {
             desk.resume_link(away);
@@ -136,7 +137,8 @@ mod tests {
         }
         assert_eq!(desk.link.tries, 0);
         assert!(
-            desk.client
+            desk.connection
+                .client
                 .as_ref()
                 .is_some_and(|c| Arc::ptr_eq(c, &client))
         );
@@ -186,7 +188,7 @@ mod tests {
 
     #[test]
     fn a_key_the_connection_took_probes_it_and_a_paused_one_doesnt() {
-        let (_client, mut rt) = crate::grid::budget::input_fixture();
+        let (_client, mut rt) = crate::test_support::input_fixture();
         rt.frame(0.0);
         let type_a = |desk: &mut Desk| {
             desk.send_input(|control, terminal| control.send_text(terminal, "a"));
@@ -199,7 +201,11 @@ mod tests {
         // A terminal that can't take input says so; there is no key to follow.
         rt.update(|desk, _| {
             desk.clock = 20.0;
-            let shown = desk.shown.as_mut().expect("the fixture's terminal");
+            let shown = desk
+                .connection
+                .shown
+                .as_mut()
+                .expect("the fixture's terminal");
             shown.resource = phux_protocol::ids::ResourceId::local(9);
             type_a(desk);
         });

@@ -70,7 +70,7 @@ impl Desk {
         if !self.terminal_has_keyboard(&terminal) || selection != ClipboardSelection::Clipboard {
             return false;
         }
-        let reads = &mut self.resources.clipboard_reads;
+        let reads = &mut self.connection.resources.clipboard_reads;
         let policy = *reads.policy.get_or_insert_with(file_policy);
         let allowed = policy == ClipboardRead::Allow
             || (policy == ClipboardRead::Ask && reads.granted.contains(&terminal));
@@ -101,7 +101,8 @@ impl Desk {
         tx: &mut Tx,
     ) {
         if for_terminal {
-            self.resources
+            self.connection
+                .resources
                 .clipboard_reads
                 .granted
                 .insert(terminal.clone());
@@ -120,8 +121,13 @@ impl Desk {
             return None;
         };
         let (terminal, selection) = (terminal.clone(), *selection);
-        let armed = (self.resources.clipboard_reads.asked.get(&terminal))
-            .is_none_or(|at| at.elapsed() >= PROMPT_ARMING);
+        let armed = (self
+            .connection
+            .resources
+            .clipboard_reads
+            .asked
+            .get(&terminal))
+        .is_none_or(|at| at.elapsed() >= PROMPT_ARMING);
         let for_terminal = match &event.key {
             rune::Key::Escape => {
                 self.pending = None;
@@ -158,11 +164,16 @@ impl Desk {
         selection: ClipboardSelection,
         tx: &mut Tx,
     ) {
+        let fence = self.connection.callback_fence();
         tx.read_clipboard(move |desk: &mut Self, content, _| {
-            if !desk.terminal_has_keyboard(&terminal) {
+            if !fence
+                .as_ref()
+                .is_some_and(|fence| fence.is_current(&desk.connection))
+                || !desk.terminal_has_keyboard(&terminal)
+            {
                 return;
             }
-            if let Some(client) = &desk.client {
+            if let Some(client) = &desk.connection.client {
                 let _ =
                     client.send_clipboard_reply(&terminal, selection, content.text().to_owned());
             }
@@ -186,8 +197,8 @@ mod tests {
     /// A window showing terminal 1, applying `policy`.
     fn window(policy: ClipboardRead) -> Runtime<Desk> {
         let mut desk = Desk::new(&Resolved::offline("clipboard reads"));
-        desk.resources.clipboard_reads = ClipboardReads::with_policy(policy);
-        desk.shown = Some(crate::desk::Shown {
+        desk.connection.resources.clipboard_reads = ClipboardReads::with_policy(policy);
+        desk.connection.shown = Some(crate::desk::Shown {
             resource: id(1),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
@@ -247,13 +258,26 @@ mod tests {
             assert_eq!(d.clipboard_read_key(&a, tx), Some(false));
             assert_eq!(d.clipboard_read_key(&enter, tx), Some(false));
             assert!(d.pending.is_some(), "still asking");
-            let asked = d.resources.clipboard_reads.asked.get_mut(&id(1)).unwrap();
+            let asked = d
+                .connection
+                .resources
+                .clipboard_reads
+                .asked
+                .get_mut(&id(1))
+                .unwrap();
             *asked -= PROMPT_ARMING;
             assert_eq!(d.clipboard_read_key(&a, tx), Some(true));
             assert_eq!(d.pending, None);
             assert!(!d.clipboard_read(id(1), C, tx), "answered, not asked");
         });
-        assert!(rt.state.resources.clipboard_reads.granted.contains(&id(1)));
+        assert!(
+            rt.state
+                .connection
+                .resources
+                .clipboard_reads
+                .granted
+                .contains(&id(1))
+        );
         assert_eq!(rt.state.pending, None);
     }
 }

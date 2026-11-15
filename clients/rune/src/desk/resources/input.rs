@@ -46,10 +46,10 @@ pub fn document_typed(key: &Key, mods: Mods) -> Option<DocumentInput> {
 impl Desk {
     /// The frame size of a surface that takes pointer and keys now.
     pub fn document_input_frame(&self, id: &ResourceId) -> Option<[u32; 2]> {
-        if !self.resources.input.accepts(id) {
+        if !self.connection.resources.input.accepts(id) {
             return None;
         }
-        match &self.resources.entries.get(id)?.body {
+        match &self.connection.resources.entries.get(id)?.body {
             Body::Surface(image) if image.error().is_none() => image.size(),
             _ => None,
         }
@@ -59,7 +59,7 @@ impl Desk {
     /// declared a control class, else a **Read-only mirror**, and **View
     /// only** once it refused this window.
     pub fn mirror_label(&self, id: &ResourceId) -> &'static str {
-        let input = &self.resources.input;
+        let input = &self.connection.resources.input;
         match (input.refused(id), input.control(id)) {
             (Some(_), _) => "View only",
             (None, Some(_)) => "Live mirror",
@@ -69,7 +69,7 @@ impl Desk {
 
     /// Why a document will not take this window's input, once it said.
     pub fn document_input_refused(&self, id: &ResourceId) -> Option<&'static str> {
-        self.resources.input.refused(id)
+        self.connection.resources.input.refused(id)
     }
 
     fn send_document_input(&mut self, id: &ResourceId, intent: DocumentInput) -> bool {
@@ -77,20 +77,20 @@ impl Desk {
     }
 
     fn send_document_request(&mut self, id: &ResourceId, intent: DocumentInput) -> Option<u32> {
-        let client = self.client.clone()?;
+        let client = self.connection.client.clone()?;
         if client.status() != Status::Attached || self.document_input_frame(id).is_none() {
             return None;
         }
         let command = DocumentInputs::command(id, intent);
         let request = client.with_control(|control| control.send_command(command));
-        self.resources.input.sent(request, id.clone());
+        self.connection.resources.input.sent(request, id.clone());
         client.wake();
         Some(request)
     }
 
     /// The surface on screen, when it takes input now.
     fn shown_input_document(&self) -> Option<ResourceId> {
-        let id = self.shown.as_ref()?.resource.clone();
+        let id = self.connection.shown.as_ref()?.resource.clone();
         self.document_input_frame(&id).is_some().then_some(id)
     }
 
@@ -101,7 +101,14 @@ impl Desk {
         let Some(id) = self.shown_input_document() else {
             return false;
         };
+        let fence = self.connection.callback_fence();
         tx.read_clipboard(move |desk: &mut Self, content, _| {
+            if !fence
+                .as_ref()
+                .is_some_and(|fence| fence.is_current(&desk.connection))
+            {
+                return;
+            }
             let text = content.text();
             if text.is_empty() {
                 desk.say(NoticeKind::Error, "Nothing here can be pasted.");
@@ -115,7 +122,7 @@ impl Desk {
                     text: text.to_owned(),
                     chord: true,
                 };
-                desk.resources.pasting = desk.send_document_request(&id, paste);
+                desk.connection.resources.pasting = desk.send_document_request(&id, paste);
             }
         });
         true
@@ -130,7 +137,7 @@ impl Desk {
         };
         let copy = DocumentInput::CopyClipboard { reply: 0 };
         if let Some(request) = self.send_document_request(&id, copy) {
-            self.resources.copying = Some(request);
+            self.connection.resources.copying = Some(request);
         }
         true
     }
@@ -143,11 +150,11 @@ impl Desk {
         result: &CommandResult,
         tx: &mut Tx,
     ) -> bool {
-        let Some(text) = self.resources.input.copied(request, result) else {
+        let Some(text) = self.connection.resources.input.copied(request, result) else {
             return false;
         };
-        let _ = self.resources.input.answer(request, result);
-        self.resources.copying = None;
+        let _ = self.connection.resources.input.answer(request, result);
+        self.connection.resources.copying = None;
         tx.copy(text);
         self.say(NoticeKind::Info, "Copied the host's clipboard.");
         true
@@ -210,7 +217,7 @@ impl Desk {
     /// A key nothing else took, while a surface that takes input is shown;
     /// true when the document took it.
     pub(in crate::desk) fn document_key(&mut self, event: &rune::KeyEvent) -> bool {
-        let Some(id) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(id) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return false;
         };
         if self.document_input_frame(&id).is_none() {
@@ -226,7 +233,7 @@ impl Desk {
         request: u32,
         result: &CommandResult,
     ) -> bool {
-        match self.resources.input.answer(request, result) {
+        match self.connection.resources.input.answer(request, result) {
             Ok(None) => false,
             Ok(Some(refusal)) => {
                 let text = format!("{} is view only: {}.", refusal.resource, refusal.reason);
@@ -234,16 +241,16 @@ impl Desk {
                 self.generation += 1;
                 true
             }
-            Err(error) if self.resources.copying == Some(request) => {
-                self.resources.copying = None;
+            Err(error) if self.connection.resources.copying == Some(request) => {
+                self.connection.resources.copying = None;
                 self.say(
                     NoticeKind::Error,
                     format!("Could not copy from the host: {error}"),
                 );
                 true
             }
-            Err(error) if self.resources.pasting == Some(request) => {
-                self.resources.pasting = None;
+            Err(error) if self.connection.resources.pasting == Some(request) => {
+                self.connection.resources.pasting = None;
                 self.say(
                     NoticeKind::Error,
                     format!("Could not paste on the host: {error}"),

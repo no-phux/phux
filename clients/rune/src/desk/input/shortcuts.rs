@@ -88,7 +88,7 @@ impl Desk {
     }
 
     fn active_tab(&self) -> Option<usize> {
-        self.tabs.list.iter().position(|tab| tab.active)
+        self.connection.tabs.list.iter().position(|tab| tab.active)
     }
 
     fn close_active_tab(&mut self) {
@@ -99,7 +99,7 @@ impl Desk {
 
     /// The tab `step` along from the active one, wrapping.
     fn step_tab(&mut self, step: isize) {
-        let count = self.tabs.list.len() as isize;
+        let count = self.connection.tabs.list.len() as isize;
         if let Some(index) = self.active_tab() {
             let next = (index as isize + step).rem_euclid(count) as usize;
             self.select_tab(next);

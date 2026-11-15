@@ -16,7 +16,7 @@ fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 }
 
 fn runtime(size: (f32, f32), phone: bool) -> Runtime<Desk> {
-    let mut desk = Desk::settings_test_fixture().with_phone(phone);
+    let mut desk = crate::test_support::settings_window().with_phone(phone);
     desk.settings.theme = crate::theme::find("catppuccin-latte");
     let mut rt = Runtime::new(desk, surface, size, Env::new(false, 1.0));
     rt.on_key = Some(Desk::key);
@@ -429,7 +429,7 @@ fn pair_a_phone_shows_a_code_devices_and_the_explicit_choice() {
         let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
         rt.update(|d, tx| {
             tx.instant();
-            d.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+            d.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
             d.settings_category(Category::RemoteHosts);
             d.pairing_fixture();
         });
@@ -518,7 +518,7 @@ fn theme_query(rt: &mut Runtime<Desk>) {
 fn mobile_appearance_and_real_theme_palette_render_accept_and_cancel() {
     let gpu = rune::render::Gpu::headless();
     for (size, name) in [((393, 852), "phone"), ((320, 568), "small")] {
-        let mut desk = Desk::settings_test_fixture().with_phone(true);
+        let mut desk = crate::test_support::settings_window().with_phone(true);
         desk.settings_category(Category::Appearance);
         desk.settings.theme = crate::theme::find("catppuccin-latte");
         let before = desk.settings.theme;

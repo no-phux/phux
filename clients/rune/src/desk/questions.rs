@@ -310,6 +310,7 @@ impl Desk {
             None => response::build(draft)?,
         };
         let client = self
+            .connection
             .client
             .as_ref()
             .ok_or("Not connected. Nothing was sent.")?;

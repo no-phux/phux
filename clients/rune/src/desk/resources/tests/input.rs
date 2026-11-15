@@ -12,7 +12,7 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     );
     publish(&client, 1, ResourceKind::PixelSurface, PNG);
     step(&mut rt);
-    let Body::Surface(image) = &rt.state.resources.entries[&id(1)].body else {
+    let Body::Surface(image) = &rt.state.connection.resources.entries[&id(1)].body else {
         panic!("decoding the surface");
     };
     assert_eq!(image.wait(), Ok([4, 2]));
@@ -168,8 +168,8 @@ fn assert_touch_ownership(client: &Client, rt: &mut Runtime<Desk>) {
     use phux_protocol::wire::frame::DocumentInput;
     use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
 
-    let [x, y] = rt.state.origins[&id(1)];
-    let [w, h] = rt.state.areas[&id(1)];
+    let [x, y] = rt.state.connection.origins[&id(1)];
+    let [w, h] = rt.state.connection.areas[&id(1)];
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     for (lift, dx) in [
         (Cancelled, 0.0),
