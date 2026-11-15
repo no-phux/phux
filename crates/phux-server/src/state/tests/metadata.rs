@@ -147,37 +147,22 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
             ssh_origin: None,
             bearer: None,
             peer: phux_protocol::policy::PeerIdentity {
-                uid: 0,
-                pid: None,
-                exe_path: None,
                 mcp_host_key: Some("credential-id".to_owned()),
-                transport: phux_protocol::policy::TransportType::WebSocket,
-                source_addr: None,
+                ..crate::test_support::peer(phux_protocol::policy::TransportType::WebSocket)
             },
             credential: Some(crate::auth::AuthenticatedCredential {
-                id: "credential-id".to_owned(),
                 principal: "device:cockpit".to_owned(),
-                scopes: vec![crate::auth::TERMINAL_CONTROL_SCOPE.to_owned()],
-                issued_at: chrono::Utc::now(),
                 expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                 generation: 7,
-                registry_instance: None,
-                subject: None,
-                managed: None,
+                ..crate::test_support::credential(
+                    "credential-id",
+                    &[crate::auth::TERMINAL_CONTROL_SCOPE],
+                )
             }),
         },
     );
-    s.set_peer_identity(
-        l1_cid,
-        phux_protocol::policy::PeerIdentity {
-            uid: 501,
-            pid: Some(4242),
-            exe_path: None,
-            mcp_host_key: None,
-            transport: phux_protocol::policy::TransportType::UnixSocket,
-            source_addr: None,
-        },
-    );
+    let unix = phux_protocol::policy::TransportType::UnixSocket;
+    s.set_peer_identity(l1_cid, crate::test_support::peer(unix));
 
     s.detach(cid);
     s.detach(l1_cid);
@@ -207,17 +192,8 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
 fn forget_connection_drops_negotiated_layers_and_peer_identity() {
     let mut s = ServerState::new();
     let (cid, _tx, _rx) = attach_l1_only_client_seeded(&mut s);
-    s.set_peer_identity(
-        cid,
-        phux_protocol::policy::PeerIdentity {
-            uid: 501,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: None,
-            transport: phux_protocol::policy::TransportType::UnixSocket,
-            source_addr: None,
-        },
-    );
+    let unix = phux_protocol::policy::TransportType::UnixSocket;
+    s.set_peer_identity(cid, crate::test_support::peer(unix));
 
     s.forget_connection(cid);
 
