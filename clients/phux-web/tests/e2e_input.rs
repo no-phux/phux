@@ -29,13 +29,14 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[path = "browser_support/metrics.rs"]
 mod metrics;
+#[path = "browser_support/page.rs"]
+mod page;
+use page::{MARKER, POLLS, poll};
 
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
     None => "ws://127.0.0.1:47654/",
 };
-const POLL: Duration = Duration::from_millis(50);
-const POLLS: usize = 120;
 /// How long a finger rests before the drag selects. The gesture treats 400ms
 /// as a hold.
 const HOLD: Duration = Duration::from_millis(450);
@@ -71,17 +72,6 @@ async fn connected(id: &str) -> (HtmlCanvasElement, Client, Element) {
     let client = connect(&canvas).await;
     let surface = input_surface(&canvas);
     (canvas, client, surface)
-}
-
-/// Poll `ready` until it holds, for at most `POLLS` polls.
-async fn poll(mut ready: impl FnMut() -> bool) -> bool {
-    for _ in 0..POLLS {
-        if ready() {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
 }
 
 async fn wait_for(client: &Client, needle: &str) -> bool {
@@ -483,7 +473,7 @@ async fn keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captu
 #[wasm_bindgen_test]
 async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it() {
     let (canvas, client, surface) = connected("scrollback-canvas").await;
-    let marker = "PHUX_WEB_OK";
+    let marker = MARKER;
     assert!(
         wait_until(&client, true, marker).await,
         "{}",
@@ -551,12 +541,8 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
 /// pane; echo it back so suites that run later against the same server
 /// still find it.
 async fn restore_seeded_marker(client: &Client, surface: &Element) {
-    type_line(surface, "PHUX_WEB_OK");
-    assert!(
-        wait_until(client, true, "PHUX_WEB_OK").await,
-        "{}",
-        screen(client)
-    );
+    type_line(surface, MARKER);
+    assert!(wait_until(client, true, MARKER).await, "{}", screen(client));
 }
 
 fn pointer(canvas: &HtmlCanvasElement, kind: &str, col: u16, row: u16) {
