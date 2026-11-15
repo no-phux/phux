@@ -75,7 +75,7 @@ impl super::SessionLoop {
     }
 
     /// Size every workspace pane to its current chrome-inset layout. Used
-    /// after bootstrap, late stream binding, and every outer viewport vote.
+    /// after bootstrap, late stream binding, and every outer resize.
     pub(super) async fn size_workspace_panes(
         &self,
         conn: &mut Connection,

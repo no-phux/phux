@@ -89,7 +89,7 @@ pub(in crate::attach) fn move_pane(
 
 /// Park a `PendingSplit` and send `SPAWN_RESOURCE`; the reply handler splits.
 /// A satellite pane splits on its satellite at its cwd, applying once the
-/// relayed pane's attach succeeds; see [`split_host`] for older hubs.
+/// relayed pane's attach succeeds.
 pub(in crate::attach) fn split_pane(
     ActionCall {
         resolved,
