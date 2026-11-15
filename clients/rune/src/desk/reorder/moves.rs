@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use phux_client_core::layout::{ArrangementDoc, adopt_unarranged_groups, leaves};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::{Client, control::Status};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, Revision, SessionId, SessionKey};
+use phux_protocol::ids::{
+    ArrangementKey, OperationId, ResourceId, Revision, SessionId, SessionKey,
+};
 use phux_protocol::wire::frame::AttachTarget;
 
 use crate::desk::{Desk, NoticeKind};
@@ -34,55 +36,94 @@ const PLACEMENT_WAIT: Duration = Duration::from_secs(3);
 
 impl Desk {
     pub(super) fn move_sidebar_resource(&mut self, id: u32, from: SessionKey, to: SessionKey) {
-        let Some(client) = self.client.clone().filter(|c| c.status() == Status::Attached) else {
+        let Some(client) = self
+            .client
+            .clone()
+            .filter(|c| c.status() == Status::Attached)
+        else {
             return;
         };
         let live = ResourceId::local(id);
         let organization = client.organization();
-        let Some(resource) = organization.resource_by_live(&live) else { return };
+        let Some(resource) = organization.resource_by_live(&live) else {
+            return;
+        };
         if resource.session != from || from == to {
             return;
         }
         match client.move_resource(resource.key, to) {
             Ok(operation) => {
-                let follow = self.shown.as_ref()
+                let follow = self
+                    .shown
+                    .as_ref()
                     .filter(|s| s.resource == live)
-                    .filter(|_| self.wanted.as_ref().is_none_or(|(wanted, _)| *wanted == live))
+                    .filter(|_| {
+                        self.wanted
+                            .as_ref()
+                            .is_none_or(|(wanted, _)| *wanted == live)
+                    })
                     .map(|_| (live.clone(), to));
                 let placement = Placement {
-                    to, fallback: Arc::new(ArrangementDoc::single(live.clone())), since: Instant::now(),
+                    to,
+                    fallback: Arc::new(ArrangementDoc::single(live.clone())),
+                    since: Instant::now(),
                 };
-                self.reorder.moves.insert(operation, Move { follow, placement });
+                self.reorder
+                    .moves
+                    .insert(operation, Move { follow, placement });
             }
             Err(error) => self.say(NoticeKind::Error, format!("Resource not moved: {error}")),
         }
     }
 
     pub(super) fn move_sidebar_tab(&mut self, id: [u8; 16], to: SessionKey) {
-        let Some(client) = self.client.clone().filter(|c| c.status() == Status::Attached) else {
+        let Some(client) = self
+            .client
+            .clone()
+            .filter(|c| c.status() == Status::Attached)
+        else {
             return;
         };
-        let Some(tab) = self.tabs.list.iter().find(|tab| tab.id == id) else { return };
+        let Some(tab) = self.tabs.list.iter().find(|tab| tab.id == id) else {
+            return;
+        };
         let organization = client.organization();
         // No satellite, missing or already-moved member may silently turn a
         // whole-tab drop into a move of only part of that tab.
-        let resources = tab.resources.iter().map(|live| {
-            live.local_id()?;
-            let resource = organization.resource_by_live(live)?;
-            (resource.session != to).then_some(resource.key)
-        }).collect::<Option<Vec<_>>>();
-        let Some(resources) = resources.filter(|resources| !resources.is_empty()) else { return };
-        let mut follow = self.shown.as_ref()
+        let resources = tab
+            .resources
+            .iter()
+            .map(|live| {
+                live.local_id()?;
+                let resource = organization.resource_by_live(live)?;
+                (resource.session != to).then_some(resource.key)
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(resources) = resources.filter(|resources| !resources.is_empty()) else {
+            return;
+        };
+        let mut follow = self
+            .shown
+            .as_ref()
             .filter(|s| tab.resources.contains(&s.resource))
-            .filter(|s| self.wanted.as_ref().is_none_or(|(wanted, _)| *wanted == s.resource))
+            .filter(|s| {
+                self.wanted
+                    .as_ref()
+                    .is_none_or(|(wanted, _)| *wanted == s.resource)
+            })
             .map(|s| (s.resource.clone(), to));
         let mut fallback = ArrangementDoc::default();
-        let source_group = tab.resources.first()
+        let source_group = tab
+            .resources
+            .first()
             .and_then(|live| organization.resource_by_live(live))
             .and_then(|record| organization.arrangement_document(&record.session))
             .and_then(|(_, _, doc, _)| doc.groups.into_iter().find(|group| group.id == id))
-            .filter(|group| group.state.tree.as_ref().is_some_and(|tree|
-                leaves(tree).iter().all(|live| tab.resources.contains(live))));
+            .filter(|group| {
+                group.state.tree.as_ref().is_some_and(|tree| {
+                    leaves(tree).iter().all(|live| tab.resources.contains(live))
+                })
+            });
         if let Some(group) = source_group {
             fallback.groups.push(group);
         } else {
@@ -95,10 +136,21 @@ impl Desk {
             Ok(operations) => {
                 let last = operations.last().copied();
                 for operation in operations {
-                    self.reorder.moves.insert(operation, Move {
-                        follow: if Some(operation) == last { follow.take() } else { None },
-                        placement: Placement { to, fallback: fallback.clone(), since: Instant::now() },
-                    });
+                    self.reorder.moves.insert(
+                        operation,
+                        Move {
+                            follow: if Some(operation) == last {
+                                follow.take()
+                            } else {
+                                None
+                            },
+                            placement: Placement {
+                                to,
+                                fallback: fallback.clone(),
+                                since: Instant::now(),
+                            },
+                        },
+                    );
                 }
             }
             Err(error) => self.say(NoticeKind::Error, format!("Tab not moved: {error}")),
@@ -107,7 +159,11 @@ impl Desk {
 
     pub(in crate::desk) fn owns_sidebar_move(&self, operation: OperationId) -> bool {
         self.reorder.moves.contains_key(&operation)
-            || self.reorder.placing.as_ref().is_some_and(|write| write.operation == operation)
+            || self
+                .reorder
+                .placing
+                .as_ref()
+                .is_some_and(|write| write.operation == operation)
     }
 
     pub(in crate::desk) fn sidebar_move_outcome(
@@ -116,16 +172,28 @@ impl Desk {
         operation: OperationId,
         outcome: &OrgOutcome,
     ) -> bool {
-        if self.reorder.placing.as_ref().is_some_and(|write| write.operation == operation) {
+        if self
+            .reorder
+            .placing
+            .as_ref()
+            .is_some_and(|write| write.operation == operation)
+        {
             if outcome.succeeded() {
-                let arrangement = self.reorder.placing.as_ref().expect("matched placement").arrangement;
+                let arrangement = self
+                    .reorder
+                    .placing
+                    .as_ref()
+                    .expect("matched placement")
+                    .arrangement;
                 let _ = client.fetch_arrangement(arrangement);
             } else {
                 self.reorder.placing = None;
             }
             return true;
         }
-        let Some(pending) = self.reorder.moves.remove(&operation) else { return false };
+        let Some(pending) = self.reorder.moves.remove(&operation) else {
+            return false;
+        };
         if !outcome.succeeded() {
             self.say(NoticeKind::Error, format!(
                 "Resource move did not settle: {outcome:?}. Check the server's resources before retrying."
@@ -135,13 +203,18 @@ impl Desk {
         // Journal delivery and the command receipt may arrive in either order.
         // Refresh inventory rather than making an optimistic ownership edit.
         let _ = client.refresh_organization();
-        client.with_control(|control| { let _ = control.refresh_topology(); });
+        client.with_control(|control| {
+            let _ = control.refresh_topology();
+        });
         let mut placement = pending.placement;
         placement.since = Instant::now();
         self.reorder.placements.push(placement);
         if let Some((live, to)) = pending.follow
             && self.shown.as_ref().is_some_and(|s| s.resource == live)
-            && self.wanted.as_ref().is_none_or(|(wanted, _)| *wanted == live)
+            && self
+                .wanted
+                .as_ref()
+                .is_none_or(|(wanted, _)| *wanted == live)
             && let Some(session) = self.topology.as_ref().and_then(|t| t.session_keyed(&to))
         {
             // Keep the selected moved resource visible, but do not steal focus
@@ -154,7 +227,10 @@ impl Desk {
     }
 
     pub(in crate::desk) fn cancel_sidebar_moves(&mut self) -> bool {
-        if self.reorder.moves.is_empty() && self.reorder.placements.is_empty() && self.reorder.placing.is_none() {
+        if self.reorder.moves.is_empty()
+            && self.reorder.placements.is_empty()
+            && self.reorder.placing.is_none()
+        {
             return false;
         }
         self.reorder.moves.clear();
@@ -170,14 +246,16 @@ impl Desk {
     /// One bounded placement phase after membership settles. Never attaches
     /// an unselected destination and never resubmits a refused write.
     pub(super) fn place_sidebar_moves(&mut self, client: &Client) -> bool {
-        if self.receipts.waiting() || client.status() != Status::Attached
+        if self.receipts.waiting()
+            || client.status() != Status::Attached
             || (self.reorder.placements.is_empty() && self.reorder.placing.is_none())
         {
             return false;
         }
         let organization = client.organization();
         if let Some(write) = &self.reorder.placing {
-            let observed = organization.arrangement_document(&write.session)
+            let observed = organization
+                .arrangement_document(&write.session)
                 .is_some_and(|(_, revision, _, _)| revision != write.base);
             if observed && !self.layout_ops.contains(&write.operation) {
                 self.reorder.placing = None;
@@ -199,13 +277,26 @@ impl Desk {
             if !organization.is_live() {
                 return false;
             }
-            let belongs = |live: &ResourceId| organization.resource_by_live(live)
-                .is_some_and(|record| record.session == pending.to);
-            if !pending.fallback.groups.iter().flat_map(|group| group.state.tree.iter().flat_map(leaves)).any(|live| belongs(&live)) {
+            let belongs = |live: &ResourceId| {
+                organization
+                    .resource_by_live(live)
+                    .is_some_and(|record| record.session == pending.to)
+            };
+            if !pending
+                .fallback
+                .groups
+                .iter()
+                .flat_map(|group| group.state.tree.iter().flat_map(leaves))
+                .any(|live| belongs(&live))
+            {
                 return false;
             }
-            let Some((arrangement, base, mut document, _)) = organization.arrangement_document(&pending.to) else {
-                if let Some(arrangement) = organization.session(&pending.to).and_then(|s| s.arrangement)
+            let Some((arrangement, base, mut document, _)) =
+                organization.arrangement_document(&pending.to)
+            else {
+                if let Some(arrangement) = organization
+                    .session(&pending.to)
+                    .and_then(|s| s.arrangement)
                     && self.fetched.insert(arrangement)
                 {
                     let _ = client.fetch_arrangement(arrangement);
@@ -218,10 +309,19 @@ impl Desk {
                 continue;
             }
             match self.submit_arrangement(client, pending.to, &document) {
-                Ok(operation) => self.reorder.placing = Some(Placing {
-                    operation, session: pending.to, arrangement, base, since: Instant::now(),
-                }),
-                Err(error) => self.say(NoticeKind::Error, format!("Resources moved, but their destination tabs were not saved: {error}")),
+                Ok(operation) => {
+                    self.reorder.placing = Some(Placing {
+                        operation,
+                        session: pending.to,
+                        arrangement,
+                        base,
+                        since: Instant::now(),
+                    })
+                }
+                Err(error) => self.say(
+                    NoticeKind::Error,
+                    format!("Resources moved, but their destination tabs were not saved: {error}"),
+                ),
             }
             return true;
         }
@@ -238,14 +338,27 @@ fn merge_placement(
 ) -> bool {
     let before = document.groups.len();
     let active = document.active;
-    if fallback.groups.iter().flat_map(|group| group.state.tree.iter().flat_map(leaves))
+    if fallback
+        .groups
+        .iter()
+        .flat_map(|group| group.state.tree.iter().flat_map(leaves))
         .all(|live| belongs(&live))
     {
         adopt_unarranged_groups(document, fallback);
     }
-    for live in fallback.groups.iter().flat_map(|group| group.state.tree.iter().flat_map(leaves)) {
-        if belongs(&live) && !document.groups.iter()
-            .any(|group| group.state.tree.as_ref().is_some_and(|tree| leaves(tree).contains(&live)))
+    for live in fallback
+        .groups
+        .iter()
+        .flat_map(|group| group.state.tree.iter().flat_map(leaves))
+    {
+        if belongs(&live)
+            && !document.groups.iter().any(|group| {
+                group
+                    .state
+                    .tree
+                    .as_ref()
+                    .is_some_and(|tree| leaves(tree).contains(&live))
+            })
         {
             document.add_group(document.default_group_name(), live);
         }
@@ -275,7 +388,10 @@ mod tests {
         let mut target = ArrangementDoc::default();
         assert!(merge_placement(&mut target, &fallback, |id| *id == ResourceId::local(1)));
         assert_eq!(target.groups.len(), 1);
-        assert_eq!(leaves(target.groups[0].state.tree.as_ref().unwrap()), vec![ResourceId::local(1)]);
+        assert_eq!(
+            leaves(target.groups[0].state.tree.as_ref().unwrap()),
+            vec![ResourceId::local(1)]
+        );
         assert!(merge_placement(&mut target, &fallback, |_| true));
         assert_eq!(target.groups.len(), 2);
     }

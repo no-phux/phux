@@ -245,7 +245,10 @@ fn unverified_server_identity_retires_pending_resource_moves() {
 fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
     for before_submission in [false, true] {
         let (client, mut desk) = connected();
-        desk.shown = Some(crate::desk::Shown { resource: live(7), view: None });
+        desk.shown = Some(crate::desk::Shown {
+            resource: live(7),
+            view: None,
+        });
         if before_submission {
             desk.want(live(8));
         }
@@ -254,8 +257,17 @@ fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
         if !before_submission {
             desk.want(live(8));
         }
-        reply(&client, &mut desk, request, CommandResult::Accepted { operation });
-        assert_eq!(client.selected_session(), Some(1), "pending navigation is already a new selection");
+        reply(
+            &client,
+            &mut desk,
+            request,
+            CommandResult::Accepted { operation },
+        );
+        assert_eq!(
+            client.selected_session(),
+            Some(1),
+            "pending navigation is already a new selection"
+        );
         assert_eq!(desk.wanted.as_ref().map(|(id, _)| id), Some(&live(8)));
     }
 }
@@ -266,7 +278,11 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
         let (client, mut desk) = connected();
         let id = [9; 16];
         desk.tabs.list.push(crate::desk::Tab {
-            id, name: "mixed".into(), resources: vec![live(7), other], active: true, locked: false,
+            id,
+            name: "mixed".into(),
+            resources: vec![live(7), other],
+            active: true,
+            locked: false,
         });
         desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
         assert!(outbound(&client).is_empty());
@@ -278,22 +294,46 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
 fn accepted_resource_move_is_placed_in_an_unselected_destination_arrangement() {
     use phux_client_core::layout::ArrangementDoc;
     let (client, mut desk) = connected();
-    desk.shown = Some(crate::desk::Shown { resource: live(8), view: None });
+    desk.shown = Some(crate::desk::Shown {
+        resource: live(8),
+        view: None,
+    });
     desk.drag_at(Grab::Resource(7, key(1)), Phase::Up, [50.0, 160.0], false);
     let (request, operation) = move_request(&client);
-    reply(&client, &mut desk, request, CommandResult::Accepted { operation });
-    assert!(!desk.place_sidebar_moves(&client), "wait for authoritative destination membership");
+    reply(
+        &client,
+        &mut desk,
+        request,
+        CommandResult::Accepted { operation },
+    );
+    assert!(
+        !desk.place_sidebar_moves(&client),
+        "wait for authoritative destination membership"
+    );
     advertise_membership(&client, 2);
     install_arrangement(&client, 2, &ArrangementDoc::single(live(8)), 1);
     outbound(&client);
     assert!(desk.place_sidebar_moves(&client));
     let written = written_arrangement(&client);
     assert_eq!(written.groups.len(), 2);
-    assert_eq!(written.groups[0].state.tree, Some(phux_client_core::layout::LayoutNode::Leaf(live(8))));
-    assert_eq!(written.groups[1].state.tree, Some(phux_client_core::layout::LayoutNode::Leaf(live(7))));
-    assert_eq!(client.selected_session(), Some(1), "placement must not select a background destination");
+    assert_eq!(
+        written.groups[0].state.tree,
+        Some(phux_client_core::layout::LayoutNode::Leaf(live(8)))
+    );
+    assert_eq!(
+        written.groups[1].state.tree,
+        Some(phux_client_core::layout::LayoutNode::Leaf(live(7)))
+    );
+    assert_eq!(
+        client.selected_session(),
+        Some(1),
+        "placement must not select a background destination"
+    );
     assert_eq!(desk.shown.as_ref().unwrap().resource, live(8));
-    assert!(!desk.place_sidebar_moves(&client), "do not submit another write before its receipt and replica revision");
+    assert!(
+        !desk.place_sidebar_moves(&client),
+        "do not submit another write before its receipt and replica revision"
+    );
 }
 
 #[test]
@@ -302,19 +342,43 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
     let (client, mut desk) = connected();
     let mut source = ArrangementDoc::single(live(7));
     source.groups[0].name = "paired".into();
-    source.groups[0].state.tree = split_at(&LayoutNode::Leaf(live(7)), &live(7), &live(8), SplitDir::Horizontal, 0.4);
+    source.groups[0].state.tree = Some(
+        split_at(
+            &LayoutNode::Leaf(live(7)),
+            &live(7),
+            &live(8),
+            SplitDir::Horizontal,
+            0.4,
+        )
+        .unwrap(),
+    );
     install_arrangement(&client, 1, &source, 1);
     let id = source.groups[0].id;
     desk.tabs.list.push(crate::desk::Tab {
-        id, name: "paired".into(), resources: vec![live(7), live(8)], active: true, locked: false,
+        id,
+        name: "paired".into(),
+        resources: vec![live(7), live(8)],
+        active: true,
+        locked: false,
     });
     outbound(&client);
     desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
-    let (request, operation) = outbound(&client).into_iter().find_map(|frame| match frame {
-        FrameKind::Command { request_id, command: Command::ResourceMoveMany { operation, .. } } => Some((request_id, operation)),
-        _ => None,
-    }).unwrap();
-    reply(&client, &mut desk, request, CommandResult::Accepted { operation });
+    let (request, operation) = outbound(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: Command::ResourceMoveMany { operation, .. },
+            } => Some((request_id, operation)),
+            _ => None,
+        })
+        .unwrap();
+    reply(
+        &client,
+        &mut desk,
+        request,
+        CommandResult::Accepted { operation },
+    );
     advertise_membership(&client, 2);
     install_arrangement(&client, 2, &ArrangementDoc::default(), 1);
     outbound(&client);
@@ -328,12 +392,26 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
 
 fn written_arrangement(client: &Client) -> phux_client_core::layout::ArrangementDoc {
     use phux_client_core::layout::wire::{HandleMap, from_protocol};
-    let handles = HandleMap::from_pairs([(resource_key(7), Some(live(7))), (resource_key(8), Some(live(8)))]);
-    outbound(client).into_iter().find_map(|frame| match frame {
-        FrameKind::Command { command: Command::ArrangementReplace { arrangement: target, document, .. }, .. } => {
-            assert_eq!(target, arrangement(2));
-            Some(from_protocol(&document, &handles).0)
-        }
-        _ => None,
-    }).expect("accepted membership must result in a real destination arrangement command")
+    let handles = HandleMap::from_pairs([
+        (resource_key(7), Some(live(7))),
+        (resource_key(8), Some(live(8))),
+    ]);
+    outbound(client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                command:
+                    Command::ArrangementReplace {
+                        arrangement: target,
+                        document,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(target, arrangement(2));
+                Some(from_protocol(&document, &handles).0)
+            }
+            _ => None,
+        })
+        .expect("accepted membership must result in a real destination arrangement command")
 }
