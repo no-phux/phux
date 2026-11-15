@@ -87,6 +87,9 @@ fn virtual_placeholders_resolve_colors_marks_and_left_inheritance() {
     assert_eq!(placements.len(), 2);
     assert_eq!(placements[0].source, [0.0, 0.0, 4.0, 2.0]);
     assert_eq!(placements[1].source, [0.0, 2.0, 2.0, 2.0]);
+    for placement in &placements {
+        assert_eq!(placement.sample_source, [0.0, 0.0, 4.0, 4.0]);
+    }
     assert_eq!((placements[0].cols, placements[0].rows), (2.0, 1.0));
     assert_eq!((placements[1].col, placements[1].row), (0.0, 1.0));
     assert!(placements.iter().all(|placement| placement.z == -1));
@@ -232,4 +235,20 @@ fn images_are_published_in_engine_layer_then_z_order() {
             .collect::<Vec<_>>(),
         [-1_073_741_825, -2, -1, 5]
     );
+}
+
+#[test]
+fn virtual_filtering_keeps_the_prototypes_nonzero_source_crop() {
+    let mut terminal = terminal();
+    terminal.vt_write(
+        format!(
+            "\x1b_Ga=T,f=24,s=8,v=4,i=42,p=9,U=1,c=2,r=1,x=2,y=1,w=4,h=2;{}\x1b\\",
+            "/".repeat(128),
+        )
+        .as_bytes(),
+    );
+    terminal.vt_write("\x1b[38;5;42;58;5;9m\u{10eeee}\u{305}\u{30d}".as_bytes());
+    let placements = project(&mut Images::default(), &terminal);
+    assert_eq!(placements.len(), 1);
+    assert_eq!(placements[0].sample_source, [2.0, 1.0, 4.0, 2.0]);
 }

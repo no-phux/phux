@@ -92,6 +92,8 @@ pub struct ImagePlacement {
     pub rows: f64,
     /// Source pixel rectangle `[x, y, width, height]`.
     pub source: [f64; 4],
+    /// Original crop used for filtering, independent of a placeholder cell's slice.
+    pub sample_source: [f64; 4],
     /// Kitty z-index.
     pub z: i32,
 }

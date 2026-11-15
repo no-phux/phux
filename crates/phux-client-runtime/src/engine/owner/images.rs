@@ -3,8 +3,8 @@
 use crate::publication::{ImageData, ImagePlacement};
 use libghostty_vt::{
     Terminal,
-    kitty::graphics::{Graphics, Image, ImageFormat},
-    render::{ImageIteration, ImageIterator, ImageProtocol, Snapshot},
+    kitty::graphics::{Graphics, Image, ImageFormat, PlacementIterator},
+    render::{ImageIteration, ImageIterator, ImageProtocol, KittyPlacementKind, Snapshot},
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -16,6 +16,8 @@ pub(super) struct Images {
     // Image generations are process-wide, including screen/epoch replacement.
     pixels: HashMap<u64, (u32, Arc<ImageData>)>,
     iterator: Option<ImageIterator<'static>>,
+    crop_iterator: Option<PlacementIterator<'static>>,
+    crops: HashMap<(u32, u32), [f64; 4]>,
 }
 
 impl Images {
@@ -42,6 +44,7 @@ impl Images {
             return Ok(Vec::new());
         };
         let cell = cell_pixels(terminal)?;
+        self.read_crops(&graphics)?;
         let mut iterator = match self.iterator.take() {
             Some(iterator) => iterator,
             None => ImageIterator::new()?,
@@ -54,6 +57,30 @@ impl Images {
                 .is_some_and(|image| image.generation().ok() == Some(*generation))
         });
         output
+    }
+
+    fn read_crops(&mut self, graphics: &Graphics<'_>) -> Result<(), libghostty_vt::Error> {
+        let mut iterator = match self.crop_iterator.take() {
+            Some(iterator) => iterator,
+            None => PlacementIterator::new()?,
+        };
+        let result = collect_crops(graphics, &mut iterator, &mut self.crops);
+        self.crop_iterator = Some(iterator);
+        result
+    }
+
+    fn sample_source(
+        &self,
+        placement: &ImageIteration<'_, '_>,
+        id: u32,
+    ) -> Result<Option<[f64; 4]>, libghostty_vt::Error> {
+        if !matches!(placement.kitty_kind()?, Some(KittyPlacementKind::Virtual)) {
+            return Ok(None);
+        }
+        Ok(self
+            .crops
+            .get(&(id, placement.kitty_placement_id()?.unwrap_or(0)))
+            .copied())
     }
 
     fn placements(
@@ -78,7 +105,8 @@ impl Images {
                 continue;
             };
             let key = paint_order(placement, id)?;
-            output.push((key, project_placement(placement, pixels, cell)?));
+            let crop = self.sample_source(placement, id)?;
+            output.push((key, project_placement(placement, pixels, cell, crop)?));
         }
         output.sort_by_key(|(key, _)| *key);
         Ok(output.into_iter().map(|(_, placement)| placement).collect())
@@ -108,16 +136,58 @@ fn project_placement(
     placement: &ImageIteration<'_, '_>,
     image: Arc<ImageData>,
     cell: (f64, f64),
+    sample_source: Option<[f64; 4]>,
 ) -> Result<ImagePlacement, libghostty_vt::Error> {
+    let source = source_rect(placement)?;
     Ok(ImagePlacement {
         image,
         col: f64::from(placement.viewport_col()?) + f64::from(placement.cell_offset_x()?) / cell.0,
         row: f64::from(placement.viewport_row()?) + f64::from(placement.cell_offset_y()?) / cell.1,
         cols: f64::from(placement.pixel_width()?) / cell.0,
         rows: f64::from(placement.pixel_height()?) / cell.1,
-        source: source_rect(placement)?,
+        source,
+        sample_source: sample_source.unwrap_or(source),
         z: placement.z()?,
     })
+}
+
+/// Preserve the original filtering crop without recomputing placement geometry.
+/// A virtual run's resolved source may be only a slice of this crop.
+fn collect_crops(
+    graphics: &Graphics<'_>,
+    iterator: &mut PlacementIterator<'_>,
+    crops: &mut HashMap<(u32, u32), [f64; 4]>,
+) -> Result<(), libghostty_vt::Error> {
+    crops.clear();
+    let mut placements = iterator.update(graphics)?;
+    while let Some(placement) = placements.next() {
+        let id = placement.image_id()?;
+        record_crop(graphics, placement, id, crops)?;
+    }
+    Ok(())
+}
+
+fn record_crop(
+    graphics: &Graphics<'_>,
+    placement: &libghostty_vt::kitty::graphics::PlacementIteration<'_, '_>,
+    id: u32,
+    crops: &mut HashMap<(u32, u32), [f64; 4]>,
+) -> Result<(), libghostty_vt::Error> {
+    if !placement.is_virtual()? {
+        return Ok(());
+    }
+    let Some(image) = graphics.image(id) else {
+        return Ok(());
+    };
+    let source = placement.source_rect(&image)?;
+    let source = [source.x, source.y, source.width, source.height].map(f64::from);
+    if placement.is_external()? {
+        crops.insert((id, placement.placement_id()?), source);
+    }
+    if placement.is_placeholder_default()? {
+        crops.insert((id, 0), source);
+    }
+    Ok(())
 }
 
 fn source_rect(placement: &ImageIteration<'_, '_>) -> Result<[f64; 4], libghostty_vt::Error> {
