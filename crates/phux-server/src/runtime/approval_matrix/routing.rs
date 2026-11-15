@@ -97,9 +97,9 @@ async fn an_approved_keyed_kill_retried_with_its_key_replays_without_a_second_ho
             assert!(world.state.with(|s| s.pending_approval_ids().is_empty()));
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert_eq!(requested_count(&watch.frames()), 1, "one hold only");
-            requester.close().await;
-            approver.close().await;
-            watch.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -130,9 +130,9 @@ async fn two_identical_keyed_requests_held_concurrently_share_one_approval() {
             assert!(matches!(first, CommandResult::OkWith(_)), "{first:?}");
             assert_eq!(second, first, "both waiters get the one execution's answer");
             assert_eq!(requested_count(&watch.frames()), 1);
-            requester.close().await;
-            approver.close().await;
-            watch.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -176,8 +176,8 @@ async fn joins_past_the_per_connection_bound_are_refused_and_released_after() {
                 until_state(&world.state, |s| s.approvals_held_by(REQUESTER) == 0).await,
                 "every count is released"
             );
-            requester.close().await;
-            approver.close().await;
+            requester.finish().await;
+            approver.finish().await;
         })
         .await;
 }

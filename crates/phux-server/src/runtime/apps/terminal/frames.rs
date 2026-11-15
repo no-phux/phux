@@ -10,10 +10,8 @@ use super::history::{HistoryPageRequest, serve_history_request};
 use super::input_lane::{InputLaneHandle, InputStalled, RoutedInput};
 use crate::runtime::apps::ResourceFrame;
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow, direction_invalid};
-use crate::runtime::connections::hello::NegotiatedConnection;
-use crate::state::{ClientId, Outbound, SharedState};
+use crate::state::{ClientId, SharedState};
 use phux_terminal_api::TerminalInput;
-use tokio::sync::mpsc;
 
 /// Serve one `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` or `HISTORY_REQUEST`
 /// frame about a Terminal.

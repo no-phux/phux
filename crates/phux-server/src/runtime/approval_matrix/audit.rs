@@ -56,7 +56,7 @@ async fn refusals_holds_and_decisions_are_audited_without_payload_bytes() {
             let result = requester.result(HELD).await;
             assert!(is_denied(&result, "approval denied"), "{result:?}");
             for peer in [requester, approver, unsignaled] {
-                peer.close().await;
+                peer.finish().await;
             }
         })
         .await;

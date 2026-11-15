@@ -83,8 +83,8 @@ async fn a_held_terminate_runs_only_after_approval_and_never_after_denial() {
                 "the session is gone"
             );
 
-            requester.close().await;
-            approver.close().await;
+            requester.finish().await;
+            approver.finish().await;
         })
         .await;
 }

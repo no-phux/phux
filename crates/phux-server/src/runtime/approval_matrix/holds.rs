@@ -50,8 +50,8 @@ async fn held_signal_writes_an_approval_record_emits_requested_and_defers_the_re
 
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(requester.results(HELD).is_empty(), "the result is deferred");
-            requester.close().await;
-            watch.close().await;
+            requester.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -115,9 +115,9 @@ async fn approve_by_a_signal_holder_runs_the_held_command_exactly_once_under_the
             let refused = requester.result(HELD + 1).await;
             assert!(is_denied(&refused, "permission denied"), "{refused:?}");
 
-            requester.close().await;
-            approver.close().await;
-            watch.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -145,9 +145,9 @@ async fn deny_is_a_normal_journaled_outcome_with_permission_denied_to_the_reques
                 world.state.with(|s| s.registry().terminal_count()) == 2,
                 "nothing was killed"
             );
-            requester.close().await;
-            approver.close().await;
-            watch.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -176,9 +176,9 @@ async fn a_second_approve_of_the_same_id_is_rejected_single_use() {
 
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(requester.results(HELD).len(), 1, "the command ran once");
-            requester.close().await;
-            approver.close().await;
-            owner.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            owner.finish().await;
         })
         .await;
 }
@@ -208,9 +208,9 @@ async fn expiry_denies_and_removes_the_record() {
             );
             approver.send(&decision(1, id, APPROVAL_APPROVE));
             assert_eq!(approver.refused(1).await, Some(ErrorCode::PermissionDenied));
-            requester.close().await;
-            approver.close().await;
-            watch.close().await;
+            requester.finish().await;
+            approver.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -252,8 +252,8 @@ async fn requester_disconnect_drops_its_holds() {
                 })
                 .count();
             assert_eq!(withdrawn, 2);
-            requester.close().await;
-            watch.close().await;
+            requester.finish().await;
+            watch.finish().await;
         })
         .await;
 }

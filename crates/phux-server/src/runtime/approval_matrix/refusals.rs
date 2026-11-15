@@ -58,7 +58,7 @@ async fn a_viewer_or_non_signal_holder_cannot_decide() {
             assert!(is_denied(&result, "approval denied"), "{result:?}");
             let _ = world.beta;
             for peer in [requester, viewer, outsider, unsignaled] {
-                peer.close().await;
+                peer.finish().await;
             }
         })
         .await;
@@ -78,7 +78,7 @@ async fn local_mode_never_holds() {
             let result = owner.result(HELD).await;
             assert!(matches!(result, CommandResult::OkWith(_)), "{result:?}");
             assert!(state.with(|s| s.pending_approval_ids().is_empty()));
-            owner.close().await;
+            owner.finish().await;
         })
         .await;
 }
@@ -105,7 +105,7 @@ async fn pending_bound_refuses_the_65th_hold_with_resource_exhausted() {
             );
             assert_eq!(world.state.with(|s| s.pending_approval_ids().len()), 64);
             assert!((1..=64).all(|id| requester.results(id).is_empty()));
-            requester.close().await;
+            requester.finish().await;
         })
         .await;
 }
@@ -127,7 +127,7 @@ async fn a_held_signal_on_a_frame_is_refused_not_held() {
                 Some(ErrorCode::PermissionDenied)
             );
             assert!(world.state.with(|s| s.pending_approval_ids().is_empty()));
-            requester.close().await;
+            requester.finish().await;
         })
         .await;
 }
@@ -147,8 +147,8 @@ async fn revocation_withdraws_the_requesters_holds() {
             assert!(world.state.with(|s| s.pending_approval_ids().is_empty()));
             assert!(record(&world.state, id).is_none());
             assert_eq!(watch.saw_decision(ApprovalOutcome::Withdrawn).await, None);
-            requester.close().await;
-            watch.close().await;
+            requester.finish().await;
+            watch.finish().await;
         })
         .await;
 }
@@ -184,8 +184,8 @@ async fn a_viewer_cannot_decide_a_held_close_tab_and_its_record_lists_the_termin
             viewer.send(&decision(1, id, APPROVAL_APPROVE));
             assert_eq!(viewer.refused(1).await, Some(ErrorCode::PermissionDenied));
             assert!(record(&world.state, id).is_some(), "still pending");
-            requester.close().await;
-            viewer.close().await;
+            requester.finish().await;
+            viewer.finish().await;
         })
         .await;
 }
@@ -212,7 +212,7 @@ async fn the_server_wide_bound_refuses_with_resource_exhausted() {
                 "{refused:?}"
             );
             assert_eq!(world.state.with(|s| s.pending_approval_ids().len()), 2);
-            requester.close().await;
+            requester.finish().await;
         })
         .await;
 }
@@ -267,8 +267,8 @@ async fn a_reaped_terminal_withdraws_its_holds_before_its_close() {
                 decided.is_some() && decided < closed(&frames),
                 "approval_decided precedes pane_closed: {frames:?}"
             );
-            requester.close().await;
-            watch.close().await;
+            requester.finish().await;
+            watch.finish().await;
         })
         .await;
 }

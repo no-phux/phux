@@ -9,7 +9,7 @@ mod tests;
 pub(in crate::runtime) use input::attached_input_resource;
 
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
-use phux_protocol::wire::frame::{ErrorCode, FrameKind, HistoryTombstoneReason};
+use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 
 use super::dispatch::{FrameFlow, direction_invalid};
 use super::frames::frame_resource;

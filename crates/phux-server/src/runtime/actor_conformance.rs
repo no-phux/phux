@@ -14,35 +14,29 @@
     reason = "tests"
 )]
 
-use std::io;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
 use chrono::Utc;
 use phux_core::PrincipalId;
 use phux_protocol::ids::{ResourceId as WireResourceId, ServerInstance};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, ControlAction, ErrorCode, FrameKind,
-    InputMode, LiveTarget, Refusal, TerminateMode, ViewportInfo,
+    AgentEvent, Command, CommandResult, ControlAction, ErrorCode, FrameKind, InputMode, LiveTarget,
+    Refusal, TerminateMode,
 };
 use tokio::io::AsyncWriteExt as _;
-use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, LocalSet};
 use tokio_util::sync::CancellationToken;
 
 use super::delegation::{delegate_agent, revoke_delegated_agent, stamped_identity};
-use super::test_support::{Feed, Wire, encode, hello, owner_peer, workload_identity};
+use super::test_support::{
+    Connection, acquire, alpha_world, encode, hello, local, owner_peer, spawn_connection,
+    wait_until, workload_identity,
+};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::delegation::{DelegatedCredential, DelegationRequest};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError};
-use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, ServerState, SharedState};
-
-/// How long any one expectation may take before the case fails.
-const PATIENCE: Duration = Duration::from_secs(5);
 
 /// The automation credential the non-human, non-delegated cases use.
 const AUTOMATION: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -102,20 +96,9 @@ impl Drop for Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let state = crate::runtime::test_support::terminal_state();
         let root = CancellationToken::new();
-        let alpha_core = crate::runtime::test_support::seed_session_with_actor(
-            &state,
-            "alpha",
-            phux_config::ScrollbackLimits::default(),
-            &root,
-        )
-        .unwrap();
-        let (alpha, alpha_session) = state.with_mut(|s| {
-            s.set_policy_engine(Arc::new(Automation));
-            let session = s.registry().session_of(alpha_core).unwrap();
-            (s.intern_resource_wire(alpha_core), session)
-        });
+        let (state, alpha, alpha_core) = alpha_world(Arc::new(Automation), &root);
+        let alpha_session = state.with(|s| s.registry().session_of(alpha_core).unwrap());
         Self {
             state,
             root,
@@ -130,27 +113,7 @@ impl Fixture {
         let transport = identity.peer.transport;
         self.state
             .with_mut(|s| s.set_connection_identity(client, identity));
-        let (feed, rx) = mpsc::unbounded_channel();
-        let wire = Wire::default();
-        let token = self.root.child_token();
-        let task = tokio::task::spawn_local(handle_client(
-            Feed::silent_on_close(rx),
-            wire.clone(),
-            self.state.clone(),
-            client,
-            token.clone(),
-            self.root.clone(),
-            None,
-            transport,
-            false,
-        ));
-        Connection {
-            client,
-            feed,
-            wire,
-            token,
-            task,
-        }
+        spawn_connection(&self.state, client, transport, &self.root, None, false)
     }
 
     /// The owner over its Unix socket, past `HELLO`.
@@ -201,102 +164,8 @@ impl Fixture {
     }
 }
 
-/// One scripted connection.
-struct Connection {
-    client: ClientId,
-    feed: mpsc::UnboundedSender<BytesMut>,
-    wire: Wire,
-    token: CancellationToken,
-    task: JoinHandle<io::Result<()>>,
-}
-
-impl Connection {
-    fn send(&self, frame: &FrameKind) {
-        let _ = self.feed.send(encode(frame));
-    }
-
-    fn frames(&self) -> Vec<FrameKind> {
-        self.wire.frames.borrow().clone()
-    }
-
-    async fn hello(&self) {
-        self.send(&hello("actor-conformance"));
-        self.wait_for("HELLO_OK", |frame| {
-            matches!(frame, FrameKind::HelloOk { .. })
-        })
-        .await;
-    }
-
-    async fn attach(&self) {
-        self.send(&FrameKind::Attach {
-            attach_id: 1,
-            target: AttachTarget::ByName("alpha".to_owned()),
-            viewport: ViewportInfo::new(80, 24),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-            role_policy: None,
-        });
-        self.wait_for("ATTACHED", |frame| {
-            matches!(frame, FrameKind::Attached { .. })
-        })
-        .await;
-    }
-
-    /// Send `command` and return its result.
-    async fn command(&self, request_id: u32, command: Command) -> CommandResult {
-        self.send(&FrameKind::Command {
-            request_id,
-            command,
-        });
-        self.wait_for("COMMAND_RESULT", |frame| {
-            matches!(frame, FrameKind::CommandResult { request_id: id, .. } if *id == request_id)
-        })
-        .await;
-        self.frames()
-            .into_iter()
-            .find_map(|frame| match frame {
-                FrameKind::CommandResult {
-                    request_id: id,
-                    result,
-                } if id == request_id => Some(result),
-                _ => None,
-            })
-            .unwrap()
-    }
-
-    async fn wait_for(&self, what: &str, found: impl Fn(&FrameKind) -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        while !self.wire.frames.borrow().iter().any(&found) {
-            assert!(
-                Instant::now() < deadline,
-                "no {what} within {PATIENCE:?}: {:?}",
-                self.frames()
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-
-    async fn finish(self) {
-        self.token.cancel();
-        let _ = self.task.await;
-    }
-}
-
-fn acquire(terminal_id: &WireResourceId, mode: InputMode) -> Command {
-    Command::AcquireInput {
-        terminal_id: terminal_id.clone(),
-        mode,
-        ttl_ms: 0,
-    }
-}
-
 fn principal_of(principal: &PrincipalId) -> Option<phux_protocol::ids::PrincipalId> {
     crate::org_wire::principal_id(principal)
-}
-
-/// Run `case` on a current-thread runtime's `LocalSet`, as the server does.
-async fn local(case: impl std::future::Future<Output = ()>) {
-    LocalSet::new().run_until(case).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -382,7 +251,7 @@ async fn a_human_takeover_from_an_agent_always_succeeds_and_the_agent_hears_it()
     local(async {
         let fx = Fixture::new();
         let agent = fx.automation().await;
-        agent.attach().await;
+        agent.attach(1).await;
         agent.send(&FrameKind::SubscribeEvents {
             terminal: Some(fx.alpha.clone()),
             after_seq: None,
@@ -397,7 +266,7 @@ async fn a_human_takeover_from_an_agent_always_succeeds_and_the_agent_hears_it()
         let before = fx.state.with(|s| s.input_lease_epoch(fx.alpha_core));
 
         let human = fx.human().await;
-        human.attach().await;
+        human.attach(1).await;
         assert_eq!(
             human.command(1, acquire(&fx.alpha, InputMode::Seize)).await,
             CommandResult::Ok
@@ -444,7 +313,7 @@ async fn an_agent_cannot_seize_a_human_held_lease() {
     local(async {
         let fx = Fixture::new();
         let human = fx.human().await;
-        human.attach().await;
+        human.attach(1).await;
         assert_eq!(
             human
                 .command(1, acquire(&fx.alpha, InputMode::Cooperative))
@@ -454,7 +323,7 @@ async fn an_agent_cannot_seize_a_human_held_lease() {
         let epoch = fx.state.with(|s| s.input_lease_epoch(fx.alpha_core));
 
         let agent = fx.automation().await;
-        agent.attach().await;
+        agent.attach(1).await;
         let seized = agent.command(1, acquire(&fx.alpha, InputMode::Seize)).await;
         assert!(
             matches!(
