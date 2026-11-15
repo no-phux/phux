@@ -4,25 +4,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// The glyphs of a VT stream, CSI escapes dropped.
-fn strip_csi(vt: &str) -> String {
-    let mut out = String::new();
-    let mut chars = vt.chars();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        // Skip the `[` and the parameter bytes through the final byte
-        // (0x40-0x7E). Only CSI sequences are emitted here.
-        for esc in chars.by_ref() {
-            if esc != '[' && ('@'..='~').contains(&esc) {
-                break;
-            }
-        }
-    }
-    out
-}
+use crate::test_util::strip_csi;
 
 /// The real palette overflows its modal, so rows past the fold must be
 /// reachable by scrolling (they once painted off the box's bottom edge).

@@ -48,3 +48,34 @@ pub(crate) fn rendered(overlay: &dyn RenderOverlay, cols: u16, rows: u16) -> Str
     }
     out
 }
+
+/// `s` with every CSI sequence removed, so content assertions cannot match
+/// control bytes.
+pub(crate) fn strip_csi(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for n in chars.by_ref() {
+                if ('@'..='~').contains(&n) {
+                    break;
+                }
+            }
+        } else if c != '\x1b' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A fresh session kernel on the synthesized VT/raw profile.
+pub(crate) fn kernel()
+-> phux_client_core::session::SessionKernel<phux_client_core::engine::ghostty::GhosttyAdapter> {
+    phux_client_core::session::SessionKernel::new(
+        phux_client_core::engine::ghostty::GhosttyAdapter::new(
+            phux_protocol::BootstrapLimits::default(),
+        ),
+        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+    )
+}

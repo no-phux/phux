@@ -59,15 +59,6 @@ fn bootstrap() -> phux_protocol::BootstrapId {
     phux_protocol::BootstrapId::new(1).expect("bootstrap")
 }
 
-fn kernel() -> AttachKernel {
-    phux_client_core::session::SessionKernel::new(
-        phux_client_core::engine::ghostty::GhosttyAdapter::new(
-            phux_protocol::BootstrapLimits::default(),
-        ),
-        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-    )
-}
-
 fn attach_started(
     kernel: &mut AttachKernel,
     effects: &mut EffectBuffer,
@@ -261,24 +252,7 @@ fn beside(workspace: &mut ArrangementDoc, other: &ResourceId) {
     );
 }
 
-/// Strip CSI sequences so a content assertion cannot match control bytes.
-fn strip_csi(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next();
-            for n in chars.by_ref() {
-                if ('@'..='~').contains(&n) {
-                    break;
-                }
-            }
-        } else if c != '\x1b' {
-            out.push(c);
-        }
-    }
-    out
-}
+use crate::test_util::{kernel, strip_csi};
 
 /// The frame dispatcher's rig: the [`SessionMirror`] it folds into, the sink
 /// it paints to, and the per-frame [`FrameEnv`] knobs a test varies.

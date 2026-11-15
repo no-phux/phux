@@ -6,14 +6,7 @@ pub(super) fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
 }
 
-pub(super) fn test_engine_kernel() -> AttachKernel {
-    phux_client_core::session::SessionKernel::new(
-        phux_client_core::engine::ghostty::GhosttyAdapter::new(
-            phux_protocol::BootstrapLimits::default(),
-        ),
-        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-    )
-}
+pub(super) use crate::test_util::kernel as test_engine_kernel;
 
 /// Owned backing state for a test [`DispatchCtx`]: set the fields a test
 /// cares about, lend it with [`CtxFixture::ctx`], read results back after.
