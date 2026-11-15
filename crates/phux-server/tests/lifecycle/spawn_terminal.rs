@@ -57,10 +57,7 @@ fn spawn_round_trips_input_and_publishes_agent_session_provenance() {
             "provenance is installed with the new pane"
         );
 
-        let key = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event: ascii_key('a', PhysicalKey::A),
-        };
+        let key = phux_server_testkit::input_key(pane.clone(), ascii_key('a', PhysicalKey::A));
         send_frame(&mut stream, &key).await;
         release(&mut stream, &pane).await;
         output_containing(&mut stream, &pane, b"a").await;
@@ -180,18 +177,12 @@ fn a_detached_spawner_types_into_and_outlives_its_own_spawn() {
             ..Spawn::command(&["/bin/cat"])
         };
         let pane = spawned(&mut detached, 70, spawn).await;
-        let key = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event: ascii_key('z', PhysicalKey::Z),
-        };
+        let key = phux_server_testkit::input_key(pane.clone(), ascii_key('z', PhysicalKey::Z));
         send_frame(&mut detached, &key).await;
         release(&mut detached, &pane).await;
         output_containing(&mut detached, &pane, b"z").await;
 
-        let kill = phux_protocol::wire::frame::Command::KillResource {
-            terminal_id: pane.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(pane.clone());
         send_frame(
             &mut detached,
             &FrameKind::Command {

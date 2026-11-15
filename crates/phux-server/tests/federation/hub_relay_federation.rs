@@ -317,14 +317,7 @@ async fn command_via_hub(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<FrameKind>) {
-    send_frame(
-        hub,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(hub, request_id, command).await;
     let mut interleaved = Vec::new();
     loop {
         match recv_typed(hub).await.1 {
@@ -342,12 +335,7 @@ async fn get_screen_via_hub(
     request_id: u32,
     terminal_id: ResourceId,
 ) -> CommandResult {
-    let get_screen = Command::GetScreen {
-        terminal_id,
-        request_scrollback: None,
-        cells: false,
-        format: 0,
-    };
+    let get_screen = phux_server_testkit::get_screen(terminal_id);
     command_via_hub(hub, request_id, get_screen).await.0
 }
 
@@ -376,11 +364,8 @@ async fn command_until_linked(
 }
 
 async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResult {
-    command_until_linked(hub, 1000, || Command::GetScreen {
-        terminal_id: ResourceId::satellite("sat", sat_pane),
-        request_scrollback: None,
-        cells: false,
-        format: 0,
+    command_until_linked(hub, 1000, || {
+        phux_server_testkit::get_screen(ResourceId::satellite("sat", sat_pane))
     })
     .await
     .0
@@ -576,12 +561,7 @@ fn non_hub_server_refuses_every_satellite_route() {
         );
         let sat = ResourceId::satellite("sat", 1);
         let commands = [
-            Command::GetScreen {
-                terminal_id: sat.clone(),
-                request_scrollback: None,
-                cells: false,
-                format: 0,
-            },
+            phux_server_testkit::get_screen(sat.clone()),
             Command::AcquireInput {
                 terminal_id: sat.clone(),
                 mode: InputMode::Cooperative,
@@ -597,15 +577,11 @@ fn non_hub_server_refuses_every_satellite_route() {
         // SUBSCRIBE_METADATA has no reply, so its refusal is an uncorrelated
         // ERROR push; a pipelined GET_METADATA must answer after it, proving
         // both ordering and that the connection is not poisoned.
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(ResourceId::satellite("gpubox", 7)),
-            key: "phux.agent/v1".to_owned(),
-        };
-        let barrier = FrameKind::GetMetadata {
-            request_id: 9,
-            scope: Scope::Global,
-            key: "phux.test.barrier/v1".to_owned(),
-        };
+        let subscribe = phux_server_testkit::subscribe_metadata(
+            Scope::Resource(ResourceId::satellite("gpubox", 7)),
+            "phux.agent/v1",
+        );
+        let barrier = phux_server_testkit::get_metadata(9, Scope::Global, "phux.test.barrier/v1");
         send_frame(&mut plain, &subscribe).await;
         send_frame(&mut plain, &barrier).await;
         let FrameKind::Error {
@@ -861,14 +837,7 @@ async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &ResourceId, c: char, 
     enter.text = None;
     enter.unshifted_codepoint = None;
     for event in [ascii_key(c, key), enter] {
-        send_frame(
-            hub,
-            &FrameKind::InputKey {
-                terminal_id: sat_id.clone(),
-                event,
-            },
-        )
-        .await;
+        send_frame(hub, &phux_server_testkit::input_key(sat_id.clone(), event)).await;
     }
 }
 

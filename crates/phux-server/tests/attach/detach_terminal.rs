@@ -38,14 +38,7 @@ async fn command(
     command: Command,
     quiet: bool,
 ) -> CommandResult {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     recv_until_deadline(stream, deadline, |_, frame| {
         if quiet {
@@ -127,12 +120,10 @@ async fn explicit_attach(
     pane: &ResourceId,
     request_id: u32,
 ) -> Option<Screen> {
-    send_frame(
+    phux_server_testkit::send_command(
         stream,
-        &FrameKind::Command {
-            request_id,
-            command: Command::attach_terminal(pane.clone(), None),
-        },
+        request_id,
+        Command::attach_terminal(pane.clone(), None),
     )
     .await;
     let mut screen = Some(Screen::new(80, 24).unwrap());
@@ -197,12 +188,7 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
         let result = command(
             control,
             801,
-            Command::GetScreen {
-                terminal_id: pane.clone(),
-                request_scrollback: None,
-                cells: false,
-                format: 0,
-            },
+            phux_server_testkit::get_screen(pane.clone()),
             false,
         )
         .await;

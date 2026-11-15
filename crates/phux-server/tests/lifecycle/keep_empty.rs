@@ -31,12 +31,12 @@ async fn start() -> (Server, UnixStream) {
 }
 
 async fn set_keep_empty(stream: &mut UnixStream, name: &str, keep: bool, request_id: u32) {
-    let set = FrameKind::SetMetadata {
+    let set = phux_server_testkit::set_metadata(
         request_id,
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        value: encode_session_keep_empty(name, keep),
-    };
+        Scope::Global,
+        SESSION_KEEP_EMPTY_KEY,
+        encode_session_keep_empty(name, keep),
+    );
     send_frame(stream, &set).await;
 }
 
@@ -49,20 +49,14 @@ async fn command_ok(stream: &mut UnixStream, request_id: u32, cmd: Command) {
 }
 
 const fn kill(pane: ResourceId) -> Command {
-    Command::KillResource {
-        terminal_id: pane,
-        operation_id: None,
-    }
+    phux_server_testkit::kill(pane)
 }
 
 /// A client attached to `name` and subscribed to the keep-empty mark.
 async fn attached_watcher(server: &Server, name: &str) -> UnixStream {
     let mut client = server.connect().await;
     attach(&mut client, name).await;
-    let subscribe = FrameKind::SubscribeMetadata {
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-    };
+    let subscribe = phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_KEEP_EMPTY_KEY);
     send_frame(&mut client, &subscribe).await;
     state(&mut client, 50).await;
     client
@@ -341,10 +335,8 @@ fn keep_empty_mark_is_applied_and_broadcast_on_change() {
     phux_server_testkit::run_local(async {
         let (server, mut writer) = start().await;
         let mut watcher = server.connect().await;
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        };
+        let subscribe =
+            phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_KEEP_EMPTY_KEY);
         send_frame(&mut watcher, &subscribe).await;
         state(&mut watcher, 1).await;
 

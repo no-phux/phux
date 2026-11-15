@@ -37,10 +37,7 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
         let (before, _) = get_state_via_hub(&mut hub, 8102).await;
         assert!(panes.iter().all(|pane| lists(&before, pane)), "{before:?}");
 
-        let kill_one = Command::KillResource {
-            terminal_id: panes[0].clone(),
-            operation_id: None,
-        };
+        let kill_one = phux_server_testkit::kill(panes[0].clone());
         assert_eq!(command(&mut hub, 8103, kill_one).await, CommandResult::Ok);
         let (after_one, _) = get_state_via_hub(&mut hub, 8104).await;
         assert!(

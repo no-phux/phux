@@ -13,10 +13,7 @@ use crate::common::{Server, demo_parent, publish, spawn_kind, wait_frame};
 
 fn frames(resource: &ResourceId) -> Vec<FrameKind> {
     vec![
-        FrameKind::InputKey {
-            terminal_id: resource.clone(),
-            event: ascii_key('a', PhysicalKey::A),
-        },
+        phux_server_testkit::input_key(resource.clone(), ascii_key('a', PhysicalKey::A)),
         FrameKind::InputMouse {
             terminal_id: resource.clone(),
             event: MouseEvent {

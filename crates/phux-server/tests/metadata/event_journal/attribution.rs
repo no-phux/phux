@@ -150,10 +150,7 @@ fn metadata_writes_name_their_actor() {
         ] {
             send_frame(
                 &mut watcher,
-                &FrameKind::SubscribeMetadata {
-                    scope,
-                    key: key.to_owned(),
-                },
+                &phux_server_testkit::subscribe_metadata(scope, key),
             )
             .await;
         }
@@ -173,12 +170,7 @@ fn metadata_writes_name_their_actor() {
         for (n, (scope, key, value)) in writes.into_iter().enumerate() {
             send_frame(
                 &mut writer,
-                &FrameKind::SetMetadata {
-                    request_id: u32::try_from(n).unwrap(),
-                    scope,
-                    key: key.to_owned(),
-                    value,
-                },
+                &phux_server_testkit::set_metadata(u32::try_from(n).unwrap(), scope, key, value),
             )
             .await;
             let actor = recv_until(&mut watcher, |_, frame| match frame {
@@ -199,12 +191,12 @@ fn metadata_writes_name_their_actor() {
 
         send_frame(
             &mut writer,
-            &FrameKind::SetMetadata {
-                request_id: 9,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value: br#"{"name":"made-by-writer"}"#.to_vec(),
-            },
+            &phux_server_testkit::set_metadata(
+                9,
+                Scope::Global,
+                SESSION_CREATE_KEY,
+                br#"{"name":"made-by-writer"}"#.to_vec(),
+            ),
         )
         .await;
         let spawned = next_event(&mut watcher, |s| {

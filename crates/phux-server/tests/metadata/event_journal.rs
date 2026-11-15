@@ -120,14 +120,7 @@ async fn command(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<Seen>) {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     let mut seen = Vec::new();
     loop {

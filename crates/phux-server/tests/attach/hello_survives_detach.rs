@@ -39,11 +39,11 @@ fn l1_only_consumer_still_fails_the_l3_gate_after_detach() {
 
         // A non-L3 consumer's GET_METADATA is dropped silently (§11.5); the
         // in-order PONG proves it was already dispatched.
-        let get = FrameKind::GetMetadata {
-            request_id: 7,
-            scope: Scope::Group(GroupId::new(1)),
-            key: "phux.tui.layout/v1".to_owned(),
-        };
+        let get = phux_server_testkit::get_metadata(
+            7,
+            Scope::Group(GroupId::new(1)),
+            "phux.tui.layout/v1",
+        );
         send_frame(&mut stream, &get).await;
         send_frame(&mut stream, &FrameKind::Ping { nonce: 0x7255 }).await;
         recv_until(&mut stream, |type_byte, frame| {

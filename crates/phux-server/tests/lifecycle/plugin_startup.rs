@@ -595,7 +595,7 @@ fn disable_and_manifest_change_reconcile_without_touching_unchanged() {
 
 /// Ring the reload doorbell: a `CONFIG_RELOAD` metadata write.
 async fn ring(server: &Running) {
-    use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};
+    use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, Scope};
     use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, send_frame, wait_for_socket};
     static NONCE: AtomicU32 = AtomicU32::new(0);
     let socket = server.tmp.path().join("phux.sock");
@@ -603,12 +603,12 @@ async fn ring(server: &Running) {
     let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
     send_frame(
         &mut stream,
-        &FrameKind::SetMetadata {
-            request_id: 1,
-            scope: Scope::Global,
-            key: CONFIG_RELOAD_KEY.to_owned(),
-            value: format!("nonce-{}-{nonce}", std::process::id()).into_bytes(),
-        },
+        &phux_server_testkit::set_metadata(
+            1,
+            Scope::Global,
+            CONFIG_RELOAD_KEY,
+            format!("nonce-{}-{nonce}", std::process::id()).into_bytes(),
+        ),
     )
     .await;
     tokio::time::sleep(Duration::from_millis(200)).await;

@@ -77,14 +77,7 @@ pub(crate) async fn publish(
     command(stream, request_id, publish).await
 }
 
-/// Send `command` without awaiting its reply, which may trail a stream.
-pub(crate) async fn send_command(stream: &mut UnixStream, request_id: u32, command: Command) {
-    let frame = FrameKind::Command {
-        request_id,
-        command,
-    };
-    send_frame(stream, &frame).await;
-}
+pub(crate) use phux_server_testkit::send_command;
 
 /// A bootstrap of `id`: (`BEGIN` grid, profile, `base_seq`, concatenated chunks).
 pub(crate) async fn bootstrap(
@@ -183,10 +176,7 @@ pub(crate) const fn enter_key() -> KeyEvent {
 /// Send Enter to `pane`: releases children blocked on `read _`, so their
 /// output or exit cannot race the spawn reply.
 pub(crate) async fn release(stream: &mut UnixStream, pane: &ResourceId) {
-    let key = FrameKind::InputKey {
-        terminal_id: pane.clone(),
-        event: enter_key(),
-    };
+    let key = phux_server_testkit::input_key(pane.clone(), enter_key());
     send_frame(stream, &key).await;
 }
 
@@ -370,11 +360,7 @@ pub(crate) async fn get_metadata(
     scope: Scope,
     key: &str,
 ) -> Option<Vec<u8>> {
-    let get = FrameKind::GetMetadata {
-        request_id,
-        scope,
-        key: key.to_owned(),
-    };
+    let get = phux_server_testkit::get_metadata(request_id, scope, key);
     send_frame(stream, &get).await;
     wait_frame(stream, "METADATA_VALUE", |frame| match frame {
         FrameKind::MetadataValue {
@@ -397,12 +383,12 @@ pub(crate) async fn send_create(
     request_id: u32,
     body: &serde_json::Value,
 ) {
-    let set = FrameKind::SetMetadata {
+    let set = phux_server_testkit::set_metadata(
         request_id,
-        scope: Scope::Global,
-        key: SESSION_CREATE_KEY.to_owned(),
-        value: serde_json::to_vec(body).unwrap(),
-    };
+        Scope::Global,
+        SESSION_CREATE_KEY,
+        serde_json::to_vec(body).unwrap(),
+    );
     send_frame(stream, &set).await;
 }
 

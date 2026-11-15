@@ -16,11 +16,7 @@ use crate::common::{connect_as, full_caps};
 async fn get(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Option<Vec<u8>> {
     send_frame(
         stream,
-        &FrameKind::GetMetadata {
-            request_id,
-            scope,
-            key: WHOAMI_KEY.to_owned(),
-        },
+        &phux_server_testkit::get_metadata(request_id, scope, WHOAMI_KEY),
     )
     .await;
     recv_until(stream, |_, frame| match frame {
@@ -64,12 +60,12 @@ fn whoami_reports_each_connections_route_and_refuses_client_writes() {
         // Client SET and DELETE never land; the key is Global-only.
         send_frame(
             &mut plain,
-            &FrameKind::SetMetadata {
-                request_id: 2,
-                scope: Scope::Global,
-                key: WHOAMI_KEY.to_owned(),
-                value: br#"{"principal":"root"}"#.to_vec(),
-            },
+            &phux_server_testkit::set_metadata(
+                2,
+                Scope::Global,
+                WHOAMI_KEY,
+                br#"{"principal":"root"}"#.to_vec(),
+            ),
         )
         .await;
         assert_eq!(whoami(&mut plain, 3).await, record, "SET must not land");

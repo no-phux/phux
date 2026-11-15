@@ -2,7 +2,7 @@
 //! reap) must get a typed reply for every request and leave the server
 //! responsive.
 
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
+use phux_protocol::wire::frame::{CommandResult, FrameKind, SpawnResult};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
@@ -20,10 +20,7 @@ async fn next_command_result(stream: &mut UnixStream) -> CommandResult {
 const fn kill(request_id: u32, terminal_id: phux_protocol::ResourceId) -> FrameKind {
     FrameKind::Command {
         request_id,
-        command: Command::KillResource {
-            terminal_id,
-            operation_id: None,
-        },
+        command: phux_server_testkit::kill(terminal_id),
     }
 }
 

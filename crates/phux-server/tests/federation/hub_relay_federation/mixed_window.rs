@@ -389,10 +389,7 @@ async fn assert_degraded(
 }
 
 async fn kill(hub: &mut UnixStream, request_id: u32, id: &ResourceId) {
-    let command = Command::KillResource {
-        terminal_id: id.clone(),
-        operation_id: None,
-    };
+    let command = phux_server_testkit::kill(id.clone());
     let (result, _) = command_via_hub(hub, request_id, command).await;
     assert_eq!(result, CommandResult::Ok, "KILL_RESOURCE {id:?}");
 }

@@ -186,10 +186,7 @@ fn hello_attach_echo_through_relay_to_real_server() {
             ascii_key('i', PhysicalKey::I),
             enter,
         ] {
-            let input = FrameKind::InputKey {
-                terminal_id: pane_id.clone(),
-                event,
-            };
+            let input = phux_server_testkit::input_key(pane_id.clone(), event);
             consumer.send(&input).await.unwrap();
         }
         let mut echoed = Vec::new();

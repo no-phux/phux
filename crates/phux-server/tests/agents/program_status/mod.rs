@@ -152,11 +152,11 @@ impl Pane {
         let request_id = self.next_request();
         send_frame(
             &mut self.stream,
-            &FrameKind::GetMetadata {
+            &phux_server_testkit::get_metadata(
                 request_id,
-                scope: Scope::Resource(self.terminal.clone()),
-                key: key.to_owned(),
-            },
+                Scope::Resource(self.terminal.clone()),
+                key,
+            ),
         )
         .await;
         recv_until(&mut self.stream, |_, frame| match frame {
@@ -245,20 +245,13 @@ impl Pane {
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
             &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(self.terminal.clone()),
-                key: key.to_owned(),
-            },
+            &phux_server_testkit::subscribe_metadata(Scope::Resource(self.terminal.clone()), key),
         )
         .await;
         // Same-connection GET proves subscription installation before release.
         send_frame(
             &mut stream,
-            &FrameKind::GetMetadata {
-                request_id: 1,
-                scope: Scope::Resource(self.terminal.clone()),
-                key: key.to_owned(),
-            },
+            &phux_server_testkit::get_metadata(1, Scope::Resource(self.terminal.clone()), key),
         )
         .await;
         recv_until(&mut stream, |_, frame| {

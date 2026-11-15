@@ -107,10 +107,7 @@ impl Harness {
     }
 
     async fn kill(&mut self, pane: &ResourceId) {
-        let kill = Command::KillResource {
-            terminal_id: pane.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(pane.clone());
         assert_eq!(self.command(kill).await, CommandResult::Ok);
     }
 

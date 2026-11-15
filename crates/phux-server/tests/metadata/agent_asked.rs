@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_until, recv_until_deadline, run_local, send_frame,
+    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_until, recv_until_deadline, run_local,
     spawn_server_with_seed_cmd,
 };
 
@@ -34,14 +34,7 @@ async fn asked_before_reply(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<AgentEvent>) {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let mut asked = Vec::new();
     let result = recv_until(stream, |_, frame| match frame {
         FrameKind::CommandResult {

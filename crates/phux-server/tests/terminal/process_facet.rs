@@ -62,10 +62,7 @@ async fn spawn_pane(stream: &mut UnixStream, argv: &[&str], cwd: Option<&Path>) 
 }
 
 async fn press_enter(stream: &mut UnixStream, pane: &ResourceId) {
-    let enter = FrameKind::InputKey {
-        terminal_id: pane.clone(),
-        event: named_key(PhysicalKey::Enter),
-    };
+    let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
     send_frame(stream, &enter).await;
 }
 

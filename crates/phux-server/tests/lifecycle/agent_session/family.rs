@@ -39,10 +39,7 @@ fn a_childs_spawn_and_close_reach_the_parents_watchers_once() {
         let SpawnResult::Ok(session) = spawn_session(&mut owner, 2, parent).await else {
             panic!("spawn session failed");
         };
-        let kill = Command::KillResource {
-            terminal_id: session.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(session.clone());
         assert_eq!(command(&mut owner, 3, kill).await, CommandResult::Ok);
 
         // Count to a barrier on the watcher's own connection.
@@ -94,10 +91,7 @@ fn parent_kill_and_pty_exit_cascade_the_child_with_parent_closed() {
         let (parent, session) = parent_and_session(&mut owner, FOREVER).await;
         let mut watcher = server.connect().await;
         attach_resource(&mut watcher, 100, &session).await;
-        let kill = Command::KillResource {
-            terminal_id: parent.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(parent.clone());
         assert_eq!(command(&mut owner, 3, kill).await, CommandResult::Ok);
         let seen = closes(&mut watcher, std::slice::from_ref(&session)).await;
         assert_eq!(seen[&session].0, CloseReason::ParentClosed);

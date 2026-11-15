@@ -149,14 +149,7 @@ fn transcript(result: CommandResult) -> String {
 
 async fn send_isolation_probes(stream: &mut UnixStream, terminal_id: ResourceId) {
     send_frame(stream, &FrameKind::Ping { nonce: 0x51_0a }).await;
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id: 11,
-            command: phux_server_testkit::get_state(),
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, 11, phux_server_testkit::get_state()).await;
     send_frame(
         stream,
         &FrameKind::Command {

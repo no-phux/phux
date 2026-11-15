@@ -139,11 +139,7 @@ async fn owner_whoami(socket_path: std::path::PathBuf) -> serde_json::Value {
     send_frame(&mut stream, &hello()).await;
     send_frame(
         &mut stream,
-        &FrameKind::GetMetadata {
-            request_id: 1,
-            scope: Scope::Global,
-            key: WHOAMI_KEY.to_owned(),
-        },
+        &phux_server_testkit::get_metadata(1, Scope::Global, WHOAMI_KEY),
     )
     .await;
     recv_until(&mut stream, |_, frame| match frame {

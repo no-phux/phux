@@ -44,12 +44,12 @@ fn spawn_reloading_hub(
 async fn ring_reload(hub: &mut UnixStream, request_id: u32, nonce: &str) {
     send_frame(
         hub,
-        &FrameKind::SetMetadata {
+        &phux_server_testkit::set_metadata(
             request_id,
-            scope: Scope::Global,
-            key: CONFIG_RELOAD_KEY.to_owned(),
-            value: nonce.as_bytes().to_vec(),
-        },
+            Scope::Global,
+            CONFIG_RELOAD_KEY,
+            nonce.as_bytes().to_vec(),
+        ),
     )
     .await;
     send_frame(

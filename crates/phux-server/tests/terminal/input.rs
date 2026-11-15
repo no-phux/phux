@@ -58,10 +58,7 @@ async fn route(stream: &mut UnixStream, request_id: u32, pane: &ResourceId, even
 }
 
 fn key(terminal_id: &ResourceId, c: char, k: PhysicalKey) -> FrameKind {
-    FrameKind::InputKey {
-        terminal_id: terminal_id.clone(),
-        event: ascii_key(c, k),
-    }
+    phux_server_testkit::input_key(terminal_id.clone(), ascii_key(c, k))
 }
 
 /// `INPUT_KEY`, `ROUTE_INPUT`, `INPUT_KEY` sent back to back share one FIFO
@@ -86,10 +83,7 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         };
         send_frame(&mut stream, &request).await;
         send_frame(&mut stream, &key(&pane, 'c', PhysicalKey::C)).await;
-        let enter = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event: named_key(PhysicalKey::Enter),
-        };
+        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
         send_frame(&mut stream, &enter).await;
 
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
@@ -233,10 +227,7 @@ fn a_buffered_input_key_burst_reaches_the_pty_whole() {
             let (c, k) = LETTERS[i % LETTERS.len()];
             burst.extend_from_slice(&phux_server_testkit::encode_frame(&key(&pane, c, k)));
         }
-        let enter = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event: named_key(PhysicalKey::Enter),
-        };
+        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
         burst.extend_from_slice(&phux_server_testkit::encode_frame(&enter));
         tokio::io::AsyncWriteExt::write_all(&mut stream, &burst)
             .await
@@ -384,10 +375,7 @@ fn a_clipboard_reply_reaches_the_program_as_one_osc_52_answer() {
             text: phux_protocol::input::paste::ClipboardData("hi".to_owned()),
         };
         send_frame(&mut stream, &reply).await;
-        let enter = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event: named_key(PhysicalKey::Enter),
-        };
+        let enter = phux_server_testkit::input_key(pane.clone(), named_key(PhysicalKey::Enter));
         send_frame(&mut stream, &enter).await;
         let want = b"^[]52;c;aGk=^[\\";
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;

@@ -8,12 +8,7 @@ fn terminal_facet_commands_refuse_an_agent_session_and_vice_versa() {
     phux_server_testkit::run_local(async {
         let (server, mut owner) = start(|_| {}).await;
         let (parent, session) = parent_and_session(&mut owner, FOREVER).await;
-        let screen = Command::GetScreen {
-            terminal_id: session.clone(),
-            request_scrollback: None,
-            cells: false,
-            format: 0,
-        };
+        let screen = phux_server_testkit::get_screen(session.clone());
         let signal = Command::SignalTerminal {
             terminal_id: session,
             signal: TerminalSignal::Interrupt,

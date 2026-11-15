@@ -20,6 +20,8 @@
 pub mod builder;
 pub mod embedder;
 mod framing;
+mod frames;
+pub use frames::*;
 pub mod relay;
 pub mod screen;
 mod server;

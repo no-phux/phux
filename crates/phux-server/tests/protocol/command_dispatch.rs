@@ -81,11 +81,7 @@ async fn get_metadata(
 ) -> Option<Vec<u8>> {
     send_frame(
         stream,
-        &FrameKind::GetMetadata {
-            request_id,
-            scope,
-            key: key.to_owned(),
-        },
+        &phux_server_testkit::get_metadata(request_id, scope, key),
     )
     .await;
     recv_until(stream, |_, frame| match frame {
@@ -101,12 +97,7 @@ async fn get_metadata(
 async fn set_global(stream: &mut UnixStream, request_id: u32, key: &str, value: Vec<u8>) {
     send_frame(
         stream,
-        &FrameKind::SetMetadata {
-            request_id,
-            scope: Scope::Global,
-            key: key.to_owned(),
-            value,
-        },
+        &phux_server_testkit::set_metadata(request_id, Scope::Global, key, value),
     )
     .await;
 }
@@ -206,13 +197,7 @@ fn read_verbs_answer_over_the_wire() {
         let ghost = ResourceId::local(99_999);
         for (request_id, verb) in [
             (6, get_screen(ghost.clone(), None, false, 0)),
-            (
-                7,
-                Command::KillResource {
-                    terminal_id: ghost.clone(),
-                    operation_id: None,
-                },
-            ),
+            (7, phux_server_testkit::kill(ghost.clone())),
             (
                 8,
                 Command::GetTerminalState {
@@ -447,10 +432,7 @@ fn kill_resource_and_kill_resources_ack_and_close() {
             panic!("spawn c");
         };
 
-        let kill_one = Command::KillResource {
-            terminal_id: pane_b.clone(),
-            operation_id: None,
-        };
+        let kill_one = phux_server_testkit::kill(pane_b.clone());
         let kill_many = Command::KillResources {
             ids: vec![pane_a.clone(), pane_c.clone(), ResourceId::local(999_999)],
             operation_id: None,

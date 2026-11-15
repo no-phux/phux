@@ -164,12 +164,12 @@ fn a_parked_persistent_session_does_not_hold_the_server_up_alone() {
         let (_tmp, socket, handle) = seeded("read _", None);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let pane = attach(&mut stream, "solo").await.focused_resource;
-        let mark = FrameKind::SetMetadata {
-            request_id: 1,
-            scope: Scope::Global,
-            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            value: encode_session_keep_empty("solo", true),
-        };
+        let mark = phux_server_testkit::set_metadata(
+            1,
+            Scope::Global,
+            SESSION_KEEP_EMPTY_KEY,
+            encode_session_keep_empty("solo", true),
+        );
         send_frame(&mut stream, &mark).await;
         // The mark has no reply: confirm it before closing the last pane.
         assert!(

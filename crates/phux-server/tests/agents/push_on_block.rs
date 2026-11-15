@@ -107,21 +107,12 @@ fn a_screen_detected_block_pushes_an_absent_phone() {
         let grant = format!(r#"{{"gateway":"{url}","grant":"0123456789abcdef","host":"fr"}}"#);
         send_frame(
             &mut phone,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: key.to_owned(),
-                value: grant.into_bytes(),
-            },
+            &phux_server_testkit::set_metadata(1, Scope::Global, key, grant.into_bytes()),
         )
         .await;
         send_frame(
             &mut phone,
-            &FrameKind::GetMetadata {
-                request_id: 2,
-                scope: Scope::Global,
-                key: key.to_owned(),
-            },
+            &phux_server_testkit::get_metadata(2, Scope::Global, key),
         )
         .await;
         let stored = recv_until(&mut phone, |_, frame| match frame {

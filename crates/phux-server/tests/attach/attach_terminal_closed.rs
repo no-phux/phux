@@ -79,10 +79,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
         );
         let kill = FrameKind::Command {
             request_id: 2,
-            command: Command::KillResource {
-                terminal_id: victim.clone(),
-                operation_id: None,
-            },
+            command: phux_server_testkit::kill(victim.clone()),
         };
         send_frame(&mut owner, &kill).await;
 

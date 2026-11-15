@@ -20,12 +20,7 @@ fn metadata_get_and_list_replies_round_trip() {
         for (request_id, key, value) in [(1, OTHER_KEY, &b"o"[..]), (2, LAYOUT_KEY, LAYOUT_VALUE)] {
             send_frame(
                 &mut stream,
-                &FrameKind::SetMetadata {
-                    request_id,
-                    scope: scope.clone(),
-                    key: key.to_owned(),
-                    value: value.to_vec(),
-                },
+                &phux_server_testkit::set_metadata(request_id, scope.clone(), key, value.to_vec()),
             )
             .await;
         }
@@ -35,11 +30,7 @@ fn metadata_get_and_list_replies_round_trip() {
         ] {
             send_frame(
                 &mut stream,
-                &FrameKind::GetMetadata {
-                    request_id,
-                    scope: scope.clone(),
-                    key: key.to_owned(),
-                },
+                &phux_server_testkit::get_metadata(request_id, scope.clone(), key),
             )
             .await;
             let (_, reply) = recv_typed(&mut stream).await;

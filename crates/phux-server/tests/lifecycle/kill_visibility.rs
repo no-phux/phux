@@ -142,10 +142,7 @@ fn get_state_after_any_kill_reply_omits_the_killed_resources() {
         .await;
 
         let (single, _) = doomed_pane(&mut killer, 6).await;
-        let kill_one = Command::KillResource {
-            terminal_id: single.clone(),
-            operation_id: None,
-        };
+        let kill_one = phux_server_testkit::kill(single.clone());
         assert_eq!(command(&mut killer, 7, kill_one).await, CommandResult::Ok);
         assert_gone(&state(&mut observer, 8).await, &single, "KILL_RESOURCE");
 
@@ -284,10 +281,7 @@ fn a_server_stop_reaps_killed_and_live_hangup_proof_panes() {
         let (_live, live_pid) =
             recorded_pane(&mut client, 2, &server.tmp.path().join("live.pid")).await;
 
-        let kill = Command::KillResource {
-            terminal_id: killed,
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(killed);
         assert_eq!(command(&mut client, 3, kill).await, CommandResult::Ok);
         drop(client);
         server.stop().await;

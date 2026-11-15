@@ -114,10 +114,7 @@ pub(crate) async fn type_line(
     key: PhysicalKey,
 ) {
     for event in [ascii_key(c, key), enter_key()] {
-        let frame = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event,
-        };
+        let frame = phux_server_testkit::input_key(pane.clone(), event);
         send_frame(stream, &frame).await;
     }
 }

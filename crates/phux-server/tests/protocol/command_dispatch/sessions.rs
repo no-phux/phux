@@ -238,10 +238,7 @@ fn session_rename_applies_and_broadcasts_only_applied_renames() {
         attach(&mut subscriber, "work").await;
         send_frame(
             &mut subscriber,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: SESSION_NAME_KEY.to_owned(),
-            },
+            &phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_NAME_KEY),
         )
         .await;
         let _ = snapshot(&mut subscriber, 1).await; // barrier: subscription installed

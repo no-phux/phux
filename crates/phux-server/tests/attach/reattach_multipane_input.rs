@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, SpawnResult};
+use phux_protocol::wire::frame::{CommandResult, CommandValue, SpawnResult};
 use phux_server::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
@@ -33,12 +33,7 @@ async fn panes_and_focus(
 async fn assert_echo(stream: &mut UnixStream, pane: &ResourceId, needle: char) {
     let mut last = String::new();
     for request_id in 3000..3040 {
-        let get_screen = Command::GetScreen {
-            terminal_id: pane.clone(),
-            request_scrollback: None,
-            cells: false,
-            format: 0,
-        };
+        let get_screen = phux_server_testkit::get_screen(pane.clone());
         let CommandResult::OkWith(CommandValue::Json(json)) =
             command(stream, request_id, get_screen).await
         else {
