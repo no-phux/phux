@@ -155,22 +155,16 @@ pub(super) fn encode_filter(filter: OrgFilter, enc: &mut Encoder<'_>) {
         OrgFilter::All => enc.write_u8(FILTER_ALL),
         OrgFilter::Session(key) => {
             enc.write_u8(FILTER_SESSION);
-            for byte in key.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(key.as_bytes());
         }
         OrgFilter::Workspace(key) => {
             enc.write_u8(FILTER_WORKSPACE);
-            for byte in key.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(key.as_bytes());
         }
         OrgFilter::Intake => enc.write_u8(FILTER_INTAKE),
         OrgFilter::Resource(key) => {
             enc.write_u8(FILTER_RESOURCE);
-            for byte in key.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(key.as_bytes());
         }
     }
 }
@@ -233,9 +227,8 @@ pub(super) fn decode_launch(value: &[u8]) -> Result<LaunchSpec, DecodeError> {
 
 pub(super) fn encode_move_item(item: &MoveItem, enc: &mut Encoder<'_>) {
     enc.write_field_with(field::org::MOVE_ITEM, |e| {
-        for byte in item.resource.as_bytes().iter().chain(item.from.as_bytes()) {
-            e.write_u8(*byte);
-        }
+        e.write_raw(item.resource.as_bytes());
+        e.write_raw(item.from.as_bytes());
         e.write_u64_be(item.from_expected.get());
     });
 }
@@ -255,9 +248,7 @@ pub(super) fn decode_move_item(value: &[u8]) -> Result<MoveItem, DecodeError> {
 
 pub(super) fn encode_pin(pin: &RecordRevision, enc: &mut Encoder<'_>) {
     enc.write_field_with(field::org::PIN, |e| {
-        for byte in &pin.key {
-            e.write_u8(*byte);
-        }
+        e.write_raw(&pin.key);
         e.write_u64_be(pin.revision.get());
     });
 }

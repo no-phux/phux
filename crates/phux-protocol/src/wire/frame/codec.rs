@@ -308,9 +308,7 @@ pub(in crate::wire) fn encode_actor_ref(actor: &ActorRef, enc: &mut Encoder<'_>)
     if actor.principal().is_some() || actor.on_behalf_of().is_some() {
         for principal in [actor.principal(), actor.on_behalf_of()] {
             enc.write_option(principal, |e, id| {
-                for byte in id.as_bytes() {
-                    e.write_u8(*byte);
-                }
+                e.write_raw(id.as_bytes());
             });
         }
     }
@@ -339,10 +337,7 @@ fn decode_optional_principal(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<crate::ids::PrincipalId>, DecodeError> {
     dec.read_option("Option<PrincipalId> tag", |d| {
-        let mut bytes = [0; 16];
-        for byte in &mut bytes {
-            *byte = d.read_u8()?;
-        }
+        let bytes: [u8; 16] = d.read_array()?;
         crate::ids::PrincipalId::new(bytes).ok_or(DecodeError::InvalidOrganizationKey)
     })
 }

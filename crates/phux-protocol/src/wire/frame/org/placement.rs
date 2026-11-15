@@ -62,9 +62,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<CreatePlacement, DecodeError> {
 }
 
 fn read16(dec: &mut Decoder<'_>) -> Result<[u8; 16], DecodeError> {
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
+    let bytes: [u8; 16] = dec.read_array()?;
     Ok(bytes)
 }
