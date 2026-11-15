@@ -12,8 +12,8 @@ use super::{
     GridDamage, GridProjector,
 };
 
-/// `Cell` is `PhuxTerminalCell` in `include/phux/client.h` (ABI v2). Its size
-/// and every field offset are the C contract; a change here is an ABI break.
+/// `Cell`'s size and every field offset are the mobile bridge's 36-byte cell
+/// contract; a change here breaks the phone apps' decoder.
 #[test]
 fn cell_layout_matches_the_c_abi() {
     assert_eq!(size_of::<Cell>(), 36);

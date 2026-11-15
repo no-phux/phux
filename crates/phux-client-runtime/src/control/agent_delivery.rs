@@ -5,7 +5,7 @@
 //! dropping the journal hold: that is delivery acceptance. A leased drain
 //! hands out the same allocation and keeps it until
 //! [`ControlPlane::accept_agent_publication`], the adapter's explicit
-//! acceptance point (`phux_client_effect_clear` for C). Ending a pointer
+//! acceptance point. Ending a pointer
 //! borrow is not acceptance. A transport replacement returns an unaccepted
 //! allocation to the replay queue. Non-agent events never enter here.
 //! A newer full retained cut supersedes pending publications for that resource;
@@ -258,9 +258,7 @@ impl ControlPlane {
     /// Accept delivery of one leased publication by [`Arc`] allocation identity.
     ///
     /// This is consumer delivery acceptance, not the end of a pointer borrow.
-    /// The C adapter invalidates effect pointers on the next mutable call,
-    /// but unsuperseded staged effects persist until `phux_client_effect_clear`,
-    /// which calls this. Drops the journal hold and any not-yet-drained replay
+    /// Drops the journal hold and any not-yet-drained replay
     /// of that allocation. Unknown, superseded or already-accepted pointers
     /// are ignored.
     pub fn accept_agent_publication(&mut self, publication: &Arc<AgentPublication>) {

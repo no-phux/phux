@@ -87,7 +87,7 @@ Cargo manifests define the actual edges.
 | `phux-relay` | quictun bound to phux's ALPNs and state directory |
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
-| `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
+| `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
 | `phux-tree` | the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`: one document a producer replaces whole, and the newest for every viewer |
@@ -136,11 +136,10 @@ runtime's draw list with the [Rune](https://github.com/anomalyco/rune) UI
 framework.
 The [runtime consumer contract](./embedding.md#runtime-consumer-contract)
 owns epochs, delivery acceptance and callback retirement. The runtime's
-`draw::DrawList` shares colour, face, cursor, block and
-decoration rules across Phux Rune and the C ABI's `c/draw_list.rs`; other
-toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi` derives one binding
-vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
-for Swift and Kotlin.
+`draw::DrawList` owns colour, face, cursor, block and decoration rules;
+Phux Rune and other toolkits paint that same list. See
+[embedding](./embedding.md). `phux-client-ffi` derives one binding
+vocabulary and encodes it with UniFFI for Swift and Kotlin.
 
 ## Layout stability
 

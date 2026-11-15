@@ -503,8 +503,7 @@ impl Client {
     /// Each [`Event::AgentPublication`] arc stays journaled until acceptance via
     /// [`ControlPlane::accept_agent_publication`](crate::control::ControlPlane::accept_agent_publication).
     /// A newer full cut supersedes prior deliveries without accepting them.
-    /// The C adapter likewise supersedes staged effects, and otherwise accepts
-    /// in `phux_client_effect_clear`, not when a pointer borrow ends. Remaining
+    /// A pointer borrow ending is not acceptance. Remaining
     /// unaccepted allocations replay once the next catalog and attach are ready.
     #[must_use]
     pub fn take_events_leased(&self) -> Vec<Event> {
@@ -784,7 +783,7 @@ mod wake_tests {
         }
     }
 
-    /// The use-after-free behind `phux_client_free`: retiring the listener
+    /// The use-after-free behind freeing a client: retiring the listener
     /// returns only after a callback already running elsewhere returns, and
     /// no wake reaches the listener afterwards.
     #[test]

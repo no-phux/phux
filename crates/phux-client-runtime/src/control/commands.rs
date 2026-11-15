@@ -37,8 +37,7 @@ impl ControlPlane {
     /// Returned [`Event::AgentPublication`] arcs stay journaled until
     /// [`Self::accept_agent_publication`] or a newer full cut supersedes them.
     /// Only the explicit call accepts delivery; ending a pointer borrow does not.
-    /// The C adapter also supersedes staged effects on a full cut, and otherwise
-    /// accepts in `phux_client_effect_clear`. Loss replays unsuperseded,
+    /// Loss replays unsuperseded,
     /// unaccepted allocations once the next catalog and attach are ready.
     #[must_use]
     pub fn take_events_leased(&mut self) -> Vec<Event> {

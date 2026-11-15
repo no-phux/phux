@@ -1,6 +1,6 @@
 //! Kernel-side performance telemetry, shared by every frontend.
 //!
-//! The ratatui client, the native cockpit (through `phux-client-ffi`), and the
+//! The ratatui client, the mobile bridge (through `phux-client-ffi`), and the
 //! web client all drive the same [`crate::session::SessionKernel`], so the
 //! kernel is where a frontend-neutral view of "how fast is this client"
 //! lives: frames applied and their bytes, the time libghostty took to apply

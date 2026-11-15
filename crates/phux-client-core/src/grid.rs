@@ -4,14 +4,13 @@
 //! flattens the viewport into a [`GridBuffer`]: one plain-old-data [`Cell`]
 //! per viewport cell in row-major order, the UTF-8 arena their text and
 //! hyperlink URIs address, and one [`CellMetadata`] record per cell carrying
-//! the color provenance the resolved RGB fields lose. The C ABI lends a
-//! pointer to that buffer; the mobile bridge copies it as byte vectors once
-//! it re-pins (ADR-0133 decision 3). Neither defines a second cell.
+//! the color provenance the resolved RGB fields lose. The mobile bridge copies
+//! it as byte vectors (ADR-0133 decision 3) and defines no second cell.
 //!
-//! [`Cell`] is `#[repr(C)]` and its field order is part of the native ABI
-//! (`crates/phux-client-ffi/include/phux/client.h`, `PhuxTerminalCell`,
-//! ABI v2). The layout test in `grid/tests.rs` pins its size and every field
-//! offset; changing either is a C ABI break, not a refactor.
+//! [`Cell`] is `#[repr(C)]` and its 36-byte layout is what the mobile bridge
+//! serializes (`phux-client-ffi`'s `projection::grid::encode_cells`). The
+//! layout test in `grid/tests.rs` pins its size and every field offset;
+//! changing either breaks the phone apps' decoder.
 
 use std::fmt;
 

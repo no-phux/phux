@@ -11,14 +11,14 @@ use phux_client_core::session::agent_stream::{
 };
 
 /// One representation-neutral foreign record batch.
-pub(crate) struct RecordBatch {
+pub struct RecordBatch {
     pub mode: AgentRecordMode,
     pub jsonl: String,
     pub seq: u64,
 }
 
 /// Empty appends advance identity only; empty replacements clear evidence.
-pub(crate) fn project(publication: &AgentPublication) -> Option<RecordBatch> {
+pub fn project(publication: &AgentPublication) -> Option<RecordBatch> {
     if publication.mode == AgentRecordMode::Append && publication.records.is_empty() {
         return None;
     }
