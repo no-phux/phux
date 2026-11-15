@@ -79,6 +79,8 @@ check before removal.
 2. **`INPUT_TERMINAL_REPLY`.** Decoded, authorized, routed, gated by a bit
    every server advertises, then discarded (`handle_terminal_reply` in
    `crates/phux-server/src/runtime/apps/terminal/commands/terminal_input.rs`).
+   Since resolved: the server-side handler and its never-taken refusal are
+   gone; the frame is dropped where it is routed, with the same wire result.
 3. **Seven duplicated launch helpers.** `default_shell_command`,
    `shell_command`, `apply_term`, `apply_terminal_id`,
    `apply_server_socket`, `apply_spawn_cwd` and `apply_strict_spawn_cwd`
