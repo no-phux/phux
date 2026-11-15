@@ -1354,7 +1354,7 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
     let col = rows[row].find(&marker).unwrap();
     let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
     finger(&canvas, "pointerdown", (first, row), 0.0);
-    sleep(Duration::from_millis(450)).await;
+    sleep(HOLD).await;
     finger(&canvas, "pointermove", (first + 3, row), 0.0);
     finger(&canvas, "pointermove", (last, row), 0.0);
     finger(&canvas, "pointerup", (last, row), 0.0);
@@ -1374,20 +1374,22 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
     assert!(keydown(&surface, "Enter", "Enter", false));
     assert!(wait_rows(&client, "https://example.com/touch.", 2).await);
     let rows = client.rows_text();
-    let (link_row, link_col) = rows
+    let link = rows
         .iter()
         .enumerate()
         .find_map(|(row, text)| {
             text.find("https://example.com/touch")
-                .map(|col| (row as u16, col as u16))
+                .map(|col| (col as u16 + 5, row as u16))
         })
         .unwrap();
-    finger(&canvas, "pointerdown", (link_col + 5, link_row), 0.0);
-    finger(&canvas, "pointerup", (link_col + 5, link_row), 0.0);
+    // A tap opens what is painted: wait for the frame that draws the URL.
+    assert!(wait_link_hit(&canvas, link).await);
+    finger(&canvas, "pointerdown", link, 0.0);
+    finger(&canvas, "pointerup", link, 0.0);
     // A hold on it is not a tap.
-    finger(&canvas, "pointerdown", (link_col + 5, link_row), 0.0);
-    sleep(Duration::from_millis(450)).await;
-    finger(&canvas, "pointerup", (link_col + 5, link_row), 0.0);
+    finger(&canvas, "pointerdown", link, 0.0);
+    sleep(HOLD).await;
+    finger(&canvas, "pointerup", link, 0.0);
 
     js_sys::Reflect::set(&window, &"open".into(), &real_open).unwrap();
     assert_eq!(*opened.borrow(), ["https://example.com/touch"]);
