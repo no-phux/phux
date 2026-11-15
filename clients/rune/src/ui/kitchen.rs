@@ -10,14 +10,14 @@
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
-use super::playground::{self, Who, stage, target};
+use super::playground::{self, Who, badge, pill_label, pill_w, place_pills, stage, target};
 use super::reef::pen::{Pen, rgba};
 use super::reef::{Label, pill};
 use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
-use crate::reef::{Mood, Pt, Rgb};
+use crate::reef::{Mood, Pt};
 
 mod chef;
 mod room;
@@ -26,7 +26,6 @@ use chef::{AMBER, MINT, pool};
 
 /// The night's darkness is worked out on a grid this many points across.
 const CELL: f32 = 4.0;
-const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let k = &desk.kitchen.scene;
@@ -260,17 +259,7 @@ fn sign(k: &Kitchen, i: usize, [x, y]: Pt) -> El {
                         .color(rgba([242.0, 239.0, 228.0], 1.0)),
                 )
                 .child(el().size(5.0, 5.0).radius(2.5).fill(lamp))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(
-                            text(waiting.to_string())
-                                .font(CAPTION)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .children((waiting > 0).then(|| badge(waiting, 15.0, CAPTION))),
         )
 }
 
@@ -302,42 +291,29 @@ fn pills(k: &Kitchen) -> Vec<El> {
         })
         .collect();
     shown.sort_by(|a, b| b.y.total_cmp(&a.y));
-    let mut placed: Vec<[f32; 3]> = Vec::new();
-    shown
-        .into_iter()
+    let items: Vec<(String, bool, Pt, f32)> = shown
+        .iter()
         .map(|c| {
-            let amber = c.who.mood == Mood::Waiting;
-            let text = if amber {
-                format!("{} · needs you", c.who.name)
-            } else {
-                c.who.name.clone()
-            };
+            let (text, amber) = pill_label(&c.who.name, c.who.mood);
             let (at, r) = k.hit(c);
             // As `ui::reef::pill` estimates and clamps its width.
-            let w = text.chars().count() as f32 * 6.6 + 14.0;
-            let x = (at[0] - w / 2.0).clamp(6.0, (k.w - w - 6.0).max(6.0));
-            let mut y = at[1] - r - 14.0;
-            for _ in 0..6 {
-                if !placed
-                    .iter()
-                    .any(|p| (p[1] - y).abs() < 21.0 && x < p[0] + p[2] + 4.0 && p[0] < x + w + 4.0)
-                {
-                    break;
-                }
-                y -= 22.0;
-            }
-            placed.push([x, y, w]);
-            pill(
-                &Label {
-                    at: [at[0], y],
-                    text,
-                    badge: None,
-                    amber,
-                    host: None,
-                },
-                [at[0], y],
-                k.w,
-            )
+            let w = pill_w(&text, 6.6);
+            (text, amber, [at[0], at[1] - r - 14.0], w)
+        })
+        .collect();
+    let spots = place_pills(&items.iter().map(|i| (i.2, i.3)).collect::<Vec<_>>(), k.w);
+    items
+        .into_iter()
+        .zip(spots)
+        .map(|((text, amber, at, _), [_, y])| {
+            let label = Label {
+                at: [at[0], y],
+                text,
+                badge: None,
+                amber,
+                host: None,
+            };
+            pill(&label, [at[0], y], k.w)
         })
         .collect()
 }

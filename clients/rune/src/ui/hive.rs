@@ -14,21 +14,21 @@ use std::f32::consts::TAU;
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
-use super::playground::{self, Who, stage, target};
+use super::playground::{
+    self, Who, badge, name_pill, pill_label, pill_w, place_pills, stage, target,
+};
 use super::reef::drift::edges;
 use super::reef::pen::{Pen, clip_convex};
 use super::reef::rgba;
 use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
-use crate::hive::{AMBER, Hive, RANKS, place_pills};
+use crate::hive::{Hive, RANKS};
 use crate::reef::{Mood, Pt, Rgb, mix};
 
 mod bee;
 mod comb;
 mod scene;
-
-const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
 
 /// A hexagonal cell's outline, point up.
 fn hex(c: Pt, r: f32) -> Vec<Pt> {
@@ -197,16 +197,7 @@ fn plaque(h: &Hive, i: usize) -> El {
     let pulse = 1.0 + 0.08 * (h.t * 5.0).sin();
     let badge = (w8 > 0).then(|| {
         let d = bh - 4.0 * z;
-        el().size(d, d)
-            .radius(d / 2.0)
-            .center()
-            .scale(pulse)
-            .fill(rgba(AMBER, 1.0))
-            .child(
-                text(w8.to_string())
-                    .font(TextStyle::new(size, 600.0))
-                    .color(rgba(ON_AMBER, 1.0)),
-            )
+        badge(w8, d, TextStyle::new(size, 600.0)).scale(pulse)
     });
     row()
         .absolute(at[0] - 300.0, at[1] - bh / 2.0)
@@ -248,41 +239,24 @@ fn pills(h: &Hive) -> Vec<El> {
         .map(|b| {
             let at = h.to_screen([b.x, b.y]);
             let r = b.len(h.s) * 0.6 * z;
-            let amber = b.who.mood == Mood::Waiting;
-            let label = if amber {
-                format!("{} · needs you", b.who.name)
-            } else {
-                b.who.name.clone()
-            };
+            let (label, amber) = pill_label(&b.who.name, b.who.mood);
             ([at[0], at[1] - r - 14.0], label, amber)
         })
         .collect();
     shown.sort_by(|a, b| b.0[1].total_cmp(&a.0[1]));
-    let spots: Vec<(Pt, usize)> = shown
+    let spots: Vec<(Pt, f32)> = shown
         .iter()
-        .map(|(at, l, _)| (*at, l.chars().count()))
+        .map(|(at, l, _)| (*at, pill_w(l, 6.6)))
         .collect();
     place_pills(&spots, h.w)
         .into_iter()
+        .zip(spots)
         .zip(shown)
-        .map(|([x, y, w], (_, label, amber))| {
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
+        .map(|(([x, y], (_, w)), (_, label, amber))| {
+            name_pill(label, amber, CAPTION)
                 .absolute(x, y - 9.5)
                 .w(w)
-                .h(19.0)
-                .radius(9.5)
                 .justify_center()
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(CAPTION).color(ink))
         })
         .collect()
 }

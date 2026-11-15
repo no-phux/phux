@@ -357,32 +357,6 @@ pub fn claim(f: &mut Frame, rad: f32, r: &mut Rng) -> usize {
     at
 }
 
-/// Pills `(at, chars)` laid out the prototype's way (`pill()`): centred over
-/// `at` and kept inside `w`; one that would overlap a pill already placed
-/// moves up past it, at most six times. Give them bottom-most first, so
-/// stacks grow upward. Each is its left edge, centre y and width.
-pub fn place_pills(pills: &[(Pt, usize)], w: f32) -> Vec<[f32; 3]> {
-    const H: f32 = 19.0;
-    let mut placed: Vec<[f32; 3]> = Vec::new();
-    for &(at, chars) in pills {
-        // ponytail: an estimated width; measure the text if pills clip.
-        let pw = chars as f32 * 6.6 + 14.0;
-        let x = (at[0] - pw / 2.0).clamp(6.0, (w - pw - 6.0).max(6.0));
-        let mut y = at[1];
-        for _ in 0..6 {
-            let hit = placed.iter().any(|p| {
-                (p[1] - y).abs() < H + 2.0 && x < p[0] + p[2] + 4.0 && p[0] < x + pw + 4.0
-            });
-            if !hit {
-                break;
-            }
-            y -= H + 3.0;
-        }
-        placed.push([x, y, pw]);
-    }
-    placed
-}
-
 impl Hive {
     pub fn frame_of(&self, b: &Bee) -> &Frame {
         &self.frames[b.who.host.min(self.frames.len().saturating_sub(1))]

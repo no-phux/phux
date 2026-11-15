@@ -10,7 +10,7 @@
 
 use rune::{Cx, El, canvas, el, row, text};
 
-use super::playground::{self, Who, stage, target};
+use super::playground::{self, AMBER, ON_AMBER, Who, badge, stage, target};
 use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
@@ -35,9 +35,6 @@ pub(super) struct Label {
     /// A buoy's machine, whose colour leads the pill.
     pub host: Option<String>,
 }
-
-const AMBER: [f32; 3] = [255.0, 181.0, 71.0];
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let r = &desk.reef.scene;
@@ -189,13 +186,7 @@ pub(super) fn pill(l: &Label, at: Pt, w: f32) -> El {
                 .fill(fill)
                 .children(host)
                 .child(text(l.text.clone()).font(CAPTION).color(ink))
-                .children(l.badge.map(|n| {
-                    el().size(14.0, 14.0)
-                        .radius(7.0)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(text(n.to_string()).font(CAPTION).color(rgba(ON_AMBER, 1.0)))
-                })),
+                .children(l.badge.map(|n| badge(n, 14.0, CAPTION))),
         )
 }
 

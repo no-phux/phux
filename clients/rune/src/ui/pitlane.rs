@@ -9,9 +9,11 @@
 //! one canvas, then the garages' boards, name pills, the cars' press targets
 //! and the readout. The camera stays put: a car laps too fast to follow.
 
-use rune::{Cx, El, canvas, el, row, text};
+use rune::{Cx, El, canvas, row, text};
 
-use super::playground::{self, Who, stage, target};
+use super::playground::{
+    self, Who, badge, name_pill, pill_label, pill_w, place_pills, stage, target,
+};
 use super::reef::pen::{Pen, rgba};
 use super::{CAPTION, Ink};
 use crate::creature;
@@ -22,7 +24,6 @@ use crate::reef::{Mood, Pt};
 mod car;
 mod ground;
 
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 const PILL_H: f32 = 19.0;
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
@@ -107,18 +108,7 @@ fn board(r: &PitLane, i: usize) -> El {
                 .items_center()
                 .fill(rgba(g.c, 1.0))
                 .child(text(g.host.to_uppercase()).font(CAPTION).color(ink))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .border(1.0, ink)
-                        .child(
-                            text(waiting.to_string())
-                                .font(CAPTION)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .children((waiting > 0).then(|| badge(waiting, 15.0, CAPTION).border(1.0, ink))),
         )
 }
 
@@ -140,63 +130,21 @@ fn pills(r: &PitLane) -> Vec<El> {
     let items: Vec<(String, bool, Pt, f32)> = shown
         .iter()
         .map(|c| {
-            let amber = c.who.mood == Mood::Waiting;
-            let text = if amber {
-                format!("{} · needs you", c.who.name)
-            } else {
-                c.who.name.clone()
-            };
-            // ponytail: an estimated width (the pill sizes to its text) for
-            // keeping pills apart and in view; measure if they ever overlap.
-            let w = text.chars().count() as f32 * 5.6 + 14.0;
+            let (text, amber) = pill_label(&c.who.name, c.who.mood);
+            let w = pill_w(&text, 5.6);
             (text, amber, [c.x, c.y - c.r(r.k) - 14.0], w)
         })
         .collect();
-    let spots = stack(&items.iter().map(|i| (i.2, i.3)).collect::<Vec<_>>(), r.w);
+    let spots = place_pills(&items.iter().map(|i| (i.2, i.3)).collect::<Vec<_>>(), r.w);
     items
         .into_iter()
         .zip(spots)
         .map(|((label, amber, _, _), [x, y])| {
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
-                .absolute(x, y - PILL_H / 2.0)
-                .h(PILL_H)
+            name_pill(label, amber, CAPTION)
+                .absolute(x, y - 9.5)
                 .px(7.0)
-                .radius(PILL_H / 2.0)
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(CAPTION).color(ink))
         })
         .collect()
-}
-
-/// Left edges and centre heights for pills of width `w` wanted centred on
-/// `at`, in order: each kept in the view and nudged up past those already
-/// placed, up to six times, as the prototype's `pill`.
-fn stack(pills: &[(Pt, f32)], view_w: f32) -> Vec<Pt> {
-    let mut placed: Vec<[f32; 3]> = Vec::new();
-    for &(at, w) in pills {
-        let x = (at[0] - w / 2.0).min(view_w - w - 6.0).max(6.0);
-        let mut y = at[1];
-        for _ in 0..6 {
-            let hit = placed.iter().any(|p| {
-                (p[1] - y).abs() < PILL_H + 2.0 && x < p[0] + p[2] + 4.0 && p[0] < x + w + 4.0
-            });
-            if !hit {
-                break;
-            }
-            y -= PILL_H + 3.0;
-        }
-        placed.push([x, y, w]);
-    }
-    placed.into_iter().map(|p| [p[0], p[1]]).collect()
 }
 
 fn who<'a>(r: &'a PitLane, c: &'a crate::pitlane::Car) -> Who<'a> {
@@ -221,24 +169,4 @@ fn readout(r: &PitLane, waiting: usize, p: &Ink) -> El {
         (who(r, c), card)
     });
     playground::readout("pitlane", r, [r.garages.len(), waiting], r.h, picked, p)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn close_pills_stack_upward_and_stay_in_view() {
-        let spots = super::stack(
-            &[
-                ([100.0, 200.0], 80.0),
-                ([110.0, 200.0], 80.0),
-                ([400.0, 200.0], 80.0),
-                ([2.0, 50.0], 80.0),
-            ],
-            500.0,
-        );
-        assert_eq!(spots[0], [60.0, 200.0]);
-        assert_eq!(spots[1], [70.0, 178.0], "nudged up one pill");
-        assert_eq!(spots[2], [360.0, 200.0], "clear of the others");
-        assert_eq!(spots[3], [6.0, 50.0], "kept inside the view");
-    }
 }

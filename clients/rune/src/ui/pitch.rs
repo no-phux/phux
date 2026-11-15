@@ -12,18 +12,17 @@
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
 use super::Ink;
-use super::playground::{self, Who, stage, target};
+use super::playground::{self, Who, badge, name_pill, pill_label, pill_w, stage, target};
 use super::reef::pen::Pen;
 use super::reef::rgba;
 use crate::creature;
 use crate::desk::Desk;
-use crate::pitch::{AMBER, MINT, Mood, Pitch, Pt, RANKS, mix};
+use crate::pitch::{MINT, Mood, Pitch, Pt, RANKS, mix};
 
 mod players;
 
 use players::Spot;
 
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 const PILL: TextStyle = TextStyle::new(11.0, 500.0).mono();
 const BOARD: TextStyle = TextStyle::new(10.5, 600.0).mono();
 const BENCH: TextStyle = TextStyle::new(9.5, 500.0).mono();
@@ -156,14 +155,9 @@ fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)]) -> Vec<El> {
     shown
         .into_iter()
         .map(|(q, s)| {
-            let amber = q.who.mood == Mood::Waiting;
-            let label = if amber {
-                format!("{} · needs you", q.who.name)
-            } else {
-                q.who.name.clone()
-            };
+            let (label, amber) = pill_label(&q.who.name, q.who.mood);
             // Monospace: a character is 0.6 of the size across.
-            let w = label.chars().count() as f32 * 6.6 + 14.0;
+            let w = pill_w(&label, 6.6);
             let x = (s.at[0] - w / 2.0).clamp(6.0, (r.w - w - 6.0).max(6.0));
             // Up past the pills already placed, as the prototype; where the
             // view's top runs out, down instead.
@@ -180,23 +174,10 @@ fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)]) -> Vec<El> {
                 .find(|y| free(*y))
                 .unwrap_or(base);
             placed.push([x, y, w]);
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
+            name_pill(label, amber, PILL)
                 .key(format!("pitch-pill-{:?}", q.who.id))
                 .absolute(x, y - h / 2.0)
-                .h(h)
                 .px(7.0)
-                .radius(h / 2.0)
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(PILL).color(ink))
         })
         .collect()
 }
@@ -239,17 +220,7 @@ fn board(r: &Pitch, i: usize) -> El {
                     rgba([12.0, 18.0, 28.0], 1.0),
                 ))
                 .child(text(label).font(BOARD).color(rgba(ink, 1.0)))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(
-                            text(waiting.to_string())
-                                .font(BOARD)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .children((waiting > 0).then(|| badge(waiting, 15.0, BOARD))),
         )
 }
 

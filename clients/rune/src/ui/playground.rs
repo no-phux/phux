@@ -2,15 +2,16 @@
 //! the way out every one of them shows.
 
 use phux_protocol::ids::ResourceId;
-use rune::{Cx, El, col, el, row, text};
+use rune::{Cx, El, TextStyle, col, el, row, text};
 
+use super::reef::rgba;
 use super::{
     CAPTION, FROST, Ink, LABEL_STRONG, TITLEBAR_H, galaxy, hive, keycap, kitchen, overlay, pitch,
     pitlane, pressable, reef,
 };
 use crate::desk::Desk;
 use crate::desk::playground::{Playground, Scene};
-use crate::reef::{Mood, Pt};
+use crate::reef::{Mood, Pt, Rgb};
 
 /// A playground view: whether it is open, how it draws, how it closes.
 type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
@@ -200,4 +201,96 @@ pub(super) fn readout<S: Scene>(
             p,
             Desk::close_scene::<S>,
         ))
+}
+
+/// The amber of an agent that needs you, and what reads on it.
+pub(super) const AMBER: Rgb = [255.0, 181.0, 71.0];
+pub(super) const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
+const PILL_H: f32 = 19.0;
+
+/// A name pill's text, and whether it is amber: an agent that needs you
+/// says so.
+pub(super) fn pill_label(name: &str, mood: Mood) -> (String, bool) {
+    if mood == Mood::Waiting {
+        (format!("{name} · needs you"), true)
+    } else {
+        (name.to_owned(), false)
+    }
+}
+
+/// A name pill: amber when its agent needs you, else dark glass.
+pub(super) fn name_pill(label: String, amber: bool, font: TextStyle) -> El {
+    let (fill, ink) = if amber {
+        (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
+    } else {
+        (
+            rgba([10.0, 14.0, 20.0], 0.78),
+            rgba([238.0, 242.0, 246.0], 1.0),
+        )
+    };
+    row()
+        .h(PILL_H)
+        .radius(PILL_H / 2.0)
+        .items_center()
+        .fill(fill)
+        .child(text(label).font(font).color(ink))
+}
+
+/// An amber count `d` across of agents needing you.
+pub(super) fn badge(n: usize, d: f32, font: TextStyle) -> El {
+    el().size(d, d)
+        .radius(d / 2.0)
+        .center()
+        .fill(rgba(AMBER, 1.0))
+        .child(text(n.to_string()).font(font).color(rgba(ON_AMBER, 1.0)))
+}
+
+/// Left edges and centre heights for pills of width `w` wanted centred on
+/// `at`, the prototype's `pill()`: each kept in the view and nudged up past
+/// those already placed, up to six times. Give them bottom-most first, so
+/// stacks grow upward.
+pub(super) fn place_pills(pills: &[(Pt, f32)], view_w: f32) -> Vec<Pt> {
+    let mut placed: Vec<[f32; 3]> = Vec::new();
+    for &(at, w) in pills {
+        let x = (at[0] - w / 2.0).clamp(6.0, (view_w - w - 6.0).max(6.0));
+        let mut y = at[1];
+        for _ in 0..6 {
+            let hit = placed.iter().any(|p| {
+                (p[1] - y).abs() < PILL_H + 2.0 && x < p[0] + p[2] + 4.0 && p[0] < x + w + 4.0
+            });
+            if !hit {
+                break;
+            }
+            y -= PILL_H + 3.0;
+        }
+        placed.push([x, y, w]);
+    }
+    placed.into_iter().map(|p| [p[0], p[1]]).collect()
+}
+
+/// A pill's estimated width for `label` at `per` points a character.
+// ponytail: an estimate keeps pills apart and in view; measure the text if
+// they ever clip or overlap.
+pub(super) fn pill_w(label: &str, per: f32) -> f32 {
+    label.chars().count() as f32 * per + 14.0
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn close_pills_stack_upward_and_stay_in_view() {
+        let spots = super::place_pills(
+            &[
+                ([100.0, 200.0], 80.0),
+                ([110.0, 200.0], 80.0),
+                ([400.0, 200.0], 80.0),
+                ([2.0, 50.0], 80.0),
+            ],
+            500.0,
+        );
+        assert_eq!(spots[0], [60.0, 200.0]);
+        assert_eq!(spots[1], [70.0, 178.0], "nudged up one pill");
+        assert_eq!(spots[2], [360.0, 200.0], "clear of the others");
+        assert_eq!(spots[3], [6.0, 50.0], "kept inside the view");
+    }
 }

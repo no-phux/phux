@@ -176,21 +176,3 @@ fn the_camera_follows_the_selected_bee_and_stays_inside() {
     let (hw, hh) = (h.w / (2.0 * to.z), h.h / (2.0 * to.z));
     assert!(to.x >= hw && to.x <= h.w - hw && to.y >= hh && to.y <= h.h - hh);
 }
-
-#[test]
-fn pills_stack_upward_instead_of_overlapping() {
-    let placed = place_pills(
-        &[
-            ([200.0, 300.0], 10),
-            ([210.0, 300.0], 12),
-            ([900.0, 300.0], 8),
-        ],
-        1280.0,
-    );
-    assert_eq!(placed[0][1], 300.0);
-    assert_eq!(placed[1][1], 300.0 - 22.0, "moved up past the first");
-    assert_eq!(placed[2][1], 300.0, "far away: stays");
-    // Kept inside the view.
-    let edge = place_pills(&[([2.0, 50.0], 20)], 1280.0);
-    assert_eq!(edge[0][0], 6.0);
-}
