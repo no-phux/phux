@@ -4691,7 +4691,8 @@ Flags:
                              the address itself).
       --name <NAME>          Human-readable server name to embed in the connect
                              link, shown by the device in its server list.
-                             Omitted: the device picks a default.
+                             Omitted: this machine's name, its `MagicDNS` short
+                             name when the link dials by it, else its host name.
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
