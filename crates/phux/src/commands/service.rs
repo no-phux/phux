@@ -1146,10 +1146,6 @@ fn remote_entry_point(
 /// Write `[policy] mode = "paired"` into `config`, creating the file and
 /// the `[policy]` table when they are missing. Existing keys and comments
 /// stay (`phux_config::settings::write_edit`).
-///
-/// `phux service install` calls this when a unit opens a remote entry
-/// point, which is how `phux host add` settles the mode. `phux pair
-/// --enable` uses the same write.
 pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
     phux_config::settings::write_edit(
         config,

@@ -185,12 +185,6 @@ pub(super) async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) ->
 }
 
 /// Wait until the server accepts again on `dial`, or give up.
-///
-/// UDS short-circuits to [`ReconnectOutcome::SocketGone`] when the socket file is
-/// gone (a clean shutdown unlinks it; an upgrade does not). Remote lanes return
-/// the negotiated connection for the next attach to reuse, and a refusal ends
-/// the ladder immediately (ADR-0133). The first attempt is immediate; `policy`
-/// sets the deadline and cadence.
 pub(super) async fn wait_until_connectable(
     dial: &Dial,
     policy: ReconnectPolicy,

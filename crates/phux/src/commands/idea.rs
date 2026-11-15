@@ -311,16 +311,13 @@ fn decode_secret(hex: &str) -> Option<[u8; 32]> {
 }
 
 fn sign(secret: &[u8; 32], ts: &str, idempotency_key: &str, body: &[u8]) -> String {
-    let digest = hex_encode(&sha256(body));
+    let digest = crate::commands::update::apply::hex_lower(&sha256(body));
     let message = format!("{ts}\n{idempotency_key}\n{digest}");
-    hex_encode(&hmac_sha256(secret, message.as_bytes()))
+    crate::commands::update::apply::hex_lower(&hmac_sha256(secret, message.as_bytes()))
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
-    let digest = Sha256::digest(data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+    Sha256::digest(data).into()
 }
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
@@ -345,20 +342,7 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     let mut outer = Sha256::new();
     outer.update(opad);
     outer.update(inner_hash);
-    let digest = outer.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
+    outer.finalize().into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -42,9 +42,6 @@ pub(super) fn register_from_code(target: &RemoteTarget, code: &str) -> Result<Re
 
 /// Register a host from a connect link only once its enrollment ticket, when
 /// it carries one, has redeemed. Narrates nothing: the caller reports.
-///
-/// `hardware_key` keeps the enrolled key in this machine's hardware; a
-/// machine that cannot refuses before the ticket is spent.
 pub(crate) fn pair_from_code(
     target: &RemoteTarget,
     code: &str,

@@ -259,10 +259,6 @@ fn resolve_quic_endpoint(
 /// The `HOST:PORT` another machine dials this server's live QUIC listener at,
 /// resolved as a pairing link's `quic` is (overlay address, `MagicDNS`
 /// name). `Ok(None)` when no QUIC listener is bound or it binds loopback.
-///
-/// # Errors
-///
-/// No server answers, or it has no remote listener bound.
 pub(crate) fn advertised_quic_endpoint(socket: &Path) -> Result<Option<String>, String> {
     let live = bound_or_refusal(socket, query_live_listeners(socket))?;
     let overlay = phux_config::overlay::detect();

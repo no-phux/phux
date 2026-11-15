@@ -74,10 +74,6 @@ impl HubFiles {
 /// Mint NAME's join code for a satellite that dials `hub`, as `phux host
 /// ticket` does, for a caller that delivers it itself (`phux host
 /// minimal`): the code and the ticket id that withdraws it.
-///
-/// `adopt_inbound` updates an existing `inbound://` entry. `phux host
-/// minimal` sets it only for a name it minted; anything else is refused so
-/// a box cannot take over a satellite this feature did not create.
 pub(super) fn mint_code(
     name: &str,
     hub: &str,

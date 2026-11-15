@@ -223,8 +223,6 @@ pub(super) fn project_grouped_glance(rows: &[(SessionGlance, RowProject)]) -> Ve
 
 /// One session's glance line: what needs you, what runs, and `ephemeral`
 /// when the session vanishes with its last terminal.
-///
-/// `api: needs you (1 agent waiting, 1 failed), 5 running`
 pub(super) fn glance_text(row: &SessionGlance) -> String {
     let needs = attention_parts(row);
     let mut parts = Vec::new();

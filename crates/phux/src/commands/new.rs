@@ -24,16 +24,6 @@ use naming::{choose_session_name, report_invalid_session_name, requested_session
 pub(crate) use naming::{existing_session_names, unique_session_name};
 
 /// `phux new` — create a *new* session and attach to it.
-///
-/// The name comes from the positional `NAME` or `-s` (a conflict is an error).
-/// A name that already exists is refused; an omitted one renders
-/// `session-name-template`, redrawing a taken `${random-name}` and settling on a
-/// numeric suffix. Only a local server is auto-spawned.
-///
-/// Lifetime follows [`session_lifetime`]: a session is persistent and is
-/// created headless, then attached by name; `--ephemeral` makes it
-/// ephemeral, and the create+attach rides `CreateIfMissing`. `mode.empty`
-/// creates a persistent session with no terminal.
 pub(crate) fn run_new(
     name: Option<String>,
     session: Option<String>,
@@ -136,11 +126,6 @@ fn prepare_target(
 }
 
 /// Create a session and attach to it: the interactive `phux new`.
-///
-/// A persistent session is created headless with its lifetime
-/// ([`create_session_via_metadata`]) and then attached by name, because an
-/// attach-time `CreateIfMissing` carries no lifetime and the server makes
-/// such a session ephemeral. An ephemeral one rides `CreateIfMissing`.
 fn run_new_attached(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,

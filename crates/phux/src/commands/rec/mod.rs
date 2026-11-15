@@ -282,10 +282,6 @@ fn capture(
 }
 
 /// Record the session composite into `cast_path` at a virtual cell grid.
-///
-/// The attach votes a zero viewport, so the server resizes no pane. The
-/// grid comes from `--size` pixels (default `1920x1080`) floored to the
-/// recording face.
 fn capture_composited(
     target: Option<&str>,
     socket: Option<PathBuf>,

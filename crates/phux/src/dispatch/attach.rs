@@ -61,9 +61,6 @@ pub(crate) fn relay_hop(
 }
 
 /// Resolve a `--remote` target and attach to it.
-///
-/// One helper for both the root and the verb-scoped spelling, so the two
-/// cannot drift in what a target means.
 fn attach_remote_target(
     target: &str,
     session: Option<String>,

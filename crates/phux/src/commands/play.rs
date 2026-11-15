@@ -389,11 +389,6 @@ fn own_pane() -> Option<ResourceId> {
 /// Stop the tty's line discipline from editing the recording: clear `OPOST`
 /// (a cast's bytes already went through one `ONLCR`) and `ECHO` (nothing reads
 /// stdin). `ISIG` stays, so Ctrl-C stops playback.
-///
-/// Nothing is restored, so this only touches a tty this process owns: the guard
-/// is `tcgetsid(stdout) == getpid()`, true only for a pane's session leader. A
-/// writer run by hand from a shell fails it and leaves that shell's terminal
-/// alone.
 fn quiet_own_tty() {
     use std::io::IsTerminal as _;
     use std::os::fd::AsFd as _;
