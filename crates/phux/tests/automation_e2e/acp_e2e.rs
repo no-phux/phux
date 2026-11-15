@@ -75,6 +75,15 @@ fn command(
     serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("native receipt missing: {stdout} {stderr}"))
 }
+fn await_view(server: &common::ServerGuard, agent: &str, want: impl Fn(&Value) -> bool) -> Value {
+    await_value(|| latest_view(&log(server, agent)), want)
+}
+fn asking(view: &Value) -> bool {
+    view["questions"].as_array().is_some_and(|q| !q.is_empty())
+}
+fn count(text: &str, needle: &str) -> usize {
+    text.lines().filter(|line| line.contains(needle)).count()
+}
 fn profile(server: &common::ServerGuard, root: &Path, ledger: &Path) {
     profile_mode(server, root, ledger, true);
 }
@@ -134,37 +143,13 @@ fn cli_acp_permissions_stream_reconnect_and_same_worker_upgrade() {
     // A new CLI connection observes the same activation; upgrade must retain the
     // very same external worker, not reconstruct an ACP client or replay prompts.
     let before = std::fs::read_to_string(&ledger).unwrap();
-    assert_eq!(
-        before
-            .lines()
-            .filter(|line| line.contains("started"))
-            .count(),
-        1
-    );
+    assert_eq!(count(&before, "started"), 1);
     let turn = upgrade_and_cancel(&server, agent, activation);
     let after = std::fs::read_to_string(&ledger).unwrap();
-    assert_eq!(
-        after
-            .lines()
-            .filter(|line| line.contains("started"))
-            .count(),
-        1
-    );
+    assert_eq!(count(&after, "started"), 1);
     assert!(!after.contains("\"private_binding\": true"));
-    assert_eq!(
-        after
-            .lines()
-            .filter(|line| line.contains("\"method\": \"initialize\""))
-            .count(),
-        1
-    );
-    assert_eq!(
-        after
-            .lines()
-            .filter(|line| line.contains("\"method\": \"session/prompt\""))
-            .count(),
-        4
-    );
+    assert_eq!(count(&after, "\"method\": \"initialize\""), 1);
+    assert_eq!(count(&after, "\"method\": \"session/prompt\""), 4);
     let duplicate = command(
         &server,
         agent,
@@ -201,34 +186,19 @@ fn cli_acp_transport_loss_is_unknown_and_never_replays_prompt() {
     );
     let agent = spawned["agent_session_id"].as_str().unwrap();
     let activation = spawned["activation"].as_str().unwrap();
-    await_value(
-        || latest_view(&log(&server, agent)),
-        |view| view["connected"] == true,
-    );
+    await_view(&server, agent, |view| view["connected"] == true);
     let intent = json!({"type":"prompt","text":"disconnect"});
     command(&server, agent, activation, 90, &intent);
-    await_value(
-        || latest_view(&log(&server, agent)),
-        |view| view["connected"] == false,
-    );
+    await_view(&server, agent, |view| view["connected"] == false);
     let receipt = command(&server, agent, activation, 90, &intent);
     assert_eq!(receipt["result"]["disposition"], "unknown");
     let calls = std::fs::read_to_string(&ledger).unwrap();
-    assert_eq!(
-        calls
-            .lines()
-            .filter(|line| line.contains("\"method\": \"session/prompt\""))
-            .count(),
-        1
-    );
+    assert_eq!(count(&calls, "\"method\": \"session/prompt\""), 1);
 }
 
 fn upgrade_and_cancel(server: &common::ServerGuard, agent: &str, activation: &str) -> String {
     server.success(&["upgrade"]);
-    let view = await_value(
-        || latest_view(&log(server, agent)),
-        |view| view["connected"] == true,
-    );
+    let view = await_view(server, agent, |view| view["connected"] == true);
     assert_eq!(view["activation"], activation);
     command(
         server,
@@ -237,10 +207,7 @@ fn upgrade_and_cancel(server: &common::ServerGuard, agent: &str, activation: &st
         40,
         &json!({"type":"prompt","text":"hold"}),
     );
-    let view = await_value(
-        || latest_view(&log(server, agent)),
-        |view| view["questions"].as_array().is_some_and(|q| !q.is_empty()),
-    );
+    let view = await_view(server, agent, asking);
     let turn = view["turn_id"].as_str().unwrap();
     let stopped = command(
         server,
@@ -250,10 +217,9 @@ fn upgrade_and_cancel(server: &common::ServerGuard, agent: &str, activation: &st
         &json!({"type":"interrupt","turn_id":turn}),
     );
     assert_eq!(stopped["result"]["disposition"], "queued");
-    await_value(
-        || latest_view(&log(server, agent)),
-        |view| view["turn_id"].is_null() && view["questions"].as_array().is_some_and(Vec::is_empty),
-    );
+    await_view(server, agent, |view| {
+        view["turn_id"].is_null() && view["questions"].as_array().is_some_and(Vec::is_empty)
+    });
     turn.to_owned()
 }
 
@@ -274,10 +240,7 @@ fn permission_rounds(server: &common::ServerGuard, agent: &str, activation: &str
             receipt["result"]["disposition"].as_str(),
             Some("queued" | "completed")
         ));
-        let question_view = await_value(
-            || latest_view(&log(server, agent)),
-            |view| view["questions"].as_array().is_some_and(|q| !q.is_empty()),
-        );
+        let question_view = await_view(server, agent, asking);
         let question_id = question_view["questions"][0]["id"].as_str().unwrap();
         let intent = json!({"type":"answer","question_id":question_id,"response":response});
         let answers = std::thread::scope(|scope| {
@@ -307,10 +270,7 @@ fn permission_rounds(server: &common::ServerGuard, agent: &str, activation: &str
             },
         );
         assert!(rows.to_string().contains("inert tool"));
-        await_value(
-            || latest_view(&log(server, agent)),
-            |view| view["turn_id"].is_null(),
-        );
+        await_view(server, agent, |view| view["turn_id"].is_null());
     }
 }
 
@@ -348,10 +308,7 @@ fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
             &["launch", "--acp", "peer", "--session", "work", "--json"],
         );
         let source_agent = spawned["agent_session_id"].as_str().unwrap();
-        await_value(
-            || latest_view(&log(&source, source_agent)),
-            |view| view["connected"] == true,
-        );
+        await_view(&source, source_agent, |view| view["connected"] == true);
         source.success(&["archive", "export", "--output", archive.to_str().unwrap()]);
         let saved = std::fs::read_to_string(&archive).unwrap();
         assert!(saved.contains("peer-stable-session"));
@@ -364,10 +321,7 @@ fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
         dest.success(&["restore", "work"]);
         let agent = restored_agent(&dest);
         if supports_load {
-            let view = await_value(
-                || latest_view(&log(&dest, &agent)),
-                |view| view["connected"] == true,
-            );
+            let view = await_view(&dest, &agent, |view| view["connected"] == true);
             assert_eq!(view["provider_session_id"], "peer-stable-session");
             let activation = view["activation"].as_str().unwrap();
             command(
@@ -377,10 +331,7 @@ fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
                 70,
                 &json!({"type":"prompt","text":"resumed"}),
             );
-            let view = await_value(
-                || latest_view(&log(&dest, &agent)),
-                |view| view["questions"].as_array().is_some_and(|q| !q.is_empty()),
-            );
+            let view = await_view(&dest, &agent, asking);
             let question = view["questions"][0]["id"].as_str().unwrap();
             command(
                 &dest,
@@ -403,18 +354,12 @@ fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
         }
         let calls = std::fs::read_to_string(&ledger).unwrap();
         assert_eq!(
-            calls
-                .lines()
-                .filter(|line| line.contains("\"method\": \"session/new\""))
-                .count(),
+            count(&calls, "\"method\": \"session/new\""),
             1,
             "never fresh-start an unsupported resume"
         );
         assert_eq!(
-            calls
-                .lines()
-                .filter(|line| line.contains("\"method\": \"session/load\""))
-                .count(),
+            count(&calls, "\"method\": \"session/load\""),
             usize::from(supports_load)
         );
     }
