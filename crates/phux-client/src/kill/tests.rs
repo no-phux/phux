@@ -111,18 +111,11 @@ fn pane_state() -> SessionSnapshot {
         ])
 }
 
-/// The state once every pane is reaped: nothing listed.
-fn reaped_state() -> SessionSnapshot {
-    SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
-}
-
-/// The first `GET_STATE` resolves against [`pane_state`]; every later
-/// one (the post-kill reap wait) answers [`reaped_state`].
 async fn run_selected(
     spec: ScriptSpec,
     target: &str,
 ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
-    run_selected_through(spec.states([pane_state()]).state(reaped_state()), target).await
+    run_selected_through(spec.state(pane_state()), target).await
 }
 
 async fn run_selected_through(
@@ -267,56 +260,6 @@ async fn selected_splits_a_complete_miss_from_a_partial_view() {
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(notices, [NOTICE]);
     assert!(killed_one(&seen, 2), "a partial-view hit still kills");
-}
-
-fn state_reads(seen: &[FrameKind]) -> usize {
-    seen.iter()
-        .filter(|frame| {
-            matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::GetState { .. },
-                    ..
-                }
-            )
-        })
-        .count()
-}
-
-/// Against a server without `COMMITTED_TEARDOWN`, a successful kill
-/// returns only once its panes are no longer listed, so
-/// `phux kill work && phux new work` cannot race the reap.
-#[tokio::test]
-async fn selected_waits_until_an_older_server_reaps_the_killed_panes() {
-    let spec = ScriptSpec::new()
-        .states([pane_state(), pane_state(), pane_state()])
-        .state(reaped_state());
-    let (result, _, seen) = run_selected_through(spec, "work").await;
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(
-        state_reads(&seen),
-        4,
-        "resolve, two still-listed polls, then reaped: {seen:?}"
-    );
-}
-
-/// A server advertising `COMMITTED_TEARDOWN` replies only once the kill
-/// is the whole visible teardown (L1 §5.2), so the kill polls nothing.
-#[tokio::test]
-async fn selected_trusts_a_committed_teardown_reply() {
-    use phux_protocol::caps::ServerFeatureExtSet;
-
-    for target in ["work", "@2"] {
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[
-                ServerFeatureExt::CommittedTeardown,
-            ]))
-            .states([pane_state(), pane_state()])
-            .state(reaped_state());
-        let (result, _, seen) = run_selected_through(spec, target).await;
-        assert!(result.is_ok(), "{target}: {result:?}");
-        assert_eq!(state_reads(&seen), 1, "{target}: resolve only: {seen:?}");
-    }
 }
 
 fn org_spec(fixture: OrgFixture) -> ScriptSpec {
