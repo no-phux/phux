@@ -41,7 +41,8 @@ use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind, SpawnResource,
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind,
+    SpawnResource,
     SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::ServerError;
@@ -346,6 +347,15 @@ pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command)
     )
     .await;
     await_command_result(stream, request_id).await
+}
+
+/// Assert `result` is a `CommandResult::Error` carrying `code`.
+#[track_caller]
+pub fn assert_command_error(result: &CommandResult, code: ErrorCode) {
+    assert!(
+        matches!(result, CommandResult::Error { code: got, .. } if *got == code),
+        "expected {code:?}, got {result:?}"
+    );
 }
 
 /// The address `transport`'s listener actually bound, read from the

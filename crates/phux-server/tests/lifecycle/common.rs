@@ -8,18 +8,19 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, EventStamp, FrameKind,
-    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResult, StateScope,
-    ViewportInfo,
+    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult,
+    StateScope, ViewportInfo,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
-use phux_server::{ServerConfig, ServerError};
+use phux_server::{LaunchCommand, ServerConfig, ServerError};
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, command, join_after_shutdown,
-    recv_until_deadline, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
+    recv_until_deadline, seed_pty, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -69,6 +70,145 @@ impl Server {
 /// `/bin/sh -c script` as an argv.
 pub(crate) fn sh(script: &str) -> Spawn {
     Spawn::command(&["/bin/sh", "-c", script])
+}
+
+pub(crate) const FOREVER: &str = "while :; do sleep 3600; done";
+
+/// A server seeding `demo` with a pane that never exits, `owner` attached to it.
+pub(crate) async fn demo(configure: impl FnOnce(&mut ServerConfig)) -> (Server, UnixStream) {
+    let server = Server::start(Some("demo"), |cfg| {
+        let mut seed = LaunchCommand::new("/bin/sh");
+        seed.args(["-c", FOREVER]);
+        seed_pty(cfg, seed);
+        configure(cfg);
+    });
+    let mut owner = server.connect().await;
+    attach(&mut owner, "demo").await;
+    (server, owner)
+}
+
+/// [`demo`] plus a never-exiting parent Terminal (request 1) to bind under.
+pub(crate) async fn demo_parent() -> (Server, UnixStream, ResourceId) {
+    let (server, mut owner) = demo(|_| {}).await;
+    let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+    (server, owner, parent)
+}
+
+/// Spawn a non-Terminal `resource`, requiring `Ok`.
+pub(crate) async fn spawn_kind(
+    stream: &mut UnixStream,
+    request_id: u32,
+    resource: SpawnResource,
+) -> ResourceId {
+    let spawn = Spawn {
+        resource: Some(Box::new(resource)),
+        ..Spawn::default()
+    };
+    spawned(stream, request_id, spawn).await
+}
+
+/// `PUBLISH_RESOURCE_STATE` of `bytes` to `id`.
+pub(crate) async fn publish(
+    stream: &mut UnixStream,
+    request_id: u32,
+    id: &ResourceId,
+    bytes: impl Into<Vec<u8>>,
+) -> CommandResult {
+    let publish = Command::PublishResourceState {
+        terminal_id: id.clone(),
+        bytes: bytes.into(),
+    };
+    command(stream, request_id, publish).await
+}
+
+/// Send `command` without awaiting its reply, which may trail a stream.
+pub(crate) async fn send_command(stream: &mut UnixStream, request_id: u32, command: Command) {
+    let frame = FrameKind::Command {
+        request_id,
+        command,
+    };
+    send_frame(stream, &frame).await;
+}
+
+/// A bootstrap of `id`: (`BEGIN` grid, profile, `base_seq`, concatenated chunks).
+pub(crate) async fn bootstrap(
+    stream: &mut UnixStream,
+    id: &ResourceId,
+) -> ((u16, u16), BootstrapStreamProfile, u64, Vec<u8>) {
+    let mut begin = None;
+    let mut chunks = Vec::new();
+    let mut generation = None;
+    wait_frame(stream, "bootstrap", |frame| match frame {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            cols,
+            rows,
+            profile,
+            base_seq,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            begin = Some(((cols, rows), profile, base_seq));
+            generation = Some(bootstrap_id);
+            None
+        }
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            payload,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "chunk from an old generation"
+            );
+            chunks.extend_from_slice(&payload);
+            None
+        }
+        FrameKind::BootstrapReady {
+            terminal_id,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "READY from an old generation"
+            );
+            Some(())
+        }
+        FrameKind::ResourceOutput { terminal_id, .. } if &terminal_id == id && begin.is_some() => {
+            panic!("old-generation live output interleaved with the bootstrap");
+        }
+        _ => None,
+    })
+    .await;
+    let (grid, profile, base_seq) = begin.expect("BOOTSTRAP_BEGIN");
+    (grid, profile, base_seq, chunks)
+}
+
+/// Wait for `id`'s `BOOTSTRAP_READY`.
+pub(crate) async fn bootstrap_ready(stream: &mut UnixStream, id: &ResourceId) {
+    wait_frame(stream, "BOOTSTRAP_READY", |frame| match frame {
+        FrameKind::BootstrapReady { terminal_id, .. } if &terminal_id == id => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// The next live `RESOURCE_OUTPUT` for `id`: its seq and bytes.
+pub(crate) async fn next_output(stream: &mut UnixStream, id: &ResourceId) -> (u64, Vec<u8>) {
+    wait_frame(stream, "RESOURCE_OUTPUT", |frame| match frame {
+        FrameKind::ResourceOutput {
+            terminal_id,
+            seq,
+            bytes,
+            ..
+        } if &terminal_id == id => Some((seq, bytes.to_vec())),
+        _ => None,
+    })
+    .await
 }
 
 /// An unmodified Enter press with no text (the encoder synthesizes the CR).

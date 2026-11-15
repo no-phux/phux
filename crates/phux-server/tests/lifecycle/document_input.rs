@@ -6,46 +6,51 @@
 //! until the producer answers, and only that producer may; a paste is held
 //! briefly for the producer's outcome.
 
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlClass, ControlClasses, DocumentInput,
-    DocumentKey, ErrorCode, FrameKind, SpawnResource, SpawnResult,
+    DocumentKey, ErrorCode, FrameKind, SpawnResource,
 };
-use phux_server::LaunchCommand as CommandBuilder;
-use phux_server_testkit::{Spawn, command, spawn_resource};
+use phux_server_testkit::{assert_command_error, command};
+use tokio::net::UnixStream;
 
-use crate::common::{Server, attach, sh, spawned, wait_frame};
+use crate::common::{demo_parent, spawn_kind, wait_frame};
 
-const FOREVER: &str = "while :; do sleep 3600; done";
+/// A pixel surface under `parent` whose input is `class`.
+async fn open_surface(
+    producer: &mut UnixStream,
+    parent: ResourceId,
+    label: &str,
+    class: ControlClass,
+) -> ResourceId {
+    let surface = SpawnResource::pixel_surface(parent, label).with_control(Some(class));
+    spawn_kind(producer, 2, surface).await
+}
+
+/// An unstamped `SEND_DOCUMENT_INPUT` of `intent` to `surface`.
+fn input(surface: &ResourceId, intent: DocumentInput) -> Command {
+    Command::SendDocumentInput {
+        terminal_id: surface.clone(),
+        intent,
+        control: None,
+        on_behalf_of: None,
+    }
+}
 
 #[test]
 fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
     phux_server_testkit::run_local(async {
-        let server = Server::start(Some("demo"), |cfg| {
-            let mut seed = CommandBuilder::new("/bin/sh");
-            seed.args(["-c", FOREVER]);
-            phux_server_testkit::seed_pty(cfg, seed);
-        });
-        let mut producer = server.connect().await;
-        attach(&mut producer, "demo").await;
-        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
-        let spawn = Spawn {
-            resource: Some(Box::new(
-                SpawnResource::pixel_surface(parent.clone(), "page:test")
-                    .with_control(Some(ControlClass::Window)),
-            )),
-            ..Spawn::default()
-        };
-        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
-            panic!("spawn surface failed");
-        };
+        let (server, mut producer, parent) = demo_parent().await;
+        let surface = open_surface(
+            &mut producer,
+            parent.clone(),
+            "page:test",
+            ControlClass::Window,
+        )
+        .await;
 
         let mut viewer = server.connect().await;
-        let send = |intent| Command::SendDocumentInput {
-            terminal_id: surface.clone(),
-            intent,
-            control: None,
-            on_behalf_of: None,
-        };
+        let send = |intent| input(&surface, intent);
         for (request_id, intent) in [
             (10, DocumentInput::Click { x: 40, y: 12 }),
             (
@@ -76,12 +81,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
         let refused = command(
             &mut viewer,
             12,
-            Command::SendDocumentInput {
-                terminal_id: parent,
-                intent: DocumentInput::Type { text: "x".into() },
-                control: None,
-                on_behalf_of: None,
-            },
+            input(&parent, DocumentInput::Type { text: "x".into() }),
         )
         .await;
         assert!(
@@ -103,16 +103,7 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert!(
-            matches!(
-                refused,
-                CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    ..
-                }
-            ),
-            "{refused:?}"
-        );
+        assert_command_error(&refused, ErrorCode::NotProducer);
 
         drop(viewer);
         server.stop().await;
@@ -122,49 +113,25 @@ fn a_viewer_intent_reaches_the_producer_and_is_refused_once_it_is_gone() {
 #[test]
 fn a_stamped_class_set_without_the_documents_class_is_refused() {
     phux_server_testkit::run_local(async {
-        let server = Server::start(Some("demo"), |cfg| {
-            let mut seed = CommandBuilder::new("/bin/sh");
-            seed.args(["-c", FOREVER]);
-            phux_server_testkit::seed_pty(cfg, seed);
-        });
-        let mut producer = server.connect().await;
-        attach(&mut producer, "demo").await;
-        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
-        let spawn = Spawn {
-            resource: Some(Box::new(
-                SpawnResource::pixel_surface(parent.clone(), "page:test")
-                    .with_control(Some(ControlClass::Window)),
-            )),
-            ..Spawn::default()
-        };
-        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
-            panic!("spawn surface failed");
-        };
+        let (server, mut producer, parent) = demo_parent().await;
+        let surface = open_surface(&mut producer, parent, "page:test", ControlClass::Window).await;
 
         let mut viewer = server.connect().await;
         // A hub stamps the classes it authorized: one without the
         // document's class is refused before the producer hears of it.
-        let stamped = |classes: &[ControlClass]| Command::SendDocumentInput {
-            terminal_id: surface.clone(),
-            intent: DocumentInput::Click { x: 1, y: 1 },
-            control: Some(
-                classes
-                    .iter()
-                    .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
-            ),
-            on_behalf_of: None,
+        let stamped = |classes: &[ControlClass]| {
+            let mut command = input(&surface, DocumentInput::Click { x: 1, y: 1 });
+            if let Command::SendDocumentInput { control, .. } = &mut command {
+                *control = Some(
+                    classes
+                        .iter()
+                        .fold(ControlClasses::EMPTY, |set, class| set.with(*class)),
+                );
+            }
+            command
         };
         let refused = command(&mut viewer, 9, stamped(&[ControlClass::Display])).await;
-        assert!(
-            matches!(
-                refused,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ),
-            "{refused:?}"
-        );
+        assert_command_error(&refused, ErrorCode::PermissionDenied);
         let taken = command(
             &mut viewer,
             8,
@@ -193,30 +160,9 @@ fn a_stamped_class_set_without_the_documents_class_is_refused() {
 #[test]
 fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
     phux_server_testkit::run_local(async {
-        let server = Server::start(Some("demo"), |cfg| {
-            let mut seed = CommandBuilder::new("/bin/sh");
-            seed.args(["-c", FOREVER]);
-            phux_server_testkit::seed_pty(cfg, seed);
-        });
-        let mut producer = server.connect().await;
-        attach(&mut producer, "demo").await;
-        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
-        let spawn = Spawn {
-            resource: Some(Box::new(
-                SpawnResource::pixel_surface(parent, "page:test")
-                    .with_control(Some(ControlClass::Display)),
-            )),
-            ..Spawn::default()
-        };
-        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
-            panic!("spawn surface failed");
-        };
-        let send = |intent| Command::SendDocumentInput {
-            terminal_id: surface.clone(),
-            intent,
-            control: None,
-            on_behalf_of: None,
-        };
+        let (server, mut producer, parent) = demo_parent().await;
+        let surface = open_surface(&mut producer, parent, "page:test", ControlClass::Display).await;
+        let send = |intent| input(&surface, intent);
 
         // The viewer's token is not trusted: the server stamps its own.
         let mut viewer = server.connect().await;
@@ -232,16 +178,7 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
             |text: Result<String, String>| send(DocumentInput::ClipboardText { reply, text });
         let mut stranger = server.connect().await;
         let refused = command(&mut stranger, 11, answer(Ok("forged".into()))).await;
-        assert!(
-            matches!(
-                refused,
-                CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    ..
-                }
-            ),
-            "{refused:?}"
-        );
+        assert_command_error(&refused, ErrorCode::NotProducer);
         let taken = command(&mut producer, 12, answer(Ok("on the host".into()))).await;
         assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
         let (mut viewer, copied) = asked.await.unwrap();
@@ -294,30 +231,9 @@ fn a_copy_waits_for_its_producer_and_reaches_only_the_viewer_that_asked() {
 #[test]
 fn a_paste_waits_briefly_for_its_producers_outcome() {
     phux_server_testkit::run_local(async {
-        let server = Server::start(Some("demo"), |cfg| {
-            let mut seed = CommandBuilder::new("/bin/sh");
-            seed.args(["-c", FOREVER]);
-            phux_server_testkit::seed_pty(cfg, seed);
-        });
-        let mut producer = server.connect().await;
-        attach(&mut producer, "demo").await;
-        let parent = spawned(&mut producer, 1, sh(FOREVER)).await;
-        let spawn = Spawn {
-            resource: Some(Box::new(
-                SpawnResource::pixel_surface(parent, "display")
-                    .with_control(Some(ControlClass::Display)),
-            )),
-            ..Spawn::default()
-        };
-        let SpawnResult::Ok(surface) = spawn_resource(&mut producer, 2, spawn).await else {
-            panic!("spawn surface failed");
-        };
-        let send = |intent| Command::SendDocumentInput {
-            terminal_id: surface.clone(),
-            intent,
-            control: None,
-            on_behalf_of: None,
-        };
+        let (server, mut producer, parent) = demo_parent().await;
+        let surface = open_surface(&mut producer, parent, "display", ControlClass::Display).await;
+        let send = |intent| input(&surface, intent);
         let paste = || {
             send(DocumentInput::Paste {
                 text: "hello".into(),
@@ -373,8 +289,8 @@ fn a_paste_waits_briefly_for_its_producers_outcome() {
 /// The server's token on the next copy relayed to `producer`.
 /// An older producer answers an empty clipboard with "": never a copy.
 async fn empty_copies_nothing(
-    mut viewer: tokio::net::UnixStream,
-    producer: &mut tokio::net::UnixStream,
+    mut viewer: UnixStream,
+    producer: &mut UnixStream,
     send: impl Fn(DocumentInput) -> Command,
 ) {
     let copy = send(DocumentInput::CopySelection {
@@ -400,7 +316,7 @@ async fn empty_copies_nothing(
     );
 }
 
-async fn copy_relayed(producer: &mut tokio::net::UnixStream) -> u32 {
+async fn copy_relayed(producer: &mut UnixStream) -> u32 {
     wait_frame(producer, "copy", |frame| match frame {
         FrameKind::Event {
             event:
