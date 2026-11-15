@@ -95,16 +95,13 @@ impl Decoder<'_> {
         let mut request_id = 0u32;
         let mut terminal: Option<ResourceId> = None;
         let mut owner_terminal: Option<ResourceId> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::move_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::move_terminal::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
-                field::move_terminal::OWNER_TERMINAL => {
-                    owner_terminal = Some(sub!(value, decode_terminal_id));
-                }
-                _ => {}
+        for_each_field!(self, value, {
+            field::move_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::move_terminal::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
+            field::move_terminal::OWNER_TERMINAL => {
+                owner_terminal = Some(sub!(value, decode_terminal_id));
             }
-        }
+        });
         Ok(FrameKind::MoveResource {
             request_id,
             terminal: req(terminal)?,
@@ -115,13 +112,10 @@ impl Decoder<'_> {
     pub(super) fn decode_terminal_moved(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::MoveResult> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::terminal_moved::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::terminal_moved::RESULT => result = Some(sub!(value, decode_move_result)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::terminal_moved::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::terminal_moved::RESULT => result = Some(sub!(value, decode_move_result)),
+        });
         Ok(FrameKind::ResourceMoved {
             request_id,
             result: req(result)?,
@@ -134,15 +128,12 @@ impl Decoder<'_> {
         let mut exit_status: Option<i32> = None;
         let mut reason = CloseReason::Unknown;
         let mut signal: Option<i32> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
-                f::REASON => reason = CloseReason::from_wire(sub!(value, Decoder::read_u8)),
-                f::SIGNAL => signal = Some(read_i32_value(value)?),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
+            f::REASON => reason = CloseReason::from_wire(sub!(value, Decoder::read_u8)),
+            f::SIGNAL => signal = Some(read_i32_value(value)?),
+        });
         Ok(FrameKind::ResourceClosed {
             terminal_id: req(terminal_id)?,
             exit_status,
@@ -157,22 +148,19 @@ impl Decoder<'_> {
         let mut rows = 0u16;
         let mut cell_w: Option<u16> = None;
         let mut cell_h: Option<u16> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::terminal_resize::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::terminal_resize::COLS => cols = sub!(value, Decoder::read_u16_be),
-                field::terminal_resize::ROWS => rows = sub!(value, Decoder::read_u16_be),
-                field::terminal_resize::CELL_WIDTH_PX => {
-                    cell_w = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::terminal_resize::CELL_HEIGHT_PX => {
-                    cell_h = Some(sub!(value, Decoder::read_u16_be));
-                }
-                _ => {}
+        for_each_field!(self, value, {
+            field::terminal_resize::TERMINAL_ID => {
+                terminal_id = Some(sub!(value, decode_terminal_id));
             }
-        }
+            field::terminal_resize::COLS => cols = sub!(value, Decoder::read_u16_be),
+            field::terminal_resize::ROWS => rows = sub!(value, Decoder::read_u16_be),
+            field::terminal_resize::CELL_WIDTH_PX => {
+                cell_w = Some(sub!(value, Decoder::read_u16_be));
+            }
+            field::terminal_resize::CELL_HEIGHT_PX => {
+                cell_h = Some(sub!(value, Decoder::read_u16_be));
+            }
+        });
         Ok(FrameKind::ResizeTerminal {
             terminal_id: req(terminal_id)?,
             cols,
@@ -189,13 +177,10 @@ impl Decoder<'_> {
     pub(super) fn decode_command(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut command: Option<&[u8]> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::command::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::command::COMMAND => command = Some(value),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::command::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::command::COMMAND => command = Some(value),
+        });
         let command = decode_command(&mut self.child(req(command)?))
             .map_err(|err| err.into_unsupported_command(request_id))?;
         Ok(FrameKind::Command {
@@ -207,13 +192,10 @@ impl Decoder<'_> {
     pub(super) fn decode_command_result(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::CommandResult> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::command_result::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::command_result::RESULT => result = Some(sub!(value, decode_command_result)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::command_result::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::command_result::RESULT => result = Some(sub!(value, decode_command_result)),
+        });
         Ok(FrameKind::CommandResult {
             request_id,
             result: req(result)?,

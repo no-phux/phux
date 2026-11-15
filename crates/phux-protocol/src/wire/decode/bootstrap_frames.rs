@@ -19,25 +19,22 @@ impl Decoder<'_> {
         let mut output_mode = None;
         let mut base_seq = None;
         let mut resume_after_seq = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::CODEC => codec = Some(sub!(value, decode_bootstrap_codec)),
-                f::COLS => cols = Some(sub!(value, Decoder::read_u16_be)),
-                f::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
-                f::OUTPUT_MODE => output_mode = Some(sub!(value, Decoder::read_u8)),
-                f::BASE_SEQ => base_seq = Some(sub!(value, Decoder::read_u64_be)),
-                f::RESUME_AFTER_SEQ => {
-                    if value.len() != 8 {
-                        return Err(DecodeError::InvalidBootstrapProfile);
-                    }
-                    resume_after_seq = Some(sub!(value, Decoder::read_u64_be));
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::CODEC => codec = Some(sub!(value, decode_bootstrap_codec)),
+            f::COLS => cols = Some(sub!(value, Decoder::read_u16_be)),
+            f::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
+            f::OUTPUT_MODE => output_mode = Some(sub!(value, Decoder::read_u8)),
+            f::BASE_SEQ => base_seq = Some(sub!(value, Decoder::read_u64_be)),
+            f::RESUME_AFTER_SEQ => {
+                if value.len() != 8 {
+                    return Err(DecodeError::InvalidBootstrapProfile);
                 }
-                _ => {}
+                resume_after_seq = Some(sub!(value, Decoder::read_u64_be));
             }
-        }
+        });
         let profile =
             decode_bootstrap_stream_profile(req(codec)?, req(output_mode)?, resume_after_seq)?;
         let base_seq = req(base_seq)?;
@@ -63,21 +60,18 @@ impl Decoder<'_> {
         let mut bootstrap_id = None;
         let mut chunk_seq = None;
         let mut payload = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::CHUNK_SEQ => chunk_seq = Some(sub!(value, Decoder::read_u32_be)),
-                f::PAYLOAD => {
-                    if value.len() > self.max_bootstrap_chunk_bytes as usize {
-                        return Err(DecodeError::BootstrapLimitExceeded);
-                    }
-                    payload = Some(bytes::Bytes::copy_from_slice(value));
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::CHUNK_SEQ => chunk_seq = Some(sub!(value, Decoder::read_u32_be)),
+            f::PAYLOAD => {
+                if value.len() > self.max_bootstrap_chunk_bytes as usize {
+                    return Err(DecodeError::BootstrapLimitExceeded);
                 }
-                _ => {}
+                payload = Some(bytes::Bytes::copy_from_slice(value));
             }
-        }
+        });
         Ok(FrameKind::BootstrapChunk {
             terminal_id: req(terminal_id)?,
             stream_id: req(stream_id)?,
@@ -93,15 +87,12 @@ impl Decoder<'_> {
         let mut stream_id = None;
         let mut bootstrap_id = None;
         let mut history_cursor = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::HISTORY_CURSOR => history_cursor = Some(checked_history_cursor(value)?),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::HISTORY_CURSOR => history_cursor = Some(checked_history_cursor(value)?),
+        });
         Ok(FrameKind::BootstrapReady {
             terminal_id: req(terminal_id)?,
             stream_id: req(stream_id)?,
@@ -118,17 +109,14 @@ impl Decoder<'_> {
         let mut cursor = None;
         let mut max_bytes = None;
         let mut max_rows = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                f::MAX_BYTES => max_bytes = Some(sub!(value, Decoder::read_u32_be)),
-                f::MAX_ROWS => max_rows = Some(sub!(value, Decoder::read_u32_be)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+            f::MAX_BYTES => max_bytes = Some(sub!(value, Decoder::read_u32_be)),
+            f::MAX_ROWS => max_rows = Some(sub!(value, Decoder::read_u32_be)),
+        });
         let max_bytes = req(max_bytes)?;
         let max_rows = req(max_rows)?;
         Ok(FrameKind::HistoryRequest {
@@ -152,19 +140,16 @@ impl Decoder<'_> {
         let mut next_cursor = None;
         let mut payload = None;
         let mut rows = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::history_page::TERMINAL_ID => terminal_id = Some(value),
-                field::history_page::STREAM_ID => stream_id = Some(value),
-                field::history_page::BOOTSTRAP_ID => bootstrap_id = Some(value),
-                field::history_page::CURSOR => cursor = Some(value),
-                field::history_page::NEXT_CURSOR => next_cursor = Some(value),
-                field::history_page::PAYLOAD => payload = Some(value),
-                field::history_page::PAGE_SEQ => page_seq = Some(value),
-                field::history_page::ROWS => rows = Some(value),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::history_page::TERMINAL_ID => terminal_id = Some(value),
+            field::history_page::STREAM_ID => stream_id = Some(value),
+            field::history_page::BOOTSTRAP_ID => bootstrap_id = Some(value),
+            field::history_page::CURSOR => cursor = Some(value),
+            field::history_page::NEXT_CURSOR => next_cursor = Some(value),
+            field::history_page::PAYLOAD => payload = Some(value),
+            field::history_page::PAGE_SEQ => page_seq = Some(value),
+            field::history_page::ROWS => rows = Some(value),
+        });
 
         let stream_id = sub!(req(stream_id)?, decode_stream_id);
         let bootstrap_id = sub!(req(bootstrap_id)?, decode_bootstrap_id);
@@ -203,20 +188,17 @@ impl Decoder<'_> {
         let mut bootstrap_id = None;
         let mut reason = None;
         let mut last_valid_seq = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::REASON => {
-                    let value = sub!(value, Decoder::read_u8);
-                    reason =
-                        Some(TombstoneReason::from_wire(value).unwrap_or(TombstoneReason::Unknown));
-                }
-                f::LAST_VALID_SEQ => last_valid_seq = Some(sub!(value, Decoder::read_u64_be)),
-                _ => {}
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::REASON => {
+                let value = sub!(value, Decoder::read_u8);
+                reason =
+                    Some(TombstoneReason::from_wire(value).unwrap_or(TombstoneReason::Unknown));
             }
-        }
+            f::LAST_VALID_SEQ => last_valid_seq = Some(sub!(value, Decoder::read_u64_be)),
+        });
         Ok(FrameKind::BootstrapTombstone {
             terminal_id: req(terminal_id)?,
             stream_id: req(stream_id)?,
@@ -233,22 +215,19 @@ impl Decoder<'_> {
         let mut bootstrap_id = None;
         let mut cursor = None;
         let mut reason = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                f::REASON => {
-                    let value = sub!(value, Decoder::read_u8);
-                    reason = Some(
-                        HistoryTombstoneReason::from_wire(value)
-                            .unwrap_or(HistoryTombstoneReason::Unknown),
-                    );
-                }
-                _ => {}
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+            f::REASON => {
+                let value = sub!(value, Decoder::read_u8);
+                reason = Some(
+                    HistoryTombstoneReason::from_wire(value)
+                        .unwrap_or(HistoryTombstoneReason::Unknown),
+                );
             }
-        }
+        });
         Ok(FrameKind::HistoryTombstone {
             terminal_id: req(terminal_id)?,
             stream_id: req(stream_id)?,
@@ -280,24 +259,21 @@ impl Decoder<'_> {
         let mut reason = None;
         let mut required_bytes = None;
         let mut required_rows = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                f::REASON => {
-                    let value = sub!(value, Decoder::read_u8);
-                    reason = Some(
-                        HistoryRejectionReason::from_wire(value)
-                            .unwrap_or(HistoryRejectionReason::Unknown),
-                    );
-                }
-                f::REQUIRED_BYTES => required_bytes = Some(sub!(value, Decoder::read_u32_be)),
-                f::REQUIRED_ROWS => required_rows = Some(sub!(value, Decoder::read_u32_be)),
-                _ => {}
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+            f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+            f::REASON => {
+                let value = sub!(value, Decoder::read_u8);
+                reason = Some(
+                    HistoryRejectionReason::from_wire(value)
+                        .unwrap_or(HistoryRejectionReason::Unknown),
+                );
             }
-        }
+            f::REQUIRED_BYTES => required_bytes = Some(sub!(value, Decoder::read_u32_be)),
+            f::REQUIRED_ROWS => required_rows = Some(sub!(value, Decoder::read_u32_be)),
+        });
         let required_bytes = self.checked_history_required_bytes(required_bytes)?;
         let required_rows = checked_history_required_rows(required_rows)?;
         Ok(FrameKind::HistoryRejected {

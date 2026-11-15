@@ -131,4 +131,4 @@ pub const fn kind_spec(kind: ResourceKind) -> Option<&'static KindSpec> {
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
-mod samples;
+pub(crate) mod samples;
