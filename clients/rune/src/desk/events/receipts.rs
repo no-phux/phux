@@ -96,7 +96,9 @@ impl Desk {
                     || self.pending_splits.contains_key(request_id)
             }
             Event::OrganizationOperation { operation, .. } => {
-                self.layout_ops.contains(operation) || self.owns_quick_move(*operation)
+                self.layout_ops.contains(operation)
+                    || self.owns_quick_move(*operation)
+                    || self.owns_sidebar_move(*operation)
             }
             _ => false,
         }
@@ -118,6 +120,7 @@ impl Desk {
                     // against the cached identity while HELLO is outstanding.
                     changed |= self.abandon_layout(operation, &format!("{outcome:?}"));
                     changed |= self.quick_move_outcome(client, operation, &outcome);
+                    changed |= self.sidebar_move_outcome(client, operation, &outcome);
                 }
                 other => self.receipts.deferred.push((server, other)),
             }
@@ -127,6 +130,7 @@ impl Desk {
 
     fn cancel_old_placements(&mut self) -> bool {
         let quick = self.cancel_quick_move("the server incarnation could not be verified");
+        let sidebar = self.cancel_sidebar_moves();
         let pending = !self.pending_spawns.is_empty()
             || !self.pending_splits.is_empty()
             || !self.layout_ops.is_empty()
@@ -140,6 +144,6 @@ impl Desk {
         if pending {
             self.say(NoticeKind::Error, "Pending pane/layout actions cancelled: the server incarnation changed or could not be verified. Check the server’s panes in the palette before retrying; a producer may already be running.");
         }
-        pending | quick
+        pending | quick | sidebar
     }
 }
