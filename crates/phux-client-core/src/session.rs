@@ -497,6 +497,9 @@ mod kernel_rig;
 mod property_tests;
 
 #[cfg(test)]
+mod test_rig;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

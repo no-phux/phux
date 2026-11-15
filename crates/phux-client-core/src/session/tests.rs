@@ -23,6 +23,11 @@ use crate::engine::{
 };
 use crate::history::HistoryLoadState;
 
+use super::test_rig::*;
+
+/// The session rig over the synthesized [`FakeAdapter`].
+type Rig<E = FakeAdapter> = super::test_rig::Rig<E>;
+
 #[cfg(feature = "native-engine")]
 use crate::engine::ghostty::GhosttyAdapter;
 #[cfg(feature = "native-engine")]
@@ -303,29 +308,8 @@ impl EngineAdapter for RecordingNativeAdapter {
     }
 }
 
-fn terminal(raw: u32) -> ResourceId {
-    ResourceId::local(raw)
-}
-
-fn stream(raw: u64) -> StreamId {
-    let Some(id) = StreamId::new(raw) else {
-        panic!("test stream id must be non-zero");
-    };
-    id
-}
-
-fn bootstrap(raw: u64) -> BootstrapId {
-    let Some(id) = BootstrapId::new(raw) else {
-        panic!("test bootstrap id must be non-zero");
-    };
-    id
-}
-
-fn geometry() -> CanonicalGeometry {
-    let Some(geometry) = CanonicalGeometry::new(80, 24) else {
-        panic!("test geometry must be non-empty");
-    };
-    geometry
+const fn event_input<'a>(terminal_id: &'a ResourceId, event: &'a AgentEvent) -> KernelInput<'a> {
+    KernelInput::Event { terminal_id, event }
 }
 
 fn kernel(mode: ReadyMode) -> SessionKernel<FakeAdapter> {
@@ -345,231 +329,9 @@ const NATIVE: BootstrapProfile = BootstrapProfile::NativeState {
     features: EngineFeatureSet::required_native(),
 };
 
-const fn attach_started(attach_id: u32, terminals: &[ResourceId]) -> KernelInput<'_> {
-    KernelInput::AttachStarted {
-        attach_id,
-        terminals,
-    }
-}
-
-const fn attach_ready<'a>(attach_id: u32) -> KernelInput<'a> {
-    KernelInput::AttachReady { attach_id }
-}
-
-const fn begin_input(
-    terminal_id: &ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    profile: BootstrapStreamProfile,
-    geometry: CanonicalGeometry,
-    base_seq: u64,
-) -> KernelInput<'_> {
-    KernelInput::BootstrapBegin {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        profile,
-        geometry,
-        base_seq,
-    }
-}
-
-const fn chunk<'a>(
-    terminal_id: &'a ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    chunk_seq: u32,
-    payload: &'a [u8],
-) -> KernelInput<'a> {
-    KernelInput::BootstrapChunk {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        chunk_seq,
-        payload,
-    }
-}
-
-const fn ready<'a>(
-    terminal_id: &'a ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    history_cursor: Option<&'a [u8]>,
-) -> KernelInput<'a> {
-    KernelInput::BootstrapReady {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        history_cursor,
-    }
-}
-
-const fn closed(terminal_id: &ResourceId) -> KernelInput<'_> {
-    KernelInput::ResourceClosed {
-        terminal_id,
-        exit_status: None,
-        signal: None,
-        reason: CloseReason::Unknown,
-    }
-}
-
-const fn event_input<'a>(terminal_id: &'a ResourceId, event: &'a AgentEvent) -> KernelInput<'a> {
-    KernelInput::Event { terminal_id, event }
-}
-
-const fn output<'a>(
-    terminal_id: &'a ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    seq: u64,
-    payload: &'a [u8],
-) -> KernelInput<'a> {
-    KernelInput::ResourceOutput {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        seq,
-        payload,
-    }
-}
-
-/// Whether any effect in `$effects` matches the pattern (and guard).
-macro_rules! any_effect {
-    ($effects:expr, $($pattern:tt)+) => {
-        $effects.as_slice().iter().any(|effect| matches!(effect, $($pattern)+))
-    };
-}
-
-/// The `(terminal, stream, bootstrap)` triple naming one replica generation,
-/// with builders for the inputs addressed to it.
-#[derive(Clone)]
-struct Gen {
-    id: ResourceId,
-    s: StreamId,
-    b: BootstrapId,
-}
-
-fn gen_of(id: u32, s: u64, b: u64) -> Gen {
-    Gen {
-        id: terminal(id),
-        s: stream(s),
-        b: bootstrap(b),
-    }
-}
-
-impl Gen {
-    /// The same terminal and stream under another bootstrap generation.
-    fn with_bootstrap(&self, raw: u64) -> Self {
-        Self {
-            b: bootstrap(raw),
-            ..self.clone()
-        }
-    }
-
-    fn begin(&self, base_seq: u64) -> KernelInput<'_> {
-        self.begin_as(BootstrapStreamProfile::SynthesizedVtRaw, base_seq)
-    }
-
-    fn begin_as(&self, profile: BootstrapStreamProfile, base_seq: u64) -> KernelInput<'_> {
-        begin_input(&self.id, self.s, self.b, profile, geometry(), base_seq)
-    }
-
-    const fn chunk<'a>(&'a self, seq: u32, payload: &'a [u8]) -> KernelInput<'a> {
-        chunk(&self.id, self.s, self.b, seq, payload)
-    }
-
-    const fn ready<'a>(&'a self, cursor: Option<&'a [u8]>) -> KernelInput<'a> {
-        ready(&self.id, self.s, self.b, cursor)
-    }
-
-    const fn output<'a>(&'a self, seq: u64, payload: &'a [u8]) -> KernelInput<'a> {
-        output(&self.id, self.s, self.b, seq, payload)
-    }
-
-    /// History page `page_seq` 1 for `cursor`.
-    const fn page<'a>(
-        &'a self,
-        cursor: &'a [u8],
-        next_cursor: Option<&'a [u8]>,
-        payload: &'a [u8],
-        rows: u32,
-    ) -> KernelInput<'a> {
-        KernelInput::HistoryPage {
-            terminal_id: &self.id,
-            stream_id: self.s,
-            bootstrap_id: self.b,
-            cursor,
-            next_cursor,
-            payload,
-            page_seq: 1,
-            rows,
-        }
-    }
-
-    const fn rejected<'a>(
-        &'a self,
-        cursor: &'a [u8],
-        reason: HistoryRejectionReason,
-        required_bytes: u32,
-        required_rows: u32,
-    ) -> KernelInput<'a> {
-        KernelInput::HistoryRejected {
-            terminal_id: &self.id,
-            stream_id: self.s,
-            bootstrap_id: self.b,
-            cursor,
-            reason,
-            required_bytes,
-            required_rows,
-        }
-    }
-
-    const fn tombstone(&self, reason: TombstoneReason, last_valid_seq: u64) -> KernelInput<'_> {
-        KernelInput::Tombstone {
-            terminal_id: &self.id,
-            stream_id: self.s,
-            bootstrap_id: self.b,
-            reason,
-            last_valid_seq,
-        }
-    }
-}
-
-/// A kernel and the effect buffer every update writes into.
-struct Rig<E: EngineAdapter = FakeAdapter> {
-    k: SessionKernel<E>,
-    fx: EffectBuffer,
-}
-
-impl Rig {
+impl Rig<FakeAdapter> {
     fn new(mode: ReadyMode) -> Self {
         Self::of(kernel(mode))
-    }
-}
-
-impl<E: EngineAdapter> Rig<E> {
-    fn of(k: SessionKernel<E>) -> Self {
-        Self {
-            k,
-            fx: EffectBuffer::new(),
-        }
-    }
-
-    fn up(&mut self, input: KernelInput<'_>) -> Result<(), KernelError<E::Error>> {
-        self.k.update(input, &mut self.fx)
-    }
-
-    #[track_caller]
-    fn ok(&mut self, input: KernelInput<'_>) {
-        self.up(input).unwrap();
-    }
-
-    fn tomb(&self, g: &Gen) -> Option<TombstoneRecord> {
-        self.k.tombstone(&g.id, g.s, g.b)
-    }
-
-    fn history_state(&self, id: &ResourceId) -> HistoryLoadState {
-        self.k.history_cache(id).unwrap().status().state
     }
 }
 
@@ -2013,30 +1775,14 @@ fn agent_gen(s: u64, b: u64) -> Gen {
 
 impl Gen {
     const fn agent_begin(&self, base_seq: u64) -> KernelInput<'_> {
-        self.agent_begin_as(AGENT_PROFILE, base_seq)
+        self.begin_gridless(AGENT_PROFILE, base_seq)
     }
 
     const fn resume(&self, after_seq: u64, base_seq: u64) -> KernelInput<'_> {
-        self.agent_begin_as(
+        self.begin_gridless(
             BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq },
             base_seq,
         )
-    }
-
-    const fn agent_begin_as(
-        &self,
-        profile: BootstrapStreamProfile,
-        base_seq: u64,
-    ) -> KernelInput<'_> {
-        KernelInput::BootstrapBegin {
-            terminal_id: &self.id,
-            stream_id: self.s,
-            bootstrap_id: self.b,
-            profile,
-            // An AgentSession has no grid; the wire encodes that as 0x0.
-            geometry: CanonicalGeometry { cols: 0, rows: 0 },
-            base_seq,
-        }
     }
 }
 
