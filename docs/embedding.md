@@ -136,18 +136,14 @@ UniFFI's `RemoteClient` projects the same event as
 
 ## Runtime consumer contract
 
-Native Rust consumers normally use the runtime's **Fed** delivery: the
-driver feeds the control plane, and the UI consumes events and immutable
-`GridFrame` publications. A binding with owning-thread per-frame catalog
-state can use **Queued** delivery: the driver retains inbound bytes, and the
-owner drains/polls and decodes them. Do not build another dialer to
-move the decode point. Queues and frame publications are bounded.
+The runtime's driver feeds every inbound frame into the control plane, and
+the UI consumes events and immutable `GridFrame` publications. Do not build
+another dialer to move the decode point. Event queues and frame publications
+are bounded.
 
 Use `take_observation` to drain events and sample status, topology, failure
 and `connection_epoch` under one lock. An identical terminal id after
-reconnect is not the same observation. For queued batches, carry the drained
-epoch and check `accepts_inbound(epoch)` under the same control guard used
-to feed **each** frame; reconnect can retire a batch after it was drained.
+reconnect is not the same observation.
 Caller-validated recovery reads inventory and validates stable identities
 before attaching, never blindly adopts reused handles. Deliberate lease
 takeover is spent once, not repeated automatically on reconnect. Geometry
@@ -166,14 +162,12 @@ client. Dropping the last `Client` closes the driver, retires callbacks,
 waits out callbacks on other threads, and joins the driver (never joins
 itself from its own callback). Free callback context only after retirement.
 
-Immutable Rust grid frames can outlive a later publication. Ordinary event
-drains accept agent publications; leased drains retain their journal
-allocation until explicit `accept_agent_publication`, unless
-a newer full retained cut supersedes earlier same-resource publications.
-Resume appends preserve their unaccepted prefix. Remaining unaccepted
-publications replay after replacement once catalog/attach are ready.
-This acceptance is also not the presentation receipt that clears an
-unknown-input fence; see [Frames, wakes, and input](#frames-wakes-and-input).
+Immutable Rust grid frames can outlive a later publication. Draining events
+accepts the agent publications in the batch; a publication still undrained
+when the transport is replaced replays once catalog and attach are ready,
+unless a newer full retained cut superseded it. Resume appends preserve
+their undrained prefix. This acceptance is not the presentation receipt that
+clears an unknown-input fence; see [Frames, wakes, and input](#frames-wakes-and-input).
 
 The [runtime API](../crates/phux-client-runtime/src/runtime.rs),
 [publication delivery seam](../crates/phux-client-runtime/src/control/agent_delivery.rs),

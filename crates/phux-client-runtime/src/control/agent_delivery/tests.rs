@@ -26,7 +26,7 @@ fn publication(id: u32, mode: AgentRecordMode, seqs: &[u64]) -> AgentPublication
 
 fn batches(plane: &mut ControlPlane) -> Vec<(ResourceId, AgentRecordMode, Vec<u64>)> {
     plane
-        .take_events_leased()
+        .take_events()
         .into_iter()
         .filter_map(|event| match event {
             Event::AgentPublication { publication, .. } => Some((
@@ -51,44 +51,35 @@ fn rebind(plane: &mut ControlPlane) {
 }
 
 #[test]
-fn full_agent_cut_supersedes_unaccepted_records_but_resume_keeps_them() {
+fn full_agent_cut_supersedes_undrained_records_but_resume_keeps_them() {
     use AgentRecordMode::{Append, Replace};
-    for leased in [false, true] {
-        let mut plane = ControlPlane::new(ControlOptions::default());
-        plane.status = Status::Attached;
-        rebind(&mut plane);
-        plane.commit_agent_publication(publication(1, Append, &[3]));
-        if leased {
-            assert_eq!(
-                batches(&mut plane),
-                [(ResourceId::local(1), Append, vec![3])]
-            );
-        }
-        plane.commit_agent_publication(publication(2, Append, &[90]));
-        plane.commit_agent_publication(publication(1, Replace, &[3, 4]));
-        let full = vec![
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.status = Status::Attached;
+    rebind(&mut plane);
+    plane.commit_agent_publication(publication(1, Append, &[3]));
+    plane.commit_agent_publication(publication(2, Append, &[90]));
+    plane.commit_agent_publication(publication(1, Replace, &[3, 4]));
+    // A transport replacement replays what was never drained.
+    rebind(&mut plane);
+    assert_eq!(
+        batches(&mut plane),
+        [
             (ResourceId::local(2), Append, vec![90]),
             (ResourceId::local(1), Replace, vec![3, 4]),
-        ];
-        assert_eq!(
-            batches(&mut plane),
-            full,
-            "queued prefix is superseded, sibling is not"
-        );
-        rebind(&mut plane);
-        assert_eq!(
-            batches(&mut plane),
-            full,
-            "only the full cut and sibling replay"
-        );
-        plane.commit_agent_publication(publication(1, Append, &[5]));
-        rebind(&mut plane);
-        let mut resumed = full;
-        resumed.push((ResourceId::local(1), Append, vec![5]));
-        assert_eq!(
-            batches(&mut plane),
-            resumed,
-            "a resume needs its unaccepted prefix"
-        );
-    }
+        ],
+        "the queued prefix is superseded, the sibling is not"
+    );
+    rebind(&mut plane);
+    assert!(batches(&mut plane).is_empty(), "a drain accepted them");
+    plane.commit_agent_publication(publication(1, Append, &[5]));
+    plane.commit_agent_publication(publication(1, Append, &[6]));
+    rebind(&mut plane);
+    assert_eq!(
+        batches(&mut plane),
+        [
+            (ResourceId::local(1), Append, vec![5]),
+            (ResourceId::local(1), Append, vec![6]),
+        ],
+        "a resume needs its undrained prefix"
+    );
 }

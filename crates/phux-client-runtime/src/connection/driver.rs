@@ -13,10 +13,9 @@ use super::io::{Io, LinkError};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
 use crate::reconnect::{earned_immediate, ladder_for};
 
-use crate::control::{ControlError, ControlPlane, InboundDelivery, Status};
+use crate::control::{ControlError, ControlPlane, Status};
 
 mod ping;
-use ping::peel_queued_pings;
 
 /// How long an attached session may sit with no inbound bytes before a probe.
 /// A busy session never reaches it: any inbound frame pushes the deadline out.
@@ -363,38 +362,27 @@ impl<'a> Pump<'a> {
 
     async fn step(&mut self) -> Result<(), ConnectionEnd> {
         let expiry = self.expiry_wait();
-        let reading = self.has_inbound_room();
-        // Soft residual: an in-flight probe deadline while paused cannot
-        // observe its answer (reads are gated), and the backlog already
-        // proves the peer is alive. Clear it; do not only skip start_probe.
-        if !reading {
-            self.probe_deadline = None;
-            // The backlog is proof of life. Don't probe the moment reads resume.
-            self.note_inbound();
-        }
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
             () = signal(&mut self.signals.resync) => Err(ConnectionEnd::Resync),
-            // A paused read has a backlog the peer just sent: it is alive,
-            // and a probe answer could not be read before its deadline.
-            () = signal(&mut self.signals.nudge) => if reading { self.start_probe().await } else { Ok(()) },
-            () = signal(&mut self.signals.rebind) => self.rebind(reading).await,
+            () = signal(&mut self.signals.nudge) => self.start_probe().await,
+            () = signal(&mut self.signals.rebind) => self.rebind().await,
             () = wait_for_probe(&mut self.probe_deadline), if self.probe_deadline.is_some() => {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
-            inbound = self.io.read_frames(), if reading => self.accept_inbound(inbound).await,
+            inbound = self.io.read_frames() => self.accept_inbound(inbound).await,
             // Re-checked every loop, so a session that attaches while this
             // select is parked starts its quiet clock on the next wake.
-            () = tokio::time::sleep_until(self.quiet_probe_at), if self.quiet_probe_due(reading) => {
+            () = tokio::time::sleep_until(self.quiet_probe_at), if self.quiet_probe_due() => {
                 self.arm_quiet_probe().await
             }
         }
     }
 
-    /// An attached session with room to read, and no probe already in flight.
-    fn quiet_probe_due(&self, reading: bool) -> bool {
-        reading && self.probe_deadline.is_none() && self.session_attached()
+    /// An attached session with no probe already in flight.
+    fn quiet_probe_due(&self) -> bool {
+        self.probe_deadline.is_none() && self.session_attached()
     }
 
     fn session_attached(&self) -> bool {
@@ -408,13 +396,6 @@ impl<'a> Pump<'a> {
     async fn arm_quiet_probe(&mut self) -> Result<(), ConnectionEnd> {
         self.quiet_probe_at = Instant::now() + QUIET_PROBE;
         self.start_probe().await
-    }
-
-    /// Backpressure: a queued-delivery consumer that has fallen behind
-    /// pauses reads until it drains, leaving the backlog in the socket.
-    fn has_inbound_room(&self) -> bool {
-        let control = lock(self.shared);
-        control.options().deliver_inbound != InboundDelivery::Queued || control.has_inbound_room()
     }
 
     fn expiry_wait(&self) -> Duration {
@@ -441,7 +422,7 @@ impl<'a> Pump<'a> {
     /// then probe, so a path the peer cannot validate drops into the
     /// ladder instead of hanging on a silent socket. A failed rebind is
     /// a drop too: the redial binds afresh, which is the fallback.
-    async fn rebind(&mut self, reading: bool) -> Result<(), ConnectionEnd> {
+    async fn rebind(&mut self) -> Result<(), ConnectionEnd> {
         let migrated = self
             .io
             .rebind(self.name)
@@ -449,11 +430,7 @@ impl<'a> Pump<'a> {
         if migrated {
             tracing::info!(host = self.name, "migrated to a fresh socket");
         }
-        if reading {
-            self.start_probe().await
-        } else {
-            Ok(())
-        }
+        self.start_probe().await
     }
 
     async fn expire_inputs(&mut self) -> Result<(), ConnectionEnd> {
@@ -485,30 +462,11 @@ impl<'a> Pump<'a> {
         if frames.is_empty() {
             return Ok(());
         }
-        // A binding that keeps its own per-frame state on one owning
-        // thread takes delivery itself; the socket is still ours.
-        let queued = lock(self.shared).options().deliver_inbound == InboundDelivery::Queued;
-        let (fed, outbound, pongs) = if queued {
-            let mut control = lock(self.shared);
-            // Answer Ping on the driver before enqueue so a stalled
-            // consumer cannot strand liveness replies behind UI drain.
-            let (to_queue, pongs) = peel_queued_pings(frames);
-            let fed = if to_queue.is_empty() {
-                Ok(())
-            } else {
-                control.queue_inbound_batch(to_queue)
-            };
-            (fed, control.take_outbound(), pongs)
-        } else {
-            // The lock is released across engine round trips: a reconnect
-            // replays a snapshot per terminal, and holding it through that
-            // apply stalled every reader, a consumer's UI thread included.
-            let fed = ControlPlane::feed_shared_unlocked(self.shared, frames);
-            (fed, lock(self.shared).take_outbound(), Vec::new())
-        };
-        // Pongs first: the peer's probe must not wait on consumer-queued
-        // outbound that may still be draining.
-        self.write_all(pongs).await?;
+        // The lock is released across engine round trips: a reconnect
+        // replays a snapshot per terminal, and holding it through that
+        // apply stalled every reader, a consumer's UI thread included.
+        let fed = ControlPlane::feed_shared_unlocked(self.shared, frames);
+        let outbound = lock(self.shared).take_outbound();
         self.write_all(outbound).await?;
         // Edge-triggered: a frame flood costs one callback, not one per
         // frame, and the callback runs with no lock held.

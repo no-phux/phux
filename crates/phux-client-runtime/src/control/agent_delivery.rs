@@ -1,12 +1,8 @@
 //! Authoritative delivery of committed `AgentSession` publications.
 //!
 //! The kernel commits; this module decides when a consumer may see that
-//! commit. One [`Arc`] owns the record vector. An ordinary drain accepts by
-//! dropping the journal hold: that is delivery acceptance. A leased drain
-//! hands out the same allocation and keeps it until
-//! [`ControlPlane::accept_agent_publication`], the adapter's explicit
-//! acceptance point. Ending a pointer
-//! borrow is not acceptance. A transport replacement returns an unaccepted
+//! commit. One [`Arc`] owns the record vector; a drain accepts it by
+//! dropping the journal hold. A transport replacement returns an undrained
 //! allocation to the replay queue. Non-agent events never enter here.
 //! A newer full retained cut supersedes pending publications for that resource;
 //! a resume suffix keeps them, since it cannot reconstruct their prefix.
@@ -22,13 +18,12 @@ use super::{AgentSessionInfo, ControlPlane, Event};
 
 /// Whether an unaccepted publication is waiting to be handed out.
 ///
-/// Queued events and leased drains are the same state: already released,
-/// not yet accepted. Only [`Place::Held`] is eligible for the next release.
+/// Only [`Place::Held`] is eligible for the next release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
-    /// Journaled, not yet in the event queue or a leased drain.
+    /// Journaled, not yet in the event queue.
     Held,
-    /// In the event queue or already handed to a leased drain.
+    /// In the event queue, not yet drained.
     Released,
 }
 
@@ -148,8 +143,7 @@ impl AgentDelivery {
         }
     }
 
-    /// Drop the journal hold for this allocation. The caller removes any
-    /// queued replay of the same pointer.
+    /// Drop the journal hold for this allocation.
     pub(super) fn accept(&mut self, publication: &Arc<AgentPublication>) {
         if self
             .journal
@@ -191,13 +185,6 @@ impl AgentDelivery {
 
 pub(super) const fn is_agent_publication(event: &Event) -> bool {
     matches!(event, Event::AgentPublication { .. })
-}
-
-pub(super) fn same_publication(event: &Event, publication: &Arc<AgentPublication>) -> bool {
-    matches!(
-        event,
-        Event::AgentPublication { publication: queued, .. } if Arc::ptr_eq(queued, publication)
-    )
 }
 
 impl ControlPlane {
@@ -253,18 +240,6 @@ impl ControlPlane {
         for event in events {
             self.push_event(event);
         }
-    }
-
-    /// Accept delivery of one leased publication by [`Arc`] allocation identity.
-    ///
-    /// This is consumer delivery acceptance, not the end of a pointer borrow.
-    /// Drops the journal hold and any not-yet-drained replay
-    /// of that allocation. Unknown, superseded or already-accepted pointers
-    /// are ignored.
-    pub fn accept_agent_publication(&mut self, publication: &Arc<AgentPublication>) {
-        self.agent_delivery.accept(publication);
-        self.events
-            .retain(|event| !same_publication(event, publication));
     }
 }
 

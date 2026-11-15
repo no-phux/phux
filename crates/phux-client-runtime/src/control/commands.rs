@@ -22,26 +22,11 @@ impl ControlPlane {
 
     /// Every event queued since the last drain, in order, preceded by one
     /// [`Event::TerminalChanged`] per terminal that changed.
-    ///
-    /// Accepts agent publications in the batch: that drain is delivery
-    /// acceptance. A binding that accepts later, at its own explicit clear
-    /// rather than when a pointer borrow ends, uses [`Self::take_events_leased`].
+    /// The drain accepts the agent publications in it.
     pub fn take_events(&mut self) -> Vec<Event> {
         let events = self.drain_events();
         self.agent_delivery.accept_drained(&events);
         events
-    }
-
-    /// Drain events without accepting agent publications.
-    ///
-    /// Returned [`Event::AgentPublication`] arcs stay journaled until
-    /// [`Self::accept_agent_publication`] or a newer full cut supersedes them.
-    /// Only the explicit call accepts delivery; ending a pointer borrow does not.
-    /// Loss replays unsuperseded,
-    /// unaccepted allocations once the next catalog and attach are ready.
-    #[must_use]
-    pub fn take_events_leased(&mut self) -> Vec<Event> {
-        self.drain_events()
     }
 
     fn drain_events(&mut self) -> Vec<Event> {

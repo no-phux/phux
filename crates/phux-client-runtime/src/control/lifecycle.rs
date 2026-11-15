@@ -26,8 +26,6 @@ impl ControlPlane {
             offered_caps,
             connection_epoch: 0,
             live_connection_epoch: None,
-            inbound: Vec::new(),
-            inbound_bytes: 0,
             status: Status::Idle,
             handshake_ready: false,
             attached_once: false,
@@ -114,13 +112,6 @@ impl ControlPlane {
     #[must_use]
     pub const fn connection_epoch(&self) -> u64 {
         self.connection_epoch
-    }
-
-    /// Whether a drained queued batch still belongs to the active transport.
-    /// Check while holding the same control guard used to feed its frame.
-    #[must_use]
-    pub const fn accepts_inbound(&self, epoch: u64) -> bool {
-        matches!(self.live_connection_epoch, Some(current) if current == epoch)
     }
 
     /// The options this plane was built with.
@@ -392,7 +383,6 @@ impl ControlPlane {
         // Anything the consumer has not drained belongs to the connection
         // that just ended, and feeding it against fresh per-connection
         // state would be a protocol error.
-        let _ = self.take_inbound();
         self.subscriptions.clear(Origin::AttachResource);
         self.terminal_roles.clear();
         self.stream_recoveries.clear();
@@ -423,7 +413,6 @@ impl ControlPlane {
     pub fn connection_lost(&mut self, message: Option<String>) {
         self.park_agent_delivery();
         self.live_connection_epoch = None;
-        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.input_replay.connection_lost();
         self.org_connection_lost();
@@ -442,7 +431,6 @@ impl ControlPlane {
     /// The session ends in failure: no retry can help.
     pub fn fail(&mut self, message: impl Into<String>) {
         self.live_connection_epoch = None;
-        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
@@ -458,7 +446,6 @@ impl ControlPlane {
         self.discard_agent_delivery();
         self.live_connection_epoch = None;
         self.handshake_ready = false;
-        let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");
         self.org_strand("the client closed before the operation completed");
         self.strand_extensions("the client closed before the operation completed");

@@ -247,34 +247,6 @@ fn take_agent_records(plane: &mut ControlPlane) -> Vec<(Vec<u64>, bool)> {
     publications_of(plane.take_events())
 }
 
-fn lease_agent_records(
-    plane: &mut ControlPlane,
-) -> Vec<(
-    Vec<u64>,
-    bool,
-    std::sync::Arc<phux_client_runtime::control::AgentPublication>,
-)> {
-    plane
-        .take_events_leased()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::AgentPublication { publication, .. } => {
-                assert_eq!(publication.resource_id, ResourceId::local(AGENT));
-                Some((
-                    publication
-                        .records
-                        .iter()
-                        .map(|record| record.seq)
-                        .collect(),
-                    publication.mode == phux_client_runtime::control::AgentRecordMode::Replace,
-                    publication,
-                ))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn publications_of(events: Vec<Event>) -> Vec<(Vec<u64>, bool)> {
     events
         .into_iter()
@@ -937,40 +909,20 @@ fn replace_without_loss(plane: &mut ControlPlane) {
     attach_ready_to(plane, attach_id, with_agent(terminal()));
 }
 
-fn lease_two_live_frames(
-    plane: &mut ControlPlane,
-) -> [std::sync::Arc<phux_client_runtime::control::AgentPublication>; 2] {
-    agent_live(plane, 1, &[(3, "tool_start")]).unwrap();
-    let first = lease_agent_records(plane);
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0].0, vec![3]);
-    agent_live(plane, 1, &[(4, "tool_end")]).unwrap();
-    let second = lease_agent_records(plane);
-    assert_eq!(second.len(), 1);
-    assert_eq!(second[0].0, vec![4]);
-    [
-        first.into_iter().next().unwrap().2,
-        second.into_iter().next().unwrap().2,
-    ]
-}
-
 #[test]
-fn leased_internal_frames_replay_in_order_after_replacement_without_loss() {
+fn undrained_frames_replay_in_order_after_replacement_without_loss() {
     let (mut plane, attach_id) = subscribing_with_resume(true, true);
     attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
     let requests = agent_requests(&mut plane);
     commit_initial_agent(&mut plane, requests[0].0);
-    let leased = lease_two_live_frames(&mut plane);
-    // Two internal drains, neither accepted: the adapter has not cleared
-    // effects. Replacement can open without a preceding connection_lost.
+    agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();
+    agent_live(&mut plane, 1, &[(4, "tool_end")]).unwrap();
+    // Replacement can open without a preceding connection_lost.
     replace_without_loss(&mut plane);
-    let replay = lease_agent_records(&mut plane);
     assert_eq!(
-        replay.iter().map(|row| row.0.clone()).collect::<Vec<_>>(),
-        vec![vec![3], vec![4]]
+        take_agent_records(&mut plane),
+        [(vec![3], false), (vec![4], false)]
     );
-    assert!(std::sync::Arc::ptr_eq(&replay[0].2, &leased[0]));
-    assert!(std::sync::Arc::ptr_eq(&replay[1].2, &leased[1]));
     let requests = agent_requests(&mut plane);
     assert_eq!(requests[0].1, Some(4));
     agent_begin(&mut plane, 2, Some(4), 5);
@@ -980,41 +932,13 @@ fn leased_internal_frames_replay_in_order_after_replacement_without_loss() {
 }
 
 #[test]
-fn explicit_accept_after_loss_removes_the_queued_replay() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
-    agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();
-    agent_live(&mut plane, 1, &[(4, "tool_end")]).unwrap();
-    let leased = lease_agent_records(&mut plane);
-    assert_eq!(
-        leased.iter().map(|row| row.0.clone()).collect::<Vec<_>>(),
-        vec![vec![3], vec![4]]
-    );
-    plane.connection_lost(None);
-    replace_without_loss(&mut plane);
-    // Readiness has queued the replay. Clearing one borrowed batch accepts
-    // only that allocation; the uncleared sibling still replays.
-    plane.accept_agent_publication(&leased[0].2);
-    let replay = lease_agent_records(&mut plane);
-    assert_eq!(replay.len(), 1);
-    assert_eq!(replay[0].0, vec![4]);
-    assert!(std::sync::Arc::ptr_eq(&replay[0].2, &leased[1].2));
-    plane.accept_agent_publication(&replay[0].2);
-    replace_without_loss(&mut plane);
-    assert!(lease_agent_records(&mut plane).is_empty());
-}
-
-#[test]
-fn close_and_detach_do_not_replay_leased_publications() {
+fn close_and_detach_do_not_replay_undrained_publications() {
     for close in [true, false] {
         let (mut plane, attach_id) = subscribing_with_resume(true, true);
         attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
         let requests = agent_requests(&mut plane);
         commit_initial_agent(&mut plane, requests[0].0);
         agent_live(&mut plane, 1, &[(3, "stop")]).unwrap();
-        let _leased = lease_agent_records(&mut plane);
         if close {
             plane
                 .feed(FrameKind::ResourceClosed {
@@ -1034,7 +958,7 @@ fn close_and_detach_do_not_replay_leased_publications() {
                 .unwrap();
         }
         let closed: Vec<_> = plane
-            .take_events_leased()
+            .take_events()
             .into_iter()
             .filter_map(|event| match event {
                 Event::AgentSessionClosed {
@@ -1048,7 +972,7 @@ fn close_and_detach_do_not_replay_leased_publications() {
         assert_eq!(closed.len(), 1);
         assert_eq!(closed[0].map(|stream| stream.last_seq), Some(3));
         replace_without_loss(&mut plane);
-        assert!(lease_agent_records(&mut plane).is_empty());
+        assert!(take_agent_records(&mut plane).is_empty());
     }
 }
 
@@ -1092,9 +1016,6 @@ fn option_false_omitted_attach_withholds_until_explicit_declare() {
     let (mut plane, attach_id) = subscribing(false);
     attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
     publish_agent(&mut plane);
-    let leased = lease_agent_records(&mut plane);
-    assert_eq!(leased.len(), 1);
-    assert_eq!(leased[0].0, vec![1, 2]);
     let cursor = plane
         .engine()
         .unwrap()
@@ -1102,7 +1023,7 @@ fn option_false_omitted_attach_withholds_until_explicit_declare() {
         .unwrap();
     replace_attached(&mut plane, two_session_snapshot(false));
     assert!(
-        lease_agent_records(&mut plane).is_empty(),
+        take_agent_records(&mut plane).is_empty(),
         "a partial ATTACHED must not release an omitted agent"
     );
     assert_eq!(
@@ -1114,34 +1035,28 @@ fn option_false_omitted_attach_withholds_until_explicit_declare() {
         "a partial ATTACHED must not drop the owner cursor"
     );
     declare_agent(&mut plane);
-    let replay = lease_agent_records(&mut plane);
-    assert_eq!(replay.len(), 1);
-    assert_eq!(replay[0].0, vec![1, 2]);
-    assert!(std::sync::Arc::ptr_eq(&replay[0].2, &leased[0].2));
+    assert_eq!(take_agent_records(&mut plane), [(vec![1, 2], true)]);
 }
 
 #[test]
 fn option_false_authoritative_omit_forgets_the_cursor_and_does_not_resurrect() {
-    for accepted in [false, true] {
+    for drained in [false, true] {
         let (mut plane, attach_id) = subscribing(false);
         attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
         publish_agent(&mut plane);
-        let leased = lease_agent_records(&mut plane);
-        assert_eq!(leased[0].0, vec![1, 2]);
-        if accepted {
-            plane.accept_agent_publication(&leased[0].2);
+        if drained {
+            assert_eq!(take_agent_records(&mut plane), [(vec![1, 2], true)]);
         }
         replace_attached(&mut plane, two_session_snapshot(false));
-        assert!(lease_agent_records(&mut plane).is_empty());
+        assert!(take_agent_records(&mut plane).is_empty());
         let omitted = two_session_snapshot(false);
         plane.reconcile_agent_delivery_catalog(&omitted);
-        let after = plane.take_events_leased();
+        let after = plane.take_events();
         assert!(after.iter().all(|event| !matches!(
         event,
         Event::AgentSessionClosed { terminal_id, .. } | Event::TerminalClosed { terminal_id, .. }
             if *terminal_id == ResourceId::local(AGENT)
     )));
-        assert!(lease_agent_records(&mut plane).is_empty());
         assert!(
             plane
                 .engine()
@@ -1151,7 +1066,7 @@ fn option_false_authoritative_omit_forgets_the_cursor_and_does_not_resurrect() {
         );
         declare_agent(&mut plane);
         assert!(
-            lease_agent_records(&mut plane).is_empty(),
+            take_agent_records(&mut plane).is_empty(),
             "discarded rows must not resurrect on re-admit"
         );
         agent_begin(&mut plane, 2, None, 1);
@@ -1196,9 +1111,8 @@ fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
     let requests = agent_requests(&mut plane);
     commit_initial_agent(&mut plane, requests[0].0);
     agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();
-    let leased = lease_agent_records(&mut plane);
     replace_attached(&mut plane, two_session_snapshot(false));
-    assert!(lease_agent_records(&mut plane).is_empty());
+    assert!(take_agent_records(&mut plane).is_empty());
     let request_id = plane.refresh_topology().unwrap();
     // ATTACHED fences the inventory queued before its admission barrier.
     plane
@@ -1208,14 +1122,14 @@ fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
         })
         .unwrap();
     let request_id = plane.refresh_topology().unwrap();
-    let _ = plane.take_events_leased();
+    let _ = plane.take_events();
     plane
         .feed(FrameKind::CommandResult {
             request_id,
             result: CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
         })
         .unwrap();
-    let events = plane.take_events_leased();
+    let events = plane.take_events();
     let catalog = events
         .iter()
         .position(|event| matches!(event, Event::TopologySnapshot { .. }))
@@ -1226,7 +1140,7 @@ fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
             matches!(
                 event,
                 Event::AgentPublication { publication, .. }
-                    if std::sync::Arc::ptr_eq(publication, &leased[0].2)
+                    if publication.records.iter().map(|record| record.seq).eq([3])
             )
         })
         .expect("held publication");
