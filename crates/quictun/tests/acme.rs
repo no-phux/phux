@@ -511,24 +511,6 @@ async fn serve_ca(ca: TestCa, ingress: SocketAddr) -> String {
     base
 }
 
-/// A local TCP service: read each connection to its end, then say how much.
-async fn counting_target() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let _ = stream.read_to_end(&mut request).await;
-                let reply = format!("got {} bytes", request.len());
-                let _ = stream.write_all(reply.as_bytes()).await;
-                let _ = stream.shutdown().await;
-            });
-        }
-    });
-    addr
-}
-
 async fn request(through: SocketAddr, body: &[u8]) -> Vec<u8> {
     let mut stream = tokio::net::TcpStream::connect(through).await.unwrap();
     stream.write_all(body).await.unwrap();
@@ -577,7 +559,7 @@ async fn acme_issues_through_the_relay_and_connect_multiplexes_over_it() {
         let tunnel = Tunnel::open(&relay, &Protocol::quictun(), &token)
             .await
             .unwrap();
-        let target = counting_target().await;
+        let target = quictun::testing::counting_target().await;
         tokio::spawn(async move { serve_tunnel(&tunnel, target, &tls).await });
 
         // Issue from the mock CA, which validates through the relay.

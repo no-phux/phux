@@ -5,7 +5,6 @@
 #![cfg(feature = "cli")]
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
-use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::process::Stdio;
@@ -76,26 +75,6 @@ async fn read_value(lines: &mut BufReader<ChildStdout>, label: &str) -> String {
     }
 }
 
-/// A local TCP service: read each connection to its end, then say how much.
-async fn counting_target() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let _ = stream.read_to_end(&mut request).await;
-                let reply = format!("got {} bytes", request.len());
-                let _ = stream.write_all(reply.as_bytes()).await;
-                let _ = stream.shutdown().await;
-            });
-        }
-    });
-    addr
-}
-
 /// One request through `connect`: write, half-close, read the reply.
 async fn request(through: &str, body: &[u8]) -> Option<Vec<u8>> {
     let mut stream = tokio::net::TcpStream::connect(through).await.ok()?;
@@ -127,7 +106,7 @@ async fn pair_relay_expose_and_connect_carry_tcp_end_to_end() {
         let (_relay, relay_addr, mut relay_out) = spawn_reading(relay, "relay").await;
         assert_eq!(read_value(&mut relay_out, "relay pin").await, relay_pin);
 
-        let target = counting_target().await.to_string();
+        let target = quictun::testing::counting_target().await.to_string();
         let token_path = token_file.to_str().expect("utf-8 path");
         let expose = quictun(
             Some(service_state.path()),
