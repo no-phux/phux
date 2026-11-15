@@ -496,16 +496,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_server_receives_no_decision_or_metadata_requests() {
+    async fn refused_handshake_receives_no_decision_or_metadata_requests() {
         use phux_client::testkit::{ScriptSpec, ScriptedServer};
-        use phux_protocol::wire::frame::FrameKind;
+        use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
-        let (client, server) = tokio::net::UnixStream::pair().unwrap();
-        let peer = tokio::spawn(ScriptedServer::on_stream(server, ScriptSpec::new()).run());
-        let mut conn = Connection::from_stream(client);
-        let result = manage(&mut conn, &action("approvals", None), &Theme::default()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("approvals.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let spec = ScriptSpec::new()
+            .refuse_hello(ErrorCode::VersionIncompatible, "unsupported protocol major");
+        let peer = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let result = phux_client::approvals::connect(
+            &phux_client::attach::connection::Dial::uds(&socket),
+            "phux approval review".to_owned(),
+            true,
+        )
+        .await;
         assert!(result.is_err());
-        drop(conn);
         assert!(matches!(
             peer.await.unwrap().as_slice(),
             [FrameKind::Hello { .. }]

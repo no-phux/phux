@@ -1,4 +1,7 @@
 //! Nonsecret approval review and decision projection.
+//!
+//! `UniFFI` includes exported docstrings in API checksums. The C reference
+//! below describes the retired encoder's shared JSON schema; keep it stable.
 
 use super::*;
 
@@ -19,7 +22,7 @@ impl RemoteClient {
         }
     }
 
-    /// Versioned JSON: supported and pending records with exact references
+    /// Versioned JSON shared with C: supported and pending records with exact references
     /// and bound provider identity. Purpose/name are untrusted labels, not authenticated identity.
     pub fn approvals_json(&self) -> Result<Vec<u8>, WireError> {
         let client = self.runtime_client();
