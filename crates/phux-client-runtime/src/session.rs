@@ -34,8 +34,7 @@
 //! |--------------------------------------|-------------------------------------------------|
 //! | `connect(socket)`                    | `connect(&Dial::uds(socket), name, control_caps())` |
 //! | `connect_with_hello(socket, n, c)`   | `connect(&Dial::uds(socket), n, c)`             |
-//! | `connect_quic(d)` / `_with_hello`    | `connect(&Dial::Quic(d.clone()), n, c)`         |
-//! | `connect_ws_with_hello(d, n, c)`     | `connect(&Dial::Ws(d.clone()), n, c)`           |
+//! | `connect_quic(d)`                    | `connect(&Dial::Quic(d.clone()), n, c)`         |
 //! | `connect_dial(d)` / `_with_hello`    | `connect(d, n, c)` (`Dial` is this crate's)     |
 //! | `connect_quic_with_terminal_frame_deadline_for_test` | `connect` + `set_terminal_frame_deadline_for_test` (feature `testing`) |
 //! | `from_stream(stream)`                | `from_stream(stream)`                           |
