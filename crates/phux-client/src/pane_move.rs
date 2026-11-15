@@ -5,11 +5,10 @@
 //! (membership only; the server prunes the source arrangement in the same
 //! transaction), then a compare-and-swap edit of the destination
 //! arrangement, undone by `ORGANIZATION_UNDO` of the move's receipt when the
-//! placement cannot be written. Against an older server: ADR-0056's L1
+//! placement cannot be written. With named projection keys: ADR-0056's L1
 //! re-parent, then destination-first layout publication and source cleanup.
 //! The [`ResourceId`] is never replaced and the process keeps running.
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope, StateScope,
@@ -57,9 +56,6 @@ pub enum PaneMoveError {
         /// Whether ownership could be restored.
         rollback: &'static str,
     },
-    /// The peer cannot perform ADR-0056 moves.
-    #[error("this server predates cross-session pane moves")]
-    ServerTooOld,
     /// The server refused the ownership move.
     #[error("server refused the pane move: {0}")]
     MoveRefused(String),
@@ -190,13 +186,6 @@ pub async fn move_pane(
             ratio,
         )
         .await;
-    }
-    if !conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(ServerFeature::MoveResource)
-    }) {
-        return Err(PaneMoveError::ServerTooOld);
     }
     let plan = CrossMovePlan {
         rollback_owner: sibling_in_session(&snapshot, &source),
@@ -611,7 +600,6 @@ fn tree_has_placement(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::ids::WindowId;
     use phux_protocol::wire::frame::{ErrorCode, FrameKind};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
@@ -704,7 +692,6 @@ mod tests {
     ) -> ScriptSpec {
         let group = Scope::Group(DEFAULT_LAYOUT_GROUP_ID);
         ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states(states)
             .move_result(result)
             .stored_metadata(
@@ -849,7 +836,6 @@ mod tests {
     #[tokio::test]
     async fn destination_layout_failure_rolls_ownership_back_and_reports_failure() {
         let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states([
                 snapshot(false, true),
                 snapshot(true, true),
@@ -875,9 +861,7 @@ mod tests {
     /// Naming only one side's projection is refused before any write.
     #[tokio::test]
     async fn cross_session_move_with_one_projection_key_is_refused() {
-        let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
-            .states([snapshot(false, true)]);
+        let spec = ScriptSpec::new().states([snapshot(false, true)]);
         let (_dir, mut conn, server) = serve(spec).await;
         let error = move_pane(
             &mut conn,
