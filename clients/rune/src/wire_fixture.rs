@@ -7,7 +7,7 @@ use phux_protocol::caps::{
     ServerFeatureExt, ServerFeatureExtSet,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, StreamId};
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_protocol::wire::info::SessionSnapshot;
 
 /// What the client has sent since last asked.
@@ -129,5 +129,14 @@ pub fn attached(client: &Client, attach_id: u32, snapshot: SessionSnapshot) {
             snapshot,
             initial_client_id: ClientId::new(1),
         })
+        .unwrap();
+}
+
+/// Refuse `request_id` with `code` and `message`.
+pub fn refuse(client: &Client, request_id: u32, code: ErrorCode, message: &str) {
+    let message = message.to_owned();
+    let result = CommandResult::Error { code, message };
+    client
+        .feed(FrameKind::CommandResult { request_id, result })
         .unwrap();
 }

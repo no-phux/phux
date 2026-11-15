@@ -176,15 +176,7 @@ fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
     for server in [1, 2] {
         let (client, mut rt) = home();
         let request = start(&mut rt, &client, false);
-        client
-            .feed(FrameKind::CommandResult {
-                request_id: request,
-                result: CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    message: "spawn denied".to_owned(),
-                },
-            })
-            .unwrap();
+        crate::wire_fixture::refuse(&client, request, ErrorCode::InvalidCommand, "spawn denied");
         client.with_control(ControlPlane::connection_opened);
         reattach(&client, server);
         drain(&mut rt, &client);
@@ -351,15 +343,12 @@ fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity
 fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
     let (client, mut rt) = home();
     let (operation, request_id) = pending_layout(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unknown(65535),
-                message: "unreadable layout reply".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request_id,
+        ErrorCode::Unknown(65535),
+        "unreadable layout reply",
+    );
     client.with_control(ControlPlane::connection_opened);
     reattach(&client, 1);
     drain(&mut rt, &client);
@@ -389,15 +378,12 @@ fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
 fn failed_organization_outcome_settles_before_the_new_hello_without_retrying() {
     let (client, mut rt) = home();
     let (operation, request_id) = pending_layout(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "layout denied before reconnect".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request_id,
+        ErrorCode::InvalidCommand,
+        "layout denied before reconnect",
+    );
     client.with_control(ControlPlane::connection_opened);
     drain(&mut rt, &client);
     assert!(!rt.state.layout_ops.contains(&operation));

@@ -109,15 +109,12 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         Some("from the host")
     );
     // A paste the host could not press says why.
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: paste,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "nothing here can press the paste chord".into(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        paste,
+        ErrorCode::Unavailable,
+        "nothing here can press the paste chord",
+    );
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the paste failure is said");
     assert!(
@@ -126,15 +123,12 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         notice.text
     );
     for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
-        client
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    message: "the surface's producer is not connected".into(),
-                },
-            })
-            .unwrap();
+        crate::wire_fixture::refuse(
+            &client,
+            request_id,
+            ErrorCode::NotProducer,
+            "the surface's producer is not connected",
+        );
     }
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the refusal is said");

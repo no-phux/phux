@@ -232,15 +232,12 @@ fn opening_never_viewed_foreign_document_subscribes_and_adopts_existing_cut() {
 fn foreign_subscription_refusal_is_visible_and_only_explicit_reopen_retries() {
     let (client, mut rt) = foreign_fixture();
     let request = open_foreign(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                message: "viewer refused".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request,
+        phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+        "viewer refused",
+    );
     step(&mut rt);
     assert!(
         matches!(&rt.state.resources.entries[&id(2)].body, Body::Invalid(text) if text.contains("viewer refused"))
