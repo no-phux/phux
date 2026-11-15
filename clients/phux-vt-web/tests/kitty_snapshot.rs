@@ -1,5 +1,6 @@
 //! Official 1.0 image records stay distinct from history rows and FINISH even
-//! when the freestanding engine does not render Kitty graphics.
+//! when the freestanding engine cannot decode Kitty graphics. The Rust driver
+//! authenticates and skips pixels, deferring leading manifests until FINISH.
 
 use phux_vt_web::{HistoryProgressKind, NativeCodecError, NativeDecoder, Vt};
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -73,6 +74,34 @@ async fn kitty_image_units_report_progress_not_finish() {
 }
 
 #[wasm_bindgen_test]
+async fn history_manifests_before_skipped_images_are_delivered_with_finish() {
+    let (ready, images, finish) = fixture();
+    // The real fixture ends with HISTORY(primary, zero pages) + FINISH.
+    // Move that unmodified manifest before IMAGE: the driver must retain it
+    // across all skipped pixels and feed it to the engine with FINISH.
+    let (manifest, finish) = finish.split_at(16);
+    let vt = Vt::load().await.expect("load engine");
+    let mut decoder = vt.native_decoder(1024 * 1024).expect("decoder");
+    feed(&mut decoder, &ready, 7);
+    decoder.ready().expect("READY");
+    for (index, image) in images.iter().enumerate() {
+        if index == 0 {
+            feed(&mut decoder, manifest, 1);
+        }
+        feed(&mut decoder, image, 7);
+        let progress = decoder
+            .next_checked(0)
+            .expect("skip pixels")
+            .expect("IMAGE");
+        assert_eq!(progress.kind, HistoryProgressKind::Image);
+        assert_eq!(progress.authenticated_rows, 0);
+        assert_eq!(progress.rows, 0);
+    }
+    feed(&mut decoder, finish, 1);
+    assert_eq!(decoder.next_checked(0), Ok(None));
+}
+
+#[wasm_bindgen_test]
 async fn corrupt_or_row_bearing_images_fail_closed() {
     let (ready, images, _) = fixture();
     let vt = Vt::load().await.expect("load engine");
@@ -91,7 +120,7 @@ async fn corrupt_or_row_bearing_images_fail_closed() {
             .expect_err("reject image");
         if declared_rows == 0 {
             assert!(
-                matches!(error, NativeCodecError::Status { .. }),
+                matches!(error, NativeCodecError::InvalidUnit),
                 "bad CRC: {error}"
             );
         } else {

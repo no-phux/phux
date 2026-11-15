@@ -213,6 +213,8 @@ pub unsafe extern "C" fn phux_client_anchor_release(
 ///
 /// Preserves the live terminal and protocol sequence. The expected generation must match exactly.
 /// All document anchors for the terminal are invalidated. No input is sent.
+/// If pending parser input cannot be exported, returns `InvalidState` without
+/// clearing anything; retry after the unfinished sequence completes.
 ///
 /// # Safety
 ///

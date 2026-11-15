@@ -128,7 +128,7 @@ toml_edit = "0.25"
 # Report the full config key path, not an ambiguous leaf name.
 serde_path_to_error = "0.1"
 # Pinned terminal engine; protocol's default features stay pure Rust.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "4571f2bbd1c06b7f47e1f3e02a6e20d81567ba24", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "a2ce6f921a66e40357badb20a4f7261bfdac10f8", default-features = false }
 # Kitty graphics replay decodes f=100 PNG images.
 png = "0.18"
 # Use ring rather than aws-lc-rs/cmake. Omit log to avoid tracing/log unification.

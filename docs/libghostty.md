@@ -43,15 +43,16 @@ Embedding runs this replica in the app's process
 The engine is Ghostty main past [libghostty-vt 1.0.1](https://lib.ghostty.org/vt/1.0.0/)
 (it reports `1.0.2`), plus phux's extensions, from
 [phall1/ghostty](https://github.com/phall1/ghostty).
-The Rust bindings track upstream, with phux extensions for staged decoding,
-input-option snapshots, parser-safe display clearing, image replay metadata,
-and safe formatter/PNG integration. Capture uses the stock snapshot encoder;
-phux bounds and indexes the resulting immutable bytes.
+The Rust bindings track upstream, with effective input-option getters, image
+iteration and replay metadata, and safe formatter/PNG integration. Capture uses
+the stock snapshot encoder; phux bounds and indexes the resulting immutable
+bytes. Transport-unit CRC preflight, decoder boundaries, and parser-preserving
+local Clear belong to phux, not new engine APIs.
 Upstream terminal semantics and image placement resolution remain authoritative.
 
-Native builds link verified prebuilt archives of that pin on Linux and macOS;
-other targets build it from source with Zig 0.17
-([development](./development.md#libghostty-vt)).
+Native builds use a verified prebuilt archive when the immutable pin declares
+one, otherwise verified source with Zig 0.17
+([development](./development.md#libghostty-vt)). Source-only pins are supported.
 
 ## Snapshot compatibility
 
@@ -96,24 +97,49 @@ The remaining extensions have narrower purposes:
 
 | Extension | Reason |
 | --- | --- |
-| Staged history decoding | A stock PAGE decode reads the next record header to discover optional Kitty placements. phux units end at the PAGE/placement boundary. Keeping this small extension avoids changing the wire or adding prefetch/accounting machinery. |
-| Whole-unit CRC preflight | Checks every record, including placements and unknown optional records, before applying the unit. This does not promise transactions for semantically invalid, CRC-valid data. |
 | Deferred-history clear fence | A live scrollback clear must discard pre-clear pages still arriving after READY, without dropping deferred pixels for surviving active-screen images. |
-| Input-option snapshots | Publishes the engine's effective key and mouse options to the independent input lane without duplicating mode precedence. |
-| Parser-preserving Clear | Clears the local presentation without consuming unfinished CSI, OSC, DCS, or UTF-8 input. Injecting clear escape sequences is not equivalent. |
-| Image metadata | Preserves unplaced images and placeholder identity/crops in synthesized replay and rendering. Native snapshots themselves already preserve images upstream. |
+| Disabled-Kitty PAGE lookahead | A build that cannot apply placements has no reason to read another header to discover them. Returning PAGE progress directly avoids unnecessary reads on freestanding targets. |
+| Effective input-option getters | Reads the options copied by stock `set_from_terminal`, using typed getters that mirror encoder setters. The independent input lane does not duplicate Ghostty's mode precedence. |
+| Image iteration and metadata | An image iterator includes images with no placement; placement fields preserve placeholder identity/crops in synthesized replay and rendering. Native snapshots themselves already preserve images upstream. |
 | Rendering/PNG fixes | Correct dirty-row tracking and synchronize the process-global PNG hook used by concurrent embedded terminals. |
 
-Formatter convenience wrappers and build caching are integration choices,
-not evidence that the engine must be forked. An application-owned Zig shim
-could expose some missing operations, but cannot safely unwrap an existing
-opaque C terminal through the public interface. Replacing terminal ownership
-just to relocate these wrappers would be a larger change.
-Likewise, staged decoding is a transport integration choice, not an upstream
-inability to load history progressively. These patches are the smaller
-current integration, not a claim that every helper intrinsically requires
-a fork. A startup-only PNG hook policy may also avoid the atomic-hook patch;
-that requires controlling every initializer in the embedding process.
+The getters, image iterator, resize correction, and deferred-history clear fence
+are upstream-shaped additions or correctness fixes, not transport glue.
+Formatter convenience wrappers and build caching are integration choices, not
+evidence that the engine must be forked. A startup-only PNG hook policy may also
+avoid the atomic-hook patch; that requires controlling every initializer in the
+embedding process.
+
+### Application-owned snapshot boundaries and Clear
+
+Native and browser replicas share phux's pure-Rust record framing and CRC32C
+preflight. Every record, including optional unknown records and placements, is
+checked before a history unit reaches the engine. This prevents corrupt suffixes
+from partially applying a PAGE; it does not make semantically invalid,
+CRC-valid records transactional.
+
+With Kitty enabled, stock PAGE decoding reads another header to discover
+optional placements. For a PAGE with no placements, native phux supplies a valid
+empty placement record in the local reader, using the HISTORY sequence's screen
+key. The engine consumes that no-op suffix and returns normally. Existing
+placements need no suffix. An unknown-record sentinel would not work: the
+decoder skips it and keeps reading.
+
+Upstream disables Kitty graphics on freestanding WASM because timestamps are
+unavailable. The decoder therefore skips placement lookahead when that feature
+is disabled. phux's browser adapter preflights all original records, discards
+unsupported placements and pixels, and preserves any preceding HISTORY
+manifests for the next engine call. It reports discarded images as zero-row
+transport progress, not FINISH. This is snapshot compatibility, not browser
+image-rendering parity. No padding is sent on the wire, no extra history page
+is fetched, and the immutable snapshot and codec id remain unchanged.
+
+Local Clear retains continuation tracking from terminal construction or native
+READY. It exports pending input before mutation, cancels it with CAN, writes
+standard CUP/ED clear sequences, then replays the saved continuation. Selection
+and viewport use stock APIs. If pending input exceeds the tracking limit, Clear
+returns an explicit retry error without changing the display or parser; it
+never discards unrecoverable input just to clear the screen.
 
 [Rex's author commits to using the public MIT-licensed building blocks](https://mitchellh.com/writing/superlogical),
 and [reported fixes found during Rex's own 1.0 upgrade](https://github.com/ghostty-org/ghostty/pull/15134).

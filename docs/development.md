@@ -45,7 +45,8 @@ Nix provides it.
 The terminal engine is Ghostty's C library. What it does in a running phux,
 and what it does not, is [libghostty in phux](./libghostty.md). On Linux
 and macOS (arm64 and x86_64) the build script downloads a checksummed
-prebuilt `libghostty-vt.a` for the pinned engine, so no Zig is needed. Each
+prebuilt `libghostty-vt.a` when the pinned engine declares one, so those builds
+need no Zig. The current API-boundary pin is source-only. Each
 pin's archives are published by the `prebuilt` workflow of
 [phall1/libghostty-rs](https://github.com/phall1/libghostty-rs) with Zig
 0.17.1. Other targets,

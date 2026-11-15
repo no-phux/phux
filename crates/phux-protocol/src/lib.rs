@@ -9,7 +9,8 @@
 //! # Crate features
 //!
 //! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
-//!   [`ids`], [`caps`], [`policy`], and [`Version`], including for browser clients.
+//!   [`ids`], [`caps`], [`policy`], [`snapshot_framing`], and [`Version`],
+//!   including for browser clients.
 //! - **`render-pool`** (off by default): `render_pool`, the libghostty
 //!   render-trio pool. Enables `libghostty-vt` only, with no png, no kitty
 //!   graphics, and no input-atom conversions.
@@ -40,6 +41,7 @@ pub mod native_agent;
 pub mod policy;
 pub mod scope;
 pub mod service_http;
+pub mod snapshot_framing;
 
 #[cfg(feature = "server")]
 pub mod sgr;

@@ -196,6 +196,9 @@ fn clear_preserves_partial_osc_and_its_title() {
 fn clear_preserves_partial_dcs_and_utf8() {
     let cases: &[(&[u8], &[u8], &str)] = &[
         (b"\x1bP1;2|pending", b"body\x1b\\X", "X"),
+        // CAN may abort a query internally, but the replica must never send a
+        // reply (clear_then_resume checks its outgoing queue before resuming).
+        (b"\x1bP$q", b"m\x1b\\X", "X"),
         (b"\xe2", b"\x82\xac", "€"),
         (b"\xe2\x82", b"\xac", "€"),
         (b"\xf0", b"\x9f\x98\x80", "\u{1f600}"),

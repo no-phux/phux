@@ -205,7 +205,7 @@ async fn resized_history_pages_are_authenticated_but_not_mistaken_for_finish() {
 async fn unknown_records_between_page_and_placements_are_authenticated() {
     let fixture = fixture();
     let (page, rows) = &fixture.pages[0];
-    for corrupt in 0..3 {
+    for corrupt in [1, 2, 0] {
         let mut decoder = ready_decoder(&fixture).await;
         let before = decoder.terminal().expect("READY").screen_rows();
         let mut unknown = record(4242, b"optional extension");
@@ -224,7 +224,7 @@ async fn unknown_records_between_page_and_placements_are_authenticated() {
         let progress = decoder.next_checked(*rows);
         if corrupt != 0 {
             assert!(
-                matches!(progress, Err(NativeCodecError::Status { .. })),
+                matches!(progress, Err(NativeCodecError::InvalidUnit)),
                 "suffix CRC case {corrupt}"
             );
             assert_eq!(
@@ -248,6 +248,33 @@ async fn unknown_records_between_page_and_placements_are_authenticated() {
         feed(&mut decoder, &fixture.finish, 1);
         assert_eq!(decoder.next_checked(0), Ok(None));
     }
+}
+
+#[wasm_bindgen_test]
+async fn bare_primary_pages_leave_the_live_alternate_screen_unchanged() {
+    let fixture = fixture();
+    let mut decoder = ready_decoder(&fixture).await;
+    decoder.terminal().unwrap().write(b"\x1b[?1049halt-live");
+    let alternate_before = decoder.terminal().unwrap().screen_rows();
+    assert!(last_row(decoder.terminal().unwrap()).ends_with("alt-live"));
+    for (page, rows) in &fixture.pages {
+        feed(&mut decoder, page, 7);
+        let progress = decoder
+            .next_checked(*rows)
+            .expect("primary history with alternate active")
+            .expect("PAGE, not FINISH");
+        assert_eq!(progress.authenticated_rows, *rows);
+        assert_eq!(progress.kind, HistoryProgressKind::Page);
+    }
+    feed(&mut decoder, &fixture.finish, 1);
+    assert_eq!(decoder.next_checked(0), Ok(None));
+    assert_eq!(
+        decoder.terminal().unwrap().screen_rows(),
+        alternate_before,
+        "primary history must not target or change the live alternate screen"
+    );
+    decoder.terminal().unwrap().write(b"\x1b[?1049l");
+    assert_eq!(last_row(decoder.terminal().unwrap()), "live-tail");
 }
 
 #[wasm_bindgen_test]
@@ -380,7 +407,7 @@ async fn malformed_history_units_fail_closed_and_keep_the_terminal() {
     assert!(
         matches!(
             decoder.next_checked(*rows),
-            Err(NativeCodecError::Status { .. })
+            Err(NativeCodecError::InvalidUnit)
         ),
         "a corrupt page fails its checksum"
     );

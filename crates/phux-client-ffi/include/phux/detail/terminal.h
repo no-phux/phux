@@ -162,7 +162,9 @@ PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxResour
 /** Client-only Clear: home the cursor, erase the active display and scrollback,
  * clear selection/document anchors, and cancel older history for this replica.
  * Preserves modes, dimensions, durable work and live sequence; sends no input.
- * Rejects an absent/disconnected terminal or mismatched stream/bootstrap IDs. */
+ * Rejects an absent/disconnected terminal or mismatched stream/bootstrap IDs.
+ * If pending parser input cannot be exported, returns INVALID_STATE without
+ * mutation; retry after the unfinished sequence completes. */
 PhuxClientResult phux_client_clear_presentation(PhuxClient *client, const PhuxResourceId *terminal_id, uint64_t stream_id, uint64_t bootstrap_id);
 PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentAnchor anchor);
 PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxResourceId *terminal_id);

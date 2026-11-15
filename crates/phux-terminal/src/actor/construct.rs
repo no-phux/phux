@@ -160,9 +160,14 @@ impl TerminalActor {
             cell_height: u32::from(DEFAULT_CELL_PX.1),
         }));
         let synth = SnapshotSynthesizer::new()?;
-        let key_enc = PerTerminalKeyEncoder::new()?;
-        let mouse_enc = PerTerminalMouseEncoder::new()?;
-        let initial_input_snapshot = InputEncoderSnapshot::capture(&terminal, DEFAULT_CELL_PX)?;
+        let mut key_enc = PerTerminalKeyEncoder::new()?;
+        let mut mouse_enc = PerTerminalMouseEncoder::new()?;
+        let initial_input_snapshot = InputEncoderSnapshot::capture(
+            &terminal,
+            DEFAULT_CELL_PX,
+            &mut key_enc,
+            &mut mouse_enc,
+        )?;
         let (input_tx, input_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (encoded_input_tx, encoded_input_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (input_snapshot_tx, input_snapshot_rx) = watch::channel(initial_input_snapshot);
