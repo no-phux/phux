@@ -168,10 +168,7 @@ async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
 
     for exit in exits {
         let mut session = crate::Connection::new(&vt, 80, 24);
-        let mut inbound = FrameBuffer::new();
-        inbound.push(&attached_chunk(b"ready"));
-        while let Some(bytes) = inbound.next_frame() {
-            let (frame, _) = FrameKind::decode(&bytes).unwrap();
+        for frame in attached_frames(1, b"ready") {
             assert!(session.on_frame(frame).fatal.is_none());
         }
         let key = KeyEvent {
@@ -316,14 +313,15 @@ async fn malformed_token_fails_closed_before_an_available_ws_fallback() {
     assert!(result.is_err());
 }
 
-/// One transport chunk that takes a fresh session through HELLO_OK to
-/// ATTACH_READY with one raw-profile terminal whose bootstrap is
-/// `payload`.
-fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
-    let terminal_id = ResourceId::new(1);
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    let frames = [
+/// Frames that take a fresh session through HELLO_OK to ATTACH_READY with
+/// `count` raw-profile 80x24 terminals `@1..`, each bootstrapped to `payload`.
+pub(super) fn attached_frames(count: u32, payload: &'static [u8]) -> Vec<FrameKind> {
+    let ids = (1..=count).map(ResourceId::new);
+    let resources = ids
+        .clone()
+        .map(|id| ResourceInfo::new(id, WindowId::new(1), 80, 24))
+        .collect();
+    let mut frames = vec![
         FrameKind::HelloOk {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
@@ -335,50 +333,50 @@ fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
         },
         FrameKind::Attached {
             attach_id: 1,
-            snapshot: SessionSnapshot::new(
-                SessionId::new(1),
-                WindowId::new(1),
-                terminal_id.clone(),
-            )
-            .with_resources(vec![ResourceInfo::new(
-                terminal_id.clone(),
-                WindowId::new(1),
-                80,
-                24,
-            )]),
+            snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+                .with_resources(resources),
             initial_client_id: ClientId::new(1),
         },
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 80,
-            rows: 24,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::from_static(payload),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id: 1 },
     ];
-    let mut chunk = Vec::new();
-    for frame in frames {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        chunk.extend_from_slice(&encoded);
+    for (serial, terminal_id) in (1..).zip(ids) {
+        let stream_id = StreamId::new(serial).unwrap();
+        let bootstrap_id = BootstrapId::new(serial).unwrap();
+        frames.extend([
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(payload),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]);
     }
-    chunk
+    frames.push(FrameKind::AttachReady { attach_id: 1 });
+    frames
+}
+
+/// [`attached_frames`] for one terminal, encoded as one transport chunk.
+fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
+    let mut chunk = bytes::BytesMut::new();
+    for frame in attached_frames(1, payload) {
+        frame.encode(&mut chunk);
+    }
+    chunk.to_vec()
 }
 
 #[wasm_bindgen_test]

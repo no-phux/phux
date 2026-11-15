@@ -2,12 +2,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
 use super::*;
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
-};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 async fn fixture(count: u32) -> Client {
@@ -21,64 +16,8 @@ async fn fixture(count: u32) -> Client {
     let socket = WebSocket::new("ws://127.0.0.1:1/").unwrap();
     let (app, _ready) =
         build_app(&vt, WireTx::Ws(WsTx::new(socket)), canvas, 80, 24, false).unwrap();
-    {
-        let mut app = app.borrow_mut();
-        app.session.on_frame(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: vec![],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        });
-        app.session.on_frame(FrameKind::Attached {
-            attach_id: 1,
-            initial_client_id: ClientId::new(1),
-            snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-                .with_resources(
-                    (1..=count)
-                        .map(|id| ResourceInfo::new(ResourceId::new(id), WindowId::new(1), 80, 24))
-                        .collect(),
-                ),
-        });
-        for id in 1..=count {
-            let terminal_id = ResourceId::new(id);
-            let stream_id = StreamId::new(u64::from(id)).unwrap();
-            let bootstrap_id = BootstrapId::new(u64::from(id)).unwrap();
-            for frame in [
-                FrameKind::BootstrapBegin {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                    cols: 80,
-                    rows: 24,
-                    base_seq: 0,
-                },
-                FrameKind::BootstrapChunk {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: bytes::Bytes::from_static(b"\x1b[48;2;255;0;0m \x1b[0mreal"),
-                },
-                FrameKind::BootstrapReady {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                },
-            ] {
-                assert!(app.session.on_frame(frame).fatal.is_none());
-            }
-        }
-        assert!(
-            app.session
-                .on_frame(FrameKind::AttachReady { attach_id: 1 })
-                .fatal
-                .is_none()
-        );
+    for frame in super::tests::attached_frames(count, b"\x1b[48;2;255;0;0m \x1b[0mreal") {
+        assert!(app.borrow_mut().session.on_frame(frame).fatal.is_none());
     }
     Client { app }
 }
