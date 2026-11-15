@@ -2,35 +2,20 @@
 
 use super::*;
 
-/// The server-produced transcript `phux-vt-web` decodes; see its tests.
-const SERVER_SNAPSHOT: &[u8] =
-    include_bytes!("../../../phux-vt-web/tests/fixtures/server-snapshot-v1.bin");
+#[path = "../../../phux-vt-web/tests/support/server_snapshot.rs"]
+mod server_snapshot;
 
-/// History units in order, each with its PAGE rows; FINISH is last with
-/// zero rows.
+/// History units in order, each PAGE with its rows, then FINISH with none.
 type HistoryUnits = Vec<(Vec<u8>, u32)>;
 
 /// `(cols, rows, READY prefix, history units)`.
 fn server_snapshot() -> (u16, u16, Vec<u8>, HistoryUnits) {
-    let bytes = SERVER_SNAPSHOT;
-    assert_eq!(&bytes[..8], b"PHUXSNP1");
-    let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("u32"));
-    let cols = u16::from_le_bytes([bytes[8], bytes[9]]);
-    let rows = u16::from_le_bytes([bytes[10], bytes[11]]);
-    let mut ready = Vec::new();
-    let mut history = Vec::new();
-    let mut offset = 12;
-    while offset < bytes.len() {
-        let (kind, unit_rows, len) = (bytes[offset], u32_at(offset + 1), u32_at(offset + 5));
-        let unit = bytes[offset + 9..offset + 9 + len as usize].to_vec();
-        offset += 9 + len as usize;
-        if kind == 0 {
-            ready = unit;
-        } else {
-            history.push((unit, unit_rows));
-        }
-    }
-    (cols, rows, ready, history)
+    let fixture = server_snapshot::server_snapshot();
+    let mut history: Vec<_> = (fixture.pages.into_iter())
+        .map(|(unit, rows)| (unit, u32::try_from(rows).expect("rows")))
+        .collect();
+    history.push((fixture.finish, 0));
+    (fixture.cols, fixture.rows, fixture.ready, history)
 }
 
 const NATIVE_STREAM: BootstrapStreamProfile = BootstrapStreamProfile::NativeState {
