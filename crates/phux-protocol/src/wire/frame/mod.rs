@@ -116,6 +116,44 @@ macro_rules! wire_enum {
     };
 }
 
+/// [`wire_enum!`] for an open enum: a value this build does not define
+/// decodes as `Unknown(raw)`, listed first, which encodes back as `raw`, so
+/// the conversion is total both ways.
+macro_rules! open_wire_enum {
+    ($repr:ty; $to:ident / $from:ident;
+     $(#[$meta:meta])*
+     pub enum $name:ident {
+         $(#[$umeta:meta])* Unknown($unknown:ty),
+         $( $(#[$vmeta:meta])* $variant:ident = $tag:literal, )*
+     }) => {
+        $(#[$meta])*
+        pub enum $name {
+            $( $(#[$vmeta])* $variant, )*
+            $(#[$umeta])* Unknown($unknown),
+        }
+
+        impl $name {
+            /// The wire value; `Unknown` writes back its raw value.
+            #[must_use]
+            pub const fn $to(self) -> $repr {
+                match self {
+                    $( Self::$variant => $tag, )*
+                    Self::Unknown(value) => value,
+                }
+            }
+
+            /// Classify a wire value, keeping one this build does not define.
+            #[must_use]
+            pub const fn $from(value: $repr) -> Self {
+                match value {
+                    $( $tag => Self::$variant, )*
+                    other => Self::Unknown(other),
+                }
+            }
+        }
+    };
+}
+
 wire_tags! { Message;
 /// Discriminant for `HELLO` (client to server, `docs/protocol.md#handshake`).
 pub const TYPE_HELLO: u8 = 0x01;

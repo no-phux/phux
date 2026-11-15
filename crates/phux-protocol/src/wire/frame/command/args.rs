@@ -85,82 +85,40 @@ pub const GET_SCREEN_FORMAT_SELECTOR_MASK: u8 = 0x7F;
 /// Ignored when the selector is `0`.
 pub const GET_SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
+open_wire_enum! { u8; to_u8 / from_u8;
 /// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
 ///
 /// Only [`Self::Quic`] is defined. A decoder keeps any other value, so a
 /// server can refuse it by name instead of the whole frame failing to decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListenerTransport {
-    /// QUIC over TLS 1.3, admitting a listener-scoped bearer token (`0x00`).
-    Quic,
     /// A value this build does not define. A server refuses it with
     /// `INVALID_COMMAND`.
     Unknown(u8),
+    /// QUIC over TLS 1.3, admitting a listener-scoped bearer token.
+    Quic = 0,
+}
 }
 
-impl ListenerTransport {
-    /// Classify a wire byte, keeping values this build does not define.
-    #[must_use]
-    pub const fn from_u8(value: u8) -> Self {
-        match value {
-            0 => Self::Quic,
-            other => Self::Unknown(other),
-        }
-    }
-
-    /// The wire byte.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        match self {
-            Self::Quic => 0,
-            Self::Unknown(value) => value,
-        }
-    }
-}
-
+open_wire_enum! { u8; to_u8 / from_u8;
 /// The operation a [`Command::PerfControl`] asks for (`u8` on the wire).
 ///
 /// A decoder keeps any undefined value, so a server can refuse it by name
 /// instead of the whole frame failing to decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PerfOp {
-    /// Start recording a span trace (`0x00`).
-    TraceStart,
-    /// Stop the trace and write it to a file (`0x01`).
-    TraceStop,
-    /// Turn heap accounting on (`0x02`).
-    AllocOn,
-    /// Turn heap accounting off (`0x03`).
-    AllocOff,
     /// A value this build does not define. A server refuses it with
     /// `INVALID_COMMAND`.
     Unknown(u8),
+    /// Start recording a span trace.
+    TraceStart = 0,
+    /// Stop the trace and write it to a file.
+    TraceStop = 1,
+    /// Turn heap accounting on.
+    AllocOn = 2,
+    /// Turn heap accounting off.
+    AllocOff = 3,
 }
-
-impl PerfOp {
-    /// Classify a wire byte, keeping values this build does not define.
-    #[must_use]
-    pub const fn from_u8(value: u8) -> Self {
-        match value {
-            0 => Self::TraceStart,
-            1 => Self::TraceStop,
-            2 => Self::AllocOn,
-            3 => Self::AllocOff,
-            other => Self::Unknown(other),
-        }
-    }
-
-    /// The wire byte.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        match self {
-            Self::TraceStart => 0,
-            Self::TraceStop => 1,
-            Self::AllocOn => 2,
-            Self::AllocOff => 3,
-            Self::Unknown(value) => value,
-        }
-    }
 }
 
 /// The preconditions a [`Command::KillResourceIf`] carries (ADR-0109).

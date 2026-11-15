@@ -469,6 +469,8 @@ fn error_code_wire_values_match_spec() {
         (ErrorCode::UnknownMessageType, 2),
         (ErrorCode::MalformedMessage, 3),
         (ErrorCode::FrameTooLarge, 4),
+        (ErrorCode::CodecUnavailable, 6),
+        (ErrorCode::Unsupported, 7),
         (ErrorCode::NotAttached, 100),
         (ErrorCode::AlreadyAttached, 101),
         (ErrorCode::SessionNotFound, 102),
@@ -489,6 +491,10 @@ fn error_code_wire_values_match_spec() {
         (ErrorCode::NotProducer, 209),
         (ErrorCode::RecordInvalid, 210),
         (ErrorCode::Overflow, 211),
+        (ErrorCode::PreconditionFailed, 212),
+        (ErrorCode::IncarnationChanged, 213),
+        (ErrorCode::NotFound, 214),
+        (ErrorCode::Unavailable, 215),
         (ErrorCode::InternalError, 65535),
     ] {
         assert_eq!(code.as_wire(), wire, "{code:?}");
