@@ -1,5 +1,19 @@
 use super::*;
 
+/// A consumer-side replica, blank like the primed acked reference.
+fn mirror_terminal() -> GhosttyTerminal<'static, 'static> {
+    let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
+    terminal
+        .set_scrollback_max_lines(Some(100))
+        .expect("mirror");
+    terminal
+}
+
+fn canonical_viewport(actor: &TerminalActor) -> Vec<String> {
+    let canonical = actor.terminal.borrow();
+    render_viewport(canonical.try_terminal().expect("no capture in flight"))
+}
+
 // ---- phux-v45.8 / ADR-0042: loss-tolerant (advance-on-ack) state sync ----
 
 /// A loss-tolerant reference advances on ack, not emit.
@@ -70,13 +84,7 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
 
     // Mirror starts at the same point the acked reference was primed to
     // (an empty grid) — what the consumer's TERMINAL_SNAPSHOT establishes.
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Content A → delta 1. SIMULATE A DROP: do not apply it, do not ack.
     actor.vt_write_for_test(b"AAAA");
@@ -93,13 +101,7 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     // Apply ONLY delta 2 (delta 1 was lost).
     mirror.vt_write(&delivered[0].1);
 
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -117,13 +119,7 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
 fn loss_tolerant_incremental_after_ack_converges() {
     let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Round 1: content, deliver + ack.
     actor.vt_write_for_test(b"row-one");
@@ -142,13 +138,7 @@ fn loss_tolerant_incremental_after_ack_converges() {
     mirror.vt_write(&f2[0].1);
     actor.on_frame_ack(client, f2[0].0);
 
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -163,13 +153,7 @@ fn loss_tolerant_incremental_after_ack_converges() {
 fn loss_tolerant_retransmits_lost_frame_when_idle() {
     let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Content → delta. Simulate a drop: discard it, never ack.
     actor.vt_write_for_test(b"lonely");
@@ -191,13 +175,7 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
     // The retransmit (re-diffed against the acked reference) converges the
     // mirror that never saw the original frame.
     mirror.vt_write(&retransmit[0].1);
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
