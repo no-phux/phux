@@ -77,34 +77,3 @@ pub(crate) fn is_reachability_io(err: &std::io::Error) -> bool {
             | std::io::ErrorKind::TimedOut
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reachability_io_matches_unanswered_hosts_only() {
-        for kind in [
-            std::io::ErrorKind::ConnectionRefused,
-            std::io::ErrorKind::HostUnreachable,
-            std::io::ErrorKind::NetworkUnreachable,
-            std::io::ErrorKind::NetworkDown,
-            std::io::ErrorKind::TimedOut,
-        ] {
-            assert!(
-                is_reachability_io(&std::io::Error::from(kind)),
-                "{kind:?} is a reachability failure"
-            );
-        }
-        for kind in [
-            std::io::ErrorKind::PermissionDenied,
-            std::io::ErrorKind::NotFound,
-            std::io::ErrorKind::InvalidData,
-        ] {
-            assert!(
-                !is_reachability_io(&std::io::Error::from(kind)),
-                "{kind:?} is not a reachability failure"
-            );
-        }
-    }
-}

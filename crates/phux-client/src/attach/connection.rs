@@ -80,20 +80,6 @@ impl Connection {
         Self::connect_dial(&Dial::Quic(dial.clone())).await
     }
 
-    /// Dial QUIC and negotiate with the supplied client profile; a plain
-    /// QUIC link also offers per-Terminal streams (docs/protocol.md#quic-stream-routing).
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_quic_with_hello(
-        dial: &QuicDial,
-        client_name: String,
-        client_caps: ClientCapabilities,
-    ) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(&Dial::Quic(dial.clone()), client_name, client_caps).await
-    }
-
     /// [`Self::connect_quic`] with a short incomplete-Terminal-frame deadline.
     ///
     /// # Errors
