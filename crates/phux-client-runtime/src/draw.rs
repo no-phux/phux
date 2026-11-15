@@ -244,7 +244,7 @@ pub const fn cursor_visible(frame: &GridFrame, visibility: Visibility) -> bool {
 /// The cursor's colour: the theme's, else the application's, else the
 /// default foreground.
 #[must_use]
-pub fn cursor_color<C: Copy>(frame: &GridFrame, theme: &Theme<C>) -> C {
+pub(crate) fn cursor_color<C: Copy>(frame: &GridFrame, theme: &Theme<C>) -> C {
     theme
         .cursor
         .or_else(|| frame.colors.cursor.map(theme.rgb))

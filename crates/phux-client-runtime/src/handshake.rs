@@ -121,7 +121,7 @@ impl ServerInfo {
 
     /// Whether the server advertised an extended feature.
     #[must_use]
-    pub const fn has_ext(&self, feature: ServerFeatureExt) -> bool {
+    pub(crate) const fn has_ext(&self, feature: ServerFeatureExt) -> bool {
         self.features_ext.contains(feature)
     }
 

@@ -53,7 +53,7 @@ pub enum TunnelState {
 impl TunnelState {
     /// The stable numeric form the shared atomic stores.
     #[must_use]
-    pub const fn as_u32(self) -> u32 {
+    pub(crate) const fn as_u32(self) -> u32 {
         self as u32
     }
 
@@ -209,12 +209,6 @@ impl Tunnel {
     #[must_use]
     pub const fn transport(&self) -> &Transport {
         &self.resolved.transport
-    }
-
-    /// Publish a failure as a test would observe one, without a network.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn inject_failure(&self, message: String) {
-        self.shared.fail(message);
     }
 
     /// The current state.

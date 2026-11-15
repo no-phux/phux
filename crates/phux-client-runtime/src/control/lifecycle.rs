@@ -9,7 +9,6 @@ use super::{
     SessionRecovery, Status, Topology, ViewportInfo, agent_delivery, approvals, extensions,
     geometry, global_metadata, org_plane, organization, roster, topology,
 };
-use phux_protocol::ids::ResourceKind;
 
 impl ControlPlane {
     /// A control plane that has opened no connection.
@@ -90,7 +89,7 @@ impl ControlPlane {
 
     /// The same override, for a binding that reaches an already-built plane
     /// through its runtime client rather than a builder.
-    pub fn set_history_config(&mut self, config: HistoryCacheConfig) {
+    pub(crate) fn set_history_config(&mut self, config: HistoryCacheConfig) {
         self.history_config = Some(config.normalized());
     }
 
@@ -147,12 +146,6 @@ impl ControlPlane {
     #[must_use]
     pub const fn server(&self) -> Option<&ServerInfo> {
         self.server.as_ref()
-    }
-
-    /// Whether `HELLO_OK` has been accepted on the current connection.
-    #[must_use]
-    pub const fn handshake_ready(&self) -> bool {
-        self.handshake_ready
     }
 
     /// Whether any connection ever attached: after that, drops reconnect
@@ -261,7 +254,7 @@ impl ControlPlane {
 
     /// The payload limits inbound frames must be decoded under.
     #[must_use]
-    pub fn decode_limits(&self) -> Option<BootstrapLimits> {
+    pub(crate) fn decode_limits(&self) -> Option<BootstrapLimits> {
         self.server.as_ref().map(|server| server.limits)
     }
 
@@ -278,17 +271,6 @@ impl ControlPlane {
     }
 
     // ----- connection lifecycle ---------------------------------------
-
-    /// Open a manually driven plane with the embedder's client name.
-    /// Returns `false` after the plane has already left `Idle`.
-    pub fn open_explicit(&mut self, client_name: String) -> bool {
-        if self.options.automatic_lifecycle || self.status != Status::Idle {
-            return false;
-        }
-        self.options.client_name = client_name;
-        self.connection_opened();
-        true
-    }
 
     /// Whether `terminal_id` belongs to the active session attach.
     #[must_use]
@@ -327,15 +309,6 @@ impl ControlPlane {
             .insert(terminal_id, kind, Origin::AttachResource)
     }
 
-    /// Record a server pump created by a manual binding's successful spawn.
-    pub fn admit_external_spawn(&mut self, terminal_id: &ResourceId) -> bool {
-        if self.terminal_is_admitted(terminal_id) {
-            return false;
-        }
-        self.subscriptions
-            .insert(terminal_id, ResourceKind::Terminal, Origin::OwnSpawn)
-    }
-
     /// Release one explicitly withdrawn terminal from both the attach
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
@@ -358,11 +331,6 @@ impl ControlPlane {
             .as_ref()
             .is_some_and(|engine| engine.detach(terminal_id.clone()));
         known || detached
-    }
-
-    /// Update the cursor carried by runtime-generated event subscriptions.
-    pub const fn set_event_after_seq(&mut self, after_seq: Option<u64>) {
-        self.options.event_after_seq = after_seq;
     }
 
     /// A transport is up: reset every per-connection correlation and queue

@@ -90,23 +90,6 @@ impl ControlPlane {
         self.finish_batch(engine_events, deferred_error)
     }
 
-    /// Feed already-decoded frames in order, applying each contiguous run
-    /// of engine events as one projection batch: one owner-thread round trip
-    /// and one publication per damaged terminal, however many frames the run
-    /// carried. [`Self::feed_bytes_batch`] without the decode, for a binding
-    /// that decodes on its own thread to run per-frame hooks first.
-    pub fn feed_batch(
-        &mut self,
-        frames: impl IntoIterator<Item = FrameKind>,
-    ) -> Result<(), ControlError> {
-        let mut engine_events = Vec::new();
-        let mut deferred_error = None;
-        for frame in frames {
-            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
-        }
-        self.finish_batch(engine_events, deferred_error)
-    }
-
     fn finish_batch(
         &mut self,
         mut engine_events: Vec<EngineEvent>,

@@ -64,7 +64,7 @@ impl ControlPlane {
     /// Earliest retry-horizon deadline across acknowledged input and durable
     /// uploads.
     #[must_use]
-    pub fn next_operation_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_operation_deadline(&self) -> Option<Instant> {
         [
             self.next_input_deadline(),
             self.next_upload_deadline(),
@@ -77,7 +77,7 @@ impl ControlPlane {
 
     /// Resolve every operation past its retry horizon. Returns whether any
     /// lossless receipt was published.
-    pub fn expire_operations(&mut self) -> bool {
+    pub(crate) fn expire_operations(&mut self) -> bool {
         let input = self.expire_inputs();
         let uploads = self.expire_uploads();
         let organization = self.expire_org();
