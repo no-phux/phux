@@ -471,6 +471,31 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 /// surface a button as `on_press` would.
 pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
 
+/// `rt`'s last frame painted `size` pixels big through Rune's real
+/// renderer, as RGBA.
+#[cfg(test)]
+pub fn offscreen(
+    gpu: &rune::render::Gpu,
+    renderer: &mut rune::render::Renderer,
+    rt: &mut rune::Runtime<Desk>,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
+    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
+    renderer.prepare(
+        &gpu.device,
+        &gpu.queue,
+        &mut rt.text.atlas,
+        &rt.instances,
+        size,
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.draw(&mut encoder, &target.view, [0.0; 4]);
+    target.copy(&mut encoder);
+    renderer.submit(&gpu.queue, encoder);
+    target.read(&gpu.device)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

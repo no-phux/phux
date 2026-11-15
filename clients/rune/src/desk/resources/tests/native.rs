@@ -190,20 +190,7 @@ fn native_png_headless_renderer_smoke() {
     );
     let gpu = rune::render::Gpu::headless();
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-    let target = rune::render::Offscreen::new(&gpu.device, 800, 600);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (800, 600),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(&gpu, &mut renderer, &mut rt, (800, 600));
     let accessibility = rt.accessibility_json().to_string();
     assert!(
         accessibility.contains("Native JSON inspector"),

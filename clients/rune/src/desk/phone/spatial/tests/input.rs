@@ -47,13 +47,10 @@ fn a_collapsed_focus_can_be_picked_without_nonfinite_runtime_geometry() {
     no_input(&client);
 }
 use phux_protocol::wire::frame::FrameKind;
-use rune::{Key, KeyEvent, Mods};
+use rune::Key;
 
 fn key(rt: &mut rune::Runtime<Desk>, key: Key) {
-    rt.key(KeyEvent {
-        key,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(key));
     rt.frame(1.0 / 60.0);
 }
 

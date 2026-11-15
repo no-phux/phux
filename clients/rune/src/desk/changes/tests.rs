@@ -6,7 +6,7 @@ use phux_protocol::checkout::{
     CheckoutAnswer, CheckoutArea, CheckoutDiff, CheckoutEntry, CheckoutRefusal,
     CheckoutRefusalCode, CheckoutStatus,
 };
-use rune::{Key, KeyEvent, Mods};
+use rune::Key;
 
 use crate::changes::Line;
 use crate::desk::Desk;
@@ -34,10 +34,7 @@ fn answer(desk: &mut Desk, request_id: u32, answer: CheckoutAnswer) -> bool {
 }
 
 fn press(rt: &mut rune::Runtime<Desk>, key: Key) {
-    rt.key(KeyEvent {
-        key,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(key));
     rt.frame(0.0);
 }
 

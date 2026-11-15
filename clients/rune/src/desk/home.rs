@@ -160,8 +160,6 @@ fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_client_core::layout::wire::HandleMap;
-    use phux_protocol::ids::ResourceId;
 
     fn session(id: u32, name: &str, created: i64) -> SessionDescriptor {
         SessionDescriptor {
@@ -183,19 +181,7 @@ mod tests {
     }
 
     fn topology(sessions: Vec<SessionDescriptor>) -> Topology {
-        Topology {
-            sessions,
-            resources: Vec::new(),
-            panes: Vec::new(),
-            agent_sessions: Vec::new(),
-            documents: Vec::new(),
-            satellite_sessions: Vec::new(),
-            focused_session: 0,
-            focused_pane: ResourceId::local(0),
-            authority: None,
-            inbox: None,
-            handles: HandleMap::new(),
-        }
+        crate::desk::topology(sessions, Vec::new())
     }
 
     #[test]

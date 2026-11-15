@@ -278,20 +278,7 @@ fn render(
     // frame too, rather than exporting the previous frame's draw instances.
     rt.frame(1.0);
     rt.frame(1.0);
-    let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        size,
-    );
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut encoder, &target.view, [0.0; 4]);
-    target.copy(&mut encoder);
-    renderer.submit(&gpu.queue, encoder);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(gpu, renderer, rt, size);
     assert!(
         pixels
             .as_chunks::<4>()

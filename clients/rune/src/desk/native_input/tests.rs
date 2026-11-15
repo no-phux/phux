@@ -5,13 +5,7 @@ mod retirement;
 
 fn native(d: &mut Desk) {
     d.phone = Some(super::super::phone::Phone::default());
-    d.native = Some(crate::mobile::Platform {
-        target: phux_client_runtime::Target::uds("/tmp/not-used"),
-        active: true,
-        connection_requested: false,
-        paste_requested: false,
-        away_since: None,
-    });
+    d.native = Some(crate::mobile::Platform::test());
 }
 
 fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
@@ -570,13 +564,7 @@ fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
     let (client, mut rt) = crate::grid::budget::input_fixture();
     rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.phone = Some(super::super::phone::Phone::default());
-    rt.state.native = Some(crate::mobile::Platform {
-        target: phux_client_runtime::Target::uds("/tmp/not-used"),
-        active: true,
-        connection_requested: false,
-        paste_requested: false,
-        away_since: None,
-    });
+    rt.state.native = Some(crate::mobile::Platform::test());
     rt.set_viewport((393.0, 600.0), 2.0);
     for _ in 0..120 {
         rt.frame(1.0 / 60.0);

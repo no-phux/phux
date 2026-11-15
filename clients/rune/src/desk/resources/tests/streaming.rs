@@ -133,20 +133,7 @@ fn render(
     gpu: &rune::render::Gpu,
     renderer: &mut rune::render::Renderer,
 ) -> Vec<u8> {
-    let target = rune::render::Offscreen::new(&gpu.device, 800, 600);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (800, 600),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    target.read(&gpu.device)
+    crate::ui::offscreen(gpu, renderer, rt, (800, 600))
 }
 
 fn marker(pixels: &[u8]) -> [u8; 4] {

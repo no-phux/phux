@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use phux_client_core::layout::wire::HandleMap;
 use phux_client_runtime::Runtime;
 use phux_client_runtime::control::{ControlOptions, PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
@@ -53,19 +52,7 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
 }
 
 fn topology(panes: Vec<PaneDescriptor>) -> Topology {
-    Topology {
-        sessions: Vec::new(),
-        resources: Vec::new(),
-        panes,
-        agent_sessions: Vec::new(),
-        documents: Vec::new(),
-        satellite_sessions: Vec::new(),
-        focused_session: 0,
-        focused_pane: ResourceId::local(0),
-        authority: None,
-        inbox: None,
-        handles: HandleMap::new(),
-    }
+    crate::desk::topology(Vec::new(), panes)
 }
 
 fn embedded() -> Arc<Client> {
