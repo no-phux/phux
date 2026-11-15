@@ -90,7 +90,8 @@ pub(super) fn connection_samples() -> Vec<FrameKind> {
                 .with_compression(CompressionSet::from_bits(CompressionSet::DEFLATE))
                 .with_ssh_origin(origin)
                 .with_quic_streams(true)
-                .with_platform(crate::caps::ClientPlatform::parse("macos")),
+                .with_platform(crate::caps::ClientPlatform::parse("macos"))
+                .with_credential_approvals(true),
         ),
         hello_ok(ServerCapabilities::new()),
         hello_ok(ServerCapabilities::new().with_compression(Compression::Deflate)),

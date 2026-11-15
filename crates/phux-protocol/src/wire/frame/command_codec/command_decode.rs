@@ -43,6 +43,25 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
         return Ok(Command::DescribeApi);
     }
+    if tag == crate::wire::frame::COMMAND_TAG_CREDENTIALS {
+        let bytes = dec.read_bytes()?;
+        if bytes.len() > crate::credentials::MAX_CREDENTIAL_PAYLOAD {
+            return Err(DecodeError::InvalidCredentialPayload);
+        }
+        let op: crate::credentials::CredentialOp =
+            serde_json::from_slice(bytes).map_err(|error| {
+                if crate::wire::error::names_unknown_json(&error.to_string()) {
+                    DecodeError::UnsupportedPayload {
+                        payload: "CredentialOp",
+                    }
+                } else {
+                    DecodeError::InvalidCredentialPayload
+                }
+            })?;
+        op.validate()
+            .map_err(|_| DecodeError::InvalidCredentialPayload)?;
+        return Ok(Command::Credentials { op });
+    }
     if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
         return Ok(Command::HostChecklist);
     }

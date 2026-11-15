@@ -11,6 +11,7 @@
     reason = "this private module is the crate root of the C lane; its `pub(crate)` helpers are shared with its own submodules"
 )]
 
+mod approvals;
 mod arrangement;
 mod client;
 mod connect;
@@ -58,6 +59,7 @@ use phux_protocol::input::InputEvent;
 #[cfg(test)]
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
+pub use approvals::*;
 pub use arrangement::*;
 pub use connect::*;
 pub use directory::*;

@@ -65,6 +65,7 @@ pub(super) fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         old.dispose();
     }
     find::install(app, &document)?;
+    approvals::install(app)?;
     if focus_is_idle(&document) {
         app.borrow().place_input_surface();
         let _ = surface.focus();

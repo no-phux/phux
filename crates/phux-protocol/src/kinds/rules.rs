@@ -481,6 +481,9 @@ static C_PRIVACY_STATUS: Rule = Rule::verbs(
     &[Verb::Inventory],
     GLOBAL_OWNER_UDS,
 );
+// Full Global control, never pane-scoped agent keys or control-class grants.
+// Every Request also goes through the mandatory per-exchange approval gate.
+static C_CREDENTIALS: Rule = Rule::verbs("`CREDENTIALS`", &[Verb::Bind, Verb::Input], GLOBAL);
 // What works on the host, for a person deciding what to fix: inventory, so a
 // paired phone reads it like `GET_STATE`.
 static C_HOST_CHECKLIST: Rule = Rule::verbs("`HOST_CHECKLIST`", &[Verb::Inventory], GLOBAL);
@@ -489,7 +492,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 61] = [
+pub static COMMAND_RULES: [&Rule; 62] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -527,6 +530,7 @@ pub static COMMAND_RULES: [&Rule; 61] = [
     &C_MIRROR,
     &C_MIRROR_PROVIDE,
     &C_PRIVACY_STATUS,
+    &C_CREDENTIALS,
     &C_HOST_CHECKLIST,
     &C_NATIVE_SPAWN,
     &C_NATIVE_LIST,

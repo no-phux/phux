@@ -148,6 +148,7 @@ impl ControlOptions {
                 },
             )
             .with_layers(LayerSet::with(&[Layer::L3]))
+            .with_credential_approvals(true)
             .with_bootstrap(self.bootstrap_caps())
             .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS)
     }

@@ -7,6 +7,7 @@
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
 //! chord to its remote `SPAWN_RESOURCE` reply.
 
+pub(in crate::attach) mod approvals;
 mod args;
 mod chrome_drag;
 mod ctx;
