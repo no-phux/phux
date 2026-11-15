@@ -11,10 +11,8 @@
 pub mod agent;
 pub mod agent_records;
 pub mod checkout;
-pub mod event;
 pub mod grid;
 pub mod id;
 pub mod organization;
-pub mod outcome;
 pub mod status;
 pub mod topology;
