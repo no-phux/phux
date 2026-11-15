@@ -190,12 +190,10 @@ async fn relay_kind_lookup_uses_one_bounded_inventory_then_only_learned_facts() 
         else {
             panic!("kind fallback must use the existing bounded server inventory");
         };
-        session
-            .handle_inbound(&encode(&FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::OkWith(CommandValue::State(kind_snapshot())),
-            }))
-            .expect("inventory response");
+        session.feed(&FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(kind_snapshot())),
+        });
     };
     let (kind, ()) = tokio::join!(relay.resource_kind(7), resolve);
     assert_eq!(kind.expect("agent kind"), ResourceKind::AgentSession);
