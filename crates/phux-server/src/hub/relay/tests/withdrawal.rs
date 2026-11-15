@@ -313,15 +313,10 @@ fn upstream_detach_barrier_discards_old_frames_before_a_fresh_attach() {
         command: Command::attach_terminal(ResourceId::local(9), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(BootstrapLimits::default()),
+            ..proxy(9, ClientId(1), out_tx)
         }),
     };
     let prepared = session.prepare_request(&request);

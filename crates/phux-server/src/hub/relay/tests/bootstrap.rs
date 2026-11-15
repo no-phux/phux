@@ -204,15 +204,10 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
         command: Command::attach_terminal(ResourceId::local(7), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 7,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(limits),
+            ..proxy(7, ClientId(1), out_tx)
         }),
     });
     assert!(
@@ -239,15 +234,10 @@ fn content_subscription_requires_exact_downstream_profile_and_bounds() {
         command: Command::attach_terminal(ResourceId::local(8), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 8,
-            client: ClientId(2),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(native_profile()),
             bootstrap_limits: Some(smaller),
+            ..proxy(8, ClientId(2), out_tx)
         }),
     });
     assert!(wire.is_none(), "mismatched bounds reached the link");

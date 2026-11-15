@@ -229,17 +229,7 @@ fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_t
         );
         let (out_tx, _out_rx) = mpsc::channel(1);
         let wire = session.handle_request(RelayRequest::Subscribe {
-            subscription: ProxySubscription {
-                resource_kind: None,
-                terminal: 9,
-                client: ClientId(1),
-                out_tx,
-                consumer_cancel: CancellationToken::new(),
-                seq: 1,
-                awaits_snapshot: false,
-                bootstrap_profile: None,
-                bootstrap_limits: None,
-            },
+            subscription: proxy(9, ClientId(1), out_tx),
             forward: FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(9)),
                 after_seq: None,

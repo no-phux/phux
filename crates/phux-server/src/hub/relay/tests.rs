@@ -34,6 +34,39 @@ pub(super) fn next_frame(rx: &mut mpsc::Receiver<Outbound>, what: &str) -> Frame
     }
 }
 
+/// An events-shaped subscription at token 1, with no bootstrap selection.
+pub(super) fn proxy(
+    terminal: u32,
+    client: ClientId,
+    out_tx: mpsc::Sender<Outbound>,
+) -> ProxySubscription {
+    ProxySubscription {
+        resource_kind: None,
+        terminal,
+        client,
+        out_tx,
+        consumer_cancel: CancellationToken::new(),
+        seq: 1,
+        awaits_snapshot: false,
+        bootstrap_profile: None,
+        bootstrap_limits: None,
+    }
+}
+
+/// Send an unsubscribed `command`: its wire bytes and reply.
+pub(super) fn send_command(
+    session: &mut RelaySession,
+    command: Command,
+) -> (Option<Vec<u8>>, oneshot::Receiver<CommandResult>) {
+    let (reply, rx) = oneshot::channel();
+    let wire = session.handle_request_checked(RelayRequest::Command {
+        command,
+        reply,
+        subscribe: None,
+    });
+    (wire, rx)
+}
+
 impl RelaySession {
     /// Feed one valid satellite frame.
     pub(super) fn feed(&mut self, frame: &FrameKind) {
@@ -77,15 +110,8 @@ pub(super) fn subscribe_at(
 ) {
     let wire = session.handle_request(RelayRequest::Subscribe {
         subscription: ProxySubscription {
-            resource_kind: None,
-            terminal,
-            client,
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
             seq,
-            awaits_snapshot: false,
-            bootstrap_profile: None,
-            bootstrap_limits: None,
+            ..proxy(terminal, client, out_tx)
         },
         forward: FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::local(terminal)),
@@ -112,15 +138,10 @@ pub(super) fn attach(
         command: Command::attach_terminal(ResourceId::local(terminal), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal,
-            client,
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            seq: 1,
             awaits_snapshot: true,
             bootstrap_profile: Some(selected_profile),
             bootstrap_limits: Some(selected_limits),
+            ..proxy(terminal, client, out_tx)
         }),
     });
     assert!(!wire.is_empty(), "attach must produce the COMMAND frame");

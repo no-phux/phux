@@ -68,15 +68,11 @@ fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
         command: Command::attach_terminal(ResourceId::local(9), None),
         reply: reply_b,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(2),
-            out_tx: tx_b.clone(),
-            consumer_cancel: CancellationToken::new(),
             seq: 2,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(BootstrapLimits::default()),
+            ..proxy(9, ClientId(2), tx_b.clone())
         }),
     });
     let FrameKind::Command { request_id, .. } = decode(&wire) else {
@@ -135,15 +131,11 @@ fn satellite_error_never_rolls_back_a_preexisting_subscription() {
         command: Command::attach_terminal(ResourceId::local(9), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
             seq: 2,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(BootstrapLimits::default()),
+            ..proxy(9, ClientId(1), out_tx)
         }),
     });
     let FrameKind::Command { request_id, .. } = decode(&wire) else {

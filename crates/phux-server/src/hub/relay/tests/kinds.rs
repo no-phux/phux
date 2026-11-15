@@ -37,14 +37,10 @@ fn agent_resume_relay_routes_cursors_only_with_support_and_a_sole_consumer() {
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: Some(phux_protocol::ids::ResourceKind::AgentSession),
-                terminal: 7,
-                client: ClientId(1),
-                out_tx,
-                consumer_cancel: CancellationToken::new(),
-                seq: 1,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(native_profile()),
                 bootstrap_limits: Some(limits),
+                ..proxy(7, ClientId(1), out_tx)
             }),
         });
         let resume = cursor.is_some() && supports_resume && !shared;

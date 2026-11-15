@@ -129,15 +129,9 @@ fn idempotent_reattach_cannot_cancel_a_queued_terminal_close() {
 
     let (new_tx, mut new_rx) = mpsc::channel(2);
     let registration = session.register_subscriber(ProxySubscription {
-        resource_kind: None,
-        terminal: 9,
-        client: ClientId(1),
-        out_tx: new_tx,
-        consumer_cancel: CancellationToken::new(),
         seq: 0,
         awaits_snapshot: true,
-        bootstrap_profile: None,
-        bootstrap_limits: None,
+        ..proxy(9, ClientId(1), new_tx)
     });
     assert!(matches!(registration, Registration::Idempotent));
     assert!(session.subscribers[&9][0].retire_after_flush);
