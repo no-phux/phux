@@ -6,24 +6,13 @@ use super::*;
 #[test]
 pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
     let mut h = Harness::new();
-    let applied = h
-        .run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: shell(),
-        })
-        .expect("create");
+    let applied = h.create(None, shell(), None).expect("create");
     let r = created(&applied).1.expect("resource");
     assert_eq!(h.resource(r).session, h.inbox());
 
     let missing = SessionKey::from_bytes([7; 16]);
     assert_eq!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: Some(missing),
-            resource: shell(),
-        })
-        .err(),
+        h.create(Some(missing), shell(), None).err(),
         Some(Refusal::NotFound)
     );
     let orphan_agent = NewResource {
@@ -32,11 +21,7 @@ pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: orphan_agent,
-        }),
+        h.create(None, orphan_agent, None),
         Err(Refusal::InvalidArgument {
             field: "parent",
             ..
@@ -48,11 +33,7 @@ pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: wrong_spec,
-        }),
+        h.create(None, wrong_spec, None),
         Err(Refusal::InvalidArgument {
             field: "launch",
             ..
@@ -113,11 +94,7 @@ pub(super) fn a_deferred_create_is_dormant_until_relaunched() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: Some(s),
-            resource: without_spec,
-        }),
+        h.create(Some(s), without_spec, None),
         Err(Refusal::InvalidArgument {
             field: "launch_mode",
             ..
