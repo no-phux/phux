@@ -63,7 +63,7 @@ pub const COLOR_KIND_RGB: u8 = 2;
 ///
 /// The `content_tag`, `wide`, `semantic_content`, and `underline` fields
 /// carry libghostty's `CellContentTag`, `CellWide`, `CellSemanticContent`,
-/// and `Underline` discriminants; the header names them.
+/// and `Underline` discriminants.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cell {

@@ -15,7 +15,7 @@ use super::{
 /// `Cell`'s size and every field offset are the mobile bridge's 36-byte cell
 /// contract; a change here breaks the phone apps' decoder.
 #[test]
-fn cell_layout_matches_the_c_abi() {
+fn cell_layout_is_pinned() {
     assert_eq!(size_of::<Cell>(), 36);
     assert_eq!(align_of::<Cell>(), 4);
     assert_eq!(offset_of!(Cell, utf8_offset), 0);
@@ -39,9 +39,9 @@ fn cell_layout_matches_the_c_abi() {
     assert_eq!(offset_of!(Cell, reserved), 34);
 }
 
-/// `CellMetadata` is `PhuxGridCellMetadata` in the same header.
+/// `CellMetadata`'s size and field offsets are pinned like `Cell`'s.
 #[test]
-fn cell_metadata_layout_matches_the_c_abi() {
+fn cell_metadata_layout_is_pinned() {
     assert_eq!(size_of::<CellMetadata>(), 4);
     assert_eq!(offset_of!(CellMetadata, foreground_kind), 0);
     assert_eq!(offset_of!(CellMetadata, foreground_palette_index), 1);
@@ -50,18 +50,17 @@ fn cell_metadata_layout_matches_the_c_abi() {
 }
 
 #[test]
-fn cursor_style_numbers_match_the_c_abi() {
+fn cursor_style_numbers_are_pinned() {
     assert_eq!(CursorStyle::Bar as u32, 0);
     assert_eq!(CursorStyle::Block as u32, 1);
     assert_eq!(CursorStyle::Underline as u32, 2);
     assert_eq!(CursorStyle::BlockHollow as u32, 3);
 }
 
-/// The `CELL_*` bits are `PHUX_CLIENT_CELL_*` and the `COLOR_KIND_*` values
-/// are `PHUX_GRID_COLOR_*` in the header; both sides are independent literals,
-/// so this test is what keeps them from drifting apart.
+/// The `CELL_*` bits and `COLOR_KIND_*` values are pinned literals the
+/// phone apps decode; this test keeps them from drifting.
 #[test]
-fn cell_flag_bits_and_color_kinds_match_the_c_abi() {
+fn cell_flag_bits_and_color_kinds_are_pinned() {
     assert_eq!(CELL_BOLD, 1 << 0);
     assert_eq!(CELL_ITALIC, 1 << 1);
     assert_eq!(CELL_FAINT, 1 << 2);

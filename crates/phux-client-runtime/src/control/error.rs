@@ -11,8 +11,8 @@ pub enum ControlError {
     /// A refusal no retry can satisfy; the session is over.
     #[error("{0}")]
     Refused(String),
-    /// A retired, mismatched, or duplicate generation: the C ABI
-    /// reports `InvalidState` and the session stays attached.
+    /// A retired, mismatched, or duplicate generation; the session stays
+    /// attached.
     #[error("{0}")]
     InvalidState(String),
     /// A replica generation was invalidated; reconnect for fresh
