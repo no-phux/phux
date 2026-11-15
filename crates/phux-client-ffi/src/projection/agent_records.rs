@@ -1,6 +1,6 @@
 //! `AgentSession` records (ADR-0103) as the codec's own JSON lines.
 //!
-//! The kernel validated and decoded every record; both encoders hand them
+//! The kernel validated and decoded every record; the bridge hands them
 //! on as `AgentEventsJsonlV1` lines (`{"seq","ts_ms","type","data"}`, one
 //! object per line, each ending in `\n`) so a host parses one documented
 //! shape, including the `phux.transcript/v1` entries `provider_raw` records

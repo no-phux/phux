@@ -379,7 +379,7 @@ impl ControlPlane {
             FrameKind::DirectoryListing { request_id, result } => {
                 if let Some(result) = self.resolve_directory_listing(request_id, result) {
                     // Preserve manually correlated extension traffic for
-                    // projection shims such as the stable C ABI.
+                    // consumers that read raw frames.
                     self.push_event(Event::Frame(Box::new(FrameKind::DirectoryListing {
                         request_id,
                         result,
