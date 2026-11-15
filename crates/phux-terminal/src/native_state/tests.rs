@@ -6,8 +6,8 @@ use phux_protocol::caps::BootstrapProfileKind;
 
 fn snapshot_ready_offset(bytes: &[u8]) -> Result<usize, NativeStateError> {
     let mut reader = Cursor::new(bytes);
-    let decoder = Decoder::new(&mut reader)?;
-    drop(decoder.ready()?);
+    let decoder = Decoder::new(&mut reader).map_err(engine_error)?;
+    drop(decoder.ready().map_err(engine_error)?);
     let offset = usize::try_from(reader.position()).unwrap_or(bytes.len());
     Ok(offset.min(bytes.len()))
 }

@@ -143,7 +143,7 @@ impl NativeTerminalManager {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.terminal = Some(terminal);
-                return Err(error.into());
+                return Err(super::capture_error(&error));
             }
         };
         self.next_generation = next_generation;

@@ -8,7 +8,7 @@ use super::rules::RuleSet;
 use super::identity::KernelIdentity;
 use super::{
     AgentDetector, AgentReport, Cadence, DetectedState, TICK_CONFIRMING, TICK_IDENTIFIED,
-    TICK_UNIDENTIFIED, live_session,
+    TICK_UNIDENTIFIED,
 };
 
 impl AgentDetector {
@@ -111,7 +111,10 @@ impl AgentDetector {
     }
 
     /// Wire the live-`AgentSession`-child probe (ADR-0103 §5).
-    pub(crate) fn set_live_session_probe(&mut self, probe: live_session::LiveSessionProbe) {
+    pub(crate) fn set_live_session_probe(
+        &mut self,
+        probe: phux_terminal_api::agent_detect::LiveSessionProbe,
+    ) {
         self.live_session = Some(probe);
     }
 

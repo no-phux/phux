@@ -86,9 +86,6 @@ pub use tick::*;
 /// Line half of [`DEFAULT_SCROLLBACK`]: a tmux-style mid-range value.
 const DEFAULT_MAX_SCROLLBACK: u32 = 10_000;
 
-/// Finite history replay for resource attachment and replacement generations.
-pub const DEFAULT_REPLAY_SCROLLBACK_LINES: u32 = 1_000;
-
 /// Scrollback bounds for the no-config constructors; the runtime passes the
 /// configured `defaults.history-limit`/`history-bytes` (ADR-0094).
 const DEFAULT_SCROLLBACK: phux_config::ScrollbackLimits =
@@ -247,7 +244,7 @@ pub struct TerminalActor {
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
     /// handed to the detector when [`Self::run`] builds it.
-    live_session_probe: Option<crate::agent_detect::live_session::LiveSessionProbe>,
+    live_session_probe: Option<phux_terminal_api::agent_detect::LiveSessionProbe>,
     /// The bound `AgentSession` child's producer channel. With one bound, a
     /// hook report is appended to its stream (ADR-0103 §6); a closed channel
     /// behaves like no child.

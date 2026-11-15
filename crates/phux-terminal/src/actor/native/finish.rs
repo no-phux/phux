@@ -139,7 +139,7 @@ impl TerminalActor {
             ) {
                 Ok(reply) => prepared.push((waiter, reply)),
                 Err(error) => {
-                    let _ = waiter.reply.send(Err(error.into()));
+                    let _ = waiter.reply.send(Err(error));
                 }
             }
         }
@@ -200,9 +200,9 @@ impl TerminalActor {
         let mut installed = 0_usize;
         for (waiter, reply_value) in prepared {
             if !self.retain_native_generation(&cursor, installed_new && installed == 0) {
-                let _ = waiter.reply.send(Err(
-                    crate::native_state::NativeStateError::LimitExceeded.into(),
-                ));
+                let _ = waiter
+                    .reply
+                    .send(Err(crate::native_state::NativeStateError::LimitExceeded));
                 continue;
             }
             installed += 1;
@@ -301,7 +301,7 @@ impl TerminalActor {
                 | crate::native_state::NativeStateError::Resize => error,
                 _ => crate::native_state::NativeStateError::LimitExceeded,
             };
-            let _ = waiter.reply.send(Err(error.into()));
+            let _ = waiter.reply.send(Err(error));
         }
     }
 
@@ -347,9 +347,9 @@ impl TerminalActor {
                 }
                 self.apply_native_replay(&pending.replay);
                 for waiter in pending.waiters {
-                    let _ = waiter.reply.send(Err(
-                        crate::native_state::NativeStateError::LimitExceeded.into(),
-                    ));
+                    let _ = waiter
+                        .reply
+                        .send(Err(crate::native_state::NativeStateError::LimitExceeded));
                 }
             }
         } else if let Some(pending) = self.pending_native_bootstrap.as_mut() {
