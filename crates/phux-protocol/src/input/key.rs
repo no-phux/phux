@@ -5,7 +5,7 @@
 /// Press, release, or repeat. Wire `u32`; values match libghostty's
 /// `key::Action`.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, int_enum::IntEnum)]
 pub enum KeyAction {
     /// Key was released.
     Release = 0,
@@ -13,32 +13,6 @@ pub enum KeyAction {
     Press = 1,
     /// Key is being held down (auto-repeat).
     Repeat = 2,
-}
-
-impl KeyAction {
-    /// The wire discriminant.
-    #[must_use]
-    pub const fn to_u32(self) -> u32 {
-        self as u32
-    }
-
-    /// Build from a wire discriminant; `None` if unknown.
-    #[must_use]
-    pub const fn from_u32(v: u32) -> Option<Self> {
-        match v {
-            0 => Some(Self::Release),
-            1 => Some(Self::Press),
-            2 => Some(Self::Repeat),
-            _ => None,
-        }
-    }
-}
-
-impl TryFrom<u32> for KeyAction {
-    type Error = u32;
-    fn try_from(v: u32) -> Result<Self, u32> {
-        Self::from_u32(v).ok_or(v)
-    }
 }
 
 bitflags::bitflags! {
@@ -354,9 +328,9 @@ mod tests {
     #[test]
     fn key_action_round_trips_wire_discriminant() {
         for a in [KeyAction::Release, KeyAction::Press, KeyAction::Repeat] {
-            assert_eq!(KeyAction::from_u32(a.to_u32()), Some(a));
+            assert_eq!(KeyAction::try_from(a as u32), Ok(a));
         }
-        assert_eq!(KeyAction::from_u32(9), None);
+        assert!(KeyAction::try_from(9).is_err());
     }
 
     #[test]
