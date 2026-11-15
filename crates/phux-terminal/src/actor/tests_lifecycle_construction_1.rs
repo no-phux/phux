@@ -148,14 +148,7 @@ async fn actor_responds_to_snapshot_request_on_localset() {
             .terminal()
             .expect("terminal facet")
             .snapshot
-            .send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply: reply_tx,
-            })
+            .send(whole_snapshot(reply_tx))
             .await
             .expect("send snapshot request");
         let (snap, base_seq) = reply_rx

@@ -90,14 +90,7 @@ async fn actor_exits_on_cancellation() {
             .terminal()
             .expect("terminal facet")
             .snapshot
-            .try_send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply: reply_tx,
-            });
+            .try_send(whole_snapshot(reply_tx));
         drop(reply_rx);
     })
     .await;

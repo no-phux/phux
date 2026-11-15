@@ -134,6 +134,48 @@ pub(super) fn actor_with_consumer(
     (actor, client, rx)
 }
 
+/// A viewport snapshot with every image protocol and no byte or frame
+/// bound, chunked one byte at a time.
+pub(super) fn whole_snapshot(
+    reply: oneshot::Sender<Result<(SnapshotBytes, u64), phux_terminal_api::grid::CaptureError>>,
+) -> SnapshotRequest {
+    SnapshotRequest {
+        image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
+        scrollback: None,
+        max_bytes: usize::MAX,
+        max_frames: usize::MAX,
+        chunk_bytes: 1,
+        reply,
+    }
+}
+
+/// A native bootstrap of terminal 1, stream 1, bootstrap 1 for `owner`,
+/// under default limits and the production capture bounds.
+pub(super) fn native_bootstrap(
+    owner: u64,
+    reply: oneshot::Sender<
+        Result<NativeBootstrapReply, phux_terminal_api::native_state::NativeStateError>,
+    >,
+) -> NativeBootstrapRequest {
+    NativeBootstrapRequest::full_budget(
+        owner,
+        phux_protocol::ids::ResourceId::local(1),
+        phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        phux_protocol::caps::BootstrapLimits::default(),
+        reply,
+    )
+}
+
+/// The widest bootstrap bounds a client may negotiate.
+pub(super) fn wide_bootstrap_limits() -> phux_protocol::caps::BootstrapLimits {
+    phux_protocol::caps::BootstrapLimits::new(
+        phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
+        phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
+    )
+    .expect("wide negotiated bootstrap bound")
+}
+
 /// The viewport as right-trimmed rows, skipping wide-cell tails.
 pub(super) fn render_viewport(t: &GhosttyTerminal<'_, '_>) -> Vec<String> {
     use libghostty_vt::render::{CellIterator, RowIterator};

@@ -18,14 +18,7 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
             .terminal()
             .expect("terminal facet")
             .snapshot
-            .send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply,
-            })
+            .send(whole_snapshot(reply))
             .await
             .expect("send snapshot");
         String::from_utf8_lossy(

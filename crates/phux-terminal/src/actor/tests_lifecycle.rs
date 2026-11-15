@@ -38,14 +38,7 @@ async fn snapshot_under_pty_pressure(refill_chunks: usize) {
         .terminal()
         .expect("terminal")
         .snapshot
-        .try_send(SnapshotRequest {
-            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-            scrollback: None,
-            max_bytes: usize::MAX,
-            max_frames: usize::MAX,
-            chunk_bytes: 1,
-            reply,
-        })
+        .try_send(whole_snapshot(reply))
         .expect("snapshot request");
     let run = tokio::task::spawn_local(actor.run());
     let (_, base_seq) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, replied)

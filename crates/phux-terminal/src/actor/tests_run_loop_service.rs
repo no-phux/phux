@@ -5,10 +5,8 @@ use futures_util::FutureExt;
 
 use super::*;
 use crate::ControlRequest;
-use crate::actor::test_support::{dummy_outbound, on_local};
-use crate::actor::{
-    ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest, SnapshotRequest,
-};
+use crate::actor::test_support::{dummy_outbound, on_local, whole_snapshot};
+use crate::actor::{ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest};
 use phux_agent_session::parent::{AgentParent, AgentParentRequest};
 use phux_protocol::ClientId;
 use tokio::sync::oneshot;
@@ -168,14 +166,7 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         let (reply, replied) = oneshot::channel();
         facet
             .snapshot
-            .try_send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply,
-            })
+            .try_send(whole_snapshot(reply))
             .expect("snapshot");
         snapshots.push(replied);
     }
@@ -261,16 +252,7 @@ async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
     let mut actor = bundle.actor;
     let mut state = actor.arm_run_loop().await;
     let (reply, _capture) = oneshot::channel();
-    actor.start_native_bootstrap(crate::actor::NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
-    });
+    actor.start_native_bootstrap(crate::actor::test_support::native_bootstrap(31, reply));
     assert!(
         actor.native_bootstrap_pending(),
         "real capture owns the grid"
@@ -281,14 +263,7 @@ async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
         .terminal()
         .expect("terminal")
         .snapshot
-        .try_send(SnapshotRequest {
-            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-            scrollback: None,
-            max_bytes: usize::MAX,
-            max_frames: usize::MAX,
-            chunk_bytes: 1,
-            reply,
-        })
+        .try_send(whole_snapshot(reply))
         .expect("snapshot");
     let (reply, mut cwd) = oneshot::channel();
     bundle
@@ -334,14 +309,7 @@ async fn service_rotation_services_due_state_tick_under_request_pressure() {
             .terminal()
             .expect("terminal")
             .snapshot
-            .try_send(SnapshotRequest {
-                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
-                reply,
-            })
+            .try_send(whole_snapshot(reply))
             .expect("snapshot");
         actor.service_pending_turn(&mut state, deadline.as_mut());
     }

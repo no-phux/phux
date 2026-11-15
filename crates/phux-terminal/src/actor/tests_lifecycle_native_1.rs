@@ -47,18 +47,8 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
             .expect("terminal facet")
             .native_bootstrap
             .send(NativeBootstrapRequest {
-                owner: 3,
-                terminal_id: phux_protocol::ids::ResourceId::local(1),
-                stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-                limits: phux_protocol::caps::BootstrapLimits::new(
-                    phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
-                    phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
-                )
-                .expect("wide negotiated bootstrap bound"),
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-                reply,
+                limits: wide_bootstrap_limits(),
+                ..native_bootstrap(3, reply)
             })
             .await
             .expect("send native request");
@@ -102,16 +92,7 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
     let mut actor = bundle.actor;
     let (reply, _replied) = oneshot::channel();
-    actor.start_native_bootstrap(NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
-    });
+    actor.start_native_bootstrap(native_bootstrap(31, reply));
     assert!(
         actor.terminal.borrow().try_terminal().is_none(),
         "the capture must actually hold the terminal for this to test anything",
@@ -162,16 +143,7 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
     let mut actor = bundle.actor;
     let (reply, replied) = oneshot::channel();
-    actor.start_native_bootstrap(NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
-    });
+    actor.start_native_bootstrap(native_bootstrap(31, reply));
     assert!(
         actor.pending_native_bootstrap.is_some(),
         "the capture must be in flight for this to be the race under test",
@@ -213,16 +185,7 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     let bundle = TerminalActor::new(80, 24).expect("new actor");
     let mut actor = bundle.actor;
     let (reply, replied) = oneshot::channel();
-    actor.start_native_bootstrap(NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
-    });
+    actor.start_native_bootstrap(native_bootstrap(31, reply));
     actor
         .pending_native_bootstrap
         .as_mut()
@@ -332,18 +295,8 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
             .expect("terminal facet")
             .native_bootstrap
             .send(NativeBootstrapRequest {
-                owner: 7,
-                terminal_id: phux_protocol::ids::ResourceId::local(1),
-                stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-                limits: phux_protocol::caps::BootstrapLimits::new(
-                    phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
-                    phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
-                )
-                .expect("wide negotiated bootstrap bound"),
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-                reply,
+                limits: wide_bootstrap_limits(),
+                ..native_bootstrap(7, reply)
             })
             .await
             .expect("send native request");
