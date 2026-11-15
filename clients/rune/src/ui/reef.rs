@@ -22,6 +22,7 @@ mod forms;
 pub(super) mod pen;
 mod scene;
 
+use crate::ui::Cover;
 use pen::Pen;
 pub(super) use pen::rgba;
 
@@ -92,25 +93,17 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         target::<Reef>("reef-fish", &who(r, f), at, rad)
     });
 
-    root.child(
-        canvas(back.into_shape())
-            .key("reef-back")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full(),
-    )
-    .children(caustics(desk, r))
-    .child(
-        canvas(front.into_shape())
-            .key("reef-front")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .on_press(Desk::scene_deselect::<Reef>),
-    )
-    .children(labels.iter().map(|l| pill(l, to(l.at), r.w)))
-    .children(targets)
-    .child(readout(r, waiting, p))
+    root.child(canvas(back.into_shape()).key("reef-back").cover())
+        .children(caustics(desk, r))
+        .child(
+            canvas(front.into_shape())
+                .key("reef-front")
+                .cover()
+                .on_press(Desk::scene_deselect::<Reef>),
+        )
+        .children(labels.iter().map(|l| pill(l, to(l.at), r.w)))
+        .children(targets)
+        .child(readout(r, waiting, p))
 }
 
 /// The prototype's two scrolling layers of caustic light on the sand, cut

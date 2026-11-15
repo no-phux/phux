@@ -12,6 +12,7 @@ use super::{
 use crate::desk::Desk;
 use crate::desk::playground::{Playground, Scene};
 use crate::reef::{Mood, Pt, Rgb};
+use crate::ui::Cover;
 
 /// A playground view: whether it is open, how it draws, how it closes.
 type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
@@ -100,9 +101,7 @@ pub(super) fn stage<S: Scene>(
     );
     let root = el()
         .key(key)
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(p.bg)
         .modal(false, Desk::close_scene::<S>)
         .label(summary)

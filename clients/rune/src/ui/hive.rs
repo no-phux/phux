@@ -25,6 +25,7 @@ use crate::creature;
 use crate::desk::Desk;
 use crate::hive::{Hive, RANKS};
 use crate::reef::{Mood, Pt, Rgb, mix};
+use crate::ui::Cover;
 
 mod bee;
 mod comb;
@@ -143,20 +144,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     });
 
     root.children(backdrop)
-        .child(
-            canvas(mid.into_shape())
-                .key("hive-mid")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full(),
-        )
+        .child(canvas(mid.into_shape()).key("hive-mid").cover())
         .children((0..h.frames.len()).map(|i| plaque(h, i)))
         .child(
             canvas(front.into_shape())
                 .key("hive-front")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
+                .cover()
                 .on_press(Desk::scene_deselect::<Hive>),
         )
         .children(pills(h))

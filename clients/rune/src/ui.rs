@@ -237,13 +237,8 @@ fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
         return root.fill(tint);
     }
     let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
-    root.system_material(rune::SystemMaterial::Glass).child(
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(tint.alpha(alpha))
-            .inert(),
-    )
+    root.system_material(rune::SystemMaterial::Glass)
+        .child(el().cover().fill(tint.alpha(alpha)).inert())
 }
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every
@@ -379,9 +374,7 @@ impl Sheet {
             .child(el().w_full().px(14.0).py(10.0).child(foot));
         col()
             .key(format!("{}-scrim", self.key))
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .py(MARGIN)
             .px(MARGIN)
             .items_center()
@@ -416,6 +409,17 @@ pub(crate) fn icon_press(
                 .a11y_hidden(),
         )
         .hover_group()
+}
+
+/// Covering the whole of its parent, over what came before it.
+pub(crate) trait Cover {
+    fn cover(self) -> Self;
+}
+
+impl Cover for El {
+    fn cover(self) -> El {
+        self.absolute(0.0, 0.0).w_full().h_full()
+    }
 }
 
 /// Something to press: a wash under the pointer that deepens while held, and

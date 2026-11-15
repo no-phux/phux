@@ -22,6 +22,7 @@ use crate::reef::{Mood, Pt};
 mod chef;
 mod room;
 
+use crate::ui::Cover;
 use chef::{AMBER, MINT, pool};
 
 /// The night's darkness is worked out on a grid this many points across.
@@ -47,49 +48,32 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let dark = (k.nt > 0.02).then(|| {
         let (w, h, rgba) = night(k);
         desk.kitchen.paint.mask.set(w, h, rgba);
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .pixels(&desk.kitchen.paint.mask)
+        el().cover().pixels(&desk.kitchen.paint.mask)
     });
     let targets = k.chefs.iter().map(|c| {
         let (at, r) = k.hit(c);
         let rad = r.max(10.0) + 8.0;
         target::<Kitchen>("kitchen-chef", &who(k, c), at, rad)
     });
-    root.child(
-        canvas(room)
-            .key("kitchen-room")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full(),
-    )
-    .child(
-        canvas(pen.into_shape())
-            .key("kitchen-front")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .on_press(Desk::scene_deselect::<Kitchen>),
-    )
-    .children(dark)
-    .child(
-        canvas(over.into_shape())
-            .key("kitchen-over")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full(),
-    )
-    .children(
-        k.lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0])),
-    )
-    .child(neon(k))
-    .children(pills(k))
-    .children(targets)
-    .child(readout(k, waiting, p))
+    root.child(canvas(room).key("kitchen-room").cover())
+        .child(
+            canvas(pen.into_shape())
+                .key("kitchen-front")
+                .cover()
+                .on_press(Desk::scene_deselect::<Kitchen>),
+        )
+        .children(dark)
+        .child(canvas(over.into_shape()).key("kitchen-over").cover())
+        .children(
+            k.lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0])),
+        )
+        .child(neon(k))
+        .children(pills(k))
+        .children(targets)
+        .child(readout(k, waiting, p))
 }
 
 /// Everything that moves, in the prototype's order.

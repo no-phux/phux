@@ -20,6 +20,7 @@ use crate::creature;
 use crate::desk::Desk;
 use crate::pitlane::{AMBER, Mode, PitLane, RANKS};
 use crate::reef::{Mood, Pt};
+use crate::ui::Cover;
 
 mod car;
 mod ground;
@@ -58,8 +59,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         target::<PitLane>("pitlane-car", &who(r, c), [c.x, c.y], rad)
     });
 
-    let full =
-        |shape: rune::Shape, key: &str| canvas(shape).key(key).absolute(0.0, 0.0).w_full().h_full();
+    let full = |shape: rune::Shape, key: &str| canvas(shape).key(key).cover();
     root.children((r.nt < 0.99).then(|| full(day, "pitlane-day")))
         .children((r.nt > 0.01).then(|| {
             let night = full(night, "pitlane-night");

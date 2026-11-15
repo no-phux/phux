@@ -21,6 +21,7 @@ use crate::pitch::{MINT, Mood, Pitch, Pt, RANKS, mix};
 
 mod players;
 
+use crate::ui::Cover;
 use players::Spot;
 
 const PILL: TextStyle = TextStyle::new(11.0, 500.0).mono();
@@ -33,13 +34,13 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     if r.zones.is_empty() {
         return root.child(readout(r, waiting, p));
     }
-    let full = |e: El| e.absolute(0.0, 0.0).w_full().h_full();
     let ground = [(r.nt < 0.99, 1.0), (r.nt > 0.01, r.nt)]
         .into_iter()
         .enumerate()
         .filter(|(_, (shown, _))| *shown)
         .map(|(i, (_, alpha))| {
-            full(el().key(format!("pitch-ground-{i}")))
+            el().key(format!("pitch-ground-{i}"))
+                .cover()
                 .pixels(&desk.pitch.paint.ground[i])
                 .opacity(alpha)
         });
@@ -122,11 +123,13 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
 
     root.children(ground)
         .children(clouds)
-        .child(full(canvas(air.into_shape()).key("pitch-air")))
+        .child(canvas(air.into_shape()).key("pitch-air").cover())
         .children(r.zones.iter().enumerate().map(|(i, _)| board(r, i)))
         .children((0..r.zones.len()).filter_map(|i| bench(r, i)))
         .child(
-            full(canvas(play.into_shape()).key("pitch-play"))
+            canvas(play.into_shape())
+                .key("pitch-play")
+                .cover()
                 .on_press(Desk::scene_deselect::<Pitch>),
         )
         .children(numbers)
