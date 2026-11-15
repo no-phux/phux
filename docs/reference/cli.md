@@ -6429,6 +6429,11 @@ Flags:
                             running process itself is never adopted: neither
                             launchd nor systemd can restart-supervise a process
                             it did not start.
+
+                            When the live server is the one this systemd unit
+                            already runs, the unit is rewritten, and a listener
+                            it gains comes up by restarting that server in
+                            place, panes kept (`phux upgrade`).
       --print               Print the unit (and the restore wrapper) to stdout
                             without writing or loading anything.
   -h, --help                Print help
