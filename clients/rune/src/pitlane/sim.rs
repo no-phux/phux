@@ -9,7 +9,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Bit, Car, Driver, Ember, GOLD, MINT, Mode, PitLane, at};
+use super::{Agent, Bit, Car, Ember, GOLD, MINT, Mode, PitLane, at};
 use crate::creature;
 use crate::reef::{self, Mood, Rng, hash};
 
@@ -28,7 +28,7 @@ fn toward(x: f32, to: f32, by: f32) -> f32 {
 
 impl PitLane {
     /// Cars for exactly `drivers`, keeping each one's place and motion.
-    pub fn sync(&mut self, drivers: Vec<Driver>) {
+    pub fn sync(&mut self, drivers: Vec<Agent>) {
         let mut old = std::mem::take(&mut self.cars);
         for who in drivers {
             let car = match old.iter().position(|c| c.who.id == who.id) {
@@ -301,7 +301,7 @@ impl PitLane {
 }
 
 /// A new car, its pace and rhythm seeded from who it is, already at its tier.
-fn fresh(who: Driver) -> Car {
+fn fresh(who: Agent) -> Car {
     let tier = creature::tier(who.work.as_ref());
     let f = 0.84 + (hash(&who.name) % 1000) as f32 / 1000.0 * 0.22;
     let seed = Rng::new(hash(&format!("{}{:?}", who.name, who.id))).next();

@@ -1,23 +1,11 @@
 use super::sim::DT;
 use super::*;
-use crate::reef::CLAUDE;
-
-fn driver(n: u32, host: usize, mood: Mood) -> Driver {
-    Driver {
-        id: ResourceId::local(n),
-        name: format!("agent-{n}"),
-        host,
-        mood,
-        species: &CLAUDE,
-        work: None,
-    }
-}
 
 fn hosts(names: &[&str]) -> Vec<(String, bool)> {
     names.iter().map(|n| ((*n).to_owned(), true)).collect()
 }
 
-fn scene(drivers: Vec<Driver>, names: &[&str]) -> PitLane {
+fn scene(drivers: Vec<Agent>, names: &[&str]) -> PitLane {
     let mut s = PitLane::default();
     s.sync(drivers);
     s.layout(1280.0, 800.0, &hosts(names));
@@ -26,7 +14,7 @@ fn scene(drivers: Vec<Driver>, names: &[&str]) -> PitLane {
 
 #[test]
 fn the_circuit_is_resampled_evenly_and_closes() {
-    let s = scene(vec![driver(1, 0, Mood::Working)], &["mini"]);
+    let s = scene(vec![Agent::test(1, 0, Mood::Working)], &["mini"]);
     for w in s.trk.windows(2) {
         let d = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
         assert!(d <= SPACING + 0.01, "{d}");
@@ -43,7 +31,7 @@ fn the_circuit_is_resampled_evenly_and_closes() {
 
 #[test]
 fn cars_brake_for_bends_not_on_the_main_straight() {
-    let s = scene(vec![driver(1, 0, Mood::Working)], &["mini"]);
+    let s = scene(vec![Agent::test(1, 0, Mood::Working)], &["mini"]);
     assert!(s.slow.iter().all(|v| (0.42..=1.0).contains(v)));
     let straight = nearest(&s.trk, s.to_s(0.4, 0.1)) / SPACING;
     assert!(s.slow[straight as usize] > 0.95);
@@ -54,10 +42,10 @@ fn cars_brake_for_bends_not_on_the_main_straight() {
 #[test]
 fn garages_follow_the_machines_order_whatever_needs_you() {
     let mut drivers = vec![
-        driver(1, 0, Mood::Working),
-        driver(2, 1, Mood::Idle),
-        driver(3, 1, Mood::Working),
-        driver(4, 2, Mood::Done),
+        Agent::test(1, 0, Mood::Working),
+        Agent::test(2, 1, Mood::Idle),
+        Agent::test(3, 1, Mood::Working),
+        Agent::test(4, 2, Mood::Done),
     ];
     let mut s = scene(drivers.clone(), &["mini", "macbook", "powerhouse-1"]);
     let order = |s: &PitLane| -> Vec<(String, f32, usize)> {
@@ -82,7 +70,7 @@ fn garages_follow_the_machines_order_whatever_needs_you() {
 
 #[test]
 fn a_machine_without_agents_still_has_a_garage() {
-    let s = scene(vec![driver(1, 0, Mood::Working)], &["mini", "far"]);
+    let s = scene(vec![Agent::test(1, 0, Mood::Working)], &["mini", "far"]);
     let far = &s.garages[1];
     assert!(far.bays.is_empty() && far.u1 > far.u0);
     assert!(far.u1 <= 0.75, "clear of parc fermé");
@@ -92,11 +80,11 @@ fn a_machine_without_agents_still_has_a_garage() {
 fn each_mood_has_its_spot() {
     let s = scene(
         vec![
-            driver(1, 0, Mood::Working),
-            driver(2, 0, Mood::Waiting),
-            driver(3, 0, Mood::Idle),
-            driver(4, 0, Mood::Done),
-            driver(5, 0, Mood::Done),
+            Agent::test(1, 0, Mood::Working),
+            Agent::test(2, 0, Mood::Waiting),
+            Agent::test(3, 0, Mood::Idle),
+            Agent::test(4, 0, Mood::Done),
+            Agent::test(5, 0, Mood::Done),
         ],
         &["mini"],
     );
@@ -119,7 +107,7 @@ fn each_mood_has_its_spot() {
 
 #[test]
 fn higher_tiers_are_bigger_cars() {
-    let mut s = scene(vec![driver(1, 0, Mood::Working)], &["mini"]);
+    let mut s = scene(vec![Agent::test(1, 0, Mood::Working)], &["mini"]);
     let base = s.cars[0].r(s.k);
     s.cars[0].tier = 4;
     assert!((s.cars[0].r(s.k) / base - 1.2 / 1.05).abs() < 1e-4);
@@ -137,7 +125,7 @@ fn seconds_to_box(s: &mut PitLane, limit: f32) -> f32 {
 
 #[test]
 fn a_car_that_needs_you_boxes_well_inside_a_lap() {
-    let mut s = scene(vec![driver(1, 0, Mood::Working)], &["mini"]);
+    let mut s = scene(vec![Agent::test(1, 0, Mood::Working)], &["mini"]);
     s.step(DT);
     // Just past the pit entry: the worst case, a whole lap to go.
     s.cars[0].d = (s.entry + 10.0) % s.lap();
@@ -167,7 +155,10 @@ fn a_car_that_needs_you_boxes_well_inside_a_lap() {
 #[test]
 fn no_car_drives_the_pit_lane_backwards() {
     let mut s = scene(
-        vec![driver(1, 0, Mood::Done), driver(2, 0, Mood::Working)],
+        vec![
+            Agent::test(1, 0, Mood::Done),
+            Agent::test(2, 0, Mood::Working),
+        ],
         &["mini"],
     );
     s.step(DT);
@@ -199,7 +190,7 @@ fn the_race_is_the_same_from_the_same_seed() {
     let run = || {
         let mut s = scene(
             (1..=8)
-                .map(|n| driver(n, (n % 2) as usize, Mood::Working))
+                .map(|n| Agent::test(n, (n % 2) as usize, Mood::Working))
                 .collect(),
             &["mini", "macbook"],
         );
@@ -214,7 +205,7 @@ fn the_race_is_the_same_from_the_same_seed() {
 #[test]
 fn a_resize_keeps_cars_on_the_circuit() {
     let mut s = scene(
-        (1..=4).map(|n| driver(n, 0, Mood::Working)).collect(),
+        (1..=4).map(|n| Agent::test(n, 0, Mood::Working)).collect(),
         &["mini"],
     );
     for _ in 0..60 {

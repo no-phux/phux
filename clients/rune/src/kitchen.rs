@@ -10,8 +10,8 @@
 
 use phux_protocol::ids::ResourceId;
 
-use crate::creature::Work;
-use crate::reef::{Mood, Pt, Rng, Species, hash};
+use crate::creature::Agent;
+use crate::reef::{Mood, Pt, Rng, hash};
 
 mod sim;
 pub use sim::{Part, PartKind};
@@ -26,18 +26,6 @@ pub const RANK: [&str; 5] = [
     "Chef de cuisine",
     "Star chef",
 ];
-
-/// An agent as the kitchen needs it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cook {
-    pub id: ResourceId,
-    pub name: String,
-    /// Its machine's line.
-    pub host: usize,
-    pub mood: Mood,
-    pub species: &'static Species,
-    pub work: Option<Work>,
-}
 
 /// A station on a counter: where its chef stands (`x + sx`, `y`), and its
 /// burner or board at (`x`, `iy`).
@@ -359,7 +347,7 @@ pub fn route(a: Pt, b: Pt, blocks: &[Rect]) -> Vec<Pt> {
 /// An agent as a chef: who it is, where it is and where it's going.
 #[derive(Debug, Clone)]
 pub struct Chef {
-    pub who: Cook,
+    pub who: Agent,
     /// Its looks and rhythm, from who it is.
     pub seed: u32,
     pub x: f32,

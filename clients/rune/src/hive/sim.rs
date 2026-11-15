@@ -5,7 +5,7 @@ use std::f32::consts::{PI, TAU};
 
 use phux_protocol::ids::ResourceId;
 
-use super::{Bee, Cam, Forager, Hive, Pt, Task};
+use super::{Agent, Bee, Cam, Hive, Pt, Task};
 use crate::reef::{Mood, Rng, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
@@ -42,7 +42,7 @@ fn steer(b: &mut Bee, to: Pt, max_sp: f32, gain: f32, dt: f32, resp: f32) -> f32
 
 impl Hive {
     /// Bees for exactly `foragers`, keeping each one's place and motion.
-    pub fn sync(&mut self, foragers: Vec<Forager>) {
+    pub fn sync(&mut self, foragers: Vec<Agent>) {
         let mut old: Vec<Bee> = std::mem::take(&mut self.bees);
         let mut fresh = Vec::new();
         for who in foragers {
@@ -310,7 +310,7 @@ impl Hive {
 }
 
 /// A new bee, its rhythm seeded from who it is.
-fn hatch(who: super::Forager, flowers: usize) -> Bee {
+fn hatch(who: Agent, flowers: usize) -> Bee {
     let mut r = Rng::new(hash(&who.name));
     let fi = (r.next() * flowers as f32) as usize;
     let wp = r.next() * TAU;

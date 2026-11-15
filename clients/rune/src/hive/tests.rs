@@ -1,23 +1,10 @@
 use super::*;
-use crate::reef::{CLAUDE, CODEX};
-
-fn forager(n: u32, host: usize, mood: Mood) -> Forager {
-    Forager {
-        id: ResourceId::local(n),
-        name: format!("agent-{n}"),
-        host,
-        mood,
-        species: if n.is_multiple_of(2) { &CLAUDE } else { &CODEX },
-        tier: 1,
-        work: None,
-    }
-}
 
 fn hosts(names: &[&str]) -> Vec<(String, bool)> {
     names.iter().map(|n| ((*n).to_owned(), true)).collect()
 }
 
-fn hive(foragers: Vec<Forager>) -> Hive {
+fn hive(foragers: Vec<Agent>) -> Hive {
     let mut h = Hive::default();
     h.sync(foragers);
     h.layout(1280.0, 800.0, &hosts(&["mini", "macbook", "powerhouse-1"]));
@@ -78,7 +65,7 @@ fn the_comb_is_the_same_from_the_same_host_name() {
 fn every_bee_gets_its_own_cell_in_the_middle_of_its_frame() {
     let h = hive(
         (0..12)
-            .map(|n| forager(n, n as usize % 3, Mood::Working))
+            .map(|n| Agent::test(n, n as usize % 3, Mood::Working))
             .collect(),
     );
     let mut seen = std::collections::HashSet::new();
@@ -95,10 +82,10 @@ fn every_bee_gets_its_own_cell_in_the_middle_of_its_frame() {
 #[test]
 fn moods_act_out_round_their_cells() {
     let mut h = hive(vec![
-        forager(1, 0, Mood::Waiting),
-        forager(2, 1, Mood::Done),
-        forager(3, 2, Mood::Idle),
-        forager(4, 0, Mood::Working),
+        Agent::test(1, 0, Mood::Waiting),
+        Agent::test(2, 1, Mood::Done),
+        Agent::test(3, 2, Mood::Idle),
+        Agent::test(4, 0, Mood::Working),
     ]);
     for _ in 0..600 {
         h.step(STEP);
@@ -131,11 +118,11 @@ fn moods_act_out_round_their_cells() {
 
 #[test]
 fn turning_to_need_you_bursts_and_starts_a_fresh_trail() {
-    let mut h = hive(vec![forager(1, 0, Mood::Working)]);
+    let mut h = hive(vec![Agent::test(1, 0, Mood::Working)]);
     for _ in 0..60 {
         h.step(STEP);
     }
-    h.sync(vec![forager(1, 0, Mood::Waiting)]);
+    h.sync(vec![Agent::test(1, 0, Mood::Waiting)]);
     assert_eq!(h.bees[0].burst, 1.0);
     assert!(h.bees[0].trail.is_empty());
     // Gone: its cell is free again and it's no longer selected.
@@ -152,7 +139,7 @@ fn tiers_add_their_flourishes() {
     assert!(flourish(2).tips && flourish(2).eye < flourish(3).eye);
     let queen = flourish(4);
     assert!(queen.crown && queen.abdomen > 1.0);
-    let mut b = hive(vec![forager(1, 0, Mood::Idle)]).bees.remove(0);
+    let mut b = hive(vec![Agent::test(1, 0, Mood::Idle)]).bees.remove(0);
     let base = b.len(1.0);
     b.who.tier = 4;
     assert!(b.len(1.0) > base * 1.3);
@@ -162,9 +149,9 @@ fn tiers_add_their_flourishes() {
 fn the_sim_is_deterministic_and_idle_bees_draw_first() {
     let make = || {
         let mut h = hive(vec![
-            forager(1, 0, Mood::Working),
-            forager(2, 0, Mood::Idle),
-            forager(3, 1, Mood::Waiting),
+            Agent::test(1, 0, Mood::Working),
+            Agent::test(2, 0, Mood::Idle),
+            Agent::test(3, 1, Mood::Waiting),
         ]);
         for _ in 0..300 {
             h.step(STEP);
@@ -173,15 +160,15 @@ fn the_sim_is_deterministic_and_idle_bees_draw_first() {
     };
     assert_eq!(make(), make());
     let h = hive(vec![
-        forager(1, 0, Mood::Working),
-        forager(2, 0, Mood::Idle),
+        Agent::test(1, 0, Mood::Working),
+        Agent::test(2, 0, Mood::Idle),
     ]);
     assert_eq!(h.draw_order()[0].who.mood, Mood::Idle);
 }
 
 #[test]
 fn the_camera_follows_the_selected_bee_and_stays_inside() {
-    let mut h = hive(vec![forager(1, 0, Mood::Idle)]);
+    let mut h = hive(vec![Agent::test(1, 0, Mood::Idle)]);
     assert_eq!(h.camera_target().z, 1.0);
     h.selected = Some(ResourceId::local(1));
     let to = h.camera_target();

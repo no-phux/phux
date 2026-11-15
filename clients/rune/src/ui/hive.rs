@@ -12,12 +12,13 @@
 
 use std::f32::consts::TAU;
 
-use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::playground::{self, Who, stage, target};
 use super::reef::drift::edges;
 use super::reef::pen::{Pen, clip_convex};
 use super::reef::rgba;
-use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
 use crate::hive::{AMBER, Hive, RANKS, place_pills};
@@ -70,35 +71,15 @@ fn hgrad(pen: &mut Pen, x: f32, y: f32, w: f32, h: f32, n: usize, at: impl Fn(f3
 }
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    desk.hive.night.set(p.bg.luminance() < 0.5);
-    desk.hive.still.set(cx.is_reduced_motion());
     let h = &desk.hive.scene;
-    let count = |m: Mood| h.bees.iter().filter(|b| b.who.mood == m).count();
-    let waiting = count(Mood::Waiting);
-    let summary = format!(
-        "Hive with {} agents on {} hosts: {} working, {waiting} need you, {} done, {} idle",
-        h.bees.len(),
-        h.frames.len(),
-        count(Mood::Working),
-        count(Mood::Done),
-        count(Mood::Idle),
-    );
-    let root = el()
-        .key("hive")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
-        .fill(p.bg)
-        .clip_rounded(0.0)
-        .modal(false, Desk::close_hive)
-        .label(summary)
-        .on_layout(|desk: &mut Desk, rect| desk.hive_laid_out(rect[2], rect[3]));
+    let (root, waiting) = stage(&desk.hive, "hive", "Hive", h.frames.len(), p, cx);
+    let root = root.clip_rounded(0.0);
     if h.frames.is_empty() {
         return root.child(readout(h, waiting, p));
     }
     let (z, o) = h.view();
     let backdrop = {
-        let mut cache = desk.hive.backdrop.borrow_mut();
+        let mut cache = desk.hive.paint.borrow_mut();
         if cache.as_ref().is_none_or(|(g, ..)| *g != h.generation) {
             *cache = Some((h.generation, comb::paint(h, false), comb::paint(h, true)));
         }
@@ -158,16 +139,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     let targets = h.bees.iter().map(|b| {
         let at = h.to_screen([b.x, b.y]);
         let rad = (b.len(h.s) * 0.6 * z).max(10.0) + 8.0;
-        let host = &h.frame_of(b).host;
-        let (press, hover) = (b.who.id.clone(), b.who.id.clone());
-        el().key(format!("hive-bee-{:?}", b.who.id))
-            .absolute(at[0] - rad, at[1] - rad)
-            .size(2.0 * rad, 2.0 * rad)
-            .radius(rad)
-            .cursor(rune::Cursor::Pointer)
-            .label(format!("{}, {}, {host}", b.who.name, b.who.mood.word()))
-            .on_press(move |desk: &mut Desk| desk.hive_press(press.clone()))
-            .on_hover_change(move |desk: &mut Desk, on, _| desk.hive_hover(hover.clone(), on))
+        target::<Hive>("hive-bee", &who(h, b), at, rad)
     });
 
     root.children(backdrop)
@@ -185,7 +157,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 .absolute(0.0, 0.0)
                 .w_full()
                 .h_full()
-                .on_press(Desk::hive_deselect),
+                .on_press(Desk::scene_deselect::<Hive>),
         )
         .children(pills(h))
         .children(targets)
@@ -315,82 +287,23 @@ fn pills(h: &Hive) -> Vec<El> {
         .collect()
 }
 
+fn who<'a>(h: &'a Hive, b: &'a crate::hive::Bee) -> Who<'a> {
+    Who {
+        id: &b.who.id,
+        name: &b.who.name,
+        mood: b.who.mood,
+        host: &h.frame_of(b).host,
+    }
+}
+
 fn readout(h: &Hive, waiting: usize, p: &Ink) -> El {
-    let working = h
-        .bees
-        .iter()
-        .filter(|b| b.who.mood == Mood::Working)
-        .count();
+    // Its rank and work, when its machine publishes agent stats.
     let picked = h.selected_bee().map(|b| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            b.who.name,
-            b.who.mood.word(),
-            h.frame_of(b).host
-        );
-        // Its rank and work, when its machine publishes agent stats.
         let card = b.who.work.map(|w| {
             let rank = RANKS[b.who.tier.min(4)];
             format!("Rank: {rank} · Work: {}", creature::work_line(&w))
         });
-        pressable("hive-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", b.who.name))
-            .on_press(Desk::open_bee)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        (who(h, b), card)
     });
-    let y = if h.h > 0.0 {
-        h.h - 44.0
-    } else {
-        TITLEBAR_H + 4.0
-    };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        h.frames.len(),
-                        h.bees.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("hive-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::hive_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "hive-close",
-            p,
-            Desk::close_hive,
-        ))
+    playground::readout("hive", h, [h.frames.len(), waiting], h.h, picked, p)
 }

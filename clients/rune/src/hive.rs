@@ -11,8 +11,8 @@ use std::f32::consts::TAU;
 
 use phux_protocol::ids::ResourceId;
 
-use crate::creature::Work;
-use crate::reef::{Mood, Pt, Rgb, Rng, Species, hash, lerp};
+use crate::creature::Agent;
+use crate::reef::{Mood, Pt, Rgb, Rng, hash, lerp};
 
 mod sim;
 pub use sim::STEP;
@@ -101,20 +101,6 @@ pub struct Firefly {
     pub sp: f32,
 }
 
-/// An agent as the hive needs it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Forager {
-    pub id: ResourceId,
-    pub name: String,
-    /// Its machine's frame.
-    pub host: usize,
-    pub mood: Mood,
-    pub species: &'static Species,
-    /// Its [`crate::creature`] tier, 0 to 4.
-    pub tier: usize,
-    pub work: Option<Work>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
     ToFlower,
@@ -126,7 +112,7 @@ pub enum Task {
 /// An agent as a bee: who it is, and how it moves.
 #[derive(Debug, Clone)]
 pub struct Bee {
-    pub who: Forager,
+    pub who: Agent,
     /// Its cell in its frame, once laid out.
     pub home: usize,
     pub x: f32,
