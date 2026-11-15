@@ -14,7 +14,7 @@ fn only_the_workload_verb_refuses_key_material_before_the_separator() {
             "add-key",
             "--scope",
             "observe@global",
-            &cert_out,
+            &cert_out
         ])
     ));
     for passes in [
@@ -62,11 +62,11 @@ fn key_material_is_caught_on_argv_and_redacted_from_usage_errors() {
         &argv(&[
             "workload",
             "add-key",
-            "--cert-out=-----BEGIN EC PRIVATE KEY-----",
+            "--cert-out=-----BEGIN EC PRIVATE KEY-----"
         ])
     ));
     assert!(!crate::parse_error::workload_argv_carries_key_material(
-        &argv(&["run", "--", "grep", "-r", "BEGIN",])
+        &words("run -- grep -r BEGIN")
     ));
     let line = "MHcCAQEEIBDpHVEl6z9Z0t6xw5Vg3F1wVZ3n7xHqAoGCCqGSM49AwEHoUQDQgAE";
     let rendered = format!(
@@ -85,31 +85,23 @@ fn key_material_is_caught_on_argv_and_redacted_from_usage_errors() {
 /// and anything else pass through untouched.
 #[test]
 fn help_verb_is_rewritten_to_the_verbs_own_help_flag() {
+    for (line, rewritten) in [
+        ("phux help host add", "phux host add --help"),
+        ("phux help", "phux help"),
+        ("phux ls help", "phux ls help"),
+        ("phux --socket /s help ls", "phux --socket /s ls --help"),
+    ] {
+        assert_eq!(
+            crate::help::rewrite_help_verb(words(line)),
+            words(rewritten)
+        );
+    }
     assert_eq!(
-        crate::help::rewrite_help_verb(argv(&["phux", "help", "host", "add"])),
-        argv(&["phux", "host", "add", "--help"])
-    );
-    assert_eq!(
-        crate::help::rewrite_help_verb(argv(&["phux", "help"])),
-        argv(&["phux", "help"])
-    );
-    assert_eq!(
-        crate::help::rewrite_help_verb(argv(&["phux", "ls", "help"])),
-        argv(&["phux", "ls", "help"])
-    );
-    assert_eq!(
-        crate::help::rewrite_help_verb(argv(&["phux", "--socket", "/s", "help", "ls"])),
-        argv(&["phux", "--socket", "/s", "ls", "--help"])
-    );
-    assert_eq!(
-        crate::help::help_word_index(&argv(&["--socket=/s", "help"])),
+        crate::help::help_word_index(&words("--socket=/s help")),
         Some(1)
     );
-    assert_eq!(
-        crate::help::help_word_index(&argv(&["--socket", "/s"])),
-        None
-    );
-    assert_eq!(crate::help::help_word_index(&argv(&["ls"])), None);
+    assert_eq!(crate::help::help_word_index(&words("--socket /s")), None);
+    assert_eq!(crate::help::help_word_index(&words("ls")), None);
 }
 
 /// Hidden verbs and aliases count: `phux help stdio-bridge` and
@@ -220,9 +212,8 @@ fn root_short_help_survives_global_option_placement() {
 /// in clap's unknown-argument refusal.
 #[test]
 fn misplaced_scoped_flag_is_recognized_for_the_hint() {
-    crate::parse_cli(["phux", "--json", "ls"])
-        .expect_err("`--json` is per-verb; the root must refuse it");
-    crate::parse_cli(["phux", "--no-such-flag", "ls"]).expect_err("unknown flags are refused");
+    // `--json` is per-verb, so the root refuses it, as it does unknown flags.
+    assert_parses(&[("phux --json ls", false), ("phux --no-such-flag ls", false)]);
 }
 
 /// The hint follows where the flag was typed: before the verb it says
