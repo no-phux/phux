@@ -205,13 +205,7 @@ fn attach_reads_the_session_project_tag_into_an_event() {
     use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope, encode_session_project};
 
     let (mut plane, attach_id) = negotiated();
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: two_session_snapshot(false),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, two_session_snapshot(false));
     let outbound: Vec<FrameKind> = plane
         .take_outbound()
         .iter()

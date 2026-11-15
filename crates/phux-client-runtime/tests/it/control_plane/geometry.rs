@@ -230,13 +230,7 @@ fn viewport_intent_during_attach_flushes_the_latest_once_after_ready() {
     let first = ViewportInfo::new(90, 25);
     plane.resize_viewport(first.cols, first.rows);
     assert!(geometry_frames(&mut plane).is_empty());
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 1);
     let latest = ViewportInfo::new(95, 26);
     plane.resize_viewport(latest.cols, latest.rows);
@@ -427,13 +421,7 @@ fn browse_to_session_reconnect_defers_preserving_replay_until_inventory_is_ready
             _ => None,
         })
         .expect("current session target was queued");
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 2);
     assert!(
         resource_attaches(

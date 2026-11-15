@@ -73,13 +73,7 @@ fn attached_with_tree() -> Client {
         ResourceInfo::resource(tree(), ResourceKind::AccessibilityTree)
             .with_session(Some(SessionId::new(1))),
     );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    client.attached(attach_id, snapshot);
     bootstrap(
         &client,
         terminal(),

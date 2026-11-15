@@ -16,13 +16,7 @@ fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
 
 /// `attach`, with the fresh bootstrap generation a new connection carries.
 fn reattach(plane: &mut ControlPlane, attach_id: u32, generation: u64) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     let stream_id = StreamId::new(1).unwrap();
     let bootstrap_id = BootstrapId::new(generation).unwrap();
     for frame in [

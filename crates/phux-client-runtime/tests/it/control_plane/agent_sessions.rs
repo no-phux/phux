@@ -39,13 +39,7 @@ fn with_agent(parent: ResourceId) -> SessionSnapshot {
 }
 
 fn attach_to(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
+    plane.attached(attach_id, snapshot);
 }
 
 fn attach_ready_to(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot) {

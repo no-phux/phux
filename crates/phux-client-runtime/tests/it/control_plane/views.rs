@@ -33,13 +33,7 @@ fn listed(plane: &ControlPlane, id: &ResourceId) -> bool {
 }
 
 fn attached(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
+    plane.attached(attach_id, snapshot);
 }
 
 fn reattach(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {

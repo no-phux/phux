@@ -144,6 +144,8 @@ pub trait PlaneExt {
     fn reply(&mut self, request_id: u32, result: CommandResult);
     /// Drain the queued frames and return the `ATTACH` id among them.
     fn queued_attach_id(&mut self) -> u32;
+    /// Answer `ATTACH` `attach_id` with `snapshot`.
+    fn attached(&mut self, attach_id: u32, snapshot: SessionSnapshot);
 }
 
 impl PlaneExt for ControlPlane {
@@ -161,6 +163,15 @@ impl PlaneExt for ControlPlane {
             })
             .expect("ATTACH")
     }
+
+    fn attached(&mut self, attach_id: u32, snapshot: SessionSnapshot) {
+        self.feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .expect("ATTACHED");
+    }
 }
 
 impl PlaneExt for phux_client_runtime::Client {
@@ -171,5 +182,14 @@ impl PlaneExt for phux_client_runtime::Client {
 
     fn queued_attach_id(&mut self) -> u32 {
         self.with_control(PlaneExt::queued_attach_id)
+    }
+
+    fn attached(&mut self, attach_id: u32, snapshot: SessionSnapshot) {
+        self.feed(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        })
+        .expect("ATTACHED");
     }
 }

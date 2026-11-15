@@ -363,13 +363,7 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
             .with_parent(Some(terminal()))
             .with_agent(Some(phux_protocol::AgentFacet::new("claude", "working"))),
     );
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot.clone(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot.clone());
     let stream_id = StreamId::new(u64::from(attach_id)).unwrap();
     let bootstrap_id = BootstrapId::new(u64::from(attach_id)).unwrap();
     plane
