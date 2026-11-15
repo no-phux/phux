@@ -277,15 +277,7 @@ fn only_organization_commands_need_the_v2_verbs() {
                 Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,
                 _ => crate::caps::ServerFeatureExt::Organization,
             };
-            assert_eq!(
-                method.gate,
-                Some(FeatureGate::FeaturesExt {
-                    mask: gate.mask(),
-                    wire_name: gate.wire_name(),
-                }),
-                "{}",
-                method.name
-            );
+            assert_eq!(method.gate, Some(FeatureGate::ext(gate)), "{}", method.name);
         } else {
             assert!(!needs_v2, "{command:?} must keep its legacy verbs");
         }
