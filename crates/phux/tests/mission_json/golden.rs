@@ -10,7 +10,7 @@ use std::process::Output;
 
 use serde_json::Value;
 
-use super::manifest_dir;
+use crate::runner::manifest_dir;
 
 pub(super) fn check(schema: &jsonschema::Validator, verb: &str, output: &Output) {
     let value = serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|err| {

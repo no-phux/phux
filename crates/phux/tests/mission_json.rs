@@ -18,58 +18,45 @@ mod common;
 mod golden;
 
 use golden::{assert_valid, check, schema_validator};
-use std::path::PathBuf;
 use std::process::Output;
 
 use serde_json::Value;
 
+/// Keepers these tests start exit this soon after their last request.
+const KEEPER_IDLE_SECS: &str = "3";
+
 #[test]
 fn bare_mission_prints_help() {
     let xdg = common::XdgDirs::fresh("mission");
-    let help = mission(&xdg, &["mission"]);
-    assert_eq!(help.status.code(), Some(0), "{}", stderr(&help));
-    let text = String::from_utf8_lossy(&help.stdout);
-    assert!(text.contains("Usage:"), "{text}");
-    assert!(text.contains("phux.mission/v1"), "{text}");
-    assert!(text.contains("add"), "{text}");
-    assert!(text.contains("edit"), "{text}");
-    assert!(
-        text.contains("--socket"),
-        "the keeper watches this server; {text}"
-    );
-    assert!(!text.to_ascii_lowercase().contains("delegate"), "{text}");
-
-    let flagged = mission(&xdg, &["mission", "--help"]);
-    assert_eq!(flagged.status.code(), Some(0), "{}", stderr(&flagged));
-    let flagged_text = String::from_utf8_lossy(&flagged.stdout);
-    assert!(flagged_text.contains("phux.mission/v1"), "{flagged_text}");
-    assert!(flagged_text.contains("--socket"), "{flagged_text}");
-    assert!(!flagged_text.to_ascii_lowercase().contains("delegate"));
-
-    let add_help = mission(&xdg, &["mission", "add", "--help"]);
-    assert_eq!(add_help.status.code(), Some(0), "{}", stderr(&add_help));
-    let add_text = String::from_utf8_lossy(&add_help.stdout);
-    assert!(add_text.contains("--socket"), "{add_text}");
+    for (args, needles) in [
+        (
+            &["mission"][..],
+            &["Usage:", "phux.mission/v1", "add", "edit", "--socket"][..],
+        ),
+        (&["mission", "--help"], &["phux.mission/v1", "--socket"]),
+        (&["mission", "add", "--help"], &["--socket"]),
+    ] {
+        let (text, _) = expect_exit(&xdg, args, 0);
+        for needle in needles {
+            assert!(text.contains(needle), "{args:?} lacks {needle}: {text}");
+        }
+        if args.len() < 3 {
+            assert!(!text.to_ascii_lowercase().contains("delegate"), "{text}");
+        }
+    }
 }
 
 #[test]
 fn mission_socket_names_the_server_the_keeper_watches() {
     let xdg = common::XdgDirs::fresh("mission");
-    let output = mission(
-        &xdg,
-        &[
-            "mission",
-            "list",
-            "--socket",
-            "/tmp/phux-mission-unused.sock",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("No tasks"),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    let args = [
+        "mission",
+        "list",
+        "--socket",
+        "/tmp/phux-mission-unused.sock",
+    ];
+    let (listed, _) = expect_exit(&xdg, &args, 0);
+    assert!(listed.contains("No tasks"), "{listed}");
     let pid_path = xdg.state.join("phux-dev/work/keeper.pid");
     if let Ok(text) = std::fs::read_to_string(&pid_path)
         && let Ok(pid) = text.trim().parse::<u32>()
@@ -84,41 +71,34 @@ fn mission_socket_names_the_server_the_keeper_watches() {
 #[test]
 fn human_list_and_show_use_words_padding_and_rev() {
     let xdg = common::XdgDirs::fresh("mission-human");
-    let empty = mission(&xdg, &["mission", "list"]);
-    assert_eq!(empty.status.code(), Some(0), "{}", stderr(&empty));
+    let (empty, _) = expect_exit(&xdg, &["mission", "list"], 0);
     assert_eq!(
-        String::from_utf8_lossy(&empty.stdout),
+        empty,
         "No tasks. Add one with phux mission add \"<title>\".\n"
     );
-
-    let add = mission(
+    let (added, _) = expect_exit(
         &xdg,
         &["mission", "add", "Fix the prompt", "--repo", "phux"],
+        0,
     );
-    assert_eq!(add.status.code(), Some(0), "{}", stderr(&add));
-    assert_eq!(String::from_utf8_lossy(&add.stdout), "added phux/1\n");
-    let other = mission(
-        &xdg,
-        &[
-            "mission",
-            "add",
-            "Grant expired",
-            "--repo",
-            "github.com/no-phux/phux",
-        ],
-    );
-    assert_eq!(other.status.code(), Some(0), "{}", stderr(&other));
+    assert_eq!(added, "added phux/1\n");
+    let other = [
+        "mission",
+        "add",
+        "Grant expired",
+        "--repo",
+        "github.com/no-phux/phux",
+    ];
+    expect_exit(&xdg, &other, 0);
 
-    let list = mission(&xdg, &["mission", "list"]);
-    let listed = String::from_utf8_lossy(&list.stdout);
+    let (listed, _) = expect_exit(&xdg, &["mission", "list"], 0);
     let lines: Vec<_> = listed.lines().collect();
     assert_eq!(lines.len(), 2, "{listed}");
     assert_eq!(lines[0].find("todo"), lines[1].find("todo"), "{listed}");
     assert!(listed.contains("github.com/no-phux/phux/1"), "{listed}");
     assert!(!listed.contains("needs_you"), "{listed}");
 
-    let show = mission(&xdg, &["mission", "show", "phux/1"]);
-    let shown = String::from_utf8_lossy(&show.stdout);
+    let (shown, _) = expect_exit(&xdg, &["mission", "show", "phux/1"], 0);
     assert!(shown.ends_with("rev 1\n"), "{shown}");
     assert!(!shown.contains("revision:"), "{shown}");
     assert!(shown.contains("state: todo\n"), "{shown}");
@@ -127,129 +107,89 @@ fn human_list_and_show_use_words_padding_and_rev() {
 #[test]
 fn human_structural_edits_print_the_new_revision() {
     let xdg = common::XdgDirs::fresh("mission-human-edit");
-    let add = mission(
+    expect_exit(
         &xdg,
         &["mission", "add", "Fix the prompt", "--repo", "phux"],
+        0,
     );
-    assert_eq!(add.status.code(), Some(0), "{}", stderr(&add));
-
-    let missing = mission(&xdg, &["mission", "edit", "phux/1", "--title", "Renamed"]);
-    assert_eq!(missing.status.code(), Some(2), "{}", stderr(&missing));
-    assert!(
-        stderr(&missing).contains("phux/1 is at rev 1; rerun with --expected-revision 1"),
-        "{}",
-        stderr(&missing)
-    );
-
-    let edit = mission(
-        &xdg,
-        &[
-            "mission",
-            "edit",
-            "phux/1",
-            "--title",
-            "Renamed",
-            "--expected-revision",
-            "1",
-        ],
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&edit.stdout),
-        "updated phux/1 (rev 2)\n",
-        "{}",
-        stderr(&edit)
-    );
-
-    let stale = mission(
-        &xdg,
-        &[
-            "mission",
-            "edit",
-            "phux/1",
-            "--title",
-            "Nope",
-            "--expected-revision",
-            "1",
-        ],
-    );
-    assert_eq!(stale.status.code(), Some(1), "{}", stderr(&stale));
-    assert!(
-        stderr(&stale).contains("phux/1 is at rev 2; rerun with --expected-revision 2"),
-        "{}",
-        stderr(&stale)
-    );
-
-    let archive = mission(
-        &xdg,
-        &["mission", "archive", "phux/1", "--expected-revision", "2"],
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&archive.stdout),
-        "archived phux/1 (rev 3)\n",
-        "{}",
-        stderr(&archive)
-    );
-    let restore = mission(
-        &xdg,
-        &["mission", "restore", "phux/1", "--expected-revision", "3"],
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&restore.stdout),
-        "restored phux/1 (rev 4)\n",
-        "{}",
-        stderr(&restore)
-    );
-
-    let empty_edit = mission(
-        &xdg,
-        &["mission", "edit", "phux/1", "--expected-revision", "4"],
-    );
-    assert_eq!(empty_edit.status.code(), Some(2), "{}", stderr(&empty_edit));
-    assert!(
-        stderr(&empty_edit).contains("edit needs a title or a description"),
-        "{}",
-        stderr(&empty_edit)
-    );
+    let edit = |rev: Option<&'static str>, title: &'static str| {
+        let mut args = vec!["mission", "edit", "phux/1"];
+        if !title.is_empty() {
+            args.extend(["--title", title]);
+        }
+        if let Some(rev) = rev {
+            args.extend(["--expected-revision", rev]);
+        }
+        args
+    };
+    let at_rev = |rev: u8| format!("phux/1 is at rev {rev}; rerun with --expected-revision {rev}");
+    // (args, exit code, stdout on success or a stderr phrase on failure)
+    let steps: [(Vec<&str>, i32, String); 6] = [
+        (edit(None, "Renamed"), 2, at_rev(1)),
+        (
+            edit(Some("1"), "Renamed"),
+            0,
+            "updated phux/1 (rev 2)\n".to_owned(),
+        ),
+        (edit(Some("1"), "Nope"), 1, at_rev(2)),
+        (
+            vec!["mission", "archive", "phux/1", "--expected-revision", "2"],
+            0,
+            "archived phux/1 (rev 3)\n".to_owned(),
+        ),
+        (
+            vec!["mission", "restore", "phux/1", "--expected-revision", "3"],
+            0,
+            "restored phux/1 (rev 4)\n".to_owned(),
+        ),
+        (
+            edit(Some("4"), ""),
+            2,
+            "edit needs a title or a description".to_owned(),
+        ),
+    ];
+    for (args, code, expected) in steps {
+        let (stdout, stderr) = expect_exit(&xdg, &args, code);
+        if code == 0 {
+            assert_eq!(stdout, expected, "{args:?}: {stderr}");
+        } else {
+            assert!(stderr.contains(&expected), "{args:?}: {stderr}");
+        }
+    }
 }
 
 #[test]
-fn default_repo_uses_the_origin_remote() {
+fn default_repo_follows_the_origin_remote_or_the_directory_name() {
     let xdg = common::XdgDirs::fresh("mission-origin");
     let root = tempfile::tempdir().expect("tempdir");
-    let dir = root.path().join("checkout");
-    std::fs::create_dir(&dir).expect("mkdir");
-    git(&dir, &["init", "-q", "-b", "main"]);
-    git(
-        &dir,
-        &["remote", "add", "origin", "git@github.com:no-phux/phux.git"],
-    );
-    let add = mission_at(&xdg, &dir, &["mission", "add", "From origin", "--json"]);
-    assert_success("origin", &add);
-    let doc: Value = serde_json::from_slice(&add.stdout).expect("json");
-    assert_eq!(doc["task"]["repo"], "github.com/no-phux/phux");
-    assert_eq!(doc["task"]["alias"], "github.com/no-phux/phux/1");
-}
-
-#[test]
-fn default_repo_uses_the_directory_name_when_there_is_no_remote() {
-    let xdg = common::XdgDirs::fresh("mission-dir");
-    let root = tempfile::tempdir().expect("tempdir");
-    let plain = root.path().join("widget");
-    std::fs::create_dir(&plain).expect("mkdir");
-    let add = mission_at(&xdg, &plain, &["mission", "add", "Local", "--json"]);
-    assert_success("dir", &add);
-    let doc: Value = serde_json::from_slice(&add.stdout).expect("json");
-    assert_eq!(doc["task"]["repo"], "widget");
-    assert_eq!(doc["task"]["alias"], "widget/1");
-
-    let bare = root.path().join("lonely");
-    std::fs::create_dir(&bare).expect("mkdir");
-    git(&bare, &["init", "-q", "-b", "main"]);
-    let no_origin = mission_at(&xdg, &bare, &["mission", "add", "No remote", "--json"]);
-    assert_success("no-origin", &no_origin);
-    let no_origin_doc: Value = serde_json::from_slice(&no_origin.stdout).expect("json");
-    assert_eq!(no_origin_doc["task"]["repo"], "lonely");
-    assert_eq!(no_origin_doc["task"]["alias"], "lonely/1");
+    for (name, git_init, origin, repo) in [
+        (
+            "checkout",
+            true,
+            Some("git@github.com:no-phux/phux.git"),
+            "github.com/no-phux/phux",
+        ),
+        ("widget", false, None, "widget"),
+        ("lonely", true, None, "lonely"),
+    ] {
+        let dir = root.path().join(name);
+        std::fs::create_dir(&dir).expect("mkdir");
+        if git_init {
+            git(&dir, &["init", "-q", "-b", "main"]);
+        }
+        if let Some(origin) = origin {
+            git(&dir, &["remote", "add", "origin", origin]);
+        }
+        let add = mission_command(&xdg)
+            .current_dir(&dir)
+            .args(["mission", "add", name, "--json"])
+            .output()
+            .expect("spawn phux");
+        assert_success(name, &add);
+        let doc: Value = serde_json::from_slice(&add.stdout).expect("json");
+        assert_eq!(doc["task"]["repo"], repo);
+        assert_eq!(doc["task"]["alias"], format!("{repo}/1"));
+    }
 }
 
 #[test]
@@ -268,22 +208,15 @@ fn a_store_held_outside_a_keeper_fails_busy_after_a_short_retry() {
         .expect("add");
 
     let started = std::time::Instant::now();
-    let mut command = common::phux_cmd(runner::phux_bin());
-    xdg.apply(&mut command);
-    command.env("HOME", &xdg.state);
-    command.env("PHUX_PROFILE", "missiontest");
-    command.env("PHUX_WORK_IDLE_EXIT_SECS", KEEPER_IDLE_SECS);
-    let output = command
+    let output = mission_command(&xdg)
+        .env("PHUX_PROFILE", "missiontest")
         .args(["mission", "list", "--json"])
         .output()
         .expect("spawn");
     let elapsed = started.elapsed();
     assert!(
-        elapsed >= std::time::Duration::from_millis(1900),
-        "retry ended after {elapsed:?}"
-    );
-    assert!(
-        elapsed <= std::time::Duration::from_secs(6),
+        (std::time::Duration::from_millis(1900)..=std::time::Duration::from_secs(6))
+            .contains(&elapsed),
         "retry ended after {elapsed:?}"
     );
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
@@ -308,167 +241,83 @@ fn a_store_held_outside_a_keeper_fails_busy_after_a_short_retry() {
 fn every_verb_json_matches_its_golden_and_the_schema() {
     let schema = schema_validator();
     let xdg = common::XdgDirs::fresh("mission");
-    let add = mission(
-        &xdg,
-        &[
-            "mission",
-            "add",
-            "Fix the prompt",
-            "--repo",
-            "phux",
-            "--description",
-            "details",
-            "--operation-id",
-            &"a".repeat(32),
-            "--json",
-        ],
-    );
+    let op = |letter: &str| letter.repeat(32);
+    let (a, e) = (op("a"), op("e"));
+    let add = mission(&xdg, &add_args(&a));
     assert_success("add", &add);
     check(&schema, "add", &add);
+    for (verb, args) in [
+        ("list", &["mission", "list", "--json"][..]),
+        ("show", &["mission", "show", "phux/1", "--json"]),
+    ] {
+        let output = mission(&xdg, args);
+        assert_success(verb, &output);
+        check(&schema, verb, &output);
+    }
+    for (verb, rev, letter) in [
+        ("edit", "1", "b"),
+        ("archive", "2", "c"),
+        ("restore", "3", "d"),
+    ] {
+        let op = op(letter);
+        let mut args = vec!["mission", verb, "phux/1"];
+        if verb == "edit" {
+            args.extend(["--description", "more detail"]);
+        }
+        args.extend(["--expected-revision", rev, "--operation-id", &op, "--json"]);
+        let output = mission(&xdg, &args);
+        assert_success(verb, &output);
+        check(&schema, verb, &output);
+    }
 
-    let list = mission(&xdg, &["mission", "list", "--json"]);
-    assert_success("list", &list);
-    check(&schema, "list", &list);
+    let error_doc = |args: &[&str], code: i32, error_code: &str| {
+        let output = mission(&xdg, args);
+        assert_eq!(output.status.code(), Some(code), "{}", stderr(&output));
+        assert!(output.stdout.is_empty());
+        let error = serde_json::from_slice::<Value>(&output.stderr).expect("error json");
+        assert_eq!(error["schema"], "phux.mission/v1");
+        assert_eq!(error["error"]["code"], error_code);
+        assert_valid(&schema, &error);
+        error
+    };
+    error_doc(
+        &["mission", "show", "phux/99", "--json"],
+        1,
+        "mission_not_found",
+    );
+    let at_rev_4 = "phux/1 is at rev 4; rerun with --expected-revision 4";
+    let missing_rev = ["mission", "edit", "phux/1", "--title", "nope", "--json"];
+    let missing = error_doc(&missing_rev, 2, "usage_error");
+    assert_eq!(missing["error"]["message"], at_rev_4);
+    let stale = [
+        "mission",
+        "edit",
+        "phux/1",
+        "--title",
+        "nope",
+        "--expected-revision",
+        "1",
+        "--operation-id",
+        &e,
+        "--json",
+    ];
+    let conflict = error_doc(&stale, 1, "mission_revision_conflict");
+    assert_eq!(conflict["error"]["message"], at_rev_4);
 
-    let show = mission(&xdg, &["mission", "show", "phux/1", "--json"]);
-    assert_success("show", &show);
-    check(&schema, "show", &show);
-
-    let edit = mission(
-        &xdg,
-        &[
-            "mission",
-            "edit",
-            "phux/1",
-            "--description",
-            "more detail",
-            "--expected-revision",
-            "1",
-            "--operation-id",
-            &"b".repeat(32),
-            "--json",
-        ],
-    );
-    assert_success("edit", &edit);
-    check(&schema, "edit", &edit);
-
-    let archive = mission(
-        &xdg,
-        &[
-            "mission",
-            "archive",
-            "phux/1",
-            "--expected-revision",
-            "2",
-            "--operation-id",
-            &"c".repeat(32),
-            "--json",
-        ],
-    );
-    assert_success("archive", &archive);
-    check(&schema, "archive", &archive);
-
-    let restore = mission(
-        &xdg,
-        &[
-            "mission",
-            "restore",
-            "phux/1",
-            "--expected-revision",
-            "3",
-            "--operation-id",
-            &"d".repeat(32),
-            "--json",
-        ],
-    );
-    assert_success("restore", &restore);
-    check(&schema, "restore", &restore);
-    errors_and_replay(&schema, &xdg);
-}
-
-fn errors_and_replay(schema: &jsonschema::Validator, xdg: &common::XdgDirs) {
-    let missing = mission(xdg, &["mission", "show", "phux/99", "--json"]);
-    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
-    assert!(missing.stdout.is_empty());
-    let error = serde_json::from_slice::<Value>(&missing.stderr).expect("error json");
-    assert_eq!(error["schema"], "phux.mission/v1");
-    assert_eq!(error["error"]["code"], "mission_not_found");
-    assert_valid(schema, &error);
-
-    let missing_rev = mission(
-        xdg,
-        &["mission", "edit", "phux/1", "--title", "nope", "--json"],
-    );
-    assert_eq!(
-        missing_rev.status.code(),
-        Some(2),
-        "{}",
-        stderr(&missing_rev)
-    );
-    let missing_doc = serde_json::from_slice::<Value>(&missing_rev.stderr).expect("error json");
-    assert_eq!(missing_doc["error"]["code"], "usage_error");
-    assert_eq!(
-        missing_doc["error"]["message"],
-        "phux/1 is at rev 4; rerun with --expected-revision 4"
-    );
-    assert_valid(schema, &missing_doc);
-
-    let conflict = mission(
-        xdg,
-        &[
-            "mission",
-            "edit",
-            "phux/1",
-            "--title",
-            "nope",
-            "--expected-revision",
-            "1",
-            "--operation-id",
-            &"e".repeat(32),
-            "--json",
-        ],
-    );
-    assert_eq!(conflict.status.code(), Some(1), "{}", stderr(&conflict));
-    let conflict_doc = serde_json::from_slice::<Value>(&conflict.stderr).expect("error json");
-    assert_eq!(conflict_doc["error"]["code"], "mission_revision_conflict");
-    assert_eq!(
-        conflict_doc["error"]["message"],
-        "phux/1 is at rev 4; rerun with --expected-revision 4"
-    );
-    assert_valid(schema, &conflict_doc);
-
-    let replay = mission(
-        xdg,
-        &[
-            "mission",
-            "add",
-            "Fix the prompt",
-            "--repo",
-            "phux",
-            "--description",
-            "details",
-            "--operation-id",
-            &"a".repeat(32),
-            "--json",
-        ],
-    );
+    let replay = mission(&xdg, &add_args(&a));
     assert_success("replay", &replay);
     let replay_doc = serde_json::from_slice::<Value>(&replay.stdout).expect("replay json");
     assert_eq!(replay_doc["idempotent_replay"], true);
     assert_eq!(replay_doc["task"]["alias"], "phux/1");
-    assert_valid(schema, &replay_doc);
+    assert_valid(&schema, &replay_doc);
 }
-
-/// Keepers these tests start exit this soon after their last request.
-const KEEPER_IDLE_SECS: &str = "3";
 
 #[test]
 fn concurrent_adds_go_through_one_keeper_and_none_is_lost() {
     let xdg = common::XdgDirs::fresh("mission-concurrent");
     let children: Vec<_> = (0..8)
         .map(|index| {
-            let mut command = mission_command(&xdg);
-            command
+            mission_command(&xdg)
                 .args([
                     "mission",
                     "add",
@@ -478,8 +327,9 @@ fn concurrent_adds_go_through_one_keeper_and_none_is_lost() {
                     "--json",
                 ])
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            command.spawn().expect("spawn phux")
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn phux")
         })
         .collect();
     let mut aliases = std::collections::BTreeSet::new();
@@ -501,16 +351,28 @@ fn concurrent_adds_go_through_one_keeper_and_none_is_lost() {
 #[test]
 fn a_second_keeper_exits_at_once_while_one_serves() {
     let xdg = common::XdgDirs::fresh("mission-keeper");
-    let add = mission(&xdg, &["mission", "add", "First", "--repo", "phux"]);
-    assert_eq!(add.status.code(), Some(0), "{}", stderr(&add));
-
+    expect_exit(&xdg, &["mission", "add", "First", "--repo", "phux"], 0);
     let started = std::time::Instant::now();
-    let second = mission(&xdg, &["mission", "keeper", "--idle-exit", "30"]);
-    assert_eq!(second.status.code(), Some(0), "{}", stderr(&second));
+    expect_exit(&xdg, &["mission", "keeper", "--idle-exit", "30"], 0);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "a second keeper served instead of exiting"
     );
+}
+
+fn add_args(op: &str) -> Vec<&str> {
+    vec![
+        "mission",
+        "add",
+        "Fix the prompt",
+        "--repo",
+        "phux",
+        "--description",
+        "details",
+        "--operation-id",
+        op,
+        "--json",
+    ]
 }
 
 fn mission_command(xdg: &common::XdgDirs) -> std::process::Command {
@@ -528,10 +390,17 @@ fn mission(xdg: &common::XdgDirs, args: &[&str]) -> Output {
         .expect("spawn phux")
 }
 
-fn mission_at(xdg: &common::XdgDirs, dir: &std::path::Path, args: &[&str]) -> Output {
-    let mut command = mission_command(xdg);
-    command.current_dir(dir);
-    command.args(args).output().expect("spawn phux")
+/// Run `args`, assert the exit code, and return `(stdout, stderr)`.
+fn expect_exit(xdg: &common::XdgDirs, args: &[&str], code: i32) -> (String, String) {
+    let output = mission(xdg, args);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{args:?}: {stdout} {}",
+        stderr(&output)
+    );
+    (stdout, stderr(&output))
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {
@@ -543,11 +412,7 @@ fn git(dir: &std::path::Path, args: &[&str]) {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .expect("run git");
-    assert!(
-        status.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&status.stderr)
-    );
+    assert!(status.status.success(), "git {args:?}: {}", stderr(&status));
 }
 
 fn assert_success(verb: &str, output: &Output) {
@@ -563,10 +428,4 @@ fn assert_success(verb: &str, output: &Output) {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// Read at run time: a compiled-in path would tie the test to one checkout
-/// (`scripts/check-cache-portable.sh`).
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
 }
