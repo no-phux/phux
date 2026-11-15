@@ -112,16 +112,6 @@ impl NativeTerminalManager {
         self.begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
     }
 
-    #[cfg(test)]
-    pub(crate) fn capture_generation_bounded(
-        &mut self,
-        limits: BootstrapLimits,
-        max_prefix_bytes: usize,
-        max_prefix_chunks: usize,
-    ) -> Result<NativeManagedCapture, NativeStateError> {
-        self.begin_generation_capture(limits, max_prefix_bytes, max_prefix_chunks)
-    }
-
     pub(crate) fn begin_generation_capture(
         &mut self,
         limits: BootstrapLimits,

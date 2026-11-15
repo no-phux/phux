@@ -124,9 +124,7 @@ fn best_detach_cost(
 ) -> std::time::Duration {
     let mut best = std::time::Duration::MAX;
     for _ in 0..samples {
-        let mut capture = manager
-            .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-            .expect("generation capture");
+        let mut capture = manager.capture(limits).expect("generation capture");
         drain_ready(&mut capture);
         let started = std::time::Instant::now();
         let detached = manager.finish_generation_capture(capture);
@@ -140,13 +138,24 @@ fn detach_managed_generation(
     manager: &mut NativeTerminalManager,
     limits: BootstrapLimits,
 ) -> (OpaqueHistoryCursor, NativeGenerationSeed) {
-    let mut capture = manager
-        .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-        .expect("generation capture");
+    let mut capture = manager.capture(limits).expect("generation capture");
     drain_ready(&mut capture);
     manager
         .finish_generation_capture(capture)
         .expect("detach generation READY continuation")
+}
+
+/// Install a detached generation under its own bounds.
+fn install(
+    manager: &mut NativeTerminalManager,
+    cursor: OpaqueHistoryCursor,
+    seed: NativeGenerationSeed,
+) {
+    let bounds = seed.bounds();
+    let reserved = bounds.required_reserved_bytes().expect("reservation");
+    manager
+        .install_generation(cursor, seed, bounds, reserved)
+        .expect("install generation");
 }
 
 fn install_leased_generation(
