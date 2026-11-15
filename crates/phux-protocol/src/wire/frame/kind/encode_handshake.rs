@@ -92,6 +92,9 @@ impl FrameKind {
         if let Some(platform) = client_caps.platform {
             enc.write_field(field::hello::PLATFORM, platform.as_str().as_bytes());
         }
+        if client_caps.credential_approvals {
+            u8_field(enc, field::hello::CREDENTIAL_APPROVALS, 1);
+        }
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

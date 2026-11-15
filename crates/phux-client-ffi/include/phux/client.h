@@ -46,6 +46,7 @@ extern "C" {
 #include "detail/paths.h"
 #include "detail/sessions.h"
 #include "detail/organization.h"
+#include "detail/approvals.h"
 #include "detail/connection.h"
 #include "detail/remote.h"
 

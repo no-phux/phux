@@ -165,6 +165,7 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// It rose to 108 with `lock` and `unlock`: someone whose tab refuses to close
 /// looks for the way out on the first page. It rose to 109 with `forward`:
 /// someone who wants a remote port looks for the word beside `download`.
+/// It rose to 110 with `credentials`: the approved 1Password launcher needs a discoverable row.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -176,7 +177,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 109,
+        lines <= 110,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

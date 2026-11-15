@@ -93,7 +93,8 @@ enum CommandTag {
     PrivacyStatus = 0x4c,
     /// `ARRANGEMENT_LOCK`: lock or unlock one group of an arrangement.
     ArrangementLock = 0x4d,
-    // 0x4e left free for concurrent work.
+    /// Ephemeral credential broker.
+    Credentials = 0x4e,
     /// `AGENT_OFFER`, `AGENT_REPLY`: ssh-agent forwarding
     /// (`docs/forwarding.md#ssh-agent`).
     AgentOffer = 0x4f,
@@ -198,6 +199,8 @@ pub(crate) const COMMAND_TAG_MIRROR_PROVIDE: u8 = CommandTag::MirrorProvide as u
 pub(crate) const COMMAND_TAG_HOST_CHECKLIST: u8 = CommandTag::HostChecklist as u8;
 /// Wire tag for [`Command::PrivacyStatus`].
 pub(crate) const COMMAND_TAG_PRIVACY_STATUS: u8 = CommandTag::PrivacyStatus as u8;
+/// Wire tag for [`Command::Credentials`].
+pub(crate) const COMMAND_TAG_CREDENTIALS: u8 = CommandTag::Credentials as u8;
 /// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on
 /// `KILL_RESOURCE`, so a peer without `CONDITIONAL_KILL` fails to decode it
 /// instead of killing unconditionally (ADR-0109).
@@ -337,7 +340,8 @@ pub(crate) const COMMAND_VALUE_TAG_CHECKOUT: u8 = 0x0b;
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_HEAD: u8 = 0x0c;
 /// Wire tag for [`CommandValue::ServiceHttpChunk`].
 pub(crate) const COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK: u8 = 0x0d;
-// 0x0e left free for concurrent work.
+/// One-use, redacted credential values.
+pub(crate) const COMMAND_VALUE_TAG_CREDENTIAL_SECRETS: u8 = 0x0e;
 /// Wire tag for [`CommandValue::ForwardOpened`].
 pub(crate) const COMMAND_VALUE_TAG_FORWARD_OPENED: u8 = 0x0f;
 /// Wire tag for [`CommandValue::ForwardChunk`].

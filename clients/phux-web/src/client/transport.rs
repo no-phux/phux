@@ -207,6 +207,9 @@ impl AppBindings {
         if let Some(picker) = self.path_picker.take() {
             picker.dispose();
         }
+        if let Some(approvals) = self.approvals.take() {
+            approvals.dispose();
+        }
         if let Some(blink) = self.blink.take() {
             blink.dispose();
         }

@@ -40,6 +40,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind, Version};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
 
+pub mod approvals;
 mod attach;
 mod documents;
 mod engine;
@@ -104,6 +105,8 @@ pub fn client_caps(vt: &Vt) -> ClientCapabilities {
     }
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
+        .with_layers(phux_protocol::caps::LayerSet::all())
+        .with_credential_approvals(true)
         .with_bootstrap(bootstrap)
         .with_resource_kinds(WEB_RESOURCE_KINDS)
 }
@@ -117,6 +120,8 @@ fn synthesized_bootstrap_caps() -> BootstrapCapabilities {
 
 fn synthesized_client_caps() -> ClientCapabilities {
     ClientCapabilities::new()
+        .with_layers(phux_protocol::caps::LayerSet::all())
+        .with_credential_approvals(true)
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(synthesized_bootstrap_caps())
         .with_resource_kinds(WEB_RESOURCE_KINDS)
@@ -173,6 +178,8 @@ pub struct Outcome {
     pub bell: bool,
     /// Pane inventory, focus, pending operation, or an actionable refusal changed.
     pub panes: bool,
+    /// Pending approval records or a decision's confirmation changed.
+    pub approvals: bool,
     /// Fatal protocol/kernel failure; the transport must close.
     pub fatal: Option<String>,
 }
@@ -197,6 +204,7 @@ struct PendingSplit {
 
 /// One attach connection whose terminal replicas are owned by [`SessionKernel`].
 pub struct Connection {
+    approvals: approvals::ApprovalWatch,
     vt: Rc<Vt>,
     blank: Terminal,
     offered_caps: ClientCapabilities,
@@ -269,6 +277,7 @@ impl Connection {
 
     fn with_caps(vt: &Rc<Vt>, cols: u16, rows: u16, offered_caps: ClientCapabilities) -> Self {
         Self {
+            approvals: approvals::ApprovalWatch::default(),
             vt: Rc::clone(vt),
             blank: vt.terminal(cols, rows),
             offered_caps,
@@ -360,6 +369,7 @@ impl Connection {
     /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
+        self.approvals.disconnect();
         self.cancel_path_query();
     }
 

@@ -319,6 +319,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -753,6 +754,12 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zlib-rs"

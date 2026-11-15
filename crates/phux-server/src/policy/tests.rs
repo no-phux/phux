@@ -108,6 +108,7 @@ fn admits_set(world: &World, set: &[String], frame: &FrameKind) -> bool {
 }
 
 include!("tests/subject_rows.rs");
+include!("tests/credentials.rs");
 include!("tests/subject_assertions.rs");
 include!("tests/engines.rs");
 include!("tests/grant_edge_cases.rs");

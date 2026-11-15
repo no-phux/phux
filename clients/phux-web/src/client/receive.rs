@@ -301,6 +301,9 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
     if path_reply {
         path_picker::paint(&a);
     }
+    if outcome.approvals {
+        approvals::paint(&a);
+    }
     BatchEffects {
         flow: ReceiveFlow::Continue,
         render: outcome.render,
