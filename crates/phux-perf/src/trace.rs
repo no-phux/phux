@@ -345,10 +345,6 @@ impl Capture {
     /// [`Self::to_chrome_json`] streamed into `out` one event at a time, so
     /// a full capture never exists as a JSON tree in memory. Give it a
     /// `BufWriter` over the file.
-    ///
-    /// # Errors
-    ///
-    /// Whatever `out` returns.
     pub fn write_chrome_json(
         &self,
         mut out: impl std::io::Write,

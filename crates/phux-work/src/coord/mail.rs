@@ -247,10 +247,6 @@ impl Store {
 
     /// A reader's mail, oldest first: what was sent to it, and in a thread
     /// also what it sent there.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors.
     pub fn read_mail(&mut self, request: &ReadMail) -> Result<Vec<Mail>, Error> {
         let reader = Address::parse(&request.reader)?;
         let thread = request.thread.as_deref().map(parse_thread).transpose()?;
@@ -338,10 +334,6 @@ impl Store {
     /// Take a reader's undelivered mail, oldest first, and mark it taken.
     /// Returns at once; the keeper does the waiting. Read and acknowledged
     /// state are left as they are.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors.
     pub fn take_mail(&mut self, request: &WaitMail) -> Result<Vec<Mail>, Error> {
         let (reader, limit) = request.checked()?;
         let tx = self
@@ -365,10 +357,6 @@ impl Store {
 impl Store {
     /// Undo [`Store::take_mail`] for `request.ids`, so a later take returns
     /// them again. Returns how many were taken and are now released.
-    ///
-    /// # Errors
-    ///
-    /// Validation and store errors.
     pub fn release_mail(&mut self, request: &ReleaseMail) -> Result<u64, Error> {
         let reader = Address::parse(&request.reader)?;
         let tx = self
