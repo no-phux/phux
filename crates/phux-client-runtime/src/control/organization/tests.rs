@@ -272,7 +272,6 @@ fn membership_moves_and_the_inbox_projection() {
     let view = replica.intake_view();
     assert_eq!(view, replica.intake_view());
     assert_eq!(view.intake(), replica.intake());
-    assert_eq!(replica.intake(), replica.inbox());
     assert_eq!(
         view.sessions.iter().map(|s| s.key).collect::<Vec<_>>(),
         vec![skey(9), skey(2)]

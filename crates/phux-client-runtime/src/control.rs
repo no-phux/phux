@@ -98,7 +98,7 @@ pub use mirror::{MirrorCall, MirrorError};
 pub use options::{ControlOptions, InboundDelivery, PredictionStyle, SessionRecovery};
 use options::{MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES};
 pub use org_plane::{ArrangementSubmitError, mint_operation};
-pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use organization::{IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
 pub use topology::{
     AgentSessionDescriptor, DocumentDescriptor, PaneDescriptor, ResourceDescriptor,

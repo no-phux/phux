@@ -88,9 +88,6 @@ pub struct IntakeView {
     pub resources: Vec<ResourceRecord>,
 }
 
-/// Legacy public spelling of [`IntakeView`].
-pub type InboxView = IntakeView;
-
 impl IntakeView {
     /// The designated Intake session, when the caller observes it.
     #[must_use]
@@ -146,12 +143,6 @@ impl OrganizationReplica {
     #[must_use]
     pub const fn authority(&self) -> Option<AuthorityId> {
         self.authority
-    }
-
-    /// Legacy alias for [`Self::intake`].
-    #[must_use]
-    pub const fn inbox(&self) -> Option<SessionKey> {
-        self.intake()
     }
 
     /// The designated Intake session, when the caller observes it.
