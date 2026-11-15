@@ -316,31 +316,34 @@ pub(super) fn on_focus_change(
 
 /// Cursor blink: toggle the phase and repaint on a fixed cadence.
 pub(super) fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let blink = interval(app, 530, |app| app.borrow().blink())?;
+    let old = app.borrow().bindings.borrow_mut().blink.replace(blink);
+    drop(old);
+    Ok(())
+}
+
+/// Call `tick` every `ms` while the app lives.
+fn interval(
+    app: &Rc<RefCell<App>>,
+    ms: i32,
+    tick: impl Fn(&Rc<RefCell<App>>) + 'static,
+) -> Result<BlinkBinding, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let weak = Rc::downgrade(app);
-    let blink = Closure::<dyn FnMut()>::new(move || {
+    let callback = Closure::<dyn FnMut()>::new(move || {
         if let Some(app) = weak.upgrade() {
-            app.borrow().blink();
+            tick(&app);
         }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
-        blink.as_ref().unchecked_ref(),
-        530,
+        callback.as_ref().unchecked_ref(),
+        ms,
     )?;
-    let old = app
-        .borrow()
-        .bindings
-        .borrow_mut()
-        .blink
-        .replace(BlinkBinding {
-            window,
-            interval,
-            callback: blink,
-        });
-    if let Some(old) = old {
-        old.dispose();
-    }
-    Ok(())
+    Ok(BlinkBinding {
+        window,
+        interval,
+        _callback: callback,
+    })
 }
 
 /// Release the App borrow before dispatch: a presentation listener may focus
@@ -352,24 +355,11 @@ pub(super) fn paint_and_publish(app: &Rc<RefCell<App>>) {
             return;
         }
         let detail = app.presentation_detail();
-        let _ = js_sys::Reflect::set(
-            &detail,
-            &"pixelWidth".into(),
-            &JsValue::from_f64(f64::from(app.canvas.width())),
-        );
-        let _ = js_sys::Reflect::set(
-            &detail,
-            &"pixelHeight".into(),
-            &JsValue::from_f64(f64::from(app.canvas.height())),
-        );
+        set_js(&detail, "pixelWidth", app.canvas.width());
+        set_js(&detail, "pixelHeight", app.canvas.height());
         (app.canvas.clone(), detail)
     };
-    let init = web_sys::CustomEventInit::new();
-    init.set_bubbles(true);
-    init.set_detail(&detail);
-    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(RENDER_EVENT, &init) {
-        let _ = canvas.dispatch_event(&event);
-    }
+    dispatch_custom(&canvas, RENDER_EVENT, Some(&detail));
 }
 
 /// The animation-frame callback every paint request shares.
@@ -398,12 +388,7 @@ pub(super) fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
 }
 
 pub(super) fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let weak = Rc::downgrade(app);
-    let callback = Closure::<dyn FnMut()>::new(move || {
-        let Some(app) = weak.upgrade() else {
-            return;
-        };
+    let expiry = interval(app, BOOTSTRAP_EXPIRY_POLL_MS, |app| {
         let mut app = app.borrow_mut();
         let outcome = app.session.expire_bootstrap_staging();
         if let Some(message) = outcome.fatal {
@@ -421,19 +406,7 @@ pub(super) fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsV
         if outcome.render {
             app.request_paint();
         }
-    });
-    let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
-        callback.as_ref().unchecked_ref(),
-        BOOTSTRAP_EXPIRY_POLL_MS,
-    )?;
-    app.borrow()
-        .bindings
-        .borrow_mut()
-        .bootstrap_expiry
-        .replace(BlinkBinding {
-            window,
-            interval,
-            callback,
-        });
+    })?;
+    app.borrow().bindings.borrow_mut().bootstrap_expiry = Some(expiry);
     Ok(())
 }

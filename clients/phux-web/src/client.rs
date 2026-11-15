@@ -44,7 +44,7 @@ use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
 use crate::session::is_version_refusal;
 use crate::touch::{TouchGesture, TouchMode, TouchStep};
-use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selected_appearance};
+use crate::{Mark, Metrics, Overlay, render, render_cursor_row};
 
 mod app;
 mod connect;
@@ -88,12 +88,11 @@ struct AttemptDeadline {
     end_ms: f64,
 }
 
-struct WebTransportAttempt {
-    session: Option<WebTransport>,
-}
-
-struct WebSocketAttempt {
-    socket: Option<WebSocket>,
+/// A transport an establishment owns until the app takes it; dropped while
+/// still armed (a failed or cancelled attempt), it closes.
+struct Attempt<T> {
+    transport: Option<T>,
+    close: fn(&T),
 }
 
 struct AppEstablishment {
@@ -194,13 +193,21 @@ struct AppBindings {
     wt_reader_cancel: Option<oneshot::Sender<()>>,
 }
 
+type EventCallback = Closure<dyn FnMut(web_sys::Event)>;
+
+/// A socket's four handlers, kept alive until the socket lets go of them.
 struct WebSocketBindings {
     socket: WebSocket,
-    onopen: Closure<dyn FnMut()>,
-    onmessage: Closure<dyn FnMut(MessageEvent)>,
-    onerror: Closure<dyn FnMut(web_sys::Event)>,
-    onclose: Closure<dyn FnMut(web_sys::Event)>,
+    _handlers: WebSocketHandlers,
 }
+
+/// `onopen`, `onmessage`, `onerror`, and `onclose`.
+type WebSocketHandlers = (
+    Closure<dyn FnMut()>,
+    Closure<dyn FnMut(MessageEvent)>,
+    EventCallback,
+    EventCallback,
+);
 
 /// Class of the hidden `<textarea>` that owns terminal input.
 pub const INPUT_SURFACE_CLASS: &str = "phux-web-input";
@@ -235,7 +242,7 @@ struct FrameBinding {
 struct BlinkBinding {
     window: web_sys::Window,
     interval: i32,
-    callback: Closure<dyn FnMut()>,
+    _callback: Closure<dyn FnMut()>,
 }
 
 struct App {
@@ -373,6 +380,23 @@ enum PaneAction<'a> {
     Focus(&'a phux_protocol::ids::ResourceId),
     CloseView,
     Kill,
+}
+
+/// Set `key` on a JS object this client built.
+fn set_js(object: &JsValue, key: &str, value: impl Into<JsValue>) {
+    let _ = js_sys::Reflect::set(object, &key.into(), &value.into());
+}
+
+/// Dispatch a bubbling `CustomEvent` named `kind`, carrying `detail`.
+fn dispatch_custom(target: &web_sys::EventTarget, kind: &str, detail: Option<&JsValue>) {
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    if let Some(detail) = detail {
+        init.set_detail(detail);
+    }
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(kind, &init) {
+        let _ = target.dispatch_event(&event);
+    }
 }
 
 #[cfg(test)]

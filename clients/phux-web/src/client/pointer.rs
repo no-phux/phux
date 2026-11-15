@@ -61,9 +61,7 @@ pub(super) fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     }
 
     let old = app.borrow().bindings.borrow_mut().input.replace(binding);
-    if let Some(old) = old {
-        old.dispose();
-    }
+    drop(old);
     find::install(app, &document)?;
     if focus_is_idle(&document) {
         app.borrow().place_input_surface();
