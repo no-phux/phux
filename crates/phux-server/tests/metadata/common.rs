@@ -68,14 +68,7 @@ pub(crate) fn gated_seed(release: &Path, script: &str) -> CommandBuilder {
 /// one connection are handled in order, so the reply proves the subscription
 /// is installed (the subscribe itself is answered with no frame).
 pub(crate) async fn subscribe_all(stream: &mut UnixStream, request_id: u32) {
-    send_frame(
-        stream,
-        &FrameKind::SubscribeEvents {
-            terminal: None,
-            after_seq: None,
-        },
-    )
-    .await;
+    send_frame(stream, &phux_server_testkit::subscribe_events(None, None)).await;
     let get_state = phux_server_testkit::get_state();
     let barrier = command(stream, request_id, get_state).await;
     assert!(

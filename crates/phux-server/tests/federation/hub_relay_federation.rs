@@ -401,10 +401,7 @@ fn on_satellite(host: &str, spawn: Spawn) -> Spawn {
 }
 
 const fn focus_gained(terminal_id: ResourceId) -> Command {
-    Command::RouteInput {
-        terminal_id,
-        event: InputEvent::Focus(FocusEvent::Gained),
-    }
+    phux_server_testkit::route_input(terminal_id, InputEvent::Focus(FocusEvent::Gained))
 }
 
 /// Wait for the next `EVENT` accepted by `pred`.
@@ -439,10 +436,7 @@ fn command_round_trip_and_stream_retagging() {
         // A relayed REPORT_ASKED comes back as an EVENT re-tagged Satellite.
         send_frame(
             &mut hub,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(sat_id.clone()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(sat_id.clone()), None),
         )
         .await;
         let ask = Command::ReportAsked {

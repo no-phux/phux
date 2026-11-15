@@ -46,10 +46,7 @@ fn attach_resource(pane: &ResourceId, role_policy: Option<RolePolicy>) -> Comman
 }
 
 fn route_input(pane: &ResourceId) -> Command {
-    Command::RouteInput {
-        terminal_id: pane.clone(),
-        event: InputEvent::Focus(FocusEvent::Gained),
-    }
+    phux_server_testkit::route_input(pane.clone(), InputEvent::Focus(FocusEvent::Gained))
 }
 
 fn acquire(pane: &ResourceId, ttl_ms: u32) -> Command {

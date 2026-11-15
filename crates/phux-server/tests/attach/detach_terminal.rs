@@ -166,13 +166,13 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
         command(
             control,
             800,
-            Command::RouteInput {
-                terminal_id: pane.clone(),
-                event: InputEvent::Paste(PasteEvent {
+            phux_server_testkit::route_input(
+                pane.clone(),
+                InputEvent::Paste(PasteEvent {
                     data: format!("{marker}\n").into_bytes(),
                     trust: PasteTrust::Trusted,
-                }),
-            },
+                })
+            ),
             false
         )
         .await,

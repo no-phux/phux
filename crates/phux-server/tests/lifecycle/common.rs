@@ -284,10 +284,7 @@ pub(crate) async fn subscribe(
 ) {
     send_frame(
         stream,
-        &FrameKind::SubscribeEvents {
-            terminal,
-            after_seq,
-        },
+        &phux_server_testkit::subscribe_events(terminal, after_seq),
     )
     .await;
     state(stream, request_id).await;

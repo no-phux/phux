@@ -183,14 +183,7 @@ fn a_detached_spawner_types_into_and_outlives_its_own_spawn() {
         output_containing(&mut detached, &pane, b"z").await;
 
         let kill = phux_server_testkit::kill(pane.clone());
-        send_frame(
-            &mut detached,
-            &FrameKind::Command {
-                request_id: 71,
-                command: kill,
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut detached, 71, kill).await;
         wait_frame(&mut detached, "RESOURCE_CLOSED", |frame| match frame {
             FrameKind::ResourceClosed { terminal_id, .. } if terminal_id == pane => Some(()),
             _ => None,

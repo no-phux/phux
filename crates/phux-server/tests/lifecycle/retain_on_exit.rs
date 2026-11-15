@@ -182,10 +182,7 @@ const fn is_closed(event: &AgentEvent) -> bool {
 async fn assert_inert(h: &mut Harness, pane: &ResourceId, info: &ResourceInfo) {
     let key = || InputEvent::Key(ascii_key('a', PhysicalKey::A));
     let routed = h
-        .command(Command::RouteInput {
-            terminal_id: pane.clone(),
-            event: key(),
-        })
+        .command(phux_server_testkit::route_input(pane.clone(), key()))
         .await;
     assert_command_error(&routed, ErrorCode::InputNotWritten);
     let applied = h
@@ -302,10 +299,7 @@ fn a_retained_exit_is_a_readable_facet_until_its_purge() {
 
         h.kill(&pane).await;
         let again = h
-            .command(Command::KillResources {
-                ids: vec![pane.clone()],
-                operation_id: None,
-            })
+            .command(phux_server_testkit::kill_all(vec![pane.clone()]))
             .await;
         assert_eq!(again, CommandResult::Ok, "a repeated kill is not an error");
         assert_eq!(

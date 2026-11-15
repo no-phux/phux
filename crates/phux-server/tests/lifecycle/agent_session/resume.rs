@@ -144,14 +144,8 @@ fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generati
         .await;
         let first_live = next_output(&mut watcher, &session).await;
         assert_eq!((first_live.0, record_seqs(&first_live.1)), (5, vec![4, 5]));
-        send_frame(
-            &mut watcher,
-            &FrameKind::Command {
-                request_id: 103,
-                command: phux_server_testkit::get_state(),
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut watcher, 103, phux_server_testkit::get_state())
+            .await;
         wait_frame(&mut watcher, "live generation fence", |frame| match frame {
             FrameKind::ResourceOutput { terminal_id, .. } if terminal_id == session => {
                 panic!("a replaced agent pump emitted duplicate live output");
@@ -230,9 +224,8 @@ fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes(
         let (server, mut owner) = start(|_| {}).await;
         let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
         let mut watcher = server.connect().await;
-        let route = || Command::RouteInput {
-            terminal_id: parent.clone(),
-            event: InputEvent::Focus(FocusEvent::Gained),
+        let route = || {
+            phux_server_testkit::route_input(parent.clone(), InputEvent::Focus(FocusEvent::Gained))
         };
         let before_input = command(&mut watcher, 100, route()).await;
         let before = state(&mut owner, 2).await;

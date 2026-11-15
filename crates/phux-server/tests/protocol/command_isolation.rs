@@ -166,10 +166,7 @@ async fn send_isolation_probes(stream: &mut UnixStream, terminal_id: ResourceId)
         stream,
         &FrameKind::Command {
             request_id: 13,
-            command: Command::RouteInput {
-                terminal_id,
-                event: paste(b"route-second\n"),
-            },
+            command: phux_server_testkit::route_input(terminal_id, paste(b"route-second\n")),
         },
     )
     .await;
@@ -310,14 +307,7 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
                 },
             ),
         ] {
-            send_frame(
-                &mut stream,
-                &FrameKind::Command {
-                    request_id,
-                    command,
-                },
-            )
-            .await;
+            phux_server_testkit::send_command(&mut stream, request_id, command).await;
         }
 
         let mut results = Vec::new();
@@ -500,14 +490,8 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
         let upload_id = FileUploadId::new([0x5d; 16]).unwrap();
         let bytes = b"held disk";
 
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 30,
-                command: put_file(upload_id, terminal_id, bytes),
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut stream, 30, put_file(upload_id, terminal_id, bytes))
+            .await;
 
         timeout(WIRE_RECV_TIMEOUT, async {
             while !hold.join("held").exists() {

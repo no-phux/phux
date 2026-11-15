@@ -152,10 +152,7 @@ async fn subscribe(
 ) -> Vec<Seen> {
     send_frame(
         stream,
-        &FrameKind::SubscribeEvents {
-            terminal,
-            after_seq,
-        },
+        &phux_server_testkit::subscribe_events(terminal, after_seq),
     )
     .await;
     let (result, seen) = command(stream, request_id, get_state()).await;
@@ -301,10 +298,7 @@ async fn journal_contents(socket: &Path) -> Vec<Seen> {
     let (mut reader, _) = connect_as(socket, "journal-reader", full_caps()).await;
     send_frame(
         &mut reader,
-        &FrameKind::SubscribeEvents {
-            terminal: None,
-            after_seq: Some(0),
-        },
+        &phux_server_testkit::subscribe_events(None, Some(0)),
     )
     .await;
     drain_until_quiet(&mut reader, Duration::from_millis(400)).await

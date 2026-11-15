@@ -84,10 +84,10 @@ fn conditional_kill_takes_only_panes_still_the_callers() {
         // Refused: another client drove it with send-keys-style input.
         let (driven, driven_instance) = spawn_bound(&mut spawner, 6).await;
         let mut agent = server.connect().await;
-        let send_keys = Command::RouteInput {
-            terminal_id: driven.clone(),
-            event: InputEvent::Key(ascii_key('a', PhysicalKey::A)),
-        };
+        let send_keys = phux_server_testkit::route_input(
+            driven.clone(),
+            InputEvent::Key(ascii_key('a', PhysicalKey::A)),
+        );
         assert_eq!(command(&mut agent, 1, send_keys).await, CommandResult::Ok);
         drop(agent);
         assert_refused(

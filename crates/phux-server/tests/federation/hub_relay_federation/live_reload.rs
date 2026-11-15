@@ -133,10 +133,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         // before the reload still delivers afterwards.
         send_frame(
             &mut hub,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(sat_id.clone()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(sat_id.clone()), None),
         )
         .await;
         ring_reload(&mut hub, 30, "noop-2").await;

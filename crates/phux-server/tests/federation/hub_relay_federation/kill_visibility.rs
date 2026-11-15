@@ -45,10 +45,7 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
             "KILL_RESOURCE: {after_one:?}"
         );
 
-        let kill_rest = Command::KillResources {
-            ids: vec![panes[1].clone()],
-            operation_id: None,
-        };
+        let kill_rest = phux_server_testkit::kill_all(vec![panes[1].clone()]);
         assert_eq!(command(&mut hub, 8105, kill_rest).await, CommandResult::Ok);
         let (after_all, _) = get_state_via_hub(&mut hub, 8106).await;
         assert!(

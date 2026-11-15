@@ -91,10 +91,7 @@ fn group_kill_detaches_clients_attached_to_a_keep_empty_session() {
         let pane = create_seeded(&mut conn, 1, "kept", true).await;
         let mut client = attached_watcher(&server, "kept").await;
 
-        let kill_all = Command::KillResources {
-            ids: vec![pane],
-            operation_id: None,
-        };
+        let kill_all = phux_server_testkit::kill_all(vec![pane]);
         command_ok(&mut conn, 2, kill_all).await;
         assert_eq!(
             released_then_detached(&mut client, "kept").await,
@@ -156,10 +153,7 @@ fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
         let grouped = create_seeded(&mut conn, 3, "grouped", true).await;
         command_ok(&mut conn, 4, kill(kept)).await;
         command_ok(&mut conn, 5, kill(plain)).await;
-        let kill_all = Command::KillResources {
-            ids: vec![grouped],
-            operation_id: None,
-        };
+        let kill_all = phux_server_testkit::kill_all(vec![grouped]);
         command_ok(&mut conn, 6, kill_all).await;
 
         let snapshot = wait_for_state(&mut conn, 100, "all three reaps", |s| {

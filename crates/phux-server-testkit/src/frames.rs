@@ -1,6 +1,7 @@
 //! Constructors for the frames and commands the suites send most.
 
 use phux_protocol::ids::ResourceId;
+use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{Command, FrameKind, Scope};
 use tokio::net::UnixStream;
@@ -68,5 +69,27 @@ pub fn subscribe_metadata(scope: Scope, key: &str) -> FrameKind {
     FrameKind::SubscribeMetadata {
         scope,
         key: key.to_owned(),
+    }
+}
+
+#[must_use]
+pub const fn subscribe_events(terminal: Option<ResourceId>, after_seq: Option<u64>) -> FrameKind {
+    FrameKind::SubscribeEvents {
+        terminal,
+        after_seq,
+    }
+}
+
+#[must_use]
+pub const fn route_input(terminal_id: ResourceId, event: InputEvent) -> Command {
+    Command::RouteInput { terminal_id, event }
+}
+
+/// `KILL_RESOURCES` of `ids` with no operation id.
+#[must_use]
+pub const fn kill_all(ids: Vec<ResourceId>) -> Command {
+    Command::KillResources {
+        ids,
+        operation_id: None,
     }
 }

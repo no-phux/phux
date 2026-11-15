@@ -177,12 +177,10 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
                 ClientCapabilities::new().with_output_mode(mode),
             )
             .await;
-            send_frame(
+            phux_server_testkit::send_command(
                 &mut watcher,
-                &FrameKind::Command {
-                    request_id: 100,
-                    command: Command::attach_terminal(pane.clone(), None),
-                },
+                100,
+                Command::attach_terminal(pane.clone(), None),
             )
             .await;
             let mut terminal = resource_bootstrap(&mut watcher).await;

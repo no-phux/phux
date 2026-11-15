@@ -441,14 +441,7 @@ fn kill_resource_and_kill_resources_ack_and_close() {
             (43, kill_one, vec![pane_b]),
             (44, kill_many, vec![pane_a, pane_c]),
         ] {
-            send_frame(
-                &mut stream,
-                &FrameKind::Command {
-                    request_id,
-                    command: kill,
-                },
-            )
-            .await;
+            phux_server_testkit::send_command(&mut stream, request_id, kill).await;
             // The ack and each RESOURCE_CLOSED arrive in any order; the
             // last kill self-exits the server and closes the connection.
             let (mut acked, mut closed) = (false, Vec::new());

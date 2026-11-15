@@ -50,10 +50,7 @@ async fn attach(stream: &mut UnixStream) -> ResourceId {
 }
 
 async fn route(stream: &mut UnixStream, request_id: u32, pane: &ResourceId, event: InputEvent) {
-    let cmd = Command::RouteInput {
-        terminal_id: pane.clone(),
-        event,
-    };
+    let cmd = phux_server_testkit::route_input(pane.clone(), event);
     assert_eq!(command(stream, request_id, cmd).await, CommandResult::Ok);
 }
 
@@ -73,10 +70,10 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         let pane = attach(&mut stream).await;
 
         send_frame(&mut stream, &key(&pane, 'a', PhysicalKey::A)).await;
-        let route_b = Command::RouteInput {
-            terminal_id: pane.clone(),
-            event: InputEvent::Key(ascii_key('b', PhysicalKey::B)),
-        };
+        let route_b = phux_server_testkit::route_input(
+            pane.clone(),
+            InputEvent::Key(ascii_key('b', PhysicalKey::B)),
+        );
         let request = FrameKind::Command {
             request_id: 7,
             command: route_b,
@@ -130,10 +127,10 @@ fn later_keys_wait_behind_routed_and_acknowledged_input() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 11,
-                command: Command::RouteInput {
-                    terminal_id: pane.clone(),
-                    event: InputEvent::Key(ascii_key('r', PhysicalKey::R)),
-                },
+                command: phux_server_testkit::route_input(
+                    pane.clone(),
+                    InputEvent::Key(ascii_key('r', PhysicalKey::R)),
+                ),
             },
         )
         .await;
