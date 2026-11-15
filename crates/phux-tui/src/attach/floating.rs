@@ -1,19 +1,9 @@
-//! The floating plugin overlay pane (ADR-0147).
-//!
-//! A manifest `[[panes]]` entry with `placement = "overlay"` spawns an
-//! ordinary server Terminal that this client never adds to a layout window.
-//! Its [`PaneSlot`] carries `floating = Some(title)`, and while it exists the
-//! client presents it as a modal box centered over the pane area:
-//!
-//! - it takes keyboard input, paste, and pointer events inside its box;
-//! - the panes beneath stop painting (like any modal) and catch up when it
-//!   closes;
-//! - any resolved action dismisses it first (killing its Terminal), and
-//!   `kill-pane` does nothing else;
-//! - it closes when its process exits.
-//!
-//! Nothing here touches the wire: the spawn is the same `SPAWN_RESOURCE` a
-//! split sends, and the dismissal is an ordinary `KILL_RESOURCE`.
+//! The floating plugin overlay pane (ADR-0147): a `placement = "overlay"`
+//! manifest pane, an ordinary server Terminal never added to a layout window
+//! and shown as a modal box over the pane area. It takes keys, paste, and
+//! pointer events inside its box; panes beneath stop painting until it
+//! closes; any resolved action dismisses it (killing its Terminal); it closes
+//! when its process exits.
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -110,11 +100,8 @@ pub(in crate::attach) const fn rect_contains(rect: Rect, x: u16, y: u16) -> bool
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// Draw the box border with `title` set into its top edge, in the modal
-/// tones (`border` for the frame, `accent` for the title) so it reads as
-/// the same kind of floating panel as a picker. Clears the interior only
-/// through the pane paint that follows; the caller paints the Terminal
-/// into `inner` afterwards.
+/// Draw the box border with `title` in its top edge, in the modal tones;
+/// the caller paints the Terminal into `inner` afterwards.
 ///
 /// # Errors
 /// Forwards any `io::Error` from `out`.

@@ -1,13 +1,9 @@
-//! Plugin manifest `[[panes]]` in the TUI.
+//! Plugin manifest `[[panes]]`: a declared pane opens its argv in a server
+//! Terminal through the same `SPAWN_RESOURCE` as `split-pane` (plugin root as
+//! cwd, `PHUX_PLUGIN_*` env.
 //!
-//! A declared pane opens its argv in a real server Terminal through the same
-//! `SPAWN_RESOURCE` verb `split-pane` and `new-window` use (plugin root as
-//! cwd, `PHUX_PLUGIN_*` env), with no new wire surface (ADR-0017).
-//!
-//! Placement: `split` parks a `PendingSplit`, `tab` a `PendingWindow` named
-//! after the pane, `zoomed` a split that zooms on spawn, and `overlay` a
-//! floating box over the pane area that is in no window (ADR-0147, see
-//! `attach::floating`). Palette rows commit [`PLUGIN_PANE_NAME`] with
+//! ADR-0017). Placements: `split`, `tab`, `zoomed`, and `overlay` (a floating
+//! box in no window, ADR-0147). Palette rows commit [`PLUGIN_PANE_NAME`] with
 //! `plugin`/`pane` args.
 
 use std::path::PathBuf;

@@ -1,10 +1,6 @@
-//! Mouse routing for the dispatcher: the pointer stage of
-//! [`EventEnv::dispatch_event`], chrome hit-tests (sidebar strip, status-bar
-//! row, pane dividers), and the pane-level gestures the client claims
-//! (click-to-focus, wheel, context menu, drag-to-copy).
-//!
-//! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
-//! types without widening their visibility.
+//! Mouse routing for the dispatcher: chrome hit-tests (sidebar, status bar,
+//! dividers) and the pane gestures the client claims (click-to-focus, wheel,
+//! context menu, drag-to-copy).
 
 use super::super::args::{
     bare_action, focus_pane_action, select_window_action, switch_host_action,
@@ -640,13 +636,8 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// Map a left press on the sidebar strip to the action it commits, through
-/// the same `ResolvedAction` vocabulary as a keybinding: window rows
-/// `select-window`, plugin section rows `focus-pane`, agent rows a local
-/// `select-window` or a cross-session
-/// `switch-session` (from the painted `targets`), session rows
-/// `switch-session { name, host? }`, headers and overflow their management
-/// views, `+ new` `new-window`, the chevron `toggle-sidebar`.
+/// Map a left press on the sidebar strip to the `ResolvedAction` it commits,
+/// the same vocabulary as a keybinding.
 pub(in crate::attach::input_dispatch) fn sidebar_click_action(
     strip: crate::layout::Rect,
     targets: &crate::render::chrome::sidebar::SidebarTargets,
@@ -798,13 +789,8 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
     )));
 }
 
-/// The active window's name, or an empty string when the workspace has no
-/// windows yet. Used as the window menu's title.
-/// The active tab as the bar labels it: its name, or `Tab N` by its index
-/// when the name is one the server handed out (a bare integer, which would
-/// read as a second, disagreeing index).
-/// Quantise an f64 pointer position (1-px-per-cell per SPEC §9.2.1) to an
-/// outer-viewport cell, saturating into `u16` like the mouse hit-test.
+/// Quantise an f64 pointer position (1 px per cell, SPEC §9.2.1) to a cell,
+/// saturating into `u16`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

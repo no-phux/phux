@@ -28,16 +28,10 @@ pub(super) fn is_placeholder(text: &str) -> bool {
     text.starts_with(PLACEHOLDER)
 }
 
-/// Whether the outer terminal, judged by its environment, drops an image
-/// from the cells text overwrites (`WezTerm`, Konsole) instead of keeping it
-/// until a clear, so images must be re-sent on every paint.
-///
-/// The environment is all the TUI knows of the terminal (it sends no
-/// `XTVERSION` query), so this misses such a terminal behind tmux or screen
-/// (`TERM_PROGRAM` names the multiplexer), over SSH (neither variable is
-/// forwarded by default), or under a renamed `TERM_PROGRAM`; those fall back
-/// to the timed heal. A variable inherited from an outer session (Konsole
-/// launching another terminal) can also turn it on needlessly.
+/// Whether the outer terminal (judged by `TERM_PROGRAM`/`TERM`) drops images
+/// from overwritten cells (`WezTerm`, Konsole), so images must be re-sent on
+/// every paint. Misses such terminals behind tmux or SSH; those fall back to
+/// the timed heal.
 fn ties_images_to_cells(env: impl Fn(&str) -> Option<String>) -> bool {
     env("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"))
         || env("KONSOLE_VERSION").is_some_and(|version| !version.is_empty())

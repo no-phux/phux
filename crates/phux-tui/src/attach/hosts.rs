@@ -1,19 +1,11 @@
 //! Machine segments for the sidebar (ADR-0140).
 //!
-//! The attached server's sessions reach the sidebar live over the attach
-//! stream. Every *other* machine phux reaches (this one, when the attach is
-//! remote, and each `[[remote]]` host) comes from a hosts provider: a
-//! command that prints the `phux.hosts/v1` document
-//! ([`phux_core::host_list`]), re-run on a cadence. The built-in provider is
-//! this binary's own `ls --all --json`; `[sidebar] hosts-provider` swaps in
-//! any command that prints the same shape. A native feature and a plugin
-//! feed the strip through one contract, so neither can do something the
-//! other cannot.
-//!
-//! A click on another machine's session does not relay through this
-//! server: it replaces this process with `phux attach` against that host
-//! ([`exec_switch_host`]), so every dial, repair, and reconnect rule the CLI
-//! already has applies unchanged.
+//! The attached server's sessions arrive over the attach stream; every other
+//! machine comes from a hosts provider printing the `phux.hosts/v1` document
+//! ([`phux_core::host_list`]) on a cadence: by default this binary's own
+//! `ls --all --json`, or `[sidebar] hosts-provider`. Clicking another
+//! machine's session replaces this process with `phux attach` against that
+//! host ([`exec_switch_host`]).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

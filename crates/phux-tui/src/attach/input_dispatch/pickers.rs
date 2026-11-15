@@ -90,12 +90,10 @@ fn append_move_destinations(
 }
 
 /// The grouped window picker: one header per session (current first, then
-/// in the stored session order, then by name). Current-session windows commit `select-window { index }`; a
-/// peer with a cached layout lists one-step `switch-session { name, window }`
-/// rows, else a single "switch to this session" row. The caller bells when
-/// only headers result. `terminals` counts each session's terminals in the
-/// cached graph (`PeerInputs::terminal_counts`), `Some` only when that graph
-/// reports each resource's session (`PeerInputs::reports_sessions`).
+/// stored order, then name). Current windows commit `select-window`; a peer
+/// with a cached layout lists `switch-session { name, window }` rows, else
+/// one "switch to this session" row. `terminals` is `Some` only when the
+/// cached graph reports each resource's session.
 pub(super) fn window_picker_items(
     workspace: &ArrangementDoc,
     names: &WindowNames<'_>,
@@ -181,15 +179,9 @@ impl WindowNames<'_> {
     }
 }
 
-/// How many tabs a peer session with no cached arrangement opens as.
-///
-/// When the cached graph reports each resource's session (an
-/// `ORGANIZATION` server, ADR-0161 §7), the server's window count is
-/// synthesized (one per non-empty session) and attaching gives each of the
-/// session's terminals a tab of its own, so the terminal count is the tab
-/// count; a session the graph lists no terminal for opens empty, as its
-/// synthesized count of 0 said. Before such a graph is cached, or from an
-/// older server, the reported window count is all there is.
+/// How many tabs a peer session with no cached arrangement opens as: one per
+/// terminal once the resource graph reports sessions (ADR-0161), else the
+/// reported window count.
 fn session_tab_count(
     session: &phux_protocol::wire::info::SessionInfo,
     terminals: Option<&HashMap<phux_protocol::ids::SessionId, usize>>,

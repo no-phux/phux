@@ -95,19 +95,12 @@ async fn run_from_start(
     }
 }
 
-/// Dial-aware production attach (UDS or QUIC) with predictive echo config.
-/// Blocks until the session ends.
+/// Dial-aware production attach (UDS or QUIC); blocks until the session ends.
 ///
-/// With `rec`, the composited output is teed into it (ADR-0060); the
-/// recorder is passed in so one cast survives reconnects.
-///
-/// The future is `!Send` (libghostty's `Terminal` lives across awaits), so
-/// drive it on a current-thread runtime (ADR-0003).
-///
-/// Connect, `HELLO`, `ATTACH`, and the `ATTACHED` wait run on the cooked
-/// terminal: a failure there returns `Err` without ever entering raw mode or
-/// the alt screen. `initial_notice` is shown once attached (the reconnect
-/// loop's "re-attached after server restart").
+/// `rec` tees the composited output (ADR-0060) and survives reconnects. The
+/// future is `!Send`: drive it on a current-thread runtime (ADR-0003).
+/// Everything up to `ATTACHED` runs on the cooked terminal, so an early failure
+/// never enters raw mode or the alt screen.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -272,13 +265,9 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     }
 }
 
-/// Re-handshake against `target` on the SAME connection and return the new
-/// `ATTACHED` frame for the next `main_loop` entry.
-///
-/// The glass is NOT cleared here: the previous session's frame stays up
-/// through the round trips, and the next entry's held first paint replaces
-/// it in one synchronized frame (`handover`). A bare `ED2` here blanked the
-/// screen and dragged the visible cursor home for the whole re-attach.
+/// Re-handshake against `target` on the same connection and return the new
+/// `ATTACHED`. The glass is not cleared: the next entry's held first paint
+/// replaces the old frame in one synchronized frame (`handover`).
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"

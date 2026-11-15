@@ -1,12 +1,8 @@
-//! Plugin sidebar sections (ADR-0148): titled, fixed-height panels a plugin
-//! manifest's `[[sidebar]]` entry declares, laid between Agents and Sessions.
+//! Plugin sidebar sections (ADR-0148): fixed-height panels between Agents and
+//! Sessions, so a section filling never moves Sessions (ADR-0112).
 //!
-//! A section's height is its header plus its declared `rows`, whatever its
-//! population, so a section filling or emptying never moves Sessions
-//! (ADR-0112). Sections are laid only while Agents and Sessions keep
-//! `MIN_CORE_ROWS` body rows between them; the last declared section yields
-//! first. The rows themselves are projected by the attach layer from pane
-//! state the client already holds; this module only shapes and names them.
+//! Laid only while both core zones keep `MIN_CORE_ROWS`; the last declared
+//! yields first.
 
 /// Most plugin sections one strip lays out; further declarations are
 /// dropped with a warning when the settings are built.

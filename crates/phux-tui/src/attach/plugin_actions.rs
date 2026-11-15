@@ -1,11 +1,9 @@
 //! Plugin manifest `[[actions]]` in the TUI, client-local (ADR-0017).
 //!
-//! [`entries_from_manifests`] flattens the load-once manifest snapshot, the
-//! palette lists them under a "Plugin" header, [`merge_plugin_bindings`]
-//! folds their `keys` into the prefix table (user config always wins), and
-//! `plugin_job` runs one through the `phux-plugin` runtime off
-//! the input loop, toasting failures (`failure_toast`). Rows and bindings
-//! both commit [`PLUGIN_ACTION_NAME`], sharing the `run_action` path.
+//! Listed in the palette under "Plugin", their `keys` merged into the prefix
+//! table ([`merge_plugin_bindings`]), and run off the input loop through
+//! `phux-plugin`, toasting failures. Rows and bindings commit
+//! [`PLUGIN_ACTION_NAME`].
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -124,12 +122,8 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
 
 /// Merge plugin `keys` bindings into the prefix table.
 ///
-/// User config always wins: a chord that collides, fails to parse, or is ambiguous with an
-/// existing binding is dropped with a warning (validated by test-building a
-/// [`Resolver`], so a bad plugin binding cannot disable every binding), and
-/// so is a key the config unbound with `"none"`
-/// ([`KeybindingsCfg::unbound`], in any spelling).
-///
+/// User config wins: a colliding, unparsable, ambiguous, or `"none"`-unbound
+/// chord is dropped with a warning (validated against a test [`Resolver`]).
 /// Between plugins, the first in `[[plugins]]` order wins.
 pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEntry]) {
     for entry in entries {

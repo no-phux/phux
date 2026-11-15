@@ -1,13 +1,6 @@
-//! Best-effort probes of the cooked outer terminal.
-//!
-//! This runs before the attach driver enters raw mode. Failures are deliberately
-//! silent to callers: palette discovery improves terminal fidelity but must
-//! never make an otherwise-valid attach fail.
-//!
-//! The probe sends OSC 10/11 and then a primary DA (`CSI c`). Terminals answer
-//! DA1 even when they ignore colour queries, and they answer in order, so a DA1
-//! reply with no colour reply ends the wait. The budgets below are only the
-//! fallback for a terminal that answers neither.
+//! Best-effort probes of the cooked outer terminal before raw mode; failures
+//! are silent. Sends OSC 10/11 then DA1: terminals answer DA1 in order even
+//! when they ignore colour queries, so a bare DA1 ends the wait.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

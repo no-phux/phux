@@ -1,17 +1,9 @@
-//! The action registry: one row per action the TUI dispatches, and the
-//! single declaration of it (ADR-0172).
+//! The action registry (ADR-0172): one [`ActionSpec`] per action the TUI
+//! dispatches, with its description, parameters, [`Palette`] placement, and
+//! handler.
 //!
-//! Each [`ActionSpec`] carries the action's name, its reference-page
-//! description and parameters, its [`Palette`] placement (a titled row with
-//! the args it commits, or the reason it has none), and the handler
-//! `run_action` calls. The palette, the which-key labels, and the generated
-//! `docs/reference/actions.md` all render from [`ACTIONS`].
-//!
-//! The names themselves are config vocabulary and live in phux-config
-//! ([`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES)), which validates
-//! keybindings and hooks without depending on this crate; a test pins
-//! [`ACTIONS`] to that list exactly. Bound chords resolve from the live
-//! [`KeybindingsCfg`] at build time.
+//! The palette, which-key labels, and `docs/reference/actions.md` all render
+//! from [`ACTIONS`].
 
 use std::collections::BTreeMap;
 

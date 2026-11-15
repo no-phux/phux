@@ -1,15 +1,9 @@
-//! Which-key popup.
+//! Which-key popup: the prefix-table legend shown after `which-key-delay-ms`.
 //!
-//! After the prefix and `which-key-delay-ms` of hesitation, a floating legend
-//! of every prefix-table continuation from the live [`KeybindingsCfg`],
-//! grouped by what it acts on (pane, tab, session, phux itself). Keys bound
-//! to the same action share one row, numeric tab jumps collapse to `0-9`,
-//! and a directional family (`h j k l` focus) collapses to one row. Labels
-//! are the palette's titles, so a key and its palette row read the same.
-//!
+//! Every continuation from the live [`KeybindingsCfg`], grouped by target,
+//! with shared actions and key families collapsed and the palette's labels.
 //! It is transparent to input ([`RenderOverlay::is_input_passthrough`]): the
-//! next key dismisses it and runs as if it had never appeared (Esc also
-//! cancels the prefix), so it can never eat or delay a chord.
+//! next key dismisses it and runs as if it never appeared.
 
 use phux_config::KeybindingsCfg;
 use phux_protocol::input::key::KeyEvent;

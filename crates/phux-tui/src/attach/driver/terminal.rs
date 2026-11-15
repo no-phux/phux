@@ -58,15 +58,9 @@ const HOST_KITTY_KEYBOARD_PUSH: &[u8] = b"\x1b[>1u";
 const HOST_KITTY_KEYBOARD_POP: &[u8] = b"\x1b[<u";
 
 /// Enter the alt screen, hide the cursor, push kitty keyboard flags, and
-/// enable bracketed paste (`?2004h`, so a paste arrives as one
-/// `InputEvent::Paste`) and focus reports (`?1004h`). With `mouse`, also
-/// `?1002h` button-event tracking (not `?1003h`, which floods hover traffic)
-/// and `?1006h` SGR coordinates. A host without the kitty protocol ignores
-/// the push and keeps sending legacy bytes, which the parser still decodes.
-///
-/// A process exec'd by a `switch-host` hand-off is already on the alt screen
-/// with the previous frame up; it skips `?1049h` (which clears) so its first
-/// synchronized frame replaces that one with no blank in between.
+/// enable bracketed paste and focus reports; with `mouse`, `?1002h` button
+/// tracking (not `?1003h`) and SGR coordinates. A `switch-host` hand-off is
+/// already on the alt screen and skips `?1049h`, which would clear it.
 fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> {
     if !INHERITED_ALT_SCREEN.take() {
         out.write_all(b"\x1b[?1049h")?;
@@ -337,27 +331,13 @@ pub(super) fn hand_off_to_host(host: &str, session: &str) -> ! {
     std::process::exit(1);
 }
 
-/// Clean client exit after a server-acknowledged DETACH (or a
-/// detach-intended disconnect). Restores the terminal and exits the
-/// process immediately rather than returning up the stack.
+/// Clean client exit after a server-acknowledged DETACH: restore the
+/// terminal and exit the process instead of returning.
 ///
-/// Why not just `return Ok(())` and let `RawModeGuard::drop` + the
-/// runtime teardown clean up? Because `tokio::io::stdin()` parks an
-/// **uncancellable** blocking `read()` on a helper thread. The terminal
-/// restore (guard Drop) does run, but the subsequent runtime drop then
-/// blocks forever waiting for that stuck read to return. The result is
-/// a zombie client that never exits, keeps a reader on the shared PTY,
-/// and steals the first line the user types next — most painfully their
-/// reattach command, which is why reattach "did nothing." Exiting here
-/// closes that window: the restore mirrors the signal path, and
-/// `process::exit` skips the teardown that would otherwise hang.
-///
-/// Because this never returns, the CLI's own `Ok(end)`
-/// handling can't run on this path — so the one-line explanation for a
-/// last-pane death (`AttachEnd::explanation`) is printed HERE, after the
-/// terminal reset (the screen is cooked again) and before the exit. A
-/// plain detach explains nothing. Process exit stays `0` either way:
-/// the attach succeeded; the ending just deserves words.
+/// `tokio::io::stdin()` parks an uncancellable blocking `read()`, so runtime
+/// teardown would hang forever, leaving a zombie client that steals the next
+/// line the user types. Since this never returns, the last-pane explanation
+/// (`AttachEnd::explanation`) is printed here, after the reset. Exit is `0`.
 #[allow(
     clippy::exit,
     reason = "detach must exit now; runtime drop hangs on the stdin read thread"

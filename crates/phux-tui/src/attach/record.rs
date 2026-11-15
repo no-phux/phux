@@ -1,16 +1,11 @@
-//! The `phux --rec` session tee: an asciicast written from the client's own
-//! composited output stream (ADR-0060).
+//! The `phux --rec` session tee (ADR-0060): an asciicast of the client's own
+//! composited output, byte-for-byte what the glass received.
 //!
-//! It wraps the one `RenderSink` the driver threads through the whole render
-//! path, so the recording is byte-for-byte what the glass received, chrome
-//! included, and it sits upstream of `StdoutSink`'s backlog drop, so a
-//! backpressured terminal loses frames on screen but not in the recording.
-//! Timing is the paint cadence (bursts coalesce into one event); content is
-//! exact.
+//! It sits upstream of `StdoutSink`'s backlog drop, so backpressure loses
+//! frames on screen but not in the recording.
 //!
-//! Nothing here may kill the session or write to stderr (it would corrupt
-//! the alt screen): a write failure latches one `tracing::warn!` and goes
-//! silent, leaving a playable prefix on disk.
+//! Nothing here may kill the session or write to stderr: a write failure
+//! latches one `tracing::warn!` and goes silent, leaving a playable prefix.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

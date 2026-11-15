@@ -1,11 +1,8 @@
 //! Attach loop: the runtime behind `phux attach <session>`.
 //!
-//! The entry point is [`run_dial`], called from a tokio
-//! current-thread runtime (ADR-0003); it takes over the controlling terminal
-//! and restores it on every exit path including panic. The headless half of
-//! the vocabulary (connection, transports, stdin parser, replay journal,
-//! [`AttachError`] / [`AttachEnd`]) lives in `phux_client::attach` and is
-//! re-exported here; this module adds everything that needs a screen.
+//! [`run_dial`] takes over the controlling terminal on a current-thread runtime
+//! (ADR-0003) and restores it on every exit path. The headless half lives in
+//! `phux_client::attach` and is re-exported here.
 
 pub mod action_registry;
 pub mod actions;

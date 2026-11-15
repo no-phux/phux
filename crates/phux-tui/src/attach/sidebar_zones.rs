@@ -475,14 +475,9 @@ pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize
         .collect()
 }
 
-/// ADR-0140: one segment per other machine, in provider order. A session
-/// row commits `switch-host`, which re-attaches this terminal there; an
-/// unreachable machine keeps its segment with an unselectable placeholder
-/// so "mini is down" is visible rather than a machine silently missing.
-///
-/// Agent counts are not known across machines (the provider lists
-/// sessions, not panes), so every count is zero and the dot is the quiet
-/// rung, the same "nothing known" reading a not-yet-swept peer gets.
+/// ADR-0140: one segment per other machine, in provider order; a session
+/// row commits `switch-host`. An unreachable machine keeps its segment with
+/// a placeholder. Agent counts are unknown across machines, so all are zero.
 fn machine_roster<'a>(
     hosts: &[&'a phux_core::host_list::HostJson],
 ) -> Vec<(

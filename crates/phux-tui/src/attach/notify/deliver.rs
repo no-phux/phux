@@ -1,10 +1,6 @@
-//! Turning a [`Note`] into something the user sees.
-//!
-//! Agent names, window names, and session names are written by agents and
-//! other clients, and every byte of a note ends up inside an escape sequence
-//! on the outer terminal. [`sanitize`] is that injection boundary: no control
-//! character (ESC, BEL, the C1 `ST`) survives it, so a name cannot end the
-//! OSC early and smuggle its own sequence onto the user's terminal.
+//! Turning a [`Note`] into something the user sees. Names come from agents
+//! and other clients and end up inside escape sequences, so [`sanitize`] is
+//! the injection boundary: no control character survives it.
 
 use std::process::{Command, Stdio};
 

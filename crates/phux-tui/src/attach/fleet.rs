@@ -1,27 +1,12 @@
-//! Agent-fleet dashboard model: a pure client-side projection (ADR-0030) of
-//! every pane with its agent identity (ADR-0040), asked state (ADR-0035),
-//! and branch/cwd, grouped under session headers and committing focus
-//! through `run_action`.
+//! Agent-fleet dashboard model: a client-side projection (ADR-0030) of every
+//! pane with its agent identity (ADR-0040), state (ADR-0035), and branch/cwd,
+//! grouped under session headers, committing focus through `run_action`.
 //!
-//! Foreign sessions come from two existing, subscribed L3 keys: the peer's
-//! persisted `phux.tui.layout/v1/<session>` pane tree and each pane's
-//! `phux.agent/v1` record; server-wide spawn/close events keep the set
-//! current. A peer row commits a one-step `switch-session { name, window,
-//! pane }`; a peer with no cached layout gets one "switch to session" row.
-//! Satellite agents are listed by agent name with a host badge (ADR-0136).
-//! Foreign rows carry no branch/cwd (no local slot).
-//!
-//! ```text
-//! work (current)                                   <- session header
-//!   ● 0:main.0 reviewer [claude]  blocked · main   <- pane row
-//!   ○ 1:logs.0 tail -f                       logs
-//! scratch                                          <- foreign session
-//!   ◐ 0:main.0 packer [codex]     working
-//! ```
-//!
-//! Glyphs are the chrome's badge vocabulary (`●` blocked, `◐` working, `◆`
-//! done, `○` idle/unknown); a pane with no record falls back to its OSC
-//! title. Attention rows use the theme's `attention` slot.
+//! Foreign sessions come from each peer's persisted layout and pane agent
+//! records; a peer row commits `switch-session { name, window, pane }`, and a
+//! peer with no cached layout gets one "switch to session" row. Satellite
+//! agents carry a host badge (ADR-0136). Glyphs are the chrome's badge
+//! vocabulary; a pane with no record falls back to its OSC title.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 

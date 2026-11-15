@@ -1,19 +1,12 @@
-//! Settings page (ADR-0101).
+//! Settings page (ADR-0101): a schema-driven editor of the user's
+//! `config.toml`.
 //!
-//! A schema-driven editor of the user's `config.toml`, not a runtime knob
-//! panel. Each row is one key with its
-//! effective value, origin layer, description, and when a change applies;
-//! each edit sets or removes one leaf (comments preserved, validated first,
-//! `phux_config::settings::write_edit`) and then reloads like `reload-config`.
+//! Each row is one key with its effective value, origin layer, description, and
+//! when a change applies; each edit sets or removes one leaf
+//! (`phux_config::settings::write_edit`) and then reloads.
 //!
-//! Roomy: a section column, the section's rows, and a detail panel. Starved
-//! viewports drop the section column, then shrink the detail panel.
-//!
-//! Text filters across sections (`j`/`k` navigate an empty query; Esc clears,
-//! then closes), `Tab`/`Shift-Tab` step sections, Enter/Space toggle, cycle,
-//! or edit, Left/Right step (letters are always filter text, so no query can
-//! write the file), `Delete`/`C-r` reset to the shipped default, `C-z` undoes.
-//! A key set by an `extends` layer refuses a reset, naming that file.
+//! Letters are always filter text, so no query can write the file. A key set
+//! by an `extends` layer refuses a reset, naming that file.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};

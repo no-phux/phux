@@ -1,22 +1,12 @@
 //! The attached session's arrangement record, read and written over a
-//! dedicated control connection when the server advertises `ORGANIZATION`.
+//! dedicated control connection on an `ORGANIZATION` server.
 //!
-//! The attach connection streams pane output, so the correlated
-//! request/response helpers in [`phux_client::layout_ops`] cannot run on it
-//! (they would consume interleaved frames). This link owns a second,
-//! unsubscribed connection on the attach's dial and drives
-//! [`LayoutOps`] over it: `ARRANGEMENT_GET` with key-to-handle translation,
+//! The attach connection streams pane output, so the correlated helpers in
+//! [`phux_client::layout_ops`] run on a second connection: `ARRANGEMENT_GET`,
 //! and `ARRANGEMENT_REPLACE` as a compare-and-swap retried on conflict.
-//! Change notification still arrives on the attach connection as
-//! `ARRANGEMENT_CHANGED`, which asks the driver to read again.
-//!
-//! Peer sessions' arrangements are read off the attach loop by
-//! [`crate::attach::peer_arrangements`].
-//!
-//! Against an older server there is no link and the driver keeps the
-//! legacy `phux.tui.layout/v1` metadata key. Against an `ORGANIZATION` server
-//! the driver never uses that key: a link that cannot connect reports the
-//! failure and connects again on the next operation.
+//! `ARRANGEMENT_CHANGED` still arrives on the attach connection. A link that
+//! cannot connect reports the failure and retries on the next operation; it
+//! never falls back to the legacy layout key.
 
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
 use phux_protocol::ids::SessionId;
@@ -122,9 +112,8 @@ impl ArrangementLink {
         Ok(read)
     }
 
-    /// Replace the session's arrangement with `document`: a compare-and-swap
-    /// against the revision just read, retried on conflict, so the write
-    /// lands whole.
+    /// Replace the session's arrangement with `document` (compare-and-swap
+    /// retried on conflict).
     ///
     /// # Errors
     ///

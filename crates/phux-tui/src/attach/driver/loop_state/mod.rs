@@ -1,15 +1,7 @@
 //! The attached session's long-lived state and the `tokio::select!` step
-//! that drives it.
-//!
-//! The handlers live beside this file: one module per wake-up source
-//! (input, frames, paint, inventory, bootstrap, panes, peers) so this
-//! type is not a single 3k-line impl.
-//!
-//! [`SessionLoop`] owns every local the attach loop carries across iterations.
-//! One named handler per wake-up source turns the `select!` into a dispatch.
-//! Every session-scoped field is rebuilt on each [`SessionLoop::new`], so a
-//! re-attach starts from a clean slate (no stale pane mirror, no
-//! carried-over predict queue).
+//! that drives it, with one handler module per wake-up source beside this
+//! file. Every session-scoped field is rebuilt by [`SessionLoop::new`], so a
+//! re-attach starts clean.
 
 #![allow(
     clippy::future_not_send,

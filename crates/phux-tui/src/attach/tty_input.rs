@@ -1,15 +1,9 @@
-//! The outer terminal's input handle, read on reactor readiness.
+//! The outer terminal's input handle, read on reactor readiness instead of
+//! the blocking pool (one cross-thread wake per keystroke).
 //!
-//! `tokio::io::stdin()` reads on the blocking pool, costing a cross-thread
-//! wake-up per keystroke. [`TtyInput::Ready`] registers a private
-//! non-blocking handle to the controlling terminal with the reactor instead.
-//!
-//! The handle is a fresh open of the terminal's device path (`ttyname` of fd
-//! 0): `O_NONBLOCK` on fd 0's shared description would leak to the parent
-//! shell after exit, and a `/dev/tty` fd is not kqueue-registrable on macOS.
-//! Termios is per device, so the raw-mode guard still governs it.
-//! [`TtyInput::Blocking`] is the fallback whenever that path cannot be
-//! established.
+//! [`TtyInput::Ready`] is a fresh open of `ttyname(0)`: `O_NONBLOCK` on fd
+//! 0's shared description would leak to the parent shell, and `/dev/tty` is
+//! not kqueue-registrable on macOS. [`TtyInput::Blocking`] is the fallback.
 
 use std::io;
 use std::io::IsTerminal;

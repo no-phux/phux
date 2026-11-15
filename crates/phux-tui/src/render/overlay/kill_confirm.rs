@@ -1,10 +1,6 @@
-//! Kill confirmation: the modal `kill-window` and `kill-pane` raise before
-//! they terminate terminals.
-//!
-//! It names how many terminals end and which of them are also shown
-//! elsewhere (another window, another session's arrangement), so closing a
-//! tab or pane is never mistaken for closing a view. Enter or `y` commits
-//! the kill with the exact target set it showed; Esc or `n` drops it.
+//! Kill confirmation for `kill-window` / `kill-pane`: names how many
+//! terminals end and which are also shown elsewhere, so closing a view is
+//! never mistaken for killing. Enter or `y` kills the exact set shown.
 
 use std::collections::BTreeMap;
 

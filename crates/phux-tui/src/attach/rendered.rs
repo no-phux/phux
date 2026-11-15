@@ -1,10 +1,5 @@
-//! Compose the client's multi-pane view into dense structured cells
-//! (`phux snapshot --rendered`).
-//!
-//! The structured-cells counterpart to `paint::paint_full_frame`, in the same
-//! order so the two agree: tile the panes into the content rect and fill
-//! their cells, overlay dividers, the sidebar strip, and the status bar, and
-//! adopt the focused pane's cursor as the frame cursor.
+//! Compose the multi-pane view into structured cells (`phux snapshot
+//! --rendered`), in `paint::paint_full_frame`'s order so the two agree.
 
 use std::collections::HashMap;
 use std::time::SystemTime;

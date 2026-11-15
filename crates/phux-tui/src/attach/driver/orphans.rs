@@ -1,20 +1,14 @@
-//! Best-effort kills for satellite panes this client spawned whose attach
-//! was then refused (the satellite already runs them and nothing references
-//! them). Replies are consumed here and logged at debug, never surfaced.
+//! Best-effort kills for satellite panes this client spawned whose attach was
+//! then refused. Replies are consumed here and logged at debug.
 //!
-//! A session switch sends no kill on the way out (the hub would hold the
-//! re-attach behind it); those panes become *strays*, killed once their
-//! satellite next answers. A late kill could hit a pane that is no longer a
-//! stray, so each retry is one of two kinds ([`StrayKill`]):
+//! A session switch sends no kill on the way out; those panes become strays,
+//! killed once their satellite next answers ([`StrayKill`]):
 //!
-//! - **Conditional** (ADR-0109): the spawn was bound to the satellite's
-//!   instance token and the hub supports `CONDITIONAL_KILL`, so the retry is
-//!   a `KILL_RESOURCE_IF` the satellite refuses after a restart or any other
-//!   use. That makes retrying safe even after unreachable signals, and lets
-//!   the record wait longer ([`BOUND_STRAY_TTL`]).
-//! - **Unconditional**: kept small and short-lived ([`STRAY_CAP`],
-//!   [`STRAY_TTL`]) and forgotten on any sign the satellite was unreachable,
-//!   since that cannot be told from a restart.
+//! - **Conditional** (ADR-0109): a bound spawn is retried as
+//!   `KILL_RESOURCE_IF`, which the satellite refuses after a restart, so it
+//!   survives unreachable signals and waits longer ([`BOUND_STRAY_TTL`]).
+//! - **Unconditional**: capped ([`STRAY_CAP`], [`STRAY_TTL`]) and forgotten
+//!   on any sign the satellite was unreachable.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};

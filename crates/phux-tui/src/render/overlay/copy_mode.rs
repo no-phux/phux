@@ -1,14 +1,9 @@
-//! Copy-mode overlay: keyboard and mouse text selection over the live pane.
+//! Copy-mode overlay: keyboard and mouse selection over the live pane
+//! (ADR-0030).
 //!
-//! Selection is a client-local projection (ADR-0030): the overlay tracks a
-//! pane-local rectangle and on commit the dispatcher resolves it against the
-//! pane's own engine and writes the host clipboard via OSC 52.
-//!
-//! Vi keys move, select (`v`, `V`, `C-v`) and copy (`y`); see the `vi` submodule.
-//!
-//! Search (`/` forward, `?` backward, `n`/`N` repeat) is typed here and run
-//! by the dispatcher against the pane's loaded history; the overlay keeps the
-//! hits in document rows so they stay put while the viewport scrolls.
+//! On commit the dispatcher resolves the pane-local rectangle against the
+//! pane's engine and writes OSC 52. Vi keys live in `vi`. Search hits are kept
+//! in document rows so they stay put while the viewport scrolls.
 
 use phux_protocol::input::key::{KeyEvent, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};

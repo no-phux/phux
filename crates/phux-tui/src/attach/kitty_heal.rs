@@ -1,21 +1,14 @@
-//! When the TUI re-sends kitty images the outer terminal may have dropped.
+//! Re-send kitty images the outer terminal may have dropped (quota eviction,
+//! a user clear) even though nothing here cleared them:
 //!
-//! The pane renderers never re-send an unchanged image, which kitty and
-//! Ghostty honour: only `ED2`, a reset or an alt-screen switch clear images
-//! there. Images still go missing behind their back (Ghostty evicting the
-//! oldest under its quota, a user clear such as Cmd-K), so they heal:
+//! - each image [`HEAL_INTERVAL`] after it was last sent, while the window is
+//!   focused or has never reported focus;
+//! - on focus-in, each image older than [`FOCUS_MIN_AGE`];
+//! - at most [`HEAL_BUDGET`] bytes per heal, oldest first, the rest
+//!   [`HEAL_SPACING`] later.
 //!
-//! - each image [`HEAL_INTERVAL`] after it was last sent, while the outer
-//!   terminal is focused or has never reported focus (an unfocused window's
-//!   holes cannot be seen, and focus-in heals them);
-//! - on focus-in, each image sent more than [`FOCUS_MIN_AGE`] ago;
-//! - at most [`HEAL_BUDGET`] bytes per heal, oldest first; the rest is owed
-//!   and healed [`HEAL_SPACING`] later, so a surface of hundreds of tiles
-//!   never bursts megabytes at once.
-//!
-//! A probe (`a=p,q=1` and an `ENOENT` reply) could re-send only what the
-//! outer terminal lost, but the input parser drops APC replies, so the heal
-//! re-sends blind.
+//! The input parser drops APC replies, so the heal cannot probe and re-sends
+//! blind.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

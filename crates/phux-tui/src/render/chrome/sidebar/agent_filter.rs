@@ -1,11 +1,7 @@
-//! Which agents the sidebar's Agents panel lists: a scope (every agent, this
-//! session's, or only the ones that need you) crossed with a machine.
+//! Which agents the sidebar's Agents panel lists: a scope crossed with a
+//! machine, picked from a chip row under its header or by `agents-filter`.
 //!
-//! The panel paints the filter as a chip row under its header; one click on
-//! a chip picks that scope and a click on the `@` chip steps through the
-//! machines that have agents. `agents-filter` drives the same state from a
-//! key or the palette. [`filter_chips`] is the one layout both the painter
-//! and the hit test read, so a chip's paint and its click target agree.
+//! [`filter_chips`] is the one layout the painter and hit test read.
 
 use super::AgentEntry;
 

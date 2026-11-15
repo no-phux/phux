@@ -1,13 +1,7 @@
-//! The session-switch hand-over: what one loop entry passes the next so a
-//! switch swaps the glass in one frame instead of blanking it.
-//!
-//! Two halves. The paint hold keeps the previous session's frame on screen
-//! (no unsynchronized clear, no cursor jump) until the new session's layout
-//! and visible pane bootstraps have landed, then paints the new view in one
-//! DEC 2026 frame; a deadline bounds the hold on a slow link. The carried
-//! peer caches seed the new entry's sidebar with what the server-wide sweeps
-//! already knew (machine label, peer layouts, every agent record), so the
-//! chrome does not paint empty and refill as the re-sweep answers.
+//! The session-switch hand-over. The paint hold keeps the previous frame up
+//! until the new session's layout and visible bootstraps land, then paints
+//! it in one DEC 2026 frame (bounded by a deadline). The carried peer caches
+//! seed the new sidebar so it does not paint empty and refill.
 
 use std::collections::{HashMap, HashSet};
 

@@ -196,13 +196,10 @@ fn project_grouped_session_items(
     items
 }
 
-/// Session picker rows grouped by host: with no other host exactly
-/// [`session_picker_items`]; otherwise the attached server's sessions under
-/// `here`, then each hub satellite and each other machine under its own
-/// header (kept, marked unreachable, when it could not be listed). A
-/// satellite row commits `switch-session { name, host, id }` (`id` is the
-/// satellite-local session id); a machine row commits `switch-host { host, name }`
-/// (ADR-0140).
+/// Session picker rows grouped by host: the attached server's sessions under
+/// `here`, then each satellite (`switch-session { name, host, id }`) and
+/// other machine (`switch-host`, ADR-0140) under its own header, kept and
+/// marked when unreachable.
 pub(in crate::attach::input_dispatch) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,

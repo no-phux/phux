@@ -1,11 +1,9 @@
-//! The TUI's "a newer phux is available" toast.
+//! The "a newer phux is available" toast (self-update stays explicit,
+//! ADR-0074).
 //!
-//! Self-update stays explicit (ADR-0074); the TUI only tells the user. The
-//! check shells out to `phux update --check` in the background once per
-//! attach (the `phux` crate depends on this one), is silent on failure, and
-//! is cached for `CACHE_TTL`. Opt out with `PHUX_NO_UPDATE_CHECK` set to any
-//! non-empty value: the background check does not run, and a cached notice
-//! does not paint.
+//! `phux update --check` runs in the background once per attach, silent on
+//! failure, cached for `CACHE_TTL`. `PHUX_NO_UPDATE_CHECK` turns off both the
+//! check and the notice.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -243,13 +241,8 @@ async fn run_check() -> Option<String> {
         .flatten()
 }
 
-/// The notice to show now, once.
-///
-/// `None` when the process opted out (`PHUX_NO_UPDATE_CHECK`), when there is
-/// no update, when the cached answer is stale (another build wrote it, or it
-/// was already shown), or when nothing has been checked yet. Marks the
-/// version announced so it is shown once. An opt-out does not consume the
-/// cache: a later process without the variable can still announce it.
+/// The notice to show now, once: `None` when opted out, up to date, stale,
+/// or unchecked. Marks the version announced; an opt-out leaves the cache.
 #[must_use]
 pub fn take_pending_notice() -> Option<UpdateNotice> {
     take_pending_notice_at(&cache_path())

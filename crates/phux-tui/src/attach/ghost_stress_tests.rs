@@ -1,11 +1,7 @@
-//! Regression: rapid window switching / control spam must never leave
-//! doubled or ghosted text. The snapshot and live-output paths once pinned an
-//! undersized mirror at the rect origin while the full frame letterboxed it,
-//! putting the same text at two offsets.
-//!
-//! These drive the real `handle_server_frame` / `paint_full_frame` in the
-//! driver's sequencing, replay every emitted byte into a "glass" terminal,
-//! and diff it against a reference compose of the pane mirrors.
+//! Regression: rapid window switching and control spam must never leave
+//! doubled text. These drive the real `handle_server_frame` and
+//! `paint_full_frame`, replay every byte into a "glass" terminal, and diff it
+//! against a reference compose of the pane mirrors.
 
 use std::collections::HashMap;
 
@@ -33,13 +29,8 @@ const fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
 }
 
-/// A driver-shaped rig: the attach loop's paint-relevant state, plus a
-/// "glass" terminal that parses every emitted byte the way a real terminal
-/// would. Methods mirror the `main_loop` arms one-to-one:
-/// server frames go through the real `handle_server_frame`, and every
-/// layout-changing control (window switch, sidebar toggle, overlay dismiss)
-/// triggers the same `paint_full_frame` the driver runs on
-/// `layout_changed`.
+/// A driver-shaped rig: the loop's paint state plus a "glass" terminal that
+/// parses every emitted byte; methods mirror the `main_loop` arms.
 struct Rig {
     mirror: SessionMirror,
     sidebar: Option<SidebarReservation>,

@@ -1,11 +1,6 @@
-//! Arrangement edits that arrived before the initial layout read.
-//!
-//! `close-view` and `reopen-views` change the shared arrangement. Applying
-//! them to the bootstrap fallback, then skipping the save because the read
-//! fence is down, drops the edit: detach and reattach show only the
-//! arrangement the session was created with (#1475). The keystroke is held
-//! and applied to the workspace the read adopts, then saved. Nothing here
-//! places a member the user did not ask to show.
+//! Arrangement edits (`close-view`, `reopen-views`) that arrived before the
+//! initial layout read: held and applied to the workspace the read adopts,
+//! then saved, instead of being dropped on the bootstrap fallback (#1475).
 
 use std::collections::{HashMap, HashSet};
 

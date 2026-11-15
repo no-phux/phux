@@ -21,13 +21,8 @@ use crate::render::chrome::status_bar::{
 mod frame_block;
 pub(super) use frame_block::FrameBlock;
 
-/// Memoized pane tiling for the hot path.
-///
-/// `compute_layout_in` walks the tree, allocates rects, and rasterizes
-/// dividers, and the output path asks for it three times a frame for a
-/// layout that almost never changes. The key is the whole tiling input (layout with
-/// its focus, content rect, viewport) checked by structural equality, so a
-/// hit is exact.
+/// Memoized pane tiling: the output path asks for it three times a frame.
+/// Keyed by the whole tiling input by structural equality, so a hit is exact.
 #[derive(Debug, Default)]
 struct LayoutCache {
     /// The inputs the cached tiling was computed from.
@@ -163,14 +158,10 @@ pub(super) fn paint_focused_pane<W: Write>(
     slot.renderer.last_cursor()
 }
 
-/// The single composite end-of-frame cursor authority (ADR-0029): the only
-/// place that emits the frame's cursor placement (CUP + DECTCEM) and flushes.
-///
-/// A known `cursor` `(row, col)` is shown there. Otherwise `fallback_origin`
-/// (the focused pane's origin `(x, y)`) parks it hidden, so it never strands
-/// at the bar's tail; with neither it parks hidden at the viewport origin.
-/// The flush is load-bearing: a CUP without a newline sits in a line-buffered
-/// stdout until the next pane output, which an idle pane never sends.
+/// The single end-of-frame cursor authority (ADR-0029): the only place that
+/// emits the frame's cursor placement and flushes. A known `cursor` is shown;
+/// otherwise it parks hidden at `fallback_origin` or the viewport origin.
+/// The flush is load-bearing: a CUP alone sits in line-buffered stdout.
 pub(super) fn end_of_frame_cursor<W: Write>(
     out: &mut W,
     cursor: Option<(u16, u16)>,
@@ -217,15 +208,9 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
-/// Re-render every visible pane and the chrome WITHOUT the `ED2` clear: what
-/// `RepaintLevel::Panes` drains to.
-///
-/// Safe only when the tile rectangles are unchanged (the caller has proven
-/// it): the panes fully cover the content at the same cells, so no stale cell
-/// survives, and skipping the clear avoids the whole-screen flash a `Full`
-/// repaint causes on a terminal that ignores DEC 2026. Fronts are invalidated
-/// and panes repainted forced, so a pane that was hidden and now shares the
-/// grid is refreshed.
+/// Re-render every visible pane and the chrome without `ED2`
+/// (`RepaintLevel::Panes`). Safe only at unchanged tiles, which the caller
+/// proves; fronts are invalidated and panes forced.
 pub(super) fn paint_panes_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
@@ -247,16 +232,10 @@ pub(super) fn paint_panes_in_place<W: super::RenderSink>(
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
-/// Repaint each visible pane's dirty rows in place, then the chrome: what
-/// `RepaintLevel::Rows` drains to.
-///
-/// No `ED2`, no forced pane paint, and no front invalidation, so a pane whose
-/// rows are clean emits nothing. For a batch that moved a pane's content
-/// under the client's own hand (a wheel or copy-mode scroll of its viewport)
-/// at unchanged tiles: libghostty dirties the viewport's rows, and nothing
-/// else paints them, since no pane output follows a local scroll. The focused
-/// pane (the floating overlay's pane, when one is open) paints last so the
-/// chrome tail restores its cursor.
+/// Repaint each visible pane's dirty rows in place, then the chrome
+/// (`RepaintLevel::Rows`): no `ED2`, no forced paint, so clean rows emit
+/// nothing. For a local viewport scroll at unchanged tiles. The focused pane
+/// paints last so the chrome tail restores its cursor.
 pub(super) fn paint_pane_rows_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
@@ -481,15 +460,9 @@ fn paint_full_frame_into<W: Write>(
     (status_bar_painted, cursor_published)
 }
 
-/// Repaint ONLY the chrome (dividers/titles, sidebar strip, status bar) in
-/// place: what `RepaintLevel::Chrome` drains to, so agent-state changes do
-/// not strobe the screen.
-///
-/// No `ED2`, no pane render (`panes` is shared for exactly that reason), and
-/// no painter-cache invalidation, so an unchanged strip costs nothing. It
-/// always ends in its own [`end_of_frame_cursor`], not
-/// [`paint_bar_after_pane`]'s (which returns early without a bar), because the
-/// strip moved the host cursor. One frame block, like [`paint_full_frame`].
+/// Repaint only the chrome in place (`RepaintLevel::Chrome`), so agent-state
+/// changes do not strobe the screen. One frame block, ending in its own
+/// [`end_of_frame_cursor`] since the strip moved the host cursor.
 pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
@@ -593,13 +566,9 @@ fn paint_chrome_in_place_into<W: Write>(
 }
 
 /// Restore the status row after a pane render, then place the cursor via
-/// [`end_of_frame_cursor`] (`restore_cursor`, else `fallback_origin` hidden).
-/// No-op without a painter.
-///
-/// Pass `fallback_origin = None` where a later pane render owns the cursor.
-/// `bar_row_clobbered` bypasses the painter's cache: only a caller that
-/// physically cleared the bar row (the full-frame `ED2`) passes `true`; on
-/// the output hot path an unchanged bar emits nothing.
+/// [`end_of_frame_cursor`]. Pass `fallback_origin = None` where a later pane
+/// render owns the cursor; `bar_row_clobbered` (only after a full-frame
+/// `ED2`) bypasses the painter's cache.
 pub(super) fn paint_bar_after_pane<W: Write>(
     out: &mut W,
     chrome: &mut ChromeCtx<'_>,

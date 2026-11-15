@@ -102,37 +102,17 @@ pub(in crate::attach) fn switch_host(
     effects.switch_host = Some((host, name));
 }
 
-/// phux-c2td.3: `switch-session { name, host }` — select a session that
-/// lives on a satellite of this hub.
+/// `switch-session { name, host }` for a session on a satellite of this hub.
 ///
-/// A session on another host cannot be *attached* from here: `ATTACH` is
-/// session-scoped and session ids are not federation-routable (ADR-0016,
-/// L1 §9.1), so the hub has no session of that name to re-attach this
-/// client to. What the hub does relay is resources, so this reuses the
-/// mechanism satellite panes already ride: the session's active pane,
-/// re-tagged `Satellite { host, id }` by the hub's inventory, is opened as
-/// a window of the session this client is attached to and attached through
-/// the relay (`ATTACH_RESOURCE`), exactly as a `spawn --satellite` pane is.
-/// Choosing the same session again focuses that window rather than opening
-/// a second one onto the same pane.
+/// `ATTACH` is session-scoped and session ids are not federation-routable
+/// (ADR-0016), so the session's active pane is opened as a window here and
+/// attached through the relay (`ATTACH_RESOURCE`), like a `spawn --satellite`
+/// pane; choosing it again focuses that window. The window holds the real
+/// Terminal, so closing it kills the pane on the satellite (a full cross-host
+/// attach is `phux attach --remote`). It opens only once the attach succeeds;
+/// a refusal bells with a notice and leaves the layout untouched.
 ///
-/// The consequence to know: the opened window holds the satellite's real
-/// Terminal, not a copy of it. Closing the window kills that pane on the
-/// satellite, like any other leaf. A full cross-host attach — the
-/// satellite's whole window layout, its own windows and splits — is
-/// `phux attach --remote HOST SESSION`, a separate connection to that
-/// server.
-///
-/// The window opens only when the attach succeeds. The action parks a
-/// [`PendingWindow`] naming the pane to adopt and sends `ATTACH_RESOURCE`;
-/// the reply either opens, focuses, and broadcasts the window, or — when the
-/// hub or satellite refuses — bells and names the host and session in a
-/// status notice, leaving the shared layout untouched. A second commit while
-/// that attach is in flight sends nothing more.
-///
-/// Bells when the host is unreachable, has no such session, or reported no
-/// active pane for it: there is nothing to open, and the picker's
-/// `(unreachable)` header has already said why.
+/// Bells when the host is unreachable or has no such session or active pane.
 fn open_satellite_session(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,

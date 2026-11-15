@@ -1,18 +1,10 @@
 //! Fixed-area Agents and Sessions sidebar painter.
 //!
-//! Agents lists every agent in caller-supplied stable order, narrowed by a
-//! one-click filter row under its header (every agent, this session's, or
-//! only the ones that need you, crossed with a machine; see
-//! [`agent_filter`]), and keeps a fixed share (`[sidebar] agents-share`) of
-//! the body whatever its population; an empty list paints a quiet
-//! placeholder.
-//! Sessions fill the rest, with a host line
-//! per machine when more than one is known, the active session expanding its
-//! tabs beneath it. Plugin sections (ADR-0148) sit between them at fixed
-//! heights. The last
-//! row holds New tab with a collapse chevron in the corner; a rule on the
-//! pane-facing column separates the strip from the panes. [`hit_test`] reads
-//! the same row model as the painter, and an unchanged repaint emits nothing.
+//! Agents keeps a fixed share (`[sidebar] agents-share`) of the body, under a
+//! filter row ([`agent_filter`]); Sessions fill the rest, grouped by machine,
+//! the active session expanding its tabs. Plugin sections (ADR-0148) sit
+//! between them. [`hit_test`] reads the same row model as the painter, and an
+//! unchanged repaint emits nothing.
 
 use crate::render::chrome::sidebar_sections::PluginShape;
 use phux_client::agent_meta::AgentMetaState;
@@ -112,15 +104,9 @@ impl AgentEntry {
     }
 }
 
-/// An agent's rung on the attention ladder (higher wants a human sooner);
-/// drives badges and session summaries, not display order.
-///
-/// ```text
-/// blocked  >  done AND !seen  >  working  >  done/idle AND seen  >  unknown
-/// ```
-///
-/// `attention` (declared high attention, or an ADR-0035 ask) pins the top
-/// rung: an agent that asked for a human is blocked on one.
+/// An agent's rung on the attention ladder (higher wants a human sooner):
+/// blocked > done unseen > working > done/idle seen > unknown. `attention`
+/// pins the top rung.
 #[must_use]
 pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) -> u8 {
     if attention {

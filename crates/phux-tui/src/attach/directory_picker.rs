@@ -1,13 +1,7 @@
-//! Rows for the `go-to-directory` picker: a
-//! [`SelectList`](crate::render::overlay::SelectList) over one
-//! `DIRECTORY_LISTING` reply (`docs/protocol.md`) from the attached server.
-//!
-//! On a federation hub a satellite pane's listing is relayed from the
-//! satellite ([`ListingHost::Satellite`], §4.1) and every row carries `host`.
-//!
-//! Rows commit ordinary actions: "open new tab here" is
-//! `new-window { cwd }`; `..` and children are `go-to-directory { path }`; a
-//! refused listing keeps `..` and `~`.
+//! Rows for the `go-to-directory` picker over one `DIRECTORY_LISTING` reply.
+//! A satellite pane's listing is relayed from that satellite and every row
+//! carries `host`. "Open new tab here" commits `new-window { cwd }`; `..`
+//! and children commit `go-to-directory { path }`.
 
 use std::collections::BTreeMap;
 use std::path::Path;

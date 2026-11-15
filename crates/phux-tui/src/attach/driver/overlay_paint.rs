@@ -15,14 +15,10 @@ use crate::render::chrome::status_bar::Position;
 use crate::render::overlay::CopyMarks;
 use crate::render::overlay::OverlayState;
 
-/// Paint the active overlay layer. Copy mode repaints the focused pane with
-/// its selection inverted plus a status line; every other overlay floats over
-/// a repainted base frame. [`OverlayState::copy_selection`] picks the branch.
-///
-/// `base` is the render window (zoom honored), `None` for an empty workspace.
-/// The chrome keeps panes inset under an overlay (no reflow flicker), and its
-/// sidebar painter keeps the strip visible under a modal: the base repaint
-/// starts with ED2, so without the painter the sidebar vanishes.
+/// Paint the active overlay layer: copy mode repaints the focused pane with
+/// its selection plus a status line; every other overlay floats over a
+/// repainted base frame. `base` is the render window, `None` when empty.
+/// The sidebar painter is passed so the strip survives the base's `ED2`.
 pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     out: &mut W,
     overlays: &OverlayState,
