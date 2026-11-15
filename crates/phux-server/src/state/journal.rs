@@ -240,6 +240,7 @@ impl Journal {
     }
 
     /// Every retained entry, oldest first.
+    #[cfg(test)]
     pub(crate) fn retained(&self) -> impl Iterator<Item = &JournalEntry> {
         self.entries.iter()
     }
