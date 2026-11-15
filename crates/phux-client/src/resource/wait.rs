@@ -122,10 +122,10 @@ pub struct ResourceWait {
     /// Wall time from the start of the deadline.
     pub waited: Duration,
     /// Where to resume: pass it back as the next wait's cursor. `None` when
-    /// the server keeps no journal.
+    /// the server names no incarnation.
     pub cursor: Option<Cursor>,
-    /// The caller's cursor belonged to another server incarnation (or a
-    /// server with no journal), so the wait fell back to its level read.
+    /// The caller's cursor belonged to another server incarnation, so the
+    /// wait fell back to its level read.
     pub cursor_void: bool,
     /// The replay reported a range the journal had already evicted, so a
     /// close in that range was never seen: a `gone` may hide an exit.
