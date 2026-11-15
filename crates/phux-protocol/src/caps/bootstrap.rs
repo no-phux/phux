@@ -83,9 +83,9 @@ u8_flag_set! {
     }
 }
 
+wire_enum! { as_wire / from_wire;
 /// An immutable libghostty checkpoint codec version: an exact capability,
 /// never a range, so negotiation cannot infer compatibility.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum EngineCodec {
@@ -105,25 +105,8 @@ pub enum EngineCodec {
     /// ignored on receipt.
     LibghosttySnapshotV1 = 5,
 }
-
-impl EngineCodec {
-    /// Exact checkpoint envelope version selected on the wire.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode an exact checkpoint version.
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Option<Self> {
-        match value {
-            2 => Some(Self::LibghosttyCheckpointV2),
-            4 => Some(Self::LibghosttyPre1SnapshotV1),
-            5 => Some(Self::LibghosttySnapshotV1),
-            _ => None,
-        }
-    }
 }
+
 /// Additive set of exact native engine codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EngineCodecSet(u64);

@@ -43,42 +43,20 @@ pub struct DirectoryListing {
     pub truncated: bool,
 }
 
+wire_enum! { as_wire / from_wire else Other;
 /// Why a directory could not be listed. Wire `u8`; an unallocated value
 /// decodes as [`Self::Other`] so the vocabulary can grow additively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DirectoryErrorCode {
     /// Nothing exists at the path.
-    NotFound,
+    NotFound = 0,
     /// The serving user may not read the directory.
-    PermissionDenied,
+    PermissionDenied = 1,
     /// The path names something that is not a directory.
-    NotADirectory,
+    NotADirectory = 2,
     /// Any other failure (relative path, unknown home, timeout, I/O error).
-    Other,
+    Other = 3,
 }
-
-impl DirectoryErrorCode {
-    /// Wire value.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        match self {
-            Self::NotFound => 0,
-            Self::PermissionDenied => 1,
-            Self::NotADirectory => 2,
-            Self::Other => 3,
-        }
-    }
-
-    /// Inverse of [`Self::as_wire`]; unallocated values read as [`Self::Other`].
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Self {
-        match value {
-            0 => Self::NotFound,
-            1 => Self::PermissionDenied,
-            2 => Self::NotADirectory,
-            _ => Self::Other,
-        }
-    }
 }
 
 /// A refused listing: the path the server tried and a typed reason.
