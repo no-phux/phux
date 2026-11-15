@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::wire::frame::ControlClass;
+use crate::wire::frame::{ControlClass, RolePolicy};
 
 use bytes::{Bytes, BytesMut};
 
@@ -69,13 +69,22 @@ fn forward_samples() -> Vec<(Command, &'static Rule)> {
 
 include!("samples/command_samples.rs");
 include!("samples/frame_samples.rs");
+include!("samples/metadata_samples.rs");
 
-fn frame_samples() -> Vec<(FrameKind, &'static Rule)> {
+/// Every client-originated frame shape, each with the row it lands on. The
+/// wire schema samples these too, so each optional field appears both set
+/// and unset.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the wire schema's samples, outside `kinds`, read it"
+)]
+pub(crate) fn frame_samples() -> Vec<(FrameKind, &'static Rule)> {
     let mut samples = connection_samples();
     samples.extend(input_samples());
     samples.extend(stream_samples());
     samples.extend(metadata_samples());
     samples.extend(spawn_samples());
+    samples.extend(host_samples());
     samples
 }
 
