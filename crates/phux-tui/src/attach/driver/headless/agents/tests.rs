@@ -98,7 +98,7 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
             let focused = outcome.sessions.map(|(_, focused)| focused);
             session.request_agent_records(&mut conn).await.unwrap();
             assert!(!session.agent_metadata_complete());
-            let mut completion = HeadlessCompletion::new(None);
+            let mut completion = HeadlessCompletion::default();
             tokio::time::timeout(
                 Duration::from_secs(10),
                 drain_until_settled(
@@ -107,7 +107,6 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
                     &mut completion,
                     &mut attach_id,
                     focused,
-                    None,
                 ),
             )
             .await

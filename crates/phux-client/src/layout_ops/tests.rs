@@ -292,77 +292,20 @@ fn scripted(spec: ScriptSpec) -> (Connection, tokio::task::JoinHandle<Vec<FrameK
     (Connection::from_stream(client_stream), server)
 }
 
-#[tokio::test]
-async fn mutate_correlates_replies_and_confirms_set() {
-    let initial = two_window_workspace();
-    // A foreign METADATA_VALUE ahead of the reply must not be taken.
-    let spec = ScriptSpec::new()
-        .foreign_metadata_value(999)
-        .stored_metadata(
-            Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-            &layout_key(SessionId::new(7)),
-            initial.encode_cbor().unwrap(),
-        );
-    let (mut client, server_task) = scripted(spec);
-
-    let confirmed = LayoutOps::new(&mut client, SessionId::new(7), 10)
-        .mutate(LayoutMutation::Swap {
-            first: tid(1),
-            second: tid(2),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        leaves(confirmed.groups[0].state.tree.as_ref().unwrap()),
-        vec![tid(2), tid(1)]
-    );
-    drop(client);
-
-    let seen = server_task.await.unwrap();
-    assert!(
-        matches!(
-            seen.first(),
-            Some(FrameKind::GetMetadata { request_id: 10, scope, key })
-                if *scope == Scope::Group(DEFAULT_LAYOUT_GROUP_ID)
-                    && *key == layout_key(SessionId::new(7))
-        ),
-        "the read leg is a group-scoped GET on the session's layout key; got {:?}",
-        seen.first()
-    );
-    let Some(FrameKind::SetMetadata {
-        request_id: 11,
-        value,
-        ..
-    }) = seen.get(1)
-    else {
-        panic!("expected SET on request 11, got {:?}", seen.get(1));
-    };
-    let written = ArrangementDoc::decode_cbor(value).unwrap();
-    assert_eq!(
-        leaves(written.groups[0].state.tree.as_ref().unwrap()),
-        vec![tid(2), tid(1)]
-    );
-    assert!(
-        matches!(
-            seen.get(2),
-            Some(FrameKind::GetMetadata { request_id: 12, .. })
-        ),
-        "the confirming GET closes the CAS; got {:?}",
-        seen.get(2)
-    );
-}
-
 /// ADR-0129: `--projection` writes and reads the named key it was given,
 /// never the shared `phux.tui.layout/v1/<session>` default.
 #[tokio::test]
 async fn insert_pane_with_projection_writes_the_named_key_and_leaves_the_default_untouched() {
     let initial = two_window_workspace();
     let named_key = "myapp.layout/v1/7".to_owned();
-    let spec = ScriptSpec::new().stored_metadata(
-        Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-        &named_key,
-        initial.encode_cbor().unwrap(),
-    );
+    // A foreign METADATA_VALUE ahead of the reply must not be taken.
+    let spec = ScriptSpec::new()
+        .foreign_metadata_value(999)
+        .stored_metadata(
+            Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+            &named_key,
+            initial.encode_cbor().unwrap(),
+        );
     let (mut client, server_task) = scripted(spec);
 
     let mut ops =
@@ -402,13 +345,14 @@ async fn insert_pane_with_projection_writes_the_named_key_and_leaves_the_default
 #[tokio::test]
 async fn write_and_confirm_refuses_a_read_back_that_does_not_match_what_was_written() {
     let stale = ArrangementDoc::single(tid(9)).encode_cbor().unwrap();
-    let key = layout_key(SessionId::new(7));
+    let key = "myapp.layout/v1/7".to_owned();
     let spec = ScriptSpec::new()
         .stored_metadata(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key, stale)
         .drop_metadata_writes(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key);
     let (mut client, server_task) = scripted(spec);
 
-    let result = LayoutOps::new(&mut client, SessionId::new(7), 10)
+    let result = LayoutOps::with_key(&mut client, SessionId::new(7), key, 10)
+        .unwrap()
         .write_and_confirm(&ArrangementDoc::single(tid(1)))
         .await;
     assert!(
@@ -421,72 +365,15 @@ async fn write_and_confirm_refuses_a_read_back_that_does_not_match_what_was_writ
 
 #[tokio::test]
 async fn correlated_error_is_reported() {
-    let spec = ScriptSpec::new().refuse_metadata(ErrorCode::InvalidCommand, "foreign group");
+    let spec = ScriptSpec::new().refuse_metadata(ErrorCode::InvalidCommand, "denied");
     let (mut client, server_task) = scripted(spec);
-    let result = LayoutOps::in_group(&mut client, SessionId::new(1), GroupId::new(77), 5)
+    let result = LayoutOps::with_key(&mut client, SessionId::new(1), "app.layout/v1/1".into(), 5)
+        .unwrap()
         .read()
         .await;
-    assert!(matches!(result, Err(LayoutOpsError::Refused(message)) if message == "foreign group"));
+    assert!(matches!(result, Err(LayoutOpsError::Refused(message)) if message == "denied"));
     drop(client);
     server_task.await.unwrap();
-}
-
-#[tokio::test]
-async fn read_or_seed_initializes_an_absent_layout_and_confirms_it() {
-    let (mut client, server_task) = scripted(ScriptSpec::new());
-    let fallback = ArrangementDoc::single(tid(7));
-
-    let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
-        .read_or_seed(fallback.clone())
-        .await
-        .unwrap();
-    assert_eq!(confirmed, fallback);
-    drop(client);
-
-    let seen = server_task.await.unwrap();
-    assert!(matches!(
-        seen.first(),
-        Some(FrameKind::GetMetadata { request_id: 20, .. })
-    ));
-    let Some(FrameKind::SetMetadata {
-        request_id: 21,
-        key,
-        value,
-        ..
-    }) = seen.get(1)
-    else {
-        panic!("expected conditional seed SET, got {:?}", seen.get(1));
-    };
-    assert_eq!(key, &layout_key(SessionId::new(3)));
-    assert_eq!(ArrangementDoc::decode_cbor(value).unwrap(), fallback);
-    assert!(matches!(
-        seen.get(2),
-        Some(FrameKind::GetMetadata { request_id: 22, .. })
-    ));
-}
-
-#[tokio::test]
-async fn read_or_seed_preserves_an_existing_layout_without_writing() {
-    let existing = two_window_workspace();
-    let spec = ScriptSpec::new().stored_metadata(
-        Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-        &layout_key(SessionId::new(3)),
-        existing.encode_cbor().unwrap(),
-    );
-    let (mut client, server_task) = scripted(spec);
-
-    let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
-        .read_or_seed(ArrangementDoc::single(tid(99)))
-        .await
-        .unwrap();
-    assert_eq!(confirmed, existing);
-    drop(client);
-
-    let seen = server_task.await.unwrap();
-    assert!(matches!(
-        seen.as_slice(),
-        [FrameKind::GetMetadata { request_id: 20, .. }]
-    ));
 }
 
 mod organization;

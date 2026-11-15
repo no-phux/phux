@@ -126,19 +126,19 @@ async fn capture_archive(
         &native_launches,
         bridge::resolve_resume_owner,
     );
-    // The organization records (`None` from a server that predates them):
-    // the sessions' arrangements and typed attributes.
+    // The organization records: the sessions' arrangements and typed
+    // attributes.
     let records = phux_client::org::fetch_from_socket(socket_path)
         .await
         .map_err(|err| {
             CaptureError::Failed(format!("could not capture session attributes: {err}"))
         })?;
     // `GET_STATE` never carries split trees, so each session's is read from
-    // its arrangement (or, from an older server or under `--projection`, its
-    // L3 layout key), best-effort: missing or undecodable falls back to the
+    // its arrangement (or, under `--projection`, its L3 layout key),
+    // best-effort: missing or undecodable falls back to the
     // pane-list projection.
     let (layouts, layout_warnings) =
-        fetch_session_layouts(socket_path, &snapshot, projection, records.as_ref()).await;
+        fetch_session_layouts(socket_path, &snapshot, projection, &records).await;
     let confirmation = phux_client::state::get_state(socket_path)
         .await
         .map_err(CaptureError::NoServer)?
@@ -156,24 +156,22 @@ async fn capture_archive(
     let mut directories =
         phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
     let mut links = HashMap::new();
-    if let Some(records) = records {
-        for session in records.sessions {
-            for (key, value) in session.attrs {
-                match key.as_str() {
-                    "project" => {
-                        projects.insert(session.name.clone(), value);
-                    }
-                    phux_core::project_identity::attr::LINK => {
-                        links.insert(session.name.clone(), value);
-                    }
-                    "directory" => {
-                        directories.insert(session.name.clone(), value);
-                    }
-                    "host" => {
-                        hosts.insert(session.name.clone(), value);
-                    }
-                    _ => {}
+    for session in records.sessions {
+        for (key, value) in session.attrs {
+            match key.as_str() {
+                "project" => {
+                    projects.insert(session.name.clone(), value);
                 }
+                phux_core::project_identity::attr::LINK => {
+                    links.insert(session.name.clone(), value);
+                }
+                "directory" => {
+                    directories.insert(session.name.clone(), value);
+                }
+                "host" => {
+                    hosts.insert(session.name.clone(), value);
+                }
+                _ => {}
             }
         }
     }
@@ -305,22 +303,19 @@ async fn fetch_session_layouts(
     socket_path: &Path,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     projection: Option<&str>,
-    records: Option<&phux_client::org::OrgInventory>,
+    records: &phux_client::org::OrgInventory,
 ) -> (SessionLayouts, Vec<String>) {
     let mut layouts = HashMap::new();
     let mut warnings = Vec::new();
     let Ok(mut conn) = Connection::connect(socket_path).await else {
         return (layouts, warnings);
     };
-    if projection.is_none()
-        && let Some(records) = records
-    {
+    let Some(prefix) = projection else {
         return (
             fetch_session_arrangements(&mut conn, snapshot, records).await,
             warnings,
         );
-    }
-    let prefix = projection.unwrap_or(phux_client::layout_ops::LAYOUT_KEY);
+    };
     let mut request_id = 1u32;
     for session in &snapshot.sessions {
         let key = format!("{prefix}/{}", session.id.get());
@@ -334,7 +329,7 @@ async fn fetch_session_layouts(
             }
             Err(_) => false,
         };
-        if !found && projection.is_some() {
+        if !found {
             warnings.push(format!(
                 "archive export: session {:?} has no layout stored at projection key {key:?}",
                 session.name
@@ -538,18 +533,6 @@ pub(crate) async fn import_archive(
         .await
         .map_err(RestoreError::Reported)?;
     let plan = restore_plan(archive, &existing).map_err(RestoreError::Failed)?;
-    let organization = organization_supported(socket_path)
-        .await
-        .map_err(|err| RestoreError::Reported(report_no_server(&err, socket_path, verb)))?;
-    if !organization {
-        let reason = match kind {
-            ImportKind::Archive => "cannot recreate a session without starting its panes",
-            ImportKind::Project { .. } => "cannot create a session with per-session attributes",
-        };
-        return Err(RestoreError::Failed(format!(
-            "{verb}: this server predates organization records, so it {reason}; upgrade it (`phux upgrade`)"
-        )));
-    }
     let mut sessions = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
     let mut dormant = HashSet::new();
@@ -632,14 +615,6 @@ pub(crate) async fn relaunch_imported(socket_path: &Path, imported: Imported) ->
         failed,
         warnings,
     }
-}
-
-/// Whether the server at `socket_path` advertises `ORGANIZATION`.
-async fn organization_supported(
-    socket_path: &Path,
-) -> Result<bool, phux_client::attach::AttachError> {
-    let conn = Connection::connect(socket_path).await?;
-    Ok(phux_client::org::supported(&conn))
 }
 
 /// Refuse a session whose archived agent session would now resume through a
@@ -1856,8 +1831,7 @@ mod tests {
             let (socket, server, _dir) = serve(fixture);
             let records = phux_client::org::fetch_from_socket(&socket)
                 .await
-                .expect("records")
-                .expect("an ORGANIZATION server");
+                .expect("records");
             server.await.expect("server");
             records
         }
@@ -1871,7 +1845,7 @@ mod tests {
             let records = records_of(fixture.clone()).await;
             let (socket, server, _dir) = serve(fixture);
             let (layouts, warnings) =
-                fetch_session_layouts(&socket, &snapshot, projection, Some(&records)).await;
+                fetch_session_layouts(&socket, &snapshot, projection, &records).await;
             (layouts, warnings, server.await.expect("server"))
         }
 

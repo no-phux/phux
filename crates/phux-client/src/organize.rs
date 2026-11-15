@@ -105,14 +105,11 @@ impl OrganizeError {
 ///
 /// # Errors
 ///
-/// A server without `ORGANIZATION`, or a failed read.
+/// A failed read.
 pub async fn gather(
     conn: &mut Connection,
     files_host: Option<&str>,
 ) -> Result<Facts, OrganizeError> {
-    if !org::supported(conn) {
-        return Err(OrgError::Unsupported.into());
-    }
     let inventory = org::fetch(conn, OrgFilter::All, 1).await?;
     let view = crate::state::get_state_on(conn)
         .await
@@ -404,12 +401,9 @@ pub async fn apply(conn: &mut Connection, plan: &Plan) -> Report {
 ///
 /// # Errors
 ///
-/// A server without `ORGANIZATION`, a failed read, or
+/// A failed read, or
 /// [`OrganizeError::OtherServer`] for another server's journal.
 pub async fn undo(conn: &mut Connection, journal: &Journal) -> Result<Report, OrganizeError> {
-    if !org::supported(conn) {
-        return Err(OrgError::Unsupported.into());
-    }
     let records = org::fetch(conn, OrgFilter::All, REQUEST_ID).await?;
     let sequencer = Sequencer::undo(journal.clone());
     if sequencer.refusal(&records) == Some(UndoRefusal::OtherServer) {

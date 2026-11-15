@@ -7,10 +7,7 @@ use crate::org::OrgError;
 use crate::selector::{self, Selector};
 use crate::state::Degradation;
 
-use super::keyed_signal_supported;
-use super::session::{
-    kill_each_terminal, kill_keyed, kill_session, kill_whole_session, session_kill_supported,
-};
+use super::session::{kill_each_terminal, kill_keyed, kill_session, kill_whole_session};
 
 /// A successful [`selected`] kill.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -26,13 +23,6 @@ pub struct Selected {
 /// Why [`selected`] did not kill the target.
 #[derive(Debug, thiserror::Error)]
 pub enum KillError {
-    /// The server does not advertise `KEYED_SIGNAL`, so a keyed retry would
-    /// run again. Nothing was sent.
-    #[error(
-        "the server does not advertise KEYED_SIGNAL, so it would run a keyed retry again; \
-         nothing was sent"
-    )]
-    UnsupportedKeyedSignal,
     /// The selector matched nothing against a complete view, or a named
     /// session is absent (hub-local, so a partial fleet cannot hide it).
     #[error("no such target: {target}")]
@@ -117,9 +107,9 @@ impl KillError {
 
 /// Resolve `selector` against a fresh snapshot on `conn` and kill what it names.
 ///
-/// A whole-session target runs [`kill_session`] against a server that
-/// advertises `SESSION_KILL` (an empty session is simply deleted), and one
-/// atomic `KILL_RESOURCES` against an older one; a group, pane, `@id`, or
+/// A whole-session target runs [`kill_session`] (an empty session is simply
+/// deleted), or one atomic `KILL_RESOURCES` when the snapshot carries no
+/// session key; a group, pane, `@id`, or
 /// `#tag` target kills each resolved Terminal with `KILL_RESOURCE`. A clean
 /// disconnect after a kill is the server self-exiting once its last session
 /// was reaped: success.
@@ -144,17 +134,12 @@ pub async fn selected(
     key: Option<IdempotencyKey>,
     notices: &mut Vec<String>,
 ) -> Result<Selected, KillError> {
-    if key.is_some() && !keyed_signal_supported(conn) {
-        return Err(KillError::UnsupportedKeyedSignal);
-    }
     if let (Some(key), Some(id)) = (key, selector.explicit_id()) {
         return kill_keyed(conn, target, vec![id], key).await;
     }
     let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
     if let Some(session) = selector::whole_session_name(selector, &snapshot) {
-        if session_kill_supported(conn)
-            && let Some(key) = session_key_named(&snapshot, &session)
-        {
+        if let Some(key) = session_key_named(&snapshot, &session) {
             notices.extend(degradation.notices().iter().cloned());
             return kill_session(conn, key, &session).await;
         }

@@ -279,9 +279,8 @@ pub(crate) fn print_sessions_json(
     snapshot: &SessionSnapshot,
     organization: Option<&OrgInventory>,
     degradation: &Degradation,
-    hosts_complete: bool,
 ) -> ExitCode {
     let list: SessionListJson =
-        phux_client::session_list::document(snapshot, organization, degradation, hosts_complete);
+        phux_client::session_list::document(snapshot, organization, degradation);
     crate::output::json(&list)
 }

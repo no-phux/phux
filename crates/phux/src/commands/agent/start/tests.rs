@@ -65,12 +65,11 @@ fn shell_line_quotes_every_word_and_refuses_what_quoting_cannot_contain() {
 /// I asked for started". An absent kind is reported, not failed: an
 /// explicit hook writer may own the record and stand the detector down.
 /// The typed line exports the delegated socket through `env`, quoted like
-/// every other word, and a server without delegation types the plan's.
+/// every other word.
 #[test]
 fn the_typed_line_points_the_agent_at_its_delegated_socket() {
     let plan = Plan {
         kind: "codex".to_owned(),
-        line: "'codex' '--x'".to_owned(),
         argv: argv(&["codex", "--x"]),
         env: BTreeMap::from([("A".to_owned(), "1".to_owned())]),
         resolved_cwd: PathBuf::from("/"),
@@ -86,11 +85,10 @@ fn the_typed_line_points_the_agent_at_its_delegated_socket() {
         )
     };
     assert_eq!(
-        delegated_line(&plan, Some(&delegation("/tmp/phux d/agent's.sock"))).unwrap(),
+        delegated_line(&plan, &delegation("/tmp/phux d/agent's.sock")).unwrap(),
         r"env 'A=1' 'PHUX_SOCKET=/tmp/phux d/agent'\''s.sock' 'codex' '--x'"
     );
-    assert_eq!(delegated_line(&plan, None).unwrap(), plan.line);
-    assert!(delegated_line(&plan, Some(&delegation("/tmp/a\nb"))).is_err());
+    assert!(delegated_line(&plan, &delegation("/tmp/a\nb")).is_err());
 }
 
 #[test]

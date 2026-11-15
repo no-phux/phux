@@ -11,7 +11,7 @@
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
 use phux_protocol::ids::SessionId;
 
-use crate::attach::{AttachError, Dial, connection::Connection};
+use crate::attach::{Dial, connection::Connection};
 use crate::layout::ArrangementDoc;
 
 /// Request ids one operation may use before the next starts: a read fetches
@@ -40,31 +40,8 @@ impl std::fmt::Debug for ArrangementLink {
 }
 
 impl ArrangementLink {
-    /// Open a link for `session` on `dial`. `Ok(None)` when the server does
-    /// not advertise `ORGANIZATION`: the caller keeps the legacy key.
-    ///
-    /// # Errors
-    ///
-    /// A failed connect or handshake.
-    pub(in crate::attach) async fn open(
-        dial: &Dial,
-        session: SessionId,
-    ) -> Result<Option<Self>, AttachError> {
-        let conn = Connection::connect_dial(dial).await?;
-        if !phux_client::org::supported(&conn) {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            dial: dial.clone(),
-            session,
-            conn: Some(conn),
-            next_request_id: 1,
-            loaded: false,
-        }))
-    }
-
-    /// A link for `session` on `dial` on an `ORGANIZATION` server. It
-    /// connects on first use and reconnects after a transport failure.
+    /// A link for `session` on `dial`. It connects on first use and
+    /// reconnects after a transport failure.
     pub(in crate::attach) const fn lazy(dial: Dial, session: SessionId) -> Self {
         Self {
             dial,
@@ -170,7 +147,6 @@ mod tests {
     )]
 
     use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
-    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     use phux_protocol::wire::frame::{
         ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
         SessionLifetime,
@@ -204,14 +180,9 @@ mod tests {
         let session = fixture.live_session(&work).unwrap();
         let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
-            .organization(fixture);
+        let spec = ScriptSpec::new().organization(fixture);
         let (socket, _server) = serve_one(dir.path(), spec);
-        let mut link = ArrangementLink::open(&Dial::uds(&socket), session)
-            .await
-            .unwrap()
-            .expect("the server advertises ORGANIZATION");
+        let mut link = ArrangementLink::lazy(Dial::uds(&socket), session);
         let mut document = link.read().await.unwrap().expect("an arrangement");
         assert_eq!(document.groups[0].name, "main");
         let tree = document.groups[0].state.tree.clone().unwrap();
@@ -284,14 +255,9 @@ mod tests {
         let session = fixture.live_session(&work).unwrap();
         let extra_live = fixture.live(&extra).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
-            .organization(fixture);
+        let spec = ScriptSpec::new().organization(fixture);
         let (socket, _server) = serve_one(dir.path(), spec);
-        let mut link = ArrangementLink::open(&Dial::uds(&socket), session)
-            .await
-            .unwrap()
-            .expect("the server advertises ORGANIZATION");
+        let mut link = ArrangementLink::lazy(Dial::uds(&socket), session);
         let mut document = link.read().await.unwrap().expect("an arrangement");
         document.add_group("extra".to_owned(), extra_live);
 
@@ -317,16 +283,5 @@ mod tests {
             log.contains("arrangement save refused") && log.contains("conflict"),
             "{log}"
         );
-    }
-
-    /// Without `ORGANIZATION` there is no link: the driver keeps the key.
-    #[tokio::test]
-    async fn no_link_without_organization() {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, _server) = serve_one(dir.path(), ScriptSpec::new());
-        let link = ArrangementLink::open(&Dial::uds(&socket), SessionId::new(1))
-            .await
-            .unwrap();
-        assert!(link.is_none());
     }
 }

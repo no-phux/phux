@@ -378,24 +378,6 @@ fn claimed_satellite_terminals_are_not_listed_twice() {
     );
 }
 
-/// The text-mode "satellite sessions are unavailable" note fires only for
-/// a server that lists satellite Terminals.
-#[test]
-fn host_sessions_note_needs_satellite_terminals() {
-    use phux_protocol::ids::SatelliteHost;
-
-    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-        .with_sessions(vec![session("work", 1, 0)]);
-    assert!(!super::all_hosts::has_satellite_terminals(&plain));
-    let hub = plain.with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
-        ResourceId::satellite(SatelliteHost::new("edge"), 9),
-        WindowId::new(3),
-        80,
-        24,
-    )]);
-    assert!(super::all_hosts::has_satellite_terminals(&hub));
-}
-
 #[test]
 fn lines_are_name_sorted() {
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))

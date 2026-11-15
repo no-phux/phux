@@ -56,8 +56,6 @@ pub enum Refusal {
         /// The satellite host token the target named.
         host: String,
     },
-    /// The server does not advertise `ACKNOWLEDGED_INPUT`.
-    NoAcknowledgedInput,
     /// The pane declares no `phux.agent/v1` record to verify against.
     NoAgentRecord,
     /// The pane hosts a different agent than the caller named; the string
@@ -106,10 +104,6 @@ impl std::fmt::Display for Refusal {
                 "'{host}' is a federation satellite, and acknowledged input is local-only: \
                  the delivery receipt is owned by the machine that owns the PTY, and a hub \
                  cannot vouch for it"
-            ),
-            Self::NoAcknowledgedInput => f.write_str(
-                "this server does not advertise ACKNOWLEDGED_INPUT, so there is no \
-                 acknowledged input path to use",
             ),
             Self::NoAgentRecord => f.write_str(
                 "the pane declares no phux.agent/v1 record, so there is no agent identity \

@@ -576,7 +576,7 @@ async fn level_step(conn: &mut Connection, progress: &mut Progress) -> Result<St
 async fn level_read(conn: &mut Connection, progress: &mut Progress) -> Result<Step, WaitFailure> {
     let (result, interleaved) = get_state_reply(conn).await?;
     let refused = command_denial(&result);
-    let view = state_view(conn, result, &interleaved);
+    let view = state_view(result, &interleaved);
     if let Ok(view) = &view {
         progress.cut(view.snapshot().journal_head());
     }

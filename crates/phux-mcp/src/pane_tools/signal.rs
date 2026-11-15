@@ -3,7 +3,7 @@
 use phux_client::signal::LeaseOutcome;
 use serde_json::{Value, json};
 
-use super::{idempotency_key, unsupported_keyed_signal};
+use super::idempotency_key;
 use crate::cli_adapter::{bounded_string, enum_string};
 use crate::cli_tools::optional_bool;
 use crate::tools::signals::{signal_named, signal_names};
@@ -55,7 +55,6 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
 }
 
 fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolError {
-    use phux_client::kill::KeyedError;
     use phux_client::signal::SignalError;
     match err {
         SignalError::Miss { degradation } if degradation.is_complete() => {
@@ -64,7 +63,6 @@ fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolErro
         SignalError::Miss { degradation } => incomplete_view_miss(target, degradation.notices()),
         SignalError::Agent(err) => crate::tools::agent_resolve_error(&err),
         SignalError::WrongKind(err) => crate::tools::wrong_kind_error("phux_signal", &err),
-        SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
-        SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
+        SignalError::Attach(err) => err.into(),
     }
 }

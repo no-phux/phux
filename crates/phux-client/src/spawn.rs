@@ -11,7 +11,6 @@
 
 use std::path::Path;
 
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::UnreadableResult;
 use phux_protocol::wire::frame::{
@@ -67,49 +66,6 @@ pub async fn spawn_on(
     let outcome = spawn(&mut conn, frame).await?;
     drop(conn);
     Ok(outcome)
-}
-
-/// The additive feature `frame` relies on that `features` lacks.
-///
-/// Retention needs `RETAIN_ON_EXIT` and a keyed spawn `SPAWN_IDEMPOTENCY`; a
-/// server without the bit silently skips the field, so callers refuse first.
-#[must_use]
-pub fn missing_spawn_feature(
-    frame: &FrameKind,
-    features: ServerFeatureSet,
-) -> Option<ServerFeature> {
-    let FrameKind::SpawnResource {
-        resource: Some(resource),
-        ..
-    } = frame
-    else {
-        return None;
-    };
-    [
-        (resource.retain_secs.is_some(), ServerFeature::RetainOnExit),
-        (
-            resource.idempotency_key.is_some(),
-            ServerFeature::SpawnIdempotency,
-        ),
-    ]
-    .into_iter()
-    .find(|(asked, feature)| *asked && !features.contains(*feature))
-    .map(|(_, feature)| feature)
-}
-
-/// The additive features the server at `socket_path` advertises in
-/// `HELLO_OK`.
-///
-/// # Errors
-///
-/// Transport failures from [`Connection::connect`].
-pub async fn server_features(socket_path: &Path) -> Result<ServerFeatureSet, AttachError> {
-    let conn = Connection::connect(socket_path).await?;
-    Ok(conn
-        .negotiated_bootstrap()
-        .map_or_else(ServerFeatureSet::new, |negotiated| {
-            negotiated.server_features
-        }))
 }
 
 /// Why a string is not an idempotency key.

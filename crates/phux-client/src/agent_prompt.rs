@@ -159,17 +159,6 @@ pub fn validate_batch(events: &[InputEvent]) -> Result<(), Refusal> {
     })
 }
 
-/// Whether `conn`'s server advertised `ACKNOWLEDGED_INPUT` (`false` when
-/// unnegotiated, so callers refuse rather than proceed).
-#[must_use]
-pub fn supports_acknowledged_input(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(phux_protocol::caps::ServerFeature::AcknowledgedInput)
-    })
-}
-
 /// Submit `events` to `terminal` once, under `operation_id`, and classify it.
 ///
 /// Interleaved frames are returned, not dropped: a subscribed connection's
@@ -435,9 +424,6 @@ pub async fn deliver_acknowledged(
     validate_batch(&events).map_err(PromptError::Refused)?;
 
     let mut conn = subscribe(socket, Some(terminal.clone())).await?;
-    if !supports_acknowledged_input(&conn) {
-        return Err(PromptError::Refused(Refusal::NoAcknowledgedInput));
-    }
     let record = verified_occupant(&mut conn, terminal, verify).await?;
     let pre_submit_state = record.state;
     let submitted = submit_batch(&mut conn, terminal, operation_id, events).await?;
