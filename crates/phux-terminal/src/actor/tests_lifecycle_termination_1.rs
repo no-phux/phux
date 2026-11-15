@@ -61,13 +61,8 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
         // `set -m` put in its own group, so it implies both
         // preconditions. The generous budget covers process startup
         // under load, not the subject under test.
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while !armed.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect(
+        assert!(
+            wait_until_fixture_exists(&armed).await,
             "foreground job never installed its SIGHUP trap: the fixture shells did not \
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
@@ -266,13 +261,8 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
         let run = tokio::task::spawn_local(actor.run());
 
         // Wait for the holder's pid file.
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while !holder.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect(
+        assert!(
+            wait_until_fixture_exists(&holder).await,
             "the fixture never forked its detached holder: an environment problem \
                      (machine load), not a failure of the path this test covers",
         );

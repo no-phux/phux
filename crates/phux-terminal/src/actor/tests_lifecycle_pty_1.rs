@@ -193,23 +193,26 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         tokio::task::spawn_local(actor.run());
 
         let by = phux_protocol::ids::ClientId::new(7);
-
-        // Freeze → Frozen.
-        let (reply, ack) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("a Terminal")
-            .control
-            .send(ControlRequest::Signal {
-                signal: TerminalSignal::Freeze,
+        let signal = async |signal, operation_id| {
+            let (reply, ack) = oneshot::channel();
+            let control = &handle.terminal().expect("a Terminal").control;
+            let request = ControlRequest::Signal {
+                signal,
                 input_holder: None,
                 by,
                 reply,
-                operation_id: phux_protocol::ids::IdempotencyKey::new([4; 16]),
-            })
-            .await
-            .expect("send freeze");
-        ack.await.expect("freeze ack").expect("freeze delivered");
+                operation_id,
+            };
+            control.send(request).await.expect("send signal");
+            ack.await.expect("signal ack").expect("signal delivered");
+        };
+
+        // Freeze → Frozen.
+        signal(
+            TerminalSignal::Freeze,
+            phux_protocol::ids::IdempotencyKey::new([4; 16]),
+        )
+        .await;
         let (action, lifecycle, operation_id) = next_control(&mut evt_rx).await;
         assert_eq!(action, ControlAction::Frozen);
         assert_eq!(lifecycle, ResourceLifecycle::Frozen);
@@ -220,42 +223,14 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         );
 
         // Resume → Running.
-        let (reply, ack) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("a Terminal")
-            .control
-            .send(ControlRequest::Signal {
-                signal: TerminalSignal::Resume,
-                input_holder: None,
-                by,
-                reply,
-                operation_id: None,
-            })
-            .await
-            .expect("send resume");
-        ack.await.expect("resume ack").expect("resume delivered");
+        signal(TerminalSignal::Resume, None).await;
         let (action, lifecycle, operation_id) = next_control(&mut evt_rx).await;
         assert_eq!(operation_id, None, "an unkeyed signal carries none");
         assert_eq!(action, ControlAction::Resumed);
         assert_eq!(lifecycle, ResourceLifecycle::Running);
 
         // Kill → the child actually dies; its EOF fires the exit notify.
-        let (reply, ack) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("a Terminal")
-            .control
-            .send(ControlRequest::Signal {
-                signal: TerminalSignal::Kill,
-                input_holder: None,
-                by,
-                reply,
-                operation_id: None,
-            })
-            .await
-            .expect("send kill");
-        ack.await.expect("kill ack").expect("kill delivered");
+        signal(TerminalSignal::Kill, None).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), &mut exit_rx)
             .await
             .expect("killed child should exit and notify")

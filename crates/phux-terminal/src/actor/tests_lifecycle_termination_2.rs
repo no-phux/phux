@@ -64,13 +64,8 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
         let _pane_cleanup = FixturePane::for_actor(&actor);
         let run = tokio::task::spawn_local(actor.run());
 
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while !armed.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect(
+        assert!(
+            wait_until_fixture_exists(&armed).await,
             "the fixture shell never started: an environment problem (machine load), \
                      not a failure of the path this test covers",
         );
