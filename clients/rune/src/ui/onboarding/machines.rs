@@ -25,10 +25,8 @@ fn status(words: impl Into<String>, ink: Color) -> El {
 
 fn machine(target: String, name: String, state: Offered, p: &Ink) -> El {
     let line = row().w_full().h(30.0).px(10.0).gap(10.0).items_center();
-    let label = text(name.clone())
-        .font(LABEL_STRONG)
-        .color(p.text)
-        .truncate();
+    // The name keeps its width; a long step is what gets cut.
+    let label = text(name.clone()).font(LABEL_STRONG).color(p.text);
     let row = match &state {
         // A failed one ticks again to retry.
         Offered::Pick(_) | Offered::Failed(_) => {
