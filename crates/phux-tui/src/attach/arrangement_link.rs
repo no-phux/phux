@@ -63,10 +63,8 @@ impl ArrangementLink {
         }))
     }
 
-    /// A link for `session` on `dial` against a server already known to
-    /// advertise `ORGANIZATION`. It connects on first use and reconnects
-    /// after a transport failure, so a dial that fails now never sends the
-    /// caller back to the legacy key.
+    /// A link for `session` on `dial` on an `ORGANIZATION` server. It
+    /// connects on first use and reconnects after a transport failure.
     pub(in crate::attach) const fn lazy(dial: Dial, session: SessionId) -> Self {
         Self {
             dial,

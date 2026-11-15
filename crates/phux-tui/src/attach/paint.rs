@@ -56,10 +56,8 @@ impl LayoutCache {
 }
 
 thread_local! {
-    /// One cache per attach thread. A hit is a structural match on the full
-    /// key, so sharing across session loops can only miss, never answer
-    /// wrongly, and it avoids threading another parameter through
-    /// `handle_server_frame`.
+    /// One cache per attach thread; a hit is an exact structural match, so
+    /// sharing across session loops can only miss.
     static LAYOUT_CACHE: std::cell::RefCell<LayoutCache> =
         std::cell::RefCell::new(LayoutCache::default());
 }
@@ -113,10 +111,8 @@ impl StatusBarPaint {
     }
 }
 
-/// The server-authoritative mirror grid `(cols, rows)` a pane is letterboxed
-/// with (the rect dims on error, degrading to the clamp paint). Every paint
-/// path must use the same dims, or an undersized mirror paints at two
-/// origins and shows doubled text.
+/// The mirror grid a pane is letterboxed with; every paint path must use
+/// these dims, or an undersized mirror paints twice.
 pub(super) fn mirror_dims(
     terminal: &GhosttyTerminal<'_, '_>,
     rect: crate::layout::Rect,

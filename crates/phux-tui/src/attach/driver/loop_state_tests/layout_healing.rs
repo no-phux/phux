@@ -66,10 +66,8 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     drop(server);
 }
 
-/// #1207: a session whose layout key is missing, or names fewer panes than
-/// the session owns, must not hide the rest. Every live session pane gets a
-/// place, the attach focus stays, a peer session's pane stays out, and the
-/// healed layout is saved.
+/// #1207: a missing or partial layout must not hide the session's panes:
+/// each gets a place, focus stays, a peer's pane stays out, and it is saved.
 #[tokio::test(flavor = "current_thread")]
 async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
     let focus = ResourceId::local(1);

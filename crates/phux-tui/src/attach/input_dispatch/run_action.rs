@@ -58,10 +58,8 @@ pub(in crate::attach) use windows::{
 };
 pub(in crate::attach) use worktree::new_worktree;
 
-/// Everything a handler may read or change for one action: the action, the
-/// lent driver state, the focused pane, the read-only pane slots (lent apart
-/// from `ctx` because the driver lends `panes` mutably beside it), and the
-/// effects the async pass applies.
+/// Everything a handler may read or change for one action. `panes` is lent
+/// apart from `ctx` because the driver lends it mutably beside it.
 pub(in crate::attach) struct ActionCall<'a, 'c> {
     pub(super) resolved: &'a phux_config::keybind::ResolvedAction,
     pub(super) ctx: &'a mut DispatchCtx<'c>,

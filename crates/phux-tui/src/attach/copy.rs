@@ -192,9 +192,7 @@ pub fn viewport_top(terminal: &GhosttyTerminal<'_, '_>) -> Option<u32> {
 }
 
 /// Every hit for `needle` in `terminal_id`'s loaded history, oldest first,
-/// through the kernel's document search (the engine's case policy and wrap
-/// handling). The engine anchors are released before returning: copy-mode
-/// keeps plain document rows, valid until history is trimmed.
+/// through the kernel's document search, as plain document rows.
 pub(crate) fn search_loaded(
     kernel: &mut AttachKernel,
     terminal_id: &ResourceId,

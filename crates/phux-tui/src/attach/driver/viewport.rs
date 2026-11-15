@@ -56,10 +56,8 @@ pub(super) async fn emit_view_reflow(
     emit_layout_reflow(conn, leaves, ls.as_ref(), prev_rects, content, cell_px).await
 }
 
-/// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
-/// between two [`view_rects`] of the same window (a `resize-pane`, divider
-/// drag, or swap). Both sides come from the one tiling, so a viewport too
-/// small to tile cannot read as a change.
+/// Emit `RESIZE_TERMINAL` for each pane whose tile changed size between two
+/// [`view_rects`] of the same window.
 #[allow(
     clippy::future_not_send,
     reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"

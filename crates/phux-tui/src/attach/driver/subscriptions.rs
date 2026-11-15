@@ -33,10 +33,8 @@ pub(super) struct PeerWatch {
     /// ADR-0140: the hosts provider's latest `phux.hosts/v1` rows. The
     /// attached machine's row is filtered out at projection time.
     pub(super) remote_hosts: Vec<phux_core::host_list::HostJson>,
-    /// phux-4li.20: cache of the server's session graph, refreshed from
-    /// every ATTACHED snapshot. The `<leader> a` session picker reads
-    /// this to list peer sessions; `focused_session` marks the row the
-    /// client is currently attached to (excluded from the picker).
+    /// The server's session graph, refreshed from every ATTACHED snapshot,
+    /// for the session picker.
     pub(super) sessions: Vec<phux_protocol::wire::info::SessionInfo>,
     /// Windows from the same graph: an older server's tab grouping, and the
     /// session join for a resource that does not name its session. Never
@@ -47,10 +45,7 @@ pub(super) struct PeerWatch {
     pub(super) resources: Vec<phux_protocol::wire::info::ResourceInfo>,
     /// The session this client is attached to, once ATTACHED has named it.
     pub(super) focused_session: Option<SessionId>,
-    /// Peer sessions' arrangements, for one-step cross-session window rows
-    /// in the picker: their arrangement records on an `ORGANIZATION` server
-    /// (read over the arrangement link), else one `GET_METADATA` of the
-    /// legacy layout key per peer.
+    /// Peer sessions' arrangements for the picker's one-step window rows.
     pub(super) foreign_layouts: HashMap<SessionId, ArrangementDoc>,
     /// Peer arrangement records to read over the arrangement link once this
     /// burst settles (the `ORGANIZATION` form of the layout sweep).
@@ -79,10 +74,8 @@ pub(super) struct PeerWatch {
     pub(super) hosts_pending: Option<u32>,
     /// When that request was sent, bounding how long notices are held.
     pub(super) hosts_pending_since: Option<std::time::Instant>,
-    /// `SatelliteUnreachable` notices that arrived while the inventory was in
-    /// flight. The reply drops only the ones it explains
-    /// (`unexplained_unreachable_notices`); a refusal or missed deadline
-    /// surfaces all of them.
+    /// `SatelliteUnreachable` notices that arrived while the inventory was
+    /// in flight; the reply drops the ones it explains.
     pub(super) held_unreachable: Vec<String>,
     /// Peer panes whose agent asked for a human; a foreign pane has no
     /// `PaneSlot::attention` to carry the flag.
@@ -100,10 +93,8 @@ pub(super) struct PeerWatch {
     /// ADR-0168: project groups collapsed in this client's sidebar, read
     /// from and written to the state dir.
     pub(super) collapsed_projects: std::collections::BTreeSet<String>,
-    /// The peer sweep waits for the first paint: set at construction and
-    /// consumed at the first frame-burst drain, so a bootstrap (including a
-    /// session switch, which drops all subscriptions) does not queue peer
-    /// GET/SUBSCRIBE traffic ahead of the snapshot burst that paints.
+    /// The peer sweep waits for the first paint, so a bootstrap does not
+    /// queue peer traffic ahead of the burst that paints.
     pub(super) sweep_pending: bool,
 }
 
@@ -336,10 +327,8 @@ pub(super) async fn sync_agent_meta_subscriptions(
             key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
-        // ADR-0136: a satellite pane's asked flag is metadata, not an event
-        // this client is guaranteed to see. The GET must not share `pending`.
-        // A local pane's occupant record names it instead; that record stays
-        // on the pane's own server, so a satellite pane has none to read.
+        // ADR-0136: a satellite pane's asked flag is metadata this client is
+        // not guaranteed to see; the GET must not share `pending`.
         let (key, pending) = if id.is_local() {
             (RESOURCE_PANE_OCCUPANT_KEY, &mut agent_meta.occupant_pending)
         } else {

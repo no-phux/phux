@@ -36,10 +36,8 @@ pub(in crate::attach) fn last_window(ActionCall { ctx, effects, .. }: ActionCall
     });
 }
 
-/// Remove the focused view from the arrangement (MIGRATION §03): the leaf
-/// folds out of its window, an emptied window goes, and the terminal keeps
-/// running and stays a member of the session. Never a kill, never a detach;
-/// with nothing left arranged the empty state offers `reopen-views`.
+/// Remove the focused view from the arrangement: its terminal keeps running
+/// as a member, and never a kill or a detach.
 pub(in crate::attach) fn close_view(
     ActionCall {
         ctx,

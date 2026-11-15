@@ -314,10 +314,8 @@ impl super::SessionLoop {
             .min()
     }
 
-    /// A stalled Terminal or agent cut asks for a fresh bootstrap, as a
-    /// resync the kernel reports on a frame does; then a due satellite probe
-    /// runs. A stalled document never costs the session a rebootstrap: this
-    /// client streams none, so one can only come from an older server.
+    /// A stalled Terminal or agent cut asks for a fresh bootstrap, then a due
+    /// satellite probe runs. A stalled document never costs a rebootstrap.
     async fn on_probe_due(&mut self, conn: &mut Connection) -> Result<Step, AttachError> {
         let mirror = &mut self.mirror;
         mirror

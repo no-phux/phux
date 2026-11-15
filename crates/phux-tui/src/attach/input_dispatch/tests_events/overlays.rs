@@ -29,10 +29,8 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     assert_eq!(received[1].key, PhysicalKey::X);
 }
 
-/// With the prefix pending under a passthrough popup (which-key or first-use
-/// guidance), the next chord dismisses it AND runs its binding (`C-a d`
-/// detaches); Esc dismisses and cancels the prefix, so a following `d` is a
-/// plain keystroke.
+/// Under a passthrough popup with the prefix pending, the next chord
+/// dismisses it and runs; Esc dismisses and cancels the prefix.
 #[tokio::test]
 async fn passthrough_popups_never_eat_the_pending_chord() {
     for (events, onboarding, detaches) in [

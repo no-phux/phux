@@ -6,10 +6,9 @@ use super::{
 };
 
 impl super::SessionLoop {
-    /// Global metadata the picker and status line follow after attach. An
-    /// `ORGANIZATION` server reports renames and lifetime changes as
-    /// `SESSION_RENAMED` and `SESSION_LIFETIME_CHANGED` events (ADR-0161), so
-    /// only an older server's translated session keys are watched.
+    /// Global metadata the picker and status line follow. An `ORGANIZATION`
+    /// server reports renames as events (ADR-0161), so only an older one's
+    /// session keys are watched.
     pub(super) async fn subscribe_global_session_keys(
         &self,
         conn: &mut Connection,

@@ -1,12 +1,9 @@
-//! Context-menu contents (ADR-0058): the pane, tab, and session menus.
-//! [`crate::render::overlay::menu`] owns how a menu looks. Every row commits
-//! a [`ResolvedAction`] through `run_action` (a test holds the names in
-//! lockstep) and shows its bound chord when there is one.
+//! Context-menu contents (ADR-0058): the pane, tab, and session menus, each
+//! row committing a [`ResolvedAction`] and showing its bound chord.
 
 use std::collections::BTreeMap;
 
 use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
 
 use crate::render::overlay::MenuRow;
 
@@ -135,8 +132,6 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
     }
 }
 
-/// One menu row: `label` committing `action` with inline string `args`,
-/// annotated with the chord bound to that exact action when there is one.
 /// A menu row whose one argument is an integer, so its chord annotation
 /// matches a binding written the natural way (`delta = -1`, not `"-1"`).
 fn int_row(
@@ -153,19 +148,18 @@ fn int_row(
     MenuRow::item(label, resolved).secondary(chord)
 }
 
+/// One menu row: `label` committing `action` with string `args`, annotated
+/// with its bound chord.
 fn row(
     keybindings: Option<&KeybindingsCfg>,
     label: &str,
     action: &str,
     args: &[(&str, &str)],
 ) -> MenuRow {
-    let resolved = ResolvedAction {
-        action: action.to_owned(),
-        args: args
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), toml::Value::String((*v).to_owned())))
-            .collect::<BTreeMap<_, _>>(),
-    };
+    let args = args
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), toml::Value::String((*v).to_owned())));
+    let resolved = crate::attach::resolved(action, args.collect());
     let chord = super::action_registry::bound_chord_for(keybindings, &resolved);
     MenuRow::item(label, resolved).secondary(chord)
 }

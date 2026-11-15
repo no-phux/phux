@@ -130,10 +130,8 @@ pub(crate) fn resolved(
     }
 }
 
-/// The output sink the attach driver composites into.
-///
-/// A pure byte sink (stdout, a `Vec<u8>` capture, any `Write`) threaded
-/// through the whole render path; chrome is rasterized to VT bytes first.
+/// The output sink the attach driver composites into: any `Write`, chrome
+/// rasterized to VT first.
 pub trait RenderSink: std::io::Write {}
 impl<T: std::io::Write + ?Sized> RenderSink for T {}
 

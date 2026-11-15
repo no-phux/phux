@@ -16,10 +16,8 @@ use crate::layout::ArrangementDoc;
 /// rest fills in place, as a first attach does.
 pub(super) const SWITCH_PAINT_HOLD: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// Server-wide peer caches carried across an in-process session switch.
-///
-/// Everything here is re-read by the new entry's sweeps; the carry only
-/// spares the first frame from painting without it.
+/// Server-wide peer caches carried across a session switch, sparing the
+/// first frame; the new entry's sweeps re-read them all.
 #[derive(Debug, Default)]
 pub(in super::super) struct CarriedPeers {
     /// The serving machine's label from the whoami read.

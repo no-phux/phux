@@ -16,10 +16,8 @@ use crate::render::overlay::{CopyRequest, SelectItem, SelectList, SelectionGrab,
 
 use super::{ActionCall, focus_in_window};
 
-/// Open the single fuzzy discovery surface. `show-help` and
-/// `command-palette` are entry aliases so users never have to choose between
-/// a reference modal and an executable finder. The recording marker row
-/// shows only while a recording is live.
+/// Open the fuzzy finder; `show-help` and `command-palette` are aliases. The
+/// marker row shows only while a recording is live.
 pub(in crate::attach) fn push_action_finder(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     let mut items = crate::attach::action_registry::palette_items(
         ctx.keybindings,
@@ -49,10 +47,8 @@ pub(in crate::attach) fn push_settings(ActionCall { ctx, .. }: ActionCall<'_, '_
         )));
 }
 
-/// Post an asciicast `m` marker to every recording this machine has open.
-///
-/// The bare chord writes an empty label. Nothing is recording when the
-/// inbox directory has no live file, and that bells.
+/// Post an asciicast `m` marker to every recording this machine has open;
+/// bells when none is.
 pub(in crate::attach) fn rec_mark(
     ActionCall {
         resolved, effects, ..

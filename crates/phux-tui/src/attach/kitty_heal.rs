@@ -25,10 +25,8 @@ pub(super) const HEAL_INTERVAL: Duration = Duration::from_mins(1);
 /// focus following the mouse re-sends nothing, a real absence heals.
 pub(super) const FOCUS_MIN_AGE: Duration = Duration::from_secs(5);
 
-/// Bytes one heal may re-send; the oldest image always goes, however big.
-///
-/// 256 KiB is a minute's heal of about 60 typical inline images in one
-/// go, and a fifth of a second on a 10 Mbit/s SSH link.
+/// Bytes one heal may re-send (the oldest image always goes): about a
+/// minute's heal of 60 inline images.
 pub(super) const HEAL_BUDGET: usize = 256 * 1024;
 
 /// The least time between two heals, which paces an owed remainder at

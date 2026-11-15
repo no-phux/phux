@@ -148,10 +148,8 @@ pub(super) fn unanswered_spawns(
     windows.chain(splits).collect()
 }
 
-/// Window before a parser-pending bare ESC is taken as the Escape key. The
-/// outer terminal writes a key's full sequence in one burst, so a short window
-/// suffices; it must stay short because modal-editor users pay it on every
-/// Escape (tmux ships `escape-time 0..10` for the same reason).
+/// Window before a pending bare ESC is taken as the Escape key: a key's
+/// sequence arrives in one burst, and modal-editor users pay this per Escape.
 pub(super) const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
 
 /// Safety valve for an application that enters DEC synchronized output and
@@ -241,10 +239,8 @@ pub(super) const fn input_expects_a_reply(event: &phux_protocol::input::InputEve
     }
 }
 
-/// Whether an inbound burst must discharge the pacer's withheld debt before it
-/// parks. `paint_now` covers the case the timer cannot: an admitted burst just
-/// pushed the deadline out, and a saturating `conn.recv()` would starve the
-/// `paint_deadline` arm.
+/// Whether an inbound burst must discharge the pacer's withheld debt before
+/// it parks, since a saturating `conn.recv()` would starve the deadline arm.
 pub(super) const fn burst_settles_debt(paint_now: bool, deadline_passed: bool) -> bool {
     paint_now || deadline_passed
 }

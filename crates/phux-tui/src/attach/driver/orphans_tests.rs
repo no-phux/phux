@@ -244,10 +244,8 @@ fn a_failed_kill_is_not_remembered() {
     assert_eq!(waiting(&mut kills, now), Vec::new());
 }
 
-/// Any frame saying a satellite is unreachable forgets that satellite's
-/// unconditional strays and keeps the rest: an uncorrelated notice, a
-/// refused command, a refused spawn. A message naming no satellite forgets
-/// them all; a failure for another reason forgets nothing.
+/// Any frame saying a satellite is unreachable forgets its unconditional
+/// strays; one naming no satellite forgets all; other failures nothing.
 #[test]
 fn an_unreachable_satellite_forgets_its_strays() {
     let now = Instant::now();
@@ -333,10 +331,8 @@ fn a_reissued_id_forgets_the_stray() {
     assert_eq!(waiting(&mut kills, now), vec![edge(3), other(9)]);
 }
 
-/// A session switch remembers the parked panes and the satellite panes
-/// its unanswered spawns turn out to be; the drain settles kill replies,
-/// forgets a satellite it shows unreachable, and clears the old
-/// request-id space.
+/// A switch remembers parked panes and the satellite panes its unanswered
+/// spawns turn out to be, settling kill replies during the drain.
 #[test]
 fn a_switch_remembers_parked_and_drained_spawns() {
     let mut kills = OrphanKills::default();

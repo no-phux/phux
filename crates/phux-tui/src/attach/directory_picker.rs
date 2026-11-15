@@ -53,10 +53,8 @@ pub(super) fn picker_title(host: &ListingHost) -> String {
     }
 }
 
-/// The picker's footer status: the directory it shows, as the shell would
-/// show it. On the attached host `home` (this client's `$HOME`, which is
-/// the serving user's on a local server) becomes `~`; a satellite's path
-/// is shown whole, since its home is another machine's.
+/// The picker's footer status: the directory as the shell shows it (`~` on
+/// the attached host; a satellite's path whole).
 pub(super) fn picker_status(
     result: &DirectoryListingResult,
     host: &ListingHost,

@@ -332,10 +332,9 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // terminal; fatal signals are `phux_crash`'s job above.
     install_panic_hook_once();
 
-    // Outer re-attach loop. `main_loop` is single-session; a `SwitchTo`
-    // detaches and re-handshakes on the same connection (it is bound to the
-    // server, not a session) while the raw-mode guard stays installed, so the
-    // alt screen never flickers.
+    // `main_loop` is single-session; a `SwitchTo` re-handshakes on the same
+    // connection under the same raw-mode guard, so the alt screen never
+    // flickers.
     let mut attached = attached;
     // First-use guidance, decided once per process attach and consumed by the
     // first loop entry.
@@ -421,10 +420,8 @@ async fn attach_session<W: crate::attach::RenderSink>(
     }
 }
 
-/// Detach the current session and re-handshake against `target` on the SAME
-/// connection (DETACH keeps the server's read loop alive), returning the new
-/// `ATTACHED` frame. A new-session request uses `CreateIfMissing`; a
-/// one-step pick's window, pane, or resource is stashed for the next entry.
+/// Detach and re-handshake against `target` on the same connection, returning
+/// the new `ATTACHED`; a one-step pick is stashed for the next entry.
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,

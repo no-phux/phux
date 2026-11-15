@@ -8,10 +8,8 @@ pub(super) fn tid(id: u32) -> ResourceId {
 
 pub(super) use crate::test_util::kernel as test_engine_kernel;
 
-/// Owned backing state for a test [`DispatchCtx`]: set the fields a test
-/// cares about, lend it with [`CtxFixture::ctx`], read results back after.
-/// Borrow-only fields (`control_dial`, `resolver`, `input_replay`,
-/// `keybindings`) start `None` on the lent context.
+/// Owned backing state for a test [`DispatchCtx`], lent with
+/// [`CtxFixture::ctx`]; borrow-only fields start `None`.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "mirrors DispatchCtx's independent driver flags one-to-one"

@@ -130,10 +130,8 @@ impl super::super::SessionLoop {
             && self.mirror.workspace.active == prior.active_window
             && !self.detach_pending
         {
-            // This window's own layout moved (`resize-pane`, a divider drag,
-            // a swap): resize exactly the panes whose tile changed. A switch
-            // to another window is not a resize (bootstrap sized its panes),
-            // and nothing may follow a sent `DETACH`.
+            // This window's own layout moved: resize exactly the panes whose
+            // tile changed (a window switch is not a resize).
             let rects = view_rects(
                 &self.mirror.workspace,
                 self.mirror.zoomed.as_ref(),

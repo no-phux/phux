@@ -20,10 +20,9 @@ pub(in crate::attach) struct PendingSplit {
     pub zoom_on_spawn: bool,
     /// The host the new pane was asked of.
     pub host: SplitHost,
-    /// `Some` when the split waits on a pane's `ATTACH_RESOURCE` instead of
-    /// a spawn: an existing pane (`host/@N` or `@N`) to place, which a
-    /// refusal leaves alone, or the satellite pane a spawn answered with,
-    /// which a refusal kills.
+    /// `Some` when the split waits on an `ATTACH_RESOURCE` instead of a
+    /// spawn: an existing pane (left alone on refusal) or the satellite pane
+    /// a spawn answered with (killed on refusal).
     pub adopt: Option<Adopt>,
 }
 

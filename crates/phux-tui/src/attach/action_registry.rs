@@ -133,10 +133,8 @@ impl ActionSpec {
     }
 }
 
-/// An extra palette row for an action whose one registry row lists only
-/// one of its argument values: the same action under another title, so the
-/// palette offers what which-key already shows (`"` splits below, `%`
-/// splits right).
+/// An extra palette row for an action whose registry row lists one argument
+/// value: the same action under another title (`"` below, `%` right).
 struct PaletteVariant {
     /// The [`ActionSpec::name`] the row commits.
     action: &'static str,

@@ -214,10 +214,8 @@ pub(in crate::attach) fn last_session(ActionCall { ctx, effects, .. }: ActionCal
     reattach_named(ctx, effects, name);
 }
 
-/// Create-or-switch to a named session, or prompt for a name. A name no
-/// selector could address again is refused with a notice, not created.
-/// The seed directory and host follow the focused pane unless `cwd` or
-/// `host` is set.
+/// Create-or-switch to a named session, or prompt for a name; an
+/// unaddressable name is refused. Directory and host follow the focus.
 pub(in crate::attach) fn new_session(
     ActionCall {
         resolved,

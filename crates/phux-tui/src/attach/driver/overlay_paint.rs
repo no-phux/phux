@@ -157,10 +157,8 @@ pub(super) fn legend_for(room: usize) -> Option<&'static str> {
         .find(|legend| crate::render::display_width(legend) + 2 <= room)
 }
 
-/// Emit the copy-mode status strip over the bottom row of `content` (the
-/// pane columns; the sidebar keeps its own rows), then hide the hardware
-/// cursor (the reverse-video selection is the position indicator).
-/// `search` is the search line being typed or the last search's position.
+/// Emit the copy-mode status strip over the bottom row of `content`, then
+/// hide the hardware cursor (the selection marks the position).
 pub(super) fn paint_copy_mode_status<W: Write>(
     out: &mut W,
     sel: SelectionRect,

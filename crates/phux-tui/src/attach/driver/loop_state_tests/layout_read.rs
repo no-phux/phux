@@ -114,9 +114,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
 }
 
 /// #1475: a reopen pressed before the layout read is applied to the
-/// arrangement that read adopts, then saved. An organization server does
-/// not place hidden members on its own, so the extra window is the queued
-/// edit and nothing else.
+/// arrangement that read adopts, then saved.
 #[tokio::test(flavor = "current_thread")]
 async fn a_deferred_reopen_is_saved_when_the_layout_read_lands() {
     use crate::attach::input_dispatch::DeferredArrangementEdit;

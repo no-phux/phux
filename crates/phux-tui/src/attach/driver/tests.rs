@@ -1013,10 +1013,8 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
     ))
 }
 
-/// Opening the palette must NOT blank the sidebar: the floating-modal base
-/// frame repaints the strip and panes, then centers the modal in the pane
-/// area. Without the painter the strip is blank (the bug's shape, so the
-/// probe cannot false-pass).
+/// Opening the palette must not blank the sidebar: the floating-modal base
+/// frame repaints the strip, then centers the modal in the pane area.
 #[test]
 fn command_palette_keeps_sidebar_visible() {
     let (_, blank) = overlay_frame(palette_overlay(), false);

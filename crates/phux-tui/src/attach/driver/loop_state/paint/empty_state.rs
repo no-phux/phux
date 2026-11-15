@@ -3,10 +3,8 @@
 use super::super::{ChromeCtx, RepaintLevel, SidebarReservation, StatusBarPaint};
 
 impl super::super::SessionLoop {
-    /// An attached session with nothing arranged paints its empty state: the
-    /// members still running with no view and the action that shows them
-    /// again, else an empty persistent session's new-window hint. An
-    /// ephemeral session with nothing running has already detached (R15).
+    /// Paint an attached session's empty state: members running with no view
+    /// and how to show them, else the new-window hint.
     pub(in crate::attach::driver::loop_state) fn paint_empty_state<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

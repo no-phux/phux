@@ -152,10 +152,8 @@ impl super::SessionLoop {
         std::mem::take(&mut self.peers.held_unreachable)
     }
 
-    /// True when a snapshot carries windows or resources not yet adopted.
-    /// Empty lists are not a change (inventory replies often omit the graph).
-    /// Windows count only when the resources do not name their sessions: an
-    /// `ORGANIZATION` server's windows are synthesized from the same graph.
+    /// Whether a snapshot carries windows or resources not yet adopted
+    /// (windows only when resources do not name their sessions).
     pub(super) fn snapshot_graph_changed(
         &self,
         snapshot: &phux_protocol::wire::info::SessionSnapshot,

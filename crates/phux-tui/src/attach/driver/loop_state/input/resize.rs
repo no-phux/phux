@@ -32,10 +32,9 @@ impl super::super::SessionLoop {
         // ADR-0145: no window-size vote; the pane targets carry the tiles.
         self.resize_cell_px = resize_cell_px(&viewport);
         self.size_workspace_panes(conn, sidebar).await?;
-        // A real reflow clears rather than repainting a stale mirror; the
-        // server's resync snapshot fills the new size. A held switch keeps
-        // the old frame up instead. A same-grid resize is left on screen:
-        // there is no snapshot coming to refill a clear.
+        // A real reflow clears; the server's resync snapshot refills it. A
+        // held switch keeps the old frame, and a same-grid resize is left on
+        // screen (no snapshot comes to refill a clear).
         if !grid_unchanged && !self.paint_held() {
             let _ = out.write_all(b"\x1b[2J\x1b[H");
         }

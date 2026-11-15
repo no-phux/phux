@@ -22,10 +22,8 @@ pub(in crate::attach::input_dispatch) struct SessionCounts {
     pub order: Vec<phux_protocol::ids::SessionKey>,
 }
 
-/// Session picker rows, read at a glance (`docs/clients.md#terminal-ui`):
-/// `focused` first (committing it is a silent no-op), then the sessions
-/// with panes that need you, then the stored session order, then name. Each commits
-/// `switch-session { name }`.
+/// Session picker rows: `focused` first, then sessions that need you, then
+/// stored order, then name; each commits `switch-session { name }`.
 pub(in crate::attach::input_dispatch) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,

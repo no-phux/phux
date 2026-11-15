@@ -200,10 +200,8 @@ impl AxisResize<'_> {
         )
     }
 
-    /// The ratio step for `cells` of a split spanning `extent` cells. The
-    /// boundary moves toward `dir` whichever side holds focus: a right or
-    /// lower pane grows toward `dir`, a left or upper one gives way. `ratio`
-    /// is the left (upper) child's share.
+    /// The ratio step for `cells` of a split spanning `extent` cells; the
+    /// boundary moves toward `dir` whichever side holds focus.
     fn signed_delta(&self, extent: f32) -> f32 {
         let delta = self.cells / extent;
         match self.dir {
@@ -367,10 +365,8 @@ fn unused_leaf_id(state: &LayoutState) -> ResourceId {
     }
 }
 
-/// The `(cols, rows)` the pane a parked split waits on will get: the
-/// post-reply reflow's computation run one round trip early, sent as
-/// `SPAWN_RESOURCE.initial_size` so the server builds the pane at its real
-/// size. `None` when unpredictable (the caller omits the field).
+/// The `(cols, rows)` a parked split's pane will get, computed one round
+/// trip early for `SPAWN_RESOURCE.initial_size`; `None` when unpredictable.
 pub(super) fn predicted_spawn_dims(
     state: &LayoutState,
     pending: &PendingSplit,

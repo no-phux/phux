@@ -50,9 +50,7 @@ impl super::super::SessionLoop {
     }
 
     /// Fold one non-terminal frame outcome into the loop: attach what it
-    /// discovered, fold peer, rename, watch, and chrome changes, send the
-    /// requests it owes, and raise (never paint) what the burst drain must
-    /// repaint. `prev_rects` is the pre-frame leaf geometry a reflow diffs.
+    /// found, send what it owes, and raise (never paint) the repaint owed.
     pub(in crate::attach::driver::loop_state) async fn fold_frame_outcome<
         W: crate::attach::RenderSink,
     >(

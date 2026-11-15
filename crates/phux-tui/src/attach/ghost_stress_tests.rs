@@ -383,10 +383,8 @@ fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
     rig.assert_consistent("non-focused snapshot resync");
 }
 
-/// The dogfood stress: continuous output and synchronized-output bursts on
-/// every pane while windows cycle, the sidebar toggles, and a palette opens
-/// and closes, with lagging snapshot resyncs landing mid-spam. Every settled
-/// step must match the mirror compose.
+/// The dogfood stress: continuous output and synchronized bursts while
+/// windows cycle, the sidebar toggles, and a palette opens and closes.
 #[test]
 fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
     let p = tid(1);
@@ -429,10 +427,8 @@ fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
         }
         rig.assert_consistent(&format!("iter {i}: after control spam"));
 
-        // Server resyncs racing the spam: R's snapshot still carries the
-        // lagging 21x24 grid; every third iteration P resyncs at a lagging
-        // 40x24 grid too (the attach-from-a-bigger-terminal shape), then
-        // catches back up to the full 80x24.
+        // Lagging server resyncs race the spam (R at 21x24, P every third
+        // iteration at 40x24), then catch back up to 80x24.
         rig.snapshot(&r, 21, 24, format!("\x1b[2J\x1b[Hr: resync {i}").as_bytes());
         rig.assert_consistent(&format!("iter {i}: after r resync"));
         if i % 3 == 0 {

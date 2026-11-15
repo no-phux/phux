@@ -171,10 +171,8 @@ fn write_stage(path: &Path, stage: Stage) -> std::io::Result<()> {
     }
 }
 
-/// Compact first-attach guidance: continuity, leave, commands, and the
-/// agent glyphs. `sidebar_visible` is the attach's live sidebar flag.
-/// When the strip is already on, the copy does not tell the user to turn
-/// it on. When it is off, it names the live `toggle-sidebar` chord.
+/// Compact first-attach guidance. `sidebar_visible` decides whether the
+/// copy names the `toggle-sidebar` chord.
 pub(super) fn hint_lines(
     keybindings: Option<&KeybindingsCfg>,
     sidebar_visible: bool,

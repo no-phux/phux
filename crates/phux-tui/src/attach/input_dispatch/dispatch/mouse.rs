@@ -24,10 +24,8 @@ use crate::render::overlay::{SelectionGrab, SelectionMode};
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
-    /// ADR-0048 pointer stage: chrome drags, sidebar and bar clicks, then
-    /// hit-testing the pane composition. A divider press grabs its split; a
-    /// pane press focuses and forwards (pane-local), so mouse-tracking apps
-    /// still get every event over their cells. Claims every mouse event.
+    /// ADR-0048 pointer stage: chrome drags and clicks, then the pane
+    /// composition; a pane press focuses and forwards. Claims every event.
     pub(super) async fn route_mouse_input(
         &mut self,
         ev: &InputEvent,
@@ -83,10 +81,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// ADR-0147: while the floating overlay is open it owns the pointer. Its
-    /// interior gets the event pane-local (the wheel scrolls it as it would a
-    /// tile), its border swallows it, and a press anywhere else dismisses it.
-    /// `None` when no overlay is open.
+    /// ADR-0147: the open floating overlay owns the pointer: its interior
+    /// gets events pane-local, and a press outside dismisses it.
     async fn route_floating_mouse(
         &mut self,
         mouse: &MouseEvent,
@@ -183,10 +179,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(matches!(grab, DragGrab::Window(_)))
     }
 
-    /// The sidebar strip claims every pointer event over its cells before
-    /// pane routing. A left press commits the row's action through
-    /// `run_action` (or grabs the edge); a right press opens a menu;
-    /// everything else is consumed. `None` when not over the strip.
+    /// The sidebar strip claims every pointer event over its cells: a left
+    /// press commits its row (or grabs the edge), a right press a menu.
     async fn route_sidebar_click(
         &mut self,
         mouse: &MouseEvent,
@@ -254,10 +248,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(layout_changed)
     }
 
-    /// The status-bar row is chrome: a left press on a tab commits its
-    /// `select-window` (and picks it up for dragging), a right press opens a
-    /// menu, and everything else is consumed. The sidebar hit-tests first,
-    /// so by here the event is in the bar's own span. `None` off the row.
+    /// The status-bar row is chrome: a left press on a tab selects (and
+    /// grabs) it, a right press opens a menu, the rest is consumed.
     async fn route_status_bar_click(
         &mut self,
         mouse: &MouseEvent,

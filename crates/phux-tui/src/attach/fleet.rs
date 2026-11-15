@@ -312,10 +312,8 @@ fn current_session_pane_rows(
     rows
 }
 
-/// One pane's row, or one of its `AgentSession` rows. The stream (or else
-/// the `phux.agent/v1` record) supplies state and name; with neither, the
-/// OSC title and `○`. The secondary is `state · place` (branch, else cwd
-/// leaf). Asked, blocked, or high declared attention highlight the row.
+/// One pane's row, or one of its `AgentSession` rows: state and name from
+/// the stream or record, else the OSC title; secondary `state · place`.
 fn pane_row(
     w: usize,
     window_name: &str,

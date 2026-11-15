@@ -95,10 +95,8 @@ impl Write for CountingSink {
     }
 }
 
-/// Build the corpus grid the renderer walks.
-///
-/// Mirrors `phux-server/benches/server_measure.rs::build_terminal` so both
-/// ends of the wire are measured against the same cells.
+/// Build the corpus grid the renderer walks, as `phux-server`'s
+/// `server_measure.rs::build_terminal` does, so both ends measure one grid.
 fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static> {
     let (cols, rows) = corpus.geometry();
     let mut terminal = {

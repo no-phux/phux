@@ -211,10 +211,8 @@ async fn focusing_another_pane_never_clears_the_screen() {
     drop(server);
 }
 
-/// A wheel notch over a pane with history scrolls its viewport locally; no
-/// tile moved, so the classifier's chrome-only level would leave the pane
-/// showing the live tail. The batch must paint the history rows, without
-/// clearing the screen and without a forced whole-pane repaint.
+/// A wheel notch scrolls a pane's viewport locally with no tile moved: the
+/// batch paints the history rows without a clear or a forced repaint.
 #[tokio::test(flavor = "current_thread")]
 async fn a_wheel_scroll_paints_the_history_rows_without_clearing() {
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};

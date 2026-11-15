@@ -278,10 +278,8 @@ impl InheritedAltScreen {
     }
 }
 
-/// Note a `switch-host` hand-off at process start.
-///
-/// Arms the leave so that even a Ctrl-C or a panic during the successor's
-/// dial hands the shell its screen back. A no-op without one.
+/// Note a `switch-host` hand-off at process start, so even a Ctrl-C or panic
+/// during the successor's dial hands the shell its screen back.
 pub fn adopt_alt_screen_handoff() {
     INHERITED_ALT_SCREEN.read_once();
 }

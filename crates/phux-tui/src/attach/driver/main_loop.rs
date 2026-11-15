@@ -50,10 +50,8 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
     deferred_by_coalesce
 }
 
-/// Drive the `select!` loop until detach or a session switch. The
-/// `ATTACHED` frame [`wait_for_attached`] pulled is replayed through
-/// `handle_server_frame`; every session-scoped local is rebuilt per entry, so
-/// the outer loop can re-attach without leaving raw mode.
+/// Drive the `select!` loop until detach or a session switch, replaying the
+/// `ATTACHED` frame first; every session-scoped local is rebuilt per entry.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
