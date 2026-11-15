@@ -27,7 +27,7 @@ impl ClipboardSelection {
 
     /// The selection a byte names, if it is one a read may answer.
     #[must_use]
-    pub(crate) const fn from_byte(byte: u8) -> Option<Self> {
+    pub const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             b'c' => Some(Self::Clipboard),
             b'p' => Some(Self::Primary),
@@ -42,7 +42,7 @@ const MAX_BODY: usize = 16;
 
 /// Scanner state carried across output chunks.
 #[derive(Debug, Default)]
-pub(crate) struct Osc52ReadScanner {
+pub struct Osc52ReadScanner {
     state: State,
     body: Vec<u8>,
 }
@@ -61,7 +61,7 @@ enum State {
 
 impl Osc52ReadScanner {
     /// Scan one chunk of live output; the last read it completes, if any.
-    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Option<ClipboardSelection> {
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<ClipboardSelection> {
         let mut found = None;
         let mut rest = bytes;
         while !rest.is_empty() {

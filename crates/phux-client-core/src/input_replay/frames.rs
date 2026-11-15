@@ -26,7 +26,7 @@ impl InputReplayJournal {
     }
 
     /// Caller-clock single-frame entry point, available on every target.
-    pub(crate) fn next_frame_at(
+    pub fn next_frame_at(
         &mut self,
         next_request_id: &mut u32,
         now_ms: u64,
