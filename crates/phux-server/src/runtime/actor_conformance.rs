@@ -36,6 +36,7 @@ use super::test_support::{
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::delegation::{DelegatedCredential, DelegationRequest};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError};
+use crate::runtime::test_support::error_code;
 use crate::state::{ClientId, ServerState, SharedState};
 
 /// The automation credential the non-human, non-delegated cases use.
@@ -204,14 +205,9 @@ async fn a_delegated_agent_is_refused_terminate_and_kill_and_its_pane_survives()
                 },
             )
             .await;
-        assert!(
-            matches!(
-                killed,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ),
+        assert_eq!(
+            error_code(&killed),
+            Some(ErrorCode::PermissionDenied),
             "{killed:?}"
         );
         let terminated = agent
@@ -325,14 +321,9 @@ async fn an_agent_cannot_seize_a_human_held_lease() {
         let agent = fx.automation().await;
         agent.attach(1).await;
         let seized = agent.command(1, acquire(&fx.alpha, InputMode::Seize)).await;
-        assert!(
-            matches!(
-                seized,
-                CommandResult::Error {
-                    code: ErrorCode::InputLeaseHeld,
-                    ..
-                }
-            ),
+        assert_eq!(
+            error_code(&seized),
+            Some(ErrorCode::InputLeaseHeld),
             "{seized:?}"
         );
         assert_eq!(fx.lease_holder(), Some(human.client));

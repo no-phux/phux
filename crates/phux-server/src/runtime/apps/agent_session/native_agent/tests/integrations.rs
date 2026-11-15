@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::test_support::error_code;
 
 fn launch(fx: &Fixture) -> NativeRequest {
     let session = fx.state.with(|s| {
@@ -42,26 +43,14 @@ async fn native_integration_host_and_viewer_cannot_launch() {
             let fx = Fixture::new();
             let request = launch(&fx);
             let host = handle(&fx.context(fx.host), request.clone()).await;
-            assert!(matches!(
-                host,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ));
+            assert_eq!(error_code(&host), Some(ErrorCode::PermissionDenied));
             let (tx, _rx) = mpsc::channel(32);
             fx.state.with_mut(|s| {
                 s.attach_default_caps(fx.owner, "alpha", tx).unwrap();
                 s.set_attached_viewer(fx.owner, true);
             });
             let viewer = handle(&fx.context(fx.owner), request).await;
-            assert!(matches!(
-                viewer,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ));
+            assert_eq!(error_code(&viewer), Some(ErrorCode::PermissionDenied));
         })
         .await;
 }

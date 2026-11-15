@@ -66,14 +66,9 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
             ),
         ] {
             let refused = agent.command(request_id, command).await;
-            assert!(
-                matches!(
-                    refused,
-                    CommandResult::Error {
-                        code: ErrorCode::PermissionDenied,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&refused),
+                Some(ErrorCode::PermissionDenied),
                 "{refused:?}"
             );
         }
@@ -117,14 +112,9 @@ async fn no_agent_takes_a_paired_devices_lease_and_the_devices_takeover_beats_th
         for agent in [&delegated, &automation] {
             agent.attach(1).await;
             let seized = agent.command(1, acquire(&fx.alpha, InputMode::Seize)).await;
-            assert!(
-                matches!(
-                    seized,
-                    CommandResult::Error {
-                        code: ErrorCode::InputLeaseHeld,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&seized),
+                Some(ErrorCode::InputLeaseHeld),
                 "{seized:?}"
             );
             assert_eq!(fx.lease_holder(), Some(phone.client));

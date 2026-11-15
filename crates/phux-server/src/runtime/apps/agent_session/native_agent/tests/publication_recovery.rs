@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::test_support::error_code;
 
 #[tokio::test(flavor = "current_thread")]
 async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
@@ -71,13 +72,7 @@ async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
                     Bytes::from_static(b"{\"type\":\"stop\"}\n"),
                 )
                 .await;
-            assert!(matches!(
-                forged,
-                CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    ..
-                }
-            ));
+            assert_eq!(error_code(&forged), Some(ErrorCode::NotProducer));
         })
         .await;
 }
@@ -114,13 +109,7 @@ async fn controller_binding_fences_old_generation_and_cannot_create_resources() 
                     },
                 )
                 .await;
-            assert!(matches!(
-                wrong_proof,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ));
+            assert_eq!(error_code(&wrong_proof), Some(ErrorCode::PermissionDenied));
             let spawn = Command::NativeAgent {
                 request: NativeRequestPayload::new(NativeRequest::Spawn {
                     spec: fx

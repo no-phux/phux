@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::test_support::error_code;
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_resource_activation_and_operation_identity_are_required() {
@@ -247,13 +248,7 @@ async fn human_permission_and_parent_input_lease_gate_native_commands() {
                     data: b"must not reach PTY".to_vec(),
                 }),
             );
-            assert!(matches!(
-                raw,
-                CommandResult::Error {
-                    code: ErrorCode::InputNotWritten,
-                    ..
-                }
-            ));
+            assert_eq!(error_code(&raw), Some(ErrorCode::InputNotWritten));
         })
         .await;
 }

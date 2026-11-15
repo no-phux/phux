@@ -23,7 +23,7 @@ use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 use super::test_support::{
-    Connection as Peer, PATIENCE, owner_peer, spawn_connection, workload_identity,
+    Connection as Peer, PATIENCE, error_code, owner_peer, spawn_connection, workload_identity,
 };
 use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};

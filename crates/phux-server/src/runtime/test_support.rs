@@ -379,3 +379,13 @@ pub(super) fn alpha_world(
     });
     (state, alpha, alpha_core)
 }
+
+/// The code of an error `result`; `None` for any other result.
+pub(super) const fn error_code(
+    result: &CommandResult,
+) -> Option<phux_protocol::wire::frame::ErrorCode> {
+    match result {
+        CommandResult::Error { code, .. } => Some(*code),
+        _ => None,
+    }
+}

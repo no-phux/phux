@@ -93,14 +93,9 @@ async fn pending_bound_refuses_the_65th_hold_with_resource_exhausted() {
                 requester.send(&detach_all(request_id));
             }
             let refused = requester.result(65).await;
-            assert!(
-                matches!(
-                    refused,
-                    CommandResult::Error {
-                        code: ErrorCode::ResourceExhausted,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&refused),
+                Some(ErrorCode::ResourceExhausted),
                 "{refused:?}"
             );
             assert_eq!(world.state.with(|s| s.pending_approval_ids().len()), 64);

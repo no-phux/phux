@@ -1,5 +1,6 @@
 use super::*;
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+use crate::runtime::test_support::error_code;
 use phux_protocol::ids::{ResourceId, SatelliteHost};
 
 struct Fixture {
@@ -86,13 +87,7 @@ impl Fixture {
 async fn a_refused_first_satellite_viewer_attach_does_not_leave_a_tombstone() {
     let mut fixture = Fixture::new();
     let result = fixture.refuse_attach(1, RolePolicy::VIEWER).await;
-    assert!(matches!(
-        result,
-        CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            ..
-        }
-    ));
+    assert_eq!(error_code(&result), Some(ErrorCode::TerminalNotFound));
     let wire = fixture.wire(1);
     assert!(
         !fixture
