@@ -6,12 +6,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::{common, listeners, paired};
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};

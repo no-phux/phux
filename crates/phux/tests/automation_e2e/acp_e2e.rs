@@ -5,8 +5,7 @@
     clippy::panic,
     reason = "tests"
 )]
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 use serde_json::{Value, json};
 use std::{
     path::Path,

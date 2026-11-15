@@ -6,10 +6,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
+use crate::{common, listeners};
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

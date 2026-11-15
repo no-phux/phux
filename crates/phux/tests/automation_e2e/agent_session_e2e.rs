@@ -12,8 +12,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -95,26 +94,6 @@ impl ServerGuard {
             POLL,
             STEP_DEADLINE,
         )
-    }
-
-    /// Create a pane running `command` and return its local Terminal id.
-    fn spawn_pane(&self, command: &Path) -> u32 {
-        let mut cmd = self.cmd_global(&["spawn", "--json", "--"]);
-        cmd.arg(command);
-        let out = cmd.output().expect("run phux spawn");
-        assert!(
-            out.status.success(),
-            "phux spawn exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let json: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("phux spawn --json");
-        json["terminal_id"]
-            .as_u64()
-            .expect("spawn reports a terminal id")
-            .try_into()
-            .expect("terminal id fits u32")
     }
 
     /// The `resources` array of `phux ls --json`.

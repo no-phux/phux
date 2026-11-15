@@ -12,10 +12,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
+use crate::{common, listeners};
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};

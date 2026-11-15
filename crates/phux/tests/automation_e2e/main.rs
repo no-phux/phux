@@ -1,11 +1,8 @@
 //! Lane-selected agent automation and workspace archive acceptance tests.
 //! nextest preserves per-test process isolation across these suite modules.
 
-#![allow(
-    clippy::duplicate_mod,
-    reason = "retain each suite's common-module tests and state when consolidating binaries"
-)]
-
+#[path = "../common/mod.rs"]
+mod common;
 #[path = "../common/runner.rs"]
 mod runner;
 

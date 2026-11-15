@@ -12,7 +12,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Keys a live pane of the production server exports, kept as the named
@@ -115,9 +115,7 @@ pub struct XdgDirs {
 
 impl XdgDirs {
     /// A fresh, empty pair under the target temp directory, named by `tag`,
-    /// the process id, a counter, and the clock. A test binary that mounts
-    /// `common` under several modules has one counter per copy, so the pid
-    /// and counter alone collide between copies running in parallel.
+    /// the process id, a counter, and the clock.
     pub fn fresh(tag: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -142,11 +140,23 @@ impl XdgDirs {
     }
 }
 
-/// The pair [`phux_cmd`] uses: one per test process, which under nextest is
-/// one per test.
+/// The pair [`phux_cmd`] uses: one per test thread, so tests a raw
+/// `cargo test` runs concurrently in one process never share a store (one
+/// per process under nextest). An unnamed helper thread shares the first.
 pub fn isolated_xdg() -> &'static XdgDirs {
-    static DIRS: OnceLock<XdgDirs> = OnceLock::new();
-    DIRS.get_or_init(|| XdgDirs::fresh("proc"))
+    static DIRS: Mutex<Vec<(Option<String>, &'static XdgDirs)>> = Mutex::new(Vec::new());
+    let name = std::thread::current().name().map(str::to_owned);
+    let mut dirs = DIRS.lock().expect("isolated XDG table");
+    let found = match &name {
+        Some(_) => dirs.iter().find(|(key, _)| *key == name),
+        None => dirs.first(),
+    };
+    if let Some((_, dirs)) = found {
+        return dirs;
+    }
+    let fresh: &'static XdgDirs = Box::leak(Box::new(XdgDirs::fresh("proc")));
+    dirs.push((name, fresh));
+    fresh
 }
 
 fn xdg_root() -> PathBuf {
