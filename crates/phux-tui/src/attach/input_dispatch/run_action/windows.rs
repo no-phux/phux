@@ -131,7 +131,7 @@ pub(super) fn confirmed_targets(
 ) -> Option<Vec<ResourceId>> {
     let toml::Value::Array(items) = resolved
         .args
-        .get(crate::render::overlay::kill_confirm::KILL_TARGETS_ARG)?
+        .get(crate::render::overlay::confirm::KILL_TARGETS_ARG)?
     else {
         return None;
     };
@@ -161,7 +161,7 @@ fn confirm_kill_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// counted nor killed: the kill only closes their views.
 pub(in crate::attach::input_dispatch) fn kill_window_confirm(
     ctx: &DispatchCtx<'_>,
-) -> Option<crate::render::overlay::KillConfirmOverlay> {
+) -> Option<crate::render::overlay::ConfirmOverlay> {
     let leaves: Vec<ResourceId> = ctx
         .workspace
         .active_group()
@@ -194,8 +194,8 @@ pub(in crate::attach::input_dispatch) fn kill_window_confirm(
             })
         })
         .collect();
-    Some(crate::render::overlay::KillConfirmOverlay::new(
-        &window, leaves, &shared, ctx.theme,
+    Some(crate::render::overlay::ConfirmOverlay::kill_window(
+        &window, &leaves, &shared, ctx.theme,
     ))
 }
 
@@ -203,7 +203,7 @@ pub(in crate::attach::input_dispatch) fn kill_window_confirm(
 pub(super) fn kill_pane_confirm(
     ctx: &DispatchCtx<'_>,
     leaf: &ResourceId,
-) -> crate::render::overlay::KillConfirmOverlay {
+) -> crate::render::overlay::ConfirmOverlay {
     let label = crate::attach::server_frame::pane_label(leaf);
     let elsewhere = shown_elsewhere(ctx, ctx.workspace.active, leaf);
     let shared: Vec<_> = (!elsewhere.is_empty())
@@ -213,7 +213,7 @@ pub(super) fn kill_pane_confirm(
         })
         .into_iter()
         .collect();
-    crate::render::overlay::KillConfirmOverlay::pane(&label, leaf.clone(), &shared, ctx.theme)
+    crate::render::overlay::ConfirmOverlay::kill_pane(&label, leaf, &shared, ctx.theme)
 }
 
 /// How a message names a tab: a user-given name, else the index the tab bar

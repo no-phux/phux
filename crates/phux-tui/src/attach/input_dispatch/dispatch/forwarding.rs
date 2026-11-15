@@ -87,7 +87,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let lines = crate::attach::paste_safety::line_count(&paste.data);
         self.ctx
             .overlays
-            .push(Box::new(crate::render::overlay::PasteConfirmOverlay::new(
+            .push(Box::new(crate::render::overlay::ConfirmOverlay::paste(
                 paste.clone(),
                 lines,
                 bracketed,

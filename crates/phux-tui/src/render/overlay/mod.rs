@@ -13,12 +13,10 @@ use ratatui::style::Color;
 
 use crate::render::{ChromeBreakpoints, Theme};
 
-pub mod clipboard_confirm;
+pub mod confirm;
 pub mod copy_mode;
-pub mod kill_confirm;
 pub mod line_edit;
 pub mod menu;
-pub mod paste_confirm;
 pub mod path_picker;
 pub mod pending;
 pub mod prompt;
@@ -30,13 +28,11 @@ pub mod toast;
 pub mod which_key;
 pub mod widgets;
 
-pub use clipboard_confirm::ClipboardConfirmOverlay;
+pub use confirm::{ConfirmOverlay, SharedTarget};
 pub use copy_mode::{
     CopyModeOverlay, CopyMotionRequest, CopySearchRequest, CopySearchResult, CopySearchView,
 };
-pub use kill_confirm::{KillConfirmOverlay, SharedTarget};
 pub use menu::{ContextMenu, MenuRow};
-pub use paste_confirm::PasteConfirmOverlay;
 pub use path_picker::PathPicker;
 pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;

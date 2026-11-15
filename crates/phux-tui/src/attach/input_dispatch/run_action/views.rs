@@ -1,8 +1,6 @@
 //! Overlays and views: the command palette, pickers, settings, copy mode,
 //! the agent fleet and attention, and sidebar filters.
 
-use phux_protocol::ResourceId;
-
 use crate::attach::copy::extract_selection_text;
 use crate::attach::input_dispatch::args::{
     focus_terminal, ordered_workspace_panes, str_arg, usize_arg,
@@ -111,7 +109,7 @@ pub(in crate::attach) fn report_bug(
     let draft = crate::report::ReportDraft {
         note: str_arg(resolved, "note"),
         session,
-        pane: focused.map(pane_selector),
+        pane: focused.map(crate::render::overlay::confirm::selector),
         window: Some(ctx.workspace.active),
         viewport: Some(ctx.viewport),
         alt_screen,
@@ -145,13 +143,6 @@ pub(in crate::attach) fn report_bug(
                 ctx.theme,
             )));
         }
-    }
-}
-
-fn pane_selector(id: &ResourceId) -> String {
-    match id {
-        ResourceId::Local { id } => format!("@{id}"),
-        ResourceId::Satellite { host, id } => format!("{host}/@{id}"),
     }
 }
 

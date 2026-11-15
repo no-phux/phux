@@ -27,7 +27,7 @@ impl super::super::SessionLoop {
                 ClipboardWrite::Ask => {
                     let source = crate::attach::server_frame::pane_label(&pane);
                     self.overlays.push(Box::new(
-                        crate::render::overlay::ClipboardConfirmOverlay::new(
+                        crate::render::overlay::ConfirmOverlay::clipboard(
                             &source,
                             text,
                             &self.settings.theme,
