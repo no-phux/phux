@@ -52,8 +52,6 @@ pub mod codes {
     pub const PANE_ALREADY_IN_LAYOUT: &str = "pane_already_in_layout";
     /// The layout engine or the server refused the edit.
     pub const LAYOUT_REJECTED: &str = "layout_rejected";
-    /// The server predates cross-session moves.
-    pub const SERVER_TOO_OLD: &str = "server_too_old";
     /// The server refused the ownership move.
     pub const MOVE_REFUSED: &str = "move_refused";
     /// Ownership moved but the resulting state could not be read.

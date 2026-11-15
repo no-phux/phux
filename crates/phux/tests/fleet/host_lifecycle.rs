@@ -11,23 +11,25 @@ use crate::common::run_with_xdg;
 /// The stderr build banner, which no one-shot verb may print.
 const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
+/// `host add --role satellite REST...`.
+fn satellite_add<'a>(rest: &[&'a str]) -> Vec<&'a str> {
+    [&["host", "add", "--role", "satellite"][..], rest].concat()
+}
+
+/// Run `args`, assert exit 0, and parse stdout as JSON.
+fn json_ok(args: &[&str], xdg: &std::path::Path) -> serde_json::Value {
+    let (code, stdout, stderr) = run_with_xdg(args, xdg);
+    assert_eq!(code, 0, "{args:?}: stderr={stderr}");
+    serde_json::from_str(&stdout).expect("stdout is JSON")
+}
+
 #[test]
 fn add_list_update_remove_json_is_machine_readable() {
     let tmp = TempDir::new().expect("tempdir");
     let xdg = tmp.path().join("xdg");
 
-    let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
-            "devbox",
-            "ssh://devbox",
-            "--json",
-        ],
-        &xdg,
-    );
+    let (code, stdout, stderr) =
+        run_with_xdg(&satellite_add(&["devbox", "ssh://devbox", "--json"]), &xdg);
     assert_eq!(code, 0, "`host add --json` should exit 0; stderr={stderr}");
     assert!(
         !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
@@ -40,24 +42,17 @@ fn add_list_update_remove_json_is_machine_readable() {
     assert_eq!(value["host"]["endpoint"], "ssh://devbox");
     assert_eq!(value["host"]["enabled"], true);
 
-    let (code, stdout, stderr) =
-        run_with_xdg(&["host", "ls", "--role", "satellite", "--json"], &xdg);
-    assert_eq!(code, 0, "`host ls --json` should exit 0; stderr={stderr}");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("ls stdout is JSON");
+    let value = json_ok(&["host", "ls", "--role", "satellite", "--json"], &xdg);
     assert_eq!(value["hosts"][0]["name"], "devbox");
     assert_eq!(value["hosts"][0]["role"], "satellite");
 
     let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
+        &satellite_add(&[
             "devbox",
             "quic://devbox.example:8788",
             "--disabled",
             "--json",
-        ],
+        ]),
         &xdg,
     );
     assert_eq!(
@@ -74,22 +69,14 @@ fn add_list_update_remove_json_is_machine_readable() {
     assert!(config.contains(r#"endpoint = "quic://devbox.example:8788""#));
     assert!(config.contains("enabled = false"));
 
-    let (code, stdout, stderr) = run_with_xdg(
+    let value = json_ok(
         &["host", "rm", "--role", "satellite", "devbox", "--json"],
         &xdg,
     );
-    assert_eq!(code, 0, "`host rm --json` should exit 0; stderr={stderr}");
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("rm stdout is JSON");
     assert_eq!(value["removed"]["name"], "devbox");
     assert_eq!(value["removed"]["role"], "satellite");
 
-    let (code, stdout, stderr) =
-        run_with_xdg(&["host", "ls", "--role", "satellite", "--json"], &xdg);
-    assert_eq!(
-        code, 0,
-        "`host ls --json` should exit 0 after removal; stderr={stderr}"
-    );
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("empty ls stdout is JSON");
+    let value = json_ok(&["host", "ls", "--role", "satellite", "--json"], &xdg);
     assert_eq!(value["hosts"].as_array().expect("hosts").len(), 0);
 }
 
@@ -104,11 +91,7 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
     let fingerprint = ["AB"; 32].join(":");
 
     let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
+        &satellite_add(&[
             "lab",
             "quic://lab.example:8788",
             "--token-file",
@@ -116,7 +99,7 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
             "--cert-fingerprint",
             &fingerprint,
             "--json",
-        ],
+        ]),
         &xdg,
     );
     assert_eq!(
@@ -156,15 +139,7 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
 
     // `add` replaces the whole entry: omitting the auth flags clears them.
     let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
-            "lab",
-            "quic://lab.example:8788",
-            "--json",
-        ],
+        &satellite_add(&["lab", "quic://lab.example:8788", "--json"]),
         &xdg,
     );
     assert_eq!(code, 0, "bare re-add should exit 0; stderr={stderr}");
@@ -183,7 +158,7 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
 #[test]
 fn invalid_satellite_entries_are_rejected() {
     let tmp = TempDir::new().expect("tempdir");
-    let add = ["host", "add", "--role", "satellite", "lab"];
+    let add = satellite_add(&["lab"]);
     let quic = "quic://lab.example:8788";
     let cases: &[(&[&str], &str)] = &[
         (
@@ -205,7 +180,7 @@ fn invalid_satellite_entries_are_rejected() {
         (&["lab"], "endpoint must be a URI"),
     ];
     for (extra, reason) in cases {
-        let mut args = add.to_vec();
+        let mut args = add.clone();
         args.extend_from_slice(extra);
         args.push("--json");
         let (code, stdout, stderr) = run_with_xdg(&args, tmp.path());
@@ -270,18 +245,8 @@ fn lifecycle_writes_through_a_symlinked_config() {
     let link = config_dir.join("config.toml");
     std::os::unix::fs::symlink(&real, &link).expect("symlink config");
 
-    let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
-            "devbox",
-            "ssh://devbox",
-            "--json",
-        ],
-        &xdg,
-    );
+    let (code, stdout, stderr) =
+        run_with_xdg(&satellite_add(&["devbox", "ssh://devbox", "--json"]), &xdg);
 
     assert_eq!(
         code, 0,
@@ -307,11 +272,7 @@ fn host_color_overrides_the_hash_and_ls_reports_it() {
     let xdg = tmp.path().join("xdg");
     let (code, _, stderr) = run_with_xdg(&["host", "add", "mini", "ssh://mini"], &xdg);
     assert_eq!(code, 0, "stderr={stderr}");
-    let color = |args: &[&str]| {
-        let (code, stdout, stderr) = run_with_xdg(args, &xdg);
-        assert_eq!(code, 0, "{args:?}: stderr={stderr}");
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("JSON")
-    };
+    let color = |args: &[&str]| json_ok(args, &xdg);
     let ls = color(&["host", "ls", "--json"]);
     let auto = serde_json::json!({"id": "magenta", "hex": "#D9629F", "override": false});
     assert_eq!(ls["hosts"][0]["color"], auto);
@@ -354,11 +315,7 @@ fn host_color_role_picks_the_registry_and_one_override_colours_both() {
         let (code, _, stderr) = run_with_xdg(args, &xdg);
         assert_eq!(code, 0, "{args:?}: stderr={stderr}");
     }
-    let run = |args: &[&str]| {
-        let (code, stdout, stderr) = run_with_xdg(args, &xdg);
-        assert_eq!(code, 0, "{args:?}: stderr={stderr}");
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("JSON")
-    };
+    let run = |args: &[&str]| json_ok(args, &xdg);
     let ids = || {
         let ls = run(&["host", "ls", "--json"]);
         let hosts = ls["hosts"].as_array().expect("hosts").clone();

@@ -102,7 +102,7 @@ mod pty_burst_tests {
     use super::{Bytes, join_pty_burst};
 
     /// A lone chunk is forwarded without a copy; a burst joins in order into
-    /// one buffer.
+    /// one buffer, through the instruction-count entry point too.
     #[test]
     fn a_burst_joins_in_order_and_a_lone_chunk_is_not_copied() {
         let first = Bytes::from_static(b"abc");
@@ -110,8 +110,12 @@ mod pty_burst_tests {
         assert_eq!(lone.as_ptr(), first.as_ptr(), "a lone chunk moves through");
 
         let rest = [Bytes::from_static(b"de"), Bytes::from_static(b"fghi")];
-        let joined = join_pty_burst(first, &rest, 9);
+        let joined = join_pty_burst(first.clone(), &rest, 9);
         assert_eq!(&joined[..], b"abcdefghi");
+        assert_eq!(
+            &super::icount_join_pty_burst(vec![first, rest[0].clone()])[..],
+            b"abcde"
+        );
     }
 }
 
@@ -316,24 +320,5 @@ mod resync_debounce_tests {
 
         assert!(sleep.deadline() > gap_deadline);
         assert_eq!(owed(&mut debounce).0, ResyncReason::Resize);
-    }
-}
-
-#[cfg(test)]
-mod icount_join_tests {
-    use super::icount_join_pty_burst;
-    use bytes::Bytes;
-
-    #[test]
-    fn a_burst_is_one_payload() {
-        let joined =
-            icount_join_pty_burst(vec![Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]);
-        assert_eq!(joined.as_ref(), b"abcd");
-    }
-
-    #[test]
-    fn a_lone_chunk_is_moved() {
-        let joined = icount_join_pty_burst(vec![Bytes::from_static(b"only")]);
-        assert_eq!(joined.as_ref(), b"only");
     }
 }

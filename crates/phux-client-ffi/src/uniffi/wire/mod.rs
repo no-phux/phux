@@ -20,7 +20,7 @@ use phux_protocol::input::mouse::{
 use phux_protocol::input::paste::PasteTrust;
 use phux_protocol::wire::frame::AttachTarget;
 
-use crate::projection::{agent, event, grid, id, outcome, status, topology};
+use crate::projection::{agent, grid, id, status, topology};
 
 use super::keymap::{self, KeyMods, KeyPress};
 

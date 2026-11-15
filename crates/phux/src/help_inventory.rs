@@ -146,25 +146,7 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// verbs of ADR-0128 among them) plus six group headings set the floor; the
 /// bound leaves no room for a reference-style epilogue to creep back in.
 ///
-/// The bound rose from 93 to 97 with the organization verbs (`rm`,
-/// `relaunch`, `restore`, `mv`) and `archive`: four lines of discoverable
-/// lifecycle verbs are worth more than hiding them (R20). It rose to 99
-/// with `mail` and `claim` (ADR-0187): agents find coordination at the root.
-/// It rose to 100 with `download`: the pull sits beside `upload`, where
-/// someone looking for the push will find it. It rose to 101 with `idea`:
-/// capture is a root verb, and the spool is invisible if the line is hidden.
-/// It rose to 102 with `omarchy`: someone on an Omarchy desktop scans the
-/// root page for their desktop's name, and `setup` is the whole onboarding.
-/// It rose to 103 with `terminal`: one discoverable row for complete creation
-/// and receipt lookup, rather than another command choreography.
-/// It rose to 104 with `native`: one-terminal emulator windows are a distinct
-/// client mode, discoverable beside the TUI attach command.
-/// It rose to 105 with `audit`: an operator checking who did what on a host
-/// looks for the word on the root page. It rose to 106 with `migrate`:
-/// someone arriving from tmux or Ghostty looks for the way in on the first page.
-/// It rose to 108 with `lock` and `unlock`: someone whose tab refuses to close
-/// looks for the way out on the first page. It rose to 109 with `forward`:
-/// someone who wants a remote port looks for the word beside `download`.
+/// Raise the bound only for a root verb someone scans the first page for.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();

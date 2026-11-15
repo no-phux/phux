@@ -12,12 +12,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::{common, listeners, paired};
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

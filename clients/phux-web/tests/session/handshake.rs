@@ -6,10 +6,7 @@ use super::*;
 async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Connection::new(&vt, 80, 24);
-    let outcome = session.on_frame(hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    ));
+    let outcome = session.on_frame(synth_hello());
     assert!(outcome.fatal.is_none());
     assert_eq!(outcome.send.len(), 2, "HELLO_OK subscribes before attach");
     assert!(matches!(
@@ -26,10 +23,7 @@ async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
 async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
     let vt = Vt::load().await.expect("load engine");
 
-    let mut wrong_version = hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    );
+    let mut wrong_version = synth_hello();
     let FrameKind::HelloOk { protocol_major, .. } = &mut wrong_version else {
         unreachable!();
     };
@@ -146,10 +140,7 @@ async fn session_accepts_native_snapshot_and_rejects_the_unadvertised_checkpoint
 }
 
 fn hello_ok_version(major: u16, minor: u16, patch: u16) -> FrameKind {
-    let mut frame = hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    );
+    let mut frame = synth_hello();
     if let FrameKind::HelloOk {
         protocol_major,
         protocol_minor,
@@ -188,7 +179,7 @@ async fn a_protocol_major_refusal_stops_the_client_for_good() {
     let mut session = Connection::new(&vt, 80, 24);
     let outcome = session.on_frame(FrameKind::Error {
         request_id: None,
-        code: phux_protocol::wire::frame::ErrorCode::VersionIncompatible,
+        code: ErrorCode::VersionIncompatible,
         message: "client protocol 9.0 unsupported".to_owned(),
     });
     let message = outcome.fatal.expect("VERSION_INCOMPATIBLE is fatal");

@@ -7,8 +7,7 @@
     reason = "tests"
 )]
 
-#[path = "../common/ambient.rs"]
-mod common;
+use crate::common;
 
 use std::os::unix::net::UnixListener;
 

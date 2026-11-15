@@ -7,10 +7,6 @@ use super::LoadedPlugin;
 use super::live_feed::AgentProjection;
 
 /// `phux config show --layers --json`: the provenance document.
-///
-/// Layer indexes are 1-based and shared between the `layers` and
-/// `keys` sections. Scalar keys carry `layer` only; array keys add
-/// `element_layers`, one entry per element in order.
 pub(super) fn print_layers_json(config_path: &Path, provenance: &ConfigProvenance) -> ExitCode {
     let layers: Vec<_> = provenance
         .layers

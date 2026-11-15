@@ -1,11 +1,5 @@
-//! Organization outcomes, read once for every encoder.
-//!
-//! An organization command resolves to an [`OrgOutcome`], which folds here
-//! into a status, a refusal code, and a sentence, so the C ABI,
-//! `UniFFI`, and NAPI lanes report the same thing for the same answer. The
-//! numeric codes are the C ABI's (`include/phux/client.h`,
-//! `PhuxOrgStatus` and `PhuxOrgRefusal`); the words are what the string
-//! encoders carry.
+//! Organization outcomes: an [`OrgOutcome`] folds into a status word, a
+//! refusal code, and a sentence.
 
 use phux_client_core::org_ops::{OrgOutcome, refusal_sentence};
 use phux_protocol::wire::frame::Refusal;
@@ -27,26 +21,9 @@ pub enum Status {
     Unknown,
     /// It never reached a socket.
     NotSent,
-    /// A batch in which some targets succeeded and some did not.
-    Partial,
 }
 
 impl Status {
-    /// The C ABI's `PhuxOrgStatus` value.
-    #[must_use]
-    pub const fn code(self) -> u32 {
-        match self {
-            Self::Pending => 1,
-            Self::Committed => 2,
-            Self::Accepted => 3,
-            Self::Refused => 4,
-            Self::Error => 5,
-            Self::Unknown => 6,
-            Self::NotSent => 7,
-            Self::Partial => 8,
-        }
-    }
-
     /// The stable word.
     #[must_use]
     pub const fn word(self) -> &'static str {
@@ -58,19 +35,12 @@ impl Status {
             Self::Error => "error",
             Self::Unknown => "unknown",
             Self::NotSent => "not_sent",
-            Self::Partial => "partial",
         }
-    }
-
-    /// Whether the operation is known to have taken effect.
-    #[must_use]
-    pub const fn succeeded(self) -> bool {
-        matches!(self, Self::Committed | Self::Accepted)
     }
 }
 
-/// The C ABI's `PhuxOrgRefusal` value: the wire refusal tag plus one, `0`
-/// for none, `255` for a tag this build does not name.
+/// The refusal code: the wire refusal tag plus one, `0` for none, `255` for
+/// a tag this build does not name.
 #[must_use]
 pub const fn refusal_code(refusal: &Refusal) -> u32 {
     match refusal {
@@ -181,91 +151,6 @@ pub fn resolution(outcome: &OrgOutcome) -> Resolution {
     }
 }
 
-/// How one target of a batch ended. The C ABI's codes `3`, `6`, `7`, and
-/// `8` (`ALREADY_GONE`, `TIMED_OUT`, `NO_LIVE_TARGET`, `KEPT`) were the
-/// client-side kill workflow's and are no longer produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetStatus {
-    /// Still in flight.
-    Pending,
-    /// It took effect: moved, removed, deleted.
-    Done,
-    /// The server refused it.
-    Refused,
-    /// Its outcome is unknown.
-    Unknown,
-    /// It was never sent.
-    NotSent,
-}
-
-impl TargetStatus {
-    /// The C ABI's `PhuxOrgTargetStatus` value.
-    #[must_use]
-    pub const fn code(self) -> u32 {
-        match self {
-            Self::Pending => 1,
-            Self::Done => 2,
-            Self::Refused => 4,
-            Self::Unknown => 5,
-            Self::NotSent => 9,
-        }
-    }
-
-    /// The stable word.
-    #[must_use]
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Done => "done",
-            Self::Refused => "refused",
-            Self::Unknown => "unknown",
-            Self::NotSent => "not_sent",
-        }
-    }
-
-    /// Whether the target no longer stands in the way.
-    #[must_use]
-    pub const fn succeeded(self) -> bool {
-        matches!(self, Self::Done)
-    }
-}
-
-/// One target's result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetResult {
-    /// The record's key bytes.
-    pub key: [u8; 16],
-    /// Whether the target is a session (`true`) or a resource.
-    pub is_session: bool,
-    /// How it ended.
-    pub status: TargetStatus,
-    /// [`refusal_code`], `0` unless refused.
-    pub refusal: u32,
-    /// A sentence for a frontend; empty on success.
-    pub message: String,
-}
-
-impl TargetResult {
-    /// A resource target, resolved from an operation's outcome.
-    #[must_use]
-    pub fn resource(key: [u8; 16], resolution: &Resolution) -> Self {
-        let status = match resolution.status {
-            Status::Pending => TargetStatus::Pending,
-            Status::Committed | Status::Accepted => TargetStatus::Done,
-            Status::Refused | Status::Error => TargetStatus::Refused,
-            Status::Unknown | Status::Partial => TargetStatus::Unknown,
-            Status::NotSent => TargetStatus::NotSent,
-        };
-        Self {
-            key,
-            is_session: false,
-            status,
-            refusal: resolution.refusal,
-            message: resolution.message.clone(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,7 +178,7 @@ mod tests {
     }
 
     /// An organization command answered with an unreadable reply reads as
-    /// an unknown outcome through the C ABI, never as an error.
+    /// an unknown outcome, never as an error.
     #[test]
     fn an_unreadable_reply_is_an_unknown_outcome() {
         use phux_protocol::wire::frame::{CommandResult, ErrorCode};

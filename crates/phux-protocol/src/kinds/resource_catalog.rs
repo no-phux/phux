@@ -1,146 +1,59 @@
-/// The gate of every organization method: `features_ext.ORGANIZATION`.
-const ORGANIZATION: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::Organization.mask(),
-    wire_name: ServerFeatureExt::Organization.wire_name(),
-});
-/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
-const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::Mirrors.mask(),
-    wire_name: ServerFeatureExt::Mirrors.wire_name(),
-});
-
-const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::AccessibilityTree.mask(),
-    wire_name: ServerFeatureExt::AccessibilityTree.wire_name(),
-};
-const PIXEL_SURFACE: FeatureGate = FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::PixelSurface.mask(),
-    wire_name: ServerFeatureExt::PixelSurface.wire_name(),
-};
-const TYPED_DOCUMENT: FeatureGate = FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::TypedDocument.mask(),
-    wire_name: ServerFeatureExt::TypedDocument.wire_name(),
-};
+const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::ext(ServerFeatureExt::AccessibilityTree);
+const PIXEL_SURFACE: FeatureGate = FeatureGate::ext(ServerFeatureExt::PixelSurface);
+const TYPED_DOCUMENT: FeatureGate = FeatureGate::ext(ServerFeatureExt::TypedDocument);
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
-pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
-    method!(
-        "SPAWN_RESOURCE",
-        Carrier::Frame(TYPE_SPAWN_RESOURCE),
-        [
-            F_SPAWN_SATELLITE,
-            F_SPAWN_LOCAL,
-            F_SPAWN_OWNED,
-            F_SPAWN_SATELLITE_OWNED,
-            F_SPAWN_CHILD_LOCAL,
-            F_SPAWN_CHILD_SATELLITE,
-            F_SPAWN_KIND_MISMATCH,
-            F_SPAWN_MACHINE_CONTROL,
-            F_UNCLASSIFIED,
-        ]
-    ),
-    method!(
-        "ATTACH_RESOURCE",
-        Carrier::Command(COMMAND_TAG_ATTACH_RESOURCE),
-        [C_ATTACH_RESOURCE]
-    ),
-    method!(
-        "DETACH_RESOURCE",
-        Carrier::Command(COMMAND_TAG_DETACH_RESOURCE),
-        [C_DETACH_RESOURCE]
-    ),
-    dangerous(method!(
-        "KILL_RESOURCE",
-        Carrier::Command(COMMAND_TAG_KILL_RESOURCE),
-        [C_KILL_RESOURCE]
-    )),
-    dangerous(method!(
-        "KILL_RESOURCE_IF",
-        Carrier::Command(COMMAND_TAG_KILL_RESOURCE_IF),
-        [C_KILL_RESOURCE_IF],
-        Some(FeatureGate::Features(ServerFeature::ConditionalKill))
-    )),
-    dangerous(method!(
-        "KILL_RESOURCES",
-        Carrier::Command(COMMAND_TAG_KILL_RESOURCES),
-        [C_KILL_RESOURCES]
-    )),
-    dangerous(method!(
-        "CLOSE_TAB_RESOURCES",
-        Carrier::Command(COMMAND_TAG_CLOSE_TAB_RESOURCES),
-        [C_CLOSE_TAB_RESOURCES],
-        Some(FeatureGate::Features(ServerFeature::CloseTabResources))
-    )),
-    method!(
-        "SUBSCRIBE_RESOURCE_EVENTS",
-        Carrier::Command(COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS),
-        [C_SUBSCRIBE_RESOURCE_EVENTS]
-    ),
-    method!(
-        "SUBSCRIBE_EVENTS",
-        Carrier::Frame(TYPE_SUBSCRIBE_EVENTS),
-        [F_SUBSCRIBE_EVENTS_ONE, F_SUBSCRIBE_EVENTS_ALL]
-    ),
-    method!(
-        "GET_STATE",
-        Carrier::Command(COMMAND_TAG_GET_STATE),
-        [C_GET_STATE]
-    ),
-    method!(
-        "GET_METADATA",
-        Carrier::Frame(TYPE_GET_METADATA),
-        [F_GET_METADATA, F_WHOAMI]
-    ),
-    method!(
-        "SET_METADATA",
-        Carrier::Frame(TYPE_SET_METADATA),
-        [
-            F_METADATA_WRITE,
-            F_SESSION_CREATE,
-            F_KEEP_EMPTY_MARK,
-            F_KEEP_EMPTY_CLEAR,
-            F_KEEP_EMPTY_OTHER,
-            F_CONFIG_RELOAD,
-            F_APPROVAL_DECIDE,
-            F_APPROVAL_DECIDE_OTHER,
-            F_RESULT_NAMESPACE_WRITE,
-            F_SERVER_OWNED_WRITE,
-        ]
-    ),
-    method!(
-        "DELETE_METADATA",
-        Carrier::Frame(TYPE_DELETE_METADATA),
-        [
-            F_METADATA_WRITE,
-            F_RESULT_NAMESPACE_WRITE,
-            F_SERVER_OWNED_WRITE
-        ]
-    ),
-    method!(
-        "LIST_METADATA",
-        Carrier::Frame(TYPE_LIST_METADATA),
-        [F_LIST_METADATA]
-    ),
-    method!(
-        "SUBSCRIBE_METADATA",
-        Carrier::Frame(TYPE_SUBSCRIBE_METADATA),
-        [F_SUBSCRIBE_METADATA, F_RESULT_NAMESPACE_SUBSCRIBE]
-    ),
+pub static SUBSTRATE_METHODS: &[MethodSpec] = methods! {
+    "SPAWN_RESOURCE" => Frame(TYPE_SPAWN_RESOURCE) [
+        F_SPAWN_SATELLITE,
+        F_SPAWN_LOCAL,
+        F_SPAWN_OWNED,
+        F_SPAWN_SATELLITE_OWNED,
+        F_SPAWN_CHILD_LOCAL,
+        F_SPAWN_CHILD_SATELLITE,
+        F_SPAWN_KIND_MISMATCH,
+        F_SPAWN_MACHINE_CONTROL,
+        F_UNCLASSIFIED,
+    ];
+    "ATTACH_RESOURCE" => Command(COMMAND_TAG_ATTACH_RESOURCE) [C_ATTACH_RESOURCE];
+    "DETACH_RESOURCE" => Command(COMMAND_TAG_DETACH_RESOURCE) [C_DETACH_RESOURCE];
+    "KILL_RESOURCE" => Command(COMMAND_TAG_KILL_RESOURCE) [C_KILL_RESOURCE] dangerous;
+    "KILL_RESOURCE_IF" => Command(COMMAND_TAG_KILL_RESOURCE_IF) [C_KILL_RESOURCE_IF]
+        feature(ConditionalKill) dangerous;
+    "KILL_RESOURCES" => Command(COMMAND_TAG_KILL_RESOURCES) [C_KILL_RESOURCES] dangerous;
+    "CLOSE_TAB_RESOURCES" => Command(COMMAND_TAG_CLOSE_TAB_RESOURCES) [C_CLOSE_TAB_RESOURCES]
+        feature(CloseTabResources) dangerous;
+    "SUBSCRIBE_RESOURCE_EVENTS" => Command(COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS)
+        [C_SUBSCRIBE_RESOURCE_EVENTS];
+    "SUBSCRIBE_EVENTS" => Frame(TYPE_SUBSCRIBE_EVENTS)
+        [F_SUBSCRIBE_EVENTS_ONE, F_SUBSCRIBE_EVENTS_ALL];
+    "GET_STATE" => Command(COMMAND_TAG_GET_STATE) [C_GET_STATE];
+    "GET_METADATA" => Frame(TYPE_GET_METADATA) [F_GET_METADATA, F_WHOAMI];
+    "SET_METADATA" => Frame(TYPE_SET_METADATA) [
+        F_METADATA_WRITE,
+        F_SESSION_CREATE,
+        F_KEEP_EMPTY_MARK,
+        F_KEEP_EMPTY_CLEAR,
+        F_KEEP_EMPTY_OTHER,
+        F_CONFIG_RELOAD,
+        F_APPROVAL_DECIDE,
+        F_APPROVAL_DECIDE_OTHER,
+        F_RESULT_NAMESPACE_WRITE,
+        F_SERVER_OWNED_WRITE,
+    ];
+    "DELETE_METADATA" => Frame(TYPE_DELETE_METADATA)
+        [F_METADATA_WRITE, F_RESULT_NAMESPACE_WRITE, F_SERVER_OWNED_WRITE];
+    "LIST_METADATA" => Frame(TYPE_LIST_METADATA) [F_LIST_METADATA];
+    "SUBSCRIBE_METADATA" => Frame(TYPE_SUBSCRIBE_METADATA)
+        [F_SUBSCRIBE_METADATA, F_RESULT_NAMESPACE_SUBSCRIBE];
     // Replaces a document kind's whole state (an accessibility tree, a pixel
     // surface); the host routes it to the named resource's kind.
-    method!(
-        "PUBLISH_RESOURCE_STATE",
-        Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
-        [C_PUBLISH_RESOURCE_STATE]
-    ),
+    "PUBLISH_RESOURCE_STATE" => Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE)
+        [C_PUBLISH_RESOURCE_STATE];
     // A viewer's input intent for a document, relayed to its producer.
-    method!(
-        "SEND_DOCUMENT_INPUT",
-        Carrier::Command(COMMAND_TAG_SEND_DOCUMENT_INPUT),
-        [C_SEND_DOCUMENT_INPUT]
-    ),
-];
+    "SEND_DOCUMENT_INPUT" => Command(COMMAND_TAG_SEND_DOCUMENT_INPUT) [C_SEND_DOCUMENT_INPUT];
+};
 
 /// Events about the server or one subscription rather than one resource.
 ///
@@ -149,98 +62,35 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
 /// `approval_decided` report a held `SIGNAL` action (ADR-0128). The
 /// organization events (L1 §5.7) report committed changes to keyed records,
 /// which outlive any one live resource.
-pub static SERVER_EVENTS: &[EventSpec] = &[
-    EventSpec {
-        name: "journal_gap",
-        tag: EVENT_TAG_JOURNAL_GAP,
-    },
-    EventSpec {
-        name: "approval_requested",
-        tag: EVENT_TAG_APPROVAL_REQUESTED,
-    },
-    EventSpec {
-        name: "approval_decided",
-        tag: EVENT_TAG_APPROVAL_DECIDED,
-    },
-    EventSpec {
-        name: "session_created",
-        tag: EVENT_TAG_SESSION_CREATED,
-    },
-    EventSpec {
-        name: "session_renamed",
-        tag: EVENT_TAG_SESSION_RENAMED,
-    },
-    EventSpec {
-        name: "session_deleted",
-        tag: EVENT_TAG_SESSION_DELETED,
-    },
-    EventSpec {
-        name: "session_lifetime_changed",
-        tag: EVENT_TAG_SESSION_LIFETIME_CHANGED,
-    },
-    EventSpec {
-        name: "membership_changed",
-        tag: EVENT_TAG_MEMBERSHIP_CHANGED,
-    },
-    EventSpec {
-        name: "resource_created",
-        tag: EVENT_TAG_RESOURCE_CREATED,
-    },
-    EventSpec {
-        name: "resource_removed",
-        tag: EVENT_TAG_RESOURCE_REMOVED,
-    },
-    EventSpec {
-        name: "activation_changed",
-        tag: EVENT_TAG_ACTIVATION_CHANGED,
-    },
-    EventSpec {
-        name: "arrangement_changed",
-        tag: EVENT_TAG_ARRANGEMENT_CHANGED,
-    },
-    EventSpec {
-        name: "lease_changed",
-        tag: EVENT_TAG_LEASE_CHANGED,
-    },
-    EventSpec {
-        name: "intake_changed",
-        tag: EVENT_TAG_INTAKE_CHANGED,
-    },
-    EventSpec {
-        name: "resource_renamed",
-        tag: EVENT_TAG_RESOURCE_RENAMED,
-    },
-    EventSpec {
-        name: "session_project_set",
-        tag: EVENT_TAG_SESSION_PROJECT_SET,
-    },
-];
+pub static SERVER_EVENTS: &[EventSpec] = events! {
+    "journal_gap" => EVENT_TAG_JOURNAL_GAP;
+    "approval_requested" => EVENT_TAG_APPROVAL_REQUESTED;
+    "approval_decided" => EVENT_TAG_APPROVAL_DECIDED;
+    "session_created" => EVENT_TAG_SESSION_CREATED;
+    "session_renamed" => EVENT_TAG_SESSION_RENAMED;
+    "session_deleted" => EVENT_TAG_SESSION_DELETED;
+    "session_lifetime_changed" => EVENT_TAG_SESSION_LIFETIME_CHANGED;
+    "membership_changed" => EVENT_TAG_MEMBERSHIP_CHANGED;
+    "resource_created" => EVENT_TAG_RESOURCE_CREATED;
+    "resource_removed" => EVENT_TAG_RESOURCE_REMOVED;
+    "activation_changed" => EVENT_TAG_ACTIVATION_CHANGED;
+    "arrangement_changed" => EVENT_TAG_ARRANGEMENT_CHANGED;
+    "lease_changed" => EVENT_TAG_LEASE_CHANGED;
+    "intake_changed" => EVENT_TAG_INTAKE_CHANGED;
+    "resource_renamed" => EVENT_TAG_RESOURCE_RENAMED;
+    "session_project_set" => EVENT_TAG_SESSION_PROJECT_SET;
+};
 
 /// The events every kind shares: its own spawn and close, and `source_gap`
 /// when the resource produced events faster than the server could journal
 /// them (L1 §7.3).
-pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
-    EventSpec {
-        name: "pane_spawned",
-        tag: EVENT_TAG_RESOURCE_SPAWNED,
-    },
-    EventSpec {
-        name: "pane_closed",
-        tag: EVENT_TAG_RESOURCE_CLOSED,
-    },
-    EventSpec {
-        name: "source_gap",
-        tag: EVENT_TAG_SOURCE_GAP,
-    },
-    EventSpec {
-        name: "document_input",
-        tag: EVENT_TAG_DOCUMENT_INPUT,
-    },
-    EventSpec {
-        name: "agent_request",
-        tag: EVENT_TAG_AGENT_REQUEST,
-    },
-];
+pub static SUBSTRATE_EVENTS: &[EventSpec] = events! {
+    "pane_spawned" => EVENT_TAG_RESOURCE_SPAWNED;
+    "pane_closed" => EVENT_TAG_RESOURCE_CLOSED;
+    "source_gap" => EVENT_TAG_SOURCE_GAP;
+    "document_input" => EVENT_TAG_DOCUMENT_INPUT;
+    "agent_request" => EVENT_TAG_AGENT_REQUEST;
+};
 
 /// Every resource kind this build serves, in wire-tag order.
 pub static KINDS: [KindSpec; 5] = [
@@ -284,163 +134,45 @@ pub static KINDS: [KindSpec; 5] = [
             validate: None,
             scoped_child: false,
         },
-        methods: &[
-            method!("INPUT_KEY", Carrier::Frame(TYPE_INPUT_KEY), [F_INPUT]),
-            method!("INPUT_PASTE", Carrier::Frame(TYPE_INPUT_PASTE), [F_INPUT]),
-            method!("INPUT_MOUSE", Carrier::Frame(TYPE_INPUT_MOUSE), [F_INPUT]),
-            method!("INPUT_FOCUS", Carrier::Frame(TYPE_INPUT_FOCUS), [F_INPUT]),
-            MethodSpec {
-                name: "INPUT_RAW",
-                carrier: Carrier::Frame(INPUT_RAW_RESERVED_TYPE),
-                rules: &[&F_INPUT],
-                gate: None,
-                shipped: false,
-                dangerous: false,
-                served_by: None,
-            },
-            method!(
-                "INPUT_TERMINAL_REPLY",
-                Carrier::Frame(TYPE_INPUT_TERMINAL_REPLY),
-                [F_INPUT],
-                Some(FeatureGate::Features(ServerFeature::TerminalReply))
-            ),
-            method!(
-                "CLIPBOARD_REPLY",
-                Carrier::Frame(TYPE_CLIPBOARD_REPLY),
-                [F_INPUT],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::ClipboardRead.mask(),
-                    wire_name: ServerFeatureExt::ClipboardRead.wire_name(),
-                })
-            ),
-            method!(
-                "RESIZE_TERMINAL",
-                Carrier::Frame(TYPE_RESIZE_TERMINAL),
-                [F_RESIZE_TERMINAL]
-            ),
-            method!(
-                "HISTORY_REQUEST",
-                Carrier::Frame(TYPE_HISTORY_REQUEST),
-                [F_HISTORY_REQUEST]
-            ),
-            method!("FRAME_ACK", Carrier::Frame(TYPE_FRAME_ACK), [F_FRAME_ACK]),
-            method!(
-                "MOVE_RESOURCE",
-                Carrier::Frame(TYPE_MOVE_RESOURCE),
-                [F_MOVE_RESOURCE],
-                Some(FeatureGate::Features(ServerFeature::MoveResource))
-            ),
-            method!(
-                "GET_SCREEN",
-                Carrier::Command(COMMAND_TAG_GET_SCREEN),
-                [C_GET_SCREEN]
-            ),
-            method!(
-                "ROUTE_INPUT",
-                Carrier::Command(COMMAND_TAG_ROUTE_INPUT),
-                [C_INPUT]
-            ),
-            method!(
-                "APPLY_INPUT",
-                Carrier::Command(COMMAND_TAG_APPLY_INPUT),
-                [C_INPUT],
-                Some(FeatureGate::Features(ServerFeature::AcknowledgedInput))
-            ),
-            method!(
-                "PUT_FILE",
-                Carrier::Command(COMMAND_TAG_PUT_FILE),
-                [C_PUT_FILE],
-                Some(FeatureGate::Features(ServerFeature::FileUpload))
-            ),
-            method!(
-                "CHECKOUT",
-                Carrier::Command(COMMAND_TAG_CHECKOUT),
-                [C_CHECKOUT],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::Checkout.mask(),
-                    wire_name: ServerFeatureExt::Checkout.wire_name(),
-                })
-            ),
-            method!(
-                "TRANSCRIBE",
-                Carrier::Command(COMMAND_TAG_TRANSCRIBE),
-                [C_TRANSCRIBE],
-                Some(FeatureGate::Features(ServerFeature::Transcribe))
-            ),
-            method!(
-                "GET_TERMINAL_STATE",
-                Carrier::Command(COMMAND_TAG_GET_TERMINAL_STATE),
-                [C_GET_TERMINAL_STATE]
-            ),
-            method!(
-                "ACQUIRE_INPUT",
-                Carrier::Command(COMMAND_TAG_ACQUIRE_INPUT),
-                [C_INPUT_LEASE]
-            ),
-            method!(
-                "RELEASE_INPUT",
-                Carrier::Command(COMMAND_TAG_RELEASE_INPUT),
-                [C_INPUT_LEASE]
-            ),
-            dangerous(method!(
-                "SIGNAL_TERMINAL",
-                Carrier::Command(COMMAND_TAG_SIGNAL_TERMINAL),
-                [C_SIGNAL_TERMINAL]
-            )),
-            method!(
-                "REPORT_ASKED",
-                Carrier::Command(COMMAND_TAG_REPORT_ASKED),
-                [C_AGENT_REPORT]
-            ),
-            method!(
-                "REPORT_AGENT_STATE",
-                Carrier::Command(COMMAND_TAG_REPORT_AGENT_STATE),
-                [C_AGENT_REPORT],
-                Some(FeatureGate::Features(ServerFeature::ReportAgentState))
-            ),
-        ],
-        events: &[
-            EventSpec {
-                name: "command_started",
-                tag: EVENT_TAG_COMMAND_STARTED,
-            },
-            EventSpec {
-                name: "command_finished",
-                tag: EVENT_TAG_COMMAND_FINISHED,
-            },
-            EventSpec {
-                name: "title_changed",
-                tag: EVENT_TAG_TITLE_CHANGED,
-            },
-            EventSpec {
-                name: "bell",
-                tag: EVENT_TAG_BELL,
-            },
-            EventSpec {
-                name: "dirty",
-                tag: EVENT_TAG_DIRTY,
-            },
-            EventSpec {
-                name: "idle",
-                tag: EVENT_TAG_IDLE,
-            },
-            EventSpec {
-                name: "terminal_control",
-                tag: EVENT_TAG_TERMINAL_CONTROL,
-            },
-            EventSpec {
-                name: "asked",
-                tag: EVENT_TAG_ASKED,
-            },
-            EventSpec {
-                name: "cwd_changed",
-                tag: EVENT_TAG_CWD_CHANGED,
-            },
-            EventSpec {
-                name: "input_activity",
-                tag: EVENT_TAG_INPUT_ACTIVITY,
-            },
-        ],
+        methods: methods! {
+            "INPUT_KEY" => Frame(TYPE_INPUT_KEY) [F_INPUT];
+            "INPUT_PASTE" => Frame(TYPE_INPUT_PASTE) [F_INPUT];
+            "INPUT_MOUSE" => Frame(TYPE_INPUT_MOUSE) [F_INPUT];
+            "INPUT_FOCUS" => Frame(TYPE_INPUT_FOCUS) [F_INPUT];
+            "INPUT_RAW" => Frame(INPUT_RAW_RESERVED_TYPE) [F_INPUT] unshipped;
+            "INPUT_TERMINAL_REPLY" => Frame(TYPE_INPUT_TERMINAL_REPLY) [F_INPUT]
+                feature(TerminalReply);
+            "CLIPBOARD_REPLY" => Frame(TYPE_CLIPBOARD_REPLY) [F_INPUT] ext(ClipboardRead);
+            "RESIZE_TERMINAL" => Frame(TYPE_RESIZE_TERMINAL) [F_RESIZE_TERMINAL];
+            "HISTORY_REQUEST" => Frame(TYPE_HISTORY_REQUEST) [F_HISTORY_REQUEST];
+            "FRAME_ACK" => Frame(TYPE_FRAME_ACK) [F_FRAME_ACK];
+            "MOVE_RESOURCE" => Frame(TYPE_MOVE_RESOURCE) [F_MOVE_RESOURCE] feature(MoveResource);
+            "GET_SCREEN" => Command(COMMAND_TAG_GET_SCREEN) [C_GET_SCREEN];
+            "ROUTE_INPUT" => Command(COMMAND_TAG_ROUTE_INPUT) [C_INPUT];
+            "APPLY_INPUT" => Command(COMMAND_TAG_APPLY_INPUT) [C_INPUT] feature(AcknowledgedInput);
+            "PUT_FILE" => Command(COMMAND_TAG_PUT_FILE) [C_PUT_FILE] feature(FileUpload);
+            "CHECKOUT" => Command(COMMAND_TAG_CHECKOUT) [C_CHECKOUT] ext(Checkout);
+            "TRANSCRIBE" => Command(COMMAND_TAG_TRANSCRIBE) [C_TRANSCRIBE] feature(Transcribe);
+            "GET_TERMINAL_STATE" => Command(COMMAND_TAG_GET_TERMINAL_STATE) [C_GET_TERMINAL_STATE];
+            "ACQUIRE_INPUT" => Command(COMMAND_TAG_ACQUIRE_INPUT) [C_INPUT_LEASE];
+            "RELEASE_INPUT" => Command(COMMAND_TAG_RELEASE_INPUT) [C_INPUT_LEASE];
+            "SIGNAL_TERMINAL" => Command(COMMAND_TAG_SIGNAL_TERMINAL) [C_SIGNAL_TERMINAL] dangerous;
+            "REPORT_ASKED" => Command(COMMAND_TAG_REPORT_ASKED) [C_AGENT_REPORT];
+            "REPORT_AGENT_STATE" => Command(COMMAND_TAG_REPORT_AGENT_STATE) [C_AGENT_REPORT]
+                feature(ReportAgentState);
+        },
+        events: events! {
+            "command_started" => EVENT_TAG_COMMAND_STARTED;
+            "command_finished" => EVENT_TAG_COMMAND_FINISHED;
+            "title_changed" => EVENT_TAG_TITLE_CHANGED;
+            "bell" => EVENT_TAG_BELL;
+            "dirty" => EVENT_TAG_DIRTY;
+            "idle" => EVENT_TAG_IDLE;
+            "terminal_control" => EVENT_TAG_TERMINAL_CONTROL;
+            "asked" => EVENT_TAG_ASKED;
+            "cwd_changed" => EVENT_TAG_CWD_CHANGED;
+            "input_activity" => EVENT_TAG_INPUT_ACTIVITY;
+        },
         metadata_keys: &[
             RESOURCE_AGENT_KEY,
             RESOURCE_AGENT_SESSION_KEY,
@@ -465,10 +197,7 @@ pub static KINDS: [KindSpec; 5] = [
             }],
             delivery: &[Delivery::Log],
             geometry: Geometry::None,
-            resume: Some(FeatureGate::FeaturesExt {
-                mask: ServerFeatureExt::AgentStreamResume.mask(),
-                wire_name: ServerFeatureExt::AgentStreamResume.wire_name(),
-            }),
+            resume: Some(FeatureGate::ext(ServerFeatureExt::AgentStreamResume)),
             needs_terminal_profile: false,
         },
         spawn: projection_spawn(
@@ -478,30 +207,20 @@ pub static KINDS: [KindSpec; 5] = [
             None,
             true,
         ),
-        methods: &[
-            method!(
-                "APPEND_RESOURCE_OUTPUT",
-                Carrier::Command(COMMAND_TAG_APPEND_RESOURCE_OUTPUT),
-                [C_APPEND_RESOURCE_OUTPUT],
-                Some(FeatureGate::Features(ServerFeature::ResourceKinds))
-            ),
-            method!(
-                "NATIVE_AGENT",
-                Carrier::Command(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT),
-                [
-                    C_NATIVE_SPAWN,
-                    C_NATIVE_LIST,
-                    C_NATIVE_LAUNCH,
-                    C_NATIVE_COMMAND,
-                    C_NATIVE_CONTROLLER
-                ],
-                None
-            ),
-        ],
-        events: &[EventSpec {
-            name: "native_agent_result",
-            tag: crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT,
-        }],
+        methods: methods! {
+            "APPEND_RESOURCE_OUTPUT" => Command(COMMAND_TAG_APPEND_RESOURCE_OUTPUT)
+                [C_APPEND_RESOURCE_OUTPUT] feature(ResourceKinds);
+            "NATIVE_AGENT" => Command(COMMAND_TAG_NATIVE_AGENT) [
+                C_NATIVE_SPAWN,
+                C_NATIVE_LIST,
+                C_NATIVE_LAUNCH,
+                C_NATIVE_COMMAND,
+                C_NATIVE_CONTROLLER,
+            ];
+        },
+        events: events! {
+            "native_agent_result" => EVENT_TAG_NATIVE_AGENT_RESULT;
+        },
         metadata_keys: &[],
     },
     KindSpec {

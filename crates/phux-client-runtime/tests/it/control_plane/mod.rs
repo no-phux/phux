@@ -1,5 +1,5 @@
-//! The control plane driven sans-IO: frames fed directly, the way Cockpit
-//! drives `phux-client-ffi`, with no socket and no driver.
+//! The control plane driven sans-IO: frames fed directly, with no socket and
+//! no driver.
 
 #![allow(clippy::expect_used, reason = "test assertions")]
 #![allow(clippy::unwrap_used, reason = "test assertions")]

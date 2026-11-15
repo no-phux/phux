@@ -301,12 +301,6 @@ type SessionLayouts = HashMap<phux_protocol::ids::SessionId, ArrangementDoc>;
 /// with nothing decodable is absent from the map (and falls back to the
 /// registry projection); under an explicit `--projection` the absence is also
 /// a warning, since the key was probably mistyped.
-///
-/// Against an `ORGANIZATION` server (`records`, its organization) with no
-/// `--projection`, each session's layout is its typed arrangement
-/// ([`fetch_session_arrangements`]). The `phux.tui.layout/v1/<session>` key
-/// is read only from an older server; a named projection is always its own
-/// metadata key (ADR-0161 §8).
 async fn fetch_session_layouts(
     socket_path: &Path,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
@@ -533,11 +527,6 @@ impl Imported {
 /// ([`import_dormant_panes`]). Each also carries `attrs`, such as a project
 /// identity (ADR-0168). A session that cannot be created is reported in
 /// [`Imported`] rather than aborting the rest.
-///
-/// # Errors
-///
-/// [`RestoreError::Failed`] for an invalid archive or a server without
-/// `ORGANIZATION`.
 pub(crate) async fn import_archive(
     socket_path: &Path,
     archive: &model::WorkspaceArchive,
@@ -1259,11 +1248,6 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
 }
 
 /// Place archived panes on `host` when this server can reach it.
-///
-/// A missing satellite route, or a hosted archive with no pane to send
-/// there, keeps the session on this server. The seed pane already has the
-/// archived directory, and the caller still writes the project tag. Any
-/// other failure still rolls the session back.
 async fn replay_or_keep_local(
     socket_path: &Path,
     seed: &ResourceId,
@@ -1307,11 +1291,6 @@ fn keep_local_when_host_unroutable(host: Option<&str>, err: &str) -> bool {
 }
 
 /// Recreate the archived panes and write the session's arrangement.
-///
-/// A local session keeps the seed pane the session-create call already
-/// made. A session saved on a satellite spawns every archived pane there,
-/// including that seed: a local owner cannot cross the link. Each spawned
-/// pane is pushed onto `created` for rollback.
 async fn replay_split_tree(
     socket_path: &Path,
     seed: &ResourceId,
@@ -1379,9 +1358,6 @@ const fn spawn_owner<'a>(
 }
 
 /// Spawn one archived pane, resuming its agent session when possible.
-///
-/// `owner` `None` asks the satellite to place the pane. A local owner keeps
-/// the pane in that pane's session.
 async fn spawn_owned_pane(
     socket_path: &Path,
     owner: Option<&ResourceId>,

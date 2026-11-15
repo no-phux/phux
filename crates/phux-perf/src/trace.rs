@@ -13,8 +13,7 @@
 //! past the budget are dropped and counted, never blocked on.
 //!
 //! Timestamps are microseconds since the Unix epoch, anchored once per
-//! capture, so captures from the server and the desktop line up on one
-//! timeline when [`merge_chrome_json`] puts them in one file.
+//! capture, so captures from different processes line up on one timeline.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -27,7 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{Metric, MetricSource};
 
@@ -345,10 +344,6 @@ impl Capture {
     /// [`Self::to_chrome_json`] streamed into `out` one event at a time, so
     /// a full capture never exists as a JSON tree in memory. Give it a
     /// `BufWriter` over the file.
-    ///
-    /// # Errors
-    ///
-    /// Whatever `out` returns.
     pub fn write_chrome_json(
         &self,
         mut out: impl std::io::Write,
@@ -488,32 +483,6 @@ struct OutEvent<'a> {
 enum Args<'a> {
     Name { name: &'a str },
     Value { value: f64 },
-}
-
-/// Merge Chrome trace-event documents (from [`Capture::to_chrome_json`],
-/// one per process) into one, so Perfetto shows every process on one
-/// timeline. Inputs that do not parse are skipped.
-#[must_use]
-pub fn merge_chrome_json<'a>(docs: impl IntoIterator<Item = &'a str>) -> String {
-    let mut events = Vec::new();
-    let mut processes = Vec::new();
-    for doc in docs {
-        let Ok(mut value) = serde_json::from_str::<Value>(doc) else {
-            continue;
-        };
-        if let Some(Value::Array(list)) = value.get_mut("traceEvents").map(Value::take) {
-            events.extend(list);
-        }
-        if let Some(other) = value.get_mut("otherData").map(Value::take) {
-            processes.push(other);
-        }
-    }
-    json!({
-        "traceEvents": events,
-        "displayTimeUnit": "ns",
-        "otherData": { "processes": processes },
-    })
-    .to_string()
 }
 
 /// Every histogram in `tables`, by address.

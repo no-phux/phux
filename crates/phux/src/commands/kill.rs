@@ -158,10 +158,6 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// `KILL_RESOURCES { ids }`. Other targets send one `KILL_RESOURCE` per
 /// Terminal. Exit 0 success, 1 miss / no server, 2 refusal, 3 an
 /// untrustworthy miss on a partial fleet (see [`partial`]).
-///
-/// With `key` the kill is one keyed command, so a retry answers the first
-/// result (L1 §5.1.1); an `@N` target is then sent as written, without a
-/// lookup. `confirm` runs after validation and before any dial.
 pub(crate) fn run_kill(
     target: &str,
     key: Option<IdempotencyKey>,

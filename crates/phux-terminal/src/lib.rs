@@ -18,7 +18,6 @@ mod engine;
 pub mod grid;
 pub mod input;
 pub mod mailbox;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
 mod ordered_input;
 pub mod perf;

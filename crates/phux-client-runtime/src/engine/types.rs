@@ -275,7 +275,7 @@ pub enum ReplicaPrompt {
     Unknown,
 }
 
-/// Mouse tracking mode, matching the C ABI's stable numeric vocabulary.
+/// Mouse tracking mode, with a stable numeric vocabulary.
 #[cfg(feature = "engine")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseMode {

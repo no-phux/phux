@@ -38,14 +38,7 @@ async fn snapshot_under_pty_pressure(refill_chunks: usize) {
         .terminal()
         .expect("terminal")
         .snapshot
-        .try_send(SnapshotRequest {
-            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-            scrollback: None,
-            max_bytes: usize::MAX,
-            max_frames: usize::MAX,
-            chunk_bytes: 1,
-            reply,
-        })
+        .try_send(whole_snapshot(reply))
         .expect("snapshot request");
     let run = tokio::task::spawn_local(actor.run());
     let (_, base_seq) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, replied)
@@ -132,7 +125,6 @@ async fn wait_for_flush_marker(path: &std::path::Path) -> String {
     }
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn apply_native_wire_frame(
     kernel: &mut phux_client_core::session::SessionKernel<
         phux_client_core::engine::ghostty::GhosttyAdapter,
@@ -227,7 +219,6 @@ fn apply_native_wire_frame(
         .expect("kernel accepts server wire frame");
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn take_history_request(
     effects: &mut phux_client_core::session::EffectBuffer,
 ) -> Option<(Vec<u8>, u32, u32)> {
@@ -250,7 +241,6 @@ fn take_history_request(
     request
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
@@ -424,7 +414,6 @@ async fn run_native_server_kernel_flow(
 
 /// Two native pumps from one client on one pane do not invalidate each
 /// other.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn capture_native_for_pump(
     actor: &mut TerminalActor,
     owner: u64,
@@ -454,7 +443,6 @@ fn capture_native_for_pump(
     panic!("native capture did not finish")
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn activate_native_for_pump(
     actor: &mut TerminalActor,
     owner: u64,

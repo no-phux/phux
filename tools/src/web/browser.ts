@@ -259,6 +259,9 @@ async function chrome(
   const webEnv = {
     ...env,
     CARGO_TARGET_DIR: join(cwd, "target"),
+    // The runner's 20s default bounds a whole test binary: e2e_input takes
+    // ~10s on CI but nearly 20s in a local macOS Chrome. `run` bounds all.
+    WASM_BINDGEN_TEST_TIMEOUT: env["WASM_BINDGEN_TEST_TIMEOUT"] ?? "120",
     WASM_BINDGEN_TEST_WEBDRIVER_JSON: webdriverCapabilities(paths.scratch, env["CHROME"], insecure),
   };
   const command = ["wasm-pack", "test", "--headless", "--chrome", ...driver, "--locked", ...tests];

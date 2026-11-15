@@ -154,8 +154,6 @@ http-body-util = { version = "0.1", features = ["channel"] }
 iai-callgrind.workspace = true
 # `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
-# Drive the production server through the native session kernel.
-phux-client-ffi.workspace = true
 # Tests drive the native engine the client kernel uses.
 phux-client-core = { workspace = true, features = ["native-engine"] }
 # The relay e2e test runs the production relay. Dev-only: phux-relay must

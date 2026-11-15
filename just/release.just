@@ -32,16 +32,10 @@ sync-skills DEST:
     bash scripts/export-product-skills.sh "{{DEST}}"
 
 
-# PhuxFFI.xcframework (iOS device, arm64 simulator, macOS) plus provenance
-# (ADR-0133). Needs full Xcode with the iOS SDK, rustup and the pinned Zig;
-# `--dev` skips the device slice.
-[group('release')]
-[doc('Build PhuxFFI.xcframework (device, simulator, macOS) and its provenance file.')]
-ffi-xcframework *ARGS:
-    bash scripts/build-ffi-xcframework.sh {{ARGS}}
-
-# The UniFFI encoder's xcframework, with generated Swift from the same revision
-# so consumers replace slices and bindings together (ADR-0135).
+# The UniFFI xcframework (iOS device, arm64 simulator, macOS), with generated
+# Swift from the same revision so consumers replace slices and bindings
+# together (ADR-0135). Needs full Xcode with the iOS SDK, rustup and the
+# pinned Zig; `--dev` skips the device slice.
 [group('release')]
 [doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
 mobile-ffi-xcframework *ARGS:

@@ -57,10 +57,6 @@ pub(super) fn check_remote_listeners(socket_path: &std::path::Path) -> Check {
 }
 
 /// The hint when the remote-listener probe cannot ask the server.
-///
-/// Same three-way split as the server check: a dead socket may be called
-/// stale, a live incompatible server fails with the stop-and-start recovery,
-/// and every other failure stays neutral.
 pub(super) fn remote_probe_failure(
     socket_path: &std::path::Path,
     err: &phux_client::attach::AttachError,

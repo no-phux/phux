@@ -69,24 +69,43 @@ fn agent_resolve_refusals_share_one_code_vocabulary() {
     assert_eq!(super::targets::agent_resolve_exit(&partial, true), 1);
 }
 
-/// phux-i0e8.7.3: the no-server arm must name the exact start commands,
-/// and every arm must end with the server log and the doctor pointer —
-/// an error that does not name its remedy fails the `print_attach_error`
-/// bar this helper used to miss.
+const SERVER_LOG: &str = "server log: /state/phux/server.log";
+const DOCTOR: &str = "run `phux doctor` for a health check";
+
+/// phux-i0e8.7.3: the no-server arm names the exact start commands, and
+/// every arm ends with the server log and the doctor pointer. A
+/// mid-command disconnect has no start command to suggest, and the
+/// generic arm keeps the error's own sentence first.
 #[test]
-fn no_server_lines_name_start_commands_log_and_doctor() {
+fn no_server_lines_name_their_cause_log_and_doctor() {
     let socket = Path::new("/tmp/phux-test.sock");
     let log = Path::new("/state/phux/server.log");
-
-    let lines = no_server_lines(&refused_io(), socket, "ls", log, None);
-    assert_eq!(lines[0], "no server running at /tmp/phux-test.sock");
+    let lines = |err: &AttachError, verb| no_server_lines(err, socket, verb, log, None);
     assert_eq!(
-        lines[1],
-        "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
+        lines(&refused_io(), "ls"),
+        [
+            "no server running at /tmp/phux-test.sock",
+            "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`",
+            SERVER_LOG,
+            DOCTOR,
+        ]
     );
-    assert_eq!(lines[2], "server log: /state/phux/server.log");
-    assert_eq!(lines[3], "run `phux doctor` for a health check");
-    assert_eq!(lines.len(), 4);
+    assert_eq!(
+        lines(&AttachError::Disconnected, "kill"),
+        [
+            "server closed the connection during kill",
+            SERVER_LOG,
+            DOCTOR
+        ]
+    );
+    assert_eq!(
+        lines(&AttachError::Refused("policy said no".to_owned()), "tag"),
+        [
+            "tag failed: server refused the request: policy said no",
+            SERVER_LOG,
+            DOCTOR
+        ]
+    );
 }
 
 /// A socket that exists but cannot be dialed names the path and the OS
@@ -94,138 +113,74 @@ fn no_server_lines_name_start_commands_log_and_doctor() {
 #[test]
 fn no_server_unreachable_socket_names_the_path_and_reason() {
     let denied = AttachError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-    let lines = no_server_lines(
-        &denied,
-        Path::new("/tmp/s.sock"),
-        "ls",
-        Path::new("/state/phux/server.log"),
-        None,
-    );
+    let socket = Path::new("/tmp/s.sock");
+    let lines = no_server_lines(&denied, socket, "ls", Path::new("/log"), None);
     assert!(
         lines[0].starts_with("ls: cannot reach the server socket /tmp/s.sock: "),
         "{lines:?}"
     );
     assert!(!lines[0].contains("attach loop"), "{lines:?}");
-    assert_eq!(lines[2], "run `phux doctor` for a health check");
+    assert_eq!(lines[2], DOCTOR);
 
-    let json = super::json_err::no_server_error(&denied, Path::new("/tmp/s.sock"), "ls");
+    let json = super::json_err::no_server_error(&denied, socket, "ls");
     assert_eq!(json.code, super::json_err::codes::TRANSPORT);
     assert!(json.message.contains("/tmp/s.sock"), "{}", json.message);
 }
 
-/// A mid-command disconnect is not "no server": the server was there and
-/// went away, so there is no start command to suggest — but the reason it
-/// went away lives in its log, so that and doctor still close the arm.
+/// The three self-explaining attach arms stay single-line (`phux-roz`: the
+/// no-server one is copy-pasteable). A disconnect that reaches the printer
+/// without the reconnect window names the SERVER log, where the reason
+/// lives (phux-i0e8.2.3); the fallthrough names this client's own log and
+/// the client protocol triple, since a `Protocol` error usually means the
+/// binaries disagree (phux-i0e8.7.3).
 #[test]
-fn no_server_disconnect_arm_names_log_and_doctor() {
-    let lines = no_server_lines(
-        &AttachError::Disconnected,
-        Path::new("/tmp/s.sock"),
-        "kill",
-        Path::new("/state/phux/server.log"),
-        None,
-    );
-    assert_eq!(lines[0], "server closed the connection during kill");
-    assert_eq!(lines[1], "server log: /state/phux/server.log");
-    assert_eq!(lines[2], "run `phux doctor` for a health check");
-}
-
-/// The generic arm keeps the error's own Display sentence first and still
-/// ends with the remedy block.
-#[test]
-fn no_server_fallthrough_keeps_the_error_and_adds_remedies() {
-    let lines = no_server_lines(
-        &AttachError::Refused("policy said no".to_owned()),
-        Path::new("/tmp/s.sock"),
-        "tag",
-        Path::new("/log/server.log"),
-        None,
-    );
-    assert_eq!(
-        lines[0],
-        "tag failed: server refused the request: policy said no"
-    );
-    assert_eq!(lines[1], "server log: /log/server.log");
-    assert_eq!(lines[2], "run `phux doctor` for a health check");
-}
-
-/// The three self-explaining attach arms stay single-line and keep their
-/// established sentences (`phux-roz`: the no-server one is copy-pasteable).
-#[test]
-fn attach_error_named_arms_stay_single_line() {
-    let socket = Path::new("/tmp/a.sock");
-    let log = Path::new("/state/phux/client-42.log");
-
-    assert_eq!(
-        attach_error_lines(&refused_io(), socket, "main", log, None),
-        ["no server at /tmp/a.sock. Start one with: phux server --ensure"]
-    );
-    assert_eq!(
+fn attach_error_lines_name_their_cause_and_remedy() {
+    let lines = |err: &AttachError| {
         attach_error_lines(
-            &AttachError::Refused("no such session".to_owned()),
-            socket,
+            err,
+            Path::new("/tmp/a.sock"),
             "main",
-            log,
+            Path::new("/state/phux/client-42.log"),
             None,
-        ),
-        ["server refused attach: no such session"]
-    );
-    assert_eq!(
-        attach_error_lines(&AttachError::NotATty, socket, "main", log, None),
-        ["attach requires an interactive terminal (stdin is not a TTY)."]
-    );
-}
-
-/// phux-i0e8.2.3: a mid-session disconnect that reaches the printer
-/// without the reconnect window (e.g. `phux new`'s attach tail) names
-/// its cause, the SERVER log (the reason the server went away lives
-/// there, not in this client's log), and the doctor remedy.
-#[test]
-fn attach_error_disconnected_arm_names_the_remedy() {
-    let lines = attach_error_lines(
-        &AttachError::Disconnected,
-        Path::new("/tmp/a.sock"),
-        "main",
-        Path::new("/state/phux/client-42.log"),
-        None,
-    );
-    assert_eq!(lines[0], "the server closed the connection unexpectedly");
-    assert_eq!(
-        lines[1],
-        format!(
-            "server log: {}",
-            phux_server::telemetry::server_log_path().display()
         )
+    };
+    for (err, line) in [
+        (
+            refused_io(),
+            "no server at /tmp/a.sock. Start one with: phux server --ensure",
+        ),
+        (
+            AttachError::Refused("no such session".to_owned()),
+            "server refused attach: no such session",
+        ),
+        (
+            AttachError::NotATty,
+            "attach requires an interactive terminal (stdin is not a TTY).",
+        ),
+    ] {
+        assert_eq!(lines(&err), [line]);
+    }
+    let server_log = phux_server::telemetry::server_log_path();
+    assert_eq!(
+        lines(&AttachError::Disconnected),
+        [
+            "the server closed the connection unexpectedly".to_owned(),
+            format!("server log: {}", server_log.display()),
+            DOCTOR.to_owned(),
+        ]
     );
-    assert_eq!(lines[2], "run `phux doctor` for a health check");
-    assert_eq!(lines.len(), 3);
-}
-
-/// phux-i0e8.7.3: the fallthrough (`Protocol`/`Terminal`/…)
-/// used to end at "attach failed: {err}" with nowhere to go. It must now
-/// name this client's own log, doctor, and the client protocol triple —
-/// a `Protocol` error usually means the binaries disagree, and doctor
-/// prints both sides.
-#[test]
-fn attach_error_fallthrough_names_client_log_doctor_and_triple() {
-    let lines = attach_error_lines(
-        &AttachError::Protocol("bad frame".to_owned()),
-        Path::new("/tmp/a.sock"),
-        "main",
-        Path::new("/state/phux/client-42.log"),
-        None,
-    );
-    assert_eq!(lines[0], "attach failed: protocol error: bad frame");
-    assert_eq!(lines[1], "client log: /state/phux/client-42.log");
     let version = phux_protocol::PROTOCOL_VERSION;
     assert_eq!(
-        lines[2],
-        format!(
-            "run `phux doctor` for a health check (client protocol {}.{}.{})",
-            version.major, version.minor, version.patch,
-        )
+        lines(&AttachError::Protocol("bad frame".to_owned())),
+        [
+            "attach failed: protocol error: bad frame".to_owned(),
+            "client log: /state/phux/client-42.log".to_owned(),
+            format!(
+                "{DOCTOR} (client protocol {}.{}.{})",
+                version.major, version.minor, version.patch,
+            ),
+        ]
     );
-    assert_eq!(lines.len(), 3);
 }
 
 /// A live old server prints the stop-and-start recovery, with the pid when
@@ -251,28 +206,8 @@ fn incompatible_lines_are_the_stop_recovery_with_and_without_a_pid() {
             "attach and connect print the same recovery"
         );
         let text = lines.join("\n");
-        if let Some(pid) = pid {
-            assert!(text.contains(&format!("`kill {pid}`")), "{text}");
-        } else {
-            assert!(!text.contains("`kill "), "{text}");
-        }
+        assert_stop_recovery(&text, pid);
         assert!(text.contains("`lsof -nP -- '/tmp/old.sock'`"), "{text}");
-        assert!(
-            text.contains("phux server --ensure --socket '/tmp/old.sock'`"),
-            "{text}"
-        );
-        assert!(text.contains("closes only the panes"), "{text}");
-        for forbidden in [
-            "stale",
-            "phux upgrade",
-            "survive",
-            "remove",
-            "run `phux doctor`",
-            "pkill",
-            "killall",
-        ] {
-            assert!(!text.contains(forbidden), "{forbidden} in {text}");
-        }
     }
 }
 
@@ -326,17 +261,13 @@ fn a_v0_110_hello_refusal_prints_the_stop_and_start_recovery() {
         no_server_lines(&err, &socket, "upgrade", log, Some(pid)).join("\n"),
         attach_error_lines(&err, &socket, "main", log, Some(pid)).join("\n"),
     ] {
-        assert_live_old_server_hint(&text, pid);
+        assert_stop_recovery(&text, Some(pid));
     }
 
     let check = super::doctor::check_server(&socket);
     assert_eq!(check.status, super::doctor::Status::Fail);
     let doctor = format!("{}\n{}", check.detail, check.hint.unwrap_or_default());
-    assert_live_old_server_hint(&doctor, pid);
-    assert!(
-        !doctor.contains("remove it and start a fresh server"),
-        "{doctor}"
-    );
+    assert_stop_recovery(&doctor, Some(pid));
 }
 
 #[cfg(unix)]
@@ -373,12 +304,16 @@ fn old_protocol_server(
     (socket, seen)
 }
 
-fn assert_live_old_server_hint(text: &str, pid: i32) {
-    assert!(text.contains(&format!("`kill {pid}`")), "{text}");
-    assert!(
-        text.contains(&format!("`ps -p {pid} -o pid=,ppid=,user=,args=`")),
-        "{text}"
-    );
+/// The stop-and-start recovery: `kill PID` and `ps` when the pid is known,
+/// otherwise `lsof`, and never the stale / upgrade / remove advice.
+fn assert_stop_recovery(text: &str, pid: Option<i32>) {
+    if let Some(pid) = pid {
+        assert!(text.contains(&format!("`kill {pid}`")), "{text}");
+        let ps = format!("`ps -p {pid} -o pid=,ppid=,user=,args=`");
+        assert!(text.contains(&ps), "{text}");
+    } else {
+        assert!(!text.contains("`kill "), "{text}");
+    }
     assert!(text.contains("phux server --ensure --socket '"), "{text}");
     assert!(text.contains("closes only the panes"), "{text}");
     for forbidden in [
@@ -386,6 +321,7 @@ fn assert_live_old_server_hint(text: &str, pid: i32) {
         "phux upgrade",
         "survive",
         "remove",
+        "run `phux doctor`",
         "pkill",
         "killall",
     ] {

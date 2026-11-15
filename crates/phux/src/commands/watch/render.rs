@@ -93,50 +93,29 @@ pub(crate) fn agent_state_json(
     update: &AgentStateUpdate,
     terminal: Option<&str>,
 ) -> Result<String, serde_json::Error> {
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "event".to_owned(),
-        serde_json::Value::from(AGENT_STATE_EVENT),
-    );
+    let mut obj = serde_json::json!({ "event": AGENT_STATE_EVENT });
     if let Some(t) = terminal {
-        obj.insert("terminal".to_owned(), serde_json::Value::from(t));
+        obj["terminal"] = t.into();
     }
     // Identity survives the tombstone: fall back to the record we last saw
     // so a consumer filtering by agent name still recognizes the line.
     if let Some(rec) = update.record.as_ref().or(update.previous.as_ref()) {
-        obj.insert("name".to_owned(), serde_json::Value::from(rec.name.clone()));
+        obj["name"] = rec.name.as_str().into();
         if let Some(kind) = &rec.kind {
-            obj.insert("kind".to_owned(), serde_json::Value::from(kind.clone()));
+            obj["kind"] = kind.as_str().into();
         }
     }
-    match &update.record {
-        Some(rec) => {
-            obj.insert(
-                "state".to_owned(),
-                serde_json::Value::from(rec.state.as_str()),
-            );
-            obj.insert(
-                "attention".to_owned(),
-                serde_json::Value::from(rec.effective_attention().as_str()),
-            );
-            if let Some(session) = &rec.session {
-                obj.insert(
-                    "session".to_owned(),
-                    serde_json::Value::from(session.clone()),
-                );
-            }
-        }
-        None => {
-            obj.insert("state".to_owned(), serde_json::Value::Null);
+    obj["state"] = update.record.as_ref().map(|rec| rec.state.as_str()).into();
+    if let Some(rec) = &update.record {
+        obj["attention"] = rec.effective_attention().as_str().into();
+        if let Some(session) = &rec.session {
+            obj["session"] = session.as_str().into();
         }
     }
     if let Some(prev) = &update.previous {
-        obj.insert(
-            "from".to_owned(),
-            serde_json::Value::from(prev.state.as_str()),
-        );
+        obj["from"] = prev.state.as_str().into();
     }
-    serde_json::to_string(&serde_json::Value::Object(obj))
+    serde_json::to_string(&obj)
 }
 
 /// Render one watch event as a line (JSON or compact human form). A

@@ -4,8 +4,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::os::unix::net::UnixListener;
 use std::path::Path;

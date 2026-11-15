@@ -5,11 +5,10 @@
 //! (membership only; the server prunes the source arrangement in the same
 //! transaction), then a compare-and-swap edit of the destination
 //! arrangement, undone by `ORGANIZATION_UNDO` of the move's receipt when the
-//! placement cannot be written. Against an older server: ADR-0056's L1
+//! placement cannot be written. With named projection keys: ADR-0056's L1
 //! re-parent, then destination-first layout publication and source cleanup.
 //! The [`ResourceId`] is never replaced and the process keeps running.
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope, StateScope,
@@ -57,9 +56,6 @@ pub enum PaneMoveError {
         /// Whether ownership could be restored.
         rollback: &'static str,
     },
-    /// The peer cannot perform ADR-0056 moves.
-    #[error("this server predates cross-session pane moves")]
-    ServerTooOld,
     /// The server refused the ownership move.
     #[error("server refused the pane move: {0}")]
     MoveRefused(String),
@@ -190,13 +186,6 @@ pub async fn move_pane(
             ratio,
         )
         .await;
-    }
-    if !conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(ServerFeature::MoveResource)
-    }) {
-        return Err(PaneMoveError::ServerTooOld);
     }
     let plan = CrossMovePlan {
         rollback_owner: sibling_in_session(&snapshot, &source),
@@ -611,14 +600,13 @@ fn tree_has_placement(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::ids::WindowId;
     use phux_protocol::wire::frame::{ErrorCode, FrameKind};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     use super::*;
     use crate::layout::{Group, LayoutState};
-    use crate::testkit::{ScriptSpec, serve_one};
+    use crate::testkit::{ScriptSpec, connect_one, serve_one};
 
     fn tid(id: u32) -> ResourceId {
         ResourceId::local(id)
@@ -680,19 +668,6 @@ mod tests {
             ])
     }
 
-    async fn serve(
-        spec: ScriptSpec,
-    ) -> (
-        tempfile::TempDir,
-        Connection,
-        tokio::task::JoinHandle<Vec<FrameKind>>,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, server) = serve_one(dir.path(), spec);
-        let conn = Connection::connect(&socket).await.unwrap();
-        (dir, conn, server)
-    }
-
     /// A move-capable server answering `states` in order, `result` to the
     /// move, with source `origin/{1,2}` and destination `target/3` layouts
     /// stored under `keys` (source, destination).
@@ -704,7 +679,6 @@ mod tests {
     ) -> ScriptSpec {
         let group = Scope::Group(DEFAULT_LAYOUT_GROUP_ID);
         ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states(states)
             .move_result(result)
             .stored_metadata(
@@ -757,7 +731,7 @@ mod tests {
             &layout_key(session),
             initial.encode_cbor().unwrap(),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6, &[])
             .await
@@ -781,7 +755,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
@@ -834,7 +808,7 @@ mod tests {
             (&source_key, &destination_key),
             LayoutNode::Leaf(tid(1)),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
         move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap();
@@ -849,7 +823,6 @@ mod tests {
     #[tokio::test]
     async fn destination_layout_failure_rolls_ownership_back_and_reports_failure() {
         let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states([
                 snapshot(false, true),
                 snapshot(true, true),
@@ -858,7 +831,7 @@ mod tests {
             ])
             .move_result(MoveResult::Ok(tid(1)))
             .refuse_metadata(ErrorCode::PermissionDenied, "layout blocked");
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap_err();
@@ -875,10 +848,8 @@ mod tests {
     /// Naming only one side's projection is refused before any write.
     #[tokio::test]
     async fn cross_session_move_with_one_projection_key_is_refused() {
-        let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
-            .states([snapshot(false, true)]);
-        let (_dir, mut conn, server) = serve(spec).await;
+        let spec = ScriptSpec::new().states([snapshot(false, true)]);
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let error = move_pane(
             &mut conn,
             tid(1),
@@ -911,7 +882,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         // Destination-first: keys match by embedded session id, not position.
         let outcome = move_pane(
@@ -1009,7 +980,7 @@ mod tests {
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(20),

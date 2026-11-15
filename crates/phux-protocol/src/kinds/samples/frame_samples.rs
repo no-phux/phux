@@ -58,13 +58,17 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
 const CLIENT_FRAME_VARIANTS: usize = 25;
 
 fn attach(target: AttachTarget) -> FrameKind {
+    attach_as(target, None)
+}
+
+fn attach_as(target: AttachTarget, role_policy: Option<RolePolicy>) -> FrameKind {
     FrameKind::Attach {
         attach_id: 1,
         target,
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
-        role_policy: None,
+        role_policy,
     }
 }
 
@@ -160,6 +164,25 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
         spawn(None, None, Some(keyed(agent(terminal())))),
         &F_SPAWN_CHILD_LOCAL,
     ));
+    // Every launch field at once, and an agent naming its native session.
+    let launched = FrameKind::SpawnResource {
+        request_id: 2,
+        group: GroupId::new(1),
+        command: Some(vec!["zsh".to_owned(), "-i".to_owned()]),
+        cwd: Some("/home/u".to_owned()),
+        env: Some(vec![("LANG".to_owned(), "C".to_owned())]),
+        term: Some("ghostty".to_owned()),
+        satellite: Some(SatelliteHost::new("h")),
+        owner_terminal: Some(ResourceId::local(8)),
+        agent_session: Some(b"{}".to_vec()),
+        initial_size: Some((132, 43)),
+        resource: Some(Box::new(
+            keyed(SpawnResource::default()).with_bind_instance(true),
+        )),
+    };
+    samples.push((launched, &F_SPAWN_SATELLITE_OWNED));
+    let native = agent(terminal()).with_native_id(Some("session-42".to_owned()));
+    samples.push((spawn(None, None, Some(native)), &F_SPAWN_CHILD_LOCAL));
     for resource in mismatched_spawns() {
         samples.push((spawn(None, None, Some(resource)), &F_SPAWN_KIND_MISMATCH));
     }
@@ -176,143 +199,6 @@ fn spawn_samples() -> Vec<(FrameKind, &'static Rule)> {
         samples.push((spawn(None, None, Some(surface)), expected));
     }
     samples
-}
-
-fn set(scope: Scope, key: &str, value: &[u8]) -> FrameKind {
-    FrameKind::SetMetadata {
-        request_id: 1,
-        scope,
-        key: key.to_owned(),
-        value: value.to_vec(),
-    }
-}
-
-fn delete(key: &str) -> FrameKind {
-    FrameKind::DeleteMetadata {
-        request_id: 1,
-        scope: Scope::Global,
-        key: key.to_owned(),
-    }
-}
-
-fn subscribe(key: &str) -> FrameKind {
-    FrameKind::SubscribeMetadata {
-        scope: Scope::Global,
-        key: key.to_owned(),
-    }
-}
-
-fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
-    let result = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}token");
-    let pane = Scope::Resource(terminal());
-    let mark = encode_session_keep_empty("work", true);
-    let unmark = encode_session_keep_empty("work", false);
-    vec![
-        (
-            FrameKind::GetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: WHOAMI_KEY.to_owned(),
-            },
-            &F_WHOAMI,
-        ),
-        (
-            FrameKind::GetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-            &F_GET_METADATA,
-        ),
-        (
-            set(Scope::Global, SESSION_CREATE_KEY, b"{}"),
-            &F_SESSION_CREATE,
-        ),
-        (
-            set(Scope::Global, SESSION_NAME_KEY, b"old\0new"),
-            &F_METADATA_WRITE,
-        ),
-        (
-            set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &mark),
-            &F_KEEP_EMPTY_MARK,
-        ),
-        (
-            set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &unmark),
-            &F_KEEP_EMPTY_CLEAR,
-        ),
-        (
-            set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"work"),
-            &F_KEEP_EMPTY_OTHER,
-        ),
-        (
-            set(Scope::Global, CONFIG_RELOAD_KEY, b"1"),
-            &F_CONFIG_RELOAD,
-        ),
-        (
-            set(Scope::Global, SESSION_CREATE_RESULT_KEY, b"x"),
-            &F_RESULT_NAMESPACE_WRITE,
-        ),
-        (set(Scope::Global, &result, b"x"), &F_RESULT_NAMESPACE_WRITE),
-        (
-            set(pane.clone(), RESOURCE_PANE_OCCUPANT_KEY, b"x"),
-            &F_SERVER_OWNED_WRITE,
-        ),
-        (set(Scope::Global, WHOAMI_KEY, b"x"), &F_SERVER_OWNED_WRITE),
-        // The special rows are Global-scoped; elsewhere the key is ordinary.
-        (
-            set(pane.clone(), SESSION_CREATE_KEY, b"{}"),
-            &F_METADATA_WRITE,
-        ),
-        (set(pane, RESOURCE_TAGS_KEY, b"[]"), &F_METADATA_WRITE),
-        (delete(SESSION_CREATE_RESULT_KEY), &F_RESULT_NAMESPACE_WRITE),
-        (delete(RESOURCE_PANE_OCCUPANT_KEY), &F_SERVER_OWNED_WRITE),
-        (delete(WHOAMI_KEY), &F_SERVER_OWNED_WRITE),
-        (delete(CONFIG_RELOAD_KEY), &F_SERVER_OWNED_WRITE),
-        (delete(SESSION_KEEP_EMPTY_KEY), &F_SERVER_OWNED_WRITE),
-        (delete(SESSION_CREATE_KEY), &F_METADATA_WRITE),
-        (
-            FrameKind::ListMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-            },
-            &F_LIST_METADATA,
-        ),
-        (subscribe(&result), &F_RESULT_NAMESPACE_SUBSCRIBE),
-        (subscribe(RESOURCE_AGENT_KEY), &F_SUBSCRIBE_METADATA),
-    ]
-    .into_iter()
-    .chain(approval_samples())
-    .collect()
-}
-
-/// The decision key and the approval records (ADR-0128).
-fn approval_samples() -> Vec<(FrameKind, &'static Rule)> {
-    let id = "0123456789abcdef0123456789abcdef";
-    let decide = format!("{APPROVAL_DECIDE_KEY_PREFIX}{id}");
-    let record = format!("{APPROVAL_KEY_PREFIX}{id}");
-    let pane = Scope::Resource(terminal());
-    vec![
-        (set(Scope::Global, &decide, b"approve"), &F_APPROVAL_DECIDE),
-        (set(Scope::Global, &decide, b"deny"), &F_APPROVAL_DECIDE),
-        (
-            set(Scope::Global, &decide, b"maybe"),
-            &F_APPROVAL_DECIDE_OTHER,
-        ),
-        (
-            set(
-                Scope::Global,
-                &format!("{APPROVAL_DECIDE_KEY_PREFIX}NOT-AN-ID"),
-                b"approve",
-            ),
-            &F_APPROVAL_DECIDE_OTHER,
-        ),
-        (set(Scope::Global, &record, b"{}"), &F_SERVER_OWNED_WRITE),
-        (set(pane.clone(), &record, b"{}"), &F_SERVER_OWNED_WRITE),
-        (delete(&record), &F_SERVER_OWNED_WRITE),
-        (delete(&decide), &F_SERVER_OWNED_WRITE),
-        // Only the Global decision is intercepted; elsewhere it is ordinary.
-        (set(pane, &decide, b"approve"), &F_METADATA_WRITE),
-    ]
 }
 
 fn input_samples() -> Vec<(FrameKind, &'static Rule)> {
@@ -420,6 +306,15 @@ fn stream_samples() -> Vec<(FrameKind, &'static Rule)> {
             &F_RESIZE_TERMINAL,
         ),
         (
+            FrameKind::ResizeTerminal {
+                terminal_id: terminal(),
+                cols: 80,
+                rows: 24,
+                cell_px: Some((8, 16)),
+            },
+            &F_RESIZE_TERMINAL,
+        ),
+        (
             FrameKind::MoveResource {
                 request_id: 1,
                 terminal: terminal(),
@@ -471,11 +366,34 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
             },
             &F_HELLO,
         ),
+        (
+            FrameKind::Hello {
+                client_name: "samples".to_owned(),
+                protocol_major: 1,
+                protocol_minor: 0,
+                protocol_patch: 0,
+                client_caps: ClientCapabilities::new()
+                    .with_compression(crate::caps::CompressionSet::from_bits(
+                        crate::caps::CompressionSet::DEFLATE,
+                    ))
+                    .with_ssh_origin(crate::wire::ssh_origin::SshOrigin {
+                        client: "192.0.2.1:50000".parse().unwrap(),
+                        server: Some("192.0.2.2:22".parse().unwrap()),
+                    })
+                    .with_quic_streams(true)
+                    .with_platform(crate::caps::ClientPlatform::parse("macos")),
+            },
+            &F_HELLO,
+        ),
         (FrameKind::Ping { nonce: 1 }, &F_PING),
         (FrameKind::Detach, &F_DETACH),
         (attach(AttachTarget::Last), &F_ATTACH),
         (attach(AttachTarget::ByName("work".to_owned())), &F_ATTACH),
         (attach(AttachTarget::ById(SessionId::new(1))), &F_ATTACH),
+        (
+            attach_as(AttachTarget::Last, Some(RolePolicy::PRIMARY)),
+            &F_ATTACH,
+        ),
         (
             attach(AttachTarget::CreateIfMissing {
                 name: "work".to_owned(),
@@ -483,24 +401,6 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
                 cwd: None,
             }),
             &F_ATTACH_CREATE,
-        ),
-        (
-            FrameKind::ListDirectory {
-                request_id: 1,
-                path: String::new(),
-                host: None,
-            },
-            &F_LIST_DIRECTORY,
-        ),
-        (
-            FrameKind::PathQuery {
-                request_id: 1,
-                root: "/".to_owned(),
-                query: String::new(),
-                recursive: false,
-                host: None,
-            },
-            &F_PATH_QUERY,
         ),
         // The envelope defers to the nested command's row.
         (
@@ -519,6 +419,48 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
                 },
             },
             &C_TRANSCRIBE,
+        ),
+    ]
+}
+
+/// The host path queries, with and without a satellite.
+fn host_samples() -> Vec<(FrameKind, &'static Rule)> {
+    vec![
+        (
+            FrameKind::ListDirectory {
+                request_id: 1,
+                path: String::new(),
+                host: None,
+            },
+            &F_LIST_DIRECTORY,
+        ),
+        (
+            FrameKind::ListDirectory {
+                request_id: 1,
+                path: "/home".to_owned(),
+                host: Some(SatelliteHost::new("edge")),
+            },
+            &F_LIST_DIRECTORY,
+        ),
+        (
+            FrameKind::PathQuery {
+                request_id: 1,
+                root: "/".to_owned(),
+                query: String::new(),
+                recursive: false,
+                host: None,
+            },
+            &F_PATH_QUERY,
+        ),
+        (
+            FrameKind::PathQuery {
+                request_id: 1,
+                root: "/home".to_owned(),
+                query: "src".to_owned(),
+                recursive: true,
+                host: Some(SatelliteHost::new("edge")),
+            },
+            &F_PATH_QUERY,
         ),
     ]
 }

@@ -285,6 +285,28 @@ pub fn serve_one(
     (socket, server)
 }
 
+/// [`serve_one`] in a fresh tempdir, then dial it: the tempdir (keep it
+/// alive), the client connection, and the server task.
+///
+/// # Panics
+///
+/// If the tempdir, bind, or connect fails.
+#[cfg(test)]
+pub async fn connect_one(
+    spec: ScriptSpec,
+) -> (
+    tempfile::TempDir,
+    crate::attach::connection::Connection,
+    tokio::task::JoinHandle<Vec<FrameKind>>,
+) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (socket, server) = serve_one(dir.path(), spec);
+    let conn = crate::attach::connection::Connection::connect(&socket)
+        .await
+        .expect("connect");
+    (dir, conn, server)
+}
+
 /// Serve every connection `listener` accepts with a fresh spec from
 /// `make_spec`, until the task is dropped.
 ///

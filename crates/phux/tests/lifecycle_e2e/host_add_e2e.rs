@@ -11,12 +11,7 @@
 // a phux pane, an inherited `PHUX_WS_TOKENS` / `PHUX_WS_TLS_CERT` would
 // point the far host's server and its `phux pair` at the operator's real
 // credential store and certificate.
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::{common, listeners, paired};
 
 mod far_host;
 

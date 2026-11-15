@@ -42,37 +42,33 @@ fn configured_history_bytes_decides_retained_scrollback() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn actual_server_wire_kernel_history_reaches_finish_with_zero_and_discarded_rows() {
     use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState};
 
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (empty, empty_units, empty_rows) =
-                run_native_server_kernel_flow(0, HistoryCacheConfig::default(), false).await;
-            assert_eq!(empty.state, HistoryLoadState::Complete);
-            assert_eq!(empty_units, 1, "empty history still authenticates FINISH");
-            assert_eq!(empty_rows, 0);
+    on_local!(async {
+        let (empty, empty_units, empty_rows) =
+            run_native_server_kernel_flow(0, HistoryCacheConfig::default(), false).await;
+        assert_eq!(empty.state, HistoryLoadState::Complete);
+        assert_eq!(empty_units, 1, "empty history still authenticates FINISH");
+        assert_eq!(empty_rows, 0);
 
-            let tiny = HistoryCacheConfig {
-                max_materialized_rows: 1,
-                prefetch_rows: 2,
-                request_max_rows: 1024,
-                ..HistoryCacheConfig::default()
-            };
-            let (history, units, authenticated_rows) =
-                run_native_server_kernel_flow(3_000, tiny, true).await;
-            assert_eq!(history.state, HistoryLoadState::Complete);
-            assert!(units >= 3, "two history pages plus FINISH are required");
-            assert!(authenticated_rows > history.materialized_rows);
-            assert!(history.materialized_rows <= 1);
-        })
-        .await;
+        let tiny = HistoryCacheConfig {
+            max_materialized_rows: 1,
+            prefetch_rows: 2,
+            request_max_rows: 1024,
+            ..HistoryCacheConfig::default()
+        };
+        let (history, units, authenticated_rows) =
+            run_native_server_kernel_flow(3_000, tiny, true).await;
+        assert_eq!(history.state, HistoryLoadState::Complete);
+        assert!(units >= 3, "two history pages plus FINISH are required");
+        assert!(authenticated_rows > history.materialized_rows);
+        assert!(history.materialized_rows <= 1);
+    })
+    .await;
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
     let bundle = TerminalActor::new(20, 5).expect("actor");
@@ -122,7 +118,6 @@ async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
     ));
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
     use phux_protocol::wire::frame::HistoryTombstoneReason;
@@ -228,166 +223,158 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
 }
 
 /// What the next native host allocation does in place of allocating.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Clone, Copy)]
 enum AllocFault {
     Fail,
     Panic,
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,
     reason = "the test keeps fault injection and the full cursor-continuation proof in one LocalSet lifecycle"
 )]
 async fn capture_host_allocation_failures_release_state_and_history_still_pages() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            async fn request_prefix(
-                handle: &ResourceHandle,
-            ) -> Result<NativeBootstrapReply, phux_terminal_api::native_state::NativeStateError>
-            {
-                let (reply, replied) = oneshot::channel();
-                handle
-                    .terminal()
-                    .expect("terminal facet")
-                    .native_bootstrap
-                    .send(NativeBootstrapRequest {
-                        owner: 11,
-                        terminal_id: phux_protocol::ids::ResourceId::local(2),
-                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
-                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
-                            .expect("bootstrap id"),
-                        limits: phux_protocol::caps::BootstrapLimits::default(),
-                        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-                        reply,
-                    })
-                    .await
-                    .expect("send bootstrap");
-                replied.await.expect("bootstrap reply")
-            }
-
-            async fn request_history_unit(
-                handle: &ResourceHandle,
-                outbound: &mpsc::Sender<Outbound>,
-                cursor: Bytes,
-            ) -> FrameKind {
-                let permit = outbound
-                    .clone()
-                    .reserve_owned()
-                    .await
-                    .expect("history request permit");
-                let (reply, response) = oneshot::channel();
-                handle
-                    .terminal()
-                    .expect("terminal facet")
-                    .native_history
-                    .send(NativeHistoryRequest {
-                        permit,
-                        owner: 11,
-                        terminal_id: phux_protocol::ids::ResourceId::local(2),
-                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
-                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
-                            .expect("bootstrap id"),
-                        cursor,
-                        max_bytes: phux_protocol::caps::BootstrapLimits::default()
-                            .max_history_page_bytes(),
-                        max_rows: 128,
-                        limits: phux_protocol::caps::BootstrapLimits::default(),
-                        reply,
-                    })
-                    .await
-                    .expect("send history request");
-                response
-                    .await
-                    .expect("history reply")
-                    .result
-                    .expect("history host")
-            }
-
-            let fault = Rc::new(Cell::new(None));
-            let mut bundle = TerminalActor::new(20, 5).expect("new actor");
-            bundle.actor.native_alloc = {
-                let fault = Rc::clone(&fault);
-                Box::new(move |capacity| match fault.take() {
-                    Some(AllocFault::Fail) => {
-                        Err(crate::native_state::NativeStateError::OutOfMemory)
-                    }
-                    Some(AllocFault::Panic) => panic!("injected native host allocation panic"),
-                    None => try_native_bytes(capacity),
+    on_local!(async {
+        async fn request_prefix(
+            handle: &ResourceHandle,
+        ) -> Result<NativeBootstrapReply, phux_terminal_api::native_state::NativeStateError>
+        {
+            let (reply, replied) = oneshot::channel();
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .native_bootstrap
+                .send(NativeBootstrapRequest {
+                    owner: 11,
+                    terminal_id: phux_protocol::ids::ResourceId::local(2),
+                    stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(4).expect("bootstrap id"),
+                    limits: phux_protocol::caps::BootstrapLimits::default(),
+                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+                    reply,
                 })
-            };
-            let handle = bundle.handle.clone();
-            let token = bundle.token.clone();
-            let (outbound, _outbound_rx) = mpsc::channel(2);
-            let run = tokio::task::spawn_local(bundle.actor.run());
+                .await
+                .expect("send bootstrap");
+            replied.await.expect("bootstrap reply")
+        }
 
-            fault.set(Some(AllocFault::Fail));
-            assert!(matches!(
-                request_prefix(&handle).await,
-                Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
-            ));
-            fault.set(Some(AllocFault::Panic));
-            assert!(matches!(
-                request_prefix(&handle).await,
-                Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
-            ));
-
-            let prefix = request_prefix(&handle).await.expect("bootstrap capture");
-            let cursor = prefix
-                .frames
-                .into_iter()
-                .find_map(|frame| match frame {
-                    FrameKind::BootstrapReady {
-                        history_cursor: Some(cursor),
-                        ..
-                    } => Some(cursor),
-                    _ => None,
+        async fn request_history_unit(
+            handle: &ResourceHandle,
+            outbound: &mpsc::Sender<Outbound>,
+            cursor: Bytes,
+        ) -> FrameKind {
+            let permit = outbound
+                .clone()
+                .reserve_owned()
+                .await
+                .expect("history request permit");
+            let (reply, response) = oneshot::channel();
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .native_history
+                .send(NativeHistoryRequest {
+                    permit,
+                    owner: 11,
+                    terminal_id: phux_protocol::ids::ResourceId::local(2),
+                    stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(4).expect("bootstrap id"),
+                    cursor,
+                    max_bytes: phux_protocol::caps::BootstrapLimits::default()
+                        .max_history_page_bytes(),
+                    max_rows: 128,
+                    limits: phux_protocol::caps::BootstrapLimits::default(),
+                    reply,
                 })
-                .expect("bootstrap ready cursor");
+                .await
+                .expect("send history request");
+            response
+                .await
+                .expect("history reply")
+                .result
+                .expect("history host")
+        }
 
-            let result = request_history_unit(&handle, &outbound, cursor.clone()).await;
+        let fault = Rc::new(Cell::new(None));
+        let mut bundle = TerminalActor::new(20, 5).expect("new actor");
+        bundle.actor.native_alloc = {
+            let fault = Rc::clone(&fault);
+            Box::new(move |capacity| match fault.take() {
+                Some(AllocFault::Fail) => Err(crate::native_state::NativeStateError::OutOfMemory),
+                Some(AllocFault::Panic) => panic!("injected native host allocation panic"),
+                None => try_native_bytes(capacity),
+            })
+        };
+        let handle = bundle.handle.clone();
+        let token = bundle.token.clone();
+        let (outbound, _outbound_rx) = mpsc::channel(2);
+        let run = tokio::task::spawn_local(bundle.actor.run());
+
+        fault.set(Some(AllocFault::Fail));
+        assert!(matches!(
+            request_prefix(&handle).await,
+            Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
+        ));
+        fault.set(Some(AllocFault::Panic));
+        assert!(matches!(
+            request_prefix(&handle).await,
+            Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
+        ));
+
+        let prefix = request_prefix(&handle).await.expect("bootstrap capture");
+        let cursor = prefix
+            .frames
+            .into_iter()
+            .find_map(|frame| match frame {
+                FrameKind::BootstrapReady {
+                    history_cursor: Some(cursor),
+                    ..
+                } => Some(cursor),
+                _ => None,
+            })
+            .expect("bootstrap ready cursor");
+
+        let result = request_history_unit(&handle, &outbound, cursor.clone()).await;
+        let FrameKind::HistoryPage {
+            page_seq,
+            cursor: echoed,
+            next_cursor,
+            rows,
+            ..
+        } = result
+        else {
+            panic!("expected history page");
+        };
+        assert_eq!(page_seq, 1);
+        assert!(rows <= 128);
+        assert_eq!(echoed, cursor);
+
+        let mut next_cursor = next_cursor;
+        let mut expected_page_seq = 2_u64;
+        while let Some(request_cursor) = next_cursor {
+            assert_eq!(request_cursor, cursor, "cursor is stable and opaque");
+            let frame = request_history_unit(&handle, &outbound, request_cursor).await;
             let FrameKind::HistoryPage {
                 page_seq,
                 cursor: echoed,
-                next_cursor,
+                next_cursor: following,
                 rows,
                 ..
-            } = result
+            } = frame
             else {
-                panic!("expected history page");
+                panic!("continuation must end through authenticated FINISH");
             };
-            assert_eq!(page_seq, 1);
-            assert!(rows <= 128);
+            assert_eq!(page_seq, expected_page_seq);
             assert_eq!(echoed, cursor);
-
-            let mut next_cursor = next_cursor;
-            let mut expected_page_seq = 2_u64;
-            while let Some(request_cursor) = next_cursor {
-                assert_eq!(request_cursor, cursor, "cursor is stable and opaque");
-                let frame = request_history_unit(&handle, &outbound, request_cursor).await;
-                let FrameKind::HistoryPage {
-                    page_seq,
-                    cursor: echoed,
-                    next_cursor: following,
-                    rows,
-                    ..
-                } = frame
-                else {
-                    panic!("continuation must end through authenticated FINISH");
-                };
-                assert_eq!(page_seq, expected_page_seq);
-                assert_eq!(echoed, cursor);
-                assert!(rows <= 128);
-                next_cursor = following;
-                expected_page_seq = expected_page_seq.checked_add(1).expect("bounded sequence");
-                assert!(expected_page_seq <= 4_099, "bounded continuation");
-            }
-            token.cancel();
-            run.await.expect("actor run");
-        })
-        .await;
+            assert!(rows <= 128);
+            next_cursor = following;
+            expected_page_seq = expected_page_seq.checked_add(1).expect("bounded sequence");
+            assert!(expected_page_seq <= 4_099, "bounded continuation");
+        }
+        token.cancel();
+        run.await.expect("actor run");
+    })
+    .await;
 }

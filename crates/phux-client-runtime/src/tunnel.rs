@@ -51,7 +51,7 @@ pub enum TunnelState {
 }
 
 impl TunnelState {
-    /// The stable numeric form a C ABI carries.
+    /// The stable numeric form the shared atomic stores.
     #[must_use]
     pub const fn as_u32(self) -> u32 {
         self as u32

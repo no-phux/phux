@@ -14,15 +14,6 @@ pub(crate) const RECEIPT_SCHEMA_VERSION: u8 = 1;
 
 /// `phux send-keys TARGET KEYS...` — send input to a pane via the
 /// side-effect-free `ROUTE_INPUT` route.
-///
-/// `TARGET` is the full selector grammar (`docs/concepts.md#targets`):
-/// `session`, `session:group`, `session:group.pane`, `@id`, `.`. It
-/// is resolved client-side to a single pane (the selected one — the focused
-/// pane when the selector spans several), then the events route to exactly
-/// that pane by id, so this neither attaches nor resizes the live pane
-/// (phux-n95; see [`phux_client::send_keys::send_to`]). A non-Terminal
-/// target is refused by kind: a document takes typed intents through
-/// `phux agent page`, not keys.
 pub(crate) fn run_send_keys(
     target: &str,
     keys: &[String],

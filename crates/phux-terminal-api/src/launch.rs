@@ -39,9 +39,6 @@ impl LaunchCommand {
     pub const fn get_argv(&self) -> &Vec<OsString> {
         &self.argv
     }
-    pub const fn get_argv_mut(&mut self) -> &mut Vec<OsString> {
-        &mut self.argv
-    }
     pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
         self.removed.remove(key.as_ref());
         self.env
@@ -67,9 +64,6 @@ impl LaunchCommand {
     }
     pub fn cwd(&mut self, cwd: impl AsRef<OsStr>) {
         self.cwd = Some(cwd.as_ref().to_owned());
-    }
-    pub fn clear_cwd(&mut self) {
-        self.cwd = None;
     }
     #[must_use]
     pub const fn get_cwd(&self) -> Option<&OsString> {
@@ -279,8 +273,11 @@ mod tests {
         );
     }
 
+    /// Ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
+    /// (htop) push kitty flags they cannot parse back (phux-7vx).
     #[test]
     fn default_shells_start_on_the_baseline_term() {
+        assert_eq!(DEFAULT_TERM, "xterm-256color");
         for command in [
             default_shell_command("/bin/sh", false),
             shell_command("/bin/sh", "true", true),

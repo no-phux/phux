@@ -119,12 +119,7 @@ async fn focus_switch_discards_query_and_cannot_paste_into_next_pane() {
     let (FrameKind::PathQuery { request_id, .. }, _) = FrameKind::decode(&query).unwrap() else {
         panic!("query")
     };
-    session.on_frame(FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(101),
-        exit_status: None,
-        reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
-        signal: None,
-    });
+    session.on_frame(closed(ResourceId::local(101), CloseReason::ParentClosed));
     session.on_frame(path_reply(request_id, "/work/a"));
     assert!(session.path_results().is_none());
     assert!(session.paste_path_row(0).is_none());

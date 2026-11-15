@@ -19,7 +19,7 @@
 
 use phux_client_core::agent_record::parse_agent_record;
 pub use phux_client_core::agent_record::{
-    AgentAttention, AgentState, AttentionReading, MAX_RAW_WORD_BYTES, StateReading,
+    AgentAttention, AgentState, AttentionReading, StateReading,
 };
 use phux_protocol::ResourceId;
 
@@ -65,10 +65,8 @@ pub fn badge(terminal_id: &ResourceId, bytes: Option<&[u8]>) -> AgentBadge {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AgentAttention, AgentBadge, AgentState, AttentionReading, MAX_RAW_WORD_BYTES, StateReading,
-        badge,
-    };
+    use super::{AgentAttention, AgentBadge, AgentState, AttentionReading, StateReading, badge};
+    use phux_client_core::agent_record::MAX_RAW_WORD_BYTES;
     use phux_protocol::ResourceId;
 
     fn read(record: &str) -> AgentBadge {

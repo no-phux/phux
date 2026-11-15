@@ -159,72 +159,42 @@ fn subprocess_entry() {
 
 // ── Parent test cases ───────────────────────────────────────────────────
 
+/// The handler leaves a tokio runtime, sync I/O, and other signal handlers
+/// working.
 #[test]
-fn handler_does_not_interfere_with_tokio_runtime() {
-    let (status, _stdout, stderr) = run_scenario("tokio_normal");
-    assert!(
-        status.success(),
-        "tokio_normal should exit 0, got {status:?}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("all tasks completed"),
-        "should see completion message\nstderr: {stderr}"
-    );
+fn handler_does_not_interfere_with_normal_work() {
+    for (scenario, done) in [
+        ("tokio_normal", "all tasks completed"),
+        ("sync_normal", "50 files written"),
+        ("tokio_signals", "signal coexistence OK"),
+    ] {
+        let (status, _stdout, stderr) = run_scenario(scenario);
+        assert!(status.success(), "{scenario}: {status:?}\nstderr: {stderr}");
+        assert!(
+            stderr.contains(done),
+            "{scenario}: no {done:?}\nstderr: {stderr}"
+        );
+    }
 }
 
+/// Each fatal signal kills the child with `SIG_DFL` restored and the signal
+/// re-raised, not exited or swallowed; `panic = "abort"` builds die by SIGABRT.
 #[test]
-fn handler_does_not_interfere_with_sync_io() {
-    let (status, _stdout, stderr) = run_scenario("sync_normal");
-    assert!(
-        status.success(),
-        "sync_normal should exit 0, got {status:?}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("50 files written"),
-        "should see completion message\nstderr: {stderr}"
-    );
-}
-
-#[test]
-fn handler_does_not_clobber_other_signal_handlers() {
-    let (status, _stdout, stderr) = run_scenario("tokio_signals");
-    assert!(
-        status.success(),
-        "tokio_signals should exit 0, got {status:?}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("signal coexistence OK"),
-        "SIGUSR1 should be delivered through tokio\nstderr: {stderr}"
-    );
-}
-
-/// Run `scenario` and assert the child died of `expected` — the handler must
-/// restore `SIG_DFL` and re-raise, not exit or swallow the signal.
-fn assert_killed_by(scenario: &str, expected: libc::c_int) {
+fn fatal_signals_are_reraised_with_default_disposition() {
     use std::os::unix::process::ExitStatusExt;
 
-    let (status, _stdout, stderr) = run_scenario(scenario);
-    assert_eq!(
-        status.signal(),
-        Some(expected),
-        "{scenario}: process should be killed by signal {expected}, got {status:?}\nstderr: {stderr}"
-    );
-}
-
-#[test]
-fn sigbus_is_reraised_with_default_disposition() {
-    assert_killed_by("sigbus", libc::SIGBUS);
-}
-
-#[test]
-fn sigsegv_is_reraised_with_default_disposition() {
-    assert_killed_by("sigsegv", libc::SIGSEGV);
-}
-
-/// `panic = "abort"` release builds die through this path.
-#[test]
-fn sigabrt_is_reraised_with_default_disposition() {
-    assert_killed_by("sigabrt", libc::SIGABRT);
+    for (scenario, expected) in [
+        ("sigbus", libc::SIGBUS),
+        ("sigsegv", libc::SIGSEGV),
+        ("sigabrt", libc::SIGABRT),
+    ] {
+        let (status, _stdout, stderr) = run_scenario(scenario);
+        assert_eq!(
+            status.signal(),
+            Some(expected),
+            "{scenario}: {status:?}\nstderr: {stderr}"
+        );
+    }
 }
 
 /// ADDED FOR PHUX. The whole reason this crate exists: when the client

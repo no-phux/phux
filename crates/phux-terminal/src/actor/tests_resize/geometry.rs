@@ -83,94 +83,88 @@ fn kitty_bootstrap_uses_initial_and_pixel_only_geometry() {
 /// the final grid and PTY size before the attach snapshot is captured.
 #[tokio::test(flavor = "current_thread")]
 async fn saturated_geometry_applies_final_size_before_snapshot() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
-                .expect("spawn");
-            let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
-            let terminal = bundle.handle.terminal().expect("terminal").clone();
-            let mut out = bundle.handle.output.subscribe();
-            let request = ResizeRequest {
-                cols: 90,
-                rows: 30,
-                cell_px: Some((9, 18)),
-                resync_clients: true,
-                resync_only: false,
-                resync_for: None,
-            };
-            terminal.resize.try_send(request).expect("pixel donor");
-            for cols in 1..=512 {
-                terminal
-                    .resize
-                    .try_send(ResizeRequest {
-                        cols,
-                        rows: 30,
-                        cell_px: None,
-                        resync_clients: false,
-                        ..request
-                    })
-                    .expect("geometry cannot fill the mailbox");
-            }
+    on_local!(async {
+        let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
+            .expect("spawn");
+        let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+        let terminal = bundle.handle.terminal().expect("terminal").clone();
+        let mut out = bundle.handle.output.subscribe();
+        let request = ResizeRequest {
+            cols: 90,
+            rows: 30,
+            cell_px: Some((9, 18)),
+            resync_clients: true,
+            resync_only: false,
+            resync_for: None,
+        };
+        terminal.resize.try_send(request).expect("pixel donor");
+        for cols in 1..=512 {
             terminal
                 .resize
                 .try_send(ResizeRequest {
-                    cols: 137,
-                    rows: 53,
+                    cols,
+                    rows: 30,
                     cell_px: None,
                     resync_clients: false,
                     ..request
                 })
-                .expect("final geometry");
-            let (reply, snapshot) = tokio::sync::oneshot::channel();
-            terminal
-                .snapshot
-                .try_send(SnapshotRequest {
-                    image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
-                    scrollback: None,
-                    max_bytes: 1024 * 1024,
-                    max_frames: 64,
-                    chunk_bytes: 64 * 1024,
-                    reply,
-                })
-                .expect("queue attach capture before actor starts");
-            let token = bundle.token;
-            let join = tokio::task::spawn_local(bundle.actor.run());
-            let (snapshot, _) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, snapshot)
-                .await
-                .expect("capture deadline")
-                .expect("actor reply")
-                .expect("snapshot");
-            assert_eq!((snapshot.cols, snapshot.rows), (137, 53));
-            let size = master.lock().expect("master").get_size().expect("winsize");
-            assert_eq!(
-                (size.cols, size.rows, size.pixel_width, size.pixel_height),
-                (137, 53, 1233, 954)
-            );
-            let resync = tokio::time::timeout(ACTOR_EXIT_DEADLINE, out.recv())
-                .await
-                .expect("resync deadline")
-                .expect("resync");
-            assert!(
-                matches!(
-                    resync,
-                    ResourceOutput::Resync {
-                        cols: 137,
-                        rows: 53,
-                        reason: ResyncReason::Resize,
-                        audience: ResyncAudience::Everyone,
-                        ..
-                    }
-                ),
-                "an attach-time update cannot erase an owed live resync: {resync:?}"
-            );
-            token.cancel();
-            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
-                .await
-                .expect("actor exit")
-                .expect("actor task");
-        })
-        .await;
+                .expect("geometry cannot fill the mailbox");
+        }
+        terminal
+            .resize
+            .try_send(ResizeRequest {
+                cols: 137,
+                rows: 53,
+                cell_px: None,
+                resync_clients: false,
+                ..request
+            })
+            .expect("final geometry");
+        let (reply, snapshot) = tokio::sync::oneshot::channel();
+        terminal
+            .snapshot
+            .try_send(SnapshotRequest {
+                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
+                scrollback: None,
+                max_bytes: 1024 * 1024,
+                max_frames: 64,
+                chunk_bytes: 64 * 1024,
+                reply,
+            })
+            .expect("queue attach capture before actor starts");
+        let token = bundle.token;
+        let join = tokio::task::spawn_local(bundle.actor.run());
+        let (snapshot, _) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, snapshot)
+            .await
+            .expect("capture deadline")
+            .expect("actor reply")
+            .expect("snapshot");
+        assert_eq!((snapshot.cols, snapshot.rows), (137, 53));
+        let size = master.lock().expect("master").get_size().expect("winsize");
+        assert_eq!(
+            (size.cols, size.rows, size.pixel_width, size.pixel_height),
+            (137, 53, 1233, 954)
+        );
+        let resync = tokio::time::timeout(ACTOR_EXIT_DEADLINE, out.recv())
+            .await
+            .expect("resync deadline")
+            .expect("resync");
+        assert!(
+            matches!(
+                resync,
+                ResourceOutput::Resync {
+                    cols: 137,
+                    rows: 53,
+                    reason: ResyncReason::Resize,
+                    audience: ResyncAudience::Everyone,
+                    ..
+                }
+            ),
+            "an attach-time update cannot erase an owed live resync: {resync:?}"
+        );
+        stop(&token, join).await;
+    })
+    .await;
 }
 
 #[test]

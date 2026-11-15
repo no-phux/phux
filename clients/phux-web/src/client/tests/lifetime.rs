@@ -59,8 +59,8 @@ async fn dropping_polled_webtransport_ready_closes_raw_session() {
     let transport: web_sys::WebTransport = object.unchecked_into();
 
     let mut establishment = Box::pin(async move {
-        let guard = crate::client::WebTransportAttempt::new(transport);
-        let _ = JsFuture::from(guard.session().ready()).await;
+        let guard = crate::client::Attempt::webtransport(transport);
+        let _ = JsFuture::from(guard.get().ready()).await;
     });
     futures_util::future::poll_fn(|cx| {
         assert!(establishment.as_mut().poll(cx).is_pending());
