@@ -8,8 +8,6 @@
 use std::fmt;
 use std::str::FromStr;
 
-use phux_protocol::caps::ServerFeature;
-
 use crate::attach::connection::Connection;
 
 /// `SUBSCRIBE_EVENTS.after_seq` asking for journal semantics with no replay
@@ -90,29 +88,26 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ResumePlan {
     /// The `SUBSCRIBE_EVENTS.after_seq` to send: the cursor's `seq` to
-    /// replay after it, [`NO_REPLAY`] for journal semantics with no replay,
-    /// or `None` (live only) on a server with no journal.
+    /// replay after it, or [`NO_REPLAY`] for journal semantics with no replay.
     pub after_seq: Option<u64>,
     /// The cursor's `seq` when the subscription resumes from it.
     pub position: Option<u64>,
-    /// The caller passed a cursor this connection cannot honor: another
-    /// incarnation, or a server without `EVENT_JOURNAL`. The observer falls
+    /// The caller passed another incarnation's cursor. The observer falls
     /// back to its level read, which is still correct.
     pub void: bool,
 }
 
 /// Plan a resume of `cursor` on `conn`.
 fn plan_resume(cursor: Option<&Cursor>, conn: &Connection) -> ResumePlan {
-    let journal = journal_advertised(conn);
     let live = ResumePlan {
-        after_seq: journal.then_some(NO_REPLAY),
+        after_seq: Some(NO_REPLAY),
         position: None,
         void: false,
     };
     let Some(cursor) = cursor else {
         return live;
     };
-    if journal && conn.server_id() == Some(cursor.server_id()) {
+    if conn.server_id() == Some(cursor.server_id()) {
         ResumePlan {
             after_seq: Some(cursor.seq()),
             position: Some(cursor.seq()),
@@ -124,11 +119,8 @@ fn plan_resume(cursor: Option<&Cursor>, conn: &Connection) -> ResumePlan {
 }
 
 /// The cursor on `conn` after journal sequence `last_seq` (`None`: nothing
-/// accounted for yet); `None` without a journal or incarnation.
+/// accounted for yet); `None` when the server names no incarnation.
 fn cursor_after(conn: &Connection, last_seq: Option<u64>) -> Option<Cursor> {
-    if !journal_advertised(conn) {
-        return None;
-    }
     Cursor::new(conn.server_id()?.to_vec(), last_seq.unwrap_or(0))
 }
 
@@ -150,7 +142,7 @@ enum Incarnation {
     /// Not connected yet: the caller's cursor is still the answer.
     #[default]
     Unbound,
-    /// The server keeps no journal, or names no incarnation: no cursor.
+    /// The server names no incarnation: no cursor.
     NoJournal,
     /// The journal of the server incarnation with this id.
     Journal(Vec<u8>),
@@ -201,8 +193,7 @@ impl ResumeState {
         self.last_seq = Some(self.last_seq.map_or(seq, |seen| seen.max(seq)));
     }
 
-    /// The cursor that resumes this observer. `None` on a server with no
-    /// journal.
+    /// The cursor that resumes this observer.
     #[must_use]
     pub fn cursor(&self) -> Option<Cursor> {
         match &self.incarnation {
@@ -214,20 +205,12 @@ impl ResumeState {
         }
     }
 
-    /// Whether the caller's cursor could not be honored (another server
-    /// incarnation, or no journal), so the observer started live.
+    /// Whether the caller's cursor belonged to another server incarnation,
+    /// so the observer started live.
     #[must_use]
     pub const fn cursor_void(&self) -> bool {
         self.void
     }
-}
-
-fn journal_advertised(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features
-            .contains(ServerFeature::EventJournal)
-    })
 }
 
 #[cfg(test)]

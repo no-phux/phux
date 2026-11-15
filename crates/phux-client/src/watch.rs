@@ -1078,11 +1078,8 @@ mod tests {
         script: Vec<FrameKind>,
         spec: ScriptSpec,
     ) -> (WatchOutcome, Vec<WatchItem>, Vec<FrameKind>) {
-        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-
         let dir = tempfile::tempdir().expect("temp dir");
         let spec = spec
-            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
             .server_id(vec![0x01, 0x02])
             .extend(script)
             .end(EndOfScript::HangUp);
@@ -1183,8 +1180,6 @@ mod tests {
     /// the watch with no cursor at all.
     #[tokio::test]
     async fn a_zero_timeout_still_anchors_a_cursor_from_a_slow_server() {
-        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("slow.sock");
         let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
@@ -1192,7 +1187,6 @@ mod tests {
             .with_journal_head(Some(30));
         let spec = ScriptSpec::new()
             .state(state)
-            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
             .server_id(vec![0x01, 0x02])
             .end(EndOfScript::ServeUntilDetach);
         let server = tokio::spawn(async move {
