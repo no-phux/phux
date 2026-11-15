@@ -1,24 +1,9 @@
 //! Heap-profiling entry point for `phux`, gated by the `dhat-heap` feature.
 //!
-//! Deliberately a SEPARATE binary target (`required-features =
-//! ["dhat-heap"]` in Cargo.toml) rather than a `#[cfg(feature =
-//! "dhat-heap")]` branch inside the `phux` binary's own `main`. See
-//! `src/lib.rs`'s module doc: dhat's `Profiler` guard unconditionally
-//! `eprintln!`s a shutdown summary with no way to silence it through dhat's
-//! public API. Inside the `phux` binary, `cargo test -p phux --all-features`
-//! would build the exact binary integration tests spawn via
-//! `CARGO_BIN_EXE_phux` with a profiler wired in, and every test asserting
-//! clean stderr would flake. As a separate binary, the `dhat-heap` feature
-//! never touches the `phux` binary, so
-//! `--all-features` is safe to combine with `cargo test` regardless of
-//! which features are on.
-//!
-//! Run with: `cargo run --features dhat-heap --bin phux-dhat-heap -- server`
-//! (or any other `phux` subcommand in place of `server`). On clean shutdown
-//! the profiler guard's Drop writes `./dhat-heap.json`, viewable at
-//! <https://nnethercote.github.io/dh_view/dh_view.html>. The instrumented
-//! allocator is significantly slower than the system allocator — debug /
-//! profiling use only.
+//! A separate binary so dhat's unsilenceable shutdown summary never reaches
+//! the `phux` binary integration tests spawn under `--all-features`.
+//! Run: `cargo run --features dhat-heap --bin phux-dhat-heap -- server`; a
+//! clean shutdown writes `./dhat-heap.json` (view it in dh_view).
 
 #![forbid(unsafe_code)]
 
