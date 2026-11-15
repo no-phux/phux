@@ -20,7 +20,7 @@ pub(in crate::desk) struct Transfer {
 impl Desk {
     /// Keep the panel usable while main asks the server to move its terminal.
     pub fn move_to_tab(&mut self) {
-        let (Some(panel), Some(shown)) = (&mut self.quick, &self.shown) else {
+        let (Some(panel), Some(shown)) = (&mut self.quick, &self.connection.shown) else {
             return;
         };
         if panel.moving {
@@ -42,7 +42,7 @@ impl Desk {
     fn adopt_quick(&mut self, terminal: ResourceId, finish: Completion) {
         match self.submit_quick_move(&terminal) {
             Ok((operation, session)) => {
-                self.quick_move = Some(Transfer {
+                self.connection.quick_move = Some(Transfer {
                     operation,
                     terminal,
                     session,
@@ -57,7 +57,7 @@ impl Desk {
         &self,
         terminal: &ResourceId,
     ) -> Result<(OperationId, SessionKey), String> {
-        if self.quick_move.is_some() {
+        if self.connection.quick_move.is_some() {
             return Err("A quick terminal move is already waiting for the server.".to_owned());
         }
         if self.machines.current.is_some() {
@@ -67,6 +67,7 @@ impl Desk {
             );
         }
         let client = self
+            .connection
             .client
             .as_ref()
             .filter(|client| client.status() == Status::Attached)
@@ -92,6 +93,7 @@ impl Desk {
     fn quick_destination(&self, client: &Client) -> Option<SessionKey> {
         let selected = client.selected_session()?;
         let session = self
+            .connection
             .topology
             .as_ref()?
             .sessions
@@ -101,7 +103,8 @@ impl Desk {
     }
 
     pub(in crate::desk) fn owns_quick_move(&self, operation: OperationId) -> bool {
-        self.quick_move
+        self.connection
+            .quick_move
             .as_ref()
             .is_some_and(|pending| pending.operation == operation)
     }
@@ -115,7 +118,7 @@ impl Desk {
         if !self.owns_quick_move(operation) {
             return false;
         }
-        let pending = self.quick_move.take().expect("matched move");
+        let pending = self.connection.quick_move.take().expect("matched move");
         let result = if outcome.succeeded() {
             self.place_quick_tab(client, &pending)
         } else {
@@ -130,7 +133,7 @@ impl Desk {
     /// Use the original destination even if the person selected another
     /// session while waiting. Stable identity survives a session rename.
     fn place_quick_tab(&mut self, client: &Client, pending: &Transfer) -> Result<(), String> {
-        let session = self.topology.as_ref()
+        let session = self.connection.topology.as_ref()
             .and_then(|topology| topology.session_keyed(&pending.session))
             .ok_or("The quick terminal moved, but its destination is no longer listed. Check the server's panes.")?;
         client.attach_session(AttachTarget::ById(SessionId::new(session.id)));
@@ -139,7 +142,7 @@ impl Desk {
     }
 
     pub(in crate::desk) fn cancel_quick_move(&mut self, reason: &str) -> bool {
-        let Some(pending) = self.quick_move.take() else {
+        let Some(pending) = self.connection.quick_move.take() else {
             return false;
         };
         (pending.finish)(Err(format!(

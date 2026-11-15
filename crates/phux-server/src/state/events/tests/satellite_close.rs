@@ -67,8 +67,7 @@ fn a_relayed_satellite_close_withdraws_holds_naming_it_before_the_close() {
             .is_some_and(|seq| seq < close_seq),
         "withdrawn seq precedes the close seq {close_seq}: {stream:?}"
     );
-    let replay = state.journal.replay_after(0, |_| true);
-    let retained: Vec<_> = replay.entries.iter().map(|entry| &entry.event).collect();
+    let retained: Vec<_> = state.journal.retained().map(|entry| &entry.event).collect();
     assert!(
         retained.iter().any(|event| matches!(
             event,

@@ -135,7 +135,7 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/{brand,update-brand,test_brand_update}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
-  "scripts/{build-ffi-xcframework,build-mobile-ffi-android}.sh": [],
+  "scripts/build-mobile-ffi-android.sh": [],
   "scripts/ci/setup-android-ndk.sh": [],
 };
 

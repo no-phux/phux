@@ -66,10 +66,7 @@ impl TerminalActor {
             self.shutdown_pty().await;
             return PtyTurn::Shutdown;
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let deferred = self.buffer_native_live_output(seq, &burst.payload);
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        let deferred = false;
         if !deferred {
             self.ingest_pty_payload(&burst.payload);
         }
@@ -148,7 +145,6 @@ impl TerminalActor {
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
         self.source_events();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
         let done = std::time::Instant::now();
         crate::perf::PTY_VT_PARSE.record_duration(parsed.saturating_duration_since(started));

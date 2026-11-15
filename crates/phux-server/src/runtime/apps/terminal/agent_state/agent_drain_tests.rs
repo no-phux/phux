@@ -3,6 +3,7 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
 use super::{Prior, retract_hook, spawn_agent_state_drain, state_change_hook};
 use crate::hooks::AGENT_STATE_UNKNOWN;
+use crate::runtime::test_support::local;
 use crate::state::SharedState;
 use phux_agent_session::agent_record::AgentRecordJson;
 use phux_agent_session::asked::AskedPayload;
@@ -64,10 +65,6 @@ fn raw(state: &SharedState, terminal: &WireResourceId) -> Option<Vec<u8>> {
 
 fn stored(state: &SharedState, terminal: &WireResourceId) -> Option<AgentRecordJson> {
     raw(state, terminal).and_then(|bytes| AgentRecordJson::decode(&bytes))
-}
-
-async fn local(test: impl std::future::Future<Output = ()>) {
-    tokio::task::LocalSet::new().run_until(test).await;
 }
 
 #[test]

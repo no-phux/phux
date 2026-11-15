@@ -9,11 +9,7 @@ use phux_core::{
 fn first(h: &mut Harness) -> (phux_core::SessionKey, phux_core::ResourceKey, [u8; 16]) {
     let session = h.create_session("work", SessionLifetime::Persistent);
     let result = h
-        .run(Op::ResourceCreate {
-            session: Some(session),
-            resource: shell(),
-            placement: Some(CreatePlacement::NewGroup),
-        })
+        .create(Some(session), shell(), Some(CreatePlacement::NewGroup))
         .unwrap();
     let Reply::Ok { created, .. } = result.reply else {
         panic!("committed")
@@ -35,11 +31,7 @@ fn placed_remove_does_not_record_a_durable_result() {
     let mut h = Harness::new();
     let session = h.create_session("work", SessionLifetime::Persistent);
     let applied = h
-        .run(Op::ResourceCreate {
-            session: Some(session),
-            resource: shell(),
-            placement: Some(CreatePlacement::NewGroup),
-        })
+        .create(Some(session), shell(), Some(CreatePlacement::NewGroup))
         .unwrap();
     let key = created(&applied).1.unwrap();
     assert!(
@@ -53,11 +45,11 @@ fn placed_retain_records_a_durable_result() {
     let mut h = Harness::new();
     let session = h.create_session("work", SessionLifetime::Persistent);
     let applied = h
-        .run(Op::ResourceCreate {
-            session: Some(session),
-            resource: crate::support::job(),
-            placement: Some(CreatePlacement::NewGroup),
-        })
+        .create(
+            Some(session),
+            crate::support::job(),
+            Some(CreatePlacement::NewGroup),
+        )
         .unwrap();
     let key = created(&applied).1.unwrap();
     assert!(h.resource(key).durable_result);
@@ -70,18 +62,10 @@ fn beside_refuses_an_entry_showing_a_different_resource() {
     let mut h = Harness::new();
     let (session, anchor, entry) = first(&mut h);
     let other = h
-        .run(Op::ResourceCreate {
-            session: Some(session),
-            resource: shell(),
-            placement: Some(CreatePlacement::NewGroup),
-        })
+        .create(Some(session), shell(), Some(CreatePlacement::NewGroup))
         .unwrap();
     let other = created(&other).1.unwrap();
-    let refused = h.run(Op::ResourceCreate {
-        session: Some(session),
-        resource: shell(),
-        placement: Some(beside(other, entry)),
-    });
+    let refused = h.create(Some(session), shell(), Some(beside(other, entry)));
     assert!(
         matches!(
             refused,
@@ -113,11 +97,7 @@ fn beside_refuses_an_anchor_with_no_activation_as_stale() {
     let resource = created.resource.unwrap();
     let entry = created.entry.unwrap();
     assert!(h.resource(resource).activation.is_none());
-    let refused = h.run(Op::ResourceCreate {
-        session: Some(session),
-        resource: shell(),
-        placement: Some(beside(resource, entry)),
-    });
+    let refused = h.create(Some(session), shell(), Some(beside(resource, entry)));
     assert!(
         matches!(refused, Err(Refusal::Stale { current: None })),
         "{refused:?}"
@@ -133,11 +113,7 @@ fn beside_refuses_a_stale_activation_id() {
         unreachable!()
     };
     *activation = phux_core::ActivationId::FIRST.next();
-    let refused = h.run(Op::ResourceCreate {
-        session: Some(session),
-        resource: shell(),
-        placement: Some(placement),
-    });
+    let refused = h.create(Some(session), shell(), Some(placement));
     assert!(
         matches!(
             refused,
@@ -152,11 +128,7 @@ fn beside_refuses_an_anchor_from_another_session() {
     let mut h = Harness::new();
     let (_session, anchor, entry) = first(&mut h);
     let other = h.create_session("other", SessionLifetime::Persistent);
-    let refused = h.run(Op::ResourceCreate {
-        session: Some(other),
-        resource: shell(),
-        placement: Some(beside(anchor, entry)),
-    });
+    let refused = h.create(Some(other), shell(), Some(beside(anchor, entry)));
     assert!(
         matches!(
             refused,
@@ -467,18 +439,9 @@ fn unrelated_arrangement_edits_do_not_conflict_with_stable_entry_intent() {
     let mut h = Harness::new();
     let (session, anchor, entry) = first(&mut h);
     let intended = beside(anchor, entry);
-    h.run(Op::ResourceCreate {
-        session: Some(session),
-        resource: shell(),
-        placement: Some(CreatePlacement::NewGroup),
-    })
-    .unwrap();
-    h.run(Op::ResourceCreate {
-        session: Some(session),
-        resource: shell(),
-        placement: Some(intended),
-    })
-    .unwrap();
+    h.create(Some(session), shell(), Some(CreatePlacement::NewGroup))
+        .unwrap();
+    h.create(Some(session), shell(), Some(intended)).unwrap();
     let arrangement = h.session(session).arrangement.unwrap();
     let groups = &h.reg.org().arrangement(&arrangement).unwrap().groups;
     assert_eq!(groups.len(), 2);

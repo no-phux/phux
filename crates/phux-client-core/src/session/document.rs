@@ -1,53 +1,11 @@
-//! Document-space history projection, search, and selection.
+//! Document-space search, anchors, and selection.
 
 use super::{
     DocumentAnchorId, DocumentPoint, DocumentSpace, EngineDocumentAdapter, EngineDocumentSelection,
-    EngineHistoryProjection, EngineProjectionOrigin, HistoryCacheError, KernelError,
-    LoadedHistorySearch, ResourceId, SessionKernel, ViewportAnchor,
+    HistoryCacheError, KernelError, LoadedHistorySearch, ResourceId, SessionKernel,
 };
 
 impl<E: EngineDocumentAdapter> SessionKernel<E> {
-    /// Ask the engine to project loaded history at a frontend-only width.
-    ///
-    /// This never resizes the canonical terminal replica.
-    pub fn project_history(
-        &mut self,
-        terminal_id: &ResourceId,
-        width: u16,
-        max_rows: usize,
-    ) -> Result<EngineHistoryProjection, KernelError<E::Error>> {
-        let replica = self
-            .lanes
-            .terminal_mut(terminal_id)
-            .and_then(|state| state.published.as_mut())
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        replica.history.reproject(width);
-        let width = replica.history.projection_width();
-        let origin = match replica.history.viewport_anchor() {
-            ViewportAnchor::Tail => EngineProjectionOrigin::Tail,
-            ViewportAnchor::Pinned(anchor) => {
-                let valid = self
-                    .adapter
-                    .document_anchor_point(&replica.engine, anchor, DocumentSpace::History)
-                    .map_err(KernelError::Engine)?
-                    .is_some();
-                if valid {
-                    EngineProjectionOrigin::Anchor(anchor)
-                } else {
-                    replica.history.mark_pruned();
-                    self.adapter.clear_document_state(&mut replica.engine);
-                    EngineProjectionOrigin::Tail
-                }
-            }
-        };
-        let mut projection = self
-            .adapter
-            .project_history(&mut replica.engine, width, origin, max_rows)
-            .map_err(KernelError::Engine)?;
-        projection.has_older |= replica.history.has_continuation();
-        Ok(projection)
-    }
-
     /// Create one engine-owned anchor in the published document.
     pub fn track_document_anchor(
         &mut self,

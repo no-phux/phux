@@ -5,7 +5,6 @@ use phux_protocol::forward::{ForwardChunk, MAX_FORWARD_CHUNK_BYTES};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::LocalSet;
 use tokio::time::Instant;
 
 use super::slots::{Forwards, IDLE_REAP, MAX_FORWARDS, UNUSED_REAP};
@@ -329,25 +328,24 @@ async fn one_read_and_one_write_are_in_flight_at_a_time() {
 
 #[tokio::test]
 async fn a_close_ends_a_read_in_flight_and_the_target_sees_the_end() {
-    LocalSet::new()
-        .run_until(async {
-            let (ctx, forwards) = (ctx(), Forwards::default());
-            let (id, mut theirs) = pair(&ctx, &forwards).await;
-            let lease = forwards.lease_read(id).unwrap();
-            let parked = tokio::task::spawn_local(async move {
-                read(&ctx, lease, CHUNK, Duration::from_secs(60)).await
-            });
-            tokio::task::yield_now().await;
-            assert!(!parked.is_finished(), "the read waits for bytes");
+    crate::runtime::test_support::local(async {
+        let (ctx, forwards) = (ctx(), Forwards::default());
+        let (id, mut theirs) = pair(&ctx, &forwards).await;
+        let lease = forwards.lease_read(id).unwrap();
+        let parked = tokio::task::spawn_local(async move {
+            read(&ctx, lease, CHUNK, Duration::from_secs(60)).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!parked.is_finished(), "the read waits for bytes");
 
-            assert!(forwards.close(id).is_some());
-            assert_eq!(code(&parked.await.unwrap()), ErrorCode::NotFound);
-            assert_eq!(forwards.len(), 0);
-            let mut rest = Vec::new();
-            theirs.read_to_end(&mut rest).await.unwrap();
-            assert!(rest.is_empty(), "the target's connection ended");
-        })
-        .await;
+        assert!(forwards.close(id).is_some());
+        assert_eq!(code(&parked.await.unwrap()), ErrorCode::NotFound);
+        assert_eq!(forwards.len(), 0);
+        let mut rest = Vec::new();
+        theirs.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty(), "the target's connection ended");
+    })
+    .await;
 }
 
 /// The two orders a close and a command's end can land in: neither brings
@@ -442,28 +440,27 @@ async fn unused_and_idle_forwards_are_reaped() {
 
 #[tokio::test]
 async fn the_reaper_closes_abandoned_forwards_and_then_stops() {
-    LocalSet::new()
-        .run_until(async {
-            let (ctx, forwards) = (ctx(), Forwards::default());
-            let (_id, mut theirs) = pair(&ctx, &forwards).await;
-            // Paused only once the sockets exist: a paused clock would run
-            // the dial's deadline out while the real connect is pending.
-            tokio::time::pause();
-            assert!(forwards.claim_reaper());
-            assert!(!forwards.claim_reaper(), "one reaper per connection");
-            super::spawn_reaper(
-                ctx.state.clone(),
-                ctx.client_id,
-                ctx.token.clone(),
-                forwards.clone(),
-            );
+    crate::runtime::test_support::local(async {
+        let (ctx, forwards) = (ctx(), Forwards::default());
+        let (_id, mut theirs) = pair(&ctx, &forwards).await;
+        // Paused only once the sockets exist: a paused clock would run
+        // the dial's deadline out while the real connect is pending.
+        tokio::time::pause();
+        assert!(forwards.claim_reaper());
+        assert!(!forwards.claim_reaper(), "one reaper per connection");
+        super::spawn_reaper(
+            ctx.state.clone(),
+            ctx.client_id,
+            ctx.token.clone(),
+            forwards.clone(),
+        );
 
-            tokio::time::sleep(UNUSED_REAP + super::REAP_INTERVAL * 2).await;
-            assert_eq!(forwards.len(), 0, "the unused forward was reaped");
-            assert!(forwards.claim_reaper(), "an empty table's reaper ended");
-            assert_eq!(theirs.read(&mut [0; 1]).await.unwrap(), 0);
-        })
-        .await;
+        tokio::time::sleep(UNUSED_REAP + super::REAP_INTERVAL * 2).await;
+        assert_eq!(forwards.len(), 0, "the unused forward was reaped");
+        assert!(forwards.claim_reaper(), "an empty table's reaper ended");
+        assert_eq!(theirs.read(&mut [0; 1]).await.unwrap(), 0);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

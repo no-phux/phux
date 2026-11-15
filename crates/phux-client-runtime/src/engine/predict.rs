@@ -35,7 +35,7 @@ impl Predictor {
     }
 
     /// Draw guesses underlined (the default) or as plain text.
-    pub const fn set_underline(&mut self, underline: bool) {
+    pub(crate) const fn set_underline(&mut self, underline: bool) {
         self.underline = underline;
     }
 

@@ -15,8 +15,8 @@ pub(super) struct PickerBinding {
     callback: Closure<dyn FnMut(Event)>,
 }
 
-impl PickerBinding {
-    pub(super) fn dispose(self) {
+impl Drop for PickerBinding {
+    fn drop(&mut self) {
         let _ = self
             .container
             .remove_event_listener_with_callback("click", self.callback.as_ref().unchecked_ref());

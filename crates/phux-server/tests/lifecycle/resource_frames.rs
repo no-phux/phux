@@ -5,23 +5,15 @@ use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, SpawnResource, SpawnResult,
-};
-use phux_server_testkit::{Spawn, ascii_key, command, send_frame, spawn_resource};
-use phux_terminal_api::launch::LaunchCommand as CommandBuilder;
+use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind, SpawnResource};
+use phux_server_testkit::{ascii_key, send_frame};
 use tokio::net::UnixStream;
 
-use crate::common::{Server, attach, sh, spawned, wait_frame};
-
-const FOREVER: &str = "while :; do sleep 3600; done";
+use crate::common::{Server, demo_parent, publish, spawn_kind, wait_frame};
 
 fn frames(resource: &ResourceId) -> Vec<FrameKind> {
     vec![
-        FrameKind::InputKey {
-            terminal_id: resource.clone(),
-            event: ascii_key('a', PhysicalKey::A),
-        },
+        phux_server_testkit::input_key(resource.clone(), ascii_key('a', PhysicalKey::A)),
         FrameKind::InputMouse {
             terminal_id: resource.clone(),
             event: MouseEvent {
@@ -101,11 +93,9 @@ async fn assert_error(stream: &mut UnixStream, frame: &FrameKind, expected: Opti
 #[test]
 fn agent_session_stream_frames_keep_subscription_and_refusal_order() {
     phux_server_testkit::run_local(async {
-        let server = start();
-        let mut owner = server.connect().await;
-        attach(&mut owner, "demo").await;
-        let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
-        let session = spawn(&mut owner, SpawnResource::agent_session(parent, "claude")).await;
+        let (server, mut owner, parent) = demo_parent().await;
+        let agent = SpawnResource::agent_session(parent, "claude");
+        let session = spawn_kind(&mut owner, 2, agent).await;
         let mut outsider = server.connect().await;
         let wrong = Some(ErrorCode::WrongResourceKind);
         let malformed = Some(ErrorCode::MalformedMessage);
@@ -127,16 +117,16 @@ fn agent_session_stream_frames_keep_subscription_and_refusal_order() {
 #[test]
 fn document_stream_frames_keep_their_existing_wrong_kind_refusals() {
     phux_server_testkit::run_local(async {
-        let server = start();
-        let mut owner = server.connect().await;
-        attach(&mut owner, "demo").await;
-        let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+        let (server, mut owner, parent) = demo_parent().await;
         let mut outsider = server.connect().await;
-        for request in [
-            SpawnResource::accessibility_tree(parent.clone(), "window"),
-            SpawnResource::pixel_surface(parent, "window"),
+        for (request_id, request) in [
+            (
+                2,
+                SpawnResource::accessibility_tree(parent.clone(), "window"),
+            ),
+            (3, SpawnResource::pixel_surface(parent, "window")),
         ] {
-            let document = spawn(&mut owner, request).await;
+            let document = spawn_kind(&mut owner, request_id, request).await;
             for frame in frames(&document) {
                 assert_error(&mut owner, &frame, Some(ErrorCode::WrongResourceKind)).await;
                 assert_error(&mut outsider, &frame, Some(ErrorCode::WrongResourceKind)).await;
@@ -150,19 +140,11 @@ fn document_stream_frames_keep_their_existing_wrong_kind_refusals() {
 #[test]
 fn unknown_history_keeps_its_codec_first_tombstone_without_a_default_app() {
     phux_server_testkit::run_local(async {
-        let server = start();
+        let server = Server::start(None, |_| {});
         let mut owner = server.connect().await;
         let unknown = ResourceId::local(u32::MAX);
         assert_eq!(
-            command(
-                &mut owner,
-                90,
-                Command::PublishResourceState {
-                    terminal_id: unknown.clone(),
-                    bytes: b"{}".to_vec(),
-                }
-            )
-            .await,
+            publish(&mut owner, 90, &unknown, "{}").await,
             CommandResult::Error {
                 code: ErrorCode::InvalidCommand,
                 message: "command not supported by this server".to_owned(),
@@ -199,28 +181,4 @@ fn unknown_history_keeps_its_codec_first_tombstone_without_a_default_app() {
         drop(owner);
         server.stop().await;
     });
-}
-
-fn start() -> Server {
-    Server::start(Some("demo"), |cfg| {
-        let mut seed = CommandBuilder::new("/bin/sh");
-        seed.args(["-c", FOREVER]);
-        phux_server_testkit::seed_pty(cfg, seed);
-    })
-}
-
-async fn spawn(owner: &mut UnixStream, request: SpawnResource) -> ResourceId {
-    let SpawnResult::Ok(resource) = spawn_resource(
-        owner,
-        2,
-        Spawn {
-            resource: Some(Box::new(request)),
-            ..Spawn::default()
-        },
-    )
-    .await
-    else {
-        panic!("spawn failed");
-    };
-    resource
 }

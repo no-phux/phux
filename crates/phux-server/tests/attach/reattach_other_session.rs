@@ -6,12 +6,10 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{DetachReason, FrameKind};
-use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, attach_by_name_with_id, join_after_shutdown,
-    recv_typed, recv_until_deadline, recv_until_detached, run_local, send_frame,
-    spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SpawnedServer, attach_by_name, attach_by_name_with_id, recv_typed, recv_until_deadline,
+    recv_until_detached, run_local, send_frame,
 };
 
 use super::common::{attached, contains, create_if_missing, focused_name, output_until};
@@ -36,11 +34,9 @@ async fn detach(stream: &mut tokio::net::UnixStream) {
 #[test]
 fn reattach_to_other_session_on_same_connection() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket.clone(), None);
+        let server = SpawnedServer::pty(None);
         for name in ["ALPHA", "BETA"] {
-            let mut seed = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            let mut seed = server.connect().await;
             send_frame(
                 &mut seed,
                 &create_if_missing(&name.to_lowercase(), Some(counter(name)), None),
@@ -50,7 +46,7 @@ fn reattach_to_other_session_on_same_connection() {
             detach(&mut seed).await;
         }
 
-        let mut client = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut client = server.connect().await;
         send_frame(&mut client, &attach_by_name("alpha")).await;
         let alpha = attached(&mut client).await;
         assert_eq!(focused_name(&alpha), "alpha");
@@ -84,6 +80,6 @@ fn reattach_to_other_session_on_same_connection() {
         assert!(saw_beta, "expected live BETA output after reattach");
 
         drop(client);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }

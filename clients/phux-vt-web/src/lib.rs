@@ -1,17 +1,8 @@
-//! phux-vt-web — a Rust/WASM driver for ghostty's `libghostty-vt` terminal
-//! engine, compiled to WebAssembly (`ghostty-vt.wasm`).
-//!
-//! The phux browser client renders terminals with the *same* VT engine native
-//! phux uses. Rather than link zig into the Rust wasm binary, we load
-//! `ghostty-vt.wasm` as a separate module, which imports nothing from the
-//! host, and drive its C ABI through the WebAssembly JS API. This module is
-//! the thin, safe Rust surface over that ABI.
-//!
-//! The ABI is the public `libghostty-vt` C surface (`include/ghostty/vt.h`).
-//! Pointers are offsets into the engine module's linear memory; by-value
-//! structs (e.g. `GhosttyPoint`) lower to a pointer argument. The
-//! call/marshal patterns here mirror `libghostty-vt`'s safe wrapper
-//! (`terminal.rs` / `render.rs`), validated against the real module.
+//! phux-vt-web — a safe Rust driver for ghostty's `libghostty-vt` engine
+//! compiled to WebAssembly (`ghostty-vt.wasm`), the same VT engine native
+//! phux uses. The engine loads as a separate module that imports nothing;
+//! its public C ABI (`include/ghostty/vt.h`) is driven through the
+//! WebAssembly JS API, with pointers as offsets into the engine's memory.
 
 #![deny(missing_docs)]
 
@@ -525,17 +516,9 @@ impl Vt {
                     return Err(NativeCodecError::InvalidHandle);
                 }
                 self.w_u32(slot, continuation);
-                check_status(
-                    self.call_i32(
-                        &abi.decoder_set,
-                        &[
-                            f64::from(handle),
-                            SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
-                            f64::from(slot),
-                        ],
-                    )?,
-                    0,
-                )
+                let option = SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES;
+                let args = [f64::from(handle), option, f64::from(slot)];
+                check_status(self.call_i32(&abi.decoder_set, &args)?, 0)
             });
         self.wasm_free(slot, 4);
         result.map(|()| decoder)
@@ -547,15 +530,13 @@ impl Vt {
         let source = self.terminal(2, 2);
         source.write(b"ok");
         let Some(snapshot) = self.allocated_bytes(|out_ptr, out_len| {
-            self.call(
-                encode,
-                &[
-                    f64::from(source.term),
-                    0.0,
-                    f64::from(out_ptr),
-                    f64::from(out_len),
-                ],
-            ) as i32
+            let args = [
+                f64::from(source.term),
+                0.0,
+                f64::from(out_ptr),
+                f64::from(out_len),
+            ];
+            self.status(encode, &args)
         }) else {
             return false;
         };
@@ -578,10 +559,8 @@ impl Vt {
     #[must_use]
     pub fn terminal(self: &Rc<Self>, cols: u16, rows: u16) -> Terminal {
         let term_out = self.wasm_alloc(4);
-        let _ = self.call(
-            &self.terminal_new,
-            &[0.0, f64::from(term_out), f64::from(cols), f64::from(rows)],
-        );
+        let args = [0.0, f64::from(term_out), f64::from(cols), f64::from(rows)];
+        let _ = self.call(&self.terminal_new, &args);
         let term = self.r_u32(term_out);
         self.wasm_free(term_out, 4);
         self.terminal_from_handle(term)
@@ -589,14 +568,12 @@ impl Vt {
 
     fn terminal_from_handle(self: &Rc<Self>, term: u32) -> Terminal {
         if let Some(bell) = &self.bell {
-            let _ = self.call(
-                &self.terminal_set,
-                &[
-                    f64::from(term),
-                    TERMINAL_OPT_BELL,
-                    f64::from(bell.table_index),
-                ],
-            );
+            let args = [
+                f64::from(term),
+                TERMINAL_OPT_BELL,
+                f64::from(bell.table_index),
+            ];
+            let _ = self.call(&self.terminal_set, &args);
         }
         let state_out = self.wasm_alloc(4);
         let _ = self.call(&self.rs_new, &[0.0, f64::from(state_out)]);
@@ -649,26 +626,24 @@ impl Vt {
     // ── call + memory marshalling ────────────────────────────────────────────
 
     fn call(&self, func: &Function, args: &[f64]) -> f64 {
-        let arr = Array::new();
-        for a in args {
-            arr.push(&JsValue::from_f64(*a));
-        }
-        func.apply(&JsValue::NULL, &arr)
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
+        self.try_call(func, args).unwrap_or(0.0)
     }
 
-    fn call_i32(&self, func: &Function, args: &[f64]) -> Result<i32, NativeCodecError> {
-        let arr = Array::new();
-        for argument in args {
-            arr.push(&JsValue::from_f64(*argument));
-        }
+    /// [`Self::call`] for a call returning a `GhosttyResult`.
+    fn status(&self, func: &Function, args: &[f64]) -> i32 {
+        self.call(func, args) as i32
+    }
+
+    fn try_call(&self, func: &Function, args: &[f64]) -> Result<f64, NativeCodecError> {
+        let arr: Array = args.iter().map(|arg| JsValue::from_f64(*arg)).collect();
         func.apply(&JsValue::NULL, &arr)
             .map_err(|error| NativeCodecError::Host(format!("{error:?}")))?
             .as_f64()
-            .map(|value| value as i32)
             .ok_or_else(|| NativeCodecError::Host("engine returned a non-number".to_owned()))
+    }
+
+    fn call_i32(&self, func: &Function, args: &[f64]) -> Result<i32, NativeCodecError> {
+        self.try_call(func, args).map(|value| value as i32)
     }
 
     fn alloc_zeroed(&self, len: u32) -> Result<u32, NativeCodecError> {
@@ -1035,10 +1010,8 @@ impl Terminal {
         }
         let ptr = self.vt.wasm_alloc(data.len() as u32);
         self.vt.w_bytes(ptr, data);
-        let _ = self.vt.call(
-            &self.vt.vt_write,
-            &[f64::from(self.term), f64::from(ptr), data.len() as f64],
-        );
+        let args = [f64::from(self.term), f64::from(ptr), data.len() as f64];
+        let _ = self.vt.call(&self.vt.vt_write, &args);
         self.vt.wasm_free(ptr, data.len() as u32);
     }
 
@@ -1051,30 +1024,14 @@ impl Terminal {
         max_bytes: usize,
         max_lines: usize,
     ) -> Result<(), NativeCodecError> {
-        self.set_usize_option(
-            TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-            to_wasm_usize(max_bytes.max(1))?,
-        )?;
-        self.set_usize_option(
-            TERMINAL_OPT_SCROLLBACK_MAX_LINES,
-            to_wasm_usize(max_lines.max(1))?,
-        )
+        self.set_usize_option(TERMINAL_OPT_SCROLLBACK_MAX_BYTES, max_bytes)?;
+        self.set_usize_option(TERMINAL_OPT_SCROLLBACK_MAX_LINES, max_lines)
     }
 
-    fn set_usize_option(&self, option: f64, value: u32) -> Result<(), NativeCodecError> {
-        self.vt.w_u32(self.scratch, value);
-        let status = self.vt.call_i32(
-            &self.vt.terminal_set,
-            &[f64::from(self.term), option, f64::from(self.scratch)],
-        )?;
-        if status == GHOSTTY_SUCCESS {
-            Ok(())
-        } else {
-            Err(NativeCodecError::Status {
-                code: status,
-                consumed: 0,
-            })
-        }
+    fn set_usize_option(&self, option: f64, value: usize) -> Result<(), NativeCodecError> {
+        self.vt.w_u32(self.scratch, to_wasm_usize(value.max(1))?);
+        let args = [f64::from(self.term), option, f64::from(self.scratch)];
+        check_status(self.vt.call_i32(&self.vt.terminal_set, &args)?, 0)
     }
 
     /// Read back the engine's active scrollback byte and row budgets.
@@ -1090,32 +1047,22 @@ impl Terminal {
 
     fn get_usize(&self, data: f64) -> Result<usize, NativeCodecError> {
         self.vt.w_u32(self.scratch, 0);
-        let status = self.vt.call_i32(
-            &self.vt.terminal_get,
-            &[f64::from(self.term), data, f64::from(self.scratch)],
-        )?;
-        if status == GHOSTTY_SUCCESS {
-            Ok(self.vt.r_u32(self.scratch) as usize)
-        } else {
-            Err(NativeCodecError::Status {
-                code: status,
-                consumed: 0,
-            })
-        }
+        let args = [f64::from(self.term), data, f64::from(self.scratch)];
+        check_status(self.vt.call_i32(&self.vt.terminal_get, &args)?, 0)?;
+        Ok(self.vt.r_u32(self.scratch) as usize)
     }
 
     /// Resize the terminal grid to `cols`×`rows` (cell pixel size is advisory).
     pub fn resize(&self, cols: u16, rows: u16, cell_w_px: u32, cell_h_px: u32) {
-        let _ = self.vt.call(
-            &self.vt.resize,
-            &[
-                f64::from(self.term),
-                f64::from(cols),
-                f64::from(rows),
-                f64::from(cell_w_px),
-                f64::from(cell_h_px),
-            ],
-        );
+        let (cols, rows) = (f64::from(cols), f64::from(rows));
+        let args = [
+            f64::from(self.term),
+            cols,
+            rows,
+            f64::from(cell_w_px),
+            f64::from(cell_h_px),
+        ];
+        let _ = self.vt.call(&self.vt.resize, &args);
     }
 
     /// Scroll the viewport `rows` rows (negative is up, into scrollback).
@@ -1139,14 +1086,7 @@ impl Terminal {
         // GhosttyString: { ptr: u32, len: u32 }, which fits the 8-byte scratch.
         vt.w_u32(self.scratch, 0);
         vt.w_u32(self.scratch + 4, 0);
-        let status = vt.call(
-            &vt.terminal_get,
-            &[
-                f64::from(self.term),
-                TERMINAL_DATA_TITLE,
-                f64::from(self.scratch),
-            ],
-        ) as i32;
+        let status = self.term_get(TERMINAL_DATA_TITLE, self.scratch);
         let (ptr, len) = (vt.r_u32(self.scratch), vt.r_u32(self.scratch + 4));
         if status != GHOSTTY_SUCCESS || ptr == 0 || len == 0 {
             return String::new();
@@ -1175,15 +1115,7 @@ impl Terminal {
         let Ok(out) = vt.alloc_zeroed(24) else {
             return bar;
         };
-        let status = vt.call(
-            &vt.terminal_get,
-            &[
-                f64::from(self.term),
-                TERMINAL_DATA_SCROLLBAR,
-                f64::from(out),
-            ],
-        ) as i32;
-        if status == GHOSTTY_SUCCESS {
+        if self.term_get(TERMINAL_DATA_SCROLLBAR, out) == GHOSTTY_SUCCESS {
             let read =
                 |at: u32| u64::from(vt.r_u32(out + at)) | u64::from(vt.r_u32(out + at + 4)) << 32;
             bar = Scrollbar {
@@ -1229,15 +1161,8 @@ impl Terminal {
         let vt = &*self.vt;
         // A `GhosttyMode` with the ANSI bit (15) clear, and `value` cleared.
         vt.w_u32(self.scratch, u32::from(mode & 0x7fff));
-        let status = vt.call(
-            &vt.terminal_get,
-            &[
-                f64::from(self.term),
-                TERMINAL_DATA_MODE,
-                f64::from(self.scratch),
-            ],
-        ) as i32;
-        status == GHOSTTY_SUCCESS && vt.r_u8(self.scratch + MODE_CONFIG_VALUE_OFFSET) != 0
+        self.term_get(TERMINAL_DATA_MODE, self.scratch) == GHOSTTY_SUCCESS
+            && vt.r_u8(self.scratch + MODE_CONFIG_VALUE_OFFSET) != 0
     }
 
     /// Plain text of every row of the active screen, oldest scrollback row
@@ -1256,10 +1181,8 @@ impl Terminal {
     fn formatted_text(&self, selection: u32, unwrap: bool) -> Option<String> {
         let vt = &*self.vt;
         let slot = vt.alloc_zeroed(4).ok()?;
-        let status = vt.call(
-            &vt.formatter_new,
-            &[0.0, f64::from(slot), f64::from(self.term)],
-        ) as i32;
+        let args = [0.0, f64::from(slot), f64::from(self.term)];
+        let status = vt.status(&vt.formatter_new, &args);
         let formatter = vt.r_u32(slot);
         vt.wasm_free(slot, 4);
         if status != GHOSTTY_SUCCESS || formatter == 0 {
@@ -1277,24 +1200,19 @@ impl Terminal {
             (FORMATTER_OPT_UNWRAP, self.scratch),
             (FORMATTER_OPT_SELECTION, selection),
         ] {
-            let status = vt.call(
-                &vt.formatter_set,
-                &[f64::from(formatter), option, f64::from(value)],
-            ) as i32;
-            if status != GHOSTTY_SUCCESS {
+            let args = [f64::from(formatter), option, f64::from(value)];
+            if vt.status(&vt.formatter_set, &args) != GHOSTTY_SUCCESS {
                 return None;
             }
         }
         vt.allocated_output(|out_ptr, out_len| {
-            vt.call(
-                &vt.formatter_format,
-                &[
-                    f64::from(formatter),
-                    0.0,
-                    f64::from(out_ptr),
-                    f64::from(out_len),
-                ],
-            ) as i32
+            let args = [
+                f64::from(formatter),
+                0.0,
+                f64::from(out_ptr),
+                f64::from(out_len),
+            ];
+            vt.status(&vt.formatter_format, &args)
         })
     }
 
@@ -1333,24 +1251,20 @@ impl Terminal {
         }
         // A null buffer asks for the size: success means no link.
         vt.w_u32(self.scratch, 0);
-        let status = vt.call(
-            &vt.hyperlink_uri,
-            &[f64::from(grid_ref), 0.0, 0.0, f64::from(self.scratch)],
-        ) as i32;
+        let args = [f64::from(grid_ref), 0.0, 0.0, f64::from(self.scratch)];
+        let status = vt.status(&vt.hyperlink_uri, &args);
         let needed = vt.r_u32(self.scratch);
         if status != GHOSTTY_OUT_OF_SPACE || needed == 0 || needed > MAX_HYPERLINK_BYTES {
             return None;
         }
         let buf = vt.alloc_zeroed(needed).ok()?;
-        let status = vt.call(
-            &vt.hyperlink_uri,
-            &[
-                f64::from(grid_ref),
-                f64::from(buf),
-                f64::from(needed),
-                f64::from(self.scratch),
-            ],
-        ) as i32;
+        let args = [
+            f64::from(grid_ref),
+            f64::from(buf),
+            f64::from(needed),
+            f64::from(self.scratch),
+        ];
+        let status = vt.status(&vt.hyperlink_uri, &args);
         let written = vt.r_u32(self.scratch).min(needed);
         let uri = (status == GHOSTTY_SUCCESS && written > 0).then(|| {
             String::from_utf8_lossy(&vt.bytes().subarray(buf, buf + written).to_vec()).into_owned()
@@ -1369,10 +1283,8 @@ impl Terminal {
         vt.w_u32(point, POINT_TAG_VIEWPORT);
         vt.w_u32(point + 8, u32::from(col));
         vt.w_u32(point + 12, u32::from(row));
-        let status = vt.call(
-            &vt.grid_ref,
-            &[f64::from(self.term), f64::from(point), f64::from(out)],
-        ) as i32;
+        let args = [f64::from(self.term), f64::from(point), f64::from(out)];
+        let status = vt.status(&vt.grid_ref, &args);
         vt.wasm_free(point, POINT_SIZE);
         status == GHOSTTY_SUCCESS
     }
@@ -1386,10 +1298,8 @@ impl Terminal {
         vt.w_bytes(behavior, &[0; SCROLL_VIEWPORT_SIZE as usize]);
         vt.w_u32(behavior, tag);
         vt.w_u32(behavior + SCROLL_VIEWPORT_VALUE_OFFSET, delta as u32);
-        let _ = vt.call(
-            &vt.scroll_viewport,
-            &[f64::from(self.term), f64::from(behavior)],
-        );
+        let args = [f64::from(self.term), f64::from(behavior)];
+        let _ = vt.call(&vt.scroll_viewport, &args);
         vt.wasm_free(behavior, SCROLL_VIEWPORT_SIZE);
     }
 
@@ -1397,41 +1307,43 @@ impl Terminal {
     /// is read separately by the renderer). Trailing blanks are trimmed.
     #[must_use]
     pub fn rows_text(&self) -> Vec<String> {
-        let vt = &*self.vt;
-        let _ = vt.call(
-            &vt.rs_update,
-            &[f64::from(self.state), f64::from(self.term)],
-        );
-        // Bind the row iterator to the current render state (rewrites iter_slot).
-        let _ = vt.call(
-            &vt.rs_get,
-            &[
-                f64::from(self.state),
-                RENDER_STATE_DATA_ROW_ITERATOR,
-                f64::from(self.iter_slot),
-            ],
-        );
-        let iter = vt.r_u32(self.iter_slot);
-
+        self.update_render_state();
         let mut lines = Vec::new();
-        while vt.call(&vt.row_iter_next, &[f64::from(iter)]) as i32 != 0 {
-            // Bind the cell container to this row (rewrites cells_slot in place).
-            let _ = vt.call(
-                &vt.row_get,
-                &[
-                    f64::from(iter),
-                    RENDER_STATE_ROW_DATA_CELLS,
-                    f64::from(self.cells_slot),
-                ],
-            );
-            let cells = vt.r_u32(self.cells_slot);
+        self.for_each_row(|cells| {
             let mut line = String::new();
-            while vt.call(&vt.cells_next, &[f64::from(cells)]) as i32 != 0 {
+            while self.next_cell(cells) {
                 line.push(self.cell_base_char(cells));
             }
             lines.push(line.trim_end().to_string());
-        }
+        });
         lines
+    }
+
+    fn update_render_state(&self) {
+        let vt = &*self.vt;
+        let args = [f64::from(self.state), f64::from(self.term)];
+        let _ = vt.call(&vt.rs_update, &args);
+    }
+
+    /// Walk the render state's rows, handing `row` each row's cell iterator.
+    fn for_each_row(&self, mut row: impl FnMut(u32)) {
+        let vt = &*self.vt;
+        // Binding rewrites `iter_slot` (and, per row, `cells_slot`) in place.
+        let _ = self.rs_get(RENDER_STATE_DATA_ROW_ITERATOR, self.iter_slot);
+        let iter = vt.r_u32(self.iter_slot);
+        while vt.status(&vt.row_iter_next, &[f64::from(iter)]) != 0 {
+            let args = [
+                f64::from(iter),
+                RENDER_STATE_ROW_DATA_CELLS,
+                f64::from(self.cells_slot),
+            ];
+            let _ = vt.call(&vt.row_get, &args);
+            row(vt.r_u32(self.cells_slot));
+        }
+    }
+
+    fn next_cell(&self, cells: u32) -> bool {
+        self.vt.status(&self.vt.cells_next, &[f64::from(cells)]) != 0
     }
 
     /// The base grapheme of the current cell (or space if blank/unreadable).
@@ -1440,14 +1352,7 @@ impl Terminal {
         vt.w_u32(self.grapheme_buf, self.grapheme_buf + CODEPOINT_BUFFER_SIZE);
         vt.w_u32(self.grapheme_buf + 4, 1);
         vt.w_u32(self.grapheme_buf + 8, 0);
-        let status = vt.call(
-            &vt.cells_get,
-            &[
-                f64::from(cells),
-                ROW_CELLS_DATA_GRAPHEMES_BUF,
-                f64::from(self.grapheme_buf),
-            ],
-        ) as i32;
+        let status = self.cells_get(cells, ROW_CELLS_DATA_GRAPHEMES_BUF, self.grapheme_buf);
         // The grid intentionally exposes only the base codepoint. A cluster
         // longer than one returns OUT_OF_SPACE after writing that prefix.
         if !matches!(status, GHOSTTY_SUCCESS | GHOSTTY_OUT_OF_SPACE)
@@ -1462,12 +1367,7 @@ impl Terminal {
     /// fg/bg, plus the terminal's default fg/bg. Rows are padded to `cols`.
     #[must_use]
     pub fn grid(&self) -> Grid {
-        let vt = &*self.vt;
-        let _ = vt.call(
-            &vt.rs_update,
-            &[f64::from(self.state), f64::from(self.term)],
-        );
-
+        self.update_render_state();
         let cols = self.rs_u32(RENDER_STATE_DATA_COLS) as u16;
         let rows = self.rs_u32(RENDER_STATE_DATA_ROWS) as u16;
         let default_fg = self.rs_color(RENDER_STATE_DATA_COLOR_FG).unwrap_or(Rgb {
@@ -1480,117 +1380,84 @@ impl Terminal {
             g: 0x0b,
             b: 0x0f,
         });
-
-        let _ = vt.call(
-            &vt.rs_get,
-            &[
-                f64::from(self.state),
-                RENDER_STATE_DATA_ROW_ITERATOR,
-                f64::from(self.iter_slot),
-            ],
-        );
-        let iter = vt.r_u32(self.iter_slot);
-
         let mut cells = Vec::with_capacity(usize::from(cols) * usize::from(rows));
-        while vt.call(&vt.row_iter_next, &[f64::from(iter)]) as i32 != 0 {
-            let _ = vt.call(
-                &vt.row_get,
-                &[
-                    f64::from(iter),
-                    RENDER_STATE_ROW_DATA_CELLS,
-                    f64::from(self.cells_slot),
-                ],
-            );
-            let cell_iter = vt.r_u32(self.cells_slot);
-            let mut n: u16 = 0;
-            while vt.call(&vt.cells_next, &[f64::from(cell_iter)]) as i32 != 0 {
+        self.for_each_row(|cell_iter| {
+            let row_start = cells.len();
+            while self.next_cell(cell_iter) {
                 cells.push(GridCell {
                     ch: self.cell_base_char(cell_iter),
                     fg: self.cell_color(cell_iter, ROW_CELLS_DATA_FG_COLOR),
                     bg: self.cell_color(cell_iter, ROW_CELLS_DATA_BG_COLOR),
                     inverse: self.cell_inverse(cell_iter),
                 });
-                n += 1;
             }
             // Keep the grid rectangular: pad short rows out to `cols`.
-            while n < cols {
-                cells.push(GridCell {
-                    ch: ' ',
-                    fg: None,
-                    bg: None,
-                    inverse: false,
-                });
-                n += 1;
-            }
-        }
-
-        // Cursor position + visibility, read straight off the terminal.
-        let cursor_col = self.term_u32(TERMINAL_DATA_CURSOR_X) as u16;
-        let cursor_row = self.term_u32(TERMINAL_DATA_CURSOR_Y) as u16;
-        let cursor_visible = self.term_u32(TERMINAL_DATA_CURSOR_VISIBLE) != 0;
-
+            let blank = GridCell {
+                ch: ' ',
+                fg: None,
+                bg: None,
+                inverse: false,
+            };
+            cells.resize(cells.len().max(row_start + usize::from(cols)), blank);
+        });
         Grid {
             cols,
             rows,
             default_fg,
             default_bg,
             cells,
-            cursor_col,
-            cursor_row,
-            cursor_visible,
+            cursor_col: self.term_u32(TERMINAL_DATA_CURSOR_X) as u16,
+            cursor_row: self.term_u32(TERMINAL_DATA_CURSOR_Y) as u16,
+            cursor_visible: self.term_u32(TERMINAL_DATA_CURSOR_VISIBLE) != 0,
         }
+    }
+
+    /// `ghostty_terminal_get` of `tag` into `out`.
+    fn term_get(&self, tag: f64, out: u32) -> i32 {
+        let vt = &*self.vt;
+        vt.status(
+            &vt.terminal_get,
+            &[f64::from(self.term), tag, f64::from(out)],
+        )
+    }
+
+    /// `ghostty_render_state_get` of `tag` into `out`.
+    fn rs_get(&self, tag: f64, out: u32) -> i32 {
+        let vt = &*self.vt;
+        vt.status(&vt.rs_get, &[f64::from(self.state), tag, f64::from(out)])
+    }
+
+    /// `ghostty_render_state_row_cells_get` of the current cell's `tag` into `out`.
+    fn cells_get(&self, cells: u32, tag: f64, out: u32) -> i32 {
+        let vt = &*self.vt;
+        vt.status(&vt.cells_get, &[f64::from(cells), tag, f64::from(out)])
     }
 
     /// Read a u32-valued terminal data field via `ghostty_terminal_get`.
     /// Zeroes the scratch first so a narrower write (e.g. a bool) reads cleanly.
     fn term_u32(&self, tag: f64) -> u32 {
-        let vt = &*self.vt;
-        vt.w_u32(self.scratch, 0);
-        let _ = vt.call(
-            &vt.terminal_get,
-            &[f64::from(self.term), tag, f64::from(self.scratch)],
-        );
-        vt.r_u32(self.scratch)
+        self.vt.w_u32(self.scratch, 0);
+        let _ = self.term_get(tag, self.scratch);
+        self.vt.r_u32(self.scratch)
     }
 
     fn rs_u32(&self, tag: f64) -> u32 {
-        let vt = &*self.vt;
-        let _ = vt.call(
-            &vt.rs_get,
-            &[f64::from(self.state), tag, f64::from(self.scratch)],
-        );
-        vt.r_u32(self.scratch)
+        let _ = self.rs_get(tag, self.scratch);
+        self.vt.r_u32(self.scratch)
     }
 
     fn rs_color(&self, tag: f64) -> Option<Rgb> {
-        let vt = &*self.vt;
-        let r = vt.call(
-            &vt.rs_get,
-            &[f64::from(self.state), tag, f64::from(self.scratch)],
-        ) as i32;
-        (r == GHOSTTY_SUCCESS).then(|| self.read_rgb(self.scratch))
+        (self.rs_get(tag, self.scratch) == GHOSTTY_SUCCESS).then(|| self.read_rgb(self.scratch))
     }
 
     fn cell_inverse(&self, cells: u32) -> bool {
-        let status = self.vt.call(
-            &self.vt.cells_get,
-            &[
-                f64::from(cells),
-                ROW_CELLS_DATA_STYLE,
-                f64::from(self.style_buf),
-            ],
-        ) as i32;
-        status == GHOSTTY_SUCCESS
+        self.cells_get(cells, ROW_CELLS_DATA_STYLE, self.style_buf) == GHOSTTY_SUCCESS
             && self.vt.r_u8(self.style_buf + CELL_STYLE_FLAGS_OFFSET) & CELL_STYLE_FLAG_INVERSE != 0
     }
 
     fn cell_color(&self, cells: u32, tag: f64) -> Option<Rgb> {
-        let vt = &*self.vt;
-        let r = vt.call(
-            &vt.cells_get,
-            &[f64::from(cells), tag, f64::from(self.scratch)],
-        ) as i32;
-        (r == GHOSTTY_SUCCESS).then(|| self.read_rgb(self.scratch))
+        (self.cells_get(cells, tag, self.scratch) == GHOSTTY_SUCCESS)
+            .then(|| self.read_rgb(self.scratch))
     }
 
     fn read_rgb(&self, ptr: u32) -> Rgb {
@@ -1607,20 +1474,16 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         // The allocator may hand this handle to a later terminal.
         let _ = self.take_bell();
-        let row_iterator = self.vt.r_u32(self.iter_slot);
-        let cells = self.vt.r_u32(self.cells_slot);
-        let _ = self
-            .vt
-            .call(&self.vt.row_iter_free, &[f64::from(row_iterator)]);
-        let _ = self.vt.call(&self.vt.cells_free, &[f64::from(cells)]);
-        let _ = self.vt.call(&self.vt.rs_free, &[f64::from(self.state)]);
-        let _ = self
-            .vt
-            .call(&self.vt.terminal_free, &[f64::from(self.term)]);
-        self.vt.wasm_free(self.iter_slot, 4);
-        self.vt.wasm_free(self.cells_slot, 4);
-        self.vt.wasm_free(self.scratch, 8);
-        self.vt.wasm_free(self.style_buf, CELL_STYLE_SIZE);
-        self.vt.wasm_free(self.grapheme_buf, GRAPHEME_SCRATCH_SIZE);
+        let vt = &*self.vt;
+        let (row_iterator, cells) = (vt.r_u32(self.iter_slot), vt.r_u32(self.cells_slot));
+        let _ = vt.call(&vt.row_iter_free, &[f64::from(row_iterator)]);
+        let _ = vt.call(&vt.cells_free, &[f64::from(cells)]);
+        let _ = vt.call(&vt.rs_free, &[f64::from(self.state)]);
+        let _ = vt.call(&vt.terminal_free, &[f64::from(self.term)]);
+        vt.wasm_free(self.iter_slot, 4);
+        vt.wasm_free(self.cells_slot, 4);
+        vt.wasm_free(self.scratch, 8);
+        vt.wasm_free(self.style_buf, CELL_STYLE_SIZE);
+        vt.wasm_free(self.grapheme_buf, GRAPHEME_SCRATCH_SIZE);
     }
 }

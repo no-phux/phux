@@ -95,22 +95,14 @@ fn numeric_tab_jumps_collapse_to_one_row() {
 
 #[test]
 fn popup_is_passthrough_and_bounded() {
-    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
     let mut overlay =
         WhichKeyOverlay::from_config(&cfg_with("C-a", &[("d", "detach")]), &Theme::default());
     assert!(overlay.is_input_passthrough());
     let area = Rect::new(0, 0, 80, 24);
     assert!(overlay.bounds(area).is_some(), "floats over the panes");
     // Defensive handle_key dismisses (never consumes).
-    let key = KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::A,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    };
+    let key = crate::test_util::press(PhysicalKey::A);
     assert_eq!(overlay.handle_key(&key), OverlayCommand::Dismiss);
 }
 

@@ -10,14 +10,13 @@ use rune::Tx;
 
 use super::Desk;
 use crate::pitlane::{self, Driver};
-use crate::reef::{self, Mood};
+use crate::playground::{self, Mood};
 
 /// How often the pit lane redraws while open: every frame.
 const FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Default)]
 pub struct PitLane {
-    pub open: bool,
     pub scene: pitlane::PitLane,
     /// The view's size in points, from its last layout.
     pub viewport: [f32; 2],
@@ -34,29 +33,24 @@ pub struct PitLane {
 
 impl Desk {
     pub fn toggle_pitlane(&mut self) {
-        if self.pitlane.open {
+        if self.playground == Some(super::surfaces::Playground::PitLane) {
             self.close_pitlane();
             return;
         }
         self.close_inbox();
-        self.close_galaxy();
-        self.close_reef();
-        self.close_pitch();
-        self.close_kitchen();
-        self.close_hive();
         self.settings_open = false;
-        self.pitlane.open = true;
+        self.playground = Some(super::surfaces::Playground::PitLane);
         self.pitlane.last = None;
         self.pitlane.scene.selected = None;
     }
 
     pub fn close_pitlane(&mut self) {
-        self.pitlane.open = false;
+        self.close_playground(super::surfaces::Playground::PitLane);
     }
 
     /// Keep the cars in step with the fleet and the race moving while open.
     pub(super) fn tick_pitlane(&mut self, tx: &mut Tx) -> bool {
-        if !self.pitlane.open {
+        if self.playground != Some(super::surfaces::Playground::PitLane) {
             return false;
         }
         self.refresh_pitlane();
@@ -78,19 +72,19 @@ impl Desk {
 
     /// Machines as garages in the galaxy's order, every agent it knows of as a car.
     fn refresh_pitlane(&mut self) {
-        let planets = self.planets();
+        let planets = self.fleet_machines();
         let hosts: Vec<(String, bool)> =
             planets.iter().map(|p| (p.name.clone(), p.known)).collect();
         let drivers = planets
             .iter()
             .enumerate()
             .flat_map(|(at, p)| {
-                p.stars.iter().map(move |s| Driver {
+                p.agents.iter().map(move |s| Driver {
                     id: s.id.clone(),
                     name: s.name.clone(),
                     host: at,
                     mood: Mood::of(s.mark),
-                    species: reef::species(s.kind.as_deref(), &s.name),
+                    species: playground::species(s.kind.as_deref(), &s.name),
                     work: s.work,
                 })
             })
@@ -159,6 +153,6 @@ impl Desk {
         };
         let id = c.who.id.clone();
         self.close_pitlane();
-        self.go_to_star(&id);
+        self.go_to_agent(&id);
     }
 }

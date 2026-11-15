@@ -3097,8 +3097,6 @@ dependencies = [
 name = "phux-client-ffi"
 version = "0.153.0"
 dependencies = [
- "bytes",
- "futures-util",
  "libghostty-vt",
  "phux-client-core",
  "phux-client-runtime",
@@ -3107,17 +3105,12 @@ dependencies = [
  "phux-relay",
  "phux-server",
  "phux-server-testkit",
- "portable-pty",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
  "uniffi",
- "uuid",
 ]
 
 [[package]]
@@ -3385,7 +3378,6 @@ dependencies = [
  "phux-agent-rules",
  "phux-agent-session",
  "phux-client-core",
- "phux-client-ffi",
  "phux-config",
  "phux-core",
  "phux-dial",

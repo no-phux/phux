@@ -5,70 +5,159 @@
     reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
 )]
 
-use std::path::PathBuf;
 use std::time::Duration;
 
+use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, EventStamp, FrameKind,
-    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResult, StateScope,
-    ViewportInfo,
+    AgentEvent, AttachTarget, Command, CommandResult, EventStamp, FrameKind, SESSION_CREATE_KEY,
+    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult, ViewportInfo,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
-use phux_server::{ServerConfig, ServerError};
+use phux_server::{LaunchCommand, ServerConfig};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, command, join_after_shutdown,
-    recv_until_deadline, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
+    Spawn, WIRE_RECV_TIMEOUT, command, recv_until_deadline, seed_pty, send_frame, spawn_resource,
 };
-use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
-/// A server in its own temp dir.
-pub(crate) struct Server {
-    pub(crate) tmp: TempDir,
-    pub(crate) socket: PathBuf,
-    shutdown: oneshot::Sender<()>,
-    handle: JoinHandle<Result<(), ServerError>>,
-}
-
-impl Server {
-    /// Start a server, optionally pre-seeding session `pre_seeded`.
-    pub(crate) fn start(
-        pre_seeded: Option<&str>,
-        configure: impl FnOnce(&mut ServerConfig),
-    ) -> Self {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, handle) = spawn_server_with(socket.clone(), pre_seeded, configure);
-        Self {
-            tmp,
-            socket,
-            shutdown,
-            handle,
-        }
-    }
-
-    /// A server whose panes (seed and attach-create) run on real PTYs.
-    pub(crate) fn pty(pre_seeded: Option<&str>) -> Self {
-        Self::start(pre_seeded, |cfg| cfg.seed_with_pty = true)
-    }
-
-    /// A HELLO'd client.
-    pub(crate) async fn connect(&self) -> UnixStream {
-        wait_for_socket(&self.socket, SOCKET_CONNECT_DEADLINE).await
-    }
-
-    pub(crate) async fn stop(self) {
-        join_after_shutdown(self.shutdown, self.handle).await;
-    }
-}
+pub(crate) use phux_server_testkit::SpawnedServer as Server;
 
 /// `/bin/sh -c script` as an argv.
 pub(crate) fn sh(script: &str) -> Spawn {
     Spawn::command(&["/bin/sh", "-c", script])
+}
+
+pub(crate) const FOREVER: &str = "while :; do sleep 3600; done";
+
+/// A server seeding `demo` with a pane that never exits, `owner` attached to it.
+pub(crate) async fn demo(configure: impl FnOnce(&mut ServerConfig)) -> (Server, UnixStream) {
+    let server = Server::start(Some("demo"), |cfg| {
+        let mut seed = LaunchCommand::new("/bin/sh");
+        seed.args(["-c", FOREVER]);
+        seed_pty(cfg, seed);
+        configure(cfg);
+    });
+    let mut owner = server.connect().await;
+    attach(&mut owner, "demo").await;
+    (server, owner)
+}
+
+/// [`demo`] plus a never-exiting parent Terminal (request 1) to bind under.
+pub(crate) async fn demo_parent() -> (Server, UnixStream, ResourceId) {
+    let (server, mut owner) = demo(|_| {}).await;
+    let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+    (server, owner, parent)
+}
+
+/// Spawn a non-Terminal `resource`, requiring `Ok`.
+pub(crate) async fn spawn_kind(
+    stream: &mut UnixStream,
+    request_id: u32,
+    resource: SpawnResource,
+) -> ResourceId {
+    let spawn = Spawn {
+        resource: Some(Box::new(resource)),
+        ..Spawn::default()
+    };
+    spawned(stream, request_id, spawn).await
+}
+
+/// `PUBLISH_RESOURCE_STATE` of `bytes` to `id`.
+pub(crate) async fn publish(
+    stream: &mut UnixStream,
+    request_id: u32,
+    id: &ResourceId,
+    bytes: impl Into<Vec<u8>>,
+) -> CommandResult {
+    let publish = Command::PublishResourceState {
+        terminal_id: id.clone(),
+        bytes: bytes.into(),
+    };
+    command(stream, request_id, publish).await
+}
+
+pub(crate) use phux_server_testkit::send_command;
+
+/// A bootstrap of `id`: (`BEGIN` grid, profile, `base_seq`, concatenated chunks).
+pub(crate) async fn bootstrap(
+    stream: &mut UnixStream,
+    id: &ResourceId,
+) -> ((u16, u16), BootstrapStreamProfile, u64, Vec<u8>) {
+    let mut begin = None;
+    let mut chunks = Vec::new();
+    let mut generation = None;
+    wait_frame(stream, "bootstrap", |frame| match frame {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            cols,
+            rows,
+            profile,
+            base_seq,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            begin = Some(((cols, rows), profile, base_seq));
+            generation = Some(bootstrap_id);
+            None
+        }
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            payload,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "chunk from an old generation"
+            );
+            chunks.extend_from_slice(&payload);
+            None
+        }
+        FrameKind::BootstrapReady {
+            terminal_id,
+            bootstrap_id,
+            ..
+        } if &terminal_id == id => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "READY from an old generation"
+            );
+            Some(())
+        }
+        FrameKind::ResourceOutput { terminal_id, .. } if &terminal_id == id && begin.is_some() => {
+            panic!("old-generation live output interleaved with the bootstrap");
+        }
+        _ => None,
+    })
+    .await;
+    let (grid, profile, base_seq) = begin.expect("BOOTSTRAP_BEGIN");
+    (grid, profile, base_seq, chunks)
+}
+
+/// Wait for `id`'s `BOOTSTRAP_READY`.
+pub(crate) async fn bootstrap_ready(stream: &mut UnixStream, id: &ResourceId) {
+    wait_frame(stream, "BOOTSTRAP_READY", |frame| match frame {
+        FrameKind::BootstrapReady { terminal_id, .. } if &terminal_id == id => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// The next live `RESOURCE_OUTPUT` for `id`: its seq and bytes.
+pub(crate) async fn next_output(stream: &mut UnixStream, id: &ResourceId) -> (u64, Vec<u8>) {
+    wait_frame(stream, "RESOURCE_OUTPUT", |frame| match frame {
+        FrameKind::ResourceOutput {
+            terminal_id,
+            seq,
+            bytes,
+            ..
+        } if &terminal_id == id => Some((seq, bytes.to_vec())),
+        _ => None,
+    })
+    .await
 }
 
 /// An unmodified Enter press with no text (the encoder synthesizes the CR).
@@ -87,10 +176,7 @@ pub(crate) const fn enter_key() -> KeyEvent {
 /// Send Enter to `pane`: releases children blocked on `read _`, so their
 /// output or exit cannot race the spawn reply.
 pub(crate) async fn release(stream: &mut UnixStream, pane: &ResourceId) {
-    let key = FrameKind::InputKey {
-        terminal_id: pane.clone(),
-        event: enter_key(),
-    };
+    let key = phux_server_testkit::input_key(pane.clone(), enter_key());
     send_frame(stream, &key).await;
 }
 
@@ -153,16 +239,7 @@ pub(crate) async fn spawned(stream: &mut UnixStream, request_id: u32, spawn: Spa
     }
 }
 
-/// `GET_STATE { Server }`. Also an in-order barrier for this connection.
-pub(crate) async fn state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get = Command::GetState {
-        scope: StateScope::Server,
-    };
-    match command(stream, request_id, get).await {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("GET_STATE failed: {other:?}"),
-    }
-}
+pub(crate) use phux_server_testkit::server_state as state;
 
 /// Poll `GET_STATE` until `ready` holds.
 pub(crate) async fn wait_for_state(
@@ -207,10 +284,7 @@ pub(crate) async fn subscribe(
 ) {
     send_frame(
         stream,
-        &FrameKind::SubscribeEvents {
-            terminal,
-            after_seq,
-        },
+        &phux_server_testkit::subscribe_events(terminal, after_seq),
     )
     .await;
     state(stream, request_id).await;
@@ -283,11 +357,7 @@ pub(crate) async fn get_metadata(
     scope: Scope,
     key: &str,
 ) -> Option<Vec<u8>> {
-    let get = FrameKind::GetMetadata {
-        request_id,
-        scope,
-        key: key.to_owned(),
-    };
+    let get = phux_server_testkit::get_metadata(request_id, scope, key);
     send_frame(stream, &get).await;
     wait_frame(stream, "METADATA_VALUE", |frame| match frame {
         FrameKind::MetadataValue {
@@ -310,12 +380,12 @@ pub(crate) async fn send_create(
     request_id: u32,
     body: &serde_json::Value,
 ) {
-    let set = FrameKind::SetMetadata {
+    let set = phux_server_testkit::set_metadata(
         request_id,
-        scope: Scope::Global,
-        key: SESSION_CREATE_KEY.to_owned(),
-        value: serde_json::to_vec(body).unwrap(),
-    };
+        Scope::Global,
+        SESSION_CREATE_KEY,
+        serde_json::to_vec(body).unwrap(),
+    );
     send_frame(stream, &set).await;
 }
 

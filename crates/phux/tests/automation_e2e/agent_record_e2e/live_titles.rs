@@ -2,13 +2,9 @@
 /// paints nothing else, and holds. With an empty screen, any state the server
 /// derives for it comes from a `title`-scoped rule alone.
 fn write_titled_agent(dir: &std::path::Path, name: &str, title: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join(name);
     let script = format!("#!/bin/sh\nprintf '\\033[2J\\033[H\\033]2;{title}\\007'\nsleep 120\n");
-    std::fs::write(&path, script).expect("write titled agent");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod titled agent");
+    crate::common::write_executable(&path, script);
     path
 }
 
@@ -61,16 +57,13 @@ fn a_title_only_rule_is_explained_with_the_title_the_detector_read() {
 /// Write an executable that raises the ADR-0035 `phux-ask` title sentinel
 /// for `deploy`, then writes the first line it reads to `answer_file`.
 fn write_asker(dir: &std::path::Path, answer_file: &std::path::Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join("asker");
     let script = format!(
         "#!/bin/sh\nprintf '\\033]2;phux-ask[deploy]:Deploy to prod??s=Yes|No\\007'\n\
          IFS= read -r answer\nprintf '%s\\n' \"$answer\" > '{}'\nsleep 120\n",
         answer_file.display()
     );
-    std::fs::write(&path, script).expect("write asker");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod asker");
+    crate::common::write_executable(&path, script);
     path
 }
 

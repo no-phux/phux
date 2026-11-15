@@ -28,9 +28,7 @@ pub(in crate::wire) fn encode_command_result(result: &CommandResult, enc: &mut E
         }
         CommandResult::Accepted { operation } => {
             enc.write_u8(crate::wire::frame::COMMAND_RESULT_TAG_ACCEPTED);
-            for byte in operation.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(operation.as_bytes());
         }
     }
 }
@@ -56,10 +54,7 @@ pub(in crate::wire) fn decode_command_result(
             CommandResult::Refused,
         ),
         crate::wire::frame::COMMAND_RESULT_TAG_ACCEPTED => {
-            let mut bytes = [0; 16];
-            for byte in &mut bytes {
-                *byte = dec.read_u8()?;
-            }
+            let bytes: [u8; 16] = dec.read_array()?;
             let operation = IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)?;
             Ok(CommandResult::Accepted { operation })
         }
@@ -139,9 +134,7 @@ pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) 
             enc.write_u64_be(chunk.size);
             enc.write_bytes(&chunk.data);
             enc.write_option(chunk.sha256.as_ref(), |e, digest| {
-                for byte in digest {
-                    e.write_u8(*byte);
-                }
+                e.write_raw(digest);
             });
         }
         CommandValue::OrganizationPage(page) => {

@@ -54,32 +54,35 @@ fn entry(name: &str, endpoint: &str, enabled: bool) -> SatelliteConfigEntry {
 }
 
 #[test]
-fn parses_quic_and_ws_endpoints() {
+fn parses_quic_ws_and_inbound_endpoints_and_displays_them_back() {
     let quic = |host: &str| SatelliteTarget::Quic {
         host: host.to_owned(),
         port: 8788,
     };
+    let url = |url: &str| url.to_owned();
     assert_eq!(parse_endpoint("quic://devbox:8788"), Ok(quic("devbox")));
     assert_eq!(parse_endpoint("quic://[::1]:8788"), Ok(quic("[::1]")));
+    let ws = "ws://127.0.0.1:8787";
+    assert_eq!(parse_endpoint(ws), Ok(SatelliteTarget::Ws { url: url(ws) }));
+    let wss = "wss://host:8787/phux";
     assert_eq!(
-        parse_endpoint("ws://127.0.0.1:8787"),
-        Ok(SatelliteTarget::Ws {
-            url: "ws://127.0.0.1:8787".to_owned(),
-        })
+        parse_endpoint(wss),
+        Ok(SatelliteTarget::Wss { url: url(wss) })
     );
-    assert_eq!(
-        parse_endpoint("wss://host:8787/phux"),
-        Ok(SatelliteTarget::Wss {
-            url: "wss://host:8787/phux".to_owned(),
-        })
-    );
-}
-
-#[test]
-fn inbound_is_exactly_the_bare_scheme() {
+    // `inbound://` is exactly the bare scheme.
     assert_eq!(parse_endpoint("inbound://"), Ok(SatelliteTarget::Inbound));
     for endpoint in ["inbound://host", "inbound:", "inbound://:1"] {
         assert!(parse_endpoint(endpoint).is_err(), "{endpoint}");
+    }
+    for endpoint in [
+        "quic://devbox:8788",
+        "ssh://devbox",
+        "ssh://me@devbox:2222",
+        "ssh://[::1]:2222",
+        "inbound://",
+    ] {
+        let shown = parse_endpoint(endpoint).unwrap().to_string();
+        assert_eq!(shown, endpoint);
     }
 }
 
@@ -164,20 +167,29 @@ fn rejects_malformed_endpoints() {
 // --- table construction ------------------------------------------
 
 #[test]
-fn builds_table_keyed_by_satellite_host() {
+fn builds_table_keyed_by_host_with_auth_material_skipping_disabled_entries() {
+    let mut devbox = entry("devbox", "quic://devbox:8788", true);
+    devbox.token_file = Some(PathBuf::from("/secrets/devbox.token"));
+    devbox.cert_fingerprint = Some("AB:CD".to_owned());
     let table = HubTable::from_registry(&[
-        entry("devbox", "quic://devbox:8788", true),
+        devbox,
         entry("sandbox", "wss://sandbox:8787", true),
+        // Skipped even though malformed.
+        entry("parked", "not a uri at all", false),
     ])
     .unwrap();
     assert_eq!(table.len(), 2);
+    let held = table.get(&SatelliteHost::new("devbox")).unwrap();
+    let quic = SatelliteTarget::Quic {
+        host: "devbox".to_owned(),
+        port: 8788,
+    };
+    assert_eq!(held.target, quic);
     assert_eq!(
-        table.get(&SatelliteHost::new("devbox")).map(|e| &e.target),
-        Some(&SatelliteTarget::Quic {
-            host: "devbox".to_owned(),
-            port: 8788,
-        })
+        held.token_file.as_deref(),
+        Some(std::path::Path::new("/secrets/devbox.token"))
     );
+    assert_eq!(held.cert_fingerprint.as_deref(), Some("AB:CD"));
     assert_eq!(
         table.get(&SatelliteHost::new("sandbox")).map(|e| &e.target),
         Some(&SatelliteTarget::Wss {
@@ -224,31 +236,6 @@ fn diff_names_added_removed_and_changed_links_only() {
         HubTable::default().diff(&after).added,
         [host("fresh"), host("kept"), host("moved")]
     );
-}
-
-#[test]
-fn table_entries_carry_auth_material() {
-    let mut satellite = entry("devbox", "quic://devbox:8788", true);
-    satellite.token_file = Some(PathBuf::from("/secrets/devbox.token"));
-    satellite.cert_fingerprint = Some("AB:CD".to_owned());
-    let table = HubTable::from_registry(&[satellite]).unwrap();
-    let held = table.get(&SatelliteHost::new("devbox")).unwrap();
-    assert_eq!(
-        held.token_file.as_deref(),
-        Some(std::path::Path::new("/secrets/devbox.token"))
-    );
-    assert_eq!(held.cert_fingerprint.as_deref(), Some("AB:CD"));
-}
-
-#[test]
-fn disabled_entries_are_skipped_even_when_malformed() {
-    let table = HubTable::from_registry(&[
-        entry("devbox", "quic://devbox:8788", true),
-        entry("parked", "not a uri at all", false),
-    ])
-    .unwrap();
-    assert_eq!(table.len(), 1);
-    assert!(table.get(&SatelliteHost::new("parked")).is_none());
 }
 
 #[test]
@@ -301,38 +288,14 @@ fn malformed_enabled_entry_fails_with_name_and_endpoint() {
 // --- hub gate ------------------------------------------------------
 
 #[test]
-fn non_hub_mode_ignores_the_registry() {
-    // Duplicates and malformed endpoints are ignored without hub mode.
+fn only_hub_mode_validates_the_registry() {
     let garbage = [
         entry("devbox", "not a uri", true),
         entry("devbox", "also broken", true),
     ];
     assert_eq!(resolve_hub_table(false, &garbage), Ok(None));
-}
-
-#[test]
-fn hub_mode_validates_the_registry() {
-    let table = resolve_hub_table(true, &[entry("devbox", "ssh://devbox", true)])
-        .unwrap()
-        .unwrap();
-    assert_eq!(table.len(), 1);
+    let table = resolve_hub_table(true, &[entry("devbox", "ssh://devbox", true)]);
+    assert_eq!(table.unwrap().unwrap().len(), 1);
     assert!(resolve_hub_table(true, &[entry("devbox", "nope", true)]).is_err());
     assert!(resolve_hub_table(true, &[]).unwrap().unwrap().is_empty());
-}
-
-#[test]
-fn display_is_log_friendly_and_round_trips() {
-    for endpoint in [
-        "quic://devbox:8788",
-        "ssh://devbox",
-        "ssh://me@devbox:2222",
-        "ssh://[::1]:2222",
-        "inbound://",
-    ] {
-        assert_eq!(
-            parse_endpoint(endpoint).unwrap().to_string(),
-            endpoint,
-            "{endpoint}"
-        );
-    }
 }

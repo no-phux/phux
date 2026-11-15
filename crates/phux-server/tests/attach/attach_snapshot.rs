@@ -2,16 +2,13 @@
 //! round-trips the canonical grid, a PTY resized to the client's viewport,
 //! and a session that survives its last shell exiting.
 
-use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{AttachTarget, Command, CommandResult, FrameKind};
 use tempfile::TempDir;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_typed,
-    recv_until_deadline, run_local, send_frame, spawn_server_connected, spawn_server_with_seed_cmd,
-    wait_for_socket,
+    SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, recv_until_deadline, run_local,
+    send_frame, spawn_server_connected,
 };
 
 use super::common::{attach, attached, output_until, sh};
@@ -85,14 +82,9 @@ fn attach_returns_session_graph_and_round_trip_snapshot() {
 #[test]
 fn attach_resizes_seed_pty_to_client_viewport() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(
-            socket.clone(),
-            "default",
-            sh("while :; do stty size; sleep 0.05; done"),
-        );
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server =
+            SpawnedServer::seeded("default", sh("while :; do stty size; sleep 0.05; done"));
+        let mut stream = server.connect().await;
         send_frame(
             &mut stream,
             &attach(AttachTarget::ByName("default".to_owned()), 120, 40),
@@ -111,15 +103,14 @@ fn attach_resizes_seed_pty_to_client_viewport() {
 fn last_shell_eof_closes_the_terminal_and_keeps_the_session() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         // Exit only once released, after the attach handshake has landed.
         let seed = sh(&format!(
             "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
             release.display(),
         ));
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket.clone(), "demo", seed);
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let mut stream = server.connect().await;
         send_frame(&mut stream, &attach_by_name("demo")).await;
         attached(&mut stream).await;
 
@@ -141,14 +132,7 @@ fn last_shell_eof_closes_the_terminal_and_keeps_the_session() {
             "the exited shell closes with its status"
         );
 
-        let get_state = Command::GetState {
-            scope: StateScope::Server,
-        };
-        let CommandResult::OkWith(CommandValue::State(snapshot)) =
-            command(&mut stream, 10, get_state).await
-        else {
-            panic!("GET_STATE failed");
-        };
+        let snapshot = phux_server_testkit::server_state(&mut stream, 10).await;
         assert!(
             snapshot.resources.is_empty(),
             "nothing was respawned: {snapshot:?}"
@@ -172,41 +156,26 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
 
     for mode in [OutputMode::Raw, OutputMode::StateSync] {
         run_local(async {
-            let tmp = TempDir::new().unwrap();
-            let socket = tmp.path().join("phux.sock");
-            let (_shutdown, _server) = spawn_server_with_seed_cmd(
-                socket.clone(),
+            let server = SpawnedServer::seeded(
                 "history",
                 sh(
                     "i=1; while [ \"$i\" -le 160 ]; do printf 'HISTORY_ROW_%03d\\n' \"$i\"; i=$((i+1)); done; printf 'HISTORY_TAIL\\n'; exec cat",
                 ),
             );
-            let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-            let CommandResult::OkWith(CommandValue::State(snapshot)) = command(
-                &mut owner,
-                1,
-                Command::GetState {
-                    scope: StateScope::Server,
-                },
-            )
-            .await
-            else {
-                panic!("server topology unavailable")
-            };
+            let mut owner = server.connect().await;
+            let snapshot = phux_server_testkit::server_state(&mut owner, 1).await;
             let pane = snapshot.resources.first().unwrap().id.clone();
-            let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            let mut probe = server.connect().await;
             wait_for_server_screen_text(&mut probe, &pane, "HISTORY_TAIL", WIRE_RECV_TIMEOUT).await;
             let mut watcher = super::common::connect_with(
-                &socket,
+                &server.socket,
                 ClientCapabilities::new().with_output_mode(mode),
             )
             .await;
-            send_frame(
+            phux_server_testkit::send_command(
                 &mut watcher,
-                &FrameKind::Command {
-                    request_id: 100,
-                    command: Command::attach_terminal(pane.clone(), None),
-                },
+                100,
+                Command::attach_terminal(pane.clone(), None),
             )
             .await;
             let mut terminal = resource_bootstrap(&mut watcher).await;

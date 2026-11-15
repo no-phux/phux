@@ -26,11 +26,11 @@ impl RemoteClient {
             connection_epoch: observation.connection_epoch,
             events,
             events_dropped: observation.events_dropped,
-            status: status::connection(Some(observation.status)).into(),
+            status: WireStatus::from(Some(observation.status)),
             last_error: observation.last_error,
             topology: observation.topology.map(|graph| {
                 let replica = client.map(Client::organization);
-                topology::session_graph(graph, replica.as_ref()).into()
+                session_topology(graph, replica.as_ref())
             }),
         }
     }

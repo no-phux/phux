@@ -692,16 +692,6 @@ impl ControlPlane {
         })
     }
 
-    /// Legacy alias for [`Self::intake_resolve`].
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError::NotAnOperation`] when the replica does not hold the
-    /// session; [`Self::submit_organization`]'s errors.
-    pub fn inbox_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        self.intake_resolve(session)
-    }
-
     /// Clear a session's Intake mark using the legacy-compatible wire command.
     ///
     /// # Errors

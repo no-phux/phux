@@ -1,8 +1,5 @@
-// A newer 1.x server's additions reach the attach loop through
-// `Connection::recv`: an unknown frame type or enum value is skipped rather
-// than ending the attach, a state-bearing frame carrying a value this build
-// does not know still decodes, and a spawn reply with an unknown refusal
-// applies.
+// A newer 1.x server's additions (unknown frames, enum values, refusals)
+// are skipped or decoded by `Connection::recv` instead of ending the attach.
 
 /// A frame of `type_byte` with the given `(field id, value)` TLV fields.
 fn newer_server_raw(type_byte: u8, fields: &[(u8, &[u8])]) -> Vec<u8> {

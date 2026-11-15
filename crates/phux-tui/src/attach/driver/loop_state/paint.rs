@@ -483,10 +483,8 @@ impl super::SessionLoop {
         self.paint_bar_row(out, sidebar);
     }
 
-    /// Paint the bar row and nothing else, then put the cursor back where
-    /// the focused pane left it so the paint never strands it in the bar. A
-    /// frame block opens only if the bar writes, so an unchanged row emits
-    /// nothing. The caller repaints any overlay on top.
+    /// Paint the bar row only, then put the cursor back where the focused
+    /// pane left it. An unchanged row emits nothing.
     pub(super) fn paint_bar_row<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

@@ -190,8 +190,9 @@ impl ChildKiller for AdoptedChild {
         kill_pid(self.pid)
     }
 
+    /// A detached killer, usable while another thread blocks in `wait`.
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        Box::new(AdoptedChildKiller { pid: self.pid })
+        Box::new(Self::new(self.pid))
     }
 }
 
@@ -220,23 +221,6 @@ impl Child for AdoptedChild {
 
     fn process_id(&self) -> Option<u32> {
         u32::try_from(self.pid).ok()
-    }
-}
-
-/// A detached killer for an [`AdoptedChild`], usable while another thread
-/// blocks in `wait`.
-#[derive(Debug)]
-struct AdoptedChildKiller {
-    pid: libc::pid_t,
-}
-
-impl ChildKiller for AdoptedChildKiller {
-    fn kill(&mut self) -> io::Result<()> {
-        kill_pid(self.pid)
-    }
-
-    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        Box::new(Self { pid: self.pid })
     }
 }
 

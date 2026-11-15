@@ -1,64 +1,14 @@
-//! The official GHOSTSNP decoder against a server-produced transcript.
-//!
-//! `fixtures/server-snapshot-v1.bin` is captured by phux-server's production
-//! prefix and immutable-history paths (`native_state` test
-//! `browser_snapshot_fixture_is_the_current_server_capture`, which fails when
-//! the committed transcript no longer decodes to the terminal the server
-//! captures now; its bytes and page splits vary with the encoding host).
+//! The official GHOSTSNP decoder against a server-produced transcript and
+//! upstream's Kitty animation fixture.
 
 use phux_vt_web::{HistoryProgressKind, NativeCodecError, NativeDecoder, Terminal, Vt};
 use wasm_bindgen_test::wasm_bindgen_test;
 
-const FIXTURE: &[u8] = include_bytes!("fixtures/server-snapshot-v1.bin");
+#[path = "support/server_snapshot.rs"]
+mod server_snapshot;
+use server_snapshot::{ServerSnapshot, server_snapshot as fixture};
+
 const MAX_BYTES: usize = 64 * 1024 * 1024;
-
-struct Fixture {
-    cols: u16,
-    rows: u16,
-    ready: Vec<u8>,
-    pages: Vec<(Vec<u8>, usize)>,
-    finish: Vec<u8>,
-}
-
-fn fixture() -> Fixture {
-    assert_eq!(&FIXTURE[..8], b"PHUXSNP1");
-    let u16_at = |at: usize| u16::from_le_bytes([FIXTURE[at], FIXTURE[at + 1]]);
-    let u32_at = |at: usize| {
-        u32::from_le_bytes([
-            FIXTURE[at],
-            FIXTURE[at + 1],
-            FIXTURE[at + 2],
-            FIXTURE[at + 3],
-        ]) as usize
-    };
-    let mut fixture = Fixture {
-        cols: u16_at(8),
-        rows: u16_at(10),
-        ready: Vec::new(),
-        pages: Vec::new(),
-        finish: Vec::new(),
-    };
-    let mut offset = 12;
-    while offset < FIXTURE.len() {
-        let kind = FIXTURE[offset];
-        let rows = u32_at(offset + 1);
-        let len = u32_at(offset + 5);
-        let bytes = FIXTURE[offset + 9..offset + 9 + len].to_vec();
-        offset += 9 + len;
-        match kind {
-            0 => fixture.ready = bytes,
-            1 => fixture.pages.push((bytes, rows)),
-            2 => fixture.finish = bytes,
-            _ => panic!("unknown fixture unit {kind}"),
-        }
-    }
-    assert!(!fixture.ready.is_empty() && !fixture.finish.is_empty());
-    assert!(
-        fixture.pages.len() >= 2,
-        "fixture needs several history pages"
-    );
-    fixture
-}
 
 fn feed(decoder: &mut NativeDecoder, bytes: &[u8], cut: usize) {
     for fragment in bytes.chunks(cut) {
@@ -93,7 +43,7 @@ fn last_row(terminal: &Terminal) -> String {
         .unwrap_or_default()
 }
 
-async fn ready_decoder(fixture: &Fixture) -> NativeDecoder {
+async fn ready_decoder(fixture: &ServerSnapshot) -> NativeDecoder {
     let vt = Vt::load().await.expect("load engine");
     let mut decoder = vt.native_decoder(MAX_BYTES).expect("decoder");
     feed(&mut decoder, &fixture.ready, fixture.ready.len());
@@ -415,4 +365,126 @@ async fn malformed_history_units_fail_closed_and_keep_the_terminal() {
         last_row(decoder.terminal().expect("terminal survives")),
         "live-tail"
     );
+}
+
+/// Upstream's Kitty animation: image records stay distinct from history
+/// rows and FINISH even though the freestanding engine renders no graphics.
+fn kitty_fixture() -> (Vec<u8>, Vec<Vec<u8>>, Vec<u8>) {
+    let bytes: Vec<u8> = include_str!("fixtures/upstream-kitty-animation-v1.hex")
+        .lines()
+        .flat_map(|line| line.split('#').next().expect("line").split_whitespace())
+        .map(|hex| u8::from_str_radix(hex, 16).expect("fixture hex"))
+        .collect();
+    assert_eq!(&bytes[..10], b"GHOSTSNP\x01\0");
+    let mut offset = 10;
+    let mut ready_end = None;
+    let mut images = Vec::new();
+    let mut finish_start = None;
+    while offset < bytes.len() {
+        let tag = u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("tag"));
+        let len =
+            u32::from_le_bytes(bytes[offset + 2..offset + 6].try_into().expect("len")) as usize;
+        let end = offset + 10 + len;
+        match tag {
+            5 => ready_end = Some(end),
+            9 => images.push(bytes[offset..end].to_vec()),
+            4 => finish_start = Some(offset),
+            _ => {}
+        }
+        offset = end;
+    }
+    assert_eq!(images.len(), 3, "three image/animation frames");
+    (
+        bytes[..ready_end.expect("READY")].to_vec(),
+        images,
+        bytes[finish_start.expect("HISTORY + FINISH")..].to_vec(),
+    )
+}
+
+#[wasm_bindgen_test]
+async fn kitty_image_units_report_progress_not_finish() {
+    let (ready, images, finish) = kitty_fixture();
+    let vt = Vt::load().await.expect("load engine");
+    for cut in [1, 7, usize::MAX] {
+        let mut decoder = vt.native_decoder(1024 * 1024).expect("decoder");
+        feed(&mut decoder, &ready, cut);
+        let terminal = decoder.ready().expect("Kitty-bearing READY");
+        assert_eq!((terminal.grid().cols, terminal.grid().rows), (4, 2));
+        terminal.write(b"live");
+        for image in &images {
+            feed(&mut decoder, image, cut);
+            let progress = decoder
+                .next_checked(0)
+                .expect("authenticate image pixels")
+                .expect("image is not FINISH");
+            assert_eq!(progress.kind, HistoryProgressKind::Image);
+            assert_eq!(progress.authenticated_rows, 0);
+            assert_eq!(progress.rows, 0);
+            assert_eq!(decoder.staged_capacity(), 0);
+            assert_eq!(
+                decoder.terminal().expect("live terminal").rows_text()[0],
+                "live"
+            );
+        }
+        feed(&mut decoder, &finish, cut);
+        assert_eq!(decoder.next_checked(0), Ok(None), "authenticated FINISH");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn history_manifests_before_skipped_images_are_delivered_with_finish() {
+    let (ready, images, finish) = kitty_fixture();
+    let (manifest, finish) = finish.split_at(16);
+    let vt = Vt::load().await.expect("load engine");
+    let mut decoder = vt.native_decoder(1024 * 1024).expect("decoder");
+    feed(&mut decoder, &ready, 7);
+    decoder.ready().expect("READY");
+    for (index, image) in images.iter().enumerate() {
+        if index == 0 {
+            feed(&mut decoder, manifest, 1);
+        }
+        feed(&mut decoder, image, 7);
+        let progress = decoder.next_checked(0).expect("skip pixels").expect("IMAGE");
+        assert_eq!(progress.kind, HistoryProgressKind::Image);
+        assert_eq!(progress.authenticated_rows, 0);
+        assert_eq!(progress.rows, 0);
+    }
+    feed(&mut decoder, finish, 1);
+    assert_eq!(decoder.next_checked(0), Ok(None));
+}
+
+#[wasm_bindgen_test]
+async fn corrupt_or_row_bearing_images_fail_closed() {
+    let (ready, images, _) = kitty_fixture();
+    let vt = Vt::load().await.expect("load engine");
+    for declared_rows in [0, 1] {
+        let mut decoder = vt.native_decoder(1024 * 1024).expect("decoder");
+        feed(&mut decoder, &ready, 7);
+        decoder.ready().expect("READY");
+        let before = decoder.terminal().expect("terminal").screen_rows();
+        let mut image = images[0].clone();
+        if declared_rows == 0 {
+            *image.last_mut().expect("pixels") ^= 0x40;
+        }
+        feed(&mut decoder, &image, 1);
+        let error = decoder
+            .next_checked(declared_rows)
+            .expect_err("reject image");
+        if declared_rows == 0 {
+            assert!(
+                matches!(error, NativeCodecError::InvalidUnit),
+                "bad CRC: {error}"
+            );
+        } else {
+            assert_eq!(error, NativeCodecError::InvalidUnit, "images have no rows");
+        }
+        assert_eq!(
+            decoder.terminal().expect("terminal survives").screen_rows(),
+            before
+        );
+        assert_eq!(
+            decoder.feed(&images[1]),
+            Err(NativeCodecError::InvalidState)
+        );
+    }
 }

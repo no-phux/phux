@@ -95,19 +95,12 @@ async fn run_from_start(
     }
 }
 
-/// Dial-aware production attach (UDS or QUIC) with predictive echo config.
-/// Blocks until the session ends.
+/// Dial-aware production attach (UDS or QUIC); blocks until the session ends.
 ///
-/// With `rec`, the composited output is teed into it (ADR-0060); the
-/// recorder is passed in so one cast survives reconnects.
-///
-/// The future is `!Send` (libghostty's `Terminal` lives across awaits), so
-/// drive it on a current-thread runtime (ADR-0003).
-///
-/// Connect, `HELLO`, `ATTACH`, and the `ATTACHED` wait run on the cooked
-/// terminal: a failure there returns `Err` without ever entering raw mode or
-/// the alt screen. `initial_notice` is shown once attached (the reconnect
-/// loop's "re-attached after server restart").
+/// `rec` tees the composited output (ADR-0060) and survives reconnects. The
+/// future is `!Send`: drive it on a current-thread runtime (ADR-0003).
+/// Everything up to `ATTACHED` runs on the cooked terminal, so an early failure
+/// never enters raw mode or the alt screen.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -159,10 +152,7 @@ pub async fn run_connection(
 }
 
 /// UDS attach that writes the whole composited output stream to a sink.
-///
-/// Covers alt screen, panes, chrome, overlays, and cleanup. Tests and
-/// the headless surface capture the VT through it; signal and termios
-/// cleanup still target real stdout.
+/// Signal and termios cleanup still target real stdout.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -217,12 +207,9 @@ async fn handshake(
     Ok((conn, attached, output_mode))
 }
 
-/// Establish the production TUI HELLO contract without attaching.
-///
-/// A reconnect probe's connection can be handed to
-/// [`run_connection`] without downgrading capabilities. Colors
-/// are not re-probed (a second OSC 10/11 query can print on the cooked
-/// terminal).
+/// Establish the production TUI HELLO contract without attaching, so a
+/// reconnect probe's connection can go to [`run_connection`]. Colors are not
+/// re-probed (the query could print on the cooked terminal).
 pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {
     connect_attach_dial(dial, false).await
 }
@@ -272,13 +259,9 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     }
 }
 
-/// Re-handshake against `target` on the SAME connection and return the new
-/// `ATTACHED` frame for the next `main_loop` entry.
-///
-/// The glass is NOT cleared here: the previous session's frame stays up
-/// through the round trips, and the next entry's held first paint replaces
-/// it in one synchronized frame (`handover`). A bare `ED2` here blanked the
-/// screen and dragged the visible cursor home for the whole re-attach.
+/// Re-handshake against `target` on the same connection and return the new
+/// `ATTACHED`. The glass is not cleared: the next entry's held first paint
+/// replaces the old frame in one synchronized frame (`handover`).
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -297,10 +280,8 @@ async fn switch_session(
 }
 
 /// The attach session body shared by the production and test entry points.
-///
-/// `resync` is the stdout writer's backpressure flag and `writer` its handle
-/// (both `None` for the synchronous test sink); the writer is stopped/joined before
-/// every terminal reset.
+/// The stdout writer (`None` for a synchronous sink) is joined before every
+/// terminal reset.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -351,10 +332,9 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // terminal; fatal signals are `phux_crash`'s job above.
     install_panic_hook_once();
 
-    // Outer re-attach loop. `main_loop` is single-session; a `SwitchTo`
-    // detaches and re-handshakes on the same connection (it is bound to the
-    // server, not a session) while the raw-mode guard stays installed, so the
-    // alt screen never flickers.
+    // `main_loop` is single-session; a `SwitchTo` re-handshakes on the same
+    // connection under the same raw-mode guard, so the alt screen never
+    // flickers.
     let mut attached = attached;
     // First-use guidance, decided once per process attach and consumed by the
     // first loop entry.
@@ -440,10 +420,8 @@ async fn attach_session<W: crate::attach::RenderSink>(
     }
 }
 
-/// Detach the current session and re-handshake against `target` on the SAME
-/// connection (DETACH keeps the server's read loop alive), returning the new
-/// `ATTACHED` frame. A new-session request uses `CreateIfMissing`; a
-/// one-step pick's window, pane, or resource is stashed for the next entry.
+/// Detach and re-handshake against `target` on the same connection, returning
+/// the new `ATTACHED`; a one-step pick is stashed for the next entry.
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
@@ -480,11 +458,8 @@ async fn reattach_on_same_connection(
     Ok(attached)
 }
 
-/// The `CreateIfMissing` target for an in-TUI session create.
-///
-/// `directory` is the focused pane's cwd or an explicit pick.
-/// `None` leaves the server default. This does not read the client
-/// process's working directory.
+/// The `CreateIfMissing` target for an in-TUI session create, in
+/// `directory` (never the client process's cwd).
 pub(super) fn create_session_target(name: String, directory: Option<String>) -> AttachTarget {
     AttachTarget::CreateIfMissing {
         name,

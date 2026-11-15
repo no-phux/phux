@@ -216,7 +216,7 @@ impl Desk {
         let inbox = Arc::new(Mutex::new(None));
         let job: Box<dyn FnOnce() -> Result<Vec<Item>, String> + Send> =
             if machine == self.machines.current {
-                let call = match &self.client {
+                let call = match &self.connection.client {
                     Some(client) => client.with_control(|c| c.host_checklist()),
                     None => Err(ChecklistError::NotConnected),
                 };
@@ -285,6 +285,7 @@ impl Desk {
         let base = format!("fix-{}", id.replace('_', "-"));
         if machine == self.machines.current {
             let taken = self
+                .connection
                 .topology
                 .iter()
                 .flat_map(|t| &t.sessions)

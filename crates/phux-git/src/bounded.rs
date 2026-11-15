@@ -1,10 +1,8 @@
 //! Run a child with a deadline and an output cap.
 //!
-//! The Changes panel reads a local checkout with no bound; a remote client
-//! cannot be allowed to hold a server worker or memory that way. A child that
-//! outlives its deadline is killed, and one that writes past the cap is
-//! killed once the cap is reached, so neither a huge history nor a hung
-//! credential helper can pin the caller. A write is stopped with `SIGTERM`
+//! A remote client cannot be allowed to hold a server worker or memory, so a
+//! child past its deadline or its output cap is killed: neither a huge history
+//! nor a hung credential helper can pin the caller. A write is stopped with `SIGTERM`
 //! first, so Git can remove its `index.lock` before the group is killed.
 
 use std::ffi::OsStr;

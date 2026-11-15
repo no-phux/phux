@@ -71,19 +71,7 @@ fn paint(
     size: (u32, u32),
     name: &str,
 ) -> Vec<u8> {
-    let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        size,
-    );
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut encoder, &target.view, [0.0; 4]);
-    target.copy(&mut encoder);
-    renderer.submit(&gpu.queue, encoder);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(gpu, renderer, rt, size);
     assert!(
         pixels
             .as_chunks::<4>()
@@ -178,13 +166,7 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
         rt.set_system_reduced_motion(true);
         rt.update(|d, _| {
             if native {
-                d.native = Some(crate::mobile::Platform {
-                    target: phux_client_runtime::Target::uds("/tmp/not-used"),
-                    active: true,
-                    connection_requested: false,
-                    paste_requested: false,
-                    away_since: None,
-                });
+                d.native = Some(crate::mobile::Platform::test());
             }
             d.open_phone_sessions();
         });

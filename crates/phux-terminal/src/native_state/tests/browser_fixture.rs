@@ -42,9 +42,7 @@ fn browser_fixture_transcript() -> Vec<u8> {
         out.extend_from_slice(bytes);
     };
 
-    let mut capture = manager
-        .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-        .expect("generation capture");
+    let mut capture = manager.capture(limits).expect("generation capture");
     let mut prefix = Vec::new();
     loop {
         let required = match capture.step(&mut []) {
@@ -62,15 +60,7 @@ fn browser_fixture_transcript() -> Vec<u8> {
     let (cursor, seed) = manager
         .finish_generation_capture(capture)
         .expect("detach READY");
-    let bounds = seed.bounds();
-    manager
-        .install_generation(
-            cursor,
-            seed,
-            bounds,
-            bounds.required_reserved_bytes().expect("reservation"),
-        )
-        .expect("install");
+    install(&mut manager, cursor, seed);
     let mut index = 0;
     loop {
         let record = next_record(&manager, &cursor, index, limits);

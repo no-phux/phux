@@ -1,3 +1,4 @@
+wire_enum! { as_wire / from_wire;
 /// A client's color tier (SPEC §6.2), most to least permissive. The server
 /// rewrites outbound VT bytes to fit; `TrueColor` is the default so an
 /// unadvertised client is never silently downgraded.
@@ -6,40 +7,17 @@
 pub enum ColorSupport {
     /// 24-bit direct RGB; SGR truecolor is forwarded verbatim.
     #[default]
-    TrueColor,
+    TrueColor = 0,
     /// xterm 256-color palette.
-    Indexed256,
+    Indexed256 = 1,
     /// 16 system colors only.
-    Indexed16,
+    Indexed16 = 2,
     /// Monochrome: SGR color sequences MUST be stripped.
-    Mono,
+    Mono = 3,
+}
 }
 
-impl ColorSupport {
-    /// Wire tag. Stable within v0.x; new variants append.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        match self {
-            Self::TrueColor => 0,
-            Self::Indexed256 => 1,
-            Self::Indexed16 => 2,
-            Self::Mono => 3,
-        }
-    }
-
-    /// Inverse of [`Self::as_wire`]; `None` for an unknown tag.
-    #[must_use]
-    pub const fn from_wire(tag: u8) -> Option<Self> {
-        Some(match tag {
-            0 => Self::TrueColor,
-            1 => Self::Indexed256,
-            2 => Self::Indexed16,
-            3 => Self::Mono,
-            _ => return None,
-        })
-    }
-}
-
+wire_enum! { as_wire / from_wire else Raw;
 /// How the server emits terminal content to this consumer (SPEC §6.2).
 ///
 /// Either the byte-faithful raw PTY broadcast, or a per-consumer synthesized
@@ -50,30 +28,12 @@ impl ColorSupport {
 pub enum OutputMode {
     /// Raw PTY byte broadcast: the default, human-TUI path.
     #[default]
-    Raw,
+    Raw = 0,
     /// Per-consumer synthesized grid deltas with a monotonic `seq` (ADR-0018).
-    StateSync,
+    StateSync = 1,
+}
 }
 
-impl OutputMode {
-    /// Wire tag. Stable within v0.x; new variants append.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        match self {
-            Self::Raw => 0,
-            Self::StateSync => 1,
-        }
-    }
-
-    /// Inverse of [`Self::as_wire`]; an unknown tag is [`OutputMode::Raw`].
-    #[must_use]
-    pub const fn from_wire(tag: u8) -> Self {
-        match tag {
-            1 => Self::StateSync,
-            _ => Self::Raw,
-        }
-    }
-}
 // -----------------------------------------------------------------------------
 // Native bootstrap negotiation — ADR-0070 / protocol 0.7.
 // -----------------------------------------------------------------------------
@@ -88,12 +48,14 @@ pub const DEFAULT_BOOTSTRAP_CHUNK_BYTES: u32 = 256 * 1024;
 /// Default advertised maximum for one history page (1 MiB).
 pub const DEFAULT_HISTORY_PAGE_BYTES: u32 = 1024 * 1024;
 
+wire_enum! { as_u8 / from_u8 else None;
 /// A frame-payload compression algorithm (`docs/protocol.md#framing`).
 ///
 /// Decode-invisible: `FRAME_COMPRESSED` inflates back to the exact inner
 /// frame bytes, so native records stay byte-identical end to end (§6.2).
+/// An unknown algorithm reads as `None`, so an out-of-contract peer fails on
+/// its first wrapped frame instead of being misread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
 pub enum Compression {
     /// No transform. Frames go on the wire exactly as encoded.
     #[default]
@@ -101,24 +63,6 @@ pub enum Compression {
     /// Raw DEFLATE (RFC 1951), as produced by `flate2`'s `miniz_oxide` backend.
     Deflate = 1,
 }
-
-impl Compression {
-    /// The wire tag.
-    #[must_use]
-    pub const fn as_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode a wire tag; an unknown algorithm is [`Self::None`], so an
-    /// out-of-contract peer fails on its first wrapped frame instead of being
-    /// misread.
-    #[must_use]
-    pub const fn from_u8(tag: u8) -> Self {
-        match tag {
-            1 => Self::Deflate,
-            _ => Self::None,
-        }
-    }
 }
 
 /// The set of compression algorithms a peer accepts (`HELLO` field 6).

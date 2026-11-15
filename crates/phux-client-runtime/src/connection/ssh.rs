@@ -11,7 +11,8 @@ mod host_key;
 mod master;
 
 pub use diagnose::failure_hint;
-pub use host_key::{HOST_KEY_REFUSED, host_key_remedy};
+pub(super) use host_key::HOST_KEY_REFUSED;
+pub use host_key::host_key_remedy;
 pub use master::{pre_auth_drop, pre_auth_retry_delay, retry_login};
 
 /// Refuse a destination or program ssh would read as an option.

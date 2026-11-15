@@ -35,7 +35,7 @@ impl Desk {
         let Some(phone) = self.phone.as_mut() else {
             return false;
         };
-        let previous = self.fitted.get(terminal);
+        let previous = self.connection.fitted.get(terminal);
         if previous.is_none() || previous == Some(&size) {
             phone.refit = None;
             return false;

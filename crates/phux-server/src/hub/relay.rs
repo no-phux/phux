@@ -1,29 +1,18 @@
 //! Hub-to-satellite frame relay (ADR-0007 §4).
 //!
-//! A frame addressed to `ResourceId::Satellite { host, id }` is rewritten to
-//! `Local { id }` and forwarded verbatim over the link for `host`; replies
-//! and streams coming back are re-tagged `Satellite { host, id }`. Frames
-//! already tagged `Satellite` from a satellite are dropped, never chained.
+//! A frame for `ResourceId::Satellite { host, id }` is rewritten to
+//! `Local { id }` and forwarded over `host`'s link; replies and streams coming
+//! back are re-tagged `Satellite { host, id }`, and frames a satellite already
+//! tagged `Satellite` are dropped, never chained. One `RelaySession` per
+//! connected link owns the `request_id` remap and the proxy subscriptions;
+//! consumers reach it through a bounded `RelayHandle` mailbox.
 //!
-//! One `RelaySession` lives in each connected link supervisor
-//! (`super::link::run_link`) and owns the link-side `request_id` remap and
-//! the proxy-subscription registry. Consumers reach it through a
-//! `RelayHandle` (a bounded mailbox published in `HubRelays`).
-//!
-//! **Fail fast, never hang.** Without a live connection every request gets
-//! a typed `SatelliteUnreachable` at once; a disconnect fails in-flight
-//! commands and notifies every proxy subscriber. A silently dead satellite
-//! is bounded by `RELAY_COMMAND_TIMEOUT` and the link keepalive, and
-//! abandoned pending entries are pruned on the keepalive tick.
-//!
-//! **Backpressure.** Every producer uses `try_send` into bounded mailboxes;
-//! a saturated link fails commands with `ResourceExhausted`. The one
-//! exception is the attach snapshot (L1 §9.1): a snapshot a full consumer
-//! refuses is retained per subscriber and its later deltas are held until
-//! it lands, so a delta never overtakes it. No link-wide stall.
-//!
-//! **Directory listings** (`docs/protocol.md#commands-events-resources`) ride the link as
-//! correlated requests; every failure is a typed refusal naming the host.
+//! **Fail fast, never hang**: without a live connection every request gets
+//! `SatelliteUnreachable` at once, and a silent satellite is bounded by
+//! `RELAY_COMMAND_TIMEOUT` and the link keepalive. **Backpressure**: every
+//! producer uses `try_send`; the one exception is the attach snapshot
+//! (L1 §9.1), retained per subscriber until it lands so a delta never
+//! overtakes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

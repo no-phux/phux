@@ -7,8 +7,8 @@
 use std::f32::consts::{PI, TAU};
 
 use crate::pitlane::{MINT, PARC, PitLane, SPACING, at};
-use crate::reef::{Pt, Rgb, Rng, mix};
-use crate::ui::reef::pen::{Pen, Xf};
+use crate::playground::{Pt, Rgb, Rng, mix};
+use crate::ui::playground::pen::{Pen, Xf};
 
 pub struct Pal {
     grass: Rgb,

@@ -89,7 +89,7 @@ pub(crate) fn earned_immediate(was_attached: bool, elapsed: Duration) -> bool {
 
 /// The phrase a consumer uses when it flattens [`DialError::AuthRefused`]
 /// into its own vocabulary; [`is_fatal_refusal_detail`] reads it back.
-pub const TOKEN_REFUSED: &str = "pairing token refused";
+pub(crate) const TOKEN_REFUSED: &str = "pairing token refused";
 
 /// The phrase every rendering of [`DialError::AuthorityChanged`] carries;
 /// [`is_fatal_refusal_detail`] reads it back.

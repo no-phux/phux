@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-ffi"
-description = "The phux binding crate: one runtime projection, C ABI and UniFFI encoders."
+description = "The phux mobile binding crate: the UniFFI surface over the client runtime."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,9 +13,9 @@ authors.workspace = true
 workspace = true
 
 [lib]
-# staticlib for native embedders and the Apple archives the xcframework
-# carries, cdylib for the Android jniLibs and the library-mode bindgen, rlib
-# so the in-crate `uniffi-bindgen` bin can link this crate.
+# staticlib for the Apple archives the xcframework carries, cdylib for the
+# Android jniLibs and the library-mode bindgen, rlib so the in-crate
+# `uniffi-bindgen` bin can link this crate.
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 # `cargo run --bin uniffi-bindgen -- generate --library ...` emits the Swift
@@ -27,117 +27,33 @@ name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 required-features = ["uniffi"]
 
-# The rig seeder speaks the runtime directly; it stays out of C-only builds.
-[[example]]
-name = "rig_seed"
-required-features = ["uniffi"]
-
-# The connected-lane tests drive the C ABI.
-[[test]]
-name = "connected"
-required-features = ["c-abi"]
-
-# A measurement with `#[ignore]`d tests only; `measure` keeps it out of the
-# default test build.
-[[test]]
-name = "connected_flood"
-required-features = ["c-abi", "measure"]
-
-[[test]]
-name = "agent_resume_live"
-required-features = ["c-abi"]
-
 [features]
-# The native embedder lane and shipped default: the `extern "C"` surface
-# `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
-# UniFFI scaffolding and no proc-macro generator.
-default = ["c-abi"]
-# `dep:` deps here are used only under `src/c/`: JSON-lines re-encoding
-# (bytes), create-operation nonces (uuid), the `[[remote]]`/`[[satellite]]`
-# registry schema (phux-config) and the embedder-facing log init (tracing,
-# tracing-subscriber). Gating them keeps the mobile artifact's dependency
-# closure the same size it was as `phux-mobile-ffi`.
-c-abi = ["dep:bytes", "dep:uuid", "dep:phux-config", "dep:tracing", "dep:tracing-subscriber"]
-# The mobile lane: the Swift/Kotlin surface UniFFI generates. Off by default
-# so C-only `ffi-release` archives never carry it (ADR-0135). Kitty
-# graphics stays on for parity with the `phux-mobile-ffi` era artifact (its
-# `engine` feature carried `libghostty-vt/kitty-graphics` so the artifact
-# exposed the image surface); nothing on this side reads placements yet, but
-# the capability isn't dropped silently in a shipped artifact.
-uniffi = [
-    "dep:uniffi",
-    "dep:thiserror",
-    "libghostty-vt/kitty-graphics",
-]
-
-# Builds the `connected_flood` measurement test target.
-measure = []
+# The binding generator CLI the `uniffi-bindgen` bin drives. The exported
+# surface itself is always built; this only adds the generator stack
+# (uniffi_bindgen, askama, clap, cargo_metadata) for the artifact jobs, which
+# build with `--no-default-features --features uniffi`.
+uniffi = ["uniffi/cli"]
 
 [dependencies]
-libghostty-vt.workspace = true
+# Kitty graphics stays on for parity with the `phux-mobile-ffi` era artifact,
+# which exposed the image surface.
+libghostty-vt = { workspace = true, features = ["kitty-graphics"] }
 phux-client-core = { workspace = true, features = ["native-engine"] }
+phux-client-runtime.workspace = true
 phux-protocol.workspace = true
-# The kernel hands the bridge decoded AgentEventsJsonlV1 records; both the C
-# ABI and the UniFFI surface carry them as JSON lines again, so the same
-# workspace-pinned encoder re-emits them. No new crate enters the lockfile.
+# The surface carries the kernel's decoded agent records as JSON lines again.
 serde_json.workspace = true
 serde.workspace = true
-# The C ABI re-encodes the bridge's decoded records as JSON-line bytes.
-# Optional: `c-abi` only, see [features].
-bytes = { workspace = true, optional = true }
-# The server requires UUID-shaped create-operation nonces, just as the CLI
-# emits. Reuse the already-locked workspace v4 implementation rather than
-# inventing a second collision-prone generator for concurrent native clients.
-# Optional: `c-abi` only, see [features].
-uuid = { workspace = true, optional = true }
-# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1) are the
-# runtime's relay tunnel behind a C handle (ADR-0133): resolution, dial
-# planning, trust rules and the relay live there, so an embedder never
-# carries a second registry reader or a second dialer. The machine-registry
-# snapshot still reads `[[remote]]` and `[[satellite]]` entries through the
-# CLI's own schema. Always on: the runtime layer both encoders sit on.
-phux-client-runtime.workspace = true
-# The `[[remote]]`/`[[satellite]]` registry schema `src/c/remote/registry.rs`
-# reads. Optional: `c-abi` only, see [features].
-phux-config = { workspace = true, optional = true }
-# `phux_client_log_init` gives an embedder the tunnel's lifecycle on its own
-# stderr, and the dial stacks (quinn, rustls, phux-dial) already speak
-# `tracing`, so without a subscriber their spans are dropped. Both crates are
-# workspace deps already locked through phux-server at these exact features
-# (env-filter + fmt); nothing new enters Cargo.lock. tracing's `log` feature
-# stays off: feature unification would switch it on workspace-wide. Optional:
-# `c-abi` only, see [features].
-tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
-
-# The binding generator and its runtime scaffolding, behind the `uniffi`
-# feature. It is new to this workspace's DEFAULT graph only when that feature
-# is on: the CLI does not depend on this crate, and
-# `just ffi-build` builds the default features, so the proc-macro generator
-# stack (uniffi_bindgen/uniffi_meta/uniffi_macros plus askama, weedle2,
-# camino, clap and cargo_metadata) is compiled only for the mobile artifact
-# jobs. In the library it adds a small lowering/lifting runtime over `bytes`
-# and `once_cell`, both already locked here. The `cli` feature is what lets the
-# in-crate `uniffi-bindgen` bin drive generation from the built library, which
-# is how the artifact's Swift is guaranteed to come from this revision.
-uniffi = { version = "0.32", features = ["cli"], optional = true }
-# Error-derive for the UniFFI-facing error enums.
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
+uniffi = "0.32"
 
 [dev-dependencies]
-# The connected lane's e2e test runs the real server the TUI runs.
-phux-server-testkit.workspace = true
-# The uniffi lane's live QUIC test listens on the real server's QUIC socket.
+# The live QUIC and relay tests run the real server and relay.
 phux-server.workspace = true
-portable-pty.workspace = true
-# The phone-through-a-relay live test runs the production relay.
+phux-server-testkit.workspace = true
 phux-relay.workspace = true
 phux-config.workspace = true
-# A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
-# `TunnelShared::inject_failure` for the captured-tunnel test.
-phux-client-runtime = { workspace = true, features = ["testing"] }
-# The relay tests run a loopback WebSocket echo server against the tunnel.
 tokio.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# Test-only signers and publication seams.
+phux-client-runtime = { workspace = true, features = ["testing"] }

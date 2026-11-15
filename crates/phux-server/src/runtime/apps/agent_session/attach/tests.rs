@@ -203,146 +203,144 @@ fn seqs_of(payload: &[u8]) -> Vec<u64> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_lagged_consumer_is_replayed_the_skipped_records_in_order() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut stalled = stalled_consumer(4 * 1024 * 1024).await;
-            let last = stalled.outrun_the_broadcast().await;
-            let frames = stalled.drain_through(last).await;
-            let mut delivered = Vec::new();
-            let mut replayed = 0;
-            for frame in frames {
-                let FrameKind::ResourceOutput {
-                    bootstrap_id,
-                    seq,
-                    bytes,
-                    ..
-                } = frame
-                else {
-                    panic!("a recoverable lag stays in its generation: {frame:?}");
-                };
-                assert_eq!(bootstrap_id, stalled.initial);
-                let seqs = seqs_of(&bytes);
-                assert_eq!(
-                    seqs.last(),
-                    Some(&seq),
-                    "the envelope names its last record"
-                );
-                replayed += usize::from(seqs.len() == 1);
-                delivered.extend(seqs);
-            }
-            assert!(
-                replayed > 0,
-                "the consumer never lagged; the test proves nothing"
-            );
+    crate::runtime::test_support::local(async {
+        let mut stalled = stalled_consumer(4 * 1024 * 1024).await;
+        let last = stalled.outrun_the_broadcast().await;
+        let frames = stalled.drain_through(last).await;
+        let mut delivered = Vec::new();
+        let mut replayed = 0;
+        for frame in frames {
+            let FrameKind::ResourceOutput {
+                bootstrap_id,
+                seq,
+                bytes,
+                ..
+            } = frame
+            else {
+                panic!("a recoverable lag stays in its generation: {frame:?}");
+            };
+            assert_eq!(bootstrap_id, stalled.initial);
+            let seqs = seqs_of(&bytes);
             assert_eq!(
-                delivered,
-                (1..=last).collect::<Vec<_>>(),
-                "no gap, no duplicate"
+                seqs.last(),
+                Some(&seq),
+                "the envelope names its last record"
             );
-        })
-        .await;
+            replayed += usize::from(seqs.len() == 1);
+            delivered.extend(seqs);
+        }
+        assert!(
+            replayed > 0,
+            "the consumer never lagged; the test proves nothing"
+        );
+        assert_eq!(
+            delivered,
+            (1..=last).collect::<Vec<_>>(),
+            "no gap, no duplicate"
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_consumer_lagged_past_eviction_gets_a_tombstone_and_a_full_replacement() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut stalled = stalled_consumer(1024).await;
-            let last = stalled.outrun_the_broadcast().await;
-            let frames = stalled.drain_through(last).await;
-            let tombstone_at = frames
-                .iter()
-                .position(|frame| matches!(frame, FrameKind::BootstrapTombstone { .. }))
-                .expect("an evicted window is an explicit gap");
-            let mut delivered = Vec::new();
-            for frame in &frames[..tombstone_at] {
-                let FrameKind::ResourceOutput {
+    crate::runtime::test_support::local(async {
+        let mut stalled = stalled_consumer(1024).await;
+        let last = stalled.outrun_the_broadcast().await;
+        let frames = stalled.drain_through(last).await;
+        let tombstone_at = frames
+            .iter()
+            .position(|frame| matches!(frame, FrameKind::BootstrapTombstone { .. }))
+            .expect("an evicted window is an explicit gap");
+        let mut delivered = Vec::new();
+        for frame in &frames[..tombstone_at] {
+            let FrameKind::ResourceOutput {
+                bootstrap_id,
+                bytes,
+                ..
+            } = frame
+            else {
+                panic!("only live output precedes the gap: {frame:?}");
+            };
+            assert_eq!(*bootstrap_id, stalled.initial);
+            delivered.extend(seqs_of(bytes));
+        }
+        assert_eq!(delivered, (1..=delivered.len() as u64).collect::<Vec<_>>());
+        let FrameKind::BootstrapTombstone {
+            bootstrap_id,
+            reason,
+            last_valid_seq,
+            ..
+        } = &frames[tombstone_at]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*bootstrap_id, stalled.initial);
+        assert_eq!(
+            *reason,
+            phux_protocol::wire::frame::TombstoneReason::OutboundGap
+        );
+        assert_eq!(*last_valid_seq, delivered.last().copied().unwrap_or(0));
+
+        let FrameKind::BootstrapBegin {
+            bootstrap_id: replacement,
+            profile,
+            base_seq,
+            ..
+        } = &frames[tombstone_at + 1]
+        else {
+            panic!(
+                "the replacement follows its tombstone: {:?}",
+                frames[tombstone_at + 1]
+            );
+        };
+        assert_ne!(*replacement, stalled.initial);
+        assert_eq!(*profile, BootstrapStreamProfile::AgentEventsJsonlV1);
+        let mut retained = Vec::new();
+        let mut live = Vec::new();
+        for frame in &frames[tombstone_at + 2..] {
+            match frame {
+                FrameKind::BootstrapChunk {
+                    bootstrap_id,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(bootstrap_id, replacement);
+                    retained.extend(seqs_of(payload));
+                }
+                FrameKind::BootstrapReady { bootstrap_id, .. } => {
+                    assert_eq!(bootstrap_id, replacement);
+                }
+                FrameKind::ResourceOutput {
                     bootstrap_id,
                     bytes,
                     ..
-                } = frame
-                else {
-                    panic!("only live output precedes the gap: {frame:?}");
-                };
-                assert_eq!(*bootstrap_id, stalled.initial);
-                delivered.extend(seqs_of(bytes));
-            }
-            assert_eq!(delivered, (1..=delivered.len() as u64).collect::<Vec<_>>());
-            let FrameKind::BootstrapTombstone {
-                bootstrap_id,
-                reason,
-                last_valid_seq,
-                ..
-            } = &frames[tombstone_at]
-            else {
-                unreachable!()
-            };
-            assert_eq!(*bootstrap_id, stalled.initial);
-            assert_eq!(
-                *reason,
-                phux_protocol::wire::frame::TombstoneReason::OutboundGap
-            );
-            assert_eq!(*last_valid_seq, delivered.last().copied().unwrap_or(0));
-
-            let FrameKind::BootstrapBegin {
-                bootstrap_id: replacement,
-                profile,
-                base_seq,
-                ..
-            } = &frames[tombstone_at + 1]
-            else {
-                panic!(
-                    "the replacement follows its tombstone: {:?}",
-                    frames[tombstone_at + 1]
-                );
-            };
-            assert_ne!(*replacement, stalled.initial);
-            assert_eq!(*profile, BootstrapStreamProfile::AgentEventsJsonlV1);
-            let mut retained = Vec::new();
-            let mut live = Vec::new();
-            for frame in &frames[tombstone_at + 2..] {
-                match frame {
-                    FrameKind::BootstrapChunk {
-                        bootstrap_id,
-                        payload,
-                        ..
-                    } => {
-                        assert_eq!(bootstrap_id, replacement);
-                        retained.extend(seqs_of(payload));
-                    }
-                    FrameKind::BootstrapReady { bootstrap_id, .. } => {
-                        assert_eq!(bootstrap_id, replacement);
-                    }
-                    FrameKind::ResourceOutput {
-                        bootstrap_id,
-                        bytes,
-                        ..
-                    } => {
-                        assert_eq!(bootstrap_id, replacement);
-                        live.extend(seqs_of(bytes));
-                    }
-                    other => panic!("unexpected frame after the replacement: {other:?}"),
+                } => {
+                    assert_eq!(bootstrap_id, replacement);
+                    live.extend(seqs_of(bytes));
                 }
+                other => panic!("unexpected frame after the replacement: {other:?}"),
             }
-            assert!(
-                retained
-                    .first()
-                    .is_some_and(|first| *first > last_valid_seq + 1),
-                "the replacement starts after the evicted records: {retained:?}"
-            );
-            assert_eq!(retained.last(), Some(base_seq));
-            let resumed: Vec<u64> = retained.iter().chain(&live).copied().collect();
-            assert_eq!(resumed, (resumed[0]..=last).collect::<Vec<_>>());
+        }
+        assert!(
+            retained
+                .first()
+                .is_some_and(|first| *first > last_valid_seq + 1),
+            "the replacement starts after the evicted records: {retained:?}"
+        );
+        assert_eq!(retained.last(), Some(base_seq));
+        let resumed: Vec<u64> = retained.iter().chain(&live).copied().collect();
+        assert_eq!(resumed, (resumed[0]..=last).collect::<Vec<_>>());
 
-            // A later re-attach tombstones the replacement, not the retired one.
-            let (_, _, _, prior) = stalled.state.with_mut(|s| {
-                s.replace_attach_terminal_pump(
-                    stalled.client,
-                    stalled.core,
-                    phux_protocol::ids::BootstrapId::new(u64::MAX).unwrap(),
-                )
-            });
-            assert_eq!(prior.map(|(id, ..)| id), Some(*replacement));
-        })
-        .await;
+        // A later re-attach tombstones the replacement, not the retired one.
+        let (_, _, _, prior) = stalled.state.with_mut(|s| {
+            s.replace_attach_terminal_pump(
+                stalled.client,
+                stalled.core,
+                phux_protocol::ids::BootstrapId::new(u64::MAX).unwrap(),
+            )
+        });
+        assert_eq!(prior.map(|(id, ..)| id), Some(*replacement));
+    })
+    .await;
 }

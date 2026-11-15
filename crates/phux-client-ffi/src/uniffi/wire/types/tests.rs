@@ -100,76 +100,152 @@ fn a_malformed_record_lowers_to_an_empty_badge() {
 }
 
 #[test]
-fn replica_and_history_signals_have_no_swift_vocabulary() {
-    let signal = event::TerminalSignal::HistoryUnavailable {
-        terminal_id: ResourceId::local(1),
-        reason: phux_client_core::session::HistoryUnavailableReason::Pruned,
-    };
-    assert_eq!(Option::<WireEvent>::from(signal), None);
-}
-
-#[test]
-fn a_burst_signal_lowers_to_its_event() {
-    let signal = event::TerminalSignal::OutputStarted {
-        terminal_id: ResourceId::local(1),
-    };
-    assert_eq!(
-        Option::<WireEvent>::from(signal),
-        Some(WireEvent::OutputStarted {
-            terminal_id: "local:1".to_owned(),
-        })
-    );
-}
-
-#[test]
-fn a_close_becomes_a_pane_closed_and_an_exit_does_not() {
-    let closed = event::Lifecycle::Closed {
-        terminal_id: ResourceId::local(4),
-        exit_status: Some(1),
-        signal: None,
-        reason: CloseReason::Exited,
-    };
-    assert_eq!(
-        Option::<WireEvent>::from(closed),
-        Some(WireEvent::PaneClosed {
-            terminal_id: "local:4".to_owned(),
+fn replica_history_exit_and_detach_events_have_no_swift_vocabulary() {
+    let local = ResourceId::local(1);
+    for event in [
+        Event::HistoryUnavailable {
+            terminal_id: local.clone(),
+            reason: phux_client_core::session::HistoryUnavailableReason::Pruned,
+        },
+        Event::Exited {
+            terminal_id: local,
             exit_status: Some(1),
-        })
-    );
-    let exited = event::Lifecycle::Exited {
-        terminal_id: ResourceId::local(4),
-        exit_status: Some(1),
-        signal: None,
-        reason: CloseReason::Exited,
-    };
-    assert_eq!(Option::<WireEvent>::from(exited), None);
+            signal: None,
+            reason: CloseReason::Exited,
+        },
+    ] {
+        assert_eq!(lower_event(event).ok(), Some(None));
+    }
 }
 
 #[test]
-fn a_spawn_answer_keeps_its_optional_terminal() {
-    let answered = event::Lifecycle::SpawnAnswered {
-        request_id: 3,
-        terminal_id: None,
-        error: Some("refused".to_owned()),
-    };
-    assert_eq!(
-        Option::<WireEvent>::from(answered),
-        Some(WireEvent::TerminalSpawned {
-            request_id: 3,
-            terminal_id: None,
-            error: Some("refused".to_owned()),
-        })
-    );
+fn signals_and_lifecycle_events_lower_with_string_identities() {
+    let cases = [
+        (
+            Event::OutputStarted {
+                terminal_id: ResourceId::local(1),
+            },
+            WireEvent::OutputStarted {
+                terminal_id: "local:1".to_owned(),
+            },
+        ),
+        (
+            Event::TitleChanged {
+                terminal_id: ResourceId::satellite("box", 2),
+                title: "vim".to_owned(),
+            },
+            WireEvent::TitleChanged {
+                terminal_id: "satellite:box:2".to_owned(),
+                title: "vim".to_owned(),
+            },
+        ),
+        (
+            Event::TerminalClosed {
+                terminal_id: ResourceId::local(4),
+                exit_status: Some(1),
+                signal: None,
+                reason: CloseReason::Exited,
+            },
+            WireEvent::PaneClosed {
+                terminal_id: "local:4".to_owned(),
+                exit_status: Some(1),
+            },
+        ),
+        (
+            Event::TerminalSpawned {
+                request_id: 3,
+                terminal_id: None,
+                error: Some("refused".to_owned()),
+            },
+            WireEvent::TerminalSpawned {
+                request_id: 3,
+                terminal_id: None,
+                error: Some("refused".to_owned()),
+            },
+        ),
+    ];
+    for (event, lowered) in cases {
+        assert_eq!(lower_event(event).ok(), Some(Some(lowered)));
+    }
+}
+
+#[test]
+fn unrelated_events_are_handed_back() {
+    let event = lower_event(Event::TerminalChanged {
+        terminal_id: ResourceId::local(5),
+    })
+    .expect_err("not lowered here");
+    assert!(matches!(event, Event::TerminalChanged { .. }));
 }
 
 #[test]
 fn statuses_fold_the_pre_attach_states_together() {
+    use phux_client_runtime::control::Status;
+    for status in [
+        None,
+        Some(Status::Idle),
+        Some(Status::Connecting),
+        Some(Status::Negotiated),
+    ] {
+        assert_eq!(WireStatus::from(status), WireStatus::Connecting);
+    }
     assert_eq!(
-        WireStatus::from(status::Connection::Connecting),
-        WireStatus::Connecting
+        WireStatus::from(Some(Status::Attached)),
+        WireStatus::Attached
     );
-    assert_eq!(
-        WireStatus::from(status::Connection::Failed),
-        WireStatus::Failed
-    );
+    assert_eq!(WireStatus::from(Some(Status::Closed)), WireStatus::Closed);
+    assert_eq!(WireStatus::from(Some(Status::Failed)), WireStatus::Failed);
+}
+
+#[test]
+fn path_answers_keep_kind_status_and_cancellation() {
+    use phux_client_runtime::control::{
+        PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
+    };
+    let answer = WirePathAnswer::from(PathAnswer {
+        request_id: 17,
+        root: "/root".into(),
+        parent: Some("/".into()),
+        rows: vec![PathMatch {
+            path: "/root/a b".into(),
+            kind: PathMatchKind::Symlink,
+        }],
+        status: Some(PathSearchStatus::Truncated),
+        failure: None,
+        message: String::new(),
+    });
+    assert_eq!(answer.rows[0].kind, WirePathKind::Symlink);
+    assert_eq!(answer.status, Some(WirePathStatus::Truncated));
+    assert_eq!(answer.error, None);
+    let cancelled = WirePathAnswer::from(PathAnswer {
+        request_id: 18,
+        root: "/root".into(),
+        parent: None,
+        rows: Vec::new(),
+        status: None,
+        failure: Some(PathFailure::Unanswered),
+        message: "disconnected".into(),
+    });
+    assert_eq!(cancelled.error, Some(WirePathError::Unanswered));
+}
+
+#[test]
+fn a_listing_carries_its_entries_truncation_and_failure() {
+    use phux_client_runtime::control::{DirectoryChild, DirectoryFailure, DirectoryListing};
+    let listing = WireDirectoryListing::from(DirectoryListing {
+        request_id: 3,
+        path: "/home".to_owned(),
+        parent: Some("/".to_owned()),
+        entries: vec![DirectoryChild {
+            name: "work".to_owned(),
+            is_symlink: true,
+        }],
+        truncated: true,
+        error: Some(DirectoryFailure::Unanswered),
+        message: String::new(),
+    });
+    assert!(listing.truncated);
+    assert_eq!(listing.entries[0].name, "work");
+    assert!(listing.entries[0].is_symlink);
+    assert_eq!(listing.error, Some(WireDirectoryErrorCode::Unanswered));
 }

@@ -74,21 +74,25 @@ impl Desk {
     /// says. A local resource in no session it can name is left out, since
     /// showing it would attach a session called "".
     pub fn addressable(&self) -> Vec<Addressable> {
-        let Some(topology) = &self.topology else {
+        let Some(topology) = &self.connection.topology else {
             return Vec::new();
         };
-        let org = self.client.as_ref().map(|client| client.organization());
+        let org = self
+            .connection
+            .client
+            .as_ref()
+            .map(|client| client.organization());
         let mut all = list(topology);
         all.retain_mut(|r| {
             // A popup's terminal is its box's, never a place to go; the quick
             // terminal's is the panel's.
-            if self.popup.terminal() == Some(&r.id)
+            if self.connection.popup.terminal() == Some(&r.id)
                 || (self.quick.is_none() && crate::desk::quick::hidden(&r.session))
             {
                 return false;
             }
             if !r.kind.is_terminal() {
-                let Some(document) = self.resources.entries.get(&r.id) else {
+                let Some(document) = self.connection.resources.entries.get(&r.id) else {
                     return false;
                 };
                 let record = &document.record;

@@ -387,15 +387,11 @@ struct Scope {
 }
 
 impl Scope {
-    /// Connect, refuse a server without `RESOURCE_KINDS` before anything is
-    /// read, then take the snapshot on the same connection.
+    /// Connect, then take the snapshot on the same connection.
     async fn connect(socket_path: &Path, verb: &str, json: bool) -> Result<Self, ExitCode> {
         let mut conn = Connection::connect(socket_path)
             .await
             .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?;
-        if let Err(err) = agent_session::require_support(&conn) {
-            return Err(report_session_error(json, &err, socket_path, verb));
-        }
         let (snapshot, degradation) = phux_client::state::get_state_on(&mut conn)
             .await
             .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?

@@ -39,12 +39,9 @@ impl StatusBarPainter {
         self.key_gap(cols).unwrap_or(cols)
     }
 
-    /// Columns the widgets compose into: all of them, less the right-edge
-    /// chips and their gaps (the key chip, or the badge and attention hint
-    /// side by side, or a notice toast), so a right-aligned widget moves
-    /// left of them whole instead of being cut under them (a session name
-    /// cut to `phux-tui-polish` by a toast reads as a different name). A
-    /// bar too narrow for the chips keeps every column.
+    /// Columns the widgets compose into: all of them less the right-edge
+    /// chips, so a right-aligned widget moves left whole instead of being cut
+    /// under a chip. A bar too narrow for the chips keeps every column.
     fn widget_cols(&self, cols: u16) -> u16 {
         let width = |chip: &str| {
             u16::try_from(chip.chars().count())

@@ -33,7 +33,7 @@ pub use crate::layout::{LAYOUT_KEY, LayoutMutation, layout_key};
 
 mod ops;
 
-pub use ops::{LayoutOps, write_layout_on};
+pub use ops::LayoutOps;
 
 /// Apply one mutation without doing I/O; see [`crate::layout::apply_mutation`].
 ///

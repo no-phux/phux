@@ -6,11 +6,9 @@ use std::process::ExitCode;
 
 use phux_client::agent_meta::AgentRecord;
 use phux_client::glance::Sources;
-use phux_client::resource;
 use phux_client::state::StateView;
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::partial;
@@ -236,17 +234,11 @@ pub(super) fn render_listing(
     view: StateView,
     agents: &HashMap<ResourceId, AgentRecord>,
 ) -> ExitCode {
-    let hosts_complete = view.host_sessions_complete();
     let organization = view.organization().cloned();
     let (snapshot, degradation) = view.into_parts();
     if json {
         // Not stderr: a `--json` consumer's channel is the document.
-        return print_sessions_json(
-            &snapshot,
-            organization.as_ref(),
-            &degradation,
-            hosts_complete,
-        );
+        return print_sessions_json(&snapshot, organization.as_ref(), &degradation);
     }
     let sources = Sources {
         snapshot: &snapshot,
@@ -263,19 +255,6 @@ pub(super) fn render_listing(
     } else {
         print_lines(glance_lines(sources));
     }
-    if !hosts_complete && has_satellite_terminals(&snapshot) {
-        warn!("{HOST_SESSIONS_UNAVAILABLE}");
-    }
     partial::warn_partial_view("ls", &degradation);
     ExitCode::SUCCESS
-}
-
-/// The text-mode note for a hub that does not report its satellites'
-/// sessions (no `HOST_SESSIONS`): the satellite Terminals it does list are
-/// real, but which sessions they belong to cannot be known from here.
-pub(super) const HOST_SESSIONS_UNAVAILABLE: &str = "ls: satellite sessions are unavailable from this \
-     server (it does not report HOST_SESSIONS); its satellite terminals are listed above";
-
-pub(super) fn has_satellite_terminals(snapshot: &SessionSnapshot) -> bool {
-    resource::terminals(snapshot).any(|pane| pane.id.host().is_some())
 }

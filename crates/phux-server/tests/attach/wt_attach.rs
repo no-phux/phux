@@ -6,7 +6,6 @@
 
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
@@ -80,13 +79,7 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         }
         let connection = connection.expect("webtransport connect");
         let (mut send, mut recv) = connection.open_bi().await.unwrap().await.unwrap();
-        let hello = FrameKind::Hello {
-            client_name: "wt-attach-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::default(),
-        };
+        let hello = phux_server_testkit::hello("wt-attach-test", ClientCapabilities::default());
         send.write_all(&encode_frame_vec(&hello)).await.unwrap();
         let attach = attach(AttachTarget::ByName("default".to_owned()), 80, 24);
         send.write_all(&encode_frame_vec(&attach)).await.unwrap();

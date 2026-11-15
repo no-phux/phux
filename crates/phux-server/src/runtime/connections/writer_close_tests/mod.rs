@@ -213,60 +213,58 @@ fn binding(
 /// reading is reaped even while another sender keeps the mailbox open.
 #[tokio::test(flavor = "current_thread")]
 async fn retired_stream_reaps_stalled_writer_with_extra_sender() {
-    LocalSet::new()
-        .run_until(async {
-            let entered = std::sync::Arc::new(tokio::sync::Notify::new());
-            let dropped = Rc::new(std::cell::Cell::new(false));
-            let (tx, rx) = mpsc::channel(1);
-            let extra_sender = tx.clone();
-            let (close_tx, close_rx) = tokio::sync::watch::channel(false);
-            let mut tasks = tokio::task::JoinSet::new();
-            let stalled = StalledWriter {
-                entered: entered.clone(),
-                dropped: dropped.clone(),
-            };
-            tasks.spawn_local(writer(stalled, rx, close_rx));
-            tx.send(pong(1)).await.expect("queue");
-            tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
-                .await
-                .expect("writer entered");
-            let mut binding = binding(tx, tasks, close_tx);
-            let ingress_active = binding.ingress_active.clone();
-            let ingress_cancel = binding.ingress_cancel.clone();
-            tokio::time::timeout(std::time::Duration::from_secs(2), binding.retire())
-                .await
-                .expect("bounded retirement");
-            assert!(dropped.get(), "retirement must reap the transport writer");
-            assert!(binding.writer.is_empty());
-            assert!(!ingress_active.load(std::sync::atomic::Ordering::Acquire));
-            assert!(ingress_cancel.is_cancelled());
-            assert!(extra_sender.is_closed());
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let dropped = Rc::new(std::cell::Cell::new(false));
+        let (tx, rx) = mpsc::channel(1);
+        let extra_sender = tx.clone();
+        let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+        let mut tasks = tokio::task::JoinSet::new();
+        let stalled = StalledWriter {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        };
+        tasks.spawn_local(writer(stalled, rx, close_rx));
+        tx.send(pong(1)).await.expect("queue");
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("writer entered");
+        let mut binding = binding(tx, tasks, close_tx);
+        let ingress_active = binding.ingress_active.clone();
+        let ingress_cancel = binding.ingress_cancel.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(2), binding.retire())
+            .await
+            .expect("bounded retirement");
+        assert!(dropped.get(), "retirement must reap the transport writer");
+        assert!(binding.writer.is_empty());
+        assert!(!ingress_active.load(std::sync::atomic::Ordering::Acquire));
+        assert!(ingress_cancel.is_cancelled());
+        assert!(extra_sender.is_closed());
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn retired_stream_drains_queued_frames_before_close() {
-    LocalSet::new()
-        .run_until(async {
-            let recorder = Recorder::default();
-            let (tx, rx) = mpsc::channel(2);
-            let (writer_close, close_rx) = tokio::sync::watch::channel(false);
-            tx.try_send(pong(1)).expect("queue");
-            tx.try_send(pong(2)).expect("queue");
-            let extra_sender = tx.clone();
-            let mut tasks = tokio::task::JoinSet::new();
-            tasks.spawn_local(writer(recorder.clone(), rx, close_rx));
-            let mut binding = binding(tx, tasks, writer_close);
-            binding.retire().await;
-            assert_eq!(
-                recorder.events(),
-                [WriterEvent::Frame, WriterEvent::Frame, WriterEvent::Close]
-            );
-            assert!(extra_sender.is_closed());
-            assert!(binding.writer.is_empty());
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let recorder = Recorder::default();
+        let (tx, rx) = mpsc::channel(2);
+        let (writer_close, close_rx) = tokio::sync::watch::channel(false);
+        tx.try_send(pong(1)).expect("queue");
+        tx.try_send(pong(2)).expect("queue");
+        let extra_sender = tx.clone();
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn_local(writer(recorder.clone(), rx, close_rx));
+        let mut binding = binding(tx, tasks, writer_close);
+        binding.retire().await;
+        assert_eq!(
+            recorder.events(),
+            [WriterEvent::Frame, WriterEvent::Frame, WriterEvent::Close]
+        );
+        assert!(extra_sender.is_closed());
+        assert!(binding.writer.is_empty());
+    })
+    .await;
 }
 
 /// An already-queued burst costs one transport write and flush.
@@ -303,24 +301,23 @@ async fn a_batch_slices_back_into_exactly_the_frames_that_went_in() {
 /// A lone frame leaves on its own write; nothing lingers for company.
 #[tokio::test(flavor = "current_thread")]
 async fn a_lone_frame_is_written_without_waiting_for_company() {
-    LocalSet::new()
-        .run_until(async {
-            let recorder = Recorder::default();
-            let (tx, rx) = mpsc::channel(8);
-            let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-            let task = tokio::task::spawn_local(writer(recorder.clone(), rx, close_rx));
-            tx.send(pong(1)).await.expect("queue frame");
-            for _ in 0..16 {
-                if !recorder.batches().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
+    crate::runtime::test_support::local(async {
+        let recorder = Recorder::default();
+        let (tx, rx) = mpsc::channel(8);
+        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::task::spawn_local(writer(recorder.clone(), rx, close_rx));
+        tx.send(pong(1)).await.expect("queue frame");
+        for _ in 0..16 {
+            if !recorder.batches().is_empty() {
+                break;
             }
-            assert_eq!(recorder.batches(), [1]);
-            drop(tx);
-            task.await.expect("writer task");
-        })
-        .await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(recorder.batches(), [1]);
+        drop(tx);
+        task.await.expect("writer task");
+    })
+    .await;
 }
 
 /// Nothing queued behind a terminal error is written; the ERROR and its

@@ -175,7 +175,7 @@ pub(crate) fn annotate(tools: &mut Value) {
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::tool_table::{Hints, TOOLS, hints_for};
+    use crate::tool_table::{Hints, TOOLS};
 
     fn catalog_names() -> Vec<String> {
         crate::tools::catalog()
@@ -198,30 +198,6 @@ mod tests {
             read_only: entry["annotations"]["readOnlyHint"].as_bool().unwrap(),
             destructive: entry["annotations"]["destructiveHint"].as_bool().unwrap(),
         }
-    }
-
-    /// Every catalog tool has a row, every row names a catalog tool and only
-    /// catalog methods, and each descriptor carries exactly the hints the
-    /// kind table derives.
-    #[test]
-    fn annotations_match_kind_table() {
-        let names = catalog_names();
-        for name in &names {
-            let derived = hints_for(name)
-                .unwrap_or_else(|| panic!("{name} has no row, or names an unknown method"));
-            assert_eq!(annotation(name), derived, "{name}");
-        }
-        for row in TOOLS {
-            assert!(
-                names.iter().any(|name| name == row.name),
-                "stale row {}",
-                row.name
-            );
-        }
-        let mut rows: Vec<&str> = TOOLS.iter().map(|row| row.name).collect();
-        rows.sort_unstable();
-        rows.dedup();
-        assert_eq!(rows.len(), TOOLS.len(), "a tool has two rows");
     }
 
     #[test]

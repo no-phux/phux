@@ -22,9 +22,7 @@ pub(in crate::wire) fn encode_arrangement_doc(doc: &ArrangementDoc, enc: &mut En
     enc.write_u16_be(u16::try_from(doc.groups.len()).unwrap_or(u16::MAX));
     for group in &doc.groups {
         enc.write_record(|enc| {
-            for byte in &group.id {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(&group.id);
             enc.write_option(group.name.as_deref(), Encoder::write_str);
             encode_node(&group.tree, enc);
             if group.locked {
@@ -42,15 +40,11 @@ pub(super) fn encode_node_body(node: &ArrangementNode, enc: &mut Encoder<'_>) {
     match node {
         ArrangementNode::Leaf(entry) => {
             enc.write_u8(NODE_LEAF);
-            for byte in &entry.entry {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(&entry.entry);
             match &entry.target {
                 EntryTarget::Member(resource) => {
                     enc.write_u8(TARGET_MEMBER);
-                    for byte in resource.as_bytes() {
-                        enc.write_u8(*byte);
-                    }
+                    enc.write_raw(resource.as_bytes());
                 }
                 EntryTarget::Satellite { host, id } => {
                     enc.write_u8(TARGET_SATELLITE);
@@ -92,10 +86,7 @@ pub(in crate::wire) fn decode_arrangement_doc(value: &[u8]) -> Result<Arrangemen
 }
 
 pub(super) fn decode_group(dec: &mut Decoder<'_>) -> Result<ArrangementGroup, DecodeError> {
-    let mut id = [0; 16];
-    for byte in &mut id {
-        *byte = dec.read_u8()?;
-    }
+    let id: [u8; 16] = dec.read_array()?;
     let name = dec.read_option("Option<str> tag", |d| {
         bounded_dec_str(d, MAX_ORG_NAME_BYTES)
     })?;
@@ -125,16 +116,10 @@ pub(super) fn decode_node_body(
 ) -> Result<ArrangementNode, DecodeError> {
     match dec.read_u8()? {
         NODE_LEAF => {
-            let mut entry = [0; 16];
-            for byte in &mut entry {
-                *byte = dec.read_u8()?;
-            }
+            let entry: [u8; 16] = dec.read_array()?;
             let target = match dec.read_u8()? {
                 TARGET_MEMBER => {
-                    let mut resource = [0; 16];
-                    for byte in &mut resource {
-                        *byte = dec.read_u8()?;
-                    }
+                    let resource: [u8; 16] = dec.read_array()?;
                     EntryTarget::Member(
                         ResourceKey::new(resource).ok_or(DecodeError::InvalidOrganizationKey)?,
                     )

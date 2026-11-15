@@ -248,10 +248,8 @@ async fn answer_inventory(
     assert!(passed.is_none(), "the inventory reply is consumed");
 }
 
-/// A down satellite pane keeps its layout slot. An inventory
-/// that still cannot see the host does not attach it; one that can sends
-/// `ATTACH_RESOURCE` and clears the flag. A replay refusal puts the flag
-/// back without folding the leaf out.
+/// A down satellite pane keeps its slot; an inventory that can see the host
+/// re-attaches it, and a replay refusal flags it down again.
 #[tokio::test(flavor = "current_thread")]
 async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
     use phux_protocol::wire::frame::{CommandResult, ErrorCode};

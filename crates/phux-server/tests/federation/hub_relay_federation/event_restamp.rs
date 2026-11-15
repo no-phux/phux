@@ -61,10 +61,7 @@ fn relayed_satellite_events_are_restamped_in_hub_order() {
         for terminal in [None, Some(sat_id.clone())] {
             send_frame(
                 &mut hub,
-                &FrameKind::SubscribeEvents {
-                    terminal,
-                    after_seq: None,
-                },
+                &phux_server_testkit::subscribe_events(terminal, None),
             )
             .await;
         }

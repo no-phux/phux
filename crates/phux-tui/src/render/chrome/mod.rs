@@ -46,19 +46,9 @@ pub(crate) const fn agent_state_glyph(state: AgentMetaState) -> &'static str {
     }
 }
 
-/// Resolve the badge for one agent pane.
-///
-/// ```text
-/// ● blocked        (or attention: the pane asked a question)
-/// ◆ done, unread   ("look at me")
-/// ◐ working
-/// ○ done+seen / idle / unknown
-/// ```
-///
-/// The glyphs are `agent_state_glyph`'s, with two exceptions: a `done` the
-/// user has already looked at needs no one, so it relaxes to the idle ring
-/// instead of keeping the diamond, and an `unknown` that asked wears the
-/// [`attention_badge`], not a dim ring that says nothing is wrong.
+/// Resolve the badge for one agent pane: `●` blocked or asking, `◆` done and
+/// unread, `◐` working, `○` otherwise. A seen `done` relaxes to the idle
+/// ring, and an `unknown` that asked wears the [`attention_badge`].
 #[must_use]
 pub fn agent_badge(
     theme: &Theme,

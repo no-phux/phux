@@ -26,10 +26,8 @@ use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
 use crate::settings::TuiSettings;
 
-/// The chrome of one composited frame.
-///
-/// `sidebar_painter` stays optional because a paint without it deliberately
-/// leaves the strip's columns blank (the sidebar-visibility tests pin that).
+/// The chrome of one composited frame. Without `sidebar_painter` a paint
+/// leaves the strip's columns blank on purpose.
 pub(super) struct ChromeCtx<'a> {
     /// The outer terminal viewport, `(cols, rows)`.
     pub(super) viewport: (u16, u16),

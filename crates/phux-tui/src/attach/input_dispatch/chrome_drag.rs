@@ -1,16 +1,10 @@
 //! Pointer drags over client chrome: the sidebar edge and the two window
-//! strips (the status bar's tabs and the sidebar's window rows).
+//! strips. Pane-divider drags (ADR-0048) share the grab slot ([`DragGrab`]).
 //!
-//! Pane-divider drags (ADR-0048) share the same grab slot
-//! ([`DragGrab`]) and the same press / motion / release lifecycle; their
-//! ratio math lives beside the divider hit-test in `dispatch.rs`.
-//!
-//! Everything here is synchronous and mutates only client-local state. The
-//! one wire effect a drag can have, broadcasting the reordered layout on
-//! release, is reported back to the async caller as
-//! [`DragCommit::broadcast`]. A dragged sidebar width is runtime chrome,
-//! like `toggle-sidebar`: it lasts for the attach, rides across session
-//! switches, and is never written to `config.toml` (ADR-0101 decision 2).
+//! Everything here is synchronous and client-local; the one wire effect, a
+//! reordered layout broadcast on release, is [`DragCommit::broadcast`]. A
+//! dragged sidebar width lasts for the attach and is never written to
+//! `config.toml`.
 
 use phux_protocol::input::mouse::MouseEvent;
 

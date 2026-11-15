@@ -1,19 +1,12 @@
-//! Settings page (ADR-0101).
+//! Settings page (ADR-0101): a schema-driven editor of the user's
+//! `config.toml`.
 //!
-//! A schema-driven editor of the user's `config.toml`, not a runtime knob
-//! panel. Each row is one key with its
-//! effective value, origin layer, description, and when a change applies;
-//! each edit sets or removes one leaf (comments preserved, validated first,
-//! `phux_config::settings::write_edit`) and then reloads like `reload-config`.
+//! Each row is one key with its effective value, origin layer, description, and
+//! when a change applies; each edit sets or removes one leaf
+//! (`phux_config::settings::write_edit`) and then reloads.
 //!
-//! Roomy: a section column, the section's rows, and a detail panel. Starved
-//! viewports drop the section column, then shrink the detail panel.
-//!
-//! Text filters across sections (`j`/`k` navigate an empty query; Esc clears,
-//! then closes), `Tab`/`Shift-Tab` step sections, Enter/Space toggle, cycle,
-//! or edit, Left/Right step (letters are always filter text, so no query can
-//! write the file), `Delete`/`C-r` reset to the shipped default, `C-z` undoes.
-//! A key set by an `extends` layer refuses a reset, naming that file.
+//! Letters are always filter text, so no query can write the file. A key set
+//! by an `extends` layer refuses a reset, naming that file.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -1585,17 +1578,7 @@ mod tests {
         assert_eq!(shown("/Users/pat/x"), "/Users/pat/x");
     }
 
-    fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press_text as press;
 
     fn ctrl(key: PhysicalKey) -> KeyEvent {
         let mut ev = press(key, None);
@@ -1643,21 +1626,7 @@ mod tests {
         std::fs::read_to_string(dir.path().join("config.toml")).expect("read config")
     }
 
-    fn render_text(page: &SettingsOverlay, cols: u16, rows: u16) -> String {
-        let area = Rect::new(0, 0, cols, rows);
-        let mut buf = Buffer::empty(area);
-        page.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
+    use crate::test_util::rendered as render_text;
 
     /// The bottom border row of the rendered modal.
     fn bottom_border(page: &SettingsOverlay, cols: u16) -> String {

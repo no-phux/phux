@@ -98,9 +98,7 @@ pub(super) fn empty_session_json(session: &str) -> serde_json::Value {
     })
 }
 
-/// Create an empty, persistent session. Refuses before writing when the
-/// server can create no empty session ([`phux_client::session::keep_empty_supported`]:
-/// an older one would seed a shell).
+/// Create an empty, persistent session.
 pub(crate) async fn create_empty_session_via_metadata(
     server: &ServerTarget,
     name: &str,
@@ -110,11 +108,6 @@ pub(crate) async fn create_empty_session_via_metadata(
         .connect()
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    // The capability check runs before the duplicate-name `GET_STATE`, so an
-    // unsupporting server costs exactly one round trip.
-    if !phux_client::session::keep_empty_supported(&conn) {
-        return Err(report_empty_unsupported(json));
-    }
     reject_duplicate_session_name(&mut conn, server, name, json).await?;
     let mut notices = Vec::new();
     let result = phux_client::session::create_empty_session(&mut conn, name, &mut notices).await;
@@ -125,7 +118,6 @@ pub(crate) async fn create_empty_session_via_metadata(
     let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
     match outcome {
         CreateEmptyOutcome::Created => Ok(()),
-        CreateEmptyOutcome::Unsupported => Err(report_empty_unsupported(json)),
         CreateEmptyOutcome::ReadRefused(refusal) => Err(report_create_failed(
             json,
             format!("server refused the read-back: {refusal}"),
@@ -133,18 +125,4 @@ pub(crate) async fn create_empty_session_via_metadata(
         CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
         CreateEmptyOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
     }
-}
-
-/// The server cannot create a session with no terminal (ADR-0105).
-pub(super) fn report_empty_unsupported(json: bool) -> ExitCode {
-    use crate::commands::json_err::{CliError, codes, emit};
-    emit(
-        json,
-        &CliError::new(
-            codes::UNSUPPORTED_SERVER,
-            "create-session failed: the server does not support empty sessions",
-            "upgrade the server (`phux upgrade`), or create the session without --empty",
-        ),
-        1,
-    )
 }

@@ -144,15 +144,14 @@ strip = "debuginfo"
 panic = "abort"
 opt-level = 3
 
-# Production profile for the C ABI artifact. Workspace binaries keep the
-# release profile's abort policy; the FFI boundary requires unwinding so its
-# catch_unwind guards can return PHUX_CLIENT_PANIC without terminating a host.
-# Build with: cargo build --profile ffi-release -p phux-client-ffi
+# Production profile for the mobile FFI artifacts. Workspace binaries keep the
+# release profile's abort policy; UniFFI turns a Rust panic into a foreign
+# error only when it can unwind.
 [profile.ffi-release]
 inherits = "release"
 panic = "unwind"
 
-# Native-host iteration keeps the FFI panic boundary without whole-program LTO.
+# Mobile FFI iteration keeps the panic boundary without whole-program LTO.
 [profile.ffi-dev]
 inherits = "dev"
 panic = "unwind"

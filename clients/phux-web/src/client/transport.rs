@@ -194,50 +194,26 @@ impl OutboundQueue {
 }
 
 impl AppBindings {
+    /// Drop every binding, in field order; dropping the reader's cancel
+    /// sender stops the WebTransport pump.
     pub(super) fn dispose(&mut self) {
-        if let Some(websocket) = self.websocket.take() {
-            websocket.dispose();
-        }
-        if let Some(input) = self.input.take() {
-            input.dispose();
-        }
-        if let Some(find) = self.find.take() {
-            find.dispose();
-        }
-        if let Some(picker) = self.path_picker.take() {
-            picker.dispose();
-        }
-        if let Some(approvals) = self.approvals.take() {
-            approvals.dispose();
-        }
-        if let Some(blink) = self.blink.take() {
-            blink.dispose();
-        }
-        if let Some(frame) = self.frame.take() {
-            frame.dispose();
-        }
-        if let Some(expiry) = self.bootstrap_expiry.take() {
-            expiry.dispose();
-        }
-        if let Some(cancel) = self.wt_reader_cancel.take() {
-            let _ = cancel.send(());
-        }
+        *self = Self::default();
     }
 }
 
-impl WebSocketBindings {
-    pub(super) fn dispose(self) {
+impl Drop for WebSocketBindings {
+    fn drop(&mut self) {
         self.socket.set_onopen(None);
         self.socket.set_onmessage(None);
         self.socket.set_onerror(None);
         self.socket.set_onclose(None);
-        drop((self.onopen, self.onmessage, self.onerror, self.onclose));
     }
 }
 
-impl InputBinding {
-    pub(super) fn dispose(self) {
-        self.listeners.dispose();
+impl Drop for InputBinding {
+    fn drop(&mut self) {
+        // Unlisten first: removing a focused surface can fire its blur.
+        drop(std::mem::take(&mut self.listeners));
         self.surface.remove();
     }
 }
@@ -258,9 +234,11 @@ impl Listeners {
         });
         Ok(())
     }
+}
 
-    pub(super) fn dispose(self) {
-        for listener in self.0 {
+impl Drop for Listeners {
+    fn drop(&mut self) {
+        for listener in &self.0 {
             let _ = listener.target.remove_event_listener_with_callback(
                 listener.kind,
                 listener.callback.as_ref().unchecked_ref(),
@@ -281,18 +259,18 @@ impl FrameBinding {
             self.pending.set(Some(id));
         }
     }
+}
 
-    pub(super) fn dispose(self) {
+impl Drop for FrameBinding {
+    fn drop(&mut self) {
         if let Some(id) = self.pending.take() {
             let _ = self.window.cancel_animation_frame(id);
         }
-        drop(self.callback);
     }
 }
 
-impl BlinkBinding {
-    pub(super) fn dispose(self) {
+impl Drop for BlinkBinding {
+    fn drop(&mut self) {
         self.window.clear_interval_with_handle(self.interval);
-        drop(self.callback);
     }
 }

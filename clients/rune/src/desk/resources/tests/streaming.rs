@@ -74,7 +74,7 @@ fn live() -> (
     let (tx, rx) = mpsc::channel();
     let completed = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&completed);
-    rt.state.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
+    rt.state.connection.resources.images = Some(rune::ImageCache::new(Arc::new(move || {
         count.fetch_add(1, Ordering::SeqCst);
         let _ = tx.send(());
     })));
@@ -98,7 +98,7 @@ fn update_on(client: &Client, stream_id: StreamId, seq: u64, bytes: &[u8]) {
 }
 
 fn ready(rt: &Runtime<Desk>) -> Option<rune::ImageId> {
-    let document = &rt.state.resources.entries[&id(1)];
+    let document = &rt.state.connection.resources.entries[&id(1)];
     match &document.body {
         // A first image is exposed while decoding. Its worker may finish
         // after step() built the scene; wait for application promotion so
@@ -133,20 +133,7 @@ fn render(
     gpu: &rune::render::Gpu,
     renderer: &mut rune::render::Renderer,
 ) -> Vec<u8> {
-    let target = rune::render::Offscreen::new(&gpu.device, 800, 600);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (800, 600),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    target.read(&gpu.device)
+    crate::ui::offscreen(gpu, renderer, rt, (800, 600))
 }
 
 fn marker(pixels: &[u8]) -> [u8; 4] {
@@ -165,7 +152,7 @@ fn sustained_unique_png_wire_bursts_render_first_and_subsequent_complete_frames(
     let (client, mut rt, wake, completed) = live();
     publish(&client, 1, ResourceKind::PixelSurface, &stamped(&base, 0));
     step(&mut rt);
-    let first = rt.state.resources.entries[&id(1)]
+    let first = rt.state.connection.resources.entries[&id(1)]
         .surface
         .flight
         .as_ref()
@@ -219,7 +206,7 @@ fn sustained_unique_png_wire_bursts_render_first_and_subsequent_complete_frames(
             }
             rendered.push(image);
         }
-        let d = &rt.state.resources.entries[&id(1)];
+        let d = &rt.state.connection.resources.entries[&id(1)];
         assert!(
             d.surface.started <= completed.load(Ordering::SeqCst) + 1,
             "at most one queued/running decode"
@@ -257,14 +244,25 @@ fn sustained_unique_png_wire_bursts_render_first_and_subsequent_complete_frames(
     // Drain to the latest cut after proving live progress, then verify the
     // cache really ran only the bounded set of submitted decoder jobs.
     step(&mut rt);
-    while rt.state.resources.entries[&id(1)].surface.flight.is_some() {
+    while rt.state.connection.resources.entries[&id(1)]
+        .surface
+        .flight
+        .is_some()
+    {
         finish(&mut rt, &wake);
     }
     assert_eq!(
-        rt.state.resources.entries[&id(1)].surface.started,
+        rt.state.connection.resources.entries[&id(1)]
+            .surface
+            .started,
         completed.load(Ordering::SeqCst)
     );
-    assert!(rt.state.resources.entries[&id(1)].surface.pending.is_none());
+    assert!(
+        rt.state.connection.resources.entries[&id(1)]
+            .surface
+            .pending
+            .is_none()
+    );
     eprintln!(
         "live PNG acceptance: {published}+ unique wire updates, {} distinct GPU-rendered images, {} real decoder jobs",
         rendered.len(),
@@ -289,7 +287,7 @@ fn invalid_or_empty_new_png_clears_old_pixels_and_cannot_be_overwritten_by_an_ol
     update(&client, 2, b"not PNG");
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
     );
     finish(&mut rt, &wake);
     assert!(
@@ -300,7 +298,7 @@ fn invalid_or_empty_new_png_clears_old_pixels_and_cannot_be_overwritten_by_an_ol
     step(&mut rt);
     finish(&mut rt, &wake);
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
     );
     assert!(
         !rt.instances
@@ -314,7 +312,7 @@ fn invalid_or_empty_new_png_clears_old_pixels_and_cannot_be_overwritten_by_an_ol
     update(&client, 5, b"");
     step(&mut rt);
     assert!(matches!(
-        rt.state.resources.entries[&id(1)].body,
+        rt.state.connection.resources.entries[&id(1)].body,
         Body::Empty
     ));
 }
@@ -333,7 +331,7 @@ fn real_png_decoder_keeps_dimension_limits() {
         step(&mut rt);
         finish(&mut rt, &wake);
         assert!(
-            matches!(&rt.state.resources.entries[&id(1)].body, Body::Invalid(error) if error.to_lowercase().contains("limit"))
+            matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.to_lowercase().contains("limit"))
         );
         assert!(ready(&rt).is_none());
     }
@@ -357,7 +355,7 @@ fn malformed_latest_png_queued_behind_a_valid_decode_replaces_last_good_pixels_w
     update(&client, 2, &PNG[..24]);
     observe(&mut rt, &client);
     assert_eq!(
-        rt.state.resources.entries[&id(1)]
+        rt.state.connection.resources.entries[&id(1)]
             .surface
             .pending
             .as_deref(),
@@ -367,7 +365,7 @@ fn malformed_latest_png_queued_behind_a_valid_decode_replaces_last_good_pixels_w
     assert!(ready(&rt).is_some());
     finish(&mut rt, &wake); // real decoder reports malformed PNG, not stale success.
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Invalid(error) if error.contains("PNG"))
     );
     assert!(
         !rt.instances
@@ -385,12 +383,11 @@ fn replace_record(client: &Client, record: ResourceRecord) {
                 .with_live(Some(SessionId::new(1))),
         ])
         .with_resources(vec![record]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 #[test]
@@ -401,7 +398,12 @@ fn resource_identity_teardown_drops_latest_png_and_ignores_old_worker_completion
         observe(&mut rt, &client);
         update(&client, 1, &stamped(PNG, 1));
         observe(&mut rt, &client);
-        assert!(rt.state.resources.entries[&id(1)].surface.pending.is_some());
+        assert!(
+            rt.state.connection.resources.entries[&id(1)]
+                .surface
+                .pending
+                .is_some()
+        );
         match change {
             "key" => replace_record(
                 &client,
@@ -427,7 +429,7 @@ fn resource_identity_teardown_drops_latest_png_and_ignores_old_worker_completion
             1,
             "pending PNG was never submitted after teardown"
         );
-        if let Some(document) = rt.state.resources.entries.get(&id(1)) {
+        if let Some(document) = rt.state.connection.resources.entries.get(&id(1)) {
             assert!(matches!(document.body, Body::Pending));
             assert!(document.surface.flight.is_none());
             assert!(document.surface.pending.is_none());

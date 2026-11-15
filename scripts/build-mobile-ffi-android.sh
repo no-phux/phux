@@ -8,8 +8,7 @@
 #   provenance            source/toolchain/digest facts for atomic consumers
 #
 # The producer is crates/phux-client-ffi with --no-default-features
-# --features uniffi (ADR-0135); `c-abi` stays off so this artifact never
-# carries the extern "C" surface. The zip layout and the
+# --features uniffi (ADR-0135). The zip layout and the
 # dev.phux.mobile.ffi Kotlin package are the app's own namespace and do not
 # move; the cdylib, the generated file and its `loadLibrary` call all carry
 # the producing crate's name, because UniFFI names them after the crate and

@@ -149,7 +149,7 @@ impl ControlPlane {
     }
 
     /// The flushed run's result, then whatever it was flushed for, with the
-    /// non-fatal deferral `feed_batch` applies.
+    /// non-fatal deferral a batch feed applies.
     fn resolve_flush(
         &mut self,
         batch: &mut SharedBatch,

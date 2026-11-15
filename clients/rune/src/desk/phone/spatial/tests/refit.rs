@@ -52,14 +52,14 @@ fn a_phone_resize_burst_sends_only_the_settled_grid() {
 fn a_phone_round_trip_back_to_its_grid_never_resizes_the_pty() {
     let (client, mut rt) = fixture(true);
     let desk = &mut rt.state;
-    let [w, h] = desk.areas[&id(1)];
-    let fitted = desk.fitted[&id(1)];
+    let [w, h] = desk.connection.areas[&id(1)];
+    let fitted = desk.connection.fitted[&id(1)];
     area(desk, 2.0, 500.0);
     desk.clock = 2.05;
     desk.laid_out(id(1), [0.0, 0.0, w, h]);
     desk.clock = 3.0;
     desk.fit();
-    assert_eq!(desk.fitted[&id(1)], fitted);
+    assert_eq!(desk.connection.fitted[&id(1)], fitted);
     assert!(resizes(&client).is_empty());
 }
 
@@ -69,7 +69,7 @@ fn desktop_resizes_and_a_phones_first_grid_do_not_wait() {
     area(&mut rt.state, 2.0, 500.0);
     assert!(!resizes(&client).is_empty());
     let (client, mut rt) = fixture(true);
-    rt.state.fitted.clear();
+    rt.state.connection.fitted.clear();
     area(&mut rt.state, 2.0, 500.0);
     assert_eq!(
         resizes(&client).len(),
@@ -113,7 +113,7 @@ fn phone_layout_arms_a_deadline_and_poll_fits_without_another_layout_or_input() 
     rt.frame(0.01);
     let sizes = resizes(&client);
     assert_eq!(sizes.len(), 1);
-    let expected = rt.state.metrics().fit(rt.state.areas[&id(1)]);
+    let expected = rt.state.metrics().fit(rt.state.connection.areas[&id(1)]);
     assert_eq!(sizes[0], (id(1), expected.0, expected.1));
     rt.frame(1.0);
     assert!(resizes(&client).is_empty());
@@ -131,7 +131,7 @@ fn moving_a_phone_pane_without_changing_its_grid_does_not_restart_the_wait() {
     desk.fit();
     assert_eq!(resizes(&client).len(), 1);
     assert_eq!(
-        desk.origins[&id(1)],
+        desk.connection.origins[&id(1)],
         [20.0, 40.0],
         "hit testing moves immediately"
     );
@@ -150,7 +150,7 @@ fn a_native_viewport_change_cannot_release_the_expired_previous_measurement() {
     rt.state.fit();
     assert!(resizes(&client).is_empty());
     assert!(
-        rt.state.areas.contains_key(&id(1)),
+        rt.state.connection.areas.contains_key(&id(1)),
         "a sub-threshold change may deliver no layout"
     );
     area(&mut rt.state, 2.21, 320.0);
@@ -167,7 +167,7 @@ fn native_sub_threshold_and_scale_only_changes_keep_a_usable_measurement() {
     rt.poll = Some(Desk::poll);
     rt.frame(0.01);
     resizes(&client);
-    let initial = rt.state.areas[&id(1)];
+    let initial = rt.state.connection.areas[&id(1)];
     // Rune suppresses on_layout for a sub-half-point rect change. This is
     // also the native layer's pixel-rounded, effectively unchanged case.
     crate::mobile::viewport_changed(&mut rt);
@@ -175,19 +175,19 @@ fn native_sub_threshold_and_scale_only_changes_keep_a_usable_measurement() {
     for _ in 0..20 {
         rt.frame(0.01);
     }
-    assert_eq!(rt.state.areas[&id(1)], initial);
+    assert_eq!(rt.state.connection.areas[&id(1)], initial);
     assert!(resizes(&client).is_empty());
 
     // A device-pixel scale change need not move a pane in points either,
     // but its cell pixels must still reach the PTY after settling.
-    let before = rt.state.fitted[&id(1)];
+    let before = rt.state.connection.fitted[&id(1)];
     crate::mobile::viewport_changed(&mut rt);
     rt.set_viewport((393.01, 852.0), 3.0);
     for _ in 0..20 {
         rt.frame(0.01);
     }
-    assert!(rt.state.areas.contains_key(&id(1)));
-    assert_ne!(rt.state.fitted[&id(1)].1, before.1);
+    assert!(rt.state.connection.areas.contains_key(&id(1)));
+    assert_ne!(rt.state.connection.fitted[&id(1)].1, before.1);
     assert!(!resizes(&client).is_empty());
 
     // A later pinch/font change still has an area to fit, even without
@@ -200,7 +200,7 @@ fn native_sub_threshold_and_scale_only_changes_keep_a_usable_measurement() {
 fn using_the_desktop_takes_back_a_pane_another_client_resized() {
     let (client, mut rt) = fixture(false);
     let desk = &mut rt.state;
-    let (cols, rows) = desk.fitted[&id(1)].0;
+    let (cols, rows) = desk.connection.fitted[&id(1)].0;
     // The fixture's server grid stays 80x24: some other client's size.
     assert_ne!((cols, rows), (80, 24));
     resizes(&client);

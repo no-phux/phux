@@ -99,12 +99,6 @@ async fn connect(args: &Value) -> Result<Connection, ToolError> {
 fn approval_error(err: ApprovalError) -> ToolError {
     match err {
         ApprovalError::Transport(err) => err.into(),
-        ApprovalError::Unsupported => crate::tools::contract_error(
-            "unsupported_server",
-            err.to_string(),
-            "use a server that advertises approvals",
-            2,
-        ),
         other => crate::tools::contract_error(
             "approval_refused",
             other.to_string(),

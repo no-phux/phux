@@ -2,116 +2,88 @@
 
 use super::*;
 
-/// Parse `argv` to its resolved [`Command`], panicking with the argv on
-/// any failure — the shared front door for the alias-parity tests.
-fn parsed(argv: &[&str]) -> Command {
-    crate::parse_cli(argv)
-        .unwrap_or_else(|err| panic!("{argv:?} must parse: {err}"))
+/// Parse `line` to its resolved [`Command`], panicking on any failure.
+fn parsed(line: &str) -> Command {
+    parse(line)
+        .unwrap_or_else(|err| panic!("{line} must parse: {err}"))
         .command
-        .unwrap_or_else(|| panic!("{argv:?} names a verb"))
+        .unwrap_or_else(|| panic!("{line} names a verb"))
 }
 
-/// Every list-shaped registry verb answers to both `list` and `ls`, parsing
-/// to the canonical variant.
+/// Alias parity (ADR-0065, phux-i0e8.8.3): every list- and remove-shaped
+/// registry verb answers to both spellings, parsing to the canonical
+/// variant. `tag`'s canonical names are the short ones, and `plugin unlink`
+/// predates the policy but also answers to `rm` / `remove`.
 #[test]
-fn list_aliases_map_to_the_canonical_variants() {
-    use crate::commands::{PluginAction, TagAction};
-
-    for argv in [["phux", "worktree", "list"], ["phux", "worktree", "ls"]] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Worktree(crate::commands::WorktreeArgs {
-                action: crate::commands::WorktreeAction::List { .. },
-            })
-        ));
+fn aliases_parse_to_the_canonical_variants() {
+    for (alias, canonical) in [
+        ("phux worktree ls", "phux worktree list"),
+        ("phux tag list .", "phux tag ls ."),
+        ("phux plugin ls", "phux plugin list"),
+        ("phux list", "phux ls"),
+        ("phux theme ls", "phux theme list"),
+        ("phux worktree rm feat", "phux worktree remove feat"),
+        ("phux tag remove . build", "phux tag rm . build"),
+        ("phux plugin rm x.y", "phux plugin unlink x.y"),
+        ("phux plugin remove x.y", "phux plugin unlink x.y"),
+        ("phux theme rm nord", "phux theme remove nord"),
+        ("phux plugin log --limit 5", "phux plugin log -n 5"),
+    ] {
+        assert_eq!(
+            format!("{:?}", parsed(alias)),
+            format!("{:?}", parsed(canonical)),
+            "{alias}"
+        );
     }
-    // tag's canonical name is the short one; `list` is the alias.
-    for argv in [["phux", "tag", "ls", "."], ["phux", "tag", "list", "."]] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Tag(crate::commands::TagArgs {
-                action: TagAction::Ls { .. }
-            })
-        ));
-    }
-    for argv in [["phux", "plugin", "list"], ["phux", "plugin", "ls"]] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Plugin(crate::commands::PluginArgs {
-                action: PluginAction::List { .. }
-            })
-        ));
-    }
-    // The root registry verb keeps its established pair.
-    for argv in [["phux", "ls"], ["phux", "list"]] {
-        assert!(matches!(parsed(&argv), Command::Ls(..)));
-    }
+    assert!(matches!(
+        parsed("phux plugin unlink x.y"),
+        Command::Plugin(crate::commands::PluginArgs {
+            action: crate::commands::PluginAction::Unlink { .. }
+        })
+    ));
 }
 
-/// `phux theme` parses every verb; `set` takes a name or `--file`, and
-/// `remove` answers to `rm` (ADR-0065 alias policy).
+/// `phux theme` parses every verb; `set` takes a name or `--file`.
 #[test]
 fn theme_verbs_parse() {
     use crate::commands::ThemeAction;
-
-    for argv in [["phux", "theme", "list"], ["phux", "theme", "ls"]] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Theme(crate::commands::ThemeArgs {
-                action: ThemeAction::List { json: false }
-            })
-        ));
-    }
+    let action = |line| match parsed(line) {
+        Command::Theme(crate::commands::ThemeArgs { action }) => action,
+        other => panic!("{line}: {other:?}"),
+    };
     assert!(matches!(
-        parsed(&["phux", "theme", "show"]),
-        Command::Theme(crate::commands::ThemeArgs {
-            action: ThemeAction::Show {
-                name: None,
-                json: false
-            }
-        })
+        action("phux theme list"),
+        ThemeAction::List { json: false }
     ));
     assert!(matches!(
-        parsed(&["phux", "theme", "set", "nord"]),
-        Command::Theme(crate::commands::ThemeArgs {
-            action: ThemeAction::Set {
-                name: Some(_),
-                file: None
-            }
-        })
+        action("phux theme show"),
+        ThemeAction::Show {
+            name: None,
+            json: false
+        }
     ));
     assert!(matches!(
-        parsed(&["phux", "theme", "set", "--file", "~/x/colors.toml"]),
-        Command::Theme(crate::commands::ThemeArgs {
-            action: ThemeAction::Set {
-                name: None,
-                file: Some(_)
-            }
-        })
+        action("phux theme set nord"),
+        ThemeAction::Set {
+            name: Some(_),
+            file: None
+        }
     ));
     assert!(matches!(
-        parsed(&[
-            "phux",
-            "theme",
-            "install",
-            "https://example.com/x.git",
-            "--json"
-        ]),
-        Command::Theme(crate::commands::ThemeArgs {
-            action: ThemeAction::Install { json: true, .. }
-        })
+        action("phux theme set --file ~/x/colors.toml"),
+        ThemeAction::Set {
+            name: None,
+            file: Some(_)
+        }
     ));
-    for argv in [
-        ["phux", "theme", "remove", "nord"],
-        ["phux", "theme", "rm", "nord"],
-    ] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Theme(crate::commands::ThemeArgs {
-                action: ThemeAction::Remove { .. }
-            })
-        ));
-    }
+    assert!(matches!(
+        action("phux theme install https://example.com/x.git --json"),
+        ThemeAction::Install { json: true, .. }
+    ));
+    assert!(matches!(
+        action("phux theme remove nord"),
+        ThemeAction::Remove { .. }
+    ));
 }
 
 /// `phux plugin log` parses its flags, refuses a non-numeric limit, and
@@ -120,36 +92,24 @@ fn theme_verbs_parse() {
 fn plugin_log_parses_flags_and_documents_the_run_log() {
     use crate::commands::PluginAction;
 
-    assert!(matches!(
-        parsed(&["phux", "plugin", "log"]),
+    let log = |line| match parsed(line) {
         Command::Plugin(crate::commands::PluginArgs {
-            action: PluginAction::Log {
-                limit: None,
-                failed: false,
-                json: false,
-                startup: None,
-            }
-        })
-    ));
-    for argv in [
-        &["phux", "plugin", "log", "-n", "5", "--failed", "--json"][..],
-        &[
-            "phux", "plugin", "log", "--limit", "5", "--failed", "--json",
-        ][..],
-    ] {
-        assert!(matches!(
-            parsed(argv),
-            Command::Plugin(crate::commands::PluginArgs {
-                action: PluginAction::Log {
-                    limit: Some(5),
-                    failed: true,
-                    json: true,
+            action:
+                PluginAction::Log {
+                    limit,
+                    failed,
+                    json,
                     startup: None,
-                }
-            })
-        ));
-    }
-    assert!(crate::parse_cli(["phux", "plugin", "log", "-n", "many"]).is_err());
+                },
+        }) => (limit, failed, json),
+        other => panic!("{line}: {other:?}"),
+    };
+    assert_eq!(log("phux plugin log"), (None, false, false));
+    assert_eq!(
+        log("phux plugin log -n 5 --failed --json"),
+        (Some(5), true, true)
+    );
+    assert_parses(&[("phux plugin log -n many", false)]);
 
     let plugin = Cli::command()
         .subcommands
@@ -172,51 +132,6 @@ fn plugin_log_parses_flags_and_documents_the_run_log() {
         "--startup",
     ] {
         assert!(page.contains(needle), "{needle} missing from:\n{page}");
-    }
-}
-
-/// Alias parity, remove half (phux-i0e8.8.3): every remove-shaped
-/// registry verb answers to both spellings — including `plugin unlink`,
-/// whose canonical name predates the policy and now also answers to
-/// `rm` / `remove`.
-#[test]
-fn remove_aliases_map_to_the_canonical_variants() {
-    use crate::commands::{PluginAction, TagAction};
-
-    for argv in [
-        ["phux", "worktree", "remove", "feat"],
-        ["phux", "worktree", "rm", "feat"],
-    ] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Worktree(crate::commands::WorktreeArgs {
-                action: crate::commands::WorktreeAction::Remove { .. },
-            })
-        ));
-    }
-    // tag's canonical name is the short one; `remove` is the alias.
-    for argv in [
-        ["phux", "tag", "rm", ".", "build"],
-        ["phux", "tag", "remove", ".", "build"],
-    ] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Tag(crate::commands::TagArgs {
-                action: TagAction::Rm { .. }
-            })
-        ));
-    }
-    for argv in [
-        ["phux", "plugin", "unlink", "x.y"],
-        ["phux", "plugin", "rm", "x.y"],
-        ["phux", "plugin", "remove", "x.y"],
-    ] {
-        assert!(matches!(
-            parsed(&argv),
-            Command::Plugin(crate::commands::PluginArgs {
-                action: PluginAction::Unlink { .. }
-            })
-        ));
     }
 }
 

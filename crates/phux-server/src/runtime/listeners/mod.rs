@@ -301,16 +301,11 @@ impl AutoOverlayPorts {
     }
 }
 
-/// Detect the overlay address and serve the auto-bound listeners (ADR-0081)
-/// as a peer of the other accept loops. Detection shells out to `tailscale`
-/// (a wedged daemon costs ~2s), so it runs on a blocking thread after the
-/// accept loops are live: a slow overlay delays this listener, never the
-/// server (`tests/lifecycle/overlay_startup.rs`). A server started before
-/// the overlay is up records its listeners as waiting for their address and
-/// keeps detecting until one appears (#2430). A closed gate never detects.
-///
-/// With nothing to bind it parks on cancellation, so the enclosing
-/// `select_all` still reads a first completion as "an accept loop ended".
+/// Detect the overlay address and serve the auto-bound listeners (ADR-0081).
+/// Detection shells out to `tailscale` on a blocking thread after the accept
+/// loops are live, and keeps retrying until an address appears (#2430). With
+/// nothing to bind it parks on cancellation, so `select_all` still reads a
+/// first completion as "an accept loop ended".
 pub(in crate::runtime) async fn serve_auto_overlay_listeners(
     gate_open: bool,
     ports: AutoOverlayPorts,

@@ -5,12 +5,12 @@
 
 use std::f32::consts::TAU;
 
-use super::super::reef::pen::Pen;
+use super::super::playground::pen::Pen;
 use super::bee::{Look, bee};
 use super::comb::{fill_level, lit_cell, rect};
 use super::{glow_in, hex};
 use crate::hive::{AMBER, Hive, MINT};
-use crate::reef::{Mood, Pt, Rgb, lerp, mix};
+use crate::playground::{Mood, Pt, Rgb, lerp, mix};
 
 pub fn flowers(pen: &mut Pen, h: &Hive) {
     let (nt, hh) = (h.nt, h.h);
@@ -19,7 +19,7 @@ pub fn flowers(pen: &mut Pen, h: &Hive) {
         let stem = mix([70.0, 130.0, 56.0], [24.0, 60.0, 56.0], nt);
         let a = [fl.bx - sw * 0.4, hh + 4.0];
         let pts: Vec<Pt> = std::iter::once(a)
-            .chain(super::super::reef::pen::quad(
+            .chain(super::super::playground::pen::quad(
                 a,
                 [fl.bx + sw * 0.2, (fl.y + hh) / 2.0],
                 [fl.x, fl.y],

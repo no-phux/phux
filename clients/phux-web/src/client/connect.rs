@@ -2,54 +2,40 @@
 
 use super::*;
 
-impl WebSocketAttempt {
-    pub(super) fn new(socket: WebSocket) -> Self {
-        Self {
-            socket: Some(socket),
-        }
-    }
-
-    pub(super) fn socket(&self) -> &WebSocket {
-        self.socket
+impl<T> Attempt<T> {
+    pub(super) fn get(&self) -> &T {
+        self.transport
             .as_ref()
-            .expect("WebSocket attempt is still armed")
+            .expect("transport attempt is still armed")
     }
 
     fn transfer_to_app(&mut self) {
-        self.socket.take();
+        self.transport.take();
     }
 }
 
-impl Drop for WebSocketAttempt {
-    fn drop(&mut self) {
-        if let Some(socket) = self.socket.take() {
-            let _ = socket.close();
-        }
-    }
-}
-
-impl WebTransportAttempt {
-    pub(super) fn new(session: WebTransport) -> Self {
+impl Attempt<WebSocket> {
+    pub(super) fn websocket(socket: WebSocket) -> Self {
         Self {
-            session: Some(session),
+            transport: Some(socket),
+            close: |socket| drop(socket.close()),
         }
-    }
-
-    pub(super) fn session(&self) -> &WebTransport {
-        self.session
-            .as_ref()
-            .expect("WebTransport attempt is still armed")
-    }
-
-    fn transfer_to_app(&mut self) {
-        self.session.take();
     }
 }
 
-impl Drop for WebTransportAttempt {
+impl Attempt<WebTransport> {
+    pub(super) fn webtransport(session: WebTransport) -> Self {
+        Self {
+            transport: Some(session),
+            close: WebTransport::close,
+        }
+    }
+}
+
+impl<T> Drop for Attempt<T> {
     fn drop(&mut self) {
-        if let Some(session) = self.session.take() {
-            session.close();
+        if let Some(transport) = self.transport.take() {
+            (self.close)(&transport);
         }
     }
 }
@@ -57,6 +43,10 @@ impl Drop for WebTransportAttempt {
 impl AppEstablishment {
     pub(super) fn new(app: Rc<RefCell<App>>) -> Self {
         Self { app: Some(app) }
+    }
+
+    fn app(&self) -> &Rc<RefCell<App>> {
+        self.app.as_ref().expect("App establishment is still armed")
     }
 
     pub(super) fn complete(mut self) -> Client {
@@ -126,7 +116,17 @@ pub async fn run(
     rows: u16,
 ) -> Result<Client, JsValue> {
     let vt = load_vt().await?;
-    run_websocket(ws_url, None, canvas, cols, rows, false, &vt).await
+    let direct = WsMode::Direct {
+        synthesized_only: false,
+    };
+    run_websocket(ws_url, None, canvas, cols, rows, direct, &vt).await
+}
+
+/// How a WebSocket connection starts: the plain wire, or the hosted
+/// live-demo preamble whose lifecycle events go to a callback.
+enum WsMode {
+    Direct { synthesized_only: bool },
+    Hosted(js_sys::Function),
 }
 
 /// Connect over WebSocket for the hosted live-demo Worker.
@@ -145,27 +145,8 @@ pub async fn run_hosted(
     callback: js_sys::Function,
 ) -> Result<Client, JsValue> {
     let vt = load_vt().await?;
-    let deadline = AttemptDeadline::new()?;
-    let ws = websocket(ws_url, None)?;
-    let mut attempt = WebSocketAttempt::new(ws);
-    attempt.socket().set_binary_type(BinaryType::Arraybuffer);
-
-    let app_socket = attempt.socket().clone();
-    let tx = WireTx::Ws(WsTx::new(app_socket.clone()));
-    let (app, ready) = build_app(&vt, tx, canvas, cols, rows, false)?;
-    let app_attempt = AppEstablishment::new(Rc::clone(&app));
-    attempt.transfer_to_app();
-    install_transport_failure_hook(&app);
-
-    install_hosted_websocket_handlers(&app, &app_socket, callback);
-    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
-    ensure_app_live(&app)?;
-
-    install_input(&app)?;
-    path_picker::install(&app)?;
-    install_cursor_blink(&app)?;
-
-    Ok(app_attempt.complete())
+    let hosted = WsMode::Hosted(callback);
+    run_websocket(ws_url, None, canvas, cols, rows, hosted, &vt).await
 }
 
 /// Connect over WebSocket while explicitly advertising synthesized
@@ -180,7 +161,10 @@ pub async fn run_synthesized_compat(
     rows: u16,
 ) -> Result<Client, JsValue> {
     let vt = load_vt().await?;
-    run_websocket(ws_url, None, canvas, cols, rows, true, &vt).await
+    let compat = WsMode::Direct {
+        synthesized_only: true,
+    };
+    run_websocket(ws_url, None, canvas, cols, rows, compat, &vt).await
 }
 
 async fn run_websocket(
@@ -189,42 +173,56 @@ async fn run_websocket(
     canvas: HtmlCanvasElement,
     cols: u16,
     rows: u16,
-    synthesized_only: bool,
+    mode: WsMode,
     vt: &Rc<Vt>,
 ) -> Result<Client, JsValue> {
     let deadline = AttemptDeadline::new()?;
     let ws = websocket(ws_url, bearer_hex)?;
-    let mut attempt = WebSocketAttempt::new(ws);
-    attempt.socket().set_binary_type(BinaryType::Arraybuffer);
+    let mut attempt = Attempt::websocket(ws);
+    attempt.get().set_binary_type(BinaryType::Arraybuffer);
 
-    let app_socket = attempt.socket().clone();
+    let app_socket = attempt.get().clone();
     let tx = WireTx::Ws(WsTx::new(app_socket.clone()));
+    let synthesized_only = matches!(
+        mode,
+        WsMode::Direct {
+            synthesized_only: true
+        }
+    );
     let (app, ready) = build_app(vt, tx, canvas, cols, rows, synthesized_only)?;
     let app_attempt = AppEstablishment::new(Rc::clone(&app));
     attempt.transfer_to_app();
     install_transport_failure_hook(&app);
 
-    install_websocket_handlers(&app, &app_socket);
-    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
-    ensure_app_live(&app)?;
+    match mode {
+        WsMode::Direct { .. } => install_websocket_handlers(&app, &app_socket),
+        WsMode::Hosted(callback) => install_hosted_websocket_handlers(&app, &app_socket, callback),
+    }
+    complete_establishment(app_attempt, ready, &deadline).await
+}
 
-    install_input(&app)?;
-    path_picker::install(&app)?;
-    install_cursor_blink(&app)?;
-
-    Ok(app_attempt.complete())
+/// Wait for the aggregate ATTACH_READY, then bind input, the path picker,
+/// and the cursor blink.
+async fn complete_establishment(
+    establishment: AppEstablishment,
+    ready: oneshot::Receiver<Result<(), String>>,
+    deadline: &AttemptDeadline,
+) -> Result<Client, JsValue> {
+    let app = establishment.app();
+    await_protocol_ready(app, ready, deadline.remaining_ms()).await?;
+    ensure_app_live(app)?;
+    install_input(app)?;
+    path_picker::install(app)?;
+    install_cursor_blink(app)?;
+    Ok(establishment.complete())
 }
 
 /// Connect over WebTransport (HTTP/3 over QUIC), falling back to the
-/// WebSocket path when WebTransport is unavailable — an older browser
-/// without the API, or a server not listening on the WebTransport endpoint.
+/// WebSocket at `ws_url` when the API or the endpoint is unavailable.
 ///
-/// `wt_url` is an `https://` session URL (`phux server --webtransport`; on a
-/// token-authenticated listener append `?token=<hex>`, since the JS
-/// `WebTransport` API cannot set request headers). `ws_url` is the WebSocket
-/// fallback URL. The token is offered there through `Sec-WebSocket-Protocol`
-/// rather than copied into the WSS URL; the direct server must support that
-/// authenticated upgrade seam.
+/// `wt_url` is an `https://` session URL; a token-authenticated listener
+/// takes `?token=<hex>` (the JS API cannot set headers). The fallback offers
+/// that token through `Sec-WebSocket-Protocol`, never the WSS URL.
 ///
 /// # Errors
 /// Fails only if *both* paths fail to come up.
@@ -249,7 +247,10 @@ pub async fn run_with_fallback(
                 "phux-web: WebTransport unavailable; falling back to WebSocket",
             ));
             let bearer = fallback_token.valid();
-            run_websocket(ws_url, bearer, canvas, cols, rows, false, &vt).await
+            let direct = WsMode::Direct {
+                synthesized_only: false,
+            };
+            run_websocket(ws_url, bearer, canvas, cols, rows, direct, &vt).await
         }
     }
 }
@@ -267,9 +268,9 @@ async fn run_webtransport_loaded(
     // as Err so the caller's fallback fires either way.
     let wt = WebTransport::new(wt_url)
         .map_err(|_| JsValue::from_str("WebTransport initialization failed"))?;
-    let mut attempt = WebTransportAttempt::new(wt);
+    let mut attempt = Attempt::webtransport(wt);
     if await_js_promise_with_deadline(
-        attempt.session().ready(),
+        attempt.get().ready(),
         "WebTransport readiness",
         deadline.remaining_ms(),
     )
@@ -282,7 +283,7 @@ async fn run_webtransport_loaded(
     // One bidirectional stream carries the whole wire, mirroring the QUIC
     // transport's one-stream-per-connection contract.
     let stream: web_sys::WebTransportBidirectionalStream = match await_js_promise_with_deadline(
-        attempt.session().create_bidirectional_stream(),
+        attempt.get().create_bidirectional_stream(),
         "WebTransport stream creation",
         deadline.remaining_ms(),
     )
@@ -296,8 +297,8 @@ async fn run_webtransport_loaded(
     let reader = ReadableStreamDefaultReader::new(&stream.readable())
         .map_err(|_| JsValue::from_str("WebTransport reader initialization failed"))?;
 
-    let reader_session = attempt.session().clone();
-    let tx = WireTx::Wt(Rc::new(WtTx::new(writer, attempt.session().clone())));
+    let reader_session = attempt.get().clone();
+    let tx = WireTx::Wt(Rc::new(WtTx::new(writer, attempt.get().clone())));
     let (app, ready) = build_app(vt, tx, canvas, cols, rows, false)?;
     let app_attempt = AppEstablishment::new(Rc::clone(&app));
     attempt.transfer_to_app();
@@ -305,9 +306,7 @@ async fn run_webtransport_loaded(
 
     // The session is already established (unlike the WebSocket path there is
     // no onopen moment): send HELLO now; ATTACH follows HELLO_OK.
-    {
-        send_handshake(&app);
-    }
+    send_handshake(&app);
 
     // Read pump: stream chunks land at arbitrary boundaries, so reassemble
     // complete frames before decoding. `wt` is moved in to keep the session
@@ -324,15 +323,7 @@ async fn run_webtransport_loaded(
             run_webtransport_reader(app, reader, reader_session, cancel_rx).await;
         });
     }
-
-    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
-    ensure_app_live(&app)?;
-
-    install_input(&app)?;
-    path_picker::install(&app)?;
-    install_cursor_blink(&app)?;
-
-    Ok(app_attempt.complete())
+    complete_establishment(app_attempt, ready, &deadline).await
 }
 
 pub(super) fn spawn_reconnect(config: ReconnectConfig) {

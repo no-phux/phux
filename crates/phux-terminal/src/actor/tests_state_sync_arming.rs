@@ -209,52 +209,9 @@ fn osc_progress_is_mirrored_without_event_listeners() {
     assert_eq!(actor.last_progress, "4;0;");
 }
 
-/// phux-yeca: production defaults the synthesized tick emitter OFF so
-/// human TUI attach stays on the immediate raw PTY broadcast path.
-#[test]
-fn tick_emit_gate_defaults_off_for_human_attach() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, false)
-        .expect("register");
-    actor.vt_write_for_test(b"dirty-content");
-
-    actor.tick_emit();
-
-    assert!(
-        rx.try_recv().is_err(),
-        "default human attach path must not wait for synthesized tick output",
-    );
-}
-
-/// A `StateSync` consumer is served with the global test gate off.
-#[test]
-fn tick_emit_serves_negotiated_state_sync_consumer_with_gate_off() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    // NB: global gate left at its production default (OFF).
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
-    actor.vt_write_for_test(b"state-sync-marker");
-
-    actor.tick_emit();
-
-    let frame = rx
-        .try_recv()
-        .expect("state-sync consumer must be served by the tick even with the gate off");
-    let Outbound::Frame(FrameKind::ResourceOutput { seq, .. }) = frame else {
-        panic!("expected a ResourceOutput frame for the state-sync consumer");
-    };
-    assert_eq!(seq, 1, "first tick emission stamps seq=1");
-}
-
-/// With the gate off, only the `StateSync` consumer of two is served.
+/// phux-yeca: the synthesized tick emitter defaults off, so a human (raw)
+/// attach stays on the immediate PTY broadcast; only the `StateSync`
+/// consumer of two is served.
 #[test]
 fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -276,9 +233,9 @@ fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
     assert!(
         matches!(
             sync_rx.try_recv(),
-            Ok(Outbound::Frame(FrameKind::ResourceOutput { .. })),
+            Ok(Outbound::Frame(FrameKind::ResourceOutput { seq: 1, .. })),
         ),
-        "state-sync consumer must receive the synthesized delta",
+        "state-sync consumer must receive the synthesized delta at seq 1",
     );
     assert!(
         raw_rx.try_recv().is_err(),

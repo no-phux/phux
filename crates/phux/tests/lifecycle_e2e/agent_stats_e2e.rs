@@ -5,28 +5,18 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
+use crate::common;
 
 use std::path::Path;
-use std::process::{Child, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
 
-use crate::hermetic::{hermetic_env, prepare_dirs};
+use crate::hermetic::{Server, hermetic_env, prepare_dirs};
 
 const DEADLINE: Duration = Duration::from_secs(30);
-
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn phux(dir: &Path, args: &[&str]) -> Output {
     common::phux_cmd(crate::runner::phux_bin())

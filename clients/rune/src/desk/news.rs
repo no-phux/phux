@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn opening_the_panel_puts_the_bell_out_for_good() {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         assert!(News::load(&desk.prefs).unread);
         desk.news.unread = true;

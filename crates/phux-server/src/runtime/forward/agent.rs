@@ -1,17 +1,10 @@
 //! ssh-agent forwarding (`AGENT_OFFER`, `AGENT_REPLY`, behind
 //! `features_ext.FORWARD_AGENT`; `docs/forwarding.md#ssh-agent`).
 //!
-//! With `[forward] agent = true` the server listens on one owner-only Unix
-//! socket beside its own and names it to every pane as `SSH_AUTH_SOCK`. It
-//! speaks the ssh-agent protocol there, but holds no key: a request to
-//! list keys or to sign is handed, as an unjournaled `agent_request`
-//! event, to the one client that offered its agent, and that client's
-//! `AGENT_REPLY` is the pane's answer. Every other request, and every
-//! request nobody can answer, gets `SSH_AGENT_FAILURE` here.
-//!
-//! The broker's table lives in [`ServerState`](crate::state::ServerState),
-//! so an offer, a request, a reply, and a disconnect are each one step
-//! under the state lock and cannot interleave.
+//! The server serves an owner-only `SSH_AUTH_SOCK` but holds no key: list and
+//! sign requests go, as unjournaled `agent_request` events, to the one client
+//! that offered its agent; everything else gets `SSH_AGENT_FAILURE`. The
+//! broker table lives in `ServerState`, so each step is one lock.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;

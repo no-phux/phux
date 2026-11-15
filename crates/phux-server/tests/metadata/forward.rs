@@ -12,17 +12,12 @@ use std::time::Duration;
 
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::forward::{ForwardChunk, ForwardOp, MAX_FORWARD_CHUNK_BYTES};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_server::runtime::ServerConfig;
-use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
-use phux_server_testkit::{
-    await_command_result, command, join_after_shutdown, run_local, send_frame, spawn_server_with,
-};
+use phux_server_testkit::{SpawnedServer, await_command_result, command, run_local, send_frame};
 
 use crate::common::{connect_as, full_caps};
 
@@ -43,12 +38,10 @@ async fn serve(
     configure: impl FnOnce(&mut ServerConfig),
     body: impl AsyncFnOnce(UnixStream, FrameKind),
 ) {
-    let tmp = TempDir::new().unwrap();
-    let socket = tmp.path().join("phux.sock");
-    let (shutdown, server) = spawn_server_with(socket.clone(), None, configure);
-    let (stream, hello_ok) = connect_as(&socket, "forward-test", full_caps()).await;
+    let server = SpawnedServer::start(None, configure);
+    let (stream, hello_ok) = connect_as(&server.socket, "forward-test", full_caps()).await;
     body(stream, hello_ok).await;
-    join_after_shutdown(shutdown, server).await;
+    server.stop().await;
 }
 
 fn advertised(hello_ok: &FrameKind) -> bool {
@@ -123,9 +116,7 @@ fn bytes_cross_the_socket_and_a_parked_read_delays_nothing() {
                 fin: false,
             });
             assert_eq!(command(&mut stream, 4, write).await, CommandResult::Ok);
-            let state = Command::GetState {
-                scope: StateScope::Server,
-            };
+            let state = phux_server_testkit::get_state();
             assert!(matches!(
                 command(&mut stream, 5, state).await,
                 CommandResult::OkWith(_)

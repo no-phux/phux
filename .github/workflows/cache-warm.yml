@@ -135,7 +135,6 @@ jobs:
       - name: dependency-cache hit
         run: echo "hit=${{ steps.lane.outputs.cache-hit }}"
       - run: nix develop -c just binding-uniffi-test
-      - run: nix develop -c just ffi-abi
 
   rust-icount:
     name: warm rust icount

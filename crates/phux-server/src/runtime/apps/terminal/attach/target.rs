@@ -7,15 +7,10 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): return `name` when
-/// the session exists, otherwise seed it as an ephemeral session (PTY-backed
-/// when the server runs with PTYs) and return `name` for the normal attach
-/// path.
-///
-/// With PTYs, a server-wide seed command wins over the wire `command`, and
-/// the wire `cwd` applies only when it names an existing directory (a stale
-/// client path falls back rather than failing the attach). Spawn failure is
-/// reported as `SessionNotFound`: the session is not available to attach.
+/// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): seed `name` as an
+/// ephemeral session when it does not exist. A server-wide seed command wins
+/// over the wire `command`; a stale wire `cwd` falls back. Spawn failure is
+/// `SessionNotFound`.
 pub(crate) async fn resolve_create_if_missing(
     seed: crate::runtime::apps::SessionSeed<'_>,
 ) -> Option<String> {

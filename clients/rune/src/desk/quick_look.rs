@@ -36,6 +36,7 @@ impl Desk {
             );
         }
         let cwd = self
+            .connection
             .topology
             .as_ref()
             .and_then(|t| t.pane(&terminal)?.cwd.clone());

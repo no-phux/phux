@@ -1,4 +1,4 @@
-//! Nonsecret approval views shared by the C and `UniFFI` encoders.
+//! Nonsecret approval views for the `UniFFI` encoder.
 
 use phux_client_runtime::approvals::{Approval, DecisionOutcome};
 use phux_client_runtime::control::Event;

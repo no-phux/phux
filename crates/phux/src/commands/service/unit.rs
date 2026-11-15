@@ -101,10 +101,6 @@ impl ServicePlan {
 
 /// The launchd restart-policy keys, shared with [`reconcile_unit`] so the
 /// reconciler decides "current" against exactly what the generator emits.
-///
-/// Restart on abnormal exit only (`SuccessfulExit: false`), so
-/// `phux kill --server` stays down, and throttle restarts so a crash-loop is
-/// visible rather than a silent respawn storm.
 pub(super) fn launchd_policy_lines() -> Vec<String> {
     vec![
         "  <key>KeepAlive</key>".to_owned(),

@@ -236,11 +236,10 @@ impl RemoteClient {
         let sessions: Vec<String> = view.sessions.iter().map(|s| s.key.to_string()).collect();
         let records = client
             .topology()
-            .map(|graph| topology::session_graph(graph, Some(&replica)).records)
+            .map(|_| super::super::graph::records(&replica))
             .unwrap_or_default()
             .into_iter()
             .filter(|record| sessions.contains(&record.session_key))
-            .map(Into::into)
             .collect();
         InboxDescriptor {
             inbox: view.inbox.map(|key| key.to_string()),

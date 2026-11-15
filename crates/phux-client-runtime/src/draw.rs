@@ -48,8 +48,9 @@ pub struct Theme<C> {
 
 impl Theme<Rgb> {
     /// The frame's own colours, with `selection` as `(foreground, background)`.
+    #[cfg(test)]
     #[must_use]
-    pub fn frame_colors(selection: (Rgb, Rgb)) -> Self {
+    pub(crate) fn frame_colors(selection: (Rgb, Rgb)) -> Self {
         Self {
             foreground: None,
             background: None,
@@ -243,7 +244,7 @@ pub const fn cursor_visible(frame: &GridFrame, visibility: Visibility) -> bool {
 /// The cursor's colour: the theme's, else the application's, else the
 /// default foreground.
 #[must_use]
-pub fn cursor_color<C: Copy>(frame: &GridFrame, theme: &Theme<C>) -> C {
+pub(crate) fn cursor_color<C: Copy>(frame: &GridFrame, theme: &Theme<C>) -> C {
     theme
         .cursor
         .or_else(|| frame.colors.cursor.map(theme.rgb))
@@ -253,26 +254,17 @@ pub fn cursor_color<C: Copy>(frame: &GridFrame, theme: &Theme<C>) -> C {
 /// The cursor's `(row, col)`. A cursor on a wide character's tail reports
 /// the head.
 #[must_use]
-pub const fn cursor_head(frame: &GridFrame) -> (u16, u16) {
+pub(crate) const fn cursor_head(frame: &GridFrame) -> (u16, u16) {
     let tail = matches!(frame.cursor.width, CursorWidth::WideTail) as u16;
     (frame.cursor.row, frame.cursor.col.saturating_sub(tail))
 }
 
 /// The painted cursor as `(row, col, width)`.
 #[must_use]
-pub const fn cursor_span(frame: &GridFrame) -> (u16, u16, u16) {
+pub(crate) const fn cursor_span(frame: &GridFrame) -> (u16, u16, u16) {
     let (row, col) = cursor_head(frame);
     let width = if frame.cursor.width.is_wide() { 2 } else { 1 };
     (row, col, width)
-}
-
-/// A focused, visible block cursor fills its cell, and the glyph under it
-/// takes the cell's background.
-#[must_use]
-pub fn solid_cursor(frame: &GridFrame, visibility: Visibility) -> bool {
-    cursor_visible(frame, visibility)
-        && visibility.focused
-        && frame.cursor.style == CursorStyle::Block
 }
 
 /// The cursor to paint this frame.
@@ -348,7 +340,7 @@ macro_rules! region {
 /// from the cell edges avoids font side bearings and line-height gaps in
 /// terminal UIs that use half blocks for smooth panels.
 #[must_use]
-pub fn block_regions(text: &[u8]) -> Option<&'static [BlockRegion]> {
+pub(crate) fn block_regions(text: &[u8]) -> Option<&'static [BlockRegion]> {
     Some(match std::str::from_utf8(text).ok()? {
         "▀" => &[region!(0, 0, 8, 4)],
         "▁" => &[region!(0, 7, 8, 1)],

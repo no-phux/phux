@@ -2,7 +2,7 @@
 
 use super::super::{
     AttachError, Connection, SidebarReservation, current_viewport_or_default, host_cell_px,
-    resize_cell_px, viewport_resize_frame,
+    resize_cell_px,
 };
 
 impl super::super::SessionLoop {
@@ -29,19 +29,12 @@ impl super::super::SessionLoop {
             .and_then(|fid| self.mirror.panes.get(fid))
             .map_or((viewport.cols, viewport.rows), |slot| slot.geometry);
         self.mirror.predict.set_viewport(predict_cols, predict_rows);
-        self.resize_cell_px = resize_cell_px(self.sizes_panes_itself, &viewport);
-        // ADR-0145: a client that sizes its own panes casts no vote, so the
-        // outer size never reaches a pane before its tile does. An older
-        // server still needs the vote for cell pixels (a pixel-only SIGWINCH
-        // too); the pane targets below then reassert the tiles.
-        if !self.sizes_panes_itself {
-            conn.send(&viewport_resize_frame(viewport)).await?;
-        }
+        // ADR-0145: no window-size vote; the pane targets carry the tiles.
+        self.resize_cell_px = resize_cell_px(&viewport);
         self.size_workspace_panes(conn, sidebar).await?;
-        // A real reflow clears rather than repainting a stale mirror; the
-        // server's resync snapshot fills the new size. A held switch keeps
-        // the old frame up instead. A same-grid resize is left on screen:
-        // there is no snapshot coming to refill a clear.
+        // A real reflow clears; the server's resync snapshot refills it. A
+        // held switch keeps the old frame, and a same-grid resize is left on
+        // screen (no snapshot comes to refill a clear).
         if !grid_unchanged && !self.paint_held() {
             let _ = out.write_all(b"\x1b[2J\x1b[H");
         }

@@ -7,7 +7,7 @@ use phux_protocol::wire::frame::FrameKind;
 #[test]
 fn ime_reconversion_replaces_only_the_focused_field_in_both_forms() {
     for (phone, size) in [(false, (1100.0, 720.0)), (true, (393.0, 852.0))] {
-        let (client, mut rt) = crate::grid::budget::input_fixture();
+        let (client, mut rt) = crate::test_support::input_fixture();
         rt.state.phone = phone.then(crate::desk::phone::Phone::default);
         rt.set_viewport(size, 2.0);
         rt.update(|state, tx| {
@@ -53,17 +53,17 @@ fn ime_reconversion_replaces_only_the_focused_field_in_both_forms() {
 
 #[test]
 fn terminal_rejects_reconversion_of_text_it_does_not_own() {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.frame(0.0);
     let _ = client.take_outbound();
     assert!(!rt.state.ime(&rune::Ime::Select(0..9)));
-    assert!(rt.state.preedit.is_none());
+    assert!(rt.state.connection.preedit.is_none());
     assert!(client.take_outbound().is_empty());
 }
 
 #[test]
 fn inactivity_finishes_a_runtime_field_composition_once_without_terminal_input() {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.phone = Some(crate::desk::phone::Phone::default());
     rt.set_viewport((393.0, 852.0), 2.0);
     rt.update(|state, tx| {

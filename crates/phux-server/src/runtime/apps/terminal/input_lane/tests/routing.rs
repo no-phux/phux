@@ -4,18 +4,17 @@ use super::*;
 /// reaches the PTY writer in the order routed.
 #[tokio::test(flavor = "current_thread")]
 async fn attached_and_route_input_share_one_fifo() {
-    LocalSet::new()
-        .run_until(async {
-            let mut fx = fixture();
-            fx.attached(fx.client_a, b"a");
-            let routed = fx.route(fx.client_a, b"b");
-            fx.attached(fx.client_a, b"c");
-            assert_eq!(routed.await, CommandResult::Ok);
-            for expected in [&b"a"[..], b"b", b"c"] {
-                assert_eq!(next_write(&mut fx.pane.writer_rx).await.bytes, expected);
-            }
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let mut fx = fixture();
+        fx.attached(fx.client_a, b"a");
+        let routed = fx.route(fx.client_a, b"b");
+        fx.attached(fx.client_a, b"c");
+        assert_eq!(routed.await, CommandResult::Ok);
+        for expected in [&b"a"[..], b"b", b"c"] {
+            assert_eq!(next_write(&mut fx.pane.writer_rx).await.bytes, expected);
+        }
+    })
+    .await;
 }
 
 /// Lease exclusion (ADR-0033) holds on the lane: with B holding the
@@ -23,66 +22,63 @@ async fn attached_and_route_input_share_one_fifo() {
 /// typed lease error, while B's input is delivered.
 #[tokio::test(flavor = "current_thread")]
 async fn lane_honors_input_lease() {
-    LocalSet::new()
-        .run_until(async {
-            let mut fx = fixture();
-            fx.state
-                .with_mut(|s| s.set_input_lease(fx.pane.core, fx.client_b));
-            fx.attached(fx.client_a, b"a");
-            let refused = fx.route(fx.client_a, b"r").await;
-            assert_eq!(code(&refused), Some(ErrorCode::InputLeaseHeld));
-            fx.attached(fx.client_b, b"B");
-            assert_eq!(
-                next_write(&mut fx.pane.writer_rx).await.bytes.as_ref(),
-                b"B"
-            );
-            assert_no_write(&mut fx.pane.writer_rx).await;
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let mut fx = fixture();
+        fx.state
+            .with_mut(|s| s.set_input_lease(fx.pane.core, fx.client_b));
+        fx.attached(fx.client_a, b"a");
+        let refused = fx.route(fx.client_a, b"r").await;
+        assert_eq!(code(&refused), Some(ErrorCode::InputLeaseHeld));
+        fx.attached(fx.client_b, b"B");
+        assert_eq!(
+            next_write(&mut fx.pane.writer_rx).await.bytes.as_ref(),
+            b"B"
+        );
+        assert_no_write(&mut fx.pane.writer_rx).await;
+    })
+    .await;
 }
 
 /// `ROUTE_INPUT` completes while the runtime thread is synchronously
 /// busy: only the dedicated lane thread can have routed it.
 #[tokio::test(flavor = "current_thread")]
 async fn route_input_routes_while_main_runtime_is_not_polling() {
-    LocalSet::new()
-        .run_until(async {
-            let fx = fixture();
-            // Enqueue under the state lock so the lane cannot finish
-            // before this task stops polling.
-            let mut receipt = fx.state.with(|_| {
-                let mut receipt = fx.route(fx.client_a, b"k");
-                assert!((&mut receipt).now_or_never().is_none());
-                receipt
-            });
-            let deadline = std::time::Instant::now() + LANE_DELIVERY_DEADLINE;
-            let routed = loop {
-                if let Some(result) = (&mut receipt).now_or_never() {
-                    break result;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "lane did not route while the runtime was blocked"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            };
-            assert_eq!(routed, CommandResult::Ok);
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let fx = fixture();
+        // Enqueue under the state lock so the lane cannot finish
+        // before this task stops polling.
+        let mut receipt = fx.state.with(|_| {
+            let mut receipt = fx.route(fx.client_a, b"k");
+            assert!((&mut receipt).now_or_never().is_none());
+            receipt
+        });
+        let deadline = std::time::Instant::now() + LANE_DELIVERY_DEADLINE;
+        let routed = loop {
+            if let Some(result) = (&mut receipt).now_or_never() {
+                break result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lane did not route while the runtime was blocked"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(routed, CommandResult::Ok);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn lane_encodes_from_published_bracketed_paste_snapshot() {
-    LocalSet::new()
-        .run_until(async {
-            let mut fx = fixture_with_seed(b"\x1b[?2004h");
-            fx.attached(fx.client_a, b"lane");
-            assert_eq!(
-                next_write(&mut fx.pane.writer_rx).await.bytes.as_ref(),
-                b"\x1b[200~lane\x1b[201~"
-            );
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let mut fx = fixture_with_seed(b"\x1b[?2004h");
+        fx.attached(fx.client_a, b"lane");
+        assert_eq!(
+            next_write(&mut fx.pane.writer_rx).await.bytes.as_ref(),
+            b"\x1b[200~lane\x1b[201~"
+        );
+    })
+    .await;
 }
 
 /// One encoder set per pane generation: a respawned actor replaces it,
@@ -147,30 +143,29 @@ fn one_thousand_keys_in_one_second_emit_at_most_five() {
 /// leaves the journal head where it was.
 #[tokio::test(flavor = "current_thread")]
 async fn accepted_input_notifies_only_the_other_subscriber() {
-    LocalSet::new()
-        .run_until(async {
-            let mut fx = fixture();
-            let (peer_tx, mut peer_rx) = mpsc::channel(8);
-            let (self_tx, mut self_rx) = mpsc::channel(8);
-            fx.state.with_mut(|server| {
-                server.set_client_name(fx.client_a, "ada".to_owned());
-                server.subscribe_events(fx.client_a, Some(fx.pane.wire.clone()), self_tx);
-                server.subscribe_events(fx.client_b, Some(fx.pane.wire.clone()), peer_tx);
-            });
-            let head = fx.state.with(crate::state::ServerState::journal_head);
-            fx.attached(fx.client_a, b"k");
-            let _ = next_write(&mut fx.pane.writer_rx).await;
-            assert_eq!(fx.state.with(crate::state::ServerState::journal_head), head);
-            match peer_rx.try_recv().expect("peer sees the origin") {
-                crate::mailbox::Outbound::Frame(phux_protocol::wire::frame::FrameKind::Event {
-                    event: phux_protocol::wire::frame::AgentEvent::InputActivity { origin },
-                    stamp: None,
-                    ..
-                }) => assert_eq!(origin, "ada"),
-                other => panic!("peer frame: {other:?}"),
-            }
-            assert!(peer_rx.try_recv().is_err(), "one emission for one paste");
-            assert!(self_rx.try_recv().is_err(), "no self-echo");
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let mut fx = fixture();
+        let (peer_tx, mut peer_rx) = mpsc::channel(8);
+        let (self_tx, mut self_rx) = mpsc::channel(8);
+        fx.state.with_mut(|server| {
+            server.set_client_name(fx.client_a, "ada".to_owned());
+            server.subscribe_events(fx.client_a, Some(fx.pane.wire.clone()), self_tx);
+            server.subscribe_events(fx.client_b, Some(fx.pane.wire.clone()), peer_tx);
+        });
+        let head = fx.state.with(crate::state::ServerState::journal_head);
+        fx.attached(fx.client_a, b"k");
+        let _ = next_write(&mut fx.pane.writer_rx).await;
+        assert_eq!(fx.state.with(crate::state::ServerState::journal_head), head);
+        match peer_rx.try_recv().expect("peer sees the origin") {
+            crate::mailbox::Outbound::Frame(phux_protocol::wire::frame::FrameKind::Event {
+                event: phux_protocol::wire::frame::AgentEvent::InputActivity { origin },
+                stamp: None,
+                ..
+            }) => assert_eq!(origin, "ada"),
+            other => panic!("peer frame: {other:?}"),
+        }
+        assert!(peer_rx.try_recv().is_err(), "one emission for one paste");
+        assert!(self_rx.try_recv().is_err(), "no self-echo");
+    })
+    .await;
 }

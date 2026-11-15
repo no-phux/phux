@@ -404,10 +404,6 @@ impl NegotiatedConnection {
     pub(in crate::runtime) const fn quic_streams(self) -> bool {
         self.server_features.contains(ServerFeature::QuicStreams)
     }
-
-    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
-        self.server_features.contains(ServerFeature::TerminalReply)
-    }
 }
 const fn runtime_server_features() -> ServerFeatureSet {
     // QUIC_STREAMS is transport-gated at HELLO (see negotiate_hello); every

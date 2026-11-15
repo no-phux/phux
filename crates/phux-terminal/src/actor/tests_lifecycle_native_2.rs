@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
     let (_bootstrap_tx, bootstrap) = mpsc::channel(1);
@@ -60,7 +59,6 @@ async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
     ));
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[test]
 fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -117,7 +115,6 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
 }
 
 /// An attach-time reflow owes a resync to exactly the pumps it tombstoned.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -167,7 +164,6 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
 
 /// A `HISTORY_REQUEST` racing a resize that drained its binding gets a
 /// per-replica `HISTORY_TOMBSTONE`, never a connection-level error.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -260,7 +256,6 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
 
 /// EOF is not a new incarnation: a completed checkpoint blocked on a slow
 /// consumer must still activate and restore its final viewport.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn ready_native_publication_survives_eof_before_activation() {
     use libghostty_vt::fmt::Formatter;
@@ -313,93 +308,91 @@ async fn ready_native_publication_survives_eof_before_activation() {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
     use libghostty_vt::fmt::Formatter;
 
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut bundle = TerminalActor::new(40, 8).expect("native actor");
-            let exited = bundle.exit_notify.take().expect("exit notification");
-            let token = bundle.token.clone();
-            let mut output = bundle.handle.output.subscribe();
-            let mut actor = bundle.actor;
-            actor.vt_write_for_test(b"before\r\n");
-            let (first_reply, first) = oneshot::channel();
-            let (queued_reply, queued) = oneshot::channel();
-            // Different admitted budgets put the second consumer in the
-            // backlog instead of joining the first consumer's frozen cut.
-            for (owner, max_bytes, reply) in [
-                (
-                    31,
-                    crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                    first_reply,
-                ),
-                (
-                    32,
-                    crate::native_state::MAX_NATIVE_PREFIX_BYTES - 1,
-                    queued_reply,
-                ),
-            ] {
-                actor.handle_native_bootstrap(NativeBootstrapRequest {
-                    owner,
-                    terminal_id: phux_protocol::ids::ResourceId::local(1),
-                    stream_id: phux_protocol::ids::StreamId::new(owner).expect("stream"),
-                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
-                    limits: phux_protocol::caps::BootstrapLimits::default(),
-                    max_bytes,
-                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-                    reply,
-                });
-            }
-            let (pty, _writer) = actor.install_test_pty_channels();
-            pty.send(PtyEvent::Bytes {
-                chunk: Bytes::from_static(b"final-tail"),
-                read_at: std::time::Instant::now(),
-            })
-            .await
-            .expect("queue final output behind the loan");
-            pty.send(PtyEvent::Eof).await.expect("queue EOF");
-            let run = tokio::task::spawn_local(actor.run());
-
-            assert!(matches!(
-                first.await.expect("interrupted capture is answered"),
-                Err(phux_terminal_api::native_state::NativeStateError::Resize)
-            ));
-            tokio::time::timeout(ACTOR_EXIT_DEADLINE, exited)
-                .await
-                .expect("EOF is announced")
-                .expect("exit outcome");
-            let mut final_snapshot = None;
-            while let Ok(event) = output.try_recv() {
-                if let ResourceOutput::Resync {
-                    reason: super::super::ResyncReason::Exit,
-                    bytes,
-                    ..
-                } = event
-                {
-                    final_snapshot = Some(bytes);
-                }
-            }
-            let mut mirror = libghostty_vt::Terminal::new(40, 8).expect("consumer mirror");
-            mirror.vt_write(&final_snapshot.expect("EOF publishes the final grid"));
-            let mut formatter = Formatter::new(&mirror).expect("viewport formatter");
-            let mut text = [0; 512];
-            let len = formatter.format_buf(&mut text).expect("bounded viewport");
-            assert_eq!(
-                std::str::from_utf8(&text[..len])
-                    .expect("viewport text")
-                    .trim_end(),
-                "before\nfinal-tail"
-            );
-            tokio::time::timeout(ACTOR_EXIT_DEADLINE, queued)
-                .await
-                .expect("queued capture resumes")
-                .expect("queued consumer is answered")
-                .expect("queued consumer captures the EOF grid");
-            token.cancel();
-            run.await.expect("actor stops");
+    on_local!(async {
+        let mut bundle = TerminalActor::new(40, 8).expect("native actor");
+        let exited = bundle.exit_notify.take().expect("exit notification");
+        let token = bundle.token.clone();
+        let mut output = bundle.handle.output.subscribe();
+        let mut actor = bundle.actor;
+        actor.vt_write_for_test(b"before\r\n");
+        let (first_reply, first) = oneshot::channel();
+        let (queued_reply, queued) = oneshot::channel();
+        // Different admitted budgets put the second consumer in the
+        // backlog instead of joining the first consumer's frozen cut.
+        for (owner, max_bytes, reply) in [
+            (
+                31,
+                crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                first_reply,
+            ),
+            (
+                32,
+                crate::native_state::MAX_NATIVE_PREFIX_BYTES - 1,
+                queued_reply,
+            ),
+        ] {
+            actor.handle_native_bootstrap(NativeBootstrapRequest {
+                owner,
+                terminal_id: phux_protocol::ids::ResourceId::local(1),
+                stream_id: phux_protocol::ids::StreamId::new(owner).expect("stream"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
+                limits: phux_protocol::caps::BootstrapLimits::default(),
+                max_bytes,
+                max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+                reply,
+            });
+        }
+        let (pty, _writer) = actor.install_test_pty_channels();
+        pty.send(PtyEvent::Bytes {
+            chunk: Bytes::from_static(b"final-tail"),
+            read_at: std::time::Instant::now(),
         })
-        .await;
+        .await
+        .expect("queue final output behind the loan");
+        pty.send(PtyEvent::Eof).await.expect("queue EOF");
+        let run = tokio::task::spawn_local(actor.run());
+
+        assert!(matches!(
+            first.await.expect("interrupted capture is answered"),
+            Err(phux_terminal_api::native_state::NativeStateError::Resize)
+        ));
+        tokio::time::timeout(ACTOR_EXIT_DEADLINE, exited)
+            .await
+            .expect("EOF is announced")
+            .expect("exit outcome");
+        let mut final_snapshot = None;
+        while let Ok(event) = output.try_recv() {
+            if let ResourceOutput::Resync {
+                reason: super::super::ResyncReason::Exit,
+                bytes,
+                ..
+            } = event
+            {
+                final_snapshot = Some(bytes);
+            }
+        }
+        let mut mirror = libghostty_vt::Terminal::new(40, 8).expect("consumer mirror");
+        mirror.vt_write(&final_snapshot.expect("EOF publishes the final grid"));
+        let mut formatter = Formatter::new(&mirror).expect("viewport formatter");
+        let mut text = [0; 512];
+        let len = formatter.format_buf(&mut text).expect("bounded viewport");
+        assert_eq!(
+            std::str::from_utf8(&text[..len])
+                .expect("viewport text")
+                .trim_end(),
+            "before\nfinal-tail"
+        );
+        tokio::time::timeout(ACTOR_EXIT_DEADLINE, queued)
+            .await
+            .expect("queued capture resumes")
+            .expect("queued consumer is answered")
+            .expect("queued consumer captures the EOF grid");
+        token.cancel();
+        run.await.expect("actor stops");
+    })
+    .await;
 }

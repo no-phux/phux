@@ -1,6 +1,6 @@
 //! Frontend-neutral terminal-engine boundary used by the session kernel.
 
-use crate::history::{DocumentAnchorId, HistoryPageId};
+use crate::history::DocumentAnchorId;
 use phux_protocol::BootstrapStreamProfile;
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -283,30 +283,6 @@ pub struct DocumentPoint {
     pub y: u32,
 }
 
-/// Adapter-produced semantic row for frontend projection.
-///
-/// This is derived from imported engine state, never from opaque history bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineProjectionRow {
-    /// Engine-formatted Unicode text.
-    pub text: String,
-    /// Whether the following physical row continues this logical line.
-    pub soft_wrapped: bool,
-    /// Cached opaque page backing this row when known.
-    pub page: Option<HistoryPageId>,
-}
-
-/// Cooperative client-local history projection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EngineHistoryProjection {
-    /// Frontend-local width used for wrapping.
-    pub width: u16,
-    /// Oldest-to-newest semantic rows returned within the caller's bound.
-    pub rows: Vec<EngineProjectionRow>,
-    /// Whether an older uncached/unmaterialized row remains.
-    pub has_older: bool,
-}
-
 /// Engine-owned selection endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineDocumentSelection {
@@ -327,14 +303,6 @@ pub struct EngineSearchMatch {
     pub end: DocumentAnchorId,
 }
 
-/// Where an engine projection begins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineProjectionOrigin {
-    /// Project the newest loaded tail.
-    Tail,
-    /// Project forward from a resolved tracked anchor.
-    Anchor(DocumentAnchorId),
-}
 /// Optional client-only presentation mutation for adapters with a live engine.
 pub trait EnginePresentationAdapter: EngineAdapter {
     /// Home the cursor and erase the active display and scrollback, preserving
@@ -362,15 +330,6 @@ pub enum BoundedSelectionText {
 
 /// Optional semantic document operations for adapters with an engine-owned grid.
 pub trait EngineDocumentAdapter: EngineAdapter {
-    /// Cooperatively project imported history without resizing canonical PTY state.
-    fn project_history(
-        &mut self,
-        replica: &mut Self::Replica,
-        width: u16,
-        origin: EngineProjectionOrigin,
-        max_rows: usize,
-    ) -> Result<EngineHistoryProjection, Self::Error>;
-
     /// Create one tracked anchor owned by the replica.
     fn track_document_anchor(
         &mut self,

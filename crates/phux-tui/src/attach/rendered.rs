@@ -1,10 +1,5 @@
-//! Compose the client's multi-pane view into dense structured cells
-//! (`phux snapshot --rendered`).
-//!
-//! The structured-cells counterpart to `paint::paint_full_frame`, in the same
-//! order so the two agree: tile the panes into the content rect and fill
-//! their cells, overlay dividers, the sidebar strip, and the status bar, and
-//! adopt the focused pane's cursor as the frame cursor.
+//! Compose the multi-pane view into structured cells (`phux snapshot
+//! --rendered`), in `paint::paint_full_frame`'s order so the two agree.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -102,11 +97,9 @@ pub(super) fn compose_full_frame_cells(
     frame
 }
 
-/// Overlay a ratatui [`Buffer`] onto `frame`, shifting the buffer's rows by
-/// `row_offset`. `Skip` cells are never written (the libghostty pane owns
-/// them). When `skip_blanks` is set, empty/space cells are also skipped so a
-/// divider buffer's gap cells don't paint over pane content; the status bar
-/// passes `false` so its styled background spaces survive.
+/// Overlay a ratatui [`Buffer`] onto `frame` at `row_offset`. `Skip` cells
+/// are never written; `skip_blanks` also skips blank cells (dividers), off
+/// for the status bar's styled background.
 fn overlay_buffer(frame: &mut RenderedFrame, buf: &Buffer, origin: (u16, u16), skip_blanks: bool) {
     let (col_offset, row_offset) = origin;
     let area = buf.area;
@@ -269,10 +262,8 @@ mod tests {
             .collect()
     }
 
-    /// Panes tile into their rects with a divider between them, and the
-    /// focused pane's cursor is the frame cursor; with a sidebar the strip
-    /// paints its columns (separator at col 19) and the panes inset past it,
-    /// while without one nothing is reserved.
+    /// Panes tile with a divider and the focused cursor is the frame cursor;
+    /// a sidebar paints its columns and insets the panes.
     #[test]
     fn compose_tiles_panes_divider_cursor_and_sidebar() {
         let (left, right) = (ResourceId::local(1), ResourceId::local(2));

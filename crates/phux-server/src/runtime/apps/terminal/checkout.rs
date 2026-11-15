@@ -1,15 +1,8 @@
-//! Typed checkout methods (`Command::Checkout`).
-//!
-//! The checkout is the one the named Terminal's PTY child is in, resolved
-//! from its live working directory on this server; a client never names a
-//! host path. The command is `INPUT` on that Terminal: an `INPUT` holder can
-//! already run `git diff` or `git add` in it. A satellite Terminal is routed
-//! to its satellite before this runs (`commands.rs`), and the hub refuses a
-//! satellite that does not advertise `CHECKOUT`.
-//!
-//! Git and `gh` run on blocking workers under a small global semaphore. Each
-//! child has its own deadline and output cap (`phux_git::checkout`), and
-//! the answer is bounded again before it is encoded.
+//! Typed checkout methods (`Command::Checkout`) on the checkout the named
+//! Terminal's child is in; a client never names a host path. Classified
+//! `INPUT`: an input holder could already run `git` there. Git and `gh` run
+//! on blocking workers under a global semaphore, with per-child deadlines and
+//! output caps.
 
 use phux_terminal_api::actor::TerminalResource as _;
 use std::path::PathBuf;

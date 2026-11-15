@@ -176,15 +176,9 @@ pub(super) fn is_current_session(
     id.map_or_else(|| name == session_name, |id| Some(id) == focused_session)
 }
 
-/// rename-session via the shared [`phux_client::rename`] policy, correlated
-/// by the driver rather than awaited here (a request/response helper would
-/// eat interleaved output). A refusal is parked on `rename_notice`; the
-/// status name changes only once the server confirms.
-///
-/// Against an `ORGANIZATION` server the rename is one `SESSION_RENAME`
-/// naming the attached session's key, settled by its reply. Against an
-/// older server it is a `SET_METADATA` of the translated name key followed
-/// by a `GET_STATE` barrier whose snapshot is the outcome.
+/// rename-session via [`phux_client::rename`], correlated by the driver.
+/// On an `ORGANIZATION` server one `SESSION_RENAME`; otherwise a
+/// `SET_METADATA` of the name key and a `GET_STATE` barrier.
 #[allow(
     clippy::future_not_send,
     reason = "DispatchCtx holds current-thread state"

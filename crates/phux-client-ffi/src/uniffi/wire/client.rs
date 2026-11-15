@@ -344,7 +344,7 @@ impl RemoteClient {
                 connection_epoch: 0,
                 events: Vec::new(),
                 events_dropped: false,
-                status: status::connection(None).into(),
+                status: WireStatus::from(None),
                 last_error: None,
                 topology: None,
             };
@@ -362,7 +362,7 @@ impl RemoteClient {
                 client
                     .take_file_upload_receipts()
                     .into_iter()
-                    .map(|receipt| outcome::upload_receipt(receipt).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
@@ -439,7 +439,7 @@ impl RemoteClient {
                 client
                     .take_directory_listings()
                     .into_iter()
-                    .map(|listing| outcome::directory(listing).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
@@ -474,7 +474,7 @@ impl RemoteClient {
                 client
                     .take_path_answers()
                     .into_iter()
-                    .map(|answer| outcome::path_result(answer).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
@@ -500,7 +500,7 @@ impl RemoteClient {
                 client
                     .take_checkout_answers()
                     .into_iter()
-                    .map(|answer| crate::projection::checkout::result(answer).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
@@ -661,7 +661,7 @@ impl RemoteClient {
     }
 
     pub fn status(&self) -> WireStatus {
-        status::connection(self.runtime_client().map(|client| client.status())).into()
+        WireStatus::from(self.runtime_client().map(|client| client.status()))
     }
 
     pub fn last_error(&self) -> Option<String> {
@@ -689,7 +689,7 @@ impl RemoteClient {
         let replica = client.organization();
         client
             .topology()
-            .map(|graph| topology::session_graph(graph, Some(&replica)).into())
+            .map(|graph| session_topology(graph, Some(&replica)))
     }
 
     pub fn send_text(&self, terminal_id: String, text: String) {
@@ -775,7 +775,7 @@ impl RemoteClient {
                 client
                     .take_transcribe_receipts()
                     .into_iter()
-                    .map(|receipt| outcome::transcribe_receipt(receipt).into())
+                    .map(Into::into)
                     .collect()
             })
             .unwrap_or_default()
@@ -1001,23 +1001,15 @@ impl RemoteClient {
         });
     }
 
-    /// Lower one runtime event.
-    ///
-    /// The two classifiers run first: whatever they recognize is a product
-    /// fact the projection layer already decided, and this method only
-    /// lowers it. What is left is either bridge-local state (the damage
-    /// bookkeeping) or a fact with no Swift
+    /// Lower one runtime event. What [`lower_event`] does not name is either
+    /// bridge-local state (the damage bookkeeping) or a fact with no Swift
     /// vocabulary.
     fn project_event(&self, client: Option<&Client>, event: Event, projected: &mut Vec<WireEvent>) {
         if Self::project_approval(&event, projected) {
             return;
         }
-        let event = match event::terminal_signal(event) {
-            Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
-            Err(event) => event,
-        };
-        let event = match event::lifecycle(event) {
-            Ok(lifecycle) => return projected.extend(Option::<WireEvent>::from(lifecycle)),
+        let event = match lower_event(event) {
+            Ok(lowered) => return projected.extend(lowered),
             Err(event) => event,
         };
         let Some(event) = project_agent_control(event, projected) else {
@@ -1041,15 +1033,16 @@ impl RemoteClient {
                 outcome: result,
                 code,
                 message,
-            } => self.input_deliveries.lock().unwrap().push(
-                outcome::InputDelivery {
+            } => self
+                .input_deliveries
+                .lock()
+                .unwrap()
+                .push(WireInputDelivery {
                     delivery_id,
-                    outcome: outcome::delivery(result),
+                    outcome: result.into(),
                     code,
                     message,
-                }
-                .into(),
-            ),
+                }),
             Event::AgentMetadata { terminal_id, value } => {
                 projected.push(agent::badge(&terminal_id, value.as_deref()).into());
             }

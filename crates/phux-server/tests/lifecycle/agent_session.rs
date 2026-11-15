@@ -7,17 +7,18 @@
 use std::collections::HashMap;
 
 use phux_protocol::caps::BootstrapStreamProfile;
-use phux_protocol::ids::{BootstrapId, ResourceId, ResourceKind, StreamId};
-use phux_protocol::input::key::PhysicalKey;
+use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, ErrorCode, FrameKind, ReportedAgentState,
     Scope, SpawnError, SpawnResource, SpawnResult, TerminalSignal,
 };
-use phux_server::LaunchCommand as CommandBuilder;
-use phux_server_testkit::{Spawn, ascii_key, command, send_frame, spawn_resource};
+use phux_server_testkit::{Spawn, assert_command_error, command, send_frame, spawn_resource};
 use tokio::net::UnixStream;
 
-use crate::common::{Server, attach, get_metadata, sh, spawned, state, subscribe, wait_frame};
+use crate::common::{
+    FOREVER, bootstrap, demo as start, get_metadata, next_output, send_command, sh, spawned, state,
+    subscribe, wait_frame,
+};
 
 #[path = "agent_session/family.rs"]
 mod family;
@@ -25,21 +26,6 @@ mod family;
 mod frames;
 #[path = "agent_session/resume.rs"]
 mod resume;
-
-const FOREVER: &str = "while :; do sleep 3600; done";
-
-/// A server whose seed pane never exits, with `owner` attached to it.
-async fn start(configure: impl FnOnce(&mut phux_server::ServerConfig)) -> (Server, UnixStream) {
-    let server = Server::start(Some("demo"), |cfg| {
-        let mut seed = CommandBuilder::new("/bin/sh");
-        seed.args(["-c", FOREVER]);
-        phux_server_testkit::seed_pty(cfg, seed);
-        configure(cfg);
-    });
-    let mut owner = server.connect().await;
-    attach(&mut owner, "demo").await;
-    (server, owner)
-}
 
 async fn spawn_session(
     stream: &mut UnixStream,
@@ -85,88 +71,7 @@ async fn attach_after(
     agent_after_seq: Option<u64>,
 ) {
     let attach = Command::attach_agent_session(terminal_id.clone(), None, agent_after_seq);
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command: attach,
-        },
-    )
-    .await;
-}
-
-/// The next live `RESOURCE_OUTPUT` for `session`: its seq and bytes.
-async fn next_output(stream: &mut UnixStream, session: &ResourceId) -> (u64, Vec<u8>) {
-    wait_frame(stream, "agent output", |frame| match frame {
-        FrameKind::ResourceOutput {
-            terminal_id,
-            seq,
-            bytes,
-            ..
-        } if &terminal_id == session => Some((seq, bytes.to_vec())),
-        _ => None,
-    })
-    .await
-}
-
-/// A bootstrap: (`BEGIN` grid, profile, `base_seq`, concatenated chunks).
-async fn bootstrap(
-    stream: &mut UnixStream,
-    session: &ResourceId,
-) -> ((u16, u16), BootstrapStreamProfile, u64, Vec<u8>) {
-    let mut begin = None;
-    let mut chunks = Vec::new();
-    let mut generation = None;
-    wait_frame(stream, "bootstrap", |frame| match frame {
-        FrameKind::BootstrapBegin {
-            terminal_id,
-            cols,
-            rows,
-            profile,
-            base_seq,
-            bootstrap_id,
-            ..
-        } if &terminal_id == session => {
-            begin = Some(((cols, rows), profile, base_seq));
-            generation = Some(bootstrap_id);
-            None
-        }
-        FrameKind::BootstrapChunk {
-            terminal_id,
-            payload,
-            bootstrap_id,
-            ..
-        } if &terminal_id == session => {
-            assert_eq!(
-                Some(bootstrap_id),
-                generation,
-                "chunk from an old generation"
-            );
-            chunks.extend_from_slice(&payload);
-            None
-        }
-        FrameKind::BootstrapReady {
-            terminal_id,
-            bootstrap_id,
-            ..
-        } if &terminal_id == session => {
-            assert_eq!(
-                Some(bootstrap_id),
-                generation,
-                "READY from an old generation"
-            );
-            Some(())
-        }
-        FrameKind::ResourceOutput { terminal_id, .. }
-            if &terminal_id == session && begin.is_some() =>
-        {
-            panic!("old-generation live output interleaved with the bootstrap");
-        }
-        _ => None,
-    })
-    .await;
-    let (grid, profile, base_seq) = begin.expect("BOOTSTRAP_BEGIN");
-    (grid, profile, base_seq, chunks)
+    send_command(stream, request_id, attach).await;
 }
 
 fn records(payload: &[u8]) -> Vec<serde_json::Value> {
@@ -196,14 +101,7 @@ async fn append_as_owner(
         terminal_id: session.clone(),
         bytes: records.as_bytes().to_vec(),
     };
-    send_frame(
-        owner,
-        &FrameKind::Command {
-            request_id,
-            command: append,
-        },
-    )
-    .await;
+    send_command(owner, request_id, append).await;
     let mut copy = Vec::new();
     wait_frame(owner, "append reply", |frame| match frame {
         FrameKind::ResourceOutput {
@@ -251,19 +149,6 @@ async fn closes(
     })
     .await;
     seen
-}
-
-fn assert_wrong_kind(result: &CommandResult, what: &str) {
-    assert!(
-        matches!(
-            result,
-            CommandResult::Error {
-                code: ErrorCode::WrongResourceKind,
-                ..
-            }
-        ),
-        "{what}: {result:?}"
-    );
 }
 
 /// Spawn registers the child with its kind, parent, and facet; a
@@ -358,7 +243,6 @@ fn ring_overflow_evicts_oldest_but_keeps_counting() {
 fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
     phux_server_testkit::run_local(async {
         use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, ClientCapabilities};
-        use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, wait_for_raw_socket};
 
         let (server, mut owner) = start(|_| {}).await;
         let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
@@ -377,16 +261,7 @@ fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
             },
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::RecordInvalid,
-                    ..
-                }
-            ),
-            "{result:?}"
-        );
+        assert_command_error(&result, ErrorCode::RecordInvalid);
         let accepted = format!("{prefix}{}{suffix}", "é".repeat(8_000));
         let live = append_as_owner(&mut owner, 4, &session, &accepted).await;
         let parsed = phux_client_core::session::agent_stream::parse_records(&live)
@@ -396,7 +271,7 @@ fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
 
         // Reconnect twice with a budget that splits both JSON and UTF-8.
         for _ in 0..2 {
-            let mut late = wait_for_raw_socket(&server.socket, SOCKET_CONNECT_DEADLINE).await;
+            let mut late = server.connect_raw().await;
             let version = phux_protocol::PROTOCOL_VERSION;
             send_frame(
                 &mut late,
@@ -451,6 +326,21 @@ fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
             );
         }
         drop(owner);
+        server.stop().await;
+    });
+}
+
+/// Any local connection may feed a session, not only its opener: `phux agent
+/// session open` and each `phux agent emit` are separate processes
+/// (phux-jqlh0.8).
+#[test]
+fn a_local_connection_that_did_not_open_the_session_may_append() {
+    phux_server_testkit::run_local(async {
+        let (server, mut opener) = start(|_| {}).await;
+        let (_parent, session) = parent_and_session(&mut opener, FOREVER).await;
+        drop(opener);
+        let mut emitter = server.connect().await;
+        append(&mut emitter, 1, &session, "{\"type\":\"prompt\"}\n").await;
         server.stop().await;
     });
 }

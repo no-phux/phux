@@ -297,14 +297,14 @@ fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
 /// terminal output. A project's sessions follow its header, indented.
 fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.resource);
+    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
     let theme = desk.settings.theme.map(|t| t.id);
     let all = desk.addressable();
     let here = desk.machines.label();
     let host = (here, host_color::entry(here).0);
     let waiting_in = |id: u32| waiting.get(&id).copied().unwrap_or(0);
-    let dropping = desk.reorder.target();
+    let dropping = desk.connection.reorder.target();
     let session_rows = |session: &SessionDescriptor, branch: bool| {
         let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
@@ -382,7 +382,7 @@ fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
 /// the hub's own sessions).
 fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     let mut list = col().w_full().gap(1.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.resource);
+    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
     let theme = desk.settings.theme.map(|t| t.id);
     for (n, session) in topology.satellite_sessions.iter().enumerate() {
         let name = format!("{} · {}", session.host, session.name);
@@ -484,7 +484,7 @@ fn foot(
 }
 
 pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
-    let topology = desk.topology.as_ref();
+    let topology = desk.connection.topology.as_ref();
     let counts = topology.map_or_else(HashMap::new, |t| waiting_by_session(desk, t));
     let folded = desk.machines.folded;
     let list = topology.filter(|_| !folded).map_or_else(col, |t| {

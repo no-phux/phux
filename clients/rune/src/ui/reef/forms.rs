@@ -7,9 +7,10 @@
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use super::fish::{body, inside_convex};
-use super::pen::{Pen, Xf, clip_convex, clip_half, quad};
 use crate::creature::Form;
-use crate::reef::{Fish, Mood, Pt, Rgb, lerp, mix};
+use crate::playground::{Mood, Pt, Rgb, lerp, mix};
+use crate::reef::Fish;
+use crate::ui::playground::pen::{Pen, Xf, clip_convex, clip_half, quad};
 
 const WHITE: Rgb = [255.0, 255.0, 255.0];
 const BLACK: Rgb = [0.0, 0.0, 0.0];

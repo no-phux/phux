@@ -1,4 +1,4 @@
-//! Lowering projected badges, signals, and lifecycle changes into [`WireEvent`].
+//! Lowering agent badges and runtime events into [`WireEvent`].
 
 #![allow(
     clippy::wildcard_imports,
@@ -22,108 +22,105 @@ impl From<agent::AgentBadge> for WireEvent {
     }
 }
 
-impl From<event::TerminalSignal> for Option<WireEvent> {
-    /// The Swift surface has no vocabulary for replica tombstones or
-    /// progressive history, so those signals project to nothing. They are
-    /// the runtime's business and the C lane's; a phone re-reads the pane.
-    fn from(value: event::TerminalSignal) -> Self {
-        Some(match value {
-            event::TerminalSignal::Bell { terminal_id } => WireEvent::Bell {
-                terminal_id: id::encode(&terminal_id),
-            },
-            event::TerminalSignal::ClipboardWrite { terminal_id, text } => {
-                WireEvent::ClipboardWrite {
-                    terminal_id: id::encode(&terminal_id),
-                    text: text.0,
-                }
-            }
-            event::TerminalSignal::TitleChanged { terminal_id, title } => WireEvent::TitleChanged {
-                terminal_id: id::encode(&terminal_id),
-                title,
-            },
-            event::TerminalSignal::CwdChanged { terminal_id, cwd } => WireEvent::CwdChanged {
-                terminal_id: id::encode(&terminal_id),
-                cwd,
-            },
-            event::TerminalSignal::OutputStarted { terminal_id } => WireEvent::OutputStarted {
-                terminal_id: id::encode(&terminal_id),
-            },
-            event::TerminalSignal::OutputSettled { terminal_id } => WireEvent::OutputSettled {
-                terminal_id: id::encode(&terminal_id),
-            },
-            event::TerminalSignal::CommandStarted { terminal_id } => WireEvent::CommandStarted {
-                terminal_id: id::encode(&terminal_id),
-            },
-            event::TerminalSignal::CommandFinished {
-                terminal_id,
-                exit_code,
-            } => WireEvent::CommandFinished {
-                terminal_id: id::encode(&terminal_id),
-                exit_code,
-            },
-            event::TerminalSignal::InputHolder {
-                terminal_id,
-                holder,
-                mine,
-                ..
-            } => WireEvent::InputHolderChanged {
-                terminal_id: id::encode(&terminal_id),
-                holder: holder.map(phux_protocol::ClientId::get),
-                mine,
-            },
-            event::TerminalSignal::Resync { .. }
-            | event::TerminalSignal::History { .. }
-            | event::TerminalSignal::HistoryUnavailable { .. } => return None,
-        })
-    }
-}
-
-impl From<event::Lifecycle> for Option<WireEvent> {
-    /// `Exited` projects to nothing: the runtime follows it with a
-    /// `Closed` for a pane that is really gone, and a retained pane
-    /// (ADR-0124) must not disappear from the phone's list.
-    fn from(value: event::Lifecycle) -> Self {
-        Some(match value {
-            event::Lifecycle::PaneSpawned { terminal_id } => WireEvent::PaneSpawned {
-                terminal_id: id::encode(&terminal_id),
-            },
-            event::Lifecycle::SpawnAnswered {
-                request_id,
-                terminal_id,
-                error,
-            } => WireEvent::TerminalSpawned {
-                request_id,
-                terminal_id: terminal_id.as_ref().map(id::encode),
-                error,
-            },
-            event::Lifecycle::AttachAnswered {
-                request_id,
-                terminal_id,
-                error,
-            } => WireEvent::TerminalAttached {
-                request_id,
-                terminal_id: id::encode(&terminal_id),
-                error,
-            },
-            event::Lifecycle::DetachAnswered {
-                request_id,
-                terminal_id,
-                error,
-            } => WireEvent::TerminalDetached {
-                request_id,
-                terminal_id: id::encode(&terminal_id),
-                error,
-            },
-            event::Lifecycle::Closed {
-                terminal_id,
-                exit_status,
-                ..
-            } => WireEvent::PaneClosed {
-                terminal_id: id::encode(&terminal_id),
-                exit_status,
-            },
-            event::Lifecycle::ServerError { message, .. } => WireEvent::ServerError { message },
-            event::Lifecycle::Exited { .. } | event::Lifecycle::Detached { .. } => return None,
-        })
-    }
+/// Lower a runtime event that names a terminal signal or lifecycle fact, or
+/// hand it back untouched.
+///
+/// Replica tombstones, progressive history and `Exited` lower to nothing:
+/// a phone re-reads the pane, and the runtime follows `Exited` with a
+/// `TerminalClosed` for a pane that is really gone, so a retained pane
+/// (ADR-0124) must not disappear from the phone's list.
+#[allow(
+    clippy::result_large_err,
+    reason = "the Err payload is the caller's own event handed back, not an error; boxing it would allocate once per drained event"
+)]
+pub(in crate::uniffi::wire) fn lower_event(event: Event) -> Result<Option<WireEvent>, Event> {
+    let encode = |terminal_id: ResourceId| id::encode(&terminal_id);
+    Ok(Some(match event {
+        Event::Bell { terminal_id } => WireEvent::Bell {
+            terminal_id: encode(terminal_id),
+        },
+        Event::ClipboardWrite { terminal_id, text } => WireEvent::ClipboardWrite {
+            terminal_id: encode(terminal_id),
+            text: text.0,
+        },
+        Event::TitleChanged { terminal_id, title } => WireEvent::TitleChanged {
+            terminal_id: encode(terminal_id),
+            title,
+        },
+        Event::CwdChanged { terminal_id, cwd } => WireEvent::CwdChanged {
+            terminal_id: encode(terminal_id),
+            cwd,
+        },
+        Event::OutputStarted { terminal_id } => WireEvent::OutputStarted {
+            terminal_id: encode(terminal_id),
+        },
+        Event::OutputSettled { terminal_id } => WireEvent::OutputSettled {
+            terminal_id: encode(terminal_id),
+        },
+        Event::CommandStarted { terminal_id } => WireEvent::CommandStarted {
+            terminal_id: encode(terminal_id),
+        },
+        Event::CommandFinished {
+            terminal_id,
+            exit_code,
+        } => WireEvent::CommandFinished {
+            terminal_id: encode(terminal_id),
+            exit_code,
+        },
+        Event::InputHolderChanged {
+            terminal_id,
+            holder,
+            mine,
+            ..
+        } => WireEvent::InputHolderChanged {
+            terminal_id: encode(terminal_id),
+            holder: holder.map(phux_protocol::ClientId::get),
+            mine,
+        },
+        Event::PaneSpawned { terminal_id } => WireEvent::PaneSpawned {
+            terminal_id: encode(terminal_id),
+        },
+        Event::TerminalSpawned {
+            request_id,
+            terminal_id,
+            error,
+        } => WireEvent::TerminalSpawned {
+            request_id,
+            terminal_id: terminal_id.map(encode),
+            error,
+        },
+        Event::TerminalAttached {
+            request_id,
+            terminal_id,
+            error,
+        } => WireEvent::TerminalAttached {
+            request_id,
+            terminal_id: encode(terminal_id),
+            error,
+        },
+        Event::TerminalDetached {
+            request_id,
+            terminal_id,
+            error,
+        } => WireEvent::TerminalDetached {
+            request_id,
+            terminal_id: encode(terminal_id),
+            error,
+        },
+        Event::TerminalClosed {
+            terminal_id,
+            exit_status,
+            ..
+        } => WireEvent::PaneClosed {
+            terminal_id: encode(terminal_id),
+            exit_status,
+        },
+        Event::ServerError { message, .. } => WireEvent::ServerError { message },
+        Event::ResyncRequired { .. }
+        | Event::History { .. }
+        | Event::HistoryUnavailable { .. }
+        | Event::Exited { .. }
+        | Event::Detached { .. } => return Ok(None),
+        other => return Err(other),
+    }))
 }

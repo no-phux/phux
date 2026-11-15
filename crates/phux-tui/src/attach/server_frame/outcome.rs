@@ -26,11 +26,8 @@ pub(in crate::attach) fn project_tag_outcome(value: Option<&[u8]>) -> FrameOutco
     }
 }
 
-/// What one frame did to the stored `phux.session.project/v1` tag.
-///
-/// `Absent` is the default so a frame that never mentions the key leaves the
-/// picker alone. A tombstone or undecodable value is `Cleared`, distinct from
-/// a frame that did not speak.
+/// What one frame did to the stored `phux.session.project/v1` tag. `Absent`
+/// (the default) leaves the picker alone; a tombstone is `Cleared`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::attach) enum ProjectTagFrame {
     /// This frame did not mention the project tag.

@@ -18,46 +18,46 @@ pub(super) fn entry(
 }
 
 #[test]
-fn quic_plan_keeps_host_port_and_pins_routable() {
-    let spec = plan_link(&entry(
+fn routable_plans_keep_their_target_and_pin() {
+    let token = |name: &str| Some(PathBuf::from(format!("/secrets/{name}.token")));
+    let quic = plan_link(&entry(
         "quic://devbox:8788",
         Some("/secrets/devbox.token"),
         Some("AB:CD"),
-    ))
-    .expect("dialable");
+    ));
     assert_eq!(
-        spec,
+        quic.expect("dialable"),
         DialSpec::Quic {
             host: "devbox".to_owned(),
             port: 8788,
             trust: CertTrust::Pinned("AB:CD".to_owned()),
-            token_file: Some(PathBuf::from("/secrets/devbox.token")),
+            token_file: token("devbox"),
             identity: None,
         }
     );
-}
-
-#[test]
-fn wss_plan_keeps_url_and_pins_routable() {
-    let spec = plan_link(&entry(
+    let wss = plan_link(&entry(
         "wss://sandbox:8787/phux",
         Some("/secrets/sandbox.token"),
         Some("ab:cd"),
-    ))
-    .expect("dialable");
+    ));
     assert_eq!(
-        spec,
+        wss.expect("dialable"),
         DialSpec::Ws {
             url: "wss://sandbox:8787/phux".to_owned(),
             trust: CertTrust::Pinned("ab:cd".to_owned()),
-            token_file: Some(PathBuf::from("/secrets/sandbox.token")),
+            token_file: token("sandbox"),
             identity: None,
         }
     );
 }
 
+/// Loopback skips verification without a pin, and still pins with one.
 #[test]
 fn loopback_plans_skip_verify_without_a_pin() {
+    let trust = |spec| match spec {
+        DialSpec::Quic { trust, .. } | DialSpec::Ws { trust, .. } => trust,
+        DialSpec::Ssh { .. } | DialSpec::Inbound => unreachable!("no ssh or inbound here"),
+    };
     for endpoint in [
         "quic://127.0.0.1:8788",
         "quic://[::1]:8788",
@@ -66,20 +66,15 @@ fn loopback_plans_skip_verify_without_a_pin() {
         "wss://localhost:8787",
     ] {
         let spec = plan_link(&entry(endpoint, None, None)).expect("loopback carve-out");
-        let trust = match spec {
-            DialSpec::Quic { trust, .. } | DialSpec::Ws { trust, .. } => trust,
-            DialSpec::Ssh { .. } | DialSpec::Inbound => {
-                unreachable!("no ssh or inbound endpoints in this matrix")
-            }
-        };
-        assert_eq!(trust, CertTrust::SkipVerify, "{endpoint}");
+        assert_eq!(trust(spec), CertTrust::SkipVerify, "{endpoint}");
     }
-}
-
-#[test]
-fn loopback_with_a_pin_still_pins() {
-    let spec = plan_link(&entry("wss://127.0.0.1:8787", None, Some("AB"))).expect("dialable");
-    assert!(matches!(spec, DialSpec::Ws { trust: CertTrust::Pinned(pin), .. } if pin == "AB"));
+    let pinned = plan_link(&entry("wss://127.0.0.1:8787", None, Some("AB"))).expect("dialable");
+    assert_eq!(trust(pinned), CertTrust::Pinned("AB".to_owned()));
+    assert!(host_is_loopback("127.0.0.1") && host_is_loopback("[::1]"));
+    assert!(host_is_loopback("LOCALHOST"));
+    for routable in ["devbox", "10.0.0.7", "[2001:db8::1]"] {
+        assert!(!host_is_loopback(routable), "{routable}");
+    }
 }
 
 #[test]
@@ -107,10 +102,7 @@ fn routable_endpoints_fail_closed_without_token_or_pin() {
             (Some(_), Some(_)) => unreachable!("dialable rows are not in the matrix"),
         }
     }
-}
-
-#[test]
-fn plaintext_ws_to_routable_host_is_refused_even_with_credentials() {
+    // Plaintext to a routable host is refused even with credentials.
     let refusal = plan_link(&entry("ws://devbox:8787", Some("/t"), Some("AB")))
         .expect_err("plaintext routable");
     assert!(matches!(refusal, LinkRefusal::PlaintextRoutable { .. }));
@@ -137,9 +129,8 @@ fn ssh_plan_needs_no_credentials_and_carries_none() {
 
 #[test]
 fn ssh_argv_matrix_is_shell_free_and_option_injection_proof() {
-    assert_eq!(
-        ssh_argv(None, "devbox", None),
-        vec![
+    let argv = |extra: &[&'static str]| {
+        let mut argv = vec![
             "-o",
             "BatchMode=yes",
             "-o",
@@ -149,33 +140,16 @@ fn ssh_argv_matrix_is_shell_free_and_option_injection_proof() {
             "-o",
             "ServerAliveCountMax=3",
             "-T",
-            "--",
-            "devbox",
-            "phux",
-            "stdio-bridge",
-        ]
-    );
+        ];
+        argv.extend(extra);
+        // The host always follows `--`.
+        argv.extend(["--", "devbox", "phux", "stdio-bridge"]);
+        argv
+    };
+    assert_eq!(ssh_argv(None, "devbox", None), argv(&[]));
     assert_eq!(
         ssh_argv(Some("me"), "devbox", Some(2222)),
-        vec![
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ClearAllForwardings=yes",
-            "-o",
-            "ServerAliveInterval=10",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-T",
-            "-p",
-            "2222",
-            "-l",
-            "me",
-            "--",
-            "devbox",
-            "phux",
-            "stdio-bridge",
-        ]
+        argv(&["-p", "2222", "-l", "me"])
     );
     // interval * count == LINK_IDLE_TIMEOUT.
     assert_eq!(
@@ -183,20 +157,6 @@ fn ssh_argv_matrix_is_shell_free_and_option_injection_proof() {
         LINK_IDLE_TIMEOUT,
         "keepalive constants drifted; re-derive ServerAlive* expectations"
     );
-    // The host always follows `--`.
-    let argv = ssh_argv(Some("me"), "devbox", Some(22));
-    let dashdash = argv.iter().position(|a| a == "--").expect("has --");
-    assert_eq!(argv[dashdash + 1], "devbox");
-}
-
-#[test]
-fn quic_loopback_literals_are_recognized() {
-    assert!(host_is_loopback("127.0.0.1"));
-    assert!(host_is_loopback("[::1]"));
-    assert!(host_is_loopback("LOCALHOST"));
-    assert!(!host_is_loopback("devbox"));
-    assert!(!host_is_loopback("10.0.0.7"));
-    assert!(!host_is_loopback("[2001:db8::1]"));
 }
 
 #[test]
@@ -250,41 +210,16 @@ async fn read_tail_is_bounded_and_keeps_the_end() {
 }
 
 #[test]
-fn backoff_doubles_from_base_and_caps() {
+fn backoff_doubles_from_base_caps_resets_and_never_overflows() {
     let mut backoff = Backoff::new(Duration::from_millis(500), Duration::from_secs(30));
-    let mut delays = Vec::new();
-    for _ in 0..9 {
-        delays.push(backoff.next_delay());
-    }
+    let delays: Vec<_> = (0..9).map(|_| backoff.next_delay().as_millis()).collect();
     assert_eq!(
         delays,
-        vec![
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(4),
-            Duration::from_secs(8),
-            Duration::from_secs(16),
-            Duration::from_secs(30),
-            Duration::from_secs(30),
-            Duration::from_secs(30),
-        ]
+        [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]
     );
-}
-
-#[test]
-fn backoff_reset_returns_to_base() {
-    let mut backoff = Backoff::new(Duration::from_millis(500), Duration::from_secs(30));
-    let _ = backoff.next_delay();
-    let _ = backoff.next_delay();
     backoff.reset();
     assert_eq!(backoff.failures(), 0);
     assert_eq!(backoff.next_delay(), Duration::from_millis(500));
-}
-
-#[test]
-fn backoff_never_overflows_at_large_failure_counts() {
-    let mut backoff = Backoff::new(Duration::from_millis(500), Duration::from_secs(30));
     for _ in 0..10_000 {
         assert!(backoff.next_delay() <= Duration::from_secs(30));
     }

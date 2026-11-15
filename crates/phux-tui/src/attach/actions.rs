@@ -1,10 +1,6 @@
-//! Pure layout-action helpers for the multi-pane TUI dispatcher.
-//!
-//! Per ADR-0019 the client interprets keybind `ResolvedAction`s into
-//! [`LayoutState`] mutations; the driver adds the wire side effects
-//! (`SPAWN_RESOURCE`, `SET_METADATA`). These helpers never touch the
-//! connection, the clock, or the screen. Focus in the broadcast envelope is
-//! non-authoritative (ADR-0049).
+//! Pure layout-action helpers (ADR-0019): keybind actions to [`LayoutState`]
+//! mutations, never touching the connection, clock, or screen. Focus in the
+//! broadcast envelope is non-authoritative (ADR-0049).
 
 use std::io::{self, Write};
 
@@ -97,17 +93,15 @@ pub fn apply_focus(state: &LayoutState, dir: Direction) -> Option<LayoutState> {
 /// Minimum leaf size along the active axis, in cells (ADR-0019 decision 5).
 const MIN_PANE_CELL: u16 = 2;
 
-/// Resize the focused pane: move the boundary of the enclosing split along
-/// the direction's axis `amount / axis_cells` toward `dir`, so a positive
-/// `amount` grows the focused pane toward `dir` when that side has a
-/// neighbor, and shrinks it from the far side otherwise (tmux's
-/// `resize-pane`). `Ok(None)` when a child would drop below
-/// [`MIN_PANE_CELL`] (the driver bells).
+/// Resize the focused pane tmux-style: move the enclosing split's boundary
+/// along the direction's axis by `amount / axis_cells`, growing toward `dir`
+/// when that side has a neighbor, else shrinking from the far side.
+/// `Ok(None)` when a child would drop below [`MIN_PANE_CELL`].
 ///
 /// # Errors
 /// [`ActionError::NoFocus`] / [`ActionError::EmptyTree`] on an empty state;
-/// [`ActionError::NoResizableBoundary`] when no split along the axis
-/// encloses the focused leaf.
+/// [`ActionError::NoResizableBoundary`] when no split on the axis encloses
+/// the focused leaf.
 pub(super) fn apply_resize(
     state: &LayoutState,
     dir: Direction,
@@ -206,10 +200,8 @@ impl AxisResize<'_> {
         )
     }
 
-    /// The ratio step for `cells` of a split spanning `extent` cells. The
-    /// boundary moves toward `dir` whichever side holds focus: a right or
-    /// lower pane grows toward `dir`, a left or upper one gives way. `ratio`
-    /// is the left (upper) child's share.
+    /// The ratio step for `cells` of a split spanning `extent` cells; the
+    /// boundary moves toward `dir` whichever side holds focus.
     fn signed_delta(&self, extent: f32) -> f32 {
         let delta = self.cells / extent;
         match self.dir {
@@ -252,15 +244,12 @@ fn violates_min_cell(
 }
 
 /// ADR-0048 drag: set the split at `node_path` so its divider sits under the
-/// absolute `pointer` (x for a `Horizontal` split, y for `Vertical`). The
-/// content rect must match the hit test's, so `bar` and `sidebar` inset it.
-/// `Ok(None)` at the [`MIN_PANE_CELL`] floor, so a drag stalls instead of
-/// collapsing a pane.
+/// absolute `pointer`, over the same inset content rect the hit test uses.
+/// `Ok(None)` at the [`MIN_PANE_CELL`] floor, so a drag stalls.
 ///
 /// # Errors
 /// [`ActionError::EmptyTree`] on an empty state;
-/// [`ActionError::NoResizableBoundary`] when `node_path` no longer names a
-/// split (a stale grab) or its budget is zero.
+/// [`ActionError::NoResizableBoundary`] for a stale grab or a zero budget.
 pub(super) fn apply_divider_resize(
     state: &LayoutState,
     node_path: &NodePath,
@@ -376,10 +365,8 @@ fn unused_leaf_id(state: &LayoutState) -> ResourceId {
     }
 }
 
-/// The `(cols, rows)` the pane a parked split waits on will get: the
-/// post-reply reflow's computation run one round trip early, sent as
-/// `SPAWN_RESOURCE.initial_size` so the server builds the pane at its real
-/// size. `None` when unpredictable (the caller omits the field).
+/// The `(cols, rows)` a parked split's pane will get, computed one round
+/// trip early for `SPAWN_RESOURCE.initial_size`; `None` when unpredictable.
 pub(super) fn predicted_spawn_dims(
     state: &LayoutState,
     pending: &PendingSplit,

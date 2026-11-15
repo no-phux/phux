@@ -26,11 +26,12 @@ import { Failure } from "../lib/command.ts";
 import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { AgentFixture } from "./fixture.ts";
+import { BROWSER_SUITES } from "./suites.ts";
 import { AUTH_REQUIRED_TESTS, REQUIRED_TESTS } from "./required-tests.ts";
 
-type Env = Record<string, string>;
+export { REQUIRED_TESTS };
 
-export { REQUIRED_TESTS } from "./required-tests.ts";
+type Env = Record<string, string>;
 
 const TEST_TOKEN = "11".repeat(32);
 
@@ -269,7 +270,6 @@ function demoServer(
   );
 }
 
-const BROWSER_SUITES = "--lib --test render --test e2e_browser --test e2e_input".split(" ");
 // A `cat` pane echoes each typed line, escape sequences included.
 const DEMO_SERVER = { PHUX_WS_ADDR: "127.0.0.1:0", PHUX_DEMO_PANE: "cat" };
 

@@ -3,7 +3,7 @@
 use super::subscriptions::Origin;
 use super::{
     ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineHandle, EngineOutcome, Event,
-    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
+    FrameKind, InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId,
 };
 use phux_protocol::ids::ResourceKind;
 
@@ -16,15 +16,6 @@ pub(super) struct EngineApply {
 
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
-
-    /// Apply one normalized engine event on the owner thread.
-    ///
-    /// Bindings normally use [`ControlPlane::feed`](super::ControlPlane::feed),
-    /// which performs protocol validation first. This lower-level entry point
-    /// exists for native embedders that already hold typed runtime events.
-    pub fn apply_engine_event(&mut self, event: EngineEvent) -> Result<(), ControlError> {
-        self.apply_engine_events(vec![event])
-    }
 
     /// Apply a pump's queued typed events in order and project each damaged
     /// terminal once after the whole batch. Every outcome is still processed
@@ -237,9 +228,7 @@ impl ControlPlane {
                 after_seq,
             } => FrameKind::SubscribeEvents {
                 terminal,
-                after_seq: after_seq
-                    .or(self.options.event_after_seq)
-                    .filter(|_| self.server_has(ServerFeature::EventJournal)),
+                after_seq: after_seq.or(self.options.event_after_seq),
             },
         };
         self.queue_frame(&frame);

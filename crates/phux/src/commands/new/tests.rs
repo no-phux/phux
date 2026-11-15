@@ -1,11 +1,11 @@
 //! Unit tests for `phux new`.
 
-use super::empty::{create_empty_session_via_metadata, empty_session_json};
+use super::empty::empty_session_json;
 use super::naming::{
     RANDOM_NAME_ATTEMPTS, choose_session_name, fresh_session_name, requested_session_name,
     unique_session_name,
 };
-use super::{AttachTarget, ServerTarget, new_session_json, new_session_target, seed_cwd};
+use super::{AttachTarget, new_session_json, new_session_target, seed_cwd};
 use std::path::{Path, PathBuf};
 
 use phux_config::{NameRng, random_name};
@@ -21,35 +21,6 @@ fn empty_session_json_pins_the_contract_shape() {
     assert_eq!(doc["empty"], true);
     assert_eq!(doc["keep_empty"], true);
     assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
-}
-
-/// Against a server without `KeepEmptySessions`, `phux new --empty` refuses
-/// on the capability check alone, with no `GET_STATE`.
-#[tokio::test]
-async fn create_empty_session_refuses_before_any_get_state_when_unsupported() {
-    use phux_client::testkit::{ScriptSpec, ScriptedServer};
-    use phux_protocol::wire::frame::FrameKind;
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let socket = dir.path().join("phux.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking");
-    let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-    // A bare `ScriptSpec` advertises no `KeepEmptySessions` bit.
-    let spec = ScriptSpec::new();
-    let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-
-    let target = ServerTarget::local(&socket);
-    let result = create_empty_session_via_metadata(&target, "parked", false).await;
-    let seen = server.await.expect("scripted server task");
-
-    assert_eq!(result, Err(std::process::ExitCode::FAILURE));
-    assert_eq!(
-        seen.len(),
-        1,
-        "expected only the HELLO handshake, no GET_STATE; sent {seen:?}"
-    );
-    assert!(matches!(seen[0], FrameKind::Hello { .. }));
 }
 
 const CWD: &str = "/home/me/proj";

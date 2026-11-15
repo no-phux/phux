@@ -21,14 +21,14 @@ use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::encode::Encoder;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope, TYPE_COMMAND, TYPE_PING,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_COMMAND, TYPE_PING,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    await_command_result, encode_frame, expect_protocol_error_close, recv_until, run_local,
-    spawn_server_connected,
+    assert_command_error, await_command_result, encode_frame, expect_protocol_error_close,
+    recv_until, run_local, spawn_server_connected,
 };
 
 /// A framed message of `type_byte` with these TLV fields, in order.
@@ -95,16 +95,7 @@ pub(crate) async fn next_error(stream: &mut UnixStream) -> (ErrorCode, String) {
 }
 
 pub(crate) fn assert_unsupported(result: &CommandResult) {
-    assert!(
-        matches!(
-            result,
-            CommandResult::Error {
-                code: ErrorCode::Unsupported,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
+    assert_command_error(result, ErrorCode::Unsupported);
 }
 
 #[test]
@@ -146,9 +137,7 @@ fn an_unknown_command_tag_is_refused_with_its_request_id() {
         assert_usable(&mut stream, 1).await;
 
         // A known command still works on the same connection.
-        let get_state = command_body(Command::GetState {
-            scope: StateScope::Server,
-        });
+        let get_state = command_body(phux_server_testkit::get_state());
         send_raw(&mut stream, &raw_command(78, &get_state)).await;
         assert!(matches!(
             await_command_result(&mut stream, 78).await,
@@ -161,9 +150,7 @@ fn an_unknown_command_tag_is_refused_with_its_request_id() {
 fn an_unknown_enum_inside_a_known_command_is_refused_with_its_request_id() {
     run_local(async {
         let (_server, mut stream) = spawn_server_connected(None).await;
-        let mut get_state = command_body(Command::GetState {
-            scope: StateScope::Server,
-        });
+        let mut get_state = command_body(phux_server_testkit::get_state());
         // GET_STATE is a tag then a `StateScope` tag; name a newer scope.
         *get_state.last_mut().unwrap() = 0x7F;
         send_raw(&mut stream, &raw_command(90, &get_state)).await;
@@ -198,9 +185,7 @@ fn bytes_and_fields_a_newer_client_appends_are_skipped() {
         assert_eq!(echoed, nonce);
 
         // A command body with bytes after everything this build reads.
-        let mut get_state = command_body(Command::GetState {
-            scope: StateScope::Server,
-        });
+        let mut get_state = command_body(phux_server_testkit::get_state());
         get_state.extend_from_slice(&[0xEE, 0xEE, 0xEE]);
         send_raw(&mut stream, &raw_command(31, &get_state)).await;
         assert!(matches!(
@@ -215,9 +200,7 @@ fn bytes_and_fields_a_newer_client_appends_are_skipped() {
 fn truly_malformed_command_bytes_still_close_the_connection() {
     run_local(async {
         let (_server, mut stream) = spawn_server_connected(None).await;
-        let mut get_state = command_body(Command::GetState {
-            scope: StateScope::Server,
-        });
+        let mut get_state = command_body(phux_server_testkit::get_state());
         // GET_STATE without its scope: truncated, not newer.
         get_state.truncate(1);
         send_raw(&mut stream, &raw_command(12, &get_state)).await;

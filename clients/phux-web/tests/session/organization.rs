@@ -14,26 +14,13 @@ fn organization_caps() -> ServerCapabilities {
         .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
 }
 
-fn hello_with(caps: ServerCapabilities) -> FrameKind {
-    let mut frame = hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    );
-    if let FrameKind::HelloOk { server_caps, .. } = &mut frame {
-        *server_caps = caps;
-    }
-    frame
-}
-
 fn session_key(byte: u8) -> SessionKey {
     SessionKey::new([byte; 16]).expect("non-zero key")
 }
 
 fn organization_page(request_id: u32, page: OrganizationPage) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-    }
+    let value = CommandValue::OrganizationPage(Box::new(page));
+    reply(request_id, CommandResult::OkWith(value))
 }
 
 fn empty_page() -> OrganizationPage {
@@ -82,13 +69,11 @@ async fn an_unreadable_state_attaches_the_last_session_without_creating() {
     let mut session = Connection::new(&vt, 80, 24);
     let hello = session.on_frame(hello_with(ServerCapabilities::new()));
     let request_id = state_request(&hello.send[1]);
-    let reply = session.on_frame(FrameKind::CommandResult {
+    let reply = session.on_frame(error_reply(
         request_id,
-        result: CommandResult::Error {
-            code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-            message: "no inventory".to_owned(),
-        },
-    });
+        ErrorCode::InvalidCommand,
+        "no inventory",
+    ));
     assert_eq!(attach_target(&reply.send[0]), AttachTarget::Last);
     assert!(session.pane_error().is_none());
 }
@@ -164,10 +149,7 @@ async fn a_refused_organization_read_falls_back_to_the_session_list() {
     let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
         panic!("expected a command");
     };
-    let reply = session.on_frame(FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Refused(Refusal::NotFound),
-    });
+    let reply = session.on_frame(reply(request_id, CommandResult::Refused(Refusal::NotFound)));
     let request_id = state_request(&reply.send[0]);
     let reply = session.on_frame(state_reply(
         request_id,
@@ -208,13 +190,7 @@ async fn closing_a_view_ends_nothing_and_gives_its_space_to_the_sibling() {
     assert_eq!(session.focused_pane(), Some(first.clone()));
     // The closed view's terminal is still attached and still streams.
     assert!(session.pane_terminal(&second).is_some());
-    let output = session.on_frame(FrameKind::ResourceOutput {
-        terminal_id: second,
-        stream_id: stream(2),
-        bootstrap_id: bootstrap(2),
-        seq: 1,
-        bytes: Bytes::from_static(b"still running"),
-    });
+    let output = session.on_frame(Gen::on(second, 2).output(1, &b"still running"[..]));
     assert!(output.fatal.is_none());
     let refused = session.close_view().unwrap_err();
     assert!(refused.contains("last view"), "{refused}");
@@ -224,47 +200,12 @@ async fn closing_a_view_ends_nothing_and_gives_its_space_to_the_sibling() {
 /// A two-pane connection to an `ORGANIZATION` server whose attached session
 /// has `key`.
 async fn organization_session(key: SessionKey) -> Connection {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 20, 3);
-    session.on_frame(hello_with(organization_caps()));
-    let panes = [ResourceId::local(101), ResourceId::local(102)];
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), panes[0].clone())
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "intake").with_key(Some(key)),
-        ])
-        .with_resources(
-            panes
-                .iter()
-                .cloned()
-                .map(|id| ResourceInfo::new(id, WindowId::new(1), 20, 3))
-                .collect(),
-        );
-    session.on_frame(FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(1),
-    });
-    for (i, id) in panes.iter().enumerate() {
-        let stream_id = stream(i as u64 + 1);
-        let bootstrap_id = bootstrap(i as u64 + 1);
-        session.on_frame(begin(
-            id.clone(),
-            stream_id,
-            bootstrap_id,
-            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-            20,
-            3,
-            0,
-        ));
-        session.on_frame(FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        });
-    }
-    session.on_frame(FrameKind::AttachReady { attach_id: 1 });
-    session
+    ready_session(
+        hello_with(organization_caps()),
+        vec![SessionInfo::new(SessionId::new(1), "intake").with_key(Some(key))],
+        vec![ResourceId::local(101), ResourceId::local(102)],
+    )
+    .await
 }
 
 fn running(
@@ -325,20 +266,11 @@ async fn killing_on_an_organization_server_terminates_the_current_activation() {
         }
         other => panic!("expected RESOURCE_TERMINATE, got {other:?}"),
     };
-    session.on_frame(FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Accepted {
-            operation: phux_protocol::ids::OperationId::new([5; 16]).unwrap(),
-        },
-    });
+    let operation = phux_protocol::ids::OperationId::new([5; 16]).unwrap();
+    session.on_frame(reply(request_id, CommandResult::Accepted { operation }));
     assert!(session.pane_pending(), "the pane stays until it closes");
     assert_eq!(session.pane_rects().len(), 2);
-    session.on_frame(FrameKind::ResourceClosed {
-        terminal_id: target,
-        exit_status: None,
-        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        signal: None,
-    });
+    session.on_frame(closed(target, CloseReason::Unknown));
     assert!(!session.pane_pending());
     assert_eq!(session.pane_rects().len(), 1);
 }
@@ -365,13 +297,11 @@ async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
         }
         other => panic!("expected the legacy kill, got {other:?}"),
     };
-    session.on_frame(FrameKind::CommandResult {
+    session.on_frame(error_reply(
         request_id,
-        result: CommandResult::Error {
-            code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-            message: "not permitted".to_owned(),
-        },
-    });
+        ErrorCode::InvalidCommand,
+        "not permitted",
+    ));
     assert!(!session.pane_pending());
     assert_eq!(session.pane_rects().len(), 2);
     assert!(session.pane_error().unwrap().contains("not permitted"));
@@ -397,12 +327,11 @@ async fn a_refused_terminate_keeps_the_pane_and_says_why() {
     let FrameKind::Command { request_id, .. } = decode_one(&terminate.send[0]) else {
         panic!("expected a command");
     };
-    session.on_frame(FrameKind::CommandResult {
+    let capability = "terminate".to_owned();
+    session.on_frame(reply(
         request_id,
-        result: CommandResult::Refused(Refusal::Unsupported {
-            capability: "terminate".to_owned(),
-        }),
-    });
+        CommandResult::Refused(Refusal::Unsupported { capability }),
+    ));
     assert!(!session.pane_pending());
     assert_eq!(session.pane_rects().len(), 2);
     assert!(session.pane_error().unwrap().contains("unsupported"));

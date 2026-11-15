@@ -166,9 +166,6 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/tests/stress/stress_churn.rs"])[1]).toBe(
     "phux-server:stress:stress",
   );
-  expect(plan(["crates/phux-client-ffi/tests/connected_flood.rs"])[1]).toBe(
-    "phux-client-ffi:connected_flood:measure",
-  );
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
@@ -282,7 +279,7 @@ test("UniFFI qualification skips only known unrelated crate inputs", () => {
   expectField("uniffiNeeded", [
     [[], true],
     [["crates/phux-client-ffi/src/lib.rs"], true],
-    [["crates/phux-client-ffi/tests/connected.rs"], true],
+    [["crates/phux-client-ffi/examples/rig_seed.rs"], true],
     [["crates/phux-core/src/lib.rs"], true],
     [["crates/phux-server/src/lib.rs"], true],
     [["crates/phux-testkit/src/lib.rs"], true],
@@ -306,7 +303,6 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     // Reached through phux-client-ffi's dependencies, not listed anywhere.
     [["crates/phux-core/src/lib.rs"], true],
     [["crates/phux-config-core/src/lib.rs"], true],
-    [["crates/phux-config/src/lib.rs"], true],
     [["crates/quictun/src/lib.rs"], true],
     [["scripts/build-mobile-ffi-android.sh"], true],
     [[".github/workflows/ffi-xcframework.yml"], true],

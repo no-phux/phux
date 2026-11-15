@@ -171,18 +171,13 @@ pub(in crate::wire) fn encode_server_instance(
     instance: &crate::ids::ServerInstance,
     enc: &mut Encoder<'_>,
 ) {
-    for byte in instance.as_bytes() {
-        enc.write_u8(*byte);
-    }
+    enc.write_raw(instance.as_bytes());
 }
 
 /// Read a [`ServerInstance`](crate::ids::ServerInstance) from 16 raw bytes.
 pub(in crate::wire) fn decode_server_instance(
     dec: &mut Decoder<'_>,
 ) -> Result<crate::ids::ServerInstance, DecodeError> {
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
+    let bytes: [u8; 16] = dec.read_array()?;
     Ok(crate::ids::ServerInstance::new(bytes))
 }

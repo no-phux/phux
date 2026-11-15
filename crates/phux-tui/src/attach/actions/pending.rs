@@ -20,10 +20,9 @@ pub(in crate::attach) struct PendingSplit {
     pub zoom_on_spawn: bool,
     /// The host the new pane was asked of.
     pub host: SplitHost,
-    /// `Some` when the split waits on a pane's `ATTACH_RESOURCE` instead of
-    /// a spawn: an existing pane (`host/@N` or `@N`) to place, which a
-    /// refusal leaves alone, or the satellite pane a spawn answered with,
-    /// which a refusal kills.
+    /// `Some` when the split waits on an `ATTACH_RESOURCE` instead of a
+    /// spawn: an existing pane (left alone on refusal) or the satellite pane
+    /// a spawn answered with (killed on refusal).
     pub adopt: Option<Adopt>,
 }
 
@@ -85,8 +84,6 @@ pub(in crate::attach) enum SplitHost {
     Attached,
     /// A satellite, through the attached hub: a split of a pane there.
     Satellite(phux_protocol::ids::SatelliteHost),
-    /// This host in place of the satellite: the hub lacks host-aware spawns.
-    AttachedInsteadOf(phux_protocol::ids::SatelliteHost),
 }
 
 /// A window or split parked on a satellite pane's `ATTACH_RESOURCE`.

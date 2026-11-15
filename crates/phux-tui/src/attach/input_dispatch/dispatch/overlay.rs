@@ -11,10 +11,8 @@ use super::{
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
-    /// While a (non-passthrough) overlay is up it captures all input: keys and
-    /// mouse go to the top overlay, pastes fill its text, focus is dropped.
-    /// The resolver is bypassed and reset, so a leader chord typed into a
-    /// prompt lands verbatim and a half-chord cannot leak past dismissal.
+    /// A non-passthrough overlay captures all input; the resolver is reset,
+    /// so a chord typed into a prompt lands verbatim.
     pub(super) async fn capture_into_overlay(
         &mut self,
         ev: &InputEvent,

@@ -1,10 +1,5 @@
-//! Turn a composited [`RenderedFrame`] into VT bytes a cast can replay.
-//!
-//! The interactive `--rec` tee records the bytes the glass was sent. A
-//! headless composited capture has no glass, so it emits one full redraw
-//! of the same cells: clear, then each row with SGR, then the cursor.
-//! Wide-glyph tails are empty and are not written; the leading cluster
-//! advances the cursor across them.
+//! Turn a composited [`RenderedFrame`] into VT a cast can replay: clear,
+//! each row with SGR, then the cursor. Wide-glyph tails are skipped.
 
 use std::io::Write as _;
 

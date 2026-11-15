@@ -56,24 +56,13 @@ fn format_candidates(candidates: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// Resolve a `--distro` spec to the absolute path of its layer file.
-///
-/// `checkout_distros` is a source checkout's `distros/` directory, searched
-/// last; see [`search_dirs`].
+/// Resolve a `--distro` spec to the absolute path of its layer file,
+/// searching `dirs` (see [`search_dirs`]) for a bare name.
 ///
 /// # Errors
 ///
 /// [`DistroError::Unreadable`] when the file cannot be canonicalized;
 /// [`DistroError::UnknownName`] when a bare name matches nothing.
-pub fn resolve_distro(spec: &str, checkout_distros: Option<&Path>) -> Result<PathBuf, DistroError> {
-    resolve_distro_in(spec, &search_dirs(checkout_distros))
-}
-
-/// [`resolve_distro`] against an explicit search-directory list.
-///
-/// # Errors
-///
-/// See [`resolve_distro`].
 pub fn resolve_distro_in(spec: &str, dirs: &[PathBuf]) -> Result<PathBuf, DistroError> {
     if spec_is_path(spec) {
         let path = Path::new(spec);

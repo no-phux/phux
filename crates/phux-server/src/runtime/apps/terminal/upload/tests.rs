@@ -44,6 +44,11 @@ fn env_for(root: &Path) -> crate::runtime::ServerEnv {
     }
 }
 
+/// The code `write_chunk` refuses `chunk` with.
+fn refused(root: &Path, chunk: &PutFileChunk) -> ErrorCode {
+    write_chunk(root, LIMITS, chunk).unwrap_err().0
+}
+
 fn age(path: &Path, by: Duration) {
     let file = File::options().write(true).open(path).unwrap();
     file.set_modified(SystemTime::now() - by).unwrap();
@@ -78,7 +83,7 @@ fn an_upload_id_is_bound_to_its_principal() {
     let mut replay = chunk(upload_id, 4, b"", true, Some(digest));
     replay.principal = "intruder".to_owned();
     assert_eq!(
-        write_chunk(temp.path(), LIMITS, &replay).unwrap_err().0,
+        refused(temp.path(), &replay),
         ErrorCode::InvalidCommand,
         "a finished upload is not re-acked to another principal"
     );
@@ -312,9 +317,7 @@ fn chunks_finalize_only_after_digest_and_retry_idempotently() {
     let mut changed_extension = chunk(upload_id, 6, b"world", true, Some(digest));
     changed_extension.extension = "jpg".to_owned();
     assert_eq!(
-        write_chunk(temp.path(), LIMITS, &changed_extension)
-            .unwrap_err()
-            .0,
+        refused(temp.path(), &changed_extension),
         ErrorCode::InvalidCommand
     );
 }
@@ -324,47 +327,25 @@ fn rejects_gaps_conflicts_traversal_and_bad_digest() {
     let temp = TempDir::new().unwrap();
     let upload_id = id(2);
     let gap = chunk(upload_id, 1, b"x", false, None);
-    assert_eq!(
-        write_chunk(temp.path(), LIMITS, &gap).unwrap_err().0,
-        ErrorCode::InvalidCommand
-    );
+    assert_eq!(refused(temp.path(), &gap), ErrorCode::InvalidCommand);
 
     let first = chunk(upload_id, 0, b"abc", false, None);
     write_chunk(temp.path(), LIMITS, &first).unwrap();
     let conflict = chunk(upload_id, 0, b"xbc", false, None);
-    assert_eq!(
-        write_chunk(temp.path(), LIMITS, &conflict).unwrap_err().0,
-        ErrorCode::InvalidCommand
-    );
+    assert_eq!(refused(temp.path(), &conflict), ErrorCode::InvalidCommand);
 
     let mut traversal = chunk(id(3), 0, b"x", false, None);
     traversal.extension = "../png".to_owned();
-    assert_eq!(
-        write_chunk(temp.path(), LIMITS, &traversal).unwrap_err().0,
-        ErrorCode::InvalidCommand
-    );
+    assert_eq!(refused(temp.path(), &traversal), ErrorCode::InvalidCommand);
 
     let bad_final = chunk(upload_id, 3, b"", true, Some([0; 32]));
-    assert_eq!(
-        write_chunk(temp.path(), LIMITS, &bad_final).unwrap_err().0,
-        ErrorCode::InvalidCommand
-    );
-    assert!(
-        !temp
-            .path()
-            .join("phux-upload-02020202020202020202020202020202.png")
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".phux-upload-02020202020202020202020202020202.part")
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".phux-upload-02020202020202020202020202020202.meta")
-            .exists()
-    );
+    assert_eq!(refused(temp.path(), &bad_final), ErrorCode::InvalidCommand);
+    for name in [
+        "phux-upload-{id}.png",
+        ".phux-upload-{id}.part",
+        ".phux-upload-{id}.meta",
+    ] {
+        let name = name.replace("{id}", &hex::encode([2_u8; 16]));
+        assert!(!temp.path().join(name).exists());
+    }
 }

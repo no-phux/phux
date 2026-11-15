@@ -4,10 +4,6 @@
 ///
 /// An id claimed by two enabled templates is refused. A template that fails
 /// to parse is skipped unless its filename stem is the requested id.
-///
-/// # Errors
-///
-/// Any [`LaunchError`].
 pub fn resolve_launch(
     config_path: &Path,
     integration_id: &str,

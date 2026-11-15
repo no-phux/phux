@@ -184,15 +184,10 @@ fn note_arrangement_result(
     }
 }
 
-/// `SESSION_KILL`: the kill is written to the organization store first. Only
-/// a store that accepts it closes every member with an engine here, through
-/// the legacy kill's teardown (hangup, the grace, then kill), and only then
-/// does memory mirror the transition. A store refusal therefore leaves
-/// engines, announcements, and records untouched (`STORE_FAILURE`: nothing
-/// changed, and the same operation may be retried). One lock holds the
-/// sequence, so nothing joins the session between the commit and the closes.
-/// The receipt counts the members the kill found; a replay answers without
-/// the count and without closing again.
+/// `SESSION_KILL`: the store commit comes first; only an accepted one closes
+/// members (legacy kill teardown) and then mirrors into memory, so a refusal
+/// changes nothing (`STORE_FAILURE`, retryable). One lock holds the whole
+/// sequence. A replay answers without the member count or closing again.
 #[allow(
     clippy::too_many_lines,
     reason = "persist the kill, close engines, then mirror, in one lock"
