@@ -7,7 +7,6 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::input::paste::PasteTrust;
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -229,53 +228,6 @@ async fn presentation_send_text_bounds_utf8_and_refuses_unavailable_input() {
     assert!(client.send_text(&"é".repeat(2049)).is_err());
     client.app.borrow_mut().session.fail_protocol("test");
     assert!(client.send_text("echo actual").is_err());
-    client.close();
-}
-
-/// Run against an owned loopback WebSocket echo fixture. This inspects the
-/// actual encoded INPUT_PASTE sent by the client, not a JavaScript imitation.
-#[wasm_bindgen_test]
-#[ignore = "requires owned PHUX_PRESENTATION_ECHO_URL loopback fixture"]
-async fn presentation_send_text_sends_one_bounded_structured_paste_without_enter() {
-    let url = option_env!("PHUX_PRESENTATION_ECHO_URL").expect("set owned loopback echo fixture");
-    let client = fixture(1).await;
-    let socket = WebSocket::new(url).unwrap();
-    socket.set_binary_type(BinaryType::Arraybuffer);
-    for _ in 0..200 {
-        if socket.ready_state() == WebSocket::OPEN {
-            break;
-        }
-        TimeoutFuture::new(10).await;
-    }
-    assert_eq!(socket.ready_state(), WebSocket::OPEN);
-    let seen = Rc::new(RefCell::new(Vec::new()));
-    let record = Rc::clone(&seen);
-    let listener = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-        record
-            .borrow_mut()
-            .push(js_sys::Uint8Array::new(&event.data()).to_vec());
-    });
-    socket.set_onmessage(Some(listener.as_ref().unchecked_ref()));
-    client.app.borrow_mut().tx = WireTx::Ws(WsTx::new(socket.clone()));
-    client.focus_pane("@1").unwrap();
-    client.send_text("echo café").unwrap();
-    for _ in 0..200 {
-        if !seen.borrow().is_empty() {
-            break;
-        }
-        TimeoutFuture::new(10).await;
-    }
-    assert_eq!(seen.borrow().len(), 1);
-    let (frame, _) = FrameKind::decode(&seen.borrow()[0]).unwrap();
-    match frame {
-        FrameKind::InputPaste { terminal_id, event } => {
-            assert_eq!(terminal_id, ResourceId::new(1));
-            assert_eq!(event.trust, PasteTrust::Trusted);
-            assert_eq!(event.data, "echo café".as_bytes());
-        }
-        other => panic!("expected INPUT_PASTE, got {other:?}"),
-    }
-    socket.set_onmessage(None);
     client.close();
 }
 

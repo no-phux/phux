@@ -158,11 +158,8 @@ at most 4096 UTF-8 bytes, empty text is a no-op, and no Enter key is appended.
 Use `send_key("Enter")` separately when intended. Backend command support and
 session admission remain the server's responsibility.
 
-Focused browser regressions are named `presentation_*`. Four run without a
-server fixture. The ignored structured-paste wire test additionally needs an
-owned loopback WebSocket echo fixture set at build time with
-`PHUX_PRESENTATION_ECHO_URL`, then `--include-ignored`; it decodes the actual
-sent PHUX frame and does not use a remote shell.
+Focused browser regressions are named `presentation_*` and run without a
+server fixture.
 
 ### Transparent glass appearance
 
