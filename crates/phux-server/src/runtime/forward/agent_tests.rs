@@ -382,30 +382,29 @@ async fn the_socket_is_owner_only_beside_the_servers_and_only_when_on() {
             });
         });
         let root = tokio_util::sync::CancellationToken::new();
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                // A previous run's leftover is replaced, not an error.
-                std::fs::write(&expected, b"stale").unwrap();
-                super::start(&state, &root);
-                let bound = state.with(|s| s.forward_agent().socket().map(ToOwned::to_owned));
-                if on {
-                    assert_eq!(bound.as_deref(), Some(expected.as_path()));
-                    let meta = std::fs::symlink_metadata(&expected).unwrap();
-                    assert!(meta.file_type().is_socket());
-                    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-                    root.cancel();
-                    for _ in 0..200 {
-                        if !expected.exists() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+        crate::runtime::test_support::local(async {
+            // A previous run's leftover is replaced, not an error.
+            std::fs::write(&expected, b"stale").unwrap();
+            super::start(&state, &root);
+            let bound = state.with(|s| s.forward_agent().socket().map(ToOwned::to_owned));
+            if on {
+                assert_eq!(bound.as_deref(), Some(expected.as_path()));
+                let meta = std::fs::symlink_metadata(&expected).unwrap();
+                assert!(meta.file_type().is_socket());
+                assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+                root.cancel();
+                for _ in 0..200 {
+                    if !expected.exists() {
+                        break;
                     }
-                    assert!(!expected.exists(), "the socket outlived the server");
-                } else {
-                    assert_eq!(bound, None);
-                    assert_eq!(std::fs::read(&expected).unwrap(), b"stale");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-            })
-            .await;
+                assert!(!expected.exists(), "the socket outlived the server");
+            } else {
+                assert_eq!(bound, None);
+                assert_eq!(std::fs::read(&expected).unwrap(), b"stale");
+            }
+        })
+        .await;
     }
 }

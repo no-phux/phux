@@ -297,72 +297,70 @@ fn controller_record_follows_the_typing_connection() {
 /// and the reuse of the original name.
 #[tokio::test(flavor = "current_thread")]
 async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let nonce = "11111111-1111-4111-8111-111111111111";
-            let value = serde_json::to_vec(&serde_json::json!({
-                "name": "original", "request_token": nonce, "empty": true, "keep_empty": true,
-            }))
-            .expect("request JSON");
-            set(
-                &state,
-                &Scope::Global,
-                phux_protocol::wire::frame::SESSION_CREATE_KEY,
-                &value,
-            );
-            let key = session_create_result_key(Some(nonce));
-            let bytes = get(&state, &Scope::Global, &key).expect("receipt");
-            let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
-            let session_id = |state: &SharedState| {
-                state.with_mut(|s| {
-                    s.idspace
-                        .intern_session(s.find_session_by_name("original").expect("session"))
-                        .get()
-                })
-            };
-            let original_id = session_id(&state);
-            assert_eq!(receipt["session_id"], original_id);
-            state.with_mut(|s| s.rename_session("original", "renamed"));
-            crate::runtime::commands::create_empty_session(
-                &state,
-                "original",
-                &phux_core::Actor::owner(),
-            )
-            .expect("replacement");
-            assert_ne!(original_id, session_id(&state));
-            assert_eq!(get(&state, &Scope::Global, &key), Some(bytes));
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let nonce = "11111111-1111-4111-8111-111111111111";
+        let value = serde_json::to_vec(&serde_json::json!({
+            "name": "original", "request_token": nonce, "empty": true, "keep_empty": true,
+        }))
+        .expect("request JSON");
+        set(
+            &state,
+            &Scope::Global,
+            phux_protocol::wire::frame::SESSION_CREATE_KEY,
+            &value,
+        );
+        let key = session_create_result_key(Some(nonce));
+        let bytes = get(&state, &Scope::Global, &key).expect("receipt");
+        let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        let session_id = |state: &SharedState| {
+            state.with_mut(|s| {
+                s.idspace
+                    .intern_session(s.find_session_by_name("original").expect("session"))
+                    .get()
+            })
+        };
+        let original_id = session_id(&state);
+        assert_eq!(receipt["session_id"], original_id);
+        state.with_mut(|s| s.rename_session("original", "renamed"));
+        crate::runtime::commands::create_empty_session(
+            &state,
+            "original",
+            &phux_core::Actor::owner(),
+        )
+        .expect("replacement");
+        assert_ne!(original_id, session_id(&state));
+        assert_eq!(get(&state, &Scope::Global, &key), Some(bytes));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let state = crate::runtime::apps::terminal::test_support::terminal_state();
-            let root_token = CancellationToken::new();
-            for (client_id, name) in [(ClientId(1), "first"), (ClientId(2), "collision")] {
-                let value = serde_json::to_vec(&serde_json::json!({
-                    "name": name,
-                    "request_token": "11111111-1111-4111-8111-111111111111",
-                }))
-                .expect("request JSON");
-                handle_set_metadata(
-                    &state,
-                    client_id,
-                    1,
-                    &Scope::Global,
-                    phux_protocol::wire::frame::SESSION_CREATE_KEY,
-                    value,
-                    &root_token,
-                );
-            }
-            assert!(state.with(|s| s.session_by_name("first").is_some()));
-            assert!(state.with(|s| s.session_by_name("collision").is_none()));
-            root_token.cancel();
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root_token = CancellationToken::new();
+        for (client_id, name) in [(ClientId(1), "first"), (ClientId(2), "collision")] {
+            let value = serde_json::to_vec(&serde_json::json!({
+                "name": name,
+                "request_token": "11111111-1111-4111-8111-111111111111",
+            }))
+            .expect("request JSON");
+            handle_set_metadata(
+                &state,
+                client_id,
+                1,
+                &Scope::Global,
+                phux_protocol::wire::frame::SESSION_CREATE_KEY,
+                value,
+                &root_token,
+            );
+        }
+        assert!(state.with(|s| s.session_by_name("first").is_some()));
+        assert!(state.with(|s| s.session_by_name("collision").is_none()));
+        root_token.cancel();
+    })
+    .await;
 }
 
 /// phux-jqlh0.9: an explicit `phux.agent/v1` write (`phux agent set` /

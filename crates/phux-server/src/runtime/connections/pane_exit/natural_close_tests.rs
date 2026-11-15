@@ -249,165 +249,161 @@ async fn an_oversized_final_generation_precedes_close() {
 /// natural close. Its old replacement must finish before the fresh EOF cut.
 #[tokio::test(flavor = "current_thread")]
 async fn close_waits_for_a_pump_parked_on_a_prior_gap_generation() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = Fixture::new();
-            let (ctx, mut rx) = fixture.consumer(ClientId(1), 8);
-            let client = ctx.client_id;
-            let drain = ctx.drain.clone();
-            let (output, _) = tokio::sync::broadcast::channel(8);
-            let live = output.subscribe();
-            output
-                .send(ResourceOutput::Live {
-                    seq: 1,
-                    bytes: bytes::Bytes::from_static(b"GAPPED"),
-                    at: std::time::Instant::now(),
-                })
-                .unwrap();
-            output
-                .send(ResourceOutput::Resync {
-                    cols: 80,
-                    rows: 24,
-                    bytes: bytes::Bytes::from_static(b"OLD_SCREEN"),
-                    reason: ResyncReason::OutboundGap,
-                    audience: ResyncAudience::Everyone,
-                    base_seq: 1,
-                })
-                .unwrap();
-            let pump = async move {
-                assert!(run_started_output_pump(&ctx, start(), live).await.is_none());
-            };
-            let mut pump = Box::pin(pump);
-            pending_once(pump.as_mut()).await;
-            let mut pumps = JoinSet::new();
-            fixture.track_future(client, drain, &mut pumps, pump);
-            let close = announce_close(&fixture.state, fixture.reap(), false);
-            tokio::pin!(close);
-            pending_once(close.as_mut()).await;
-            let (oracle, _) = tokio::join!(through_close(&mut rx, &fixture.wire), close);
-            assert!(
-                !oracle
-                    .payload
-                    .windows(b"OLD_SCREEN".len())
-                    .any(|part| part == b"OLD_SCREEN"),
-                "old gap bootstrap was mistaken for final capture"
-            );
-            finish_pumps(&mut pumps).await;
-            assert!(rx.try_recv().is_err());
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let fixture = Fixture::new();
+        let (ctx, mut rx) = fixture.consumer(ClientId(1), 8);
+        let client = ctx.client_id;
+        let drain = ctx.drain.clone();
+        let (output, _) = tokio::sync::broadcast::channel(8);
+        let live = output.subscribe();
+        output
+            .send(ResourceOutput::Live {
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"GAPPED"),
+                at: std::time::Instant::now(),
+            })
+            .unwrap();
+        output
+            .send(ResourceOutput::Resync {
+                cols: 80,
+                rows: 24,
+                bytes: bytes::Bytes::from_static(b"OLD_SCREEN"),
+                reason: ResyncReason::OutboundGap,
+                audience: ResyncAudience::Everyone,
+                base_seq: 1,
+            })
+            .unwrap();
+        let pump = async move {
+            assert!(run_started_output_pump(&ctx, start(), live).await.is_none());
+        };
+        let mut pump = Box::pin(pump);
+        pending_once(pump.as_mut()).await;
+        let mut pumps = JoinSet::new();
+        fixture.track_future(client, drain, &mut pumps, pump);
+        let close = announce_close(&fixture.state, fixture.reap(), false);
+        tokio::pin!(close);
+        pending_once(close.as_mut()).await;
+        let (oracle, _) = tokio::join!(through_close(&mut rx, &fixture.wire), close);
+        assert!(
+            !oracle
+                .payload
+                .windows(b"OLD_SCREEN".len())
+                .any(|part| part == b"OLD_SCREEN"),
+            "old gap bootstrap was mistaken for final capture"
+        );
+        finish_pumps(&mut pumps).await;
+        assert!(rx.try_recv().is_err());
+    })
+    .await;
 }
 
 /// Closing one reader must not await an unrelated reader's full mailbox.
 #[tokio::test(flavor = "current_thread")]
 async fn a_healthy_subscriber_receives_final_close_while_another_is_blocked() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = Fixture::new();
-            let (slow, mut slow_rx) = fixture.consumer(ClientId(1), 1);
-            let (fast, mut fast_rx) = fixture.consumer(ClientId(2), 8);
-            let mut pumps = JoinSet::new();
-            fixture.track(slow, &mut pumps);
-            fixture.track(fast, &mut pumps);
-            let close = announce_close(&fixture.state, fixture.reap(), false);
-            tokio::pin!(close);
-            tokio::select! {
-                biased;
-                _ = &mut close => panic!("close completed while the slow mailbox was still full"),
-                _ = through_close(&mut fast_rx, &fixture.wire) => {}
-            }
-            pending_once(close.as_mut()).await;
-            assert!(matches!(
-                slow_rx.try_recv(),
-                Ok(Outbound::Frame(FrameKind::Pong { nonce: 0 }))
-            ));
-            let (_, _) = tokio::join!(through_close(&mut slow_rx, &fixture.wire), close);
-            finish_pumps(&mut pumps).await;
-            assert!(fast_rx.try_recv().is_err());
-            assert!(slow_rx.try_recv().is_err());
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let fixture = Fixture::new();
+        let (slow, mut slow_rx) = fixture.consumer(ClientId(1), 1);
+        let (fast, mut fast_rx) = fixture.consumer(ClientId(2), 8);
+        let mut pumps = JoinSet::new();
+        fixture.track(slow, &mut pumps);
+        fixture.track(fast, &mut pumps);
+        let close = announce_close(&fixture.state, fixture.reap(), false);
+        tokio::pin!(close);
+        tokio::select! {
+            biased;
+            _ = &mut close => panic!("close completed while the slow mailbox was still full"),
+            _ = through_close(&mut fast_rx, &fixture.wire) => {}
+        }
+        pending_once(close.as_mut()).await;
+        assert!(matches!(
+            slow_rx.try_recv(),
+            Ok(Outbound::Frame(FrameKind::Pong { nonce: 0 }))
+        ));
+        let (_, _) = tokio::join!(through_close(&mut slow_rx, &fixture.wire), close);
+        finish_pumps(&mut pumps).await;
+        assert!(fast_rx.try_recv().is_err());
+        assert!(slow_rx.try_recv().is_err());
+    })
+    .await;
 }
 
 /// `DETACH_RESOURCE` can name a wire already retired by reap. Its returned ack
 /// fences a blocked final publisher, which must never add terminal frames.
 #[tokio::test(flavor = "current_thread")]
 async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = Fixture::new();
-            let client = ClientId(1);
-            let (mut ctx, mut rx) = fixture.consumer(client, 1);
-            let (snapshot, mut requests) = mpsc::channel(1);
-            ctx.snapshot = Some(snapshot);
-            let drain = ctx.drain.clone();
-            drain.as_ref().unwrap().cancel();
-            let output = fixture.output.subscribe();
-            let pump = async move {
-                assert!(
-                    run_started_output_pump(&ctx, start(), output)
-                        .await
-                        .is_none()
-                );
-            };
-            let mut pump = Box::pin(pump);
-            // The first poll reaches the capture reply barrier.
-            pending_once(pump.as_mut()).await;
-            let request = requests.try_recv().expect("pump reached final capture");
-            assert_eq!(request.scrollback, None);
-            request
-                .reply
-                .send(Ok((snapshot_bytes(FINAL_SCREEN), 0)))
-                .unwrap();
-            // With a supplied capture, the only remaining wait is publishing
-            // into the full mailbox: DETACH must stop that actual operation.
-            pending_once(pump.as_mut()).await;
-            assert!(requests.try_recv().is_err());
-            let mut pumps = JoinSet::new();
-            fixture.track_future(client, drain, &mut pumps, pump);
-            let reap = fixture.reap();
+    crate::runtime::test_support::local(async {
+        let fixture = Fixture::new();
+        let client = ClientId(1);
+        let (mut ctx, mut rx) = fixture.consumer(client, 1);
+        let (snapshot, mut requests) = mpsc::channel(1);
+        ctx.snapshot = Some(snapshot);
+        let drain = ctx.drain.clone();
+        drain.as_ref().unwrap().cancel();
+        let output = fixture.output.subscribe();
+        let pump = async move {
             assert!(
-                fixture
-                    .state
-                    .with(|s| s.resource_from_wire(&fixture.wire).is_none())
+                run_started_output_pump(&ctx, start(), output)
+                    .await
+                    .is_none()
             );
-            let close = announce_close(&fixture.state, reap, false);
-            tokio::pin!(close);
-            pending_once(close.as_mut()).await;
-            let result = tokio::time::timeout(
-                GUARD,
-                handle_detach_terminal(&fixture.state, client, &fixture.wire),
-            )
-            .await
-            .expect("DETACH remained blocked on the retired wire");
-            assert!(matches!(result, CommandResult::Ok));
-            tokio::time::timeout(GUARD, async {
-                while let Some(result) = pumps.join_next().await {
-                    assert!(result.is_ok() || result.is_err_and(|error| error.is_cancelled()));
-                }
-            })
-            .await
-            .expect("detached output task did not terminate");
-            assert!(matches!(
-                rx.try_recv(),
-                Ok(Outbound::Frame(FrameKind::Pong { .. }))
-            ));
-            let ((), _) = tokio::join!(
-                async {
-                    let Outbound::Frame(FrameKind::ResourceClosed { .. }) =
-                        rx.recv().await.unwrap()
-                    else {
-                        panic!("publisher emitted terminal frames after DETACH ack")
-                    };
-                },
-                close
-            );
-            assert!(
-                rx.try_recv().is_err(),
-                "output followed DETACH acknowledgement"
-            );
+        };
+        let mut pump = Box::pin(pump);
+        // The first poll reaches the capture reply barrier.
+        pending_once(pump.as_mut()).await;
+        let request = requests.try_recv().expect("pump reached final capture");
+        assert_eq!(request.scrollback, None);
+        request
+            .reply
+            .send(Ok((snapshot_bytes(FINAL_SCREEN), 0)))
+            .unwrap();
+        // With a supplied capture, the only remaining wait is publishing
+        // into the full mailbox: DETACH must stop that actual operation.
+        pending_once(pump.as_mut()).await;
+        assert!(requests.try_recv().is_err());
+        let mut pumps = JoinSet::new();
+        fixture.track_future(client, drain, &mut pumps, pump);
+        let reap = fixture.reap();
+        assert!(
+            fixture
+                .state
+                .with(|s| s.resource_from_wire(&fixture.wire).is_none())
+        );
+        let close = announce_close(&fixture.state, reap, false);
+        tokio::pin!(close);
+        pending_once(close.as_mut()).await;
+        let result = tokio::time::timeout(
+            GUARD,
+            handle_detach_terminal(&fixture.state, client, &fixture.wire),
+        )
+        .await
+        .expect("DETACH remained blocked on the retired wire");
+        assert!(matches!(result, CommandResult::Ok));
+        tokio::time::timeout(GUARD, async {
+            while let Some(result) = pumps.join_next().await {
+                assert!(result.is_ok() || result.is_err_and(|error| error.is_cancelled()));
+            }
         })
-        .await;
+        .await
+        .expect("detached output task did not terminate");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Outbound::Frame(FrameKind::Pong { .. }))
+        ));
+        let ((), _) = tokio::join!(
+            async {
+                let Outbound::Frame(FrameKind::ResourceClosed { .. }) = rx.recv().await.unwrap()
+                else {
+                    panic!("publisher emitted terminal frames after DETACH ack")
+                };
+            },
+            close
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "output followed DETACH acknowledgement"
+        );
+    })
+    .await;
 }
 
 /// Native READY is a validated engine checkpoint, not merely a frame
@@ -415,65 +411,61 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_native_final_checkpoint_is_decodable_before_close() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = Fixture::with_seed(b"FINAL_SCREEN\x1b]2;final-close-title\x07");
-            let (mut ctx, mut rx) = fixture.consumer(ClientId(1), 1);
-            ctx.profile = BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
-            };
-            let mut pumps = JoinSet::new();
-            fixture.track(ctx, &mut pumps);
-            let close = announce_close(&fixture.state, fixture.reap(), false);
-            tokio::pin!(close);
-            pending_once(close.as_mut()).await;
-            let receive = tokio::time::timeout(GUARD, async {
-                let mut payload = Vec::new();
-                let mut validated_ready = false;
-                loop {
-                    let Outbound::Frame(frame) = rx.recv().await.unwrap() else {
-                        panic!("unexpected outbound")
-                    };
-                    match frame {
-                        FrameKind::BootstrapBegin { profile, .. } => {
-                            assert!(matches!(
-                                profile,
-                                BootstrapStreamProfile::NativeState { .. }
-                            ));
-                            payload.clear();
-                            validated_ready = false;
-                        }
-                        FrameKind::BootstrapChunk { payload: chunk, .. } => {
-                            payload.extend_from_slice(&chunk);
-                        }
-                        FrameKind::BootstrapReady { .. } => {
-                            assert!(!payload.is_empty(), "native READY had no checkpoint");
-                            let mut input = std::io::Cursor::new(&payload);
-                            let decoder = vt::snapshot::Decoder::new(&mut input)
-                                .expect("valid native envelope");
-                            let checkpoint = decoder.ready().expect("validated native READY");
-                            assert_eq!(
-                                checkpoint.terminal().title().unwrap(),
-                                b"final-close-title"
-                            );
-                            validated_ready = true;
-                        }
-                        FrameKind::ResourceClosed { terminal_id, .. } => {
-                            assert_eq!(terminal_id, fixture.wire);
-                            assert!(
-                                validated_ready,
-                                "close overtook validated native checkpoint"
-                            );
-                            break;
-                        }
-                        _ => {}
+    crate::runtime::test_support::local(async {
+        let fixture = Fixture::with_seed(b"FINAL_SCREEN\x1b]2;final-close-title\x07");
+        let (mut ctx, mut rx) = fixture.consumer(ClientId(1), 1);
+        ctx.profile = BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
+        };
+        let mut pumps = JoinSet::new();
+        fixture.track(ctx, &mut pumps);
+        let close = announce_close(&fixture.state, fixture.reap(), false);
+        tokio::pin!(close);
+        pending_once(close.as_mut()).await;
+        let receive = tokio::time::timeout(GUARD, async {
+            let mut payload = Vec::new();
+            let mut validated_ready = false;
+            loop {
+                let Outbound::Frame(frame) = rx.recv().await.unwrap() else {
+                    panic!("unexpected outbound")
+                };
+                match frame {
+                    FrameKind::BootstrapBegin { profile, .. } => {
+                        assert!(matches!(
+                            profile,
+                            BootstrapStreamProfile::NativeState { .. }
+                        ));
+                        payload.clear();
+                        validated_ready = false;
                     }
+                    FrameKind::BootstrapChunk { payload: chunk, .. } => {
+                        payload.extend_from_slice(&chunk);
+                    }
+                    FrameKind::BootstrapReady { .. } => {
+                        assert!(!payload.is_empty(), "native READY had no checkpoint");
+                        let mut input = std::io::Cursor::new(&payload);
+                        let decoder =
+                            vt::snapshot::Decoder::new(&mut input).expect("valid native envelope");
+                        let checkpoint = decoder.ready().expect("validated native READY");
+                        assert_eq!(checkpoint.terminal().title().unwrap(), b"final-close-title");
+                        validated_ready = true;
+                    }
+                    FrameKind::ResourceClosed { terminal_id, .. } => {
+                        assert_eq!(terminal_id, fixture.wire);
+                        assert!(
+                            validated_ready,
+                            "close overtook validated native checkpoint"
+                        );
+                        break;
+                    }
+                    _ => {}
                 }
-            });
-            let (received, _) = tokio::join!(receive, close);
-            received.expect("native final close never completed");
-            finish_pumps(&mut pumps).await;
-            assert!(rx.try_recv().is_err(), "native frames followed close");
-        })
-        .await;
+            }
+        });
+        let (received, _) = tokio::join!(receive, close);
+        received.expect("native final close never completed");
+        finish_pumps(&mut pumps).await;
+        assert!(rx.try_recv().is_err(), "native frames followed close");
+    })
+    .await;
 }

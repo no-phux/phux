@@ -66,40 +66,37 @@ fn bind_ghost(s: &mut crate::state::ServerState, parent: WireResourceId) -> Wire
 /// the refusal reopens every stream the cut sealed and the native broker.
 #[tokio::test(flavor = "current_thread")]
 async fn an_uncarried_native_agent_refuses_the_upgrade_and_unseals_the_streams() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (pane_wire, _, append) = state.with_mut(old_image_with_agent_sessions);
-            append_records(&append, "{\"type\":\"prompt\"}").await;
-            let listener = tempfile::tempfile().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let ghost = state.with_mut(|s| {
-                s.set_upgrade_context(
-                    listener.as_raw_fd(),
-                    dir.path().join("phux.sock"),
-                    RuntimeFlags::default(),
-                );
-                bind_ghost(s, pane_wire)
-            });
-
-            let Err(UpgradeError::NativeAgentHandoff { agent }) = prepare_upgrade(&state).await
-            else {
-                panic!("an open native binding without a cut must refuse the upgrade");
-            };
-            assert_eq!(agent, ghost);
-
-            assert!(
-                !state.with(|s| s.native_agents().sealed),
-                "the refusal unseals the native broker"
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (pane_wire, _, append) = state.with_mut(old_image_with_agent_sessions);
+        append_records(&append, "{\"type\":\"prompt\"}").await;
+        let listener = tempfile::tempfile().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ghost = state.with_mut(|s| {
+            s.set_upgrade_context(
+                listener.as_raw_fd(),
+                dir.path().join("phux.sock"),
+                RuntimeFlags::default(),
             );
-            let next = append_records(&append, "{\"type\":\"stop\"}").await;
-            assert_eq!(
-                next.first_seq, 2,
-                "the cut stream reopens where it was sealed"
-            );
-        })
-        .await;
+            bind_ghost(s, pane_wire)
+        });
+
+        let Err(UpgradeError::NativeAgentHandoff { agent }) = prepare_upgrade(&state).await else {
+            panic!("an open native binding without a cut must refuse the upgrade");
+        };
+        assert_eq!(agent, ghost);
+
+        assert!(
+            !state.with(|s| s.native_agents().sealed),
+            "the refusal unseals the native broker"
+        );
+        let next = append_records(&append, "{\"type\":\"stop\"}").await;
+        assert_eq!(
+            next.first_seq, 2,
+            "the cut stream reopens where it was sealed"
+        );
+    })
+    .await;
 }
 
 /// A changed tree is checked before any kind writes its cut, so a tree
@@ -107,33 +104,31 @@ async fn an_uncarried_native_agent_refuses_the_upgrade_and_unseals_the_streams()
 /// told to make may well carry it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_changed_tree_outranks_an_uncarried_native_agent() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let (pane_wire, _, _) = state.with_mut(old_image_with_agent_sessions);
-            let ghost = state.with_mut(|s| bind_ghost(s, pane_wire));
-            let context = capture_upgrade_context(&state).unwrap();
-            let cuts = [AgentSessionUpgrade::carrying(HashMap::new())];
-            let reassemble = || {
-                reassemble_unchanged_tree(
-                    &state,
-                    context.listener_fd,
-                    context.listener_fd,
-                    &context.tree_identity,
-                    &cuts,
-                )
-            };
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (pane_wire, _, _) = state.with_mut(old_image_with_agent_sessions);
+        let ghost = state.with_mut(|s| bind_ghost(s, pane_wire));
+        let context = capture_upgrade_context(&state).unwrap();
+        let cuts = [AgentSessionUpgrade::carrying(HashMap::new())];
+        let reassemble = || {
+            reassemble_unchanged_tree(
+                &state,
+                context.listener_fd,
+                context.listener_fd,
+                &context.tree_identity,
+                &cuts,
+            )
+        };
 
-            let Err(UpgradeError::NativeAgentHandoff { agent }) = reassemble() else {
-                panic!("the unchanged tree reaches the native agent's refusal");
-            };
-            assert_eq!(agent, ghost);
+        let Err(UpgradeError::NativeAgentHandoff { agent }) = reassemble() else {
+            panic!("the unchanged tree reaches the native agent's refusal");
+        };
+        assert_eq!(agent, ghost);
 
-            state.with_mut(|s| {
-                let _ = s.seed_empty_session("late").expect("seed");
-            });
-            assert!(matches!(reassemble(), Err(UpgradeError::TreeChanged)));
-        })
-        .await;
+        state.with_mut(|s| {
+            let _ = s.seed_empty_session("late").expect("seed");
+        });
+        assert!(matches!(reassemble(), Err(UpgradeError::TreeChanged)));
+    })
+    .await;
 }

@@ -54,36 +54,33 @@ fn resume_args_reconstruct_the_served_surface() {
 /// cleanly); one that never grew links keeps its builder flags.
 #[tokio::test(flavor = "current_thread")]
 async fn a_promoted_hub_resumes_with_hub() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let state = SharedState::new();
-            let cancel = tokio_util::sync::CancellationToken::new();
-            state.with_mut(|s| {
-                s.set_upgrade_context(
-                    3,
-                    PathBuf::from("/run/phux/phux.sock"),
-                    RuntimeFlags::default(),
-                );
-                s.arm_hub_reload(None, cancel.clone());
-            });
-            let served = |state: &SharedState| {
-                args_as_strings(capture_upgrade_context(state).unwrap().flags)
-            };
-            assert!(!served(&state).contains(&"--hub".to_owned()));
-            assert!(state.with_mut(|s| s.hub_ensure_links(
-                std::ffi::OsString::from("ssh"),
-                phux_protocol::caps::BootstrapCapabilities::new(),
-            )));
-            assert!(served(&state).contains(&"--hub".to_owned()));
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        state.with_mut(|s| {
+            s.set_upgrade_context(
+                3,
+                PathBuf::from("/run/phux/phux.sock"),
+                RuntimeFlags::default(),
+            );
+            s.arm_hub_reload(None, cancel.clone());
+        });
+        let served =
+            |state: &SharedState| args_as_strings(capture_upgrade_context(state).unwrap().flags);
+        assert!(!served(&state).contains(&"--hub".to_owned()));
+        assert!(state.with_mut(|s| s.hub_ensure_links(
+            std::ffi::OsString::from("ssh"),
+            phux_protocol::caps::BootstrapCapabilities::new(),
+        )));
+        assert!(served(&state).contains(&"--hub".to_owned()));
 
-            let empty = crate::hub::HubTable::from_registry(&[]).unwrap();
-            state.with_mut(|s| s.hub_replace_table(empty, &state));
-            assert!(served(&state).contains(&"--hub".to_owned()));
-            assert!(crate::hub::resolve_hub_table(true, &[]).is_ok());
-            cancel.cancel();
-        })
-        .await;
+        let empty = crate::hub::HubTable::from_registry(&[]).unwrap();
+        state.with_mut(|s| s.hub_replace_table(empty, &state));
+        assert!(served(&state).contains(&"--hub".to_owned()));
+        assert!(crate::hub::resolve_hub_table(true, &[]).is_ok());
+        cancel.cancel();
+    })
+    .await;
 }
 
 /// A promoted hub whose on-disk registry no longer validates refuses the
@@ -92,63 +89,61 @@ async fn a_promoted_hub_resumes_with_hub() {
 /// newer than it, like `[host]`) is left to the target's `config check`.
 #[tokio::test(flavor = "current_thread")]
 async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let registry =
-                std::sync::Arc::new(std::sync::Mutex::new(vec![satellite("box", "ssh://box")]));
-            let unreadable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let read = std::sync::Arc::clone(&registry);
-            let fail = std::sync::Arc::clone(&unreadable);
-            let source = crate::hub::SatelliteSource::new(move || {
-                if fail.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err("unknown field `host`".to_owned());
-                }
-                Ok(read.lock().unwrap().clone())
-            });
-            let state = SharedState::new();
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let listener = tempfile::tempfile().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            state.with_mut(|s| {
-                s.set_upgrade_context(
-                    listener.as_raw_fd(),
-                    dir.path().join("phux.sock"),
-                    RuntimeFlags {
-                        upgrade_source_exe: Some(dir.path().join("missing-replacement")),
-                        ..RuntimeFlags::default()
-                    },
-                );
-                s.arm_hub_reload(Some(source), cancel.clone());
-            });
-            crate::hub::reload_satellites(&state);
-            assert!(state.with(crate::state::ServerState::hub_has_links));
+    crate::runtime::test_support::local(async {
+        let registry =
+            std::sync::Arc::new(std::sync::Mutex::new(vec![satellite("box", "ssh://box")]));
+        let unreadable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let read = std::sync::Arc::clone(&registry);
+        let fail = std::sync::Arc::clone(&unreadable);
+        let source = crate::hub::SatelliteSource::new(move || {
+            if fail.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("unknown field `host`".to_owned());
+            }
+            Ok(read.lock().unwrap().clone())
+        });
+        let state = SharedState::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let listener = tempfile::tempfile().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        state.with_mut(|s| {
+            s.set_upgrade_context(
+                listener.as_raw_fd(),
+                dir.path().join("phux.sock"),
+                RuntimeFlags {
+                    upgrade_source_exe: Some(dir.path().join("missing-replacement")),
+                    ..RuntimeFlags::default()
+                },
+            );
+            s.arm_hub_reload(Some(source), cancel.clone());
+        });
+        crate::hub::reload_satellites(&state);
+        assert!(state.with(crate::state::ServerState::hub_has_links));
 
-            registry.lock().unwrap().extend([
-                satellite("gopher", "gopher://box"),
-                satellite("box", "ssh://b"),
-            ]);
-            let Err(UpgradeError::HubRegistry(reason)) = prepare_upgrade(&state).await else {
-                panic!("an invalid registry must refuse the upgrade");
-            };
-            assert!(!reason.is_empty());
+        registry.lock().unwrap().extend([
+            satellite("gopher", "gopher://box"),
+            satellite("box", "ssh://b"),
+        ]);
+        let Err(UpgradeError::HubRegistry(reason)) = prepare_upgrade(&state).await else {
+            panic!("an invalid registry must refuse the upgrade");
+        };
+        assert!(!reason.is_empty());
 
-            // A valid registry gets past the check to the next stage.
-            registry.lock().unwrap().truncate(1);
-            assert!(matches!(
-                prepare_upgrade(&state).await,
-                Err(UpgradeError::Io(_))
-            ));
+        // A valid registry gets past the check to the next stage.
+        registry.lock().unwrap().truncate(1);
+        assert!(matches!(
+            prepare_upgrade(&state).await,
+            Err(UpgradeError::Io(_))
+        ));
 
-            // So does a file only the upgrade target can read.
-            unreadable.store(true, std::sync::atomic::Ordering::Relaxed);
-            assert!(matches!(
-                prepare_upgrade(&state).await,
-                Err(UpgradeError::Io(_))
-            ));
-            cancel.cancel();
-        })
-        .await;
+        // So does a file only the upgrade target can read.
+        unreadable.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            prepare_upgrade(&state).await,
+            Err(UpgradeError::Io(_))
+        ));
+        cancel.cancel();
+    })
+    .await;
 }
 
 #[test]

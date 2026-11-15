@@ -459,26 +459,25 @@ async fn an_unavailable_service_says_why() {
 
 #[tokio::test(start_paused = true)]
 async fn the_reaper_closes_abandoned_exchanges_and_then_stops() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let exchanges = Exchanges::default();
-            let reservation = exchanges.reserve(0).unwrap();
-            let remote = super::exchanges::Upstream::Remote {
-                host: phux_protocol::ids::SatelliteHost::new("ghost"),
-                exchange: 7,
-            };
-            reservation.fulfill(remote).unwrap();
-            assert!(exchanges.claim_reaper());
-            assert!(!exchanges.claim_reaper(), "one reaper per connection");
-            super::spawn_reaper(
-                SharedState::new(),
-                tokio_util::sync::CancellationToken::new(),
-                exchanges.clone(),
-            );
+    crate::runtime::test_support::local(async {
+        let exchanges = Exchanges::default();
+        let reservation = exchanges.reserve(0).unwrap();
+        let remote = super::exchanges::Upstream::Remote {
+            host: phux_protocol::ids::SatelliteHost::new("ghost"),
+            exchange: 7,
+        };
+        reservation.fulfill(remote).unwrap();
+        assert!(exchanges.claim_reaper());
+        assert!(!exchanges.claim_reaper(), "one reaper per connection");
+        super::spawn_reaper(
+            SharedState::new(),
+            tokio_util::sync::CancellationToken::new(),
+            exchanges.clone(),
+        );
 
-            tokio::time::sleep(UNREAD_REAP + super::REAP_INTERVAL * 2).await;
-            assert_eq!(exchanges.len(), 0, "the unread exchange was reaped");
-            assert!(exchanges.claim_reaper(), "an empty table's reaper ended");
-        })
-        .await;
+        tokio::time::sleep(UNREAD_REAP + super::REAP_INTERVAL * 2).await;
+        assert_eq!(exchanges.len(), 0, "the unread exchange was reaped");
+        assert!(exchanges.claim_reaper(), "an empty table's reaper ended");
+    })
+    .await;
 }

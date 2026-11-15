@@ -14,91 +14,89 @@ use phux_terminal::actor::TerminalResource as _;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
-                native_attach_handle();
-            let (output, _keepalive) = tokio::sync::broadcast::channel(16);
-            let (resize, mut resize_rx) = ResizeSender::channel(4);
-            let terminal = handle.terminal().expect("terminal facet").clone();
-            let mut consumer = spawn_native_pump(terminal, &output, resize);
-            let resync = |reason| ResourceOutput::Resync {
-                cols: 80,
-                rows: 24,
-                reason,
-                audience: ResyncAudience::Everyone,
-                base_seq: 0,
-                bytes: bytes::Bytes::new(),
-            };
+    crate::runtime::test_support::local(async {
+        let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
+            native_attach_handle();
+        let (output, _keepalive) = tokio::sync::broadcast::channel(16);
+        let (resize, mut resize_rx) = ResizeSender::channel(4);
+        let terminal = handle.terminal().expect("terminal facet").clone();
+        let mut consumer = spawn_native_pump(terminal, &output, resize);
+        let resync = |reason| ResourceOutput::Resync {
+            cols: 80,
+            rows: 24,
+            reason,
+            audience: ResyncAudience::Everyone,
+            base_seq: 0,
+            bytes: bytes::Bytes::new(),
+        };
 
-            output
-                .send(resync(crate::resource::ResyncReason::Exit))
-                .expect("pump subscribed");
-            let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
-            invalidated
-                .reply
-                .send(Err(
-                    phux_terminal_api::native_state::NativeStateError::Resize,
-                ))
-                .expect("pump awaits its capture");
-            let request = resync_request_from(&mut resize_rx, &mut consumer).await;
-            assert_eq!(
-                request.resync_for.map(|pump| pump.bootstrap_id),
-                Some(two_pump_initial_generation()),
-                "the pump asks for its own replacement generation"
-            );
-            assert!(
-                !consumer.task.is_finished(),
-                "the pump must outlive the invalidation"
-            );
+        output
+            .send(resync(crate::resource::ResyncReason::Exit))
+            .expect("pump subscribed");
+        let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
+        invalidated
+            .reply
+            .send(Err(
+                phux_terminal_api::native_state::NativeStateError::Resize,
+            ))
+            .expect("pump awaits its capture");
+        let request = resync_request_from(&mut resize_rx, &mut consumer).await;
+        assert_eq!(
+            request.resync_for.map(|pump| pump.bootstrap_id),
+            Some(two_pump_initial_generation()),
+            "the pump asks for its own replacement generation"
+        );
+        assert!(
+            !consumer.task.is_finished(),
+            "the pump must outlive the invalidation"
+        );
 
-            output
-                .send(resync(crate::resource::ResyncReason::Resize))
-                .expect("pump subscribed");
-            let capture = bootstrap_rx
-                .recv()
-                .await
-                .expect("replacement capture request");
-            let replacement = capture.bootstrap_id;
-            let reply = empty_native_checkpoint(&capture);
-            capture
-                .reply
-                .send(Ok(reply))
-                .expect("pump awaits its capture");
-            let publication = publication_rx.recv().await.expect("publication request");
-            publication
-                .reply
-                .send(Ok(phux_terminal::actor::NativePublicationReply {
-                    replay: Vec::new(),
-                    live: output.subscribe(),
-                }))
-                .expect("pump awaits its publication");
+        output
+            .send(resync(crate::resource::ResyncReason::Resize))
+            .expect("pump subscribed");
+        let capture = bootstrap_rx
+            .recv()
+            .await
+            .expect("replacement capture request");
+        let replacement = capture.bootstrap_id;
+        let reply = empty_native_checkpoint(&capture);
+        capture
+            .reply
+            .send(Ok(reply))
+            .expect("pump awaits its capture");
+        let publication = publication_rx.recv().await.expect("publication request");
+        publication
+            .reply
+            .send(Ok(phux_terminal::actor::NativePublicationReply {
+                replay: Vec::new(),
+                live: output.subscribe(),
+            }))
+            .expect("pump awaits its publication");
 
-            assert_eq!(
-                frames_seen(&mut consumer, 3).await,
-                vec![
-                    Seen::Tombstone,
-                    Seen::Begin {
-                        generation: replacement,
-                        base_seq: 0,
-                    },
-                    Seen::Ready {
-                        generation: replacement,
-                    },
-                ],
-                "one tombstone, then the replacement; no error frame"
-            );
-            assert_eq!(
-                replacement,
-                next_bootstrap_id(two_pump_initial_generation()),
-                "the replacement follows the tombstoned generation"
-            );
-            assert_quiet(&mut consumer, "the resynced pump").await;
-            assert!(!consumer.task.is_finished(), "the client stays attached");
-            consumer.task.abort();
-        })
-        .await;
+        assert_eq!(
+            frames_seen(&mut consumer, 3).await,
+            vec![
+                Seen::Tombstone,
+                Seen::Begin {
+                    generation: replacement,
+                    base_seq: 0,
+                },
+                Seen::Ready {
+                    generation: replacement,
+                },
+            ],
+            "one tombstone, then the replacement; no error frame"
+        );
+        assert_eq!(
+            replacement,
+            next_bootstrap_id(two_pump_initial_generation()),
+            "the replacement follows the tombstoned generation"
+        );
+        assert_quiet(&mut consumer, "the resynced pump").await;
+        assert!(!consumer.task.is_finished(), "the client stays attached");
+        consumer.task.abort();
+    })
+    .await;
 }
 
 /// A pane that exits while its pump is blocked publishing a replacement
@@ -109,40 +107,38 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_fault() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
-                native_attach_handle();
-            let (output, _keepalive) = tokio::sync::broadcast::channel(16);
-            let (resize, _resize_rx) = ResizeSender::channel(4);
-            let terminal = handle.terminal().expect("terminal facet").clone();
-            let mut consumer = spawn_native_pump(terminal, &output, resize);
+    crate::runtime::test_support::local(async {
+        let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
+            native_attach_handle();
+        let (output, _keepalive) = tokio::sync::broadcast::channel(16);
+        let (resize, _resize_rx) = ResizeSender::channel(4);
+        let terminal = handle.terminal().expect("terminal facet").clone();
+        let mut consumer = spawn_native_pump(terminal, &output, resize);
 
-            output
-                .send(ResourceOutput::Resync {
-                    cols: 80,
-                    rows: 24,
-                    reason: crate::resource::ResyncReason::Resize,
-                    audience: ResyncAudience::Everyone,
-                    base_seq: 0,
-                    bytes: bytes::Bytes::new(),
-                })
-                .expect("pump subscribed");
-            let capture = bootstrap_rx.recv().await.expect("replacement capture");
-            let reply = empty_native_checkpoint(&capture);
-            capture.reply.send(Ok(reply)).expect("pump awaits capture");
-            assert_eq!(frames_seen(&mut consumer, 3).await.len(), 3);
-            // The actor exits with the request in its mailbox.
-            drop(publication_rx.recv().await.expect("publication request"));
+        output
+            .send(ResourceOutput::Resync {
+                cols: 80,
+                rows: 24,
+                reason: crate::resource::ResyncReason::Resize,
+                audience: ResyncAudience::Everyone,
+                base_seq: 0,
+                bytes: bytes::Bytes::new(),
+            })
+            .expect("pump subscribed");
+        let capture = bootstrap_rx.recv().await.expect("replacement capture");
+        let reply = empty_native_checkpoint(&capture);
+        capture.reply.send(Ok(reply)).expect("pump awaits capture");
+        assert_eq!(frames_seen(&mut consumer, 3).await.len(), 3);
+        // The actor exits with the request in its mailbox.
+        drop(publication_rx.recv().await.expect("publication request"));
 
-            let fault = consumer.task.await.expect("pump task");
-            assert!(
-                matches!(fault, Some(PumpFault::PaneGone)),
-                "a gone pane must not close the client: {fault:?}"
-            );
-        })
-        .await;
+        let fault = consumer.task.await.expect("pump task");
+        assert!(
+            matches!(fault, Some(PumpFault::PaneGone)),
+            "a gone pane must not close the client: {fault:?}"
+        );
+    })
+    .await;
 }
 
 /// A native capacity failure on a fresh attach, or on a replacement after

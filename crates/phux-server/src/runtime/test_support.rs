@@ -355,8 +355,8 @@ pub(super) async fn wait_until(what: &str, done: impl Fn() -> bool) {
 }
 
 /// Run `case` on a current-thread runtime's `LocalSet`, as the server does.
-pub(super) async fn local(case: impl std::future::Future<Output = ()>) {
-    LocalSet::new().run_until(case).await;
+pub(in crate::runtime) async fn local<T>(case: impl std::future::Future<Output = T>) -> T {
+    LocalSet::new().run_until(case).await
 }
 
 /// Server state with the Terminal engine, `engine` installed, and one

@@ -26,15 +26,14 @@ async fn client(
 /// outlives it.
 #[tokio::test(flavor = "current_thread")]
 async fn eof_cancels_the_connection_token() {
-    LocalSet::new()
-        .run_until(async {
-            let token = CancellationToken::new();
-            let mut eof = Script::new([]);
-            eof.eof = true;
-            client(eof, token.clone(), CancellationToken::new()).await;
-            assert!(token.is_cancelled());
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let token = CancellationToken::new();
+        let mut eof = Script::new([]);
+        eof.eof = true;
+        client(eof, token.clone(), CancellationToken::new()).await;
+        assert!(token.is_cancelled());
+    })
+    .await;
 }
 
 /// Run a negotiated connection over `frames` (HELLO first, EOF last)
@@ -215,47 +214,45 @@ impl FrameReader for PingBeforeHelloReader {
 /// which ends in ERROR, DETACHED, close.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn pre_hello_ping_cannot_reset_absolute_handshake_deadline() {
-    LocalSet::new()
-        .run_until(async {
-            let task = tokio::task::spawn_local(client(
-                PingBeforeHelloReader { remaining: 8 },
-                CancellationToken::new(),
-                CancellationToken::new(),
-            ));
-            tokio::time::advance(crate::transport::HANDSHAKE_DEADLINE).await;
-            let events = task.await.expect("client task").events();
-            assert!(events.contains(&WriterEvent::Frame));
-            assert!(
-                events.ends_with(&[
-                    WriterEvent::Error,
-                    WriterEvent::Detached(Some(DetachReason::ProtocolError)),
-                    WriterEvent::Close,
-                ]),
-                "{events:?}",
-            );
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let task = tokio::task::spawn_local(client(
+            PingBeforeHelloReader { remaining: 8 },
+            CancellationToken::new(),
+            CancellationToken::new(),
+        ));
+        tokio::time::advance(crate::transport::HANDSHAKE_DEADLINE).await;
+        let events = task.await.expect("client task").events();
+        assert!(events.contains(&WriterEvent::Frame));
+        assert!(
+            events.ends_with(&[
+                WriterEvent::Error,
+                WriterEvent::Detached(Some(DetachReason::ProtocolError)),
+                WriterEvent::Close,
+            ]),
+            "{events:?}",
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn root_cancellation_flushes_server_shutdown_before_transport_close() {
-    LocalSet::new()
-        .run_until(async {
-            let root_token = CancellationToken::new();
-            let task = tokio::task::spawn_local(client(
-                Script::new([]),
-                root_token.child_token(),
-                root_token.clone(),
-            ));
-            tokio::task::yield_now().await;
-            root_token.cancel();
-            assert_eq!(
-                task.await.expect("client task").events(),
-                [
-                    WriterEvent::Detached(Some(DetachReason::ServerShutdown)),
-                    WriterEvent::Close
-                ],
-            );
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let root_token = CancellationToken::new();
+        let task = tokio::task::spawn_local(client(
+            Script::new([]),
+            root_token.child_token(),
+            root_token.clone(),
+        ));
+        tokio::task::yield_now().await;
+        root_token.cancel();
+        assert_eq!(
+            task.await.expect("client task").events(),
+            [
+                WriterEvent::Detached(Some(DetachReason::ServerShutdown)),
+                WriterEvent::Close
+            ],
+        );
+    })
+    .await;
 }

@@ -3,7 +3,6 @@ use super::writer_close_tests::Script;
 use crate::transport::FrameWriter;
 use phux_protocol::PROTOCOL_VERSION;
 use std::io;
-use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 use phux_protocol::caps::{
@@ -55,112 +54,111 @@ async fn next_frame(
 /// reads `HELLO_OK`, ERROR, DETACHED, and only then EOF.
 #[tokio::test(flavor = "current_thread")]
 async fn native_preflight_failure_flushes_error_then_duplex_eof() {
-    LocalSet::new()
-        .run_until(async {
-            let state = crate::runtime::apps::terminal::test_support::terminal_state();
-            let (_session, terminal) = state.with_mut(|server| server.seed_session("fatal-duplex"));
-            let (handle, mut stub) = stub_terminal();
-            // Nothing answers a detach here, so teardown must not wait for one.
-            stub.consumer_detach.close();
-            let client_id = state.with_mut(|server| {
-                server
-                    .register_resource_handle(terminal, handle, CancellationToken::new())
-                    .unwrap();
-                let client_id = server.new_client_id();
-                server.set_peer_identity(
-                    client_id,
-                    PeerIdentity {
-                        uid: nix::unistd::geteuid().as_raw(),
-                        pid: None,
-                        exe_path: None,
-                        mcp_host_key: None,
-                        transport: TransportType::UnixSocket,
-                        source_addr: None,
-                    },
-                );
-                client_id
-            });
-
-            let native = BootstrapCapabilities::new().with_native(
-                EngineCodec::LibghosttySnapshotV1,
-                EngineFeatureSet::required_native(),
-            );
-            let reader = Script::new([
-                FrameKind::Hello {
-                    client_name: "fatal-duplex-test".to_owned(),
-                    protocol_major: PROTOCOL_VERSION.major,
-                    protocol_minor: PROTOCOL_VERSION.minor,
-                    protocol_patch: PROTOCOL_VERSION.patch,
-                    client_caps: ClientCapabilities::new().with_bootstrap(native),
-                },
-                FrameKind::Attach {
-                    attach_id: 1,
-                    target: AttachTarget::ByName("fatal-duplex".to_owned()),
-                    viewport: ViewportInfo::new(80, 24),
-                    request_scrollback: false,
-                    scrollback_limit_lines: 0,
-                    role_policy: None,
-                },
-            ]);
-            let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
-            let (_server_read, server_write) = tokio::io::split(server_io);
-            let (mut client_read, _client_write) = tokio::io::split(peer_io);
-            let task = tokio::task::spawn_local(handle_client(
-                reader,
-                DuplexWriter(server_write),
-                state,
+    crate::runtime::test_support::local(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let (_session, terminal) = state.with_mut(|server| server.seed_session("fatal-duplex"));
+        let (handle, mut stub) = stub_terminal();
+        // Nothing answers a detach here, so teardown must not wait for one.
+        stub.consumer_detach.close();
+        let client_id = state.with_mut(|server| {
+            server
+                .register_resource_handle(terminal, handle, CancellationToken::new())
+                .unwrap();
+            let client_id = server.new_client_id();
+            server.set_peer_identity(
                 client_id,
-                CancellationToken::new(),
-                CancellationToken::new(),
-                None,
-                TransportType::UnixSocket,
-                false,
-            ));
-            let actor = tokio::task::spawn_local(async move {
-                let registration = stub.consumer_attach.recv().await.expect("registration");
-                registration
-                    .reply
-                    .send(Ok(ConsumerAttachOutcome {
-                        tick_managed: false,
-                        state_sync_bootstrap: None,
-                    }))
-                    .expect("registration reply");
-                stub.native_bootstrap
-                    .recv()
-                    .await
-                    .expect("native preflight")
-                    .reply
-                    .send(Err(NativeStateError::OutOfMemory))
-                    .expect("native failure reply");
-            });
+                PeerIdentity {
+                    uid: nix::unistd::geteuid().as_raw(),
+                    pid: None,
+                    exe_path: None,
+                    mcp_host_key: None,
+                    transport: TransportType::UnixSocket,
+                    source_addr: None,
+                },
+            );
+            client_id
+        });
 
-            assert!(matches!(
-                next_frame(&mut client_read).await,
-                Some(FrameKind::HelloOk {
-                    selected_profile: Some(phux_protocol::caps::BootstrapProfile::NativeState {
-                        codec: EngineCodec::LibghosttySnapshotV1,
-                        ..
-                    }),
+        let native = BootstrapCapabilities::new().with_native(
+            EngineCodec::LibghosttySnapshotV1,
+            EngineFeatureSet::required_native(),
+        );
+        let reader = Script::new([
+            FrameKind::Hello {
+                client_name: "fatal-duplex-test".to_owned(),
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_caps: ClientCapabilities::new().with_bootstrap(native),
+            },
+            FrameKind::Attach {
+                attach_id: 1,
+                target: AttachTarget::ByName("fatal-duplex".to_owned()),
+                viewport: ViewportInfo::new(80, 24),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+                role_policy: None,
+            },
+        ]);
+        let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
+        let (_server_read, server_write) = tokio::io::split(server_io);
+        let (mut client_read, _client_write) = tokio::io::split(peer_io);
+        let task = tokio::task::spawn_local(handle_client(
+            reader,
+            DuplexWriter(server_write),
+            state,
+            client_id,
+            CancellationToken::new(),
+            CancellationToken::new(),
+            None,
+            TransportType::UnixSocket,
+            false,
+        ));
+        let actor = tokio::task::spawn_local(async move {
+            let registration = stub.consumer_attach.recv().await.expect("registration");
+            registration
+                .reply
+                .send(Ok(ConsumerAttachOutcome {
+                    tick_managed: false,
+                    state_sync_bootstrap: None,
+                }))
+                .expect("registration reply");
+            stub.native_bootstrap
+                .recv()
+                .await
+                .expect("native preflight")
+                .reply
+                .send(Err(NativeStateError::OutOfMemory))
+                .expect("native failure reply");
+        });
+
+        assert!(matches!(
+            next_frame(&mut client_read).await,
+            Some(FrameKind::HelloOk {
+                selected_profile: Some(phux_protocol::caps::BootstrapProfile::NativeState {
+                    codec: EngineCodec::LibghosttySnapshotV1,
                     ..
-                })
-            ));
-            assert!(matches!(
-                next_frame(&mut client_read).await,
-                Some(FrameKind::Error {
-                    code: ErrorCode::CodecUnavailable,
-                    ..
-                })
-            ));
-            assert!(matches!(
-                next_frame(&mut client_read).await,
-                Some(FrameKind::Detached {
-                    reason: Some(DetachReason::ProtocolError),
-                    ..
-                })
-            ));
-            assert!(next_frame(&mut client_read).await.is_none());
-            actor.await.expect("actor task");
-            task.await.expect("client task").expect("client result");
-        })
-        .await;
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            next_frame(&mut client_read).await,
+            Some(FrameKind::Error {
+                code: ErrorCode::CodecUnavailable,
+                ..
+            })
+        ));
+        assert!(matches!(
+            next_frame(&mut client_read).await,
+            Some(FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                ..
+            })
+        ));
+        assert!(next_frame(&mut client_read).await.is_none());
+        actor.await.expect("actor task");
+        task.await.expect("client task").expect("client result");
+    })
+    .await;
 }
