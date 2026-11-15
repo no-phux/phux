@@ -1,17 +1,8 @@
-//! phux-vt-web — a Rust/WASM driver for ghostty's `libghostty-vt` terminal
-//! engine, compiled to WebAssembly (`ghostty-vt.wasm`).
-//!
-//! The phux browser client renders terminals with the *same* VT engine native
-//! phux uses. Rather than link zig into the Rust wasm binary, we load
-//! `ghostty-vt.wasm` as a separate module, which imports nothing from the
-//! host, and drive its C ABI through the WebAssembly JS API. This module is
-//! the thin, safe Rust surface over that ABI.
-//!
-//! The ABI is the public `libghostty-vt` C surface (`include/ghostty/vt.h`).
-//! Pointers are offsets into the engine module's linear memory; by-value
-//! structs (e.g. `GhosttyPoint`) lower to a pointer argument. The
-//! call/marshal patterns here mirror `libghostty-vt`'s safe wrapper
-//! (`terminal.rs` / `render.rs`), validated against the real module.
+//! phux-vt-web — a safe Rust driver for ghostty's `libghostty-vt` engine
+//! compiled to WebAssembly (`ghostty-vt.wasm`), the same VT engine native
+//! phux uses. The engine loads as a separate module that imports nothing;
+//! its public C ABI (`include/ghostty/vt.h`) is driven through the
+//! WebAssembly JS API, with pointers as offsets into the engine's memory.
 
 #![deny(missing_docs)]
 

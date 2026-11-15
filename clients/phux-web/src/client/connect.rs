@@ -218,15 +218,11 @@ async fn complete_establishment(
 }
 
 /// Connect over WebTransport (HTTP/3 over QUIC), falling back to the
-/// WebSocket path when WebTransport is unavailable — an older browser
-/// without the API, or a server not listening on the WebTransport endpoint.
+/// WebSocket at `ws_url` when the API or the endpoint is unavailable.
 ///
-/// `wt_url` is an `https://` session URL (`phux server --webtransport`; on a
-/// token-authenticated listener append `?token=<hex>`, since the JS
-/// `WebTransport` API cannot set request headers). `ws_url` is the WebSocket
-/// fallback URL. The token is offered there through `Sec-WebSocket-Protocol`
-/// rather than copied into the WSS URL; the direct server must support that
-/// authenticated upgrade seam.
+/// `wt_url` is an `https://` session URL; a token-authenticated listener
+/// takes `?token=<hex>` (the JS API cannot set headers). The fallback offers
+/// that token through `Sec-WebSocket-Protocol`, never the WSS URL.
 ///
 /// # Errors
 /// Fails only if *both* paths fail to come up.

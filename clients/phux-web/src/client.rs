@@ -1,17 +1,8 @@
-//! Browser glue: a transport to the phux server (WebTransport or WebSocket),
-//! a `<canvas>`, and the keyboard, all driving a [`Connection`](crate::Connection).
-//! This is the only part that touches the DOM/network; the protocol logic
-//! lives in [`crate::session`].
-//!
-//! Two connect paths speak the identical wire (ADR-0025: the transport is a
-//! byte-stream detail below the frame codec):
-//!
-//! * **WebSocket** ([`run`]) — one binary message per encoded frame. The
-//!   historical path; works everywhere.
-//! * **WebTransport** ([`run_with_fallback`]) — HTTP/3 over QUIC. One
-//!   bidirectional stream carries length-prefixed frames (reassembled by
-//!   [`FrameBuffer`](crate::framing::FrameBuffer)); falls back to WebSocket
-//!   when the API or the endpoint is unavailable.
+//! Browser glue: the transport, `<canvas>`, and input driving a
+//! [`Connection`](crate::Connection); the protocol logic is [`crate::session`].
+//! WebSocket ([`run`]) carries one frame per message; WebTransport
+//! ([`run_with_fallback`]) one length-prefixed stream, falling back to
+//! WebSocket when unavailable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
