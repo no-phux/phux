@@ -155,14 +155,11 @@ pub(in crate::wire) fn decode_list_directory(
     let mut request_id = 0u32;
     let mut path = String::new();
     let mut host = None;
-    while let Some((id, value)) = d.read_field()? {
-        match id {
-            field::list_directory::REQUEST_ID => request_id = read_u32(value)?,
-            field::list_directory::PATH => path = utf8_value(value)?,
-            field::list_directory::HOST => host = Some(SatelliteHost::new(utf8_value(value)?)),
-            _ => {}
-        }
-    }
+    for_each_field!(d, value, {
+        field::list_directory::REQUEST_ID => request_id = read_u32(value)?,
+        field::list_directory::PATH => path = utf8_value(value)?,
+        field::list_directory::HOST => host = Some(SatelliteHost::new(utf8_value(value)?)),
+    });
     Ok((request_id, path, host))
 }
 

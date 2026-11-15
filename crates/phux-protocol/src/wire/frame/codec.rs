@@ -281,14 +281,11 @@ pub(in crate::wire) fn decode_metadata_scope_key(
     let mut request_id = 0u32;
     let mut scope: Option<Scope> = None;
     let mut key: Option<String> = None;
-    while let Some((id, value)) = dec.read_field()? {
-        match id {
-            field::get_metadata::REQUEST_ID => request_id = Decoder::new(value).read_u32_be()?,
-            field::get_metadata::SCOPE => scope = Some(decode_scope(&mut Decoder::new(value))?),
-            field::get_metadata::KEY => key = Some(utf8_value(value)?),
-            _ => {}
-        }
-    }
+    for_each_field!(dec, value, {
+        field::get_metadata::REQUEST_ID => request_id = Decoder::new(value).read_u32_be()?,
+        field::get_metadata::SCOPE => scope = Some(decode_scope(&mut Decoder::new(value))?),
+        field::get_metadata::KEY => key = Some(utf8_value(value)?),
+    });
     Ok((
         request_id,
         scope.ok_or(DecodeError::UnexpectedEof)?,

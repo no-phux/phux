@@ -21,15 +21,12 @@ impl Decoder<'_> {
         let mut scope: Option<Scope> = None;
         let mut key: Option<String> = None;
         let mut value_bytes: Vec<u8> = Vec::new();
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::set_metadata::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::set_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
-                field::set_metadata::KEY => key = Some(utf8_value(value)?),
-                field::set_metadata::VALUE => value_bytes = value.to_vec(),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::set_metadata::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::set_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
+            field::set_metadata::KEY => key = Some(utf8_value(value)?),
+            field::set_metadata::VALUE => value_bytes = value.to_vec(),
+        });
         Ok(FrameKind::SetMetadata {
             request_id,
             scope: req(scope)?,
@@ -50,13 +47,10 @@ impl Decoder<'_> {
     pub(super) fn decode_list_metadata(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut scope: Option<Scope> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::list_metadata::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::list_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::list_metadata::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::list_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
+        });
         Ok(FrameKind::ListMetadata {
             request_id,
             scope: req(scope)?,
@@ -66,13 +60,10 @@ impl Decoder<'_> {
     pub(super) fn decode_subscribe_metadata(&mut self) -> Result<FrameKind, DecodeError> {
         let mut scope: Option<Scope> = None;
         let mut key: Option<String> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::subscribe_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
-                field::subscribe_metadata::KEY => key = Some(utf8_value(value)?),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::subscribe_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
+            field::subscribe_metadata::KEY => key = Some(utf8_value(value)?),
+        });
         Ok(FrameKind::SubscribeMetadata {
             scope: req(scope)?,
             key: req(key)?,
@@ -84,15 +75,12 @@ impl Decoder<'_> {
         let mut key: Option<String> = None;
         let mut value_bytes: Option<Vec<u8>> = None;
         let mut actor = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::metadata_changed::SCOPE => scope = Some(sub!(value, decode_scope)),
-                field::metadata_changed::KEY => key = Some(utf8_value(value)?),
-                field::metadata_changed::VALUE => value_bytes = Some(value.to_vec()),
-                field::metadata_changed::ACTOR => actor = Some(sub!(value, decode_actor_ref)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::metadata_changed::SCOPE => scope = Some(sub!(value, decode_scope)),
+            field::metadata_changed::KEY => key = Some(utf8_value(value)?),
+            field::metadata_changed::VALUE => value_bytes = Some(value.to_vec()),
+            field::metadata_changed::ACTOR => actor = Some(sub!(value, decode_actor_ref)),
+        });
         Ok(FrameKind::MetadataChanged {
             scope: req(scope)?,
             key: req(key)?,
@@ -104,13 +92,10 @@ impl Decoder<'_> {
     pub(super) fn decode_metadata_value(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut value_bytes: Option<Vec<u8>> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::metadata_value::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::metadata_value::VALUE => value_bytes = Some(value.to_vec()),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            field::metadata_value::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::metadata_value::VALUE => value_bytes = Some(value.to_vec()),
+        });
         Ok(FrameKind::MetadataValue {
             request_id,
             value: value_bytes,
@@ -120,23 +105,20 @@ impl Decoder<'_> {
     pub(super) fn decode_metadata_keys(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
         let mut keys: Vec<String> = Vec::new();
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::metadata_keys::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::metadata_keys::KEYS => {
-                    let mut d = Decoder::new(value);
-                    let count = d.read_u32_be()?;
-                    let count_usize =
-                        usize::try_from(count).map_err(|_| DecodeError::LengthOverflow)?;
-                    let mut out = d.bounded_capacity(count_usize);
-                    for _ in 0..count_usize {
-                        out.push(d.read_str()?.to_owned());
-                    }
-                    keys = out;
+        for_each_field!(self, value, {
+            field::metadata_keys::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+            field::metadata_keys::KEYS => {
+                let mut d = Decoder::new(value);
+                let count = d.read_u32_be()?;
+                let count_usize =
+                    usize::try_from(count).map_err(|_| DecodeError::LengthOverflow)?;
+                let mut out = d.bounded_capacity(count_usize);
+                for _ in 0..count_usize {
+                    out.push(d.read_str()?.to_owned());
                 }
-                _ => {}
+                keys = out;
             }
-        }
+        });
         Ok(FrameKind::MetadataKeys { request_id, keys })
     }
 
@@ -144,13 +126,10 @@ impl Decoder<'_> {
         use field::subscribe_events as f;
         let mut terminal: Option<ResourceId> = None;
         let mut after_seq: Option<u64> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
-                f::AFTER_SEQ => after_seq = Some(sub!(value, Decoder::read_u64_be)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            f::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
+            f::AFTER_SEQ => after_seq = Some(sub!(value, Decoder::read_u64_be)),
+        });
         Ok(FrameKind::SubscribeEvents {
             terminal,
             after_seq,

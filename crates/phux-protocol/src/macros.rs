@@ -89,3 +89,17 @@ macro_rules! open_wire_enum {
         }
     };
 }
+
+/// Match each body-level TLV field of `$dec`, in wire order, against the
+/// arms given, with `$value` bound to the field's bytes. An id no arm names
+/// is skipped by its length (`docs/protocol.md#framing`).
+macro_rules! for_each_field {
+    ($dec:expr, $value:ident, { $($arms:tt)* }) => {
+        while let Some((id, $value)) = $dec.read_field()? {
+            match id {
+                $($arms)*
+                _ => {}
+            }
+        }
+    };
+}

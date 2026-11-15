@@ -202,26 +202,23 @@ pub(super) fn encode_launch(launch: &LaunchSpec, enc: &mut Encoder<'_>) {
 pub(super) fn decode_launch(value: &[u8]) -> Result<LaunchSpec, DecodeError> {
     let mut dec = Decoder::new(value);
     let mut launch = LaunchSpec::default();
-    while let Some((id, value)) = dec.read_field()? {
-        match id {
-            field::org_launch::COMMAND => {
-                push_bounded(&mut launch.command, utf8_value(value)?, MAX_LAUNCH_LIST)?;
-            }
-            field::org_launch::CWD => launch.cwd = Some(utf8_value(value)?),
-            field::org_launch::ENV => {
-                let pair = decode_pair(value, usize::MAX)?;
-                push_bounded(&mut launch.env, pair, MAX_LAUNCH_LIST)?;
-            }
-            field::org_launch::TERM => launch.term = Some(utf8_value(value)?),
-            field::org_launch::RESTORE => {
-                if value.len() > MAX_LAUNCH_RESTORE_BYTES {
-                    return Err(DecodeError::OrganizationLimitExceeded);
-                }
-                launch.restore = Some(value.to_vec());
-            }
-            _ => {}
+    for_each_field!(dec, value, {
+        field::org_launch::COMMAND => {
+            push_bounded(&mut launch.command, utf8_value(value)?, MAX_LAUNCH_LIST)?;
         }
-    }
+        field::org_launch::CWD => launch.cwd = Some(utf8_value(value)?),
+        field::org_launch::ENV => {
+            let pair = decode_pair(value, usize::MAX)?;
+            push_bounded(&mut launch.env, pair, MAX_LAUNCH_LIST)?;
+        }
+        field::org_launch::TERM => launch.term = Some(utf8_value(value)?),
+        field::org_launch::RESTORE => {
+            if value.len() > MAX_LAUNCH_RESTORE_BYTES {
+                return Err(DecodeError::OrganizationLimitExceeded);
+            }
+            launch.restore = Some(value.to_vec());
+        }
+    });
     Ok(launch)
 }
 

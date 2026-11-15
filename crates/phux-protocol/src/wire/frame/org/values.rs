@@ -164,28 +164,23 @@ pub(in crate::wire) fn decode_organization_page(
     let mut snapshot_revision = Revision::new(0);
     let mut journal_seq = 0;
     let mut next_cursor = None;
-    while let Some((id, value)) = body.read_field()? {
-        match id {
-            field::org_page::AUTHORITY => authority = Some(read_key(value, AuthorityId::new)?),
-            field::org_page::INBOX => inbox = Some(read_key(value, SessionKey::new)?),
-            field::org_page::SESSION => sessions.push(decode_session_record(value)?),
-            field::org_page::RESOURCE => resources.push(decode_resource_record(value)?),
-            field::org_page::TOTAL_SESSIONS => totals.0 = read_u32(value)?,
-            field::org_page::TOTAL_RESOURCES => totals.1 = read_u32(value)?,
-            field::org_page::TOTAL_INTAKE => totals.2 = read_u32(value)?,
-            field::org_page::SNAPSHOT_REVISION => {
-                snapshot_revision = Revision::new(read_u64(value)?);
+    for_each_field!(body, value, {
+        field::org_page::AUTHORITY => authority = Some(read_key(value, AuthorityId::new)?),
+        field::org_page::INBOX => inbox = Some(read_key(value, SessionKey::new)?),
+        field::org_page::SESSION => sessions.push(decode_session_record(value)?),
+        field::org_page::RESOURCE => resources.push(decode_resource_record(value)?),
+        field::org_page::TOTAL_SESSIONS => totals.0 = read_u32(value)?,
+        field::org_page::TOTAL_RESOURCES => totals.1 = read_u32(value)?,
+        field::org_page::TOTAL_INTAKE => totals.2 = read_u32(value)?,
+        field::org_page::SNAPSHOT_REVISION => snapshot_revision = Revision::new(read_u64(value)?),
+        field::org_page::JOURNAL_SEQ => journal_seq = read_u64(value)?,
+        field::org_page::NEXT_CURSOR => {
+            if value.len() > MAX_ORG_CURSOR_BYTES {
+                return Err(DecodeError::OrganizationLimitExceeded);
             }
-            field::org_page::JOURNAL_SEQ => journal_seq = read_u64(value)?,
-            field::org_page::NEXT_CURSOR => {
-                if value.len() > MAX_ORG_CURSOR_BYTES {
-                    return Err(DecodeError::OrganizationLimitExceeded);
-                }
-                next_cursor = Some(value.to_vec());
-            }
-            _ => {}
+            next_cursor = Some(value.to_vec());
         }
-    }
+    });
     Ok(
         OrganizationPage::new(req(authority)?, snapshot_revision, journal_seq)
             .with_inbox(inbox)
