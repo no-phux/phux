@@ -127,6 +127,29 @@ impl ServerGuard {
         assert_eq!(code, 0, "phux {args:?} exited {code}; stderr={stderr}");
         stdout
     }
+
+    /// Create a pane running `command` and return its local Terminal id.
+    /// `--socket` precedes the verb so `spawn`'s trailing argv cannot take it.
+    pub fn spawn_pane(&self, command: &std::path::Path) -> u32 {
+        let out = self
+            .cmd_global(&["spawn", "--json", "--"])
+            .arg(command)
+            .output()
+            .expect("run phux spawn");
+        assert!(
+            out.status.success(),
+            "phux spawn exited {:?}; stderr={}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("phux spawn --json");
+        json["terminal_id"]
+            .as_u64()
+            .expect("spawn reports a terminal id")
+            .try_into()
+            .expect("terminal id fits u32")
+    }
 }
 
 /// Builder for a [`ServerGuard`]. Every field has a default that matches the

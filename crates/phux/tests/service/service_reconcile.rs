@@ -5,8 +5,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

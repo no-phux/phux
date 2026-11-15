@@ -1,12 +1,6 @@
 //! The published introductions must work against the same CLI CI built.
 
-#[path = "../common/mod.rs"]
-#[allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "shared fail-fast integration-test harness"
-)]
-mod common;
+use crate::common;
 
 #[test]
 #[ignore = "spawns private servers and PTYs; run through just e2e"]

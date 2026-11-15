@@ -1,29 +1,30 @@
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
-use std::path::PathBuf;
+use phux_client::attach::connection::Connection;
+use phux_client::org::OrgInventory;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn start(session: &str) -> common::ServerGuard {
     common::ServerGuard::builder("wa").session(session).start()
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    output(common::phux_cmd(crate::runner::phux_bin()).args(args))
+    run_in(args, None)
 }
 
-fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
-    output(
-        common::phux_cmd(crate::runner::phux_bin())
-            .env("XDG_CONFIG_HOME", xdg)
-            .args(args),
-    )
+/// Run `phux` with the process's isolated XDG dirs, or with `xdg` as
+/// `XDG_CONFIG_HOME` when given.
+fn run_in(args: &[&str], xdg: Option<&Path>) -> (i32, String, String) {
+    let mut cmd = common::phux_cmd(crate::runner::phux_bin());
+    if let Some(xdg) = xdg {
+        cmd.env("XDG_CONFIG_HOME", xdg);
+    }
+    output(cmd.args(args))
 }
 
 fn output(cmd: &mut Command) -> (i32, String, String) {
@@ -35,6 +36,88 @@ fn output(cmd: &mut Command) -> (i32, String, String) {
     )
 }
 
+/// `run_in` that must exit 0; returns stdout.
+fn ok(args: &[&str], xdg: Option<&Path>) -> String {
+    let (code, stdout, stderr) = run_in(args, xdg);
+    assert_eq!(code, 0, "phux {args:?}: {stdout} {stderr}");
+    stdout
+}
+
+/// `archive export` of `socket` to `path`, parsed. Export prints nothing.
+fn export(socket: &str, path: &Path, xdg: Option<&Path>) -> Value {
+    let path_arg = path.to_str().expect("utf-8 archive");
+    let stdout = ok(
+        &[
+            "archive", "export", "--socket", socket, "--output", path_arg,
+        ],
+        xdg,
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+    serde_json::from_slice(&std::fs::read(path).expect("read archive")).expect("archive JSON")
+}
+
+/// `archive import` of `path` into `socket`, which must restore `name`.
+fn import(path: &Path, socket: &str, name: &str, xdg: Option<&Path>) -> Value {
+    let path_arg = path.to_str().expect("utf-8 archive");
+    let summary = ok(&["archive", "import", path_arg, "--socket", socket], xdg);
+    let summary: Value = serde_json::from_str(&summary).expect("restore summary JSON");
+    assert!(
+        summary["failed"].as_array().is_none_or(Vec::is_empty),
+        "restore must not report a failure: {summary}"
+    );
+    assert!(
+        summary["restored"]
+            .as_array()
+            .expect("restored array")
+            .iter()
+            .any(|restored| restored == name),
+        "{name} must be restored: {summary}"
+    );
+    summary
+}
+
+/// [`import`], then `restore` of `name`: an import starts nothing (R16);
+/// `phux restore` starts the dormant panes.
+fn import_and_restore(path: &Path, socket: &str, name: &str, xdg: Option<&Path>) -> Value {
+    let summary = import(path, socket, name, xdg);
+    ok(&["restore", name, "--socket", socket], xdg);
+    summary
+}
+
+/// The archive's session called `name`.
+fn archived<'a>(archive: &'a Value, name: &str) -> &'a Value {
+    archive["sessions"]
+        .as_array()
+        .expect("sessions array")
+        .iter()
+        .find(|session| session["name"] == name)
+        .unwrap_or_else(|| panic!("archive names no {name:?} session: {archive}"))
+}
+
+fn archived_mut<'a>(archive: &'a mut Value, name: &str) -> &'a mut Value {
+    archive["sessions"]
+        .as_array_mut()
+        .expect("sessions array")
+        .iter_mut()
+        .find(|session| session["name"] == name)
+        .expect("archived session")
+}
+
+/// Named session's windows array from an archive.
+fn session_windows<'a>(archive: &'a Value, name: &str) -> &'a Vec<Value> {
+    archived(archive, name)["windows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{name:?} session has no windows array: {archive}"))
+}
+
+/// Total pane count across every window of `windows`.
+fn total_panes(windows: &[Value]) -> usize {
+    windows
+        .iter()
+        .map(|window| window["panes"].as_array().map_or(0, Vec::len))
+        .sum()
+}
+
 /// Ambient budget for a fake agent's `/bin/sh` to run at all (a loaded box
 /// has taken ~8s); `phux wait` returns as soon as the line appears.
 const AGENT_PAINT_BUDGET_SECS: &str = "60";
@@ -43,39 +126,36 @@ const AGENT_PAINT_BUDGET_SECS: &str = "60";
 /// every line in one burst, so a timeout here means the argv is wrong.
 const AGENT_LINE_BUDGET_SECS: &str = "5";
 
-/// Wait for `target` to paint at all (ambient budget), then for `marker`
-/// (subject budget), so load cannot masquerade as a contract failure.
-fn wait_painted_then(socket: &str, target: &str, marker: &str) {
-    let (code, _, stderr) = run(&[
-        "wait",
-        "--until",
-        "FAKE_AGENT_ARGS=",
-        "--timeout",
-        AGENT_PAINT_BUDGET_SECS,
-        "--socket",
-        socket,
-        target,
-    ]);
-    assert_eq!(
-        code, 0,
-        "{target} never painted within {AGENT_PAINT_BUDGET_SECS}s (environment, not contract): {stderr}"
-    );
+fn wait_until(socket: &str, target: &str, marker: &str, budget: &str) -> (i32, String) {
     let (code, _, stderr) = run(&[
         "wait",
         "--until",
         marker,
         "--timeout",
-        AGENT_LINE_BUDGET_SECS,
+        budget,
         "--socket",
         socket,
         target,
     ]);
+    (code, stderr)
+}
+
+/// Wait for `target` to paint at all (ambient budget), then for `marker`
+/// (subject budget), so load cannot masquerade as a contract failure.
+fn wait_painted_then(socket: &str, target: &str, marker: &str) {
+    let (code, stderr) = wait_until(socket, target, "FAKE_AGENT_ARGS=", AGENT_PAINT_BUDGET_SECS);
+    assert_eq!(
+        code, 0,
+        "{target} never painted within {AGENT_PAINT_BUDGET_SECS}s (environment, not contract): {stderr}"
+    );
+    let (code, stderr) = wait_until(socket, target, marker, AGENT_LINE_BUDGET_SECS);
     assert_eq!(code, 0, "{target} never printed {marker:?}: {stderr}");
 }
 
-/// Poll until `selector` is gone from `socket`'s registry (ambient budget:
-/// each poll forks a `phux`).
-fn wait_for_terminal_absent(socket: &str, selector: &str) {
+/// Kill `selector`, then poll until it is gone from `socket`'s registry
+/// (ambient budget: each poll forks a `phux`).
+fn kill_and_wait_absent(socket: &str, selector: &str) {
+    ok(&["kill", "--yes", "--socket", socket, selector], None);
     let budget = Duration::from_secs(60);
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
@@ -86,6 +166,85 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("{selector} was still present {budget:?} after kill");
+}
+
+/// Run `read` against `socket`'s organization records.
+fn with_org<T>(socket: &str, read: impl AsyncFnOnce(&mut Connection, OrgInventory) -> T) -> T {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let mut conn = Connection::connect(Path::new(socket))
+            .await
+            .expect("connect organization");
+        let records =
+            phux_client::org::fetch(&mut conn, phux_protocol::wire::frame::OrgFilter::All, 1)
+                .await
+                .expect("organization records");
+        read(&mut conn, records).await
+    })
+}
+
+fn live_terminals(socket: &str, name: &str) -> Vec<u32> {
+    with_org(socket, async |_, records| {
+        let session = records.session_named(name).expect("session");
+        records
+            .members(&session.key)
+            .filter_map(|resource| resource.live.as_ref()?.local_id())
+            .collect()
+    })
+}
+
+fn session_attrs(socket: &str, name: &str) -> Vec<(String, String)> {
+    with_org(socket, async |_, records| {
+        records
+            .session_named(name)
+            .expect("named organization session")
+            .attrs
+            .clone()
+    })
+}
+
+fn arranged_terminal(socket: &str, name: &str, terminal_id: u32) -> bool {
+    use phux_protocol::wire::frame::{ArrangementNode, EntryTarget};
+    with_org(socket, async |conn, records| {
+        let session = records.session_named(name).expect("named session");
+        let resource = records
+            .members(&session.key)
+            .find(|resource| {
+                resource
+                    .live
+                    .as_ref()
+                    .and_then(phux_protocol::ids::ResourceId::local_id)
+                    == Some(terminal_id)
+            })
+            .expect("reopened resource");
+        let arrangement = session.arrangement.expect("session arrangement");
+        let document = phux_client::org::arrangement(conn, 3, arrangement)
+            .await
+            .expect("read arrangement")
+            .document;
+        document.groups.iter().any(|group| {
+            matches!(&group.tree, ArrangementNode::Leaf(entry)
+                if entry.target == EntryTarget::Member(resource.key))
+        })
+    })
+}
+
+/// Assert the session `name` on `socket` carries each `(key, value)` attribute.
+fn assert_attrs(socket: &str, name: &str, expected: &[(&str, &str)]) {
+    let attrs = session_attrs(socket, name);
+    for (key, value) in expected {
+        assert_eq!(attr(&attrs, key), Some(*value), "{name} {key}: {attrs:?}");
+    }
+}
+
+fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
 }
 
 /// Two Git repositories with the same checkout basename must never share a
@@ -108,7 +267,11 @@ fn project_open_keeps_canonical_checkout_identity_and_archive_attributes() {
             .status()
             .expect("git init");
         assert!(status.success());
-        path.canonicalize().expect("canonical checkout")
+        path.canonicalize()
+            .expect("canonical checkout")
+            .to_str()
+            .expect("utf-8 path")
+            .to_owned()
     };
     let first = checkout("one", "same");
     let collision = checkout("two", "same");
@@ -117,121 +280,71 @@ fn project_open_keeps_canonical_checkout_identity_and_archive_attributes() {
     std::fs::create_dir_all(&config).expect("config directory");
     std::fs::write(
         config.join("config.toml"),
-        format!(
-            "[[projects]]\nname = \"Friendly\"\npath = {:?}\n",
-            first.display().to_string()
-        ),
+        format!("[[projects]]\nname = \"Friendly\"\npath = {first:?}\n"),
     )
     .expect("project catalog");
-    let first_path = first.to_str().expect("utf-8 path");
-    let collision_path = collision.to_str().expect("utf-8 path");
-    let other_path = other.to_str().expect("utf-8 path");
-    let project_open = |target: &str| {
-        let (code, stdout, stderr) =
-            run(&["project", "open", target, "--json", "--socket", &socket]);
-        (code, stdout, stderr)
-    };
+    let project_open =
+        |target: &str| run(&["project", "open", target, "--json", "--socket", &socket]);
     // The server's preexisting "seed" session has no directory attribute.
     // Neither its pane cwd nor a matching basename is sufficient to adopt it.
-    let unbound = checkout("four", "seed");
-    let (code, stdout, stderr) = project_open(unbound.to_str().expect("utf-8 path"));
+    let (code, stdout, stderr) = project_open(&checkout("four", "seed"));
     assert_ne!(code, 0, "untagged session must be refused: {stdout}");
     assert!(stderr.contains("no checkout directory"), "{stderr}");
 
     let (code, stdout, stderr) = project_open("Friendly");
     assert_eq!(code, 0, "first project open: {stderr}");
-    let opened: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    let opened: Value = serde_json::from_str(&stdout).expect("open JSON");
     assert_eq!(opened["created"], true);
     assert_eq!(opened["project"], "Friendly");
-    let attrs = session_attrs(&socket, "same");
-    assert_eq!(attr(&attrs, "directory"), Some(first_path));
-    assert_eq!(attr(&attrs, "project"), Some("same"));
-
-    let (code, stdout, stderr) = project_open(first_path);
-    assert_eq!(code, 0, "reentry: {stderr}");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("reentry JSON")["created"],
-        false
+    assert_attrs(
+        &socket,
+        "same",
+        &[("directory", &first), ("project", "same")],
     );
-    let (code, stdout, stderr) = project_open(collision_path);
+
+    let (code, stdout, stderr) = project_open(&first);
+    assert_eq!(code, 0, "reentry: {stderr}");
+    let reentry: Value = serde_json::from_str(&stdout).expect("reentry JSON");
+    assert_eq!(reentry["created"], false);
+    let (code, stdout, stderr) = project_open(&collision);
     assert_ne!(code, 0, "colliding repo must be refused: {stdout}");
     assert!(stdout.is_empty());
     assert!(
-        stderr.contains(first_path) && stderr.contains(collision_path),
+        stderr.contains(&first) && stderr.contains(&collision),
         "{stderr}"
     );
-    assert_eq!(
-        attr(&session_attrs(&socket, "same"), "directory"),
-        Some(first_path)
-    );
+    assert_attrs(&socket, "same", &[("directory", &first)]);
 
-    let (code, _, stderr) = project_open(other_path);
+    let (code, _, stderr) = project_open(&other);
     assert_eq!(code, 0, "second distinct project: {stderr}");
-    assert_eq!(
-        attr(&session_attrs(&socket, "other"), "directory"),
-        Some(other_path)
+    assert_attrs(
+        &socket,
+        "other",
+        &[("directory", &other), ("project", "other")],
     );
-    assert_eq!(
-        attr(&session_attrs(&socket, "other"), "project"),
-        Some("other")
-    );
-    assert_project_archive_roundtrip(&root, &socket, &dest, first_path, other_path);
-}
 
-fn assert_project_archive_roundtrip(
-    root: &tempfile::TempDir,
-    socket: &str,
-    dest: &common::ServerGuard,
-    first_path: &str,
-    other_path: &str,
-) {
-    let archive = root.path().join("projects.json");
-    let (code, _, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        socket,
-        "--output",
-        archive.to_str().expect("utf-8 archive"),
-    ]);
-    assert_eq!(code, 0, "archive export: {stderr}");
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&archive).expect("read archive"))
-            .expect("archive JSON");
-    for (name, path, label) in [("same", first_path, "same"), ("other", other_path, "other")] {
-        let row = saved["sessions"]
-            .as_array()
-            .expect("sessions")
-            .iter()
-            .find(|row| row["name"] == name)
-            .expect("archived session");
-        assert_eq!(row["cwd"], path);
-        assert_eq!(row["project"], label);
+    let saved = export(&socket, &root.path().join("projects.json"), None);
+    for (name, path) in [("same", &first), ("other", &other)] {
+        let row = archived(&saved, name);
+        assert_eq!(row["cwd"], path.as_str());
+        assert_eq!(row["project"], name);
     }
     let dest_socket = dest.socket_text();
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "import",
-        archive.to_str().expect("utf-8 archive"),
-        "--socket",
+    let archive = root.path().join("projects.json");
+    let archive = archive.to_str().expect("utf-8 archive");
+    ok(
+        &["archive", "import", archive, "--socket", &dest_socket],
+        None,
+    );
+    assert_attrs(
         &dest_socket,
-    ]);
-    assert_eq!(code, 0, "archive import: {stdout} {stderr}");
-    assert_eq!(
-        attr(&session_attrs(&dest_socket, "same"), "directory"),
-        Some(first_path)
+        "same",
+        &[("directory", &first), ("project", "same")],
     );
-    assert_eq!(
-        attr(&session_attrs(&dest_socket, "same"), "project"),
-        Some("same")
-    );
-    assert_eq!(
-        attr(&session_attrs(&dest_socket, "other"), "directory"),
-        Some(other_path)
-    );
-    assert_eq!(
-        attr(&session_attrs(&dest_socket, "other"), "project"),
-        Some("other")
+    assert_attrs(
+        &dest_socket,
+        "other",
+        &[("directory", &other), ("project", "other")],
     );
 }
 
@@ -252,30 +365,27 @@ fn project_open_requires_trust_only_on_first_creation() {
     let (code, stdout, stderr) = open();
     assert_ne!(code, 0, "untrusted recipe must refuse: {stdout}");
     assert!(stderr.contains("not trusted"), "{stderr}");
-    let (code, _, stderr) = run(&["project", "trust", path]);
-    assert_eq!(code, 0, "trust recipe: {stderr}");
+    ok(&["project", "trust", path], None);
     let (code, stdout, stderr) = open();
     assert_eq!(code, 0, "trusted recipe open: {stderr}");
-    let first: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    let first: Value = serde_json::from_str(&stdout).expect("open JSON");
     assert_eq!(first["created"], true);
     let first_id = first["terminal_id"].as_u64().expect("first terminal");
     std::fs::write(&recipe, "[[windows]]\nname = \"changed\"\n").expect("change recipe");
-    let selector = format!("@{first_id}");
-    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &socket, &selector]);
-    assert_eq!(code, 0, "kill first terminal: {stderr}");
-    wait_for_terminal_absent(&socket, &selector);
+    kill_and_wait_absent(&socket, &format!("@{first_id}"));
     let (code, stdout, stderr) = open();
     assert_eq!(
         code, 0,
         "reentry seeds shell without rerunning recipe: {stderr}"
     );
-    let reopened: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    let reopened: Value = serde_json::from_str(&stdout).expect("open JSON");
     assert_eq!(reopened["created"], false);
     assert_ne!(reopened["terminal_id"], first["terminal_id"]);
     let canonical = project.canonicalize().expect("canonical project");
-    assert_eq!(
-        attr(&session_attrs(&socket, "trusted"), "directory"),
-        canonical.to_str()
+    assert_attrs(
+        &socket,
+        "trusted",
+        &[("directory", canonical.to_str().expect("utf-8 path"))],
     );
     let reopened_id = u32::try_from(reopened["terminal_id"].as_u64().expect("terminal"))
         .expect("local terminal id");
@@ -306,42 +416,24 @@ fn project_recipe_first_pane_cwd_survives_archive_roundtrip() {
     let root_path = canonical.to_str().expect("utf-8 root");
     let web_path = canonical.join("web");
     let web_path = web_path.to_str().expect("utf-8 web");
-    let (code, _, stderr) = run(&["project", "trust", root_path]);
-    assert_eq!(code, 0, "trust recipe: {stderr}");
+    ok(&["project", "trust", root_path], None);
     let source_socket = source.socket_text();
-    let (code, stdout, stderr) = run(&[
-        "project",
-        "open",
-        root_path,
-        "--json",
-        "--socket",
-        &source_socket,
-    ]);
-    assert_eq!(code, 0, "open recipe: {stdout} {stderr}");
-    assert_eq!(
-        attr(&session_attrs(&source_socket, "site"), "directory"),
-        Some(root_path)
+    ok(
+        &[
+            "project",
+            "open",
+            root_path,
+            "--json",
+            "--socket",
+            &source_socket,
+        ],
+        None,
     );
+    assert_attrs(&source_socket, "site", &[("directory", root_path)]);
 
     let archive = root.path().join("site.json");
-    let archive_path = archive.to_str().expect("utf-8 archive");
-    let (code, _, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        &source_socket,
-        "--output",
-        archive_path,
-    ]);
-    assert_eq!(code, 0, "export recipe session: {stderr}");
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&archive).expect("read archive")).expect("archive");
-    let site = saved["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "site")
-        .expect("site archive");
+    let saved = export(&source_socket, &archive, None);
+    let site = archived(&saved, "site");
     assert_eq!(site["cwd"], root_path, "session identity is checkout root");
     assert_eq!(
         site["windows"][0]["panes"][0]["cwd"], web_path,
@@ -349,34 +441,10 @@ fn project_recipe_first_pane_cwd_survives_archive_roundtrip() {
     );
 
     let dest_socket = dest.socket_text();
-    let (code, stdout, stderr) =
-        run(&["archive", "import", archive_path, "--socket", &dest_socket]);
-    assert_eq!(code, 0, "import: {stdout} {stderr}");
-    assert_eq!(
-        attr(&session_attrs(&dest_socket, "site"), "directory"),
-        Some(root_path)
-    );
-    let (code, _, stderr) = run(&["restore", "site", "--socket", &dest_socket]);
-    assert_eq!(code, 0, "restore site: {stderr}");
-    let resaved = root.path().join("resaved.json");
-    let (code, _, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        &dest_socket,
-        "--output",
-        resaved.to_str().expect("utf-8 archive"),
-    ]);
-    assert_eq!(code, 0, "export restored site: {stderr}");
-    let restored: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(resaved).expect("read restored archive"))
-            .expect("archive");
-    let site = restored["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "site")
-        .expect("restored site");
+    import_and_restore(&archive, &dest_socket, "site", None);
+    assert_attrs(&dest_socket, "site", &[("directory", root_path)]);
+    let restored = export(&dest_socket, &root.path().join("resaved.json"), None);
+    let site = archived(&restored, "site");
     assert_eq!(site["cwd"], root_path);
     assert_eq!(
         site["windows"][0]["panes"][0]["cwd"], web_path,
@@ -410,10 +478,7 @@ fn concurrent_project_opens_share_the_same_shell() {
         live_terminals(&socket, "concurrent"),
         vec![u32::try_from(first_id).expect("local id")]
     );
-    let selector = format!("@{first_id}");
-    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &socket, &selector]);
-    assert_eq!(code, 0, "kill terminal: {stderr}");
-    wait_for_terminal_absent(&socket, &selector);
+    kill_and_wait_absent(&socket, &format!("@{first_id}"));
     let second = parallel_project_opens(&socket, path, 6);
     let second_id = second[0]["terminal_id"].as_u64().expect("terminal id");
     assert_ne!(second_id, first_id);
@@ -428,7 +493,7 @@ fn concurrent_project_opens_share_the_same_shell() {
     );
 }
 
-fn parallel_project_opens(socket: &str, path: &str, count: usize) -> Vec<serde_json::Value> {
+fn parallel_project_opens(socket: &str, path: &str, count: usize) -> Vec<Value> {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(count));
     std::thread::scope(|scope| {
         #[allow(
@@ -447,7 +512,7 @@ fn parallel_project_opens(socket: &str, path: &str, count: usize) -> Vec<serde_j
                             .args(["project", "open", path, "--json", "--socket", socket]),
                     );
                     assert_eq!(code, 0, "concurrent open: {stdout} {stderr}");
-                    serde_json::from_str::<serde_json::Value>(&stdout).expect("open JSON")
+                    serde_json::from_str::<Value>(&stdout).expect("open JSON")
                 })
             })
             .collect();
@@ -458,231 +523,70 @@ fn parallel_project_opens(socket: &str, path: &str, count: usize) -> Vec<serde_j
     })
 }
 
-fn live_terminals(socket: &str, name: &str) -> Vec<u32> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    runtime.block_on(async {
-        let mut conn =
-            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
-                .await
-                .expect("connect organization");
-        let records =
-            phux_client::org::fetch(&mut conn, phux_protocol::wire::frame::OrgFilter::All, 1)
-                .await
-                .expect("organization");
-        let session = records.session_named(name).expect("session");
-        let ids = records
-            .members(&session.key)
-            .filter_map(|resource| resource.live.as_ref()?.local_id())
-            .collect();
-        drop(conn);
-        ids
-    })
-}
-
-fn session_attrs(socket: &str, name: &str) -> Vec<(String, String)> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    runtime.block_on(async {
-        let mut conn =
-            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
-                .await
-                .expect("connect organization");
-        let records =
-            phux_client::org::fetch(&mut conn, phux_protocol::wire::frame::OrgFilter::All, 1)
-                .await
-                .expect("organization records");
-        let attrs = records
-            .session_named(name)
-            .expect("named organization session")
-            .attrs
-            .clone();
-        drop(conn);
-        attrs
-    })
-}
-
-fn arranged_terminal(socket: &str, name: &str, terminal_id: u32) -> bool {
-    use phux_protocol::wire::frame::{ArrangementNode, EntryTarget, OrgFilter};
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    runtime.block_on(async {
-        let mut conn =
-            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
-                .await
-                .expect("connect organization");
-        let records = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
-            .await
-            .expect("organization records");
-        let session = records.session_named(name).expect("named session");
-        let resource = records
-            .members(&session.key)
-            .find(|resource| {
-                resource
-                    .live
-                    .as_ref()
-                    .and_then(phux_protocol::ids::ResourceId::local_id)
-                    == Some(terminal_id)
-            })
-            .expect("reopened resource");
-        let document = phux_client::org::arrangement(
-            &mut conn,
-            3,
-            session.arrangement.expect("session arrangement"),
-        )
-        .await
-        .expect("read arrangement")
-        .document;
-        drop(conn);
-        document.groups.iter().any(|group| {
-            matches!(&group.tree, ArrangementNode::Leaf(entry)
-                if entry.target == EntryTarget::Member(resource.key))
-        })
-    })
-}
-
-fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value.as_str())
-}
-
 /// `archive export` archives a session's real L3 split layout (not the flat
 /// fallback), and export -> import -> restore -> export keeps the same split.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear save-restore-resave round trip keeps its own assertions together"
-)]
 fn archive_export_captures_a_real_split_tree_and_restore_replays_it() {
     let source = start("source");
     let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let source_archive = archive_dir.path().join("source.json");
-    let dest_archive = archive_dir.path().join("dest.json");
     let cwd = archive_dir.path().to_string_lossy().into_owned();
     let source_socket = source.socket_text();
     let dest_socket = dest.socket_text();
 
-    let (code, stdout, stderr) = run(&[
-        "new",
-        "--socket",
-        &source_socket,
-        "--json",
-        "-s",
-        "split-bench",
-        "--cwd",
-        &cwd,
-    ]);
-    assert_eq!(code, 0, "create split-bench session failed: {stderr}");
-    let created: serde_json::Value = serde_json::from_str(&stdout).expect("new --json");
+    let created = ok(
+        &[
+            "new",
+            "--socket",
+            &source_socket,
+            "--json",
+            "-s",
+            "split-bench",
+            "--cwd",
+            &cwd,
+        ],
+        None,
+    );
+    let created: Value = serde_json::from_str(&created).expect("new --json");
     let seed_pane = created["terminal_id"]
         .as_u64()
         .expect("new --json names the seed pane");
-    let seed_selector = format!("@{seed_pane}");
-
     // A placed pane writes a real two-leaf split into the layout envelope.
-    let (code, _stdout, stderr) = run(&[
-        "spawn",
-        "--socket",
-        &source_socket,
-        "--target",
-        &seed_selector,
-        "--split",
-        "vertical",
-        "--",
-        "sleep",
-        "30",
-    ]);
-    assert_eq!(code, 0, "placed spawn failed: {stderr}");
-
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        &source_socket,
-        "--output",
-        &source_archive.to_string_lossy(),
-    ]);
-    assert_eq!(code, 0, "archive export failed: {stderr}");
-    assert!(stdout.is_empty());
-
-    let saved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&source_archive).expect("read saved archive"),
-    )
-    .expect("saved archive JSON");
-    let split_window = split_bench_window(&saved);
-    assert_eq!(
-        split_window["panes"].as_array().expect("panes array").len(),
-        2,
-        "the saved window must carry both panes, not just the seed: {split_window}"
-    );
-    assert_eq!(
-        split_window["layout"]["kind"], "split",
-        "the saved layout must be the real two-leaf split, not the bare-pane fallback: {split_window}"
+    ok(
+        &[
+            "spawn",
+            "--socket",
+            &source_socket,
+            "--target",
+            &format!("@{seed_pane}"),
+            "--split",
+            "vertical",
+            "--",
+            "sleep",
+            "30",
+        ],
+        None,
     );
 
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "import",
-        &source_archive.to_string_lossy(),
-        "--socket",
-        &dest_socket,
-    ]);
-    assert_eq!(code, 0, "archive import failed: {stderr}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+    let assert_split = |archive: &Value, when: &str| {
+        let window = &session_windows(archive, "split-bench")[0];
+        assert_eq!(
+            window["panes"].as_array().expect("panes array").len(),
+            2,
+            "the {when} window must carry both panes, not just the seed: {window}"
+        );
+        assert_eq!(
+            window["layout"]["kind"], "split",
+            "the {when} layout must be the real two-leaf split, not flattened: {window}"
+        );
+    };
+    assert_split(&export(&source_socket, &source_archive, None), "saved");
+    let summary = import_and_restore(&source_archive, &dest_socket, "split-bench", None);
     assert_eq!(summary["schema_version"], 2);
-    assert!(
-        summary["failed"].as_array().is_none_or(Vec::is_empty),
-        "restore must not report a failure: {summary}"
-    );
-    assert!(
-        summary["restored"]
-            .as_array()
-            .expect("restored array")
-            .iter()
-            .any(|name| name == "split-bench")
-    );
-    // An import starts nothing (R16); `phux restore` starts the imported
-    // dormant panes.
-    let (code, _, stderr) = run(&["restore", "split-bench", "--socket", &dest_socket]);
-    assert_eq!(code, 0, "restore split-bench failed: {stderr}");
-
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        &dest_socket,
-        "--output",
-        &dest_archive.to_string_lossy(),
-    ]);
-    assert_eq!(code, 0, "archive export (post-restore) failed: {stderr}");
-    assert!(stdout.is_empty());
-    let resaved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
-    )
-    .expect("resaved archive JSON");
-    let resaved_window = split_bench_window(&resaved);
-    assert_eq!(
-        resaved_window["panes"]
-            .as_array()
-            .expect("panes array")
-            .len(),
-        2,
-        "the round-tripped window must still carry both panes: {resaved_window}"
-    );
-    assert_eq!(
-        resaved_window["layout"]["kind"], "split",
-        "the round-tripped layout must still be a real split, not flattened: {resaved_window}"
-    );
+    let resaved = export(&dest_socket, &archive_dir.path().join("dest.json"), None);
+    assert_split(&resaved, "round-tripped");
 }
 
 /// Importing an archive whose session is on host `edge`, in `/src/api`, and
@@ -694,131 +598,41 @@ fn import_keeps_edge_host_src_api_directory_phux_project_and_link() {
     let dest = start("edge");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let archive = archive_dir.path().join("edge.json");
-    let resaved = archive_dir.path().join("resaved.json");
-    std::fs::write(
-        &archive,
-        r#"{
-            "schema_version": 2,
-            "sessions": [
-                {
-                    "name": "api",
-                    "host": "edge",
-                    "cwd": "/src/api",
-                    "project": "phux",
-                    "project_link": "platform",
-                    "windows": []
-                }
-            ]
-        }"#,
-    )
-    .expect("write archive");
+    let session = serde_json::json!({
+        "name": "api",
+        "host": "edge",
+        "cwd": "/src/api",
+        "project": "phux",
+        "project_link": "platform",
+        "windows": []
+    });
+    let document = serde_json::json!({ "schema_version": 2, "sessions": [session] });
+    std::fs::write(&archive, document.to_string()).expect("write archive");
     let socket = dest.socket_text();
+    let archive_arg = archive.to_str().expect("utf-8 archive");
 
-    let (code, stdout, stderr) = run(&["archive", "import", "--plan", &archive.to_string_lossy()]);
-    assert_eq!(code, 0, "restore --plan failed: {stderr}");
+    let plan = ok(&["archive", "import", "--plan", archive_arg], None);
     assert!(
-        stdout.contains("api host=edge directory=/src/api project=phux"),
-        "plan must print the archived organization: {stdout}"
+        plan.contains("api host=edge directory=/src/api project=phux"),
+        "plan must print the archived organization: {plan}"
     );
+    import(&archive, &socket, "api", None);
 
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "import",
-        &archive.to_string_lossy(),
-        "--socket",
+    assert_attrs(
         &socket,
-    ]);
-    assert_eq!(code, 0, "archive import failed: {stderr} {stdout}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
-    assert!(
-        summary["failed"].as_array().is_none_or(Vec::is_empty),
-        "restore must not report a failure: {summary} {stderr}"
+        "api",
+        &[
+            ("host", "edge"),
+            ("directory", "/src/api"),
+            ("project", "phux"),
+            ("project.link", "platform"),
+        ],
     );
-    assert!(
-        summary["restored"]
-            .as_array()
-            .expect("restored array")
-            .iter()
-            .any(|name| name == "api"),
-        "api must be restored: {summary}"
-    );
-
-    let attrs = session_attrs(&socket, "api");
-    assert_eq!(attr(&attrs, "host"), Some("edge"));
-    assert_eq!(attr(&attrs, "directory"), Some("/src/api"));
-    assert_eq!(attr(&attrs, "project"), Some("phux"));
-    assert_eq!(attr(&attrs, "project.link"), Some("platform"));
-
-    let (code, _stdout, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
-        &socket,
-        "--output",
-        &resaved.to_string_lossy(),
-    ]);
-    assert_eq!(code, 0, "archive export after restore failed: {stderr}");
-    let saved: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&resaved).expect("read resaved archive"))
-            .expect("resaved archive JSON");
-    let session = saved["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "api")
-        .expect("api session was saved");
-    assert_eq!(
-        session["host"], "edge",
-        "host tag was not applied: {session}"
-    );
-    assert_eq!(
-        session["cwd"], "/src/api",
-        "archived directory was not recorded: {session}"
-    );
-    assert_eq!(
-        session["project"], "phux",
-        "project tag was not applied: {session}"
-    );
-    assert_eq!(
-        session["project_link"], "platform",
-        "project link was not kept: {session}"
-    );
-}
-
-/// The one window of the archive's `split-bench` session.
-fn split_bench_window(archive: &serde_json::Value) -> serde_json::Value {
-    let sessions = archive["sessions"].as_array().expect("sessions array");
-    let session = sessions
-        .iter()
-        .find(|session| session["name"] == "split-bench")
-        .unwrap_or_else(|| panic!("archive names no split-bench session: {archive}"));
-    session["windows"]
-        .as_array()
-        .and_then(|windows| windows.first())
-        .unwrap_or_else(|| panic!("split-bench session has no window: {session}"))
-        .clone()
-}
-
-/// Named session's windows array from an archive, or panics naming the
-/// archive it looked in.
-fn session_windows<'a>(archive: &'a serde_json::Value, name: &str) -> &'a Vec<serde_json::Value> {
-    archive["sessions"]
-        .as_array()
-        .expect("sessions array")
-        .iter()
-        .find(|session| session["name"] == name)
-        .unwrap_or_else(|| panic!("archive names no {name:?} session: {archive}"))
-        .get("windows")
-        .and_then(serde_json::Value::as_array)
-        .unwrap_or_else(|| panic!("{name:?} session has no windows array: {archive}"))
-}
-
-/// Total pane count across every window of `windows`.
-fn total_panes(windows: &[serde_json::Value]) -> usize {
-    windows
-        .iter()
-        .map(|window| window["panes"].as_array().map_or(0, std::vec::Vec::len))
-        .sum()
+    let saved = export(&socket, &archive_dir.path().join("resaved.json"), None);
+    let resaved = archived(&saved, "api");
+    for key in ["host", "cwd", "project", "project_link"] {
+        assert_eq!(resaved[key], session[key], "{key} was not kept: {resaved}");
+    }
 }
 
 /// A stored layout can miss live panes (a headless spawn never touches it)
@@ -828,10 +642,6 @@ fn total_panes(windows: &[serde_json::Value]) -> usize {
 /// exactly the two live panes.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear repro-save-restore-resave round trip keeps its own assertions together"
-)]
 fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     // One session only, so the headless spawn can join nothing else; its
     // seed pane is always `@1`.
@@ -839,52 +649,46 @@ fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let source_archive = archive_dir.path().join("reconcile-source.json");
-    let dest_archive = archive_dir.path().join("reconcile-dest.json");
     let source_socket = source.socket_text();
     let dest_socket = dest.socket_text();
-    let seed_selector = "@1";
 
     // A placed pane, then killed: a dead layout leaf.
-    let (code, stdout, stderr) = run(&[
-        "spawn",
-        "--socket",
-        &source_socket,
-        "--target",
-        seed_selector,
-        "--split",
-        "vertical",
-        "--json",
-        "--",
-        "sleep",
-        "30",
-    ]);
-    assert_eq!(code, 0, "placed spawn failed: {stderr}");
-    let placed: serde_json::Value = serde_json::from_str(&stdout).expect("spawn --json");
+    let placed = ok(
+        &[
+            "spawn",
+            "--socket",
+            &source_socket,
+            "--target",
+            "@1",
+            "--split",
+            "vertical",
+            "--json",
+            "--",
+            "sleep",
+            "30",
+        ],
+        None,
+    );
+    let placed: Value = serde_json::from_str(&placed).expect("spawn --json");
     let placed_id = placed["terminal_id"]
         .as_u64()
         .expect("spawn --json names the placed pane");
-    let placed_selector = format!("@{placed_id}");
-    let (code, _, stderr) = run(&[
-        "kill",
-        "--yes",
-        "--socket",
-        &source_socket,
-        &placed_selector,
-    ]);
-    assert_eq!(code, 0, "kill the placed pane before save: {stderr}");
-    wait_for_terminal_absent(&source_socket, &placed_selector);
+    kill_and_wait_absent(&source_socket, &format!("@{placed_id}"));
 
     // A headless spawn joins the session but never touches its layout.
-    let (code, _stdout, stderr) = run(&["spawn", "--socket", &source_socket, "--", "sleep", "30"]);
-    assert_eq!(code, 0, "headless spawn failed: {stderr}");
+    ok(
+        &["spawn", "--socket", &source_socket, "--", "sleep", "30"],
+        None,
+    );
 
+    let path_arg = source_archive.to_str().expect("utf-8 archive");
     let (code, stdout, stderr) = run(&[
         "archive",
         "export",
         "--socket",
         &source_socket,
         "--output",
-        &source_archive.to_string_lossy(),
+        path_arg,
     ]);
     assert_eq!(code, 0, "archive export failed: {stderr}");
     assert!(stdout.is_empty());
@@ -893,10 +697,9 @@ fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         "save must warn about the unplaced headless pane naming the session: {stderr}"
     );
 
-    let saved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&source_archive).expect("read saved archive"),
-    )
-    .expect("saved archive JSON");
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(&source_archive).expect("read saved archive"))
+            .expect("saved archive JSON");
     let windows = session_windows(&saved, "reconcile-repro");
     assert_eq!(
         total_panes(windows),
@@ -904,60 +707,28 @@ fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         "archive must hold exactly the seed pane and the headless spawn — the dead leaf \
          dropped, the headless pane not lost: {windows:?}"
     );
-    let unplaced = windows
+    let (unplaced, seeded): (Vec<_>, Vec<_>) = windows
         .iter()
-        .find(|window| window["name"] == "unplaced")
-        .unwrap_or_else(|| {
-            panic!("the headless pane must land in a synthesized unplaced window: {windows:?}")
-        });
-    assert_eq!(
-        unplaced["panes"].as_array().expect("panes array").len(),
-        1,
-        "unplaced window must hold exactly the one pane the layout never named: {unplaced}"
-    );
-    let seed_window = windows
-        .iter()
-        .find(|window| window["name"] != "unplaced")
-        .expect("the seed's own window is still present");
-    assert_eq!(
-        seed_window["panes"].as_array().expect("panes array").len(),
-        1,
-        "the dead leaf must be pruned from the seed's own window, collapsing its split: \
-         {seed_window}"
-    );
-
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "import",
-        &source_archive.to_string_lossy(),
-        "--socket",
-        &dest_socket,
-    ]);
-    assert_eq!(code, 0, "archive import failed: {stderr}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+        .partition(|window| window["name"] == "unplaced");
     assert!(
-        summary["failed"].as_array().is_none_or(Vec::is_empty),
-        "restore must not report a failure: {summary}"
+        unplaced.len() == 1 && seeded.len() == 1,
+        "the headless pane must land in a synthesized unplaced window: {windows:?}"
     );
-    // An import starts nothing (R16); `phux restore` starts the imported
-    // dormant panes.
-    let (code, _, stderr) = run(&["restore", "reconcile-repro", "--socket", &dest_socket]);
-    assert_eq!(code, 0, "restore reconcile-repro failed: {stderr}");
+    for window in [unplaced[0], seeded[0]] {
+        assert_eq!(
+            window["panes"].as_array().expect("panes array").len(),
+            1,
+            "unplaced holds the one pane the layout never named; the seed's split \
+             collapses after the dead leaf is pruned: {window}"
+        );
+    }
 
-    let (code, stdout, stderr) = run(&[
-        "archive",
-        "export",
-        "--socket",
+    import_and_restore(&source_archive, &dest_socket, "reconcile-repro", None);
+    let resaved = export(
         &dest_socket,
-        "--output",
-        &dest_archive.to_string_lossy(),
-    ]);
-    assert_eq!(code, 0, "archive export (post-restore) failed: {stderr}");
-    assert!(stdout.is_empty());
-    let resaved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
-    )
-    .expect("resaved archive JSON");
+        &archive_dir.path().join("reconcile-dest.json"),
+        None,
+    );
     let resaved_windows = session_windows(&resaved, "reconcile-repro");
     assert_eq!(
         total_panes(resaved_windows),
@@ -977,115 +748,47 @@ fn import_then_restore_starts_archived_command_process() {
     let marker = format!(
         "PHUX_RESTORED_PROCESS_{}_{}",
         std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
     );
-    let command = vec![
+    let command = [
         "sh".to_owned(),
         "-lc".to_owned(),
         format!("printf '%s\\nPWD=%s\\n' {marker} \"$PWD\"; sleep 30"),
     ];
-    let archive = serde_json::json!({
-        "schema_version": 1,
-        "sessions": [
-            {
-                "name": "restored-proc",
-                "active": true,
-                "cwd": cwd,
-                "command": command,
-                "windows": [
-                    {
-                        "name": "main",
-                        "active": true,
-                        "layout": { "kind": "pane", "pane": 0 },
-                        "panes": [
-                            {
-                                "active": true,
-                                "cwd": cwd,
-                                "command": command,
-                                "cols": 80,
-                                "rows": 24
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
+    let pane = serde_json::json!({
+        "active": true, "cwd": cwd, "command": command, "cols": 80, "rows": 24
     });
-    std::fs::write(
-        &archive_path,
-        serde_json::to_string_pretty(&archive).expect("render archive"),
-    )
-    .expect("write archive");
-    let archive_arg = archive_path.to_string_lossy().into_owned();
-    let socket_arg = dest.socket_text();
-
-    let (code, stdout, stderr) = run(&["archive", "import", &archive_arg, "--socket", &socket_arg]);
-    assert_eq!(code, 0, "archive import failed: {stderr}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
-    assert!(
-        summary["restored"]
-            .as_array()
-            .expect("restored array")
-            .iter()
-            .any(|name| name == "restored-proc")
-    );
-    // An import starts nothing (R16); `phux restore` starts the imported
-    // dormant panes.
-    let (code, _, stderr) = run(&["restore", "restored-proc", "--socket", &socket_arg]);
-    assert_eq!(code, 0, "restore restored-proc failed: {stderr}");
+    let window = serde_json::json!({
+        "name": "main", "active": true, "layout": { "kind": "pane", "pane": 0 }, "panes": [pane]
+    });
+    let session = serde_json::json!({
+        "name": "restored-proc", "active": true, "cwd": cwd, "command": command, "windows": [window]
+    });
+    let archive = serde_json::json!({ "schema_version": 1, "sessions": [session] });
+    std::fs::write(&archive_path, archive.to_string()).expect("write archive");
+    let socket = dest.socket_text();
+    import_and_restore(&archive_path, &socket, "restored-proc", None);
 
     // Ambient budget: the marker is unique, so only load can expire it.
-    let (code, _stdout, stderr) = run(&[
-        "wait",
-        "--until",
-        &marker,
-        "--timeout",
-        AGENT_PAINT_BUDGET_SECS,
-        "--socket",
-        &socket_arg,
-        "restored-proc",
-    ]);
+    let (code, stderr) = wait_until(&socket, "restored-proc", &marker, AGENT_PAINT_BUDGET_SECS);
     assert_eq!(code, 0, "restored command marker did not appear: {stderr}");
-
-    let (code, stdout, stderr) = run(&[
-        "snapshot",
-        "--json",
-        "--socket",
-        &socket_arg,
-        "restored-proc",
-    ]);
-    assert_eq!(code, 0, "snapshot after restore failed: {stderr}");
+    let snapshot = ok(
+        &["snapshot", "--json", "--socket", &socket, "restored-proc"],
+        None,
+    );
     assert!(
-        stdout.contains(&marker),
+        snapshot.contains(&marker),
         "snapshot should show restored command output"
     );
     assert!(
-        stdout.contains(&cwd),
+        snapshot.contains(&cwd),
         "snapshot should show restored command cwd"
     );
 }
 
-fn write_fake_agent_plugin(root: &std::path::Path) -> PathBuf {
-    let plugin = root.join("plugin");
-    let integrations = plugin.join("integrations");
-    let scripts = plugin.join("scripts");
-    let xdg = root.join("xdg");
-    std::fs::create_dir_all(&integrations).expect("create integrations");
-    std::fs::create_dir_all(&scripts).expect("create scripts");
-    std::fs::create_dir_all(xdg.join("phux")).expect("create config");
-    std::fs::write(
-        plugin.join("phux-plugin.toml"),
-        r#"id = "com.phux.test.restore"
-name = "Restore test agent"
-version = "1.0.0"
-min_phux_version = "0.0.2"
-platforms = ["linux", "macos"]
-"#,
-    )
-    .expect("write manifest");
-    std::fs::write(
-        integrations.join("restore-agent.toml"),
-        r#"schema_version = 1
+const RESTORE_AGENT: &str = r#"schema_version = 1
 id = "restore-agent"
 display_name = "Restore Agent"
 kind = "terminal-agent"
@@ -1101,14 +804,11 @@ fresh_args = ["--new", "${PHUX_AGENT_SESSION_ID}"]
 [launch]
 command = ["${PHUX_PLUGIN_ROOT}/scripts/fake-agent.sh"]
 working_directory = "plugin-root"
-"#,
-    )
-    .expect("write integration");
-    // Claims the `fakeprov` provider that a shell-started agent's
-    // `AgentSession` names, so save can bridge it (ADR-0151).
-    std::fs::write(
-        integrations.join("shell-resume-agent.toml"),
-        r#"schema_version = 1
+"#;
+
+/// Claims the `fakeprov` provider that a shell-started agent's
+/// `AgentSession` names, so save can bridge it (ADR-0151).
+const SHELL_RESUME_AGENT: &str = r#"schema_version = 1
 id = "shell-resume-agent"
 display_name = "Shell-started resume agent"
 kind = "terminal-agent"
@@ -1127,34 +827,52 @@ kind = "fakeprov"
 [launch]
 command = ["${PHUX_PLUGIN_ROOT}/scripts/fake-agent.sh"]
 working_directory = "workspace"
-"#,
-    )
-    .expect("write shell-started integration");
-    std::fs::write(
-        scripts.join("fake-agent.sh"),
-        r#"#!/bin/sh
-printf 'FAKE_AGENT_ARGS=%s\n' "$*"
-printf 'FAKE_AGENT_ENV=%s\n' "$PHUX_FAKE_SESSION_ID"
-printf 'FAKE_AGENT_CWD=%s\n' "$PWD"
-exec sleep 60
-"#,
-    )
-    .expect("write fake agent");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let script = scripts.join("fake-agent.sh");
-        let mut permissions = std::fs::metadata(&script)
-            .expect("stat fake agent")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(script, permissions).expect("make fake agent executable");
+"#;
+
+fn write_fake_agent_plugin(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let plugin = root.join("plugin");
+    let xdg = root.join("xdg");
+    for dir in [
+        plugin.join("integrations"),
+        plugin.join("scripts"),
+        xdg.join("phux"),
+    ] {
+        std::fs::create_dir_all(dir).expect("create fixture directory");
     }
+    let script = plugin.join("scripts/fake-agent.sh");
+    let manifest = plugin.join("phux-plugin.toml");
+    for (path, contents) in [
+        (
+            manifest.clone(),
+            "id = \"com.phux.test.restore\"\nname = \"Restore test agent\"\n\
+             version = \"1.0.0\"\nmin_phux_version = \"0.0.2\"\n\
+             platforms = [\"linux\", \"macos\"]\n",
+        ),
+        (
+            plugin.join("integrations/restore-agent.toml"),
+            RESTORE_AGENT,
+        ),
+        (
+            plugin.join("integrations/shell-resume-agent.toml"),
+            SHELL_RESUME_AGENT,
+        ),
+        (
+            script.clone(),
+            "#!/bin/sh\nprintf 'FAKE_AGENT_ARGS=%s\\n' \"$*\"\n\
+             printf 'FAKE_AGENT_ENV=%s\\n' \"$PHUX_FAKE_SESSION_ID\"\n\
+             printf 'FAKE_AGENT_CWD=%s\\n' \"$PWD\"\nexec sleep 60\n",
+        ),
+    ] {
+        std::fs::write(path, contents).expect("write plugin fixture");
+    }
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake agent executable");
     std::fs::write(
         xdg.join("phux/config.toml"),
         format!(
             "[[plugins]]\nmanifest = {:?}\nenabled = true\n",
-            plugin.join("phux-plugin.toml").to_string_lossy()
+            manifest.to_string_lossy()
         ),
     )
     .expect("write config");
@@ -1163,23 +881,15 @@ exec sleep 60
 
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear process-lifecycle scenario keeps restart and stale-owner assertions together"
-)]
 fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownership() {
     let root = tempfile::tempdir().expect("restore test tempdir");
     let xdg = write_fake_agent_plugin(root.path());
+    let xdg = Some(xdg.as_path());
     let source_archive = root.path().join("source.json");
-    let replay_archive = root.path().join("replay.json");
-    let stale_archive = root.path().join("stale.json");
-    let source_archive_arg = source_archive.to_string_lossy().into_owned();
-    let replay_archive_arg = replay_archive.to_string_lossy().into_owned();
-    let stale_archive_arg = stale_archive.to_string_lossy().into_owned();
 
     let source = start("agent-restart");
     let source_socket = source.socket_text();
-    let (code, stdout, stderr) = run_with_xdg(
+    let launch = ok(
         &[
             "launch",
             "restore-agent",
@@ -1187,91 +897,37 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
             &source_socket,
             "--json",
         ],
-        &xdg,
+        xdg,
     );
-    assert_eq!(code, 0, "fresh agent launch failed: {stderr}");
-    let launch: serde_json::Value = serde_json::from_str(&stdout).expect("launch JSON");
+    let launch: Value = serde_json::from_str(&launch).expect("launch JSON");
     assert_eq!(launch["integration"], "restore-agent");
     let launched_id = launch["terminal_id"].as_u64().expect("terminal id");
-    let launched_selector = format!("@{launched_id}");
-    wait_painted_then(&source_socket, &launched_selector, "FAKE_AGENT_ARGS=--new");
-    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &source_socket, "@1"]);
-    assert_eq!(
-        code, 0,
-        "remove the pre-agent seed pane before save: {stderr}"
+    wait_painted_then(
+        &source_socket,
+        &format!("@{launched_id}"),
+        "FAKE_AGENT_ARGS=--new",
     );
-    wait_for_terminal_absent(&source_socket, "@1");
-    let (code, _, stderr) = run_with_xdg(
-        &[
-            "archive",
-            "export",
-            "--socket",
-            &source_socket,
-            "--output",
-            &source_archive_arg,
-        ],
-        &xdg,
-    );
-    assert_eq!(code, 0, "agent archive save failed: {stderr}");
-
-    let mut archived: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&source_archive).expect("read source archive"))
-            .expect("parse source archive");
-    assert_eq!(archived["schema_version"], 3);
-    let agent = archived["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "agent-restart")
-        .and_then(|session| session["windows"][0]["panes"][0]["agent_session"].as_object())
-        .expect("saved agent session");
-    let native_id = agent["native_id"].as_str().expect("native id").to_owned();
+    // Remove the pre-agent seed pane before save.
+    kill_and_wait_absent(&source_socket, "@1");
+    let mut saved = export(&source_socket, &source_archive, xdg);
+    assert_eq!(saved["schema_version"], 3);
+    let native_id =
+        archived(&saved, "agent-restart")["windows"][0]["panes"][0]["agent_session"]["native_id"]
+            .as_str()
+            .expect("saved agent session native id")
+            .to_owned();
     assert!(
         uuid::Uuid::parse_str(&native_id).is_ok(),
         "fresh identity is a UUID: {native_id}"
     );
-    archived["sessions"]
-        .as_array_mut()
-        .expect("sessions")
-        .iter_mut()
-        .find(|session| session["name"] == "agent-restart")
-        .expect("agent session")["windows"][0]["panes"][0]["cwd"] =
-        serde_json::Value::String("/archived/cwd/must-not-win".to_owned());
-    std::fs::write(
-        &source_archive,
-        serde_json::to_vec_pretty(&archived).expect("render cwd-edited archive"),
-    )
-    .expect("write cwd-edited archive");
+    let pane = &mut archived_mut(&mut saved, "agent-restart")["windows"][0]["panes"][0];
+    pane["cwd"] = Value::from("/archived/cwd/must-not-win");
+    std::fs::write(&source_archive, saved.to_string()).expect("write cwd-edited archive");
     drop(source);
 
     let dest = start("replay-seed");
     let dest_socket = dest.socket_text();
-    let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "archive",
-            "import",
-            &source_archive_arg,
-            "--socket",
-            &dest_socket,
-        ],
-        &xdg,
-    );
-    assert_eq!(code, 0, "native restore failed: {stderr}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary");
-    assert!(
-        summary["restored"]
-            .as_array()
-            .expect("restored")
-            .iter()
-            .any(|name| name == "agent-restart")
-    );
-    // An import starts nothing (R16); `phux restore` starts the imported
-    // dormant panes.
-    let (code, _, stderr) = run_with_xdg(
-        &["restore", "agent-restart", "--socket", &dest_socket],
-        &xdg,
-    );
-    assert_eq!(code, 0, "restore agent-restart failed: {stderr}");
+    import_and_restore(&source_archive, &dest_socket, "agent-restart", xdg);
     let resume_marker = format!("FAKE_AGENT_ARGS=--resume {native_id}");
     wait_painted_then(&dest_socket, "agent-restart", &resume_marker);
     let plugin_cwd = root
@@ -1279,83 +935,45 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         .join("plugin")
         .canonicalize()
         .expect("canonical plugin root");
-    let (code, _, stderr) = run(&[
-        "wait",
-        "--until",
-        &format!("FAKE_AGENT_CWD={}", plugin_cwd.display()),
-        "--timeout",
-        AGENT_LINE_BUDGET_SECS,
-        "--socket",
+    let cwd_marker = format!("FAKE_AGENT_CWD={}", plugin_cwd.display());
+    let (code, stderr) = wait_until(
         &dest_socket,
         "agent-restart",
-    ]);
+        &cwd_marker,
+        AGENT_LINE_BUDGET_SECS,
+    );
     assert_eq!(
         code, 0,
         "restore must use current integration working directory: {stderr}"
     );
+    let replayed = export(&dest_socket, &root.path().join("replay.json"), xdg);
+    let replayed = &archived(&replayed, "agent-restart")["windows"][0]["panes"][0]["agent_session"];
+    assert_eq!(replayed["native_id"].as_str(), Some(native_id.as_str()));
 
-    let (code, _, stderr) = run_with_xdg(
-        &[
-            "archive",
-            "export",
-            "--socket",
-            &dest_socket,
-            "--output",
-            &replay_archive_arg,
-        ],
-        &xdg,
-    );
-    assert_eq!(code, 0, "replayed archive save failed: {stderr}");
-    let replayed: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&replay_archive).expect("read replay archive"))
-            .expect("parse replay archive");
-    let replayed_id = replayed["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "agent-restart")
-        .and_then(|session| {
-            session["windows"][0]["panes"][0]["agent_session"]["native_id"].as_str()
-        });
-    assert_eq!(replayed_id, Some(native_id.as_str()));
-
-    let mut stale = archived;
-    let stale_agent = stale["sessions"]
-        .as_array_mut()
-        .expect("sessions")
-        .iter_mut()
-        .find(|session| session["name"] == "agent-restart")
-        .and_then(|session| session["windows"][0]["panes"][0]["agent_session"].as_object_mut())
-        .expect("saved agent session");
-    stale_agent.insert(
-        "plugin_id".to_owned(),
-        serde_json::Value::String("com.phux.wrong-owner".to_owned()),
-    );
-    std::fs::write(
-        &stale_archive,
-        serde_json::to_vec_pretty(&stale).expect("render stale archive"),
-    )
-    .expect("write stale archive");
+    let agent =
+        &mut archived_mut(&mut saved, "agent-restart")["windows"][0]["panes"][0]["agent_session"];
+    agent["plugin_id"] = Value::from("com.phux.wrong-owner");
+    let stale_archive = root.path().join("stale.json");
+    std::fs::write(&stale_archive, saved.to_string()).expect("write stale archive");
     let stale_dest = start("stale-seed");
     let stale_socket = stale_dest.socket_text();
-    let (code, _, stderr) = run_with_xdg(
+    let (code, _, stderr) = run_in(
         &[
             "archive",
             "import",
-            &stale_archive_arg,
+            stale_archive.to_str().expect("utf-8 archive"),
             "--socket",
             &stale_socket,
         ],
-        &xdg,
+        xdg,
     );
     assert_eq!(code, 1, "stale owner must fail closed");
     assert!(
         stderr.contains("not owning plugin"),
         "ownership refusal must be explicit: {stderr}"
     );
-    let (code, stdout, stderr) = run(&["ls", "--json", "--socket", &stale_socket]);
-    assert_eq!(code, 0, "list stale destination: {stderr}");
-    let listing: serde_json::Value = serde_json::from_str(&stdout).expect("listing JSON");
+    let listing = ok(&["ls", "--json", "--socket", &stale_socket], None);
+    let listing: Value = serde_json::from_str(&listing).expect("listing JSON");
     assert!(
         !listing["sessions"]
             .as_array()
@@ -1375,48 +993,29 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
 fn shell_started_agent_session_is_archived_and_resumed() {
     let root = tempfile::tempdir().expect("restore test tempdir");
     let xdg = write_fake_agent_plugin(root.path());
+    let xdg = Some(xdg.as_path());
     let archive = root.path().join("shell-agent.json");
-    let archive_arg = archive.to_string_lossy().into_owned();
 
     let source = start("shell-agent");
     let source_socket = source.socket_text();
-    let (code, _, stderr) = run(&[
-        "agent",
-        "session",
-        "open",
-        "@1",
-        "--provider",
-        "fakeprov",
-        "--native-id",
-        "conv-7",
-        "--socket",
-        &source_socket,
-    ]);
-    assert_eq!(code, 0, "open the shell-started agent session: {stderr}");
-    let (code, _, stderr) = run_with_xdg(
+    ok(
         &[
-            "archive",
-            "export",
+            "agent",
+            "session",
+            "open",
+            "@1",
+            "--provider",
+            "fakeprov",
+            "--native-id",
+            "conv-7",
             "--socket",
             &source_socket,
-            "--output",
-            &archive_arg,
         ],
-        &xdg,
+        None,
     );
-    assert_eq!(code, 0, "archive save failed: {stderr}");
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&archive).expect("read archive"))
-            .expect("parse archive");
-    let agent = saved["sessions"]
-        .as_array()
-        .expect("sessions")
-        .iter()
-        .find(|session| session["name"] == "shell-agent")
-        .map(|session| session["windows"][0]["panes"][0]["agent_session"].clone())
-        .expect("archived session");
+    let saved = export(&source_socket, &archive, xdg);
     assert_eq!(
-        agent,
+        archived(&saved, "shell-agent")["windows"][0]["panes"][0]["agent_session"],
         serde_json::json!({
             "plugin_id": "com.phux.test.restore",
             "integration_id": "shell-resume-agent",
@@ -1432,16 +1031,12 @@ fn shell_started_agent_session_is_archived_and_resumed() {
 
     let dest = start("shell-agent-seed");
     let dest_socket = dest.socket_text();
-    let (code, _, stderr) = run_with_xdg(
-        &["archive", "import", &archive_arg, "--socket", &dest_socket],
-        &xdg,
+    let path_arg = archive.to_str().expect("utf-8 archive");
+    ok(
+        &["archive", "import", path_arg, "--socket", &dest_socket],
+        xdg,
     );
-    assert_eq!(code, 0, "native restore failed: {stderr}");
-    // An import starts nothing (R16); `phux restore` starts the imported
-    // dormant panes.
-    let (code, _, stderr) =
-        run_with_xdg(&["restore", "shell-agent", "--socket", &dest_socket], &xdg);
-    assert_eq!(code, 0, "restore shell-agent failed: {stderr}");
+    ok(&["restore", "shell-agent", "--socket", &dest_socket], xdg);
     wait_painted_then(
         &dest_socket,
         "shell-agent",
