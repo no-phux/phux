@@ -4,10 +4,7 @@ use phux_protocol::input::key::PhysicalKey;
 use crate::test_util::press as key;
 
 fn action(name: &str) -> phux_config::keybind::ResolvedAction {
-    phux_config::keybind::ResolvedAction {
-        action: name.to_owned(),
-        args: std::collections::BTreeMap::new(),
-    }
+    crate::attach::resolved(name, std::collections::BTreeMap::new())
 }
 
 /// A test overlay: optionally Esc-dismissable, optionally bounded, and

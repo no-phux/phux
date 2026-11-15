@@ -119,6 +119,18 @@ fn sync_dim(
 
 pub use crate::multi_pane;
 
+/// A [`ResolvedAction`](phux_config::keybind::ResolvedAction) named `name`
+/// with `args`, the shape a keybinding resolves to.
+pub(crate) fn resolved(
+    name: &str,
+    args: std::collections::BTreeMap<String, toml::Value>,
+) -> phux_config::keybind::ResolvedAction {
+    phux_config::keybind::ResolvedAction {
+        action: name.to_owned(),
+        args,
+    }
+}
+
 /// The output sink the attach driver composites into.
 ///
 /// A pure byte sink (stdout, a `Vec<u8>` capture, any `Write`) threaded

@@ -117,10 +117,7 @@ impl PromptOverlay {
             self.arg_key.clone(),
             toml::Value::String(self.input.as_str().to_owned()),
         );
-        ResolvedAction {
-            action: self.action.clone(),
-            args,
-        }
+        crate::attach::resolved(&self.action, args)
     }
 
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {

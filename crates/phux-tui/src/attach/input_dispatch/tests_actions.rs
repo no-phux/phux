@@ -1660,13 +1660,13 @@ fn session_picker_groups_by_project_identity() {
 #[test]
 fn toggle_project_group_hands_the_key_to_the_driver() {
     let mut f = fx(ArrangementDoc::single(tid(1)));
-    let effects = f.run(&phux_config::keybind::ResolvedAction {
-        action: "toggle-project-group".to_owned(),
-        args: std::collections::BTreeMap::from([(
+    let effects = f.run(&crate::attach::resolved(
+        "toggle-project-group",
+        std::collections::BTreeMap::from([(
             "project".to_owned(),
             Value::String("github.com/no-phux/phux".to_owned()),
         )]),
-    });
+    ));
     assert_eq!(
         effects.toggle_project.as_deref(),
         Some("github.com/no-phux/phux")

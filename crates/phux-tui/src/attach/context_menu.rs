@@ -145,10 +145,10 @@ fn int_row(
     action: &str,
     (key, value): (&str, i64),
 ) -> MenuRow {
-    let resolved = ResolvedAction {
-        action: action.to_owned(),
-        args: BTreeMap::from([(key.to_owned(), toml::Value::Integer(value))]),
-    };
+    let resolved = crate::attach::resolved(
+        action,
+        BTreeMap::from([(key.to_owned(), toml::Value::Integer(value))]),
+    );
     let chord = super::action_registry::bound_chord_for(keybindings, &resolved);
     MenuRow::item(label, resolved).secondary(chord)
 }

@@ -247,10 +247,7 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
     );
     let mut item = SelectItem::new(
         format!("{} {host}", agent_state_glyph(record.state)),
-        phux_config::keybind::ResolvedAction {
-            action: "split-pane".to_owned(),
-            args,
-        },
+        crate::attach::resolved("split-pane", args),
     )
     .indented()
     .secondary(record.state.as_str().to_owned());
@@ -385,14 +382,7 @@ fn pane_row(
         "pane".to_owned(),
         toml::Value::Integer(i64::try_from(p).unwrap_or(i64::MAX)),
     );
-    let mut item = SelectItem::new(
-        label,
-        phux_config::keybind::ResolvedAction {
-            action: "focus-pane".to_owned(),
-            args,
-        },
-    )
-    .indented();
+    let mut item = SelectItem::new(label, crate::attach::resolved("focus-pane", args)).indented();
     if let Some(sec) = secondary {
         item = item.secondary(sec);
     }
@@ -420,10 +410,7 @@ fn foreign_session_row(session: &SessionInfo, terminals: Option<usize>) -> Selec
     );
     let row = SelectItem::new(
         "switch to this session",
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
+        crate::attach::resolved("switch-session", args),
     );
     match count {
         Some(count) => row.secondary(count),
@@ -494,14 +481,8 @@ fn foreign_pane_row(
         "pane".to_owned(),
         toml::Value::Integer(i64::try_from(p).unwrap_or(i64::MAX)),
     );
-    let mut item = SelectItem::new(
-        label,
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
-    )
-    .indented();
+    let mut item =
+        SelectItem::new(label, crate::attach::resolved("switch-session", args)).indented();
     if let Some(state) = state_word {
         item = item.secondary(state.to_owned());
     }

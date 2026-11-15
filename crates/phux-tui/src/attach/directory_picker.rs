@@ -182,10 +182,7 @@ fn action_on(action: &str, key: &str, value: &str, host: Option<&SatelliteHost>)
             toml::Value::String(host.as_str().to_owned()),
         );
     }
-    ResolvedAction {
-        action: action.to_owned(),
-        args,
-    }
+    crate::attach::resolved(action, args)
 }
 
 #[cfg(test)]

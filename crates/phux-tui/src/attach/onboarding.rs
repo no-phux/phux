@@ -1,13 +1,11 @@
 //! Moment-based first-use guidance, profile-scoped and best-effort: state
 //! failures suppress guidance rather than preventing attach.
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
 use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u8 = 1;
@@ -212,10 +210,7 @@ fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> V
 }
 
 fn binding_label(keybindings: Option<&KeybindingsCfg>, action: &str, fallback: &str) -> String {
-    let resolved = ResolvedAction {
-        action: action.to_owned(),
-        args: BTreeMap::new(),
-    };
+    let resolved = crate::attach::resolved(action, std::collections::BTreeMap::new());
     super::action_registry::bound_chord_for(keybindings, &resolved)
         .unwrap_or_else(|| fallback.to_owned())
 }

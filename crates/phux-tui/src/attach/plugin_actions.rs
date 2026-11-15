@@ -49,10 +49,10 @@ impl PluginActionEntry {
     /// keybinding or palette row produces, flowing through `run_action`.
     #[must_use]
     pub fn resolved_action(&self) -> ResolvedAction {
-        ResolvedAction {
-            action: PLUGIN_ACTION_NAME.to_owned(),
-            args: plugin_args(&self.plugin_id, &self.action_id),
-        }
+        crate::attach::resolved(
+            PLUGIN_ACTION_NAME,
+            plugin_args(&self.plugin_id, &self.action_id),
+        )
     }
 
     /// The equivalent config-schema [`Action`], for prefix-table merging.

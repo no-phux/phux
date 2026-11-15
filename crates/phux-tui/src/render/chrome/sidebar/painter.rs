@@ -71,10 +71,7 @@ pub fn satellite_open_action(
         "resource".to_owned(),
         toml::Value::String(phux_client::selector::format_terminal_id(resource)),
     );
-    Some(phux_config::keybind::ResolvedAction {
-        action: "split-pane".to_owned(),
-        args,
-    })
+    Some(crate::attach::resolved("split-pane", args))
 }
 
 impl SidebarPainter {

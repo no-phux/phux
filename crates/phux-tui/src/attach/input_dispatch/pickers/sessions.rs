@@ -68,10 +68,10 @@ fn attached_session_row(
 ) -> SelectItem {
     let item = SelectItem::new(
         session.name.clone(),
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args: switch_session_args(&session.name, Some(session.id)),
-        },
+        crate::attach::resolved(
+            "switch-session",
+            switch_session_args(&session.name, Some(session.id)),
+        ),
     );
     match counts.needs_you.get(&session.id).copied().unwrap_or(0) {
         0 => item,
@@ -313,10 +313,7 @@ fn satellite_session_item(
     );
     SelectItem::new(
         session.name.clone(),
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
+        crate::attach::resolved("switch-session", args),
     )
     .secondary(details.join(", "))
     .indented()

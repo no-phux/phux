@@ -95,10 +95,7 @@ impl SelectItem {
         Self {
             label: label.into(),
             secondary: None,
-            action: ResolvedAction {
-                action: String::new(),
-                args: std::collections::BTreeMap::new(),
-            },
+            action: crate::attach::resolved("", std::collections::BTreeMap::new()),
             kind: SelectKind::Header,
             indented: false,
             attention: false,
@@ -931,10 +928,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn action(name: &str) -> ResolvedAction {
-        ResolvedAction {
-            action: name.to_owned(),
-            args: BTreeMap::new(),
-        }
+        crate::attach::resolved(name, std::collections::BTreeMap::new())
     }
 
     use crate::test_util::press_text as press;
@@ -1070,13 +1064,13 @@ mod tests {
 
     #[test]
     fn session_management_tab_preserves_filtered_target_and_ignores_status_rows() {
-        let target = ResolvedAction {
-            action: "switch-session".to_owned(),
-            args: std::collections::BTreeMap::from([
+        let target = crate::attach::resolved(
+            "switch-session",
+            std::collections::BTreeMap::from([
                 ("id".to_owned(), toml::Value::Integer(42)),
                 ("name".to_owned(), toml::Value::String("build".to_owned())),
             ]),
-        };
+        );
         let mut other = target.clone();
         other.args.insert("id".to_owned(), toml::Value::Integer(41));
         let mut sl = list(vec![
@@ -1449,10 +1443,7 @@ mod tests {
         if let Some(window) = window {
             args.insert("window".to_owned(), toml::Value::Integer(window));
         }
-        ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        }
+        crate::attach::resolved("switch-session", args)
     }
 
     #[test]

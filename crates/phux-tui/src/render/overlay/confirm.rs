@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 
 use phux_client_core::engine::ClipboardText;
-use phux_config::keybind::ResolvedAction;
 use phux_protocol::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use phux_protocol::input::paste::PasteEvent;
@@ -159,10 +158,10 @@ impl ConfirmOverlay {
             .iter()
             .map(|id| toml::Value::String(selector(id)))
             .collect();
-        let on_yes = OverlayCommand::Commit(ResolvedAction {
-            action: action.to_owned(),
-            args: BTreeMap::from([(KILL_TARGETS_ARG.to_owned(), toml::Value::Array(selectors))]),
-        });
+        let on_yes = OverlayCommand::Commit(crate::attach::resolved(
+            action,
+            BTreeMap::from([(KILL_TARGETS_ARG.to_owned(), toml::Value::Array(selectors))]),
+        ));
         Self::new(title, lines, "⏎ kill · esc", on_yes, theme)
     }
 

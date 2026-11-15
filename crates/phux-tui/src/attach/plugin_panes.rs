@@ -70,10 +70,7 @@ impl PluginPaneEntry {
             toml::Value::String(self.plugin_id.clone()),
         );
         args.insert("pane".to_owned(), toml::Value::String(self.pane_id.clone()));
-        ResolvedAction {
-            action: PLUGIN_PANE_NAME.to_owned(),
-            args,
-        }
+        crate::attach::resolved(PLUGIN_PANE_NAME, args)
     }
 
     /// The additive env for the spawned Terminal: `PHUX_PLUGIN_ID`,

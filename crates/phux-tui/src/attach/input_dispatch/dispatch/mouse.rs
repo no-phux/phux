@@ -650,13 +650,13 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
         }
         SidebarHit::Project(j) => {
             let key = targets.projects.get(j)?.clone()?;
-            return Some(phux_config::keybind::ResolvedAction {
-                action: "toggle-project-group".to_owned(),
-                args: std::collections::BTreeMap::from([(
+            return Some(crate::attach::resolved(
+                "toggle-project-group",
+                std::collections::BTreeMap::from([(
                     "project".to_owned(),
                     toml::Value::String(key),
                 )]),
-            });
+            ));
         }
         SidebarHit::Plugin(s, j) => {
             let (window, pane) = *targets.plugin.get(s)?.get(j)?;
@@ -680,13 +680,10 @@ fn agents_filter_action(
         FilterChip::Scope(scope) => ("scope", scope.name()),
         FilterChip::Host => ("host", "next"),
     };
-    phux_config::keybind::ResolvedAction {
-        action: "agents-filter".to_owned(),
-        args: std::collections::BTreeMap::from([(
-            key.to_owned(),
-            toml::Value::String(value.to_owned()),
-        )]),
-    }
+    crate::attach::resolved(
+        "agents-filter",
+        std::collections::BTreeMap::from([(key.to_owned(), toml::Value::String(value.to_owned()))]),
+    )
 }
 
 /// Agent targets distinguish client-local focus from a cross-session attach.
@@ -730,10 +727,7 @@ fn sidebar_agent_action(
             toml::Value::Integer(i64::try_from(pane).ok()?),
         );
     }
-    Some(phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    })
+    Some(crate::attach::resolved("switch-session", args))
 }
 
 /// Preserve host qualification even when two hosts use the same session name.
@@ -747,10 +741,7 @@ fn sidebar_session_action(
     if let Some(host) = &target.host {
         args.insert("host".to_owned(), toml::Value::String(host.clone()));
     }
-    phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    }
+    crate::attach::resolved("switch-session", args)
 }
 
 /// Map a press on the status-bar row to its action: a tab commits

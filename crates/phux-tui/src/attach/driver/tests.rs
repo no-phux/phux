@@ -39,7 +39,6 @@ use phux_client::agent_meta::{
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
 use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
 use phux_config::widget::WindowInfo;
 
 use super::config_ui::*;
@@ -1003,10 +1002,7 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
     let item = |action: &str| {
         SelectItem::new(
             action,
-            ResolvedAction {
-                action: action.to_owned(),
-                args: std::collections::BTreeMap::new(),
-            },
+            crate::attach::resolved(action, std::collections::BTreeMap::new()),
         )
     };
     let theme = crate::render::Theme::default();

@@ -40,10 +40,10 @@ impl PathPicker {
 }
 
 fn action(name: &str, path: &str) -> ResolvedAction {
-    ResolvedAction {
-        action: name.to_owned(),
-        args: BTreeMap::from([("path".to_owned(), toml::Value::String(path.to_owned()))]),
-    }
+    crate::attach::resolved(
+        name,
+        BTreeMap::from([("path".to_owned(), toml::Value::String(path.to_owned()))]),
+    )
 }
 
 fn rows(result: &PathQueryResult, browsing: bool) -> Vec<SelectItem> {

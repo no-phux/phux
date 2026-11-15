@@ -394,10 +394,7 @@ mod tests {
     }
 
     fn action(name: &str) -> ResolvedAction {
-        ResolvedAction {
-            action: name.to_owned(),
-            args: std::collections::BTreeMap::new(),
-        }
+        crate::attach::resolved(name, std::collections::BTreeMap::new())
     }
 
     /// split-pane, toggle-zoom, a separator, kill-pane.

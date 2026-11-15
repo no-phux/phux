@@ -78,10 +78,7 @@ fn append_move_destinations(
             rows.push(
                 SelectItem::new(
                     format!("{} · pane {}", window.name, pane_index + 1),
-                    phux_config::keybind::ResolvedAction {
-                        action: "move-pane".to_owned(),
-                        args,
-                    },
+                    crate::attach::resolved("move-pane", args),
                 )
                 .secondary(session_name.to_owned()),
             );
@@ -140,10 +137,7 @@ pub(super) fn window_picker_items(
             items.push(
                 SelectItem::new(
                     "switch to this session",
-                    phux_config::keybind::ResolvedAction {
-                        action: "switch-session".to_owned(),
-                        args,
-                    },
+                    crate::attach::resolved("switch-session", args),
                 )
                 .secondary(windows)
                 .indented(),
@@ -220,15 +214,9 @@ pub(super) fn current_session_window_rows(
             // the only one that can fire in practice.
             let idx_i64 = i64::try_from(index).unwrap_or(i64::MAX);
             args.insert("index".to_owned(), toml::Value::Integer(idx_i64));
-            SelectItem::new(
-                label,
-                phux_config::keybind::ResolvedAction {
-                    action: "select-window".to_owned(),
-                    args,
-                },
-            )
-            .secondary(secondary)
-            .indented()
+            SelectItem::new(label, crate::attach::resolved("select-window", args))
+                .secondary(secondary)
+                .indented()
         })
         .collect()
 }
@@ -260,15 +248,9 @@ pub(super) fn foreign_session_window_rows(
             // the only one that can fire in practice.
             let idx_i64 = i64::try_from(index).unwrap_or(i64::MAX);
             args.insert("window".to_owned(), toml::Value::Integer(idx_i64));
-            SelectItem::new(
-                label,
-                phux_config::keybind::ResolvedAction {
-                    action: "switch-session".to_owned(),
-                    args,
-                },
-            )
-            .secondary(secondary)
-            .indented()
+            SelectItem::new(label, crate::attach::resolved("switch-session", args))
+                .secondary(secondary)
+                .indented()
         })
         .collect()
 }
@@ -291,10 +273,7 @@ pub(super) fn window_holding(
 pub(super) fn new_session_item() -> SelectItem {
     SelectItem::new(
         "+ New session…".to_owned(),
-        phux_config::keybind::ResolvedAction {
-            action: "new-session".to_owned(),
-            args: std::collections::BTreeMap::new(),
-        },
+        crate::attach::resolved("new-session", std::collections::BTreeMap::new()),
     )
     .secondary("create".to_owned())
 }

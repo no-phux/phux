@@ -27,10 +27,7 @@ impl super::super::SessionLoop {
         } else {
             "new-window"
         };
-        let resolved = phux_config::keybind::ResolvedAction {
-            action: action.to_owned(),
-            args: std::collections::BTreeMap::new(),
-        };
+        let resolved = crate::attach::resolved(action, std::collections::BTreeMap::new());
         let chord = crate::attach::action_registry::bound_chord_for(
             self.settings.keybindings.as_ref(),
             &resolved,
