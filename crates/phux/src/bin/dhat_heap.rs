@@ -3,7 +3,7 @@
 //! A separate binary so dhat's unsilenceable shutdown summary never reaches
 //! the `phux` binary integration tests spawn under `--all-features`.
 //! Run: `cargo run --features dhat-heap --bin phux-dhat-heap -- server`; a
-//! clean shutdown writes `./dhat-heap.json` (view it in dh_view).
+//! clean shutdown writes `./dhat-heap.json` (view it in `dh_view`).
 
 #![forbid(unsafe_code)]
 
