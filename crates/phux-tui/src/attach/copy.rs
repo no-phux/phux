@@ -10,9 +10,9 @@ use std::io::{self, Write};
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     fmt::{Format, Formatter},
-    screen::GridRef,
+    grid_ref::GridRef,
+    point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
     selection::{SelectLineOptions, SelectWordOptions, Selection},
-    terminal::{Point, PointCoordinate, PointSpace},
 };
 use phux_client_core::engine::DocumentSpace;
 use phux_protocol::ids::ResourceId;

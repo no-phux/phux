@@ -1,4 +1,4 @@
-use libghostty_vt::{Terminal as GhosttyTerminal, render::Snapshot, terminal::Mode};
+use libghostty_vt::{Terminal as GhosttyTerminal, mode::Mode, render::Snapshot};
 
 use super::synthesizer::{MOUSE_MODES, SynthesisError};
 

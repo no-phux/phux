@@ -123,7 +123,7 @@ impl Owner {
     pub(super) fn set_theme(&mut self, theme: Option<super::TerminalTheme>) {
         #[cfg(feature = "engine")]
         {
-            let rgb = |[r, g, b]: [u8; 3]| libghostty_vt::style::RgbColor { r, g, b };
+            let rgb = |[r, g, b]: [u8; 3]| libghostty_vt::color::Rgb { r, g, b };
             let theme = theme.map(|theme| phux_client_core::engine::ghostty::TerminalTheme {
                 ansi16: theme.ansi16.map(rgb),
                 foreground: rgb(theme.foreground),

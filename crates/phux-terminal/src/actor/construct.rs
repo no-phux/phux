@@ -365,7 +365,7 @@ impl TerminalActor {
         terminal: &mut GhosttyTerminal<'static, 'static>,
         colors: phux_protocol::caps::TerminalDefaultColors,
     ) -> Result<(), TerminalActorError> {
-        use libghostty_vt::style::RgbColor;
+        use libghostty_vt::color::Rgb as RgbColor;
 
         terminal.set_default_fg_color(Some(RgbColor {
             r: colors.foreground.r,

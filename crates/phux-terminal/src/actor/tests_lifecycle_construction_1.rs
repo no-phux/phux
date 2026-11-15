@@ -30,7 +30,7 @@ fn seeded_default_colors_are_installed_before_actor_run() {
         let terminal = canonical.try_terminal().expect("no capture in flight");
         assert_eq!(
             terminal.default_fg_color().expect("foreground"),
-            Some(libghostty_vt::style::RgbColor {
+            Some(libghostty_vt::color::Rgb {
                 r: 208,
                 g: 208,
                 b: 208,
@@ -38,7 +38,7 @@ fn seeded_default_colors_are_installed_before_actor_run() {
         );
         assert_eq!(
             terminal.default_bg_color().expect("background"),
-            Some(libghostty_vt::style::RgbColor {
+            Some(libghostty_vt::color::Rgb {
                 r: 18,
                 g: 24,
                 b: 27,

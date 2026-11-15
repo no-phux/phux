@@ -3,7 +3,11 @@
 
 use std::collections::HashMap;
 
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, PointSpace, ScrollViewport};
+use libghostty_vt::{
+    mode::Mode,
+    point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
+    terminal::ScrollViewport,
+};
 use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
