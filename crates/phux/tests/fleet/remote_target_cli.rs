@@ -76,15 +76,6 @@ fn session_verbs_share_the_remote_usage_rules() {
     }
 }
 
-/// The server refuses SHUTDOWN from a remote connection, so `kill --server
-/// --remote` is refused up front with the reason, not after a dial.
-#[test]
-fn kill_server_refuses_remote_before_dialing() {
-    let (code, stderr) = run(&["kill", "--server", "--remote", "mini"]);
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(stderr.contains("local-socket only"), "got: {stderr}");
-}
-
 /// An unregistered host the ssh rung cannot pair fails exactly as attach's
 /// ladder does, naming both remedies. Under `--json` the ssh rung is skipped
 /// and the refusal is the one-line contract document.
@@ -101,16 +92,7 @@ fn an_unregistered_host_is_refused_with_the_ladder_remedies() {
 
     let (code, stdout, stderr) = run_with_config(None, &["ls", "--remote", "me@mini", "--json"]);
     assert_eq!(code, 1, "stderr={stderr}");
-    assert!(
-        stdout.is_empty(),
-        "--json failure leaves stdout empty: {stdout}"
-    );
-    assert_eq!(
-        stderr.lines().count(),
-        1,
-        "one JSON line on stderr: {stderr}"
-    );
-    let doc: serde_json::Value = serde_json::from_str(&stderr).expect("stderr is JSON");
+    let doc = sole_json_error(&stdout, &stderr);
     assert_eq!(doc["error"]["code"], "remote_unresolved");
     assert!(
         !stderr.contains("setting it up over ssh failed"),
@@ -193,107 +175,99 @@ fn an_unpinned_routable_entry_is_one_json_line_under_json() {
     );
 }
 
-/// The TTY refusal is the wrong answer to a usage question. If this ever
-/// fires, target validation has drifted back behind the preflight.
-fn assert_not_the_tty_error(stderr: &str) {
-    assert!(
-        !stderr.contains("requires both stdin and stdout to be terminals"),
-        "a usage error must be reported before the TTY preflight; got: {stderr}"
-    );
-}
-
+/// Malformed, path-traversing, sigil-leading, and URI targets are usage
+/// errors (exit 2), never the TTY refusal. If the TTY message ever shows,
+/// target validation has drifted back behind the preflight. A URI is a real
+/// thing an operator will try, so its refusal names the verb that takes one.
 #[test]
 fn a_malformed_target_is_a_usage_error_not_a_tty_error() {
-    for target in ["", "  ", "@mini", "me@", "mini:0", "mini:70000", "mini:ssh"] {
+    let malformed = ["", "  ", "@mini", "me@", "mini:0", "mini:70000", "mini:ssh"];
+    // These would escape the token directory or shadow the selector grammar.
+    let escaping = ["../evil", "#tag", "me@../evil"];
+    let cases = malformed
+        .iter()
+        .chain(&escaping)
+        .map(|target| (*target, None))
+        .chain([("quic://mini:8788", Some("phux host add"))]);
+    for (target, needle) in cases {
         let (code, stderr) = run(&["--remote", target]);
         assert_eq!(code, 2, "target {target:?} must exit 2; stderr={stderr}");
-        assert_not_the_tty_error(&stderr);
+        assert!(
+            !stderr.contains("requires both stdin and stdout to be terminals"),
+            "target {target:?}: a usage error must precede the TTY preflight; got: {stderr}"
+        );
+        if let Some(needle) = needle {
+            assert!(stderr.contains(needle), "target {target:?}: got: {stderr}");
+        }
     }
 }
 
-/// A URI is a real thing an operator will try. The refusal names the verb
-/// that does take one instead of guessing at the endpoint.
-#[test]
-fn a_uri_target_is_refused_and_names_host_add() {
-    let (code, stderr) = run(&["--remote", "quic://mini:8788"]);
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(
-        stderr.contains("phux host add"),
-        "the refusal must name the verb that accepts a URI; got: {stderr}"
-    );
-    assert_not_the_tty_error(&stderr);
-}
+/// Flag combinations the CLI refuses with exit 2, each naming every needle.
+const FLAG_REFUSALS: &[(&[&str], &[&str])] = &[
+    // The server refuses SHUTDOWN from a remote connection, so this is
+    // refused up front with the reason, not after a dial.
+    (
+        &["kill", "--server", "--remote", "mini"],
+        &["local-socket only"],
+    ),
+    // The root copy belongs to the naked attach, exactly like the root
+    // `--rec` (ADR-0065). Silently ignoring it in front of a verb would be
+    // worse than either accepting or refusing it.
+    (
+        &["--remote", "mini", "ls"],
+        &["naked `phux` attach", "phux attach --remote"],
+    ),
+    // `--socket` is a local UDS path and `--remote` is a network dial. clap
+    // cannot express this conflict (the root global never meets the
+    // sub-matched flag), so every spelling gets an explicit runtime refusal.
+    (
+        &["--socket", "/tmp/x.sock", "--remote", "mini"],
+        &["--socket", "--remote"],
+    ),
+    (
+        &["--remote", "mini", "--socket", "/tmp/x.sock"],
+        &["--socket", "--remote"],
+    ),
+    (
+        &["attach", "--remote", "mini", "--socket", "/tmp/x.sock"],
+        &["--socket", "--remote"],
+    ),
+    (
+        &["--socket", "/tmp/x.sock", "attach", "--remote", "mini"],
+        &["--socket", "--remote"],
+    ),
+    // `--code` and `--no-enroll` modify `--remote` and mean nothing without it.
+    (
+        &[
+            "attach",
+            "--code",
+            "https://phux.sh/connect?url=wss://x&token=t",
+        ],
+        &["--remote"],
+    ),
+    (&["attach", "--no-enroll"], &["--remote"]),
+    // `--remote` picks a host; `--quic`/`--ws` name a raw endpoint. Choosing
+    // both is a contradiction clap can catch: all three sit on one verb.
+    (
+        &["attach", "--remote", "mini", "--quic", "mini:8788"],
+        &["--remote"],
+    ),
+    (
+        &["attach", "--remote", "mini", "--ws", "wss://mini:8787"],
+        &["--remote"],
+    ),
+];
 
-/// A path-traversing or sigil-leading host would escape the token directory
-/// or shadow the selector grammar. Both are refused at parse.
 #[test]
-fn a_target_that_could_escape_or_shadow_is_refused() {
-    for target in ["../evil", "#tag", "me@../evil"] {
-        let (code, stderr) = run(&["--remote", target]);
-        assert_eq!(code, 2, "target {target:?} must exit 2; stderr={stderr}");
-        assert_not_the_tty_error(&stderr);
-    }
-}
-
-/// The root copy belongs to the naked attach, exactly like the root `--rec`
-/// (ADR-0065). Silently ignoring it in front of a verb would be worse than
-/// either accepting or refusing it.
-#[test]
-fn a_root_remote_in_front_of_a_verb_is_refused_with_the_remedy() {
-    let (code, stderr) = run(&["--remote", "mini", "ls"]);
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(
-        stderr.contains("naked `phux` attach") && stderr.contains("phux attach --remote"),
-        "the refusal must name the verb-scoped spelling; got: {stderr}"
-    );
-}
-
-/// `--socket` is a local UDS path and `--remote` is a network dial. clap
-/// cannot express this conflict (the root global never meets the sub-matched
-/// flag), so both spellings get an explicit runtime refusal.
-#[test]
-fn socket_and_remote_cannot_combine_in_either_position() {
-    for args in [
-        ["--socket", "/tmp/x.sock", "--remote", "mini"].as_slice(),
-        ["--remote", "mini", "--socket", "/tmp/x.sock"].as_slice(),
-        ["attach", "--remote", "mini", "--socket", "/tmp/x.sock"].as_slice(),
-        ["--socket", "/tmp/x.sock", "attach", "--remote", "mini"].as_slice(),
-    ] {
+fn remote_flag_combinations_are_refused_with_their_reason() {
+    for (args, needles) in FLAG_REFUSALS {
         let (code, stderr) = run(args);
         assert_eq!(code, 2, "args={args:?} stderr={stderr}");
-        assert!(
-            stderr.contains("--socket") && stderr.contains("--remote"),
-            "args={args:?}: the refusal must name both flags; got: {stderr}"
-        );
-    }
-}
-
-/// `--code` and `--no-enroll` modify `--remote` and mean nothing without it.
-#[test]
-fn code_and_no_enroll_require_remote() {
-    let (code, stderr) = run(&[
-        "attach",
-        "--code",
-        "https://phux.sh/connect?url=wss://x&token=t",
-    ]);
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(stderr.contains("--remote"), "got: {stderr}");
-
-    let (code, stderr) = run(&["attach", "--no-enroll"]);
-    assert_eq!(code, 2, "stderr={stderr}");
-    assert!(stderr.contains("--remote"), "got: {stderr}");
-}
-
-/// `--remote` picks a host; `--quic`/`--ws` name a raw endpoint. Choosing
-/// both is a contradiction clap can catch, because all three sit on one verb.
-#[test]
-fn remote_conflicts_with_the_raw_transport_flags() {
-    for other in [["--quic", "mini:8788"], ["--ws", "wss://mini:8787"]] {
-        let (code, stderr) = run(&["attach", "--remote", "mini", other[0], other[1]]);
-        assert_eq!(code, 2, "other={other:?} stderr={stderr}");
-        assert!(
-            stderr.contains("--remote"),
-            "other={other:?}: got: {stderr}"
-        );
+        for needle in *needles {
+            assert!(
+                stderr.contains(needle),
+                "args={args:?}: missing {needle:?}; got: {stderr}"
+            );
+        }
     }
 }
