@@ -243,13 +243,10 @@ test("docs catalog is path-filtered, credential-free, and required by ci", () =>
   expect(withInput(website ?? {}, "token")).toBeUndefined();
   expect(JSON.stringify(website?.["with"])).not.toMatch(/secrets\.|github\.token/);
   for (const step of checkouts) expect(withInput(step, "persist-credentials")).toBe(false);
+  const repoCheckout = checkouts.find((step) => withInput(step, "repository") === undefined);
+  expect(withInput(repoCheckout ?? {}, "fetch-depth")).toBe(0);
   const command = steps(lane).map(run).join("\n");
-  expect(command).toContain(
-    'bun -e \'import {discover} from "./website/scripts/docs-catalog.ts"; await discover("docs")\'',
-  );
-  expect(command).toContain(
-    "open a no-phux/website PR that adds the ORIENTATION entry for the page first, then re-run",
-  );
+  expect(command).toContain("bun scripts/ci/docs-catalog-new-misses.ts");
   const guards = steps(job(CI, "guards")).map(run);
   expect(guards).toContain("bash scripts/check-website-docs-catalog.sh");
   expect(guards).toContain("bash scripts/check-website-docs-catalog_test.sh");

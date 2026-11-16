@@ -70,6 +70,11 @@ function commit(value: unknown, cwd: string): string {
   return sha;
 }
 
+/** The same base and head `ci-plan` diffs. */
+export function plannerRange(eventName: string, event: unknown, cwd = ROOT): [string, string] {
+  return eventRange(eventName, event, cwd);
+}
+
 function eventRange(name: string, event: unknown, cwd: string): [string, string] {
   if (!isTable(event)) throw new Failure("event payload must be an object");
   if (name === "push") return [commit(event["before"], cwd), commit(event["after"], cwd)];

@@ -12,9 +12,12 @@ aggregate (the required check) accepts that skip. `native setup` and
 the aggregate. A merge group plans like a main push.
 
 `docs-catalog` is path-filtered, not a recipe lane. It runs when a top-level
-`docs/*.md` is added, renamed, or deleted, and when the diff cannot be read.
-It runs the website catalog's `discover("docs")` against this checkout. A
-failure fails `ci`; a filtered skip passes, on a pull request and on main.
+`docs/*.md` is added, renamed, or deleted, and when the diff cannot be read,
+on a pull request, a merge group, and a main push. It fails only when
+`discover()` reports an uncatalogued flat page on the head that the planner's
+base did not already report. A delete does not fail. A filtered skip passes,
+on a pull request and on main.
+
 On the queue, the same required aggregate also calls and requires the
 `rune-macos` child. A skipped, failed or cancelled Apple child is not a pass.
 
