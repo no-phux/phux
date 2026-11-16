@@ -35,7 +35,7 @@ fn a_satellite_writes_only_requested_bounded_mirror_entries() {
     session.handle_inbound(&changed(7, b"{}".to_vec())).unwrap();
     assert_eq!(stored(7).as_deref(), Some(b"{}".as_slice()));
 
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     session
         .handle_inbound(&changed(7, vec![b'x'; cap + 1]))
         .unwrap();

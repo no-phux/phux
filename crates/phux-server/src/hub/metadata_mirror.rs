@@ -58,7 +58,7 @@ pub(crate) fn apply_mirrored(
     let Some(retagged) = retag_local_scope(host, scope) else {
         return false;
     };
-    let cap = usize::try_from(state.metadata_value_bytes()).unwrap_or(usize::MAX);
+    let cap = usize::try_from(state.config().metadata_value_bytes).unwrap_or(usize::MAX);
     let value = value.filter(|bytes| bytes.len() <= cap);
     match value {
         Some(bytes) => {

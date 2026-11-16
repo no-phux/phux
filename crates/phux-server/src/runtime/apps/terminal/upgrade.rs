@@ -252,7 +252,7 @@ where
     /// spawn the engine that re-adopts its PTY. A pane is the tree's own, so
     /// one that cannot be rebuilt fails the resume.
     fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
-        let scrollback = cx.state.scrollback_limits();
+        let scrollback = cx.state.config().scrollback;
         let blob = cx.blob;
         for p in &blob.panes {
             let core = cx.record(p.wire_id).ok_or(RebuildError::DanglingRef {

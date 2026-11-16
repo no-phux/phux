@@ -216,7 +216,8 @@ pub(super) async fn negotiate_hello(
 /// What this server advertises: everything implemented, less what its
 /// configuration turns off.
 fn server_features_ext(state: &SharedState) -> ServerFeatureExtSet {
-    let (tcp, agent) = state.with(|s| (s.forward().tcp, s.forward_agent().socket().is_some()));
+    let (tcp, agent) =
+        state.with(|s| (s.config().forward.tcp, s.forward_agent().socket().is_some()));
     let mut features = runtime_server_features_ext();
     if !tcp {
         features = features.without(ServerFeatureExt::ForwardTcp);
@@ -318,7 +319,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         state.with_mut(|s| s.set_connection_grant(client_id, grant));
         return Ok(());
     }
-    let engine = state.with(|s| s.policy_engine().clone());
+    let engine = state.with(|s| s.config().policy_engine.clone());
     // workload-auth §5: the grant comes from the verified identity alone.
     match engine.authorize_hello(&peer, credential.as_ref()).await {
         Ok(grant) => {

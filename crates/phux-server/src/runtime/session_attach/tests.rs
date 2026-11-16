@@ -326,7 +326,7 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
     LocalSet::new().run_until(async {
         let state = SharedState::new();
         let (session, parent) = parent(&state, false);
-        state.with_mut(|s| s.set_window_size(phux_config::WindowSize::Smallest));
+        state.with_mut(|s| s.config_mut().window_size = phux_config::WindowSize::Smallest);
         let (core, handle) = tree(&state, parent, session);
         publish::<TreeDocument>(&handle, Bytes::from_static(b"{\"cut\":1}")).await;
         let wire = state.with_mut(|s| s.intern_resource_wire(core));

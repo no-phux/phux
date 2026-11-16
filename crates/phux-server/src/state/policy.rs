@@ -1,19 +1,6 @@
 use super::{ClientId, ServerState};
 
 impl ServerState {
-    /// Install the HELLO authorization engine. Called once at server
-    /// startup, before the accept loops start.
-    pub fn set_policy_engine(&mut self, engine: std::sync::Arc<dyn crate::policy::PolicyEngine>) {
-        self.config.policy_engine = engine;
-    }
-
-    /// Read the HELLO authorization engine. Defaults to the
-    /// `local` [`crate::policy::ScopedPolicy`] (ADR-0072).
-    #[must_use]
-    pub fn policy_engine(&self) -> &std::sync::Arc<dyn crate::policy::PolicyEngine> {
-        &self.config.policy_engine
-    }
-
     /// Store a peer identity for a client.
     pub fn set_peer_identity(
         &mut self,
@@ -287,35 +274,5 @@ impl ServerState {
         terminal: phux_core::ids::ResourceId,
     ) -> Option<phux_protocol::ids::ResourceId> {
         self.idspace.resource_wire(terminal).cloned()
-    }
-
-    /// Record the authorization posture the server started in. Set once at
-    /// startup.
-    pub const fn set_policy_posture(&mut self, posture: crate::policy::PolicyPosture) {
-        self.config.policy_posture = posture;
-    }
-
-    /// The authorization posture the server started in.
-    #[must_use]
-    pub const fn policy_posture(&self) -> crate::policy::PolicyPosture {
-        self.config.policy_posture
-    }
-
-    /// Record whether QUIC listeners admit the owner's own tailnet devices
-    /// (`[policy] tailnet-owner` under `paired`). Set once at startup.
-    pub const fn set_tailnet_owner(&mut self, on: bool) {
-        self.config.tailnet_owner = on;
-    }
-
-    /// Whether QUIC listeners admit the owner's own tailnet devices.
-    #[must_use]
-    pub const fn tailnet_owner(&self) -> bool {
-        self.config.tailnet_owner
-    }
-
-    /// Whether TLS listeners must require a workload client certificate.
-    #[must_use]
-    pub const fn workload_mtls_required(&self) -> bool {
-        self.config.policy_posture.requires_workload_mtls()
     }
 }

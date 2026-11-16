@@ -191,7 +191,7 @@ pub(in crate::runtime) fn spawn_hub_links(
         return;
     };
     let relays = crate::hub::relay::HubRelays::default();
-    let ssh_program = state.with(|s| s.server_env().ssh_program());
+    let ssh_program = state.with(|s| s.config().server_env.clone().ssh_program());
     let adopter = state.with(crate::state::ServerState::satellite_adopter);
     let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
     let mut links = crate::hub::link::HubLinks::new(
@@ -222,8 +222,8 @@ pub(in crate::runtime) fn spawn_connector_supervisors(
     let Some(tokens) = consumer_tokens else {
         return;
     };
-    let paired = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let paired = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     let Some(inner) = connector_inner_tls(paired, &env) else {
         // Fail closed in every posture: a bridged consumer is admitted only
         // inside its end-to-end session, so the relay never reads it

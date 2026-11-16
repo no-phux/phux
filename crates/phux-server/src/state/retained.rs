@@ -101,17 +101,6 @@ impl ServerState {
             .is_some_and(|record| record.durable_result)
     }
 
-    /// Mirror `defaults.retain-on-exit*`. Called once at startup.
-    pub const fn set_retain_policy(&mut self, policy: RetainPolicy) {
-        self.config.retain = policy;
-    }
-
-    /// The retention settings set by [`Self::set_retain_policy`].
-    #[must_use]
-    pub const fn retain_policy(&self) -> RetainPolicy {
-        self.config.retain
-    }
-
     /// Record that `pane` is retained for `secs` after its process exits.
     /// Called in the lock that registers the pane.
     pub(crate) fn note_retain_request(&mut self, pane: ResourceId, secs: u32) {
@@ -276,7 +265,7 @@ mod tests {
     #[test]
     fn retention_is_refused_while_a_close_is_pending_and_bounded_by_count() {
         let mut s = ServerState::new();
-        s.set_retain_policy(policy());
+        s.config_mut().retain = policy();
         let mut panes = Vec::new();
         for name in ["a", "b", "c"] {
             let (_, pane) = s.seed_session(name);

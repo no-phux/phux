@@ -285,7 +285,7 @@ impl KindRebuild for AgentSessionResume {
     /// `REPORT_AGENT_STATE` is re-bound to the stream (ADR-0103 §6). A
     /// session whose parent pane or record did not cross is dropped.
     fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
-        let log_bytes = cx.state.agent_log_bytes();
+        let log_bytes = cx.state.config().agent_log_bytes;
         let blob = cx.blob;
         for carried in &blob.agent_sessions {
             let (wire, parent_wire) = (carried.wire_id, carried.parent_wire_id);

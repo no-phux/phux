@@ -83,7 +83,7 @@ fn admit(
         return Some(agent::admit(&ctx, op));
     }
     let (enabled, allow) = ctx.state.with(|s| {
-        let cfg = s.forward();
+        let cfg = &s.config().forward;
         let allow = matches!(op, ForwardOp::Open { .. }).then(|| cfg.allow.clone());
         (cfg.tcp, allow.unwrap_or_default())
     });

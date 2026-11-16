@@ -173,7 +173,7 @@ pub(in crate::runtime) async fn handle_put_file(
         Some(true) => {}
     }
 
-    let env = state.with(ServerState::server_env);
+    let env = state.with(|s| s.config().server_env.clone());
     let root = match upload_dir(&env) {
         Ok(root) => root,
         Err(message) => return CommandResult::error(ErrorCode::InternalError, message),

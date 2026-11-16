@@ -100,7 +100,7 @@ async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
             // The bearer's revocation is under test, not the grant: an
             // embedder engine admits the link (ADR-0072).
             satellite.with_mut(|s| {
-                s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+                s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
             });
             let satellite_root = CancellationToken::new();
             let accept_state = satellite.clone();

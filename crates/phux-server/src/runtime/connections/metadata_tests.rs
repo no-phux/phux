@@ -170,7 +170,7 @@ fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
 #[test]
 fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {
     let state = SharedState::new();
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     set(
         &state,
         &Scope::Global,

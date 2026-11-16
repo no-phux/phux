@@ -256,7 +256,8 @@ impl ServerState {
                 self.delegations.live(id, now).is_some()
             }
             PrincipalId::Credential(id) => self
-                .policy_engine()
+                .config()
+                .policy_engine
                 .workload_registry()
                 .is_some_and(|registry| registry.current().lookup(id).is_some()),
         }

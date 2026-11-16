@@ -117,7 +117,7 @@ impl Fixture {
         ResourceId,
     ) {
         let (owner, session, parent) = state.with_mut(|s| {
-            s.set_server_socket_path(dir.join("isolated.sock"));
+            s.config_mut().server_socket_path = Some(dir.join("isolated.sock"));
             let owner = s.new_client_id();
             s.set_peer_identity(owner, peer.clone());
             s.set_connection_grant(owner, ConnectionGrant::owner());

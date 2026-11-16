@@ -120,7 +120,7 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         return;
     };
 
-    let log_bytes = state.with(crate::state::ServerState::agent_log_bytes);
+    let log_bytes = state.with(|s| s.config().agent_log_bytes);
     let token = root_token.child_token();
     let bundle = AgentSessionActor::build(
         core_parent,

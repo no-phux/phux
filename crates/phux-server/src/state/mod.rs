@@ -31,7 +31,6 @@ mod construct;
 mod controller;
 pub(crate) mod credentials;
 mod cwd;
-mod defaults;
 mod delegations;
 mod events;
 mod hook_dispatch;
@@ -79,7 +78,7 @@ pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
-use config::ServerConfig;
+pub(crate) use config::StateConfig;
 pub use delegations::UnrestoredDelegation;
 pub use events::{
     EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
@@ -187,9 +186,9 @@ pub struct ServerState {
     pub idspace: IdSpace,
     /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
     metadata: MetadataStore,
-    /// Boot-time configuration, set before the accept loops start and never
-    /// changed; see [`config`].
-    config: ServerConfig,
+    /// Boot-time configuration, built before the state and never changed;
+    /// see [`config`].
+    config: StateConfig,
     /// Hub handles (ADR-0007); all `None` on a non-hub server. See
     /// [`hub_state`].
     hub: HubState,
@@ -268,6 +267,30 @@ impl ServerState {
         &mut self.push_grants
     }
 
+    /// The boot-time configuration this state was built with.
+    #[must_use]
+    pub(crate) const fn config(&self) -> &StateConfig {
+        &self.config
+    }
+
+    /// Mutable configuration, for tests that vary it after construction.
+    #[cfg(test)]
+    pub(crate) const fn config_mut(&mut self) -> &mut StateConfig {
+        &mut self.config
+    }
+
+    /// The ssh-agent broker.
+    pub(crate) const fn forward_agent(&self) -> &crate::runtime::forward::agent::Broker {
+        &self.forward_agent
+    }
+
+    /// Mutable [`Self::forward_agent`].
+    pub(crate) const fn forward_agent_mut(
+        &mut self,
+    ) -> &mut crate::runtime::forward::agent::Broker {
+        &mut self.forward_agent
+    }
+
     /// The shared operation dedupe record. Cloning the handle shares it.
     pub(crate) const fn operation_dedupe(
         &self,
@@ -316,6 +339,17 @@ impl SharedState {
             reason = "single-threaded current-thread runtime; Mutex+Arc safety not required"
         )]
         let state = Arc::new(Mutex::new(ServerState::new()));
+        Self(state)
+    }
+
+    /// Wrap a fresh [`ServerState`] built with `config`.
+    #[must_use]
+    pub(crate) fn with_config(config: StateConfig) -> Self {
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "single-threaded current-thread runtime; Mutex+Arc safety not required"
+        )]
+        let state = Arc::new(Mutex::new(ServerState::with_config(config)));
         Self(state)
     }
 

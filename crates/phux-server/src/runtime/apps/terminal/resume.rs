@@ -70,7 +70,7 @@ pub(super) fn argv(s: &ServerState, launch: &TerminalLaunch) -> Option<Vec<Strin
     if launch.restore.is_some() {
         return None;
     }
-    s.restore().resume_argv(&resume.app, &resume.token)
+    s.config().restore.resume_argv(&resume.app, &resume.token)
 }
 
 #[cfg(test)]
@@ -177,7 +177,7 @@ mod tests {
         };
         state.with(|s| assert_eq!(argv(s, &launch("demo", "abc123")), None, "no entry"));
         state.with_mut(|s| {
-            s.set_restore(phux_config::RestoreCfg {
+            s.config_mut().restore = phux_config::RestoreCfg {
                 on_start: false,
                 program: vec![phux_config::RestoreProgram {
                     app: "demo".to_owned(),
@@ -185,7 +185,7 @@ mod tests {
                         .map(str::to_owned)
                         .to_vec(),
                 }],
-            });
+            };
         });
         state.with(|s| {
             assert_eq!(

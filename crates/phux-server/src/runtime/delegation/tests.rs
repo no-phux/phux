@@ -27,7 +27,7 @@ fn server(dir: &Path, root: &CancellationToken) -> (SharedState, SessionId) {
     )
     .unwrap();
     let session = state.with_mut(|s| {
-        s.set_server_socket_path(dir.join("phux.sock"));
+        s.config_mut().server_socket_path = Some(dir.join("phux.sock"));
         s.set_connection_grant(LAUNCHER, ConnectionGrant::owner());
         s.intern_upgrade_wires();
         s.registry().session_of(pane).unwrap()
@@ -171,7 +171,7 @@ fn the_start_up_sweep_removes_only_unserved_delegated_sockets() {
     drop(std::os::unix::net::UnixListener::bind(&unrelated).unwrap());
 
     let state = SharedState::new();
-    state.with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+    state.with_mut(|s| s.config_mut().server_socket_path = Some(dir.path().join("phux.sock")));
     sweep_stale_sockets(&state);
     assert!(!unserved.exists(), "a socket nothing serves is removed");
     assert!(live_path.exists(), "a served socket is kept");

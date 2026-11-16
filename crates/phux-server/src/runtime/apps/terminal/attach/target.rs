@@ -30,9 +30,9 @@ pub(crate) async fn resolve_create_if_missing(
 
     let (with_pty, scrollback, term) = state.with(|s| {
         (
-            s.attach_create_seeds_pty(),
-            s.scrollback_limits(),
-            s.term().to_owned(),
+            s.config().attach_create_seeds_pty,
+            s.config().scrollback,
+            s.config().term.as_str().to_owned(),
         )
     });
 
@@ -89,7 +89,7 @@ pub(crate) async fn resolve_inherited_cwd(
     state: &SharedState,
     client_id: ClientId,
 ) -> Option<String> {
-    match state.with(crate::state::ServerState::cwd_inheritance) {
+    match state.with(|s| s.config().cwd_inheritance) {
         phux_config::CwdInheritance::InheritFocused => focused_pane_cwd(state, client_id).await,
         phux_config::CwdInheritance::Home => std::env::var("HOME").ok().filter(|h| !h.is_empty()),
         phux_config::CwdInheritance::SessionRoot => session_root_cwd(state, client_id).await,

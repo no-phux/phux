@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use super::commands::handle_route_input;
 use super::input_lane::InputLaneHandle;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ClientId, SharedState};
 
 /// Largest transcript the server will paste, in bytes. A transcriber that
 /// prints a whole log file by mistake must not become a pane's input.
@@ -30,8 +30,8 @@ pub(in crate::runtime) async fn handle_transcribe(
             "TRANSCRIBE pastes locally; a satellite-routed Terminal has no route",
         );
     }
-    let voice = state.with(ServerState::voice);
-    let env = state.with(ServerState::server_env);
+    let voice = state.with(|s| s.config().voice.clone());
+    let env = state.with(|s| s.config().server_env.clone());
     let principal =
         state.with(|s| crate::runtime::apps::terminal::upload::upload_principal(s, client_id));
     let started = std::time::Instant::now();

@@ -13,7 +13,7 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
         let spec = fx.state.with_mut(|s| {
             s.attach_default_caps(fx.owner, "alpha", tx).unwrap();
             s.set_attached_viewer(fx.owner, true);
-            s.set_native_host_executable(Some(executable));
+            s.config_mut().native_host_executable = Some(executable);
             s.native_agents().bindings[&fx.agent].launch.clone()
         });
         let spawned: SpawnedNativeAgent =

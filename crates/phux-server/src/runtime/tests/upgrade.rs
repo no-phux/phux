@@ -85,7 +85,7 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
 async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
     use phux_core::{Delta, ExitPolicy, Transition};
     use phux_protocol::wire::frame::CloseReason;
-    crate::runtime::test_support::local(async {
+    crate::runtime::test_support::local(Box::pin(async {
         let (mut old, wire, _, tokens) = old_image_with_retained_panes();
         let pane = old.resource_from_wire(&wire).unwrap();
         let mut record = old.registry().record(pane).unwrap().clone();
@@ -129,7 +129,7 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
         for token in tokens {
             token.cancel();
         }
-    })
+    }))
     .await;
 }
 

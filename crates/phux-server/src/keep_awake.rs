@@ -124,7 +124,7 @@ fn hold(want: bool, failed: &mut bool) -> bool {
 /// Start the ticker on the current `LocalSet`; with the setting `off` (or
 /// on a platform with no inhibitor) only clear a state an upgrade carried.
 pub(crate) fn spawn(state: &SharedState, root_token: &CancellationToken) {
-    let mode = state.with(crate::state::ServerState::keep_awake);
+    let mode = state.with(|s| s.config().keep_awake);
     if mode == KeepAwake::Off || command(0).is_none() {
         state.with_mut(|s| drop(s.metadata_delete(&Scope::Global, STATUS_KEY)));
         return;

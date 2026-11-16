@@ -233,7 +233,7 @@ fn viewport_resize_preserves_policy_and_zero_vote_protection() {
         (WindowSize::Largest, (140, 50)),
         (WindowSize::Latest, (140, 50)),
     ] {
-        state.with_mut(|s| s.set_window_size(policy));
+        state.with_mut(|s| s.config_mut().window_size = policy);
         handle_viewport_resize(&state, large, &ViewportInfo::new(140, 50));
         let request = receiver.resize.try_recv().expect("policy geometry");
         assert_eq!((request.cols, request.rows), expected);
@@ -241,7 +241,7 @@ fn viewport_resize_preserves_policy_and_zero_vote_protection() {
     let wire = state.with_mut(|s| s.intern_resource_wire(pane));
     handle_terminal_resize(&state, large, &wire, (99, 33), None);
     receiver.resize.try_recv().expect("exact resize");
-    state.with_mut(|s| s.set_window_size(WindowSize::Smallest));
+    state.with_mut(|s| s.config_mut().window_size = WindowSize::Smallest);
     handle_viewport_resize(&state, large, &ViewportInfo::new(0, 50));
     assert!(
         receiver.resize.try_recv().is_err(),
@@ -251,7 +251,7 @@ fn viewport_resize_preserves_policy_and_zero_vote_protection() {
         state.with(|s| s.registry().terminal(pane).unwrap().dims),
         (99, 33)
     );
-    state.with_mut(|s| s.set_window_size(WindowSize::Manual));
+    state.with_mut(|s| s.config_mut().window_size = WindowSize::Manual);
     handle_viewport_resize(&state, large, &ViewportInfo::new(200, 60));
     assert!(receiver.resize.try_recv().is_err());
     assert_eq!(
@@ -301,7 +301,7 @@ fn active_policy_follows_the_view_last_used() {
     let state = SharedState::new();
     let (_, pane) = state.with_mut(|s| s.seed_session("home"));
     let mut receiver = register_stub(&state, pane);
-    state.with_mut(|s| s.set_window_size(WindowSize::Active));
+    state.with_mut(|s| s.config_mut().window_size = WindowSize::Active);
     let desk = attach_client(&state, "home");
     let phone = attach_client(&state, "home");
     handle_viewport_resize(&state, desk, &ViewportInfo::new(160, 48));
@@ -327,7 +327,7 @@ fn active_policy_follows_the_view_last_used() {
         (44, 30)
     );
 
-    state.with_mut(|s| s.set_window_size(WindowSize::Smallest));
+    state.with_mut(|s| s.config_mut().window_size = WindowSize::Smallest);
     handle_client_activity(&state, desk);
     assert!(
         receiver.resize.try_recv().is_err(),
@@ -343,7 +343,7 @@ fn active_policy_counts_a_returning_view_as_used() {
     let state = SharedState::new();
     let (_, pane) = state.with_mut(|s| s.seed_session("home"));
     let mut receiver = register_stub(&state, pane);
-    state.with_mut(|s| s.set_window_size(WindowSize::Active));
+    state.with_mut(|s| s.config_mut().window_size = WindowSize::Active);
     let desk = attach_client(&state, "home");
     let phone = attach_client(&state, "home");
     handle_viewport_resize(&state, desk, &ViewportInfo::new(160, 48));

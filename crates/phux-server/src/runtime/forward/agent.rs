@@ -188,8 +188,8 @@ pub(super) fn admit(ctx: &CommandContext, op: phux_protocol::forward::ForwardOp)
 pub(in crate::runtime) fn start(state: &SharedState, root: &CancellationToken) {
     let (enabled, server_socket) = state.with(|s| {
         (
-            s.forward().agent,
-            s.server_socket_path().map(Path::to_path_buf),
+            s.config().forward.agent,
+            s.config().server_socket_path().map(Path::to_path_buf),
         )
     });
     let Some(server_socket) = server_socket.filter(|_| enabled) else {

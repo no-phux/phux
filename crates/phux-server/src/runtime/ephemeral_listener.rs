@@ -50,8 +50,8 @@ pub(super) struct OpenRequest {
 fn workload_authority(
     state: &SharedState,
 ) -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
-    let required = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let required = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     super::workload_auth::WorkloadAuth::for_posture(required, &env).map_err(|err| {
         warn!(error = %err, "OPEN_LISTENER refused: configured workload mTLS is unavailable");
         CommandResult::error(
@@ -83,7 +83,7 @@ pub(super) fn handle_open_listener(
     }
     let linger = effective_linger(request.linger_secs);
 
-    let env = state.with(crate::state::ServerState::server_env);
+    let env = state.with(|s| s.config().server_env.clone());
     let Some((cert, key)) =
         super::remote_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), "quic", &env)
     else {
@@ -190,10 +190,7 @@ fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResul
             "OPEN_LISTENER is accepted on the local socket only".to_owned(),
         ));
     }
-    if state
-        .with(crate::state::ServerState::policy_posture)
-        .is_local()
-    {
+    if state.with(|s| s.config().policy_posture).is_local() {
         warn!(?client_id, "OPEN_LISTENER refused: [policy] mode is local");
         return Some(CommandResult::error(
             ErrorCode::PermissionDenied,

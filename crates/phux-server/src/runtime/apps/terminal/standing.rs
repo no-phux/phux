@@ -116,7 +116,7 @@ async fn outdated(
     wanted: &BTreeMap<String, Vec<String>>,
     slots: &BTreeMap<String, Slot>,
 ) -> BTreeSet<String> {
-    let Ok(installed) = state.with(crate::state::ServerState::native_host_executable) else {
+    let Ok(installed) = state.with(|s| s.config().native_host_executable()) else {
         return BTreeSet::new();
     };
     let mut outdated = BTreeSet::new();
@@ -245,7 +245,7 @@ fn start(
         ["/bin/sh", "-c", MACOS_HOLDER].map(str::to_owned).into()
     } else if args.first().is_some_and(|word| word == "phux") {
         let exe = state
-            .with(crate::state::ServerState::native_host_executable)
+            .with(|s| s.config().native_host_executable())
             .map_err(|err| err.to_string())?;
         let mut command = vec![exe.to_string_lossy().into_owned()];
         command.extend(args.into_iter().skip(1));
@@ -260,7 +260,7 @@ fn start(
         None,
         BTreeMap::new(),
     );
-    let scrollback = state.with(crate::state::ServerState::scrollback_limits);
+    let scrollback = state.with(|s| s.config().scrollback);
     let existing = state.with_mut(|s| {
         // A cold start leaves the previous run's ended panes in the session.
         let session = s.find_session_by_name(name)?;
@@ -332,7 +332,7 @@ mod tests {
         crate::runtime::test_support::local(async move {
             let state = SharedState::new();
             state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-            state.with_mut(|s| s.set_native_host_executable(Some(fake)));
+            state.with_mut(|s| s.config_mut().native_host_executable = Some(fake));
             let token = CancellationToken::new();
             let mirror = MirrorConfigEntry {
                 target: "display".to_owned(),
@@ -404,7 +404,7 @@ mod tests {
         crate::runtime::test_support::local(async move {
             let state = SharedState::new();
             state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-            state.with_mut(|s| s.set_native_host_executable(Some(fake.clone())));
+            state.with_mut(|s| s.config_mut().native_host_executable = Some(fake.clone()));
             let token = CancellationToken::new();
             let producer = ProducerConfigEntry {
                 name: "feed".to_owned(),

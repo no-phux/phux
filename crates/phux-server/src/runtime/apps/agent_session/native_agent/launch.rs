@@ -267,7 +267,7 @@ fn prepare_native_host(
     spec: &SpawnNativeAgent,
 ) -> Result<PreparedNativeHost, CommandResult> {
     let executable = state
-        .with(crate::state::ServerState::native_host_executable)
+        .with(|s| s.config().native_host_executable())
         .map_err(|error| refusal(error.to_string()))?;
     // Host-only startup carries the real local runtime configuration. The
     // portable saved recipe carries no bootstrap destination or SDK credentials.
@@ -445,7 +445,7 @@ fn install_native_session(
         &spec.provider,
         spec.native_id.as_deref(),
         token.clone(),
-        state.with(crate::state::ServerState::agent_log_bytes),
+        state.with(|s| s.config().agent_log_bytes),
     );
     state.with_mut(|s| {
         s.spawn_resource_actor(
@@ -502,7 +502,7 @@ fn launch_native_guardian(
         resources.parent,
         Some(command),
         terminal::DEFAULT_SPAWN_DIMS,
-        state.with(crate::state::ServerState::scrollback_limits),
+        state.with(|s| s.config().scrollback),
         &ctx.root_token,
         None,
         crate::runtime::commands::SpawnAttribution {

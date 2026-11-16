@@ -175,7 +175,7 @@ fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
 /// This host's capture targets, from `phux agent surface targets --json`.
 async fn list_here(state: &SharedState) -> Result<serde_json::Value, String> {
     let exe = state
-        .with(ServerState::native_host_executable)
+        .with(|s| s.config().native_host_executable())
         .map_err(|err| err.to_string())?;
     let run = tokio::process::Command::new(exe)
         .args(["agent", "surface", "targets", "--json"])

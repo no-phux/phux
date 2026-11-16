@@ -69,7 +69,7 @@ async fn local_mode_never_holds() {
         .run_until(async {
             let state = SharedState::new();
             state.with_mut(|s| {
-                s.set_policy_engine(Arc::new(ScopedPolicy::local()));
+                s.config_mut().policy_engine = Arc::new(ScopedPolicy::local());
                 s.set_peer_identity(OBSERVER, owner_peer());
             });
             let owner = connect(&state, OBSERVER, TransportType::UnixSocket).await;

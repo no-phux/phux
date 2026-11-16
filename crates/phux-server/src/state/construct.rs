@@ -1,12 +1,18 @@
 use super::{
     ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore, ResourceTable,
-    ServerState, SessionTable,
+    ServerState, SessionTable, StateConfig,
 };
 
 impl ServerState {
-    /// Build an empty state.
+    /// Build an empty state with the default configuration.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(StateConfig::default())
+    }
+
+    /// Build an empty state with `config`.
+    #[must_use]
+    pub(crate) fn with_config(config: StateConfig) -> Self {
         let idspace = IdSpace::new();
         let org = super::org::fresh_org(
             phux_core::InstanceId::from_bytes(*idspace.instance().as_bytes()),
@@ -17,8 +23,8 @@ impl ServerState {
             org: super::org::OrgSide::memory(),
             clients: ClientTable::new(),
             journal: super::journal::Journal::new(
-                usize::try_from(phux_config::DEFAULT_EVENT_JOURNAL_ENTRIES).unwrap_or(usize::MAX),
-                usize::try_from(phux_config::DEFAULT_EVENT_JOURNAL_BYTES).unwrap_or(usize::MAX),
+                config.journal_bounds.entries,
+                config.journal_bounds.bytes,
             ),
             resources: ResourceTable::default(),
             leases: LeaseTable::default(),
@@ -26,7 +32,6 @@ impl ServerState {
             satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
             idspace,
             metadata: MetadataStore::default(),
-            config: super::ServerConfig::default(),
             hub: HubState::default(),
             uplinks: crate::uplink::Uplinks::default(),
             forward_agent: crate::runtime::forward::agent::Broker::default(),
@@ -43,7 +48,8 @@ impl ServerState {
             retained: super::retained::RetainedTable::default(),
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
-            approvals: super::approvals::ApprovalTable::default(),
+            approvals: super::approvals::ApprovalTable::new(config.approval_limits),
+            config,
             credentials: super::credentials::CredentialBroker::default(),
             app_slots: super::app_slots::AppSlots::default(),
         }

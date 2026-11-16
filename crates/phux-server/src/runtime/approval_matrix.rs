@@ -81,7 +81,7 @@ fn world(grants: impl FnOnce(u32, u32) -> Vec<(ClientId, Vec<String>)>) -> World
             .collect(),
     );
     state.with_mut(|s| {
-        s.set_policy_engine(Arc::new(engine));
+        s.config_mut().policy_engine = Arc::new(engine);
         s.set_peer_identity(OBSERVER, owner_peer());
         for (client, _) in &grants {
             s.set_connection_identity(*client, workload_identity(&credential_id(*client), &[]));

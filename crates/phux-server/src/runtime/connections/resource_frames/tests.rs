@@ -144,7 +144,7 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
             let (out, _rx) = tokio::sync::mpsc::channel(8);
             s.attach_default_caps(client, "active-views", out).unwrap();
         }
-        s.set_window_size(phux_config::WindowSize::Active);
+        s.config_mut().window_size = phux_config::WindowSize::Active;
         s.set_client_viewport(CLIENT, ViewportInfo::new(60, 20));
         s.set_client_viewport(DESKTOP, ViewportInfo::new(120, 48));
         s.registry_mut().terminal_mut(pane).unwrap().dims = (120, 48);
@@ -204,7 +204,7 @@ fn configure_focus_admission(
         s.restore_retained_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
     }
     if !authorized {
-        s.set_policy_engine(Arc::new(FnPolicy::scoped(&["observe@global"])));
+        s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&["observe@global"]));
     }
 }
 
@@ -228,7 +228,7 @@ async fn satellite_frames_keep_scope_proxy_and_lease_gates_before_relay() {
                 relays.insert(handle);
                 state.with_mut(|s| {
                     s.set_peer_identity(CLIENT, owner_peer());
-                    s.set_policy_engine(Arc::new(FnPolicy::scoped(&[scope])));
+                    s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&[scope]));
                     s.set_hub_relays(relays);
                     if proxy {
                         s.register_satellite_proxy_attach(CLIENT, host.clone(), 7);

@@ -211,7 +211,7 @@ impl ResourceApp for TerminalApp {
     fn start(&self, state: &SharedState) -> std::io::Result<Option<RunningLane>> {
         let lane = super::super::input_lane::start(state)?;
         // Off the runtime thread: a large upload directory is a walk.
-        let upload_env = state.with(crate::state::ServerState::server_env);
+        let upload_env = state.with(|s| s.config().server_env.clone());
         drop(tokio::task::spawn_blocking(move || {
             super::super::upload::sweep_stale_partials_at_startup(&upload_env);
         }));

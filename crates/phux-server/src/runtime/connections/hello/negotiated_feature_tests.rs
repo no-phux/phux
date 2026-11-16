@@ -79,7 +79,7 @@ async fn quic_streams_bit_advertised_on_quic_only() {
         // Every transport here, not only the owner's socket, must reach
         // negotiation: an embedder engine admits them all (ADR-0072).
         state.with_mut(|s| {
-            s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
+            s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
         });
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
         state.with_mut(|s| {

@@ -146,8 +146,8 @@ impl RemoteListeners {
 
 /// Build the WebSocket listener for `addr` and record its slot.
 async fn bind_ws(addr: SocketAddr, state: &SharedState) -> Option<crate::transport::WsListener> {
-    let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let workload_mtls = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     let (listener, slot) = build_ws_listener(addr, workload_mtls, &env).await;
     state.with_mut(|s| s.record_remote_listener(slot));
     listener
@@ -158,8 +158,8 @@ fn bind_quic(
     addr: SocketAddr,
     state: &SharedState,
 ) -> Option<crate::transport::quic::QuicListener> {
-    let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let workload_mtls = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
     state.with_mut(|s| s.record_remote_listener(slot));
     // The configured listener adopts satellites that dial in (ADR-0182); it
@@ -167,7 +167,7 @@ fn bind_quic(
     listener.map(|listener| {
         listener
             .with_satellites(state.with(crate::state::ServerState::satellite_adopter))
-            .with_tailnet_owner(state.with(crate::state::ServerState::tailnet_owner))
+            .with_tailnet_owner(state.with(|s| s.config().tailnet_owner))
     })
 }
 

@@ -9,20 +9,18 @@ use crate::runtime::listeners::{
     ConfiguredListeners, drive_accept_loops, serve_auto_overlay_listeners,
 };
 use crate::runtime::posture::{
-    auto_overlay_allowed, install_policy_posture, record_refused_listeners,
-    remote_listener_configured, startup_policy,
+    auto_overlay_allowed, record_refused_listeners, remote_listener_configured, startup_policy,
 };
 use crate::runtime::services::{
     arm_idle_exit, drain_engines, install_hook_dispatcher, spawn_connector_supervisors,
     spawn_hub_links, spawn_shutdown_folder,
 };
 use crate::runtime::startup::{
-    adopt_or_bind_listener, install_hub_table, load_connector_consumer_tokens,
-    mirror_config_into_state, open_org_store, read_resume_blob, resume_session_tree,
-    seed_initial_session,
+    adopt_or_bind_listener, install_hub_table, load_connector_consumer_tokens, open_org_store,
+    read_resume_blob, resume_session_tree, seed_initial_session,
 };
 use crate::runtime::{delegation, revocation};
-use crate::state::SharedState;
+use crate::state::{ServerState, SharedState, StateConfig};
 use phux_protocol::wire::RemoteListenerTransport;
 use std::future::Future;
 use tokio::task::LocalSet;
@@ -63,11 +61,6 @@ impl ServerRuntime {
     {
         let socket_path = self.cfg.socket_path.clone();
 
-        let state = SharedState::new();
-        state.set_terminal_engine(self.terminal_engine.clone());
-
-        let hub_table = install_hub_table(&state, self.hub, &self.satellites)?;
-
         // Connector plans and the policy posture are startup gates: bad
         // configuration fails before anything is bound.
         let mut connector_specs = crate::connector::plan_connectors(&self.connectors)?;
@@ -92,6 +85,20 @@ impl ServerRuntime {
             ),
             self.resume_fd.is_some(),
         )?;
+        // The state is built once the posture and its engine are known, so
+        // its configuration never changes after construction.
+        let state = SharedState::with_config(StateConfig::from_runtime(
+            &self.cfg,
+            &socket_path,
+            posture,
+            posture_engine,
+        ));
+        state.set_terminal_engine(self.terminal_engine.clone());
+        state
+            .with(ServerState::satellite_adopter)
+            .set_work_store(self.cfg.work_store.as_deref().cloned());
+
+        let hub_table = install_hub_table(&state, self.hub, &self.satellites)?;
         // A resume the posture refuses keeps its panes and binds no remote
         // entry point; the flags stay in `runtime_flags`, so the next upgrade
         // after the operator sets a mode binds them again.
@@ -134,8 +141,6 @@ impl ServerRuntime {
             s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
         });
 
-        mirror_config_into_state(&self.cfg, &socket_path, &state);
-        install_policy_posture(&state, posture, posture_engine, self.cfg.tailnet_owner);
         record_refused_listeners(&state, &refused_listeners);
         let mode_unset = self.cfg.policy_mode.is_none();
 
@@ -200,8 +205,8 @@ impl ServerRuntime {
                 let configured = ConfiguredListeners::bind(ws_addr, quic_addr, &state).await;
                 #[cfg(feature = "webtransport")]
                 let webtransport_listener = webtransport_addr.and_then(|addr| {
-                    let env = state.with(crate::state::ServerState::server_env);
-                    let paired = state.with(crate::state::ServerState::workload_mtls_required);
+                    let env = state.with(|s| s.config().server_env.clone());
+                    let paired = state.with(|s| s.config().workload_mtls_required());
                     let (listener, slot) = build_wt_listener(addr, paired, &env);
                     state.with_mut(|s| s.record_remote_listener(slot));
                     listener

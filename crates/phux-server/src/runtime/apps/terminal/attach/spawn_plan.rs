@@ -141,7 +141,8 @@ pub(super) fn spawn_argv_builder(
     command: Option<Vec<String>>,
 ) -> phux_terminal_api::launch::LaunchCommand {
     crate::runtime::apps::terminal::launch::argv_command(command).unwrap_or_else(|| {
-        let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
+        let (shell, login_shell) =
+            state.with(|s| (s.config().shell.as_str().to_owned(), s.config().login_shell));
         phux_terminal_api::launch::default_shell_command(&shell, login_shell)
     })
 }
@@ -158,7 +159,7 @@ pub(super) async fn build_spawn_command(
     term: Option<&str>,
 ) -> phux_terminal_api::launch::LaunchCommand {
     let mut builder = spawn_argv_builder(state, command);
-    let default_term = state.with(|s| s.term().to_owned());
+    let default_term = state.with(|s| s.config().term.as_str().to_owned());
     phux_terminal_api::launch::apply_term(&mut builder, &default_term);
     if let Some(t) = term {
         phux_terminal_api::launch::apply_term(&mut builder, t);

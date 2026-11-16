@@ -76,7 +76,7 @@ fn reject_set_metadata(
         return true;
     }
     // ADR-0129 / L3 §2: an oversized value is refused whole.
-    let cap = state.with(ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     if value.len() > cap {
         warn!(
             ?client_id,

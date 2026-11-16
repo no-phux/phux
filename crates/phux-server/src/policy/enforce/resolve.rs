@@ -391,7 +391,7 @@ fn last_session(s: &ServerState) -> Option<phux_core::ids::SessionId> {
     if s.has_session_touch_history() {
         return None;
     }
-    s.pre_seeded_session()
+    s.config().pre_seeded_session()
         .and_then(|name| s.find_session_by_name(name))
 }
 

@@ -17,29 +17,29 @@ fn resolve_geometry_applies_window_size_policy_across_subscribers() {
     s.set_client_viewport(small, ViewportInfo::new(80, 24));
 
     // smallest: per-axis min — nothing cropped.
-    s.set_window_size(WindowSize::Smallest);
+    s.config_mut().window_size = WindowSize::Smallest;
     assert_eq!(s.resolve_terminal_geometry(pid, None), Some((80, 24)));
 
     // largest: per-axis max.
-    s.set_window_size(WindowSize::Largest);
+    s.config_mut().window_size = WindowSize::Largest;
     assert_eq!(s.resolve_terminal_geometry(pid, None), Some((120, 48)));
 
     // latest: the resizing client's viewport.
-    s.set_window_size(WindowSize::Latest);
+    s.config_mut().window_size = WindowSize::Latest;
     assert_eq!(
         s.resolve_terminal_geometry(pid, Some(ViewportInfo::new(100, 30))),
         Some((100, 30)),
     );
 
     // manual: geometry is never derived from views.
-    s.set_window_size(WindowSize::Manual);
+    s.config_mut().window_size = WindowSize::Manual;
     assert_eq!(
         s.resolve_terminal_geometry(pid, Some(ViewportInfo::new(100, 30))),
         None
     );
 
     // A zero-dimension viewport is ignored, so it can't collapse the grid.
-    s.set_window_size(WindowSize::Smallest);
+    s.config_mut().window_size = WindowSize::Smallest;
     s.set_client_viewport(small, ViewportInfo::new(0, 0));
     assert_eq!(s.resolve_terminal_geometry(pid, None), Some((120, 48)));
 }
@@ -94,7 +94,7 @@ fn manual_policy_holds_explicit_geometry_after_last_detach() {
     s.attach_default_caps(client, "default", mk_tx()).unwrap();
     s.set_client_viewport(client, ViewportInfo::new(1, 1));
     s.registry_mut().terminal_mut(pid).unwrap().dims = (137, 53);
-    s.set_window_size(WindowSize::Manual);
+    s.config_mut().window_size = WindowSize::Manual;
 
     s.detach(client);
     assert_eq!(s.registry().terminal(pid).unwrap().dims, (137, 53));
@@ -117,7 +117,7 @@ fn latest_policy_uses_the_most_recent_remaining_view_after_detach() {
         .unwrap();
     s.set_client_viewport(recent, ViewportInfo::new(111, 37));
     s.set_client_viewport(departing, ViewportInfo::new(70, 20));
-    s.set_window_size(WindowSize::Latest);
+    s.config_mut().window_size = WindowSize::Latest;
 
     s.detach(departing);
     assert_eq!(s.registry().terminal(pid).unwrap().dims, (111, 37));

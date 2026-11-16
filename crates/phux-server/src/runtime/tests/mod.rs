@@ -16,9 +16,9 @@ use crate::runtime::listeners::remote::remote_token_store;
 use crate::runtime::listeners::{
     AutoOverlayPorts, auto_overlay_gate_open, serve_auto_overlay_listeners,
 };
-use crate::runtime::posture::{install_policy_posture, startup_policy};
+use crate::runtime::posture::startup_policy;
 use crate::runtime::server::ServerRuntime;
-use crate::runtime::startup::{mirror_config_into_state, open_org_store, resume_session_tree};
+use crate::runtime::startup::{open_org_store, resume_session_tree};
 use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
