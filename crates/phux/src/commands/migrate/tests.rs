@@ -140,16 +140,7 @@ fn a_selected_phux_theme_is_kept_over_ghostty_s() {
     assert_eq!(theme.as_deref(), Some("tokyo-night"));
     let sources = discover(&home, None, &[], theme.as_deref(), &Setup::default());
     let text = render(&home, &sources);
-    let golden = home.with_file_name("theme-kept.golden.txt");
-    if std::env::var_os("PHUX_UPDATE_MIGRATE_GOLDENS").is_some() {
-        std::fs::write(&golden, &text).expect("write golden");
-        return;
-    }
-    let expected = std::fs::read_to_string(&golden).unwrap_or_default();
-    assert_eq!(
-        text, expected,
-        "prompt drifted; rerun with PHUX_UPDATE_MIGRATE_GOLDENS=1"
-    );
+    assert_golden(&text, "theme-kept.golden.txt");
     assert!(text.contains(
         "kept your phux theme `tokyo-night`; Ghostty's `dark:TokyoNight Storm,light:Catppuccin Latte` is not applied"
     ));
@@ -293,14 +284,7 @@ fn tmux_lines_are_decided_one_by_one() {
     };
     // The sourced file is read, after the file that sources it.
     assert_eq!(tmux.files.len(), 2);
-    let verdict = |text: &str| {
-        &tmux
-            .rows
-            .iter()
-            .find(|row| row.text == text)
-            .unwrap_or_else(|| panic!("no row {text}"))
-            .verdict
-    };
+    let verdict = |text| verdict(tmux, text);
     assert!(matches!(
         verdict("set -g prefix C-a"),
         Verdict::Default { .. }
@@ -346,14 +330,7 @@ fn ghostty_never_binds_cmd_and_names_macos_keys() {
     let [ghostty] = sources.as_slice() else {
         panic!("one source: {sources:?}");
     };
-    let verdict = |text: &str| {
-        &ghostty
-            .rows
-            .iter()
-            .find(|row| row.text == text)
-            .unwrap_or_else(|| panic!("no row {text}"))
-            .verdict
-    };
+    let verdict = |text| verdict(ghostty, text);
     assert_eq!(
         verdict("keybind = cmd+q=quit"),
         &Verdict::Skip("macOS uses this key itself".into())

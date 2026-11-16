@@ -2551,14 +2551,9 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))));
-        let found = ensure_remote_listener(
-            Path::new("/run/phux.sock"),
-            true,
-            false,
-            &mut prompt,
-            &mut setup,
-        )
-        .expect("bound");
+        let socket = Path::new("/run/phux.sock");
+        let found =
+            ensure_remote_listener(socket, true, false, &mut prompt, &mut setup).expect("bound");
         assert_eq!(
             found,
             live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
@@ -2657,14 +2652,9 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(None, Some("100.64.0.2:8788"))));
-        let found = ensure_remote_listener(
-            Path::new("/run/phux.sock"),
-            true,
-            false,
-            &mut prompt,
-            &mut setup,
-        )
-        .expect("enabled");
+        let socket = Path::new("/run/phux.sock");
+        let found =
+            ensure_remote_listener(socket, true, false, &mut prompt, &mut setup).expect("enabled");
         assert_eq!(found, live(None, Some("100.64.0.2:8788")));
         assert_eq!(prompt.prompted, 0);
         assert!(setup.wrote && setup.rebound);
