@@ -352,7 +352,7 @@ Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
 
 - Allocate type bytes in `wire/frame/catalog.rs`, sub-tags in
   `*tags.rs` beside it; duplicates fail to compile.
-- Add field ids in `wire/field/`, append-only.
+- Append field ids to `tlv_body!` in `wire/field/`.
 - Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
   bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.

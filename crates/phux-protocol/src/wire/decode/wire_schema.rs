@@ -4,9 +4,10 @@
 //! top-level TLV field, its id, name, value type, and presence. Everything
 //! except the value type is derived here from the codec itself: frame names
 //! from the frame catalog (`wire/frame/catalog.rs`), field names and ids from
-//! the `FIELDS` table `tlv_body!` emits in each `wire/field` module, presence from encoding samples of every variant and
-//! decoding each with one field stripped, and retired ids from the gaps in a
-//! frame's id range. The rendered result must equal the committed file byte
+//! the `FIELDS` table `tlv_body!` emits in each `wire/field` module
+//! (`field::FRAME_MODULES`), presence from encoding samples of every variant
+//! and decoding each with one field stripped, and retired ids from the gaps
+//! in a frame's id range. The rendered result must equal the committed file byte
 //! for byte, so the codec cannot change shape without a schema diff in the
 //! same change. Each declared value type is then checked against every
 //! sampled value of its field.

@@ -113,7 +113,7 @@ macro_rules! frame_kind_tables {
                 }
             }
 
-            /// The `wire/field.rs` module naming this frame's fields; empty
+            /// The `wire::field` module naming this frame's fields; empty
             /// for a frame without fields.
             #[cfg(test)]
             pub(crate) const fn field_module(&self) -> &'static str {

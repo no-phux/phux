@@ -255,9 +255,10 @@ impl TlvValue for ClipboardData {
 ///   `Some`; absent decodes as `None`.
 ///
 /// Every module also lists its fields as `FIELDS`, the table the wire
-/// schema test names fields by. The macro then emits `encode(frame, enc)`, which writes the fields in
-/// declaration order (the bytes are the contract), and one `Decoder`
-/// method per variant, which reads fields in wire order: the last of a
+/// schema test names fields by. For a regular frame the macro then emits
+/// `encode(frame, enc)`, which writes the fields in declaration order (the
+/// bytes are the contract), and one `Decoder` method per variant, which
+/// reads fields in wire order: the last of a
 /// repeated id wins, an unknown id is skipped by its length, and each
 /// value is checked by its [`TlvValue::take`] before it is kept. A frame
 /// with any other shape keeps a hand-written codec and lists only its
