@@ -141,6 +141,7 @@ fn find_file(dir: &Path, name: &str) -> bool {
     })
 }
 
+/// Run log, sidecar log, and pidfiles under the test state directory.
 fn append_startup_evidence(dir: &Path, out: &mut String) {
     use std::fmt::Write as _;
     let Ok(entries) = std::fs::read_dir(dir) else {
