@@ -3,25 +3,8 @@ use phux_protocol::wire::frame::{
     AgentEvent, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, Scope,
 };
 
-fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect()
-}
-
 fn state_id(frames: &[FrameKind]) -> u32 {
-    frames
-        .iter()
-        .find_map(|frame| match frame {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetState { .. },
-            } => Some(*request_id),
-            _ => None,
-        })
-        .expect("topology read")
+    state_read(frames).expect("topology read")
 }
 
 fn metadata_id(frames: &[FrameKind]) -> u32 {
@@ -32,13 +15,6 @@ fn metadata_id(frames: &[FrameKind]) -> u32 {
             _ => None,
         })
         .expect("metadata read")
-}
-
-fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
 }
 
 fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {

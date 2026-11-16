@@ -111,6 +111,48 @@ fn hello_ok_with(features: &[ServerFeature]) -> FrameKind {
         .build()
 }
 
+fn hello_ok_ext(features: &[ServerFeatureExt]) -> FrameKind {
+    server_hello()
+        .features_ext(ServerFeatureExtSet::with(features))
+        .build()
+}
+
+/// A browsing plane past `HELLO_OK` from a server advertising `features`,
+/// its follow-ups drained.
+fn browsing_with_ext(features: &[ServerFeatureExt]) -> ControlPlane {
+    let mut plane = opened(ControlOptions::default(), hello_ok_ext(features));
+    let _ = plane.take_outbound();
+    plane
+}
+
+/// The `GET_STATE` among `frames`, if one was sent.
+fn state_read(frames: &[FrameKind]) -> Option<u32> {
+    frames.iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetState { .. },
+        } => Some(*request_id),
+        _ => None,
+    })
+}
+
+/// Answer topology read `request_id` with `snapshot`.
+fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
+}
+
+/// Every queued outbound frame, decoded.
+fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
+    plane
+        .take_outbound()
+        .iter()
+        .map(|bytes| decode(bytes))
+        .collect()
+}
+
 fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
     let main = SessionId::new(1);
     let beta = SessionId::new(2);
@@ -174,11 +216,7 @@ fn attach_reads_the_session_project_tag_into_an_event() {
 
     let (mut plane, attach_id) = negotiated();
     plane.attached(attach_id, two_session_snapshot(false));
-    let outbound: Vec<FrameKind> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    let outbound: Vec<FrameKind> = outbound(&mut plane);
     assert!(
         outbound.iter().any(|frame| matches!(
             frame,
@@ -294,10 +332,7 @@ fn view_scrolling_routes_history_requests_through_control_plane() {
 fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     let request_id = plane.refresh_topology().expect("negotiated topology read");
     let _ = plane.take_outbound();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    answer_state(plane, request_id, snapshot);
     let _ = plane.take_events();
 }
 

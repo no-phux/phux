@@ -92,11 +92,7 @@ fn preserving_subscriptions_replay_without_global_resize_or_old_replica_readines
     assert!(plane.take_outbound().is_empty());
     plane.connection_lost(None);
     reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let frames: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    let frames = outbound(&mut plane);
     assert!(!frames.iter().any(|frame| matches!(
         frame,
         FrameKind::ResizeTerminal { .. }
@@ -325,11 +321,7 @@ fn stream_recovery_preserves_geometry() {
 fn reconnect(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane.connection_lost(None);
     reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect()
+    outbound(plane)
 }
 
 fn resource_attaches(frames: &[FrameKind]) -> Vec<ResourceId> {
@@ -392,22 +384,9 @@ fn browse_to_session_reconnect_defers_preserving_replay_until_inventory_is_ready
         .expect("current session target was queued");
     plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 2);
-    assert!(
-        resource_attaches(
-            &plane
-                .take_outbound()
-                .iter()
-                .map(|frame| decode(frame))
-                .collect::<Vec<_>>()
-        )
-        .is_empty()
-    );
+    assert!(resource_attaches(&outbound(&mut plane)).is_empty());
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let frames: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    let frames = outbound(&mut plane);
     assert_eq!(resource_attaches(&frames), vec![foreign]);
     assert!(
         !frames.iter().any(|frame| matches!(

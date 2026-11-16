@@ -34,10 +34,7 @@ fn followed_own_spawn() -> ControlPlane {
         })
         .unwrap();
     let request_id = plane.refresh_topology().unwrap();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-    );
+    answer_state(&mut plane, request_id, beta_snapshot());
     let subscriptions = attach_resources(&mut plane);
     let request_id = subscriptions
         .iter()

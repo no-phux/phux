@@ -8,14 +8,6 @@ use phux_protocol::wire::frame::Scope;
 
 const KEY: &str = "phux.usage/v1";
 
-fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect()
-}
-
 /// The request id of the `GET_METADATA` for `key`, after asserting the
 /// subscription went out first.
 fn watch_read(frames: &[FrameKind], key: &str) -> u32 {

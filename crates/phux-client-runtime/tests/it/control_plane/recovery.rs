@@ -50,24 +50,7 @@ fn interactive_setup_spawn_is_not_replayed_even_when_server_supports_idempotency
 }
 
 fn inventory_read(plane: &mut ControlPlane) -> u32 {
-    plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetState { .. },
-            } => Some(request_id),
-            _ => None,
-        })
-        .expect("topology read")
-}
-
-fn answer_inventory(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    state_read(&outbound(plane)).expect("topology read")
 }
 
 /// An empty session emits no terminal-close event to refresh the inventory.
@@ -83,7 +66,7 @@ fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
         before
             .sessions
             .push(SessionInfo::new(SessionId::new(2), "empty"));
-        answer_inventory(&mut plane, initial, before.clone());
+        answer_state(&mut plane, initial, before.clone());
         let _ = plane.take_outbound();
         let _ = plane.take_events();
         assert!(plane.topology().unwrap().session_named("empty").is_some());
@@ -102,10 +85,10 @@ fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
             .unwrap();
         if let Some(old_read) = old_read {
             assert!(plane.take_outbound().is_empty(), "coalesce in-flight reads");
-            answer_inventory(&mut plane, old_read, before);
+            answer_state(&mut plane, old_read, before);
         }
         let refresh = inventory_read(&mut plane);
-        answer_inventory(&mut plane, refresh, snapshot());
+        answer_state(&mut plane, refresh, snapshot());
         assert!(plane.topology().unwrap().session_named("empty").is_none());
         assert!(
             plane
@@ -174,11 +157,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
         ..ControlOptions::default()
     });
     reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let initial: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect();
+    let initial = outbound(&mut plane);
     let request_id = initial
         .iter()
         .find_map(|frame| match frame {
@@ -189,10 +168,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
             _ => None,
         })
         .expect("inventory before selecting work");
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
-    );
+    answer_state(&mut plane, request_id, two_session_snapshot(false));
     let _ = plane.take_outbound();
     assert!(!plane.attach_session(AttachTarget::ById(SessionId::new(1))));
     let _ = plane.take_outbound();
@@ -201,11 +177,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
     for incarnation in [0xAB, 0xCD] {
         plane.connection_lost(None);
         reopen(&mut plane, replacement_hello(incarnation));
-        let frames: Vec<_> = plane
-            .take_outbound()
-            .iter()
-            .map(|bytes| decode(bytes))
-            .collect();
+        let frames = outbound(&mut plane);
         assert!(frames.iter().any(|frame| matches!(
             frame,
             FrameKind::Command {
@@ -373,10 +345,7 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
         .unwrap();
     plane.watch_agent_sessions();
     assert!(plane.take_outbound().is_empty());
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    answer_state(&mut plane, request_id, snapshot);
     let subscribed: Vec<_> = plane
         .take_outbound()
         .iter()

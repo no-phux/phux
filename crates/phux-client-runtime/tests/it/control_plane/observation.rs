@@ -229,10 +229,7 @@ fn an_ordinary_refresh_is_not_a_new_incarnation() {
     let before = plane.take_observation();
     let request_id = plane.refresh_topology().unwrap();
     let _ = plane.take_outbound();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot())),
-    );
+    answer_state(&mut plane, request_id, snapshot());
     let after = plane.take_observation();
     assert_eq!(after.connection_epoch, before.connection_epoch);
     assert!(boundaries(&after).is_empty());

@@ -7,18 +7,7 @@ use phux_client_runtime::control::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpError}
 use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 
 fn plane_with_service_http() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps.with_features_ext(ServerFeatureExtSet::with(&[
-            ServerFeatureExt::HostServiceHttp,
-        ]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(&[ServerFeatureExt::HostServiceHttp])
 }
 
 fn info() -> ServiceHttpRequest {

@@ -6,14 +6,6 @@ use phux_client_runtime::approvals::{Decision, DecisionOutcome};
 use phux_protocol::ids::ApprovalId;
 use phux_protocol::wire::frame::{AgentEvent, ApprovalOutcome, Scope};
 
-fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect()
-}
-
 const fn id(byte: u8) -> ApprovalId {
     ApprovalId::new([byte; 16]).unwrap()
 }

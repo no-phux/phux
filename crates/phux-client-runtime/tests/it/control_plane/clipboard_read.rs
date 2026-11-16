@@ -72,7 +72,7 @@ fn the_focused_terminal_reads_and_the_reply_goes_to_it_only() {
         ClipboardSelection::Clipboard,
         "secret".to_owned()
     ));
-    let sent: Vec<_> = plane.take_outbound().iter().map(|b| decode(b)).collect();
+    let sent = outbound(&mut plane);
     assert!(matches!(
         sent.as_slice(),
         [FrameKind::ClipboardReply { terminal_id, selection: b'c', text }]

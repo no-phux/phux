@@ -17,16 +17,7 @@ fn ready<T>(call: impl Future<Output = T>) -> T {
 }
 
 fn plane(features: &[ServerFeatureExt]) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps.with_features_ext(ServerFeatureExtSet::with(features));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(features)
 }
 
 #[test]
