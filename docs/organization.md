@@ -74,6 +74,13 @@ and the rest keep running at the slot's size, so switching never reflows.
 - **Advertised.** The server advertises `features_ext.SLOT_TABS`. A client
   writes tabs only to a server that advertises it, because an older server
   would drop the trailing fields and the tabs with them.
+- **Surface.** `phux slot add @N --to @M` makes terminal `@N` a tab of the
+  slot showing `@M`. `phux slot out @N` gives a tab a slot of its own, split
+  beside the one it left. `phux slot next|prev [@M]` switches what a slot
+  shows. In the TUI the keys are `C-a }` and `C-a {`. In Rune they are
+  Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
+  terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. A slot with two
+  or more tabs shows a one-row strip of their titles and agent states.
 
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
 invariants; [arrangement validation](../crates/phux-core/src/arrangement.rs)
