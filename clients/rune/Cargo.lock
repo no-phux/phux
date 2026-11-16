@@ -2597,6 +2597,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "libghostty-vt",
+ "phux-core",
  "phux-perf",
  "phux-protocol",
  "serde",
