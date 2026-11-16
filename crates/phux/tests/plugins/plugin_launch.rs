@@ -8,18 +8,7 @@
 
 use std::path::PathBuf;
 
-const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
-
-fn repo_root() -> PathBuf {
-    crate::runner::manifest_dir()
-        .join("../..")
-        .canonicalize()
-        .expect("canonical repo root")
-}
-
-fn demo_xdg() -> PathBuf {
-    repo_root().join("plugins/agent-tools/config")
-}
+use crate::support::{PLUGIN_ID, demo_xdg};
 
 fn run(args: &[&str]) -> (i32, String, String) {
     crate::common::phux_in([("XDG_CONFIG_HOME", demo_xdg())], args).into_parts()

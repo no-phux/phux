@@ -1,27 +1,14 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::path::PathBuf;
-
 use crate::common::Out;
+use crate::support::{PLUGIN_ID, demo_xdg, repo_root};
 
-const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 const INSPECT_ACTION: &str = "inspect";
 const LIST_ACTION: &str = "list-integrations";
 const VALIDATE_ACTION: &str = "validate-integrations";
 const DETECT_ACTION: &str = "detect-agents";
 const LAUNCH_BENCH_ACTION: &str = "launch-bench";
 const SMOKE_AGENT_WRAP_ACTION: &str = "smoke-agent-wrap";
-
-fn repo_root() -> PathBuf {
-    crate::runner::manifest_dir()
-        .join("../..")
-        .canonicalize()
-        .expect("canonical repo root")
-}
-
-fn demo_xdg() -> PathBuf {
-    repo_root().join("plugins/agent-tools/config")
-}
 
 fn run_demo(args: &[&str]) -> (i32, String, String) {
     run_demo_with_env(args, &[])

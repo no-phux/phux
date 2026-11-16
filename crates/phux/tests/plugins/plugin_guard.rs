@@ -6,67 +6,10 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use tempfile::TempDir;
-
-use crate::common::Out;
-
-struct TestHome {
-    _tmp: TempDir,
-    xdg_config: PathBuf,
-    xdg_data: PathBuf,
-    scratch: PathBuf,
-}
-
-impl TestHome {
-    fn new() -> Self {
-        let tmp = TempDir::new().expect("tempdir");
-        let scratch = tmp.path().join("scratch");
-        std::fs::create_dir_all(&scratch).unwrap();
-        Self {
-            xdg_config: tmp.path().join("config"),
-            xdg_data: tmp.path().join("data"),
-            scratch,
-            _tmp: tmp,
-        }
-    }
-
-    fn run(&self, args: &[&str]) -> (i32, String, String) {
-        self.run_with(args, |_| {})
-    }
-
-    fn run_with(&self, args: &[&str], edit: impl FnOnce(&mut Command)) -> (i32, String, String) {
-        let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
-        cmd.env("XDG_CONFIG_HOME", &self.xdg_config)
-            .env("XDG_DATA_HOME", &self.xdg_data)
-            .current_dir(&self.scratch)
-            .args(args);
-        edit(&mut cmd);
-        Out::of(&mut cmd).into_parts()
-    }
-
-    fn plugins_dir(&self) -> PathBuf {
-        self.xdg_data.join("phux").join("plugins")
-    }
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "user.name=Test",
-        ])
-        .args(args)
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
-}
+use crate::support::{TestHome, git};
 
 fn write_plugin(dir: &Path, id: &str, version: &str, build: bool) {
     std::fs::create_dir_all(dir).unwrap();
