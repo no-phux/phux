@@ -260,7 +260,7 @@ async fn blob_that_disagrees_with_the_store(
 
     let mut source = ServerState::new();
     source.seed_empty_session("kept").expect("seed");
-    let kept = source.session_by_name("kept").expect("kept").clone();
+    let kept = source.sessions().by_name("kept").expect("kept").clone();
     let mut store = SqliteOrgStore::open(path).unwrap();
     store
         .import(source.org(), None, crate::state::now_stamp())
@@ -337,12 +337,13 @@ async fn a_populated_sqlite_store_wins_a_hot_upgrade_merge() {
             install_loaded_sqlite(&mut resumed, &path);
             crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut resumed, &blob)
                 .expect("merge");
-            let kept = resumed.session_by_name("kept").expect("store name");
+            let kept = resumed.sessions().by_name("kept").expect("store name");
             assert_eq!(kept.key, kept_key);
             assert_eq!(kept.revision, kept_revision);
-            assert!(resumed.session_by_name("carried").is_none());
+            assert!(resumed.sessions().by_name("carried").is_none());
             let arrived = resumed
-                .session_by_name("arrived")
+                .sessions()
+                .by_name("arrived")
                 .expect("a carried session the store lacks is added")
                 .clone();
             let arrangement = arrived

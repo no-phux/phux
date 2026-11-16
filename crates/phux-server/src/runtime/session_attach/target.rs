@@ -75,7 +75,7 @@ async fn create_attach_session(
         return None;
     };
     let name = seeding.await?;
-    let created = state.with(|s| s.find_session_by_name(&name));
+    let created = state.with(|s| s.sessions().find_by_name(&name));
     if created.is_none() {
         send_error(
             out_tx,

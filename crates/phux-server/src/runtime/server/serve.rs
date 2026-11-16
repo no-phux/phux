@@ -250,7 +250,7 @@ impl ServerRuntime {
                 }
                 let seed_missing = pre_seeded
                     .as_deref()
-                    .filter(|name| state.with(|s| s.session_by_name(name).is_none()));
+                    .filter(|name| state.with(|s| s.sessions().by_name(name).is_none()));
                 if resume_blob.is_none()
                     && let Some(name) = seed_missing
                 {

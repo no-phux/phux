@@ -175,9 +175,10 @@ impl ServerState {
         // switching sessions is refused; an unknown name stays
         // UnknownSession.
         let session_id = self
-            .find_session_by_name(session_name)
+            .sessions()
+            .find_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
-        if bootstrap_profile.is_none() && !self.session_terminals(session_id).is_empty() {
+        if bootstrap_profile.is_none() && !self.sessions().terminal_members(session_id).is_empty() {
             return Err(AttachError::TerminalProfileUnavailable);
         }
         if let Some(existing) = self.clients.attached.get(&client_id) {
@@ -316,7 +317,7 @@ impl ServerState {
         session: Option<&str>,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
         let target_session = match session {
-            Some(name) => match self.find_session_by_name(name) {
+            Some(name) => match self.sessions().find_by_name(name) {
                 Some(id) => Some(id),
                 None => return Vec::new(),
             },

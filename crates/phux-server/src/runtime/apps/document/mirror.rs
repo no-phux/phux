@@ -153,7 +153,7 @@ fn stop(state: &SharedState, target: &str) -> CommandResult {
 
 /// The local id of the live surface in session `name`.
 fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
-    let session = s.find_session_by_name(name)?;
+    let session = s.sessions().find_by_name(name)?;
     let surface = s
         .registry()
         .session(session)?

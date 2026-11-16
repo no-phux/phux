@@ -290,7 +290,7 @@ fn keyed_ceilings_survive_a_restart_from_the_persisted_store() {
     )
     .unwrap();
     after.install_org(Box::new(store), org, true);
-    let alpha = after.find_session_by_name("alpha").unwrap();
+    let alpha = after.sessions().find_by_name("alpha").unwrap();
     assert!(
         after.idspace.session_wire(alpha).is_none(),
         "a fresh start names no session on the wire yet"

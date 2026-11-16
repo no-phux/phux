@@ -378,7 +378,7 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
         state.with_mut(|s| {
             assert!(s.registry_mut().set_recent(session, Some(tree)));
             assert_eq!(s.active_resource_of_session(session), Some(tree));
-            assert_eq!(s.active_pane_of_session(session), Some(parent));
+            assert_eq!(s.sessions().default_pane_of(session), Some(parent));
             let wire = s.idspace.intern_resource(tree);
             assert_eq!(
                 s.build_session_snapshot(session).unwrap().focused_resource,

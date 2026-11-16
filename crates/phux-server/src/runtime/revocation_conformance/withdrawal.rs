@@ -278,7 +278,7 @@ async fn revocation_does_not_kill_the_workloads_terminals() {
                 "the Terminal survives"
             );
             assert!(
-                s.find_session_by_name("alpha").is_some(),
+                s.sessions().find_by_name("alpha").is_some(),
                 "its session survives"
             );
         });

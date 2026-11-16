@@ -5,7 +5,7 @@ fn launch(fx: &Fixture) -> NativeRequest {
     let session = fx.state.with(|s| {
         crate::org_wire::session_key(
             s.registry()
-                .session_key(s.find_session_by_name("alpha").unwrap())
+                .session_key(s.sessions().find_by_name("alpha").unwrap())
                 .unwrap(),
         )
         .unwrap()

@@ -188,7 +188,7 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
                 session_key_point(s, session)
             }
             phux_protocol::native_agent::NativeRequest::Spawn { spec } => s
-                .find_session_by_name(&spec.session)
+                .sessions().find_by_name(&spec.session)
                 .map(|session| session_point(s, Some(session))),
             _ => None,
         },
@@ -357,11 +357,11 @@ fn resolved_group(s: &ServerState, request: Request<'_>) -> Option<Point> {
         Request::Frame(FrameKind::Attach { target, .. }) => resolve_attach_session(s, target),
         // Clearing keep-empty: the session the value names (L3, ADR-0105).
         Request::Frame(FrameKind::SetMetadata { value, .. }) => {
-            decode_session_keep_empty(value).and_then(|(name, _)| s.find_session_by_name(name))
+            decode_session_keep_empty(value).and_then(|(name, _)| s.sessions().find_by_name(name))
         }
         Request::Command(Command::DetachClients {
             session: Some(name),
-        }) => s.find_session_by_name(name),
+        }) => s.sessions().find_by_name(name),
         _ => return None,
     };
     Some(session_point(s, session))
@@ -378,21 +378,21 @@ pub fn resolve_attach_session(
         AttachTarget::Last => last_session(s),
         AttachTarget::ById(wire) => s.idspace.resolve_session(*wire),
         AttachTarget::ByName(name) | AttachTarget::CreateIfMissing { name, .. } => {
-            s.find_session_by_name(name)
+            s.sessions().find_by_name(name)
         }
         _ => None,
     }
 }
 
 fn last_session(s: &ServerState) -> Option<phux_core::ids::SessionId> {
-    if let Some(session) = s.most_recently_touched_session() {
+    if let Some(session) = s.sessions().most_recently_touched() {
         return Some(session);
     }
-    if s.has_session_touch_history() {
+    if s.sessions().has_touch_history() {
         return None;
     }
     s.config().pre_seeded_session()
-        .and_then(|name| s.find_session_by_name(name))
+        .and_then(|name| s.sessions().find_by_name(name))
 }
 
 fn session_point(s: &ServerState, session: Option<phux_core::ids::SessionId>) -> Point {

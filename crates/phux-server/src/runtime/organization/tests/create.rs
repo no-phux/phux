@@ -125,7 +125,7 @@ fn create_rename_and_page_round_trip_with_typed_refusals() {
         };
         let renamed = committed(handle(&state, CLIENT, rename, &root));
         assert_eq!(renamed.revision.get(), record.revision.get() + 1);
-        assert!(state.with(|s| s.session_by_name("renamed").is_some()));
+        assert!(state.with(|s| s.sessions().by_name("renamed").is_some()));
 
         let link = |n: u8, project: Option<&str>| Command::SessionSetProject {
             operation: op(n),

@@ -24,19 +24,21 @@ fn open_org_store_backfills_sessions_that_have_no_arrangement() {
     open_org_store(&state, &crate::OrgStoreLocation::Path(path.clone())).unwrap();
     state.with(|server| {
         assert_eq!(
-            server.session_by_name("arranged").unwrap().arrangement,
+            server.sessions().by_name("arranged").unwrap().arrangement,
             Some(arrangement_key)
         );
         assert!(
             server
-                .session_by_name("bare")
+                .sessions()
+                .by_name("bare")
                 .unwrap()
                 .arrangement
                 .is_some()
         );
         assert!(
             server
-                .session_by_name(phux_core::INTAKE_NAME)
+                .sessions()
+                .by_name(phux_core::INTAKE_NAME)
                 .unwrap()
                 .arrangement
                 .is_some()

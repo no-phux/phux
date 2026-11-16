@@ -269,24 +269,24 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
 fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
     let mut s = ServerState::new();
     assert!(
-        s.most_recently_touched_session().is_none(),
+        s.sessions().most_recently_touched().is_none(),
         "fresh state has no prior activity memory",
     );
     assert!(
-        !s.has_session_touch_history(),
+        !s.sessions().has_touch_history(),
         "fresh state has no stale activity memory either",
     );
     let (sid, _pid) = s.seed_session("default");
     s.touch_session(sid);
-    assert_eq!(s.most_recently_touched_session(), Some(sid));
-    assert!(s.has_session_touch_history());
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
+    assert!(s.sessions().has_touch_history());
 
     // Later touches win, regardless of attach order.
     let (sid2, _p) = s.seed_session("other");
     s.touch_session(sid2);
-    assert_eq!(s.most_recently_touched_session(), Some(sid2));
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid2));
     s.touch_session(sid);
-    assert_eq!(s.most_recently_touched_session(), Some(sid));
+    assert_eq!(s.sessions().most_recently_touched(), Some(sid));
 }
 
 #[test]

@@ -144,10 +144,11 @@ async fn outdated(
 /// The terminal handles of `name`'s panes.
 fn terminals(state: &SharedState, name: &str) -> Vec<phux_terminal_api::actor::TerminalHandle> {
     state.with(|s| {
-        let Some(session) = s.find_session_by_name(name) else {
+        let Some(session) = s.sessions().find_by_name(name) else {
             return Vec::new();
         };
-        s.session_terminals(session)
+        s.sessions()
+            .terminal_members(session)
             .into_iter()
             .filter_map(|pane| s.resources().handle(pane)?.terminal().ok().cloned())
             .collect()
@@ -201,10 +202,13 @@ fn tick(
 /// Whether `name` holds a pane whose process still runs.
 fn live(state: &SharedState, name: &str) -> bool {
     state.with(|s| {
-        s.find_session_by_name(name).is_some_and(|session| {
-            s.session_terminals(session).into_iter().any(|pane| {
-                s.resources().handle(pane).is_some() && s.retained().exit(pane).is_none()
-            })
+        s.sessions().find_by_name(name).is_some_and(|session| {
+            s.sessions()
+                .terminal_members(session)
+                .into_iter()
+                .any(|pane| {
+                    s.resources().handle(pane).is_some() && s.retained().exit(pane).is_none()
+                })
         })
     })
 }
@@ -212,11 +216,12 @@ fn live(state: &SharedState, name: &str) -> bool {
 /// Close every pane of `name`; its ephemeral session goes with the last.
 fn stop(state: &SharedState, name: &str) {
     state.with_mut(|s| {
-        let Some(session) = s.find_session_by_name(name) else {
+        let Some(session) = s.sessions().find_by_name(name) else {
             return;
         };
         let panes: Vec<_> = s
-            .session_terminals(session)
+            .sessions()
+            .terminal_members(session)
             .into_iter()
             .filter(|pane| s.resources().handle(*pane).is_some())
             .collect();
@@ -263,7 +268,7 @@ fn start(
     let scrollback = state.with(|s| s.config().scrollback);
     let existing = state.with_mut(|s| {
         // A cold start leaves the previous run's ended panes in the session.
-        let session = s.find_session_by_name(name)?;
+        let session = s.sessions().find_by_name(name)?;
         let ended: Vec<_> = s
             .registry()
             .session(session)?
@@ -281,7 +286,7 @@ fn start(
                 warn!(session = %name, %refusal, "an ended standing mirror pane was not removed");
             }
         }
-        s.find_session_by_name(name)
+        s.sessions().find_by_name(name)
     });
     let started = match existing {
         Some(session) => spawn_pane_with_pty_and_colors(
@@ -375,7 +380,7 @@ mod tests {
             );
             let mut gone = false;
             for _ in 0..100 {
-                gone = state.with(|s| names.iter().all(|n| s.find_session_by_name(n).is_none()));
+                gone = state.with(|s| names.iter().all(|n| s.sessions().find_by_name(n).is_none()));
                 if gone {
                     break;
                 }
@@ -424,7 +429,10 @@ mod tests {
             );
             assert!(live(&state, name));
             let panes = |state: &SharedState| {
-                state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
+                state.with(|s| {
+                    s.sessions()
+                        .terminal_members(s.sessions().find_by_name(name).unwrap())
+                })
             };
             let first = panes(&state);
             // A hot upgrade's supervisor has no slot for what it adopts.

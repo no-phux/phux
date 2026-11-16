@@ -364,7 +364,8 @@ fn run_and_publish_session_create(
     if let Ok(wire) = &outcome {
         // Creation and this lookup run synchronously in the same server turn.
         let session_id = state.with_mut(|s| {
-            s.find_session_by_name(&name)
+            s.sessions()
+                .find_by_name(&name)
                 .map(|id| s.idspace.intern_session(id).get())
         });
         let payload =

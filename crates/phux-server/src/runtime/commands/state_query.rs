@@ -42,7 +42,8 @@ pub(crate) fn handle_get_state(
         StateScope::Server => {
             let snapshot = state.with_mut(|s| {
                 let focus = s
-                    .most_recently_touched_session()
+                    .sessions()
+                    .most_recently_touched()
                     .or_else(|| s.fallback_session());
                 let mut snapshot = focus
                     .and_then(|sid| s.build_session_snapshot(sid))

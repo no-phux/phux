@@ -6,7 +6,7 @@
 /// with `verb`, cut with a listener report so server-global data shows.
 fn filtered(world: &mut World, scopes: &[&str], verb: Verb) -> SessionSnapshot {
     world.state.set_connection_grant(CLIENT, scoped(scopes));
-    let alpha = world.state.find_session_by_name("alpha").unwrap();
+    let alpha = world.state.sessions().find_by_name("alpha").unwrap();
     let snapshot = world
         .state
         .build_session_snapshot(alpha)
@@ -108,7 +108,7 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
         )
         .unwrap();
     let child = world.state.idspace.intern_resource(child);
-    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let alpha_session = world.state.sessions().find_by_name("alpha").unwrap();
     let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
     for resource in &mut whole.resources {
         resource.viewers = vec![phux_protocol::ids::ClientId::new(99)];
@@ -131,7 +131,7 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     world
         .state
         .set_connection_grant(CLIENT, ConnectionGrant::owner());
-    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let alpha_session = world.state.sessions().find_by_name("alpha").unwrap();
     let whole = world.state.build_session_snapshot(alpha_session).unwrap();
     let owner =
         super::filter::filter_snapshot(&world.state, CLIENT, Verb::Inventory, whole.clone());

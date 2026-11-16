@@ -1,13 +1,19 @@
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::registry::Registry;
-use phux_core::session::Session;
 use phux_core::{Actor, ExitPolicy, Op, Refusal, SessionLifetime, TerminalLaunch};
 use phux_protocol::ids::ResourceId as WireResourceId;
 
 use super::org::TerminalTarget;
-use super::{KeepEmptyOutcome, RenameOutcome, ServerState};
+use super::{KeepEmptyOutcome, RenameOutcome, ServerState, SessionTable};
 
 impl ServerState {
+    /// The organization registry and per-session ledgers, read-only: session
+    /// changes commit and journal through `ServerState`.
+    #[must_use]
+    pub(crate) const fn sessions(&self) -> &SessionTable {
+        &self.sessions
+    }
+
     /// The organization registry: every session and resource record with
     /// its live handle.
     #[must_use]
@@ -21,36 +27,14 @@ impl ServerState {
         &mut self.sessions.registry
     }
 
-    /// Most-recently-touched live session, if any. Resolves
-    /// `AttachTarget::Last`.
-    #[must_use]
-    pub fn most_recently_touched_session(&self) -> Option<SessionId> {
-        self.sessions.most_recently_touched()
-    }
-
-    /// Whether this server has any session-touch history, even if every
-    /// touched session has since gone away.
-    #[must_use]
-    pub(crate) fn has_session_touch_history(&self) -> bool {
-        self.sessions.has_touch_history()
-    }
-
     /// Mark `session` as touched by attach/input/focus activity.
     pub fn touch_session(&mut self, session: SessionId) {
         self.sessions.touch(session);
     }
 
-    /// The Terminal a session-addressed action without a pane lands on
-    /// (R14): the member that last took human input, else the first leaf of
-    /// the arrangement's first group, else the oldest Terminal member.
-    #[must_use]
-    pub fn active_pane_of_session(&self, session: SessionId) -> Option<ResourceId> {
-        self.sessions.default_pane_of(session)
-    }
-
     /// The session's default resource, regardless of kind: its recent member,
     /// first arranged member, or oldest member. Terminal compatibility commands
-    /// deliberately keep using [`Self::active_pane_of_session`].
+    /// deliberately keep using `SessionTable::default_pane_of`.
     #[must_use]
     pub fn active_resource_of_session(&self, session: SessionId) -> Option<ResourceId> {
         let record = self.registry().session(session)?;
@@ -96,23 +80,6 @@ impl ServerState {
             .find(|(_, id, _)| !self.session_resources(*id).is_empty())
             .or_else(|| sessions.iter().find(|(_, _, is_intake)| !is_intake))
             .map(|(_, id, _)| *id)
-    }
-
-    /// Borrow the session named `name`, if it exists.
-    #[must_use]
-    pub fn session_by_name(&self, name: &str) -> Option<&Session> {
-        self.sessions.by_name(name)
-    }
-
-    /// The [`SessionId`] named `name`.
-    pub(crate) fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
-        self.sessions.find_by_name(name)
-    }
-
-    /// `session`'s Terminal members, in membership order.
-    #[must_use]
-    pub fn session_terminals(&self, session: SessionId) -> Vec<ResourceId> {
-        self.sessions.terminal_members(session)
     }
 
     /// Rename `current` to `new_name` as the owner; see

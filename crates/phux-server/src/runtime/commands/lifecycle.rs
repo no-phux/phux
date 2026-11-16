@@ -154,7 +154,7 @@ pub(crate) fn create_named_session(
     origin: SeedOrigin,
     root_token: &CancellationToken,
 ) -> Result<phux_protocol::ids::ResourceId, String> {
-    if state.with(|s| s.session_by_name(name).is_some()) {
+    if state.with(|s| s.sessions().by_name(name).is_some()) {
         return Err(format!("session {name:?} already exists"));
     }
 
@@ -190,7 +190,7 @@ pub(crate) fn create_empty_session(
     actor: &phux_core::Actor,
 ) -> Result<(), String> {
     state.with_mut(|s| {
-        if s.session_by_name(name).is_some() {
+        if s.sessions().by_name(name).is_some() {
             return Err(format!("session {name:?} already exists"));
         }
         s.create_empty_session(name, phux_core::SessionLifetime::Persistent, actor)

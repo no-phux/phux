@@ -199,7 +199,7 @@ pub(super) fn resolve_spawn_ownership(
         s.attached()
             .get(&client_id)
             .map(|c| c.session)
-            .or_else(|| s.most_recently_touched_session())
+            .or_else(|| s.sessions().most_recently_touched())
             .or_else(|| s.fallback_session())
     });
     let Some(session) = session else {

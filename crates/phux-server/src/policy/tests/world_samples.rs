@@ -127,7 +127,7 @@ fn agent_child(world: &mut World) -> WireResourceId {
 fn session_group_id(world: &World, name: &str) -> u32 {
     world
         .state
-        .find_session_by_name(name)
+        .sessions().find_by_name(name)
         .and_then(|session| world.state.idspace.session_wire(session))
         .unwrap()
         .get()

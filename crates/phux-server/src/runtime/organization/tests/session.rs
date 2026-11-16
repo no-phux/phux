@@ -47,7 +47,7 @@ fn session_kill_ends_every_member_and_deletes_the_session() {
                 .sessions
                 .is_empty()
         );
-        assert!(state.with(|s| s.session_by_name("work").is_none()));
+        assert!(state.with(|s| s.sessions().by_name("work").is_none()));
         let replayed = committed(handle(&state, CLIENT, kill, &root));
         assert_eq!(replayed.members, None, "a replay answers without the count");
 

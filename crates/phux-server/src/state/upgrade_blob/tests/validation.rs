@@ -126,7 +126,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
                     "main".to_owned()
                 ]
             );
-            let main = state.session_by_name("main").expect("main").clone();
+            let main = state.sessions().by_name("main").expect("main").clone();
             assert!(
                 main.awaiting_organization,
                 "imported work awaits organization"
@@ -184,9 +184,9 @@ async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
             );
             crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("an old image with an emptied window imports");
-            let empty = state.session_by_name("empty").expect("empty kept");
+            let empty = state.sessions().by_name("empty").expect("empty kept");
             assert_eq!(empty.lifetime, phux_core::SessionLifetime::Persistent);
-            let main = state.session_by_name("main").expect("main").clone();
+            let main = state.sessions().by_name("main").expect("main").clone();
             let arrangement = state
                 .org()
                 .arrangement(&main.arrangement.expect("arranged"))

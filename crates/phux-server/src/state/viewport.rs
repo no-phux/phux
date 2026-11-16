@@ -28,7 +28,8 @@ impl ServerState {
         let Some(attached) = self.clients.attached.get(&client) else {
             return Vec::new();
         };
-        self.session_terminals(attached.session)
+        self.sessions()
+            .terminal_members(attached.session)
             .into_iter()
             .filter(|terminal| {
                 self.resources()

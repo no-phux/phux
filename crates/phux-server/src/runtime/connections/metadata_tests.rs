@@ -317,7 +317,7 @@ async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
         let session_id = |state: &SharedState| {
             state.with_mut(|s| {
                 s.idspace
-                    .intern_session(s.find_session_by_name("original").expect("session"))
+                    .intern_session(s.sessions().find_by_name("original").expect("session"))
                     .get()
             })
         };
@@ -357,8 +357,8 @@ async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
                 &root_token,
             );
         }
-        assert!(state.with(|s| s.session_by_name("first").is_some()));
-        assert!(state.with(|s| s.session_by_name("collision").is_none()));
+        assert!(state.with(|s| s.sessions().by_name("first").is_some()));
+        assert!(state.with(|s| s.sessions().by_name("collision").is_none()));
         root_token.cancel();
     })
     .await;

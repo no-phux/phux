@@ -190,7 +190,8 @@ fn resolve_spawn_target(
         ));
     }
     let session = s
-        .find_session_by_name(&spec.session)
+        .sessions()
+        .find_by_name(&spec.session)
         .ok_or_else(|| refusal("native launch requires an existing organization session"))?;
     let guardian = selected_guardian(s, spec)?;
     if let Some(guardian) = guardian {

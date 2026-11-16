@@ -23,7 +23,7 @@ pub(crate) async fn resolve_create_if_missing(
         root_token,
         default_colors,
     } = seed;
-    if state.with(|s| s.session_by_name(&name).is_some()) {
+    if state.with(|s| s.sessions().by_name(&name).is_some()) {
         debug!(session = %name, "CreateIfMissing: session already exists, attaching");
         return Some(name);
     }
@@ -101,7 +101,7 @@ pub(crate) async fn resolve_inherited_cwd(
 async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let handle = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
-        let focused = s.active_pane_of_session(session)?;
+        let focused = s.sessions().default_pane_of(session)?;
         s.resources().handle(focused).cloned()
     })?;
     query_pane_cwd(handle).await
@@ -112,10 +112,10 @@ async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<St
 async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
-        if let Some(root) = s.session_root(session) {
+        if let Some(root) = s.sessions().root(session) {
             return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
         }
-        let seed = s.seed_pane_of_session(session)?;
+        let seed = s.sessions().seed_pane_of(session)?;
         let handle = s.resources().handle(seed).cloned()?;
         Some((session, FrozenOrQuery::Query(handle)))
     })?;
@@ -138,7 +138,8 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
     let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
         let handle = s
-            .active_pane_of_session(session)
+            .sessions()
+            .default_pane_of(session)
             .and_then(|p| s.resources().handle(p).cloned());
         Some((session, handle))
     })?;
@@ -152,7 +153,11 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
         });
         return Some(cwd);
     }
-    state.with(|s| s.session_last_cwd(session).and_then(|p| path_to_string(p)))
+    state.with(|s| {
+        s.sessions()
+            .last_cwd(session)
+            .and_then(|p| path_to_string(p))
+    })
 }
 
 /// A frozen session root, or the handle to query for one off-lock.
