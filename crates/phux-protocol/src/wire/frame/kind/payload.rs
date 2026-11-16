@@ -19,19 +19,19 @@ impl FrameKind {
             | Self::Ping { .. }
             | Self::Pong { .. }
             | Self::ResourceOutput { .. }
-            | Self::Attach { .. }
             | Self::Detach
             | Self::Detached { .. }
-            | Self::InputKey { .. }
-            | Self::InputMouse { .. }
-            | Self::InputFocus { .. }
-            | Self::InputPaste { .. }
-            | Self::InputTerminalReply { .. }
-            | Self::ClipboardReply { .. }
-            | Self::FrameAck { .. }
-            | Self::ViewportResize { .. }
-            | Self::Attached { .. }
-            | Self::AttachReady { .. } => self.encode_connection_payload(enc),
+            | Self::InputTerminalReply { .. } => self.encode_connection_payload(enc),
+            Self::Attach { .. } => field::attach::encode(self, enc),
+            Self::InputKey { .. } => field::input_key::encode(self, enc),
+            Self::InputMouse { .. } => field::input_mouse::encode(self, enc),
+            Self::InputFocus { .. } => field::input_focus::encode(self, enc),
+            Self::InputPaste { .. } => field::input_paste::encode(self, enc),
+            Self::ClipboardReply { .. } => field::clipboard_reply::encode(self, enc),
+            Self::FrameAck { .. } => field::frame_ack::encode(self, enc),
+            Self::ViewportResize { .. } => field::viewport_resize::encode(self, enc),
+            Self::Attached { .. } => field::attached::encode(self, enc),
+            Self::AttachReady { .. } => field::attach_ready::encode(self, enc),
             Self::BootstrapBegin { .. }
             | Self::BootstrapChunk { .. }
             | Self::BootstrapReady { .. }
@@ -39,9 +39,9 @@ impl FrameKind {
             | Self::HistoryPage { .. }
             | Self::BootstrapTombstone { .. }
             | Self::HistoryTombstone { .. }
-            | Self::HistoryRejected { .. }
-            | Self::Bell { .. }
-            | Self::Error { .. } => self.encode_stream_payload(enc),
+            | Self::HistoryRejected { .. } => self.encode_stream_payload(enc),
+            Self::Bell { .. } => field::bell::encode(self, enc),
+            Self::Error { .. } => field::error::encode(self, enc),
             Self::GetMetadata { .. } | Self::DeleteMetadata { .. } => {
                 field::get_metadata::encode(self, enc);
             }

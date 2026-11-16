@@ -1,18 +1,16 @@
-//! Payload writers for the handshake, attach, input, and ack frames.
+//! Payload writers for the handshake, output, detach, and terminal-reply
+//! frames.
 
 use crate::caps::{ClientCapabilities, Compression, ServerCapabilities};
 use crate::wire::encode::Encoder;
 use crate::wire::field;
-use crate::wire::frame::{
-    encode_attach_target, encode_bootstrap_profile, encode_focus_event, encode_key_event,
-    encode_mouse_event, encode_paste_event, encode_viewport_info,
-};
-use crate::wire::info::{encode_client_id, encode_session_snapshot};
+use crate::wire::frame::encode_bootstrap_profile;
 
 use super::{FrameKind, id_field};
 
 impl FrameKind {
-    /// Write a connection frame's payload: handshake, attach, input, ack.
+    /// Write a connection frame's payload: handshake, output, detach,
+    /// terminal reply.
     #[allow(
         clippy::too_many_lines,
         reason = "one arm per connection frame, each its field order"
@@ -83,27 +81,6 @@ impl FrameKind {
                 enc.write_u64_field(field::terminal_output::STREAM_ID, stream_id.get());
                 enc.write_u64_field(field::terminal_output::BOOTSTRAP_ID, bootstrap_id.get());
             }
-            Self::Attach {
-                attach_id,
-                target,
-                viewport,
-                request_scrollback,
-                scrollback_limit_lines,
-                role_policy,
-            } => {
-                enc.write_field_with(field::attach::TARGET, |e| encode_attach_target(target, e));
-                enc.write_field_with(field::attach::VIEWPORT, |e| {
-                    encode_viewport_info(viewport, e);
-                });
-                let scrollback = u8::from(*request_scrollback);
-                enc.write_u8_field(field::attach::REQUEST_SCROLLBACK, scrollback);
-                let limit = *scrollback_limit_lines;
-                enc.write_u32_field(field::attach::SCROLLBACK_LIMIT_LINES, limit);
-                enc.write_u32_field(field::attach::ATTACH_ID, *attach_id);
-                if let Some(policy) = role_policy {
-                    enc.write_u8_field(field::attach::ROLE_POLICY, policy.to_u8());
-                }
-            }
             // A unit variant: the type byte only.
             Self::Detach => {}
             // An unstated reason and an empty message encode as nothing, so
@@ -116,66 +93,9 @@ impl FrameKind {
                     enc.write_field(field::detached::MESSAGE, message.as_bytes());
                 }
             }
-            Self::InputKey { terminal_id, event } => {
-                id_field(enc, field::input_key::TERMINAL_ID, terminal_id);
-                enc.write_field_with(field::input_key::EVENT, |e| encode_key_event(event, e));
-            }
-            Self::InputMouse { terminal_id, event } => {
-                id_field(enc, field::input_mouse::TERMINAL_ID, terminal_id);
-                enc.write_field_with(field::input_mouse::EVENT, |e| encode_mouse_event(event, e));
-            }
-            Self::InputFocus { terminal_id, event } => {
-                id_field(enc, field::input_focus::TERMINAL_ID, terminal_id);
-                enc.write_u8_field(field::input_focus::EVENT, encode_focus_event(*event));
-            }
-            Self::InputPaste { terminal_id, event } => {
-                id_field(enc, field::input_paste::TERMINAL_ID, terminal_id);
-                enc.write_field_with(field::input_paste::EVENT, |e| encode_paste_event(event, e));
-            }
             Self::InputTerminalReply { terminal_id, bytes } => {
                 id_field(enc, field::input_terminal_reply::TERMINAL_ID, terminal_id);
                 enc.write_field(field::input_terminal_reply::BYTES, bytes);
-            }
-            Self::ClipboardReply {
-                terminal_id,
-                selection,
-                text,
-            } => {
-                id_field(enc, field::clipboard_reply::TERMINAL_ID, terminal_id);
-                enc.write_u8_field(field::clipboard_reply::SELECTION, *selection);
-                enc.write_field(field::clipboard_reply::TEXT, text.0.as_bytes());
-            }
-            Self::FrameAck {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-            } => {
-                id_field(enc, field::frame_ack::TERMINAL_ID, terminal_id);
-                enc.write_u64_field(field::frame_ack::SEQ, *seq);
-                enc.write_u64_field(field::frame_ack::STREAM_ID, stream_id.get());
-                enc.write_u64_field(field::frame_ack::BOOTSTRAP_ID, bootstrap_id.get());
-            }
-            Self::ViewportResize { viewport } => {
-                enc.write_field_with(field::viewport_resize::VIEWPORT, |e| {
-                    encode_viewport_info(viewport, e);
-                });
-            }
-            Self::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id,
-            } => {
-                enc.write_field_with(field::attached::SNAPSHOT, |e| {
-                    encode_session_snapshot(snapshot, e);
-                });
-                enc.write_field_with(field::attached::INITIAL_CLIENT_ID, |e| {
-                    encode_client_id(*initial_client_id, e);
-                });
-                enc.write_u32_field(field::attached::ATTACH_ID, *attach_id);
-            }
-            Self::AttachReady { attach_id } => {
-                enc.write_u32_field(field::attach_ready::ATTACH_ID, *attach_id);
             }
             _ => unreachable!("encode_payload routes only connection frames here"),
         }

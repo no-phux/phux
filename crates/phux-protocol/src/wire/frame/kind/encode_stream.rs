@@ -1,10 +1,10 @@
-//! Payload writers for the bootstrap, history, bell, and error frames.
+//! Payload writers for the bootstrap and history frames.
 
 use crate::wire::encode::Encoder;
 use crate::wire::field;
 use crate::wire::frame::encode_bootstrap_codec;
 
-use super::{FrameKind, generation_fields, id_field};
+use super::{FrameKind, generation_fields};
 
 impl FrameKind {
     /// Write a stream frame's payload. Bootstrap and history frames open
@@ -130,18 +130,6 @@ impl FrameKind {
                 let (bytes, rows) = (*required_bytes, *required_rows);
                 enc.write_u32_field(field::history_rejected::REQUIRED_BYTES, bytes);
                 enc.write_u32_field(field::history_rejected::REQUIRED_ROWS, rows);
-            }
-            Self::Bell { terminal_id } => id_field(enc, field::bell::TERMINAL_ID, terminal_id),
-            Self::Error {
-                request_id,
-                code,
-                message,
-            } => {
-                if let Some(id) = request_id {
-                    enc.write_u32_field(field::error::REQUEST_ID, *id);
-                }
-                enc.write_u16_field(field::error::CODE, code.as_wire());
-                enc.write_field(field::error::MESSAGE, message.as_bytes());
             }
             _ => unreachable!("encode_payload routes only stream frames here"),
         }

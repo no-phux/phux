@@ -1,5 +1,13 @@
 //! Handshake, attach, input, stream, and teardown frame bodies.
 
+use crate::ids::{BootstrapId, ClientId, ResourceId, StreamId};
+use crate::input::focus::FocusEvent;
+use crate::input::key::KeyEvent;
+use crate::input::mouse::MouseEvent;
+use crate::input::paste::{ClipboardData, PasteEvent};
+use crate::wire::frame::{AttachTarget, ErrorCode, RolePolicy, ViewportInfo};
+use crate::wire::info::SessionSnapshot;
+
 tlv_body! {
     /// `HELLO` body fields (`docs/protocol.md#handshake`).
     pub mod hello {
@@ -83,59 +91,59 @@ tlv_body! {
 
 tlv_body! {
     /// `ATTACH` body fields (`docs/protocol.md`).
-    pub mod attach {
+    pub mod attach for Attach => decode_attach {
         /// `AttachTarget` tagged union (positional).
-        pub const TARGET: u32 = 1;
+        pub const TARGET: u32 = 1 => required target: AttachTarget;
         /// `ViewportInfo` (positional sub-record).
-        pub const VIEWPORT: u32 = 2;
+        pub const VIEWPORT: u32 = 2 => required viewport: ViewportInfo;
         /// `request_scrollback: bool`.
-        pub const REQUEST_SCROLLBACK: u32 = 3;
+        pub const REQUEST_SCROLLBACK: u32 = 3 => default request_scrollback: bool;
         /// `scrollback_limit_lines: u32`.
-        pub const SCROLLBACK_LIMIT_LINES: u32 = 4;
+        pub const SCROLLBACK_LIMIT_LINES: u32 = 4 => default scrollback_limit_lines: u32;
         /// Client-chosen attach correlation id (`u32`).
-        pub const ATTACH_ID: u32 = 5;
+        pub const ATTACH_ID: u32 = 5 => required attach_id: u32;
         /// `role_policy: u8` (ADR-0127); absent = `{ PRIMARY, NEVER }`.
-        pub const ROLE_POLICY: u32 = 6;
+        pub const ROLE_POLICY: u32 = 6 => optional role_policy: RolePolicy;
     }
 }
 
 tlv_body! {
     /// `INPUT_KEY` body fields (`docs/protocol.md#input`).
-    pub mod input_key {
+    pub mod input_key for InputKey => decode_input_key {
         /// Target `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// `KeyEvent` (positional sub-record).
-        pub const EVENT: u32 = 2;
+        pub const EVENT: u32 = 2 => required event: KeyEvent;
     }
 }
 
 tlv_body! {
     /// `INPUT_MOUSE` body fields (`docs/protocol.md#input`).
-    pub mod input_mouse {
+    pub mod input_mouse for InputMouse => decode_input_mouse {
         /// Target `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// `MouseEvent` (positional sub-record).
-        pub const EVENT: u32 = 2;
+        pub const EVENT: u32 = 2 => required event: MouseEvent;
     }
 }
 
 tlv_body! {
     /// `INPUT_FOCUS` body fields (`docs/protocol.md#input`).
-    pub mod input_focus {
+    pub mod input_focus for InputFocus => decode_input_focus {
         /// Target `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// Focus kind (`u8`: gained=0 / lost=1).
-        pub const EVENT: u32 = 2;
+        pub const EVENT: u32 = 2 => required event: FocusEvent;
     }
 }
 
 tlv_body! {
     /// `INPUT_PASTE` body fields (`docs/protocol.md#input`).
-    pub mod input_paste {
+    pub mod input_paste for InputPaste => decode_input_paste {
         /// Target `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// `PasteEvent` (positional sub-record: trust byte + bytes).
-        pub const EVENT: u32 = 2;
+        pub const EVENT: u32 = 2 => required event: PasteEvent;
     }
 }
 
@@ -151,55 +159,55 @@ tlv_body! {
 
 tlv_body! {
     /// `CLIPBOARD_REPLY` body fields (`docs/program-sequences.md#clipboard-osc-52`).
-    pub mod clipboard_reply {
+    pub mod clipboard_reply for ClipboardReply => decode_clipboard_reply {
         /// Attached target `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// OSC 52 selection byte (`u8`): `c` or `p`.
-        pub const SELECTION: u32 = 2;
+        pub const SELECTION: u32 = 2 => required selection: u8;
         /// UTF-8 clipboard text, at most `MAX_CLIPBOARD_TEXT` bytes.
-        pub const TEXT: u32 = 3;
+        pub const TEXT: u32 = 3 => required text: ClipboardData;
     }
 }
 
 tlv_body! {
     /// `FRAME_ACK` body fields (`docs/protocol.md#attach-and-output`).
-    pub mod frame_ack {
+    pub mod frame_ack for FrameAck => decode_frame_ack {
         /// Acked `ResourceId` (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
         /// Acked sequence id (`u64`).
-        pub const SEQ: u32 = 2;
+        pub const SEQ: u32 = 2 => required seq: u64;
         /// Logical `StreamId` (`u64`, non-zero).
-        pub const STREAM_ID: u32 = 3;
+        pub const STREAM_ID: u32 = 3 => required stream_id: StreamId;
         /// Replica `BootstrapId` (`u64`, non-zero).
-        pub const BOOTSTRAP_ID: u32 = 4;
+        pub const BOOTSTRAP_ID: u32 = 4 => required bootstrap_id: BootstrapId;
     }
 }
 
 tlv_body! {
     /// `VIEWPORT_RESIZE` body fields (`docs/protocol.md`).
-    pub mod viewport_resize {
+    pub mod viewport_resize for ViewportResize => decode_viewport_resize {
         /// New `ViewportInfo` (positional sub-record).
-        pub const VIEWPORT: u32 = 1;
+        pub const VIEWPORT: u32 = 1 => required viewport: ViewportInfo;
     }
 }
 
 tlv_body! {
     /// `ATTACHED` body fields (`docs/protocol.md#attach-and-output`).
-    pub mod attached {
+    pub mod attached for Attached => decode_attached {
         /// Full `SessionSnapshot` (positional sub-record).
-        pub const SNAPSHOT: u32 = 1;
+        pub const SNAPSHOT: u32 = 1 => required snapshot: SessionSnapshot;
         /// Server-allocated `ClientId` for this attachment (`u32`).
-        pub const INITIAL_CLIENT_ID: u32 = 2;
+        pub const INITIAL_CLIENT_ID: u32 = 2 => required initial_client_id: ClientId;
         /// Client-chosen attach correlation id (`u32`).
-        pub const ATTACH_ID: u32 = 3;
+        pub const ATTACH_ID: u32 = 3 => required attach_id: u32;
     }
 }
 
 tlv_body! {
     /// `ATTACH_READY` body fields (`docs/protocol.md#attach-and-output`).
-    pub mod attach_ready {
+    pub mod attach_ready for AttachReady => decode_attach_ready {
         /// Client-chosen attach correlation id (`u32`).
-        pub const ATTACH_ID: u32 = 1;
+        pub const ATTACH_ID: u32 = 1 => required attach_id: u32;
     }
 }
 
@@ -374,20 +382,20 @@ tlv_body! {
 
 tlv_body! {
     /// `BELL` body fields (`docs/protocol.md#commands-events-resources`).
-    pub mod bell {
+    pub mod bell for Bell => decode_bell {
         /// Terminal that received the bell character (positional tagged union).
-        pub const TERMINAL_ID: u32 = 1;
+        pub const TERMINAL_ID: u32 = 1 => required terminal_id: ResourceId;
     }
 }
 
 tlv_body! {
     /// `ERROR` body fields (`docs/protocol.md`).
-    pub mod error {
+    pub mod error for Error => decode_error {
         /// Optional correlating `request_id` (absent field = `None`).
-        pub const REQUEST_ID: u32 = 1;
+        pub const REQUEST_ID: u32 = 1 => optional request_id: u32;
         /// Structured `ErrorCode` (`u16`).
-        pub const CODE: u32 = 2;
+        pub const CODE: u32 = 2 => required code: ErrorCode;
         /// Human-readable UTF-8 message.
-        pub const MESSAGE: u32 = 3;
+        pub const MESSAGE: u32 = 3 => required message: String;
     }
 }

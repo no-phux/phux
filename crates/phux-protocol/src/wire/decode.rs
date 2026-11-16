@@ -7,14 +7,12 @@ use super::frame::{
     CloseReason, DetachReason, ErrorCode, FrameKind, HistoryRejectionReason,
     HistoryTombstoneReason, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
     MAX_INPUT_TERMINAL_REPLY_BYTES, SpawnResource, TYPE_FRAME_COMPRESSED, TombstoneReason,
-    decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
-    decode_bootstrap_id, decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
-    decode_command_result, decode_directory_listing, decode_env, decode_focus_event,
-    decode_idempotency_key, decode_key_event, decode_list_directory, decode_mouse_event,
-    decode_move_result, decode_paste_event, decode_query, decode_results, decode_spawn_result,
-    decode_stream_id, decode_string_list, decode_terminal_id, decode_viewport_info,
+    decode_actor_ref, decode_agent_event, decode_bootstrap_codec, decode_bootstrap_id,
+    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    decode_command_result, decode_directory_listing, decode_env, decode_idempotency_key,
+    decode_list_directory, decode_move_result, decode_query, decode_results, decode_spawn_result,
+    decode_stream_id, decode_string_list, decode_terminal_id,
 };
-use super::info::{decode_client_id, decode_session_snapshot};
 use super::tlv::TlvValue;
 use crate::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,

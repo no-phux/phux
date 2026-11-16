@@ -23,13 +23,7 @@ use std::path::PathBuf;
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    Decoder, decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
-    decode_bootstrap_profile, decode_client_capabilities, decode_command, decode_command_result,
-    decode_env, decode_key_event, decode_mouse_event, decode_move_result, decode_paste_event,
-    decode_server_capabilities, decode_session_snapshot, decode_spawn_result, decode_string_list,
-    decode_terminal_id, decode_viewport_info,
-};
+use super::{Decoder, decode_client_capabilities, decode_server_capabilities};
 use crate::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Compression, ServerCapabilities,
 };
@@ -38,7 +32,6 @@ use crate::ids::{
     WindowId,
 };
 use crate::wire::encode::wire_type;
-use crate::wire::frame::decode_scope;
 use crate::wire::frame::{
     ActorRef, AgentEvent, CloseReason, CommandResult, CommandValue, DetachReason, DirectoryEntry,
     DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode, EventStamp, FrameKind,
@@ -46,7 +39,14 @@ use crate::wire::frame::{
     PathQueryError, PathRow, PathStatus, Scope, SpawnResult, TYPE_FRAME_COMPRESSED,
     TombstoneReason,
 };
+use crate::wire::frame::{
+    decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
+    decode_bootstrap_profile, decode_command, decode_command_result, decode_env, decode_key_event,
+    decode_mouse_event, decode_move_result, decode_paste_event, decode_scope, decode_spawn_result,
+    decode_string_list, decode_terminal_id, decode_viewport_info,
+};
 use crate::wire::info::SessionSnapshot;
+use crate::wire::info::decode_session_snapshot;
 use crate::wire::ssh_origin::decode_ssh_origin;
 
 mod derive;
