@@ -39,60 +39,45 @@ fn prepare_tick_serves_fresh_rows_after_resize() {
     );
 }
 
-/// The reference diff trips on a 1049 -> primary transition.
+/// A mode-only change (no glyph or cursor edit beyond what the mode itself
+/// does) still trips the reference diff, which re-emits the mode.
 #[test]
-fn reference_diff_trips_on_alt_screen_transition() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"\x1b[?1049h");
-    t.vt_write(b"alt body");
+fn reference_diff_trips_on_a_mode_only_change() {
+    for (label, setup, change, needles) in [
+        (
+            "leaving the 1049 alt screen",
+            b"\x1b[?1049halt body".as_slice(),
+            b"\x1b[?1049l".as_slice(),
+            ["?1049l"].as_slice(),
+        ),
+        (
+            "a bare mouse-mode toggle",
+            b"steady body",
+            b"\x1b[?1000h\x1b[?1006h",
+            &["?1000h", "?1006h"],
+        ),
+    ] {
+        let mut t = fresh(20, 4);
+        t.vt_write(setup);
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        let mut reference = ConsumerReference::new();
+        synth
+            .prime_reference(&t, &mut reference)
+            .expect("prime_reference");
 
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let mut reference = ConsumerReference::new();
-    synth
-        .prime_reference(&t, &mut reference)
-        .expect("prime_reference");
+        t.vt_write(change);
 
-    // Leave the alt screen: a mode-only change, no row content edits
-    // beyond what 1049's restore does.
-    t.vt_write(b"\x1b[?1049l");
-
-    let diff = synth
-        .synthesize_against_reference(&t, &mut reference)
-        .expect("diff");
-    assert!(
-        !diff.bytes.is_empty(),
-        "a 1049->primary transition must produce a non-empty diff",
-    );
-    let bytes = String::from_utf8_lossy(&diff.bytes);
-    assert!(
-        bytes.contains("?1049l"),
-        "the diff epilogue must re-emit ?1049l on leaving the alt screen; bytes={bytes:?}",
-    );
-}
-
-/// A bare mouse-mode toggle (no row or cursor change) still diffs.
-#[test]
-fn reference_diff_trips_on_a_bare_mouse_mode_toggle() {
-    let mut t = fresh(20, 4);
-    t.vt_write(b"steady body");
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let mut reference = ConsumerReference::new();
-    synth
-        .prime_reference(&t, &mut reference)
-        .expect("prime_reference");
-
-    // Mode-only change: no glyphs, no cursor movement.
-    t.vt_write(b"\x1b[?1000h\x1b[?1006h");
-
-    let diff = synth
-        .synthesize_against_reference(&t, &mut reference)
-        .expect("diff");
-    let bytes = String::from_utf8_lossy(&diff.bytes);
-    assert!(
-        bytes.contains("?1000h") && bytes.contains("?1006h"),
-        "a bare mouse-mode toggle must re-emit the epilogue; bytes={bytes:?}",
-    );
+        let diff = synth
+            .synthesize_against_reference(&t, &mut reference)
+            .expect("diff");
+        let bytes = String::from_utf8_lossy(&diff.bytes);
+        for needle in needles {
+            assert!(
+                bytes.contains(needle),
+                "{label}: the diff epilogue must re-emit {needle}; bytes={bytes:?}",
+            );
+        }
+    }
 }
 
 /// An unchanged terminal diffs to nothing, repeatedly.
