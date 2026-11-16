@@ -1,7 +1,8 @@
 # Build a phux client
 
 Show the coding agents running in phux in your own app, and let a person
-answer the ones that are waiting.
+answer the ones that are waiting. There is no published SDK or client
+library yet.
 
 This page is for a dashboard, a menu-bar app, or an agent terminal. It needs
 no library: the app runs the `phux` binary and reads JSON. Everything here is

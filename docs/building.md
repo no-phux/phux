@@ -4,6 +4,15 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
+There is no published SDK or client library yet. A program builds on the
+[versioned `--json` CLI](./scripting.md#json-output-and-errors)
+(`phux agent list --json`; [`phux watch --json`](./scripting.md#watching-events)
+prints one JSON object per line), the [MCP server](./agents.md#mcp) (`phux mcp`
+over stdio), the [server protocol](./protocol.md), or the Rust crates
+`phux-client-runtime` and `phux-client-ffi` ([Embed phux](./embedding.md)).
+Those two crates set `publish = false` ([npm and crates.io](./releasing.md#npm-and-cratesio))
+and are not on crates.io yet.
+
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
