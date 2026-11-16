@@ -161,7 +161,7 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
             while y < h {
                 let mut x = x0;
                 while x < r.w {
-                    tiles.push(el().absolute(x, y).size(tw, th).pixels(&desk.reef.caustic));
+                    tiles.push(el().absolute(x, y).size(tw, th).pixels(&desk.reef.backdrop));
                     x += tw;
                 }
                 y += th;

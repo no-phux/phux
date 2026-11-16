@@ -69,11 +69,11 @@ impl Desk {
         match self.playground {
             None => false,
             Some(Playground::Galaxy) => self.tick_galaxy(tx),
-            Some(Playground::Reef) => self.tick_reef(tx),
-            Some(Playground::Pitch) => self.tick_pitch(tx),
-            Some(Playground::Kitchen) => self.tick_kitchen(tx),
-            Some(Playground::PitLane) => self.tick_pitlane(tx),
-            Some(Playground::Hive) => self.tick_hive(tx),
+            Some(Playground::Reef) => self.tick_scene::<crate::reef::Reef>(tx),
+            Some(Playground::Pitch) => self.tick_scene::<crate::pitch::Pitch>(tx),
+            Some(Playground::Kitchen) => self.tick_scene::<crate::kitchen::Kitchen>(tx),
+            Some(Playground::PitLane) => self.tick_scene::<crate::pitlane::PitLane>(tx),
+            Some(Playground::Hive) => self.tick_scene::<crate::hive::Hive>(tx),
         }
     }
 

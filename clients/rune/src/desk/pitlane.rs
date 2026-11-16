@@ -1,81 +1,57 @@
 //! The pit lane view's state and what it does: the fleet as race cars, kept
 //! in step each frame, and the way from a car to its terminal. The scene is
-//! `crate::pitlane`; the painter is `ui::pitlane`.
+//! `crate::pitlane`; the painter is `ui::pitlane`. The shared ways in and
+//! out are `desk::scene_host`.
 
-use std::cell::{Cell, RefCell};
-use std::time::Duration;
+use std::cell::RefCell;
 
 use phux_protocol::ids::ResourceId;
-use rune::Tx;
 
 use super::Desk;
+use super::fleet::Machine;
+use super::scene_host::{FleetScene, SceneHost, SceneState};
+use super::surfaces::Playground;
 use crate::pitlane::{self, Driver};
 use crate::playground::{self, Mood};
 
-/// How often the pit lane redraws while open: every frame.
-const FRAME: Duration = Duration::from_millis(16);
+pub type PitLane = SceneHost<pitlane::PitLane>;
 
-#[derive(Debug, Default)]
-pub struct PitLane {
-    pub scene: pitlane::PitLane,
-    /// The view's size in points, from its last layout.
-    pub viewport: [f32; 2],
-    /// App clock seconds at the last frame.
-    last: Option<f64>,
-    /// Whether the theme is dark, as the last view build saw it: night.
-    pub night: Cell<bool>,
-    /// Reduced motion, as the last view build saw it.
-    pub still: Cell<bool>,
-    /// The grounds by day and by night, drawn once per layout: the
-    /// layout's revision and the two shapes.
-    pub ground: RefCell<(u64, rune::Shape, rune::Shape)>,
-}
+/// The grounds by day and by night, drawn once per layout: the layout's
+/// revision and the two shapes.
+pub type Backdrop = RefCell<(u64, rune::Shape, rune::Shape)>;
 
-impl Desk {
-    pub fn toggle_pitlane(&mut self) {
-        if self.playground == Some(super::surfaces::Playground::PitLane) {
-            self.close_pitlane();
-            return;
+/// Machines as garages in the galaxy's order, every agent it knows of as a car.
+impl FleetScene for pitlane::PitLane {
+    type Who = Driver;
+    type Backdrop = Backdrop;
+    const PLAYGROUND: Playground = Playground::PitLane;
+    const MACHINE_ORDER: bool = false;
+    const LAYOUT_FIRST: bool = false;
+
+    fn host(desk: &mut Desk) -> &mut PitLane {
+        &mut desk.pitlane
+    }
+
+    fn state(&mut self) -> SceneState<'_> {
+        SceneState {
+            selected: &mut self.selected,
+            hovered: &mut self.hovered,
+            nt_target: &mut self.nt_target,
+            reduce: &mut self.reduce,
         }
-        self.close_inbox();
-        self.settings_open = false;
-        self.playground = Some(super::surfaces::Playground::PitLane);
-        self.pitlane.last = None;
-        self.pitlane.scene.selected = None;
     }
 
-    pub fn close_pitlane(&mut self) {
-        self.close_playground(super::surfaces::Playground::PitLane);
+    fn waiting_ids(&self) -> Vec<ResourceId> {
+        let waiting = self.cars.iter().filter(|c| c.who.mood == Mood::Waiting);
+        waiting.map(|c| c.who.id.clone()).collect()
     }
 
-    /// Keep the cars in step with the fleet and the race moving while open.
-    pub(super) fn tick_pitlane(&mut self, tx: &mut Tx) -> bool {
-        if self.playground != Some(super::surfaces::Playground::PitLane) {
-            return false;
-        }
-        self.refresh_pitlane();
-        let dt = self
-            .pitlane
-            .last
-            .map_or(0.0, |last| (self.clock - last) as f32);
-        self.pitlane.last = Some(self.clock);
-        self.pitlane.scene.advance(dt);
-        tx.wake_after(FRAME);
-        true
+    fn selected_id(&self) -> Option<ResourceId> {
+        self.selected_car().map(|c| c.who.id.clone())
     }
 
-    /// The view laid out at `w` by `h`.
-    pub fn pitlane_laid_out(&mut self, w: f32, h: f32) {
-        self.pitlane.viewport = [w, h];
-        self.refresh_pitlane();
-    }
-
-    /// Machines as garages in the galaxy's order, every agent it knows of as a car.
-    fn refresh_pitlane(&mut self) {
-        let planets = self.fleet_machines();
-        let hosts: Vec<(String, bool)> =
-            planets.iter().map(|p| (p.name.clone(), p.known)).collect();
-        let drivers = planets
+    fn creatures(planets: &[Machine]) -> Vec<Driver> {
+        planets
             .iter()
             .enumerate()
             .flat_map(|(at, p)| {
@@ -88,71 +64,57 @@ impl Desk {
                     work: s.work,
                 })
             })
-            .collect();
-        let scene = &mut self.pitlane.scene;
-        scene.nt_target = if self.pitlane.night.get() { 1.0 } else { 0.0 };
-        scene.reduce = self.pitlane.still.get();
-        scene.sync(drivers);
-        let [w, h] = self.pitlane.viewport;
-        scene.layout(w, h, &hosts);
+            .collect()
     }
 
-    /// A press on a car selects it; a press on the selected one opens its
-    /// terminal, as the galaxy opens a star.
+    fn layout(&mut self, w: f32, h: f32, hosts: &[(String, bool)]) {
+        pitlane::PitLane::layout(self, w, h, hosts);
+    }
+
+    fn sync(&mut self, who: Vec<Driver>) {
+        pitlane::PitLane::sync(self, who);
+    }
+
+    fn advance(&mut self, dt: f32) {
+        pitlane::PitLane::advance(self, dt);
+    }
+}
+
+impl Desk {
+    pub fn toggle_pitlane(&mut self) {
+        self.toggle_scene::<pitlane::PitLane>();
+    }
+
+    pub fn close_pitlane(&mut self) {
+        self.close_scene::<pitlane::PitLane>();
+    }
+
+    pub fn pitlane_laid_out(&mut self, w: f32, h: f32) {
+        self.scene_laid_out::<pitlane::PitLane>(w, h);
+    }
+
     pub fn pitlane_press(&mut self, id: ResourceId) {
-        if self.pitlane.scene.selected.as_ref() == Some(&id) {
-            self.open_car();
-        } else {
-            self.pitlane.scene.selected = Some(id);
-        }
+        self.scene_press::<pitlane::PitLane>(id);
     }
 
     pub fn pitlane_deselect(&mut self) {
-        self.pitlane.scene.selected = None;
+        self.scene_deselect::<pitlane::PitLane>();
     }
 
     pub fn pitlane_hover(&mut self, id: ResourceId, on: bool) {
-        let hovered = &mut self.pitlane.scene.hovered;
-        if on {
-            *hovered = Some(id);
-        } else if hovered.as_ref() == Some(&id) {
-            *hovered = None;
-        }
+        self.scene_hover::<pitlane::PitLane>(id, on);
     }
 
-    /// The waiting car after the selected one, round again at the end.
     pub fn pitlane_next_waiting(&mut self) {
-        let scene = &self.pitlane.scene;
-        let waiting: Vec<ResourceId> = scene
-            .cars
-            .iter()
-            .filter(|c| c.who.mood == Mood::Waiting)
-            .map(|c| c.who.id.clone())
-            .collect();
-        if waiting.is_empty() {
-            return;
-        }
-        let next = waiting
-            .iter()
-            .position(|id| Some(id) == scene.selected.as_ref())
-            .map_or(0, |at| (at + 1) % waiting.len());
-        self.pitlane.scene.selected = Some(waiting[next].clone());
+        self.scene_next_waiting::<pitlane::PitLane>();
     }
 
-    /// Escape lets go of a car first, then closes.
     pub fn pitlane_escape(&mut self) {
-        if self.pitlane.scene.selected.take().is_none() {
-            self.close_pitlane();
-        }
+        self.scene_escape::<pitlane::PitLane>();
     }
 
     /// Close the pit lane on the selected car's terminal.
     pub fn open_car(&mut self) {
-        let Some(c) = self.pitlane.scene.selected_car() else {
-            return;
-        };
-        let id = c.who.id.clone();
-        self.close_pitlane();
-        self.go_to_agent(&id);
+        self.open_scene_pick::<pitlane::PitLane>();
     }
 }

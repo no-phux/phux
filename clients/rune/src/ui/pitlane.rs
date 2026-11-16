@@ -105,7 +105,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
 
 /// The grounds by day and by night, redrawn only when the layout changes.
 fn grounds(desk: &Desk, r: &PitLane) -> (rune::Shape, rune::Shape) {
-    let mut cache = desk.pitlane.ground.borrow_mut();
+    let mut cache = desk.pitlane.backdrop.borrow_mut();
     if cache.0 != r.rev {
         *cache = (r.rev, ground::paint(r, false), ground::paint(r, true));
     }

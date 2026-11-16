@@ -59,7 +59,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .filter(|(_, (shown, _))| *shown)
         .map(|(i, (_, alpha))| {
             full(el().key(format!("pitch-ground-{i}")))
-                .pixels(&desk.pitch.ground[i])
+                .pixels(&desk.pitch.backdrop.ground[i])
                 .opacity(alpha)
         });
 
@@ -69,7 +69,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .map(|([x, y], rad)| {
             el().absolute(x - rad, y - rad)
                 .size(2.0 * rad, 2.0 * rad)
-                .pixels(&desk.pitch.cloud)
+                .pixels(&desk.pitch.backdrop.cloud)
                 .opacity(0.09 * (1.0 - r.nt))
         });
     let mut air = Pen::new();
