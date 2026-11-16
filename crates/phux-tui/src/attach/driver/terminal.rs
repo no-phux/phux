@@ -50,9 +50,10 @@ fn take_termios_snapshot() -> Option<Termios> {
 static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Kitty keyboard flags pushed on the host while attached (ADR-0146):
-/// disambiguate only, so modified keys (Cmd+Return, Ctrl+I vs Tab) arrive as
-/// `CSI u` while plain text stays plain bytes.
-const HOST_KITTY_KEYBOARD_PUSH: &[u8] = b"\x1b[>1u";
+/// disambiguate, so modified keys (Cmd+Return, Ctrl+I vs Tab) arrive as
+/// `CSI u` while plain text stays plain bytes, plus report-alternates, so a
+/// chord on a non-Latin layout carries its base-layout key (Ctrl+С is ^C).
+const HOST_KITTY_KEYBOARD_PUSH: &[u8] = b"\x1b[>5u";
 /// Pops [`HOST_KITTY_KEYBOARD_PUSH`]; emitted only while on the alt screen,
 /// where the push landed (the kitty stack is per screen).
 const HOST_KITTY_KEYBOARD_POP: &[u8] = b"\x1b[<u";

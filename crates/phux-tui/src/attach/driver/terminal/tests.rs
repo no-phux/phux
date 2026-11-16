@@ -107,7 +107,7 @@ fn host_kitty_keyboard_is_pushed_on_entry_and_popped_on_reset() {
 
     let mut entry = Vec::new();
     write_enter_alt_screen(&mut entry, false).unwrap();
-    let push = pos(&entry, b"\x1b[>1u").expect("entry pushes kitty flags");
+    let push = pos(&entry, b"\x1b[>5u").expect("entry pushes kitty flags");
     assert!(pos(&entry, b"\x1b[?1049h").expect("alt screen") < push);
 
     ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
