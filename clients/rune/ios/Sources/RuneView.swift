@@ -25,7 +25,7 @@ final class RuneView: UIView {
     private var drawing = false
     private var identities: [ObjectIdentifier: UInt64] = [:]
     private var nextIdentity: UInt64 = 0
-    private var drawableRetries = 0
+    private var cadence = FrameCadence()
     private let path = NWPathMonitor()
     private var pathSettled = false
     private var pathWork: DispatchWorkItem?
@@ -67,6 +67,12 @@ final class RuneView: UIView {
         super.layoutSubviews()
         guard active, window != nil, bounds.width > 0, bounds.height > 0 else { return }
         layer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
+        // Acquisition must see this flag: wgpu then presents with the same
+        // Core Animation transaction as UIKit's keyboard/bounds change.
+        let metal = layer as! CAMetalLayer
+        let transactional = metal.presentsWithTransaction
+        metal.presentsWithTransaction = true
+        defer { metal.presentsWithTransaction = transactional }
         do {
             if bridge == nil {
                 let box = WakeBox(); box.view = self
@@ -94,6 +100,13 @@ final class RuneView: UIView {
     /// The display link draws the next frame; drawing here as well would
     /// add an off-vsync frame to every touch sample.
     func wake() {
+        // A stream of input/network wakes must not bypass a failed drawable's
+        // cooldown. The already-scheduled retry still draws the latest state.
+        guard cadence.acceptsWake(timerScheduled: timer != nil) else { return }
+        resumeDrawing()
+    }
+
+    private func resumeDrawing() {
         guard active else { return }
         displayLink?.isPaused = false
         if bridge == nil { setNeedsLayout() }
@@ -133,36 +146,49 @@ final class RuneView: UIView {
 
     func drawFrame() {
         guard active, !drawing, let bridge else { return }
+        guard window != nil, !isHidden, bounds.width > 0, bounds.height > 0 else {
+            timer?.cancel(); timer = nil
+            displayLink?.isPaused = true
+            return
+        }
         drawing = true
         defer { drawing = false }
         do {
             let frame = try bridge.frame()
-            if let input = InputContext(frame["input"]) {
-                let caret = input.caret ?? CGRect(x: 4, y: max(0,bounds.height - 24), width: 1, height: 20)
-                editor.frame = CGRect(x: max(0,min(caret.minX,bounds.width-1)),
-                    y: max(0,min(caret.minY,bounds.height-1)), width: 1, height: max(1,caret.height))
-                editor.synchronize(input)
-            }
-            timer?.cancel(); timer = nil
-            displayLink?.isPaused = !(frame["animating"] as? Bool ?? false)
-            if let after = frame["wake_after_secs"] as? Double, after.isFinite {
-                let work = DispatchWorkItem { [weak self] in self?.wake() }
-                timer = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + max(0.001, after), execute: work)
-            }
+            synchronizeInput(frame)
+            scheduleFrame(frame)
             if let requests = frame["requests"] as? [String: Any] { serve(requests) }
-            if let ground = frame["ground"] as? [Double], ground.count == 3 {
-                groundChanged?(UIColor(red: ground[0], green: ground[1], blue: ground[2], alpha: 1))
-            }
-            if frame["drew"] as? Bool == true { drawableRetries = 0 }
-            else if timer == nil, drawableRetries < 3 {
-                drawableRetries += 1
-                let retry = DispatchWorkItem { [weak self] in self?.wake() }
-                timer = retry
-                DispatchQueue.main.asyncAfter(deadline:.now() + 0.05, execute:retry)
-            }
+            updateGround(frame)
             try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale)
         } catch { fail(error) }
+    }
+
+    private func synchronizeInput(_ frame: [String: Any]) {
+        guard let input = InputContext(frame["input"]) else { return }
+        let caret = input.caret ?? CGRect(x: 4, y: max(0,bounds.height - 24), width: 1, height: 20)
+        editor.frame = CGRect(x: max(0,min(caret.minX,bounds.width-1)),
+            y: max(0,min(caret.minY,bounds.height-1)), width: 1, height: max(1,caret.height))
+        editor.synchronize(input)
+    }
+
+    private func scheduleFrame(_ frame: [String: Any]) {
+        timer?.cancel(); timer = nil
+        let drew = frame["drew"] as? Bool == true
+        displayLink?.isPaused = !drew || !(frame["animating"] as? Bool ?? false)
+        guard let after = cadence.nextWake(drew: drew, after: frame["wake_after_secs"] as? Double) else { return }
+        let work = DispatchWorkItem { [weak self] in self?.resumeDrawing() }
+        timer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: work)
+    }
+
+    private func updateGround(_ frame: [String: Any]) {
+        guard frame["drew"] as? Bool == true,
+              let ground = frame["ground"] as? [Double], ground.count == 3 else { return }
+        let color = UIColor(red: ground[0], green: ground[1], blue: ground[2], alpha: 1)
+        // Expanded, top-pinned contents expose this surface, not just the
+        // controller behind it. Never expose the old launch colour as a band.
+        if backgroundColor != color { backgroundColor = color }
+        groundChanged?(color)
     }
 
     /// What the frame asked of the system: Rune reaches no pasteboard, link
@@ -208,7 +234,7 @@ final class RuneView: UIView {
         bridge?.active(active)
         if let bridge { qualification?.active(active,bridge:bridge) }
         self.active = active
-        if active { refresh() }
+        if active { cadence.reset(); refresh() }
     }
 
     func close() {
