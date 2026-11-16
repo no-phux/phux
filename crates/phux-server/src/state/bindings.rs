@@ -214,9 +214,9 @@ impl ServerState {
     /// persistent sessions, survive in the store and do not hold it up.
     #[must_use]
     pub(crate) fn self_exit_due(&self) -> bool {
-        self.has_served_client()
+        self.lifecycle().has_served_client()
             && self.exit_watches.is_empty()
-            && self.idle_since().is_some()
+            && self.lifecycle().idle_since().is_some()
             && !self.has_live_activation()
     }
 }

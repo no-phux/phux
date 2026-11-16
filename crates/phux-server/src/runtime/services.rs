@@ -28,7 +28,7 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
             // While a client is connected `idle_since` is `None`; re-check
             // after a full interval.
             let remaining = state.with(|s| {
-                s.idle_since().map_or(idle_limit, |since| {
+                s.lifecycle().idle_since().map_or(idle_limit, |since| {
                     idle_limit.saturating_sub(since.elapsed())
                 })
             });
@@ -39,7 +39,8 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
             }
             // Re-read: a client may have come and gone while we slept.
             let expired = state.with(|s| {
-                s.idle_since()
+                s.lifecycle()
+                    .idle_since()
                     .is_some_and(|since| since.elapsed() >= idle_limit)
             });
             if expired {

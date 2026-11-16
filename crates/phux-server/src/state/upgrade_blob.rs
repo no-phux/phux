@@ -17,7 +17,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
-use std::path::PathBuf;
 
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::terminal::TerminalFacet;
@@ -117,25 +116,6 @@ impl ServerState {
                 let _ = self.intern_resource_wire(id);
             }
         }
-    }
-
-    /// Record the upgrade context (listener fd, path, runtime flags).
-    pub(crate) fn set_upgrade_context(
-        &mut self,
-        listener_fd: RawFd,
-        socket_path: PathBuf,
-        flags: crate::runtime::RuntimeFlags,
-    ) {
-        self.lifecycle
-            .set_upgrade_context(listener_fd, socket_path, flags);
-    }
-
-    /// The upgrade context `(listener_fd, socket_path, runtime_flags)`, if
-    /// serving has begun.
-    pub(crate) fn upgrade_context(
-        &self,
-    ) -> Option<(RawFd, &std::path::Path, crate::runtime::RuntimeFlags)> {
-        self.lifecycle.upgrade_context()
     }
 
     /// The live tree panes a re-exec carries, with their handles: Terminal

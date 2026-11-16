@@ -244,7 +244,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         debug!(transport = listener.kind(), "client connected");
                         // Counted before the task exists so the idle watchdog
                         // never sees an unattended gap.
-                        state.with_mut(ServerState::note_connection_opened);
+                        state.with_mut(|s| s.lifecycle_mut().note_connection_opened());
                         let client_id = state.with_mut(ServerState::new_client_id);
                         state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
                         state.with(|s| s.audit_connection(client_id, crate::audit::Kind::ConnectionOpen));
@@ -265,7 +265,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             // R13: the last connection closing on a server
                             // that runs nothing ends it.
                             let due = task_state.with_mut(|s| {
-                                s.note_connection_closed();
+                                s.lifecycle_mut().note_connection_closed();
                                 s.self_exit_due()
                             });
                             if due && !task_root_token.is_cancelled() {

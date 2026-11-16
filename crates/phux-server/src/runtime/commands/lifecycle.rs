@@ -159,7 +159,7 @@ pub(crate) fn create_named_session(
         Ok(core_terminal) => {
             // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {
-                s.arm_self_exit();
+                s.lifecycle_mut().arm_self_exit();
                 s.intern_resource_wire(core_terminal)
             });
             Ok(wire)

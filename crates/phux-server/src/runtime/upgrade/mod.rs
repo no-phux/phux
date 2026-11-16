@@ -267,7 +267,8 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
             // Wire ids are interned on first read, and the blob carries only
             // what has one.
             s.intern_upgrade_wires();
-            s.upgrade_context()
+            s.lifecycle()
+                .upgrade_context()
                 .map(|(listener_fd, path, flags)| UpgradeContext {
                     listener_fd,
                     socket_path: path.to_path_buf(),

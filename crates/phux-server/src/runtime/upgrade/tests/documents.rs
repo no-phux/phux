@@ -49,7 +49,7 @@ fn old_image(
             bundle.actor.run(),
         )
         .unwrap();
-    s.set_upgrade_context(
+    s.lifecycle_mut().set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
         RuntimeFlags::default(),

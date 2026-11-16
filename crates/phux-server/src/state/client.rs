@@ -221,7 +221,7 @@ impl ServerState {
                 },
             );
             // Attaching arms tmux-model last-session self-exit (phux-60s).
-            self.arm_self_exit();
+            self.lifecycle_mut().arm_self_exit();
         }
 
         // Subscribe every pane, not just the active one: the input gate

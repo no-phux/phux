@@ -41,7 +41,6 @@ mod layout_translation;
 mod lease_table;
 mod leases;
 mod legacy_snapshot;
-mod lifecycle;
 
 static ACTIVATION_REPORT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -246,12 +245,6 @@ impl Default for ServerState {
 }
 
 impl ServerState {
-    /// Return this state's stable, redaction-safe process incarnation.
-    #[must_use]
-    pub const fn server_incarnation(&self) -> ServerIncarnation {
-        self.lifecycle.server_incarnation()
-    }
-
     /// The push-grant registry (ADR-0155).
     pub(crate) const fn push_grants(&self) -> &crate::push::PushGrants {
         &self.push_grants

@@ -56,7 +56,7 @@ async fn a_promoted_hub_resumes_with_hub() {
         let state = SharedState::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 3,
                 PathBuf::from("/run/phux/phux.sock"),
                 RuntimeFlags::default(),
@@ -104,7 +104,7 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
         let listener = tempfile::tempfile().unwrap();
         let dir = tempfile::tempdir().unwrap();
         state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 listener.as_raw_fd(),
                 dir.path().join("phux.sock"),
                 RuntimeFlags {

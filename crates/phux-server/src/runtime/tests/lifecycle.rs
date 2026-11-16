@@ -57,7 +57,7 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
         let mut hooks = capture_hooks(&state);
         let root = CancellationToken::new();
         let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
-        state.with_mut(crate::state::ServerState::arm_self_exit);
+        state.with_mut(|s| s.lifecycle_mut().arm_self_exit());
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
         spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
 

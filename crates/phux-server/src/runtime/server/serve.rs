@@ -138,7 +138,11 @@ impl ServerRuntime {
         let autosave = self.autosave;
         let on_listening = self.on_listening;
         state.with_mut(|s| {
-            s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
+            s.lifecycle_mut().set_upgrade_context(
+                listener.as_raw_fd(),
+                socket_path.clone(),
+                runtime_flags,
+            );
         });
 
         record_refused_listeners(&state, &refused_listeners);

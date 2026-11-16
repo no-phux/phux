@@ -14,12 +14,12 @@ fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
     let mut first = ServerState::new();
     assert_eq!(first.new_client_id(), ClientId(1));
     assert_eq!(first.new_client_id(), ClientId(2));
-    let stable = first.server_incarnation();
-    assert_eq!(first.server_incarnation(), stable);
+    let stable = first.lifecycle().server_incarnation();
+    assert_eq!(first.lifecycle().server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
 
     let second = ServerState::new();
-    assert_ne!(stable, second.server_incarnation());
+    assert_ne!(stable, second.lifecycle().server_incarnation());
 }
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

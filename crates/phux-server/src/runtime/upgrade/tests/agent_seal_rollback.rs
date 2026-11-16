@@ -52,7 +52,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
 
             let _ = s.build_session_snapshot(sid);
             let _ = s.intern_window_wire(sid);
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 7,
                 PathBuf::from("/nonexistent/phux.sock"),
                 RuntimeFlags::default(),

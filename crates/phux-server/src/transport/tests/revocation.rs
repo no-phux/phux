@@ -90,7 +90,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
 
             let client_id = state.with(|server| {
                 assert_eq!(server.attached().len(), 1);
-                assert!(server.idle_since().is_none());
+                assert!(server.lifecycle().idle_since().is_none());
                 *server.attached().keys().next().unwrap()
             });
             let credential = state.with(|server| {
@@ -152,7 +152,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
                         !server.attached().contains_key(&client_id)
                             && server.peer_identity(client_id).is_none()
                             && server.authenticated_credential(client_id).is_none()
-                            && server.idle_since().is_some()
+                            && server.lifecycle().idle_since().is_some()
                     });
                     if cleaned {
                         break;

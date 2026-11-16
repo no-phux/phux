@@ -152,7 +152,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
             );
             // phux-lv57: a resumed tree has served no client in this
             // process, so it must not arm last-session self-exit.
-            assert!(!state.has_served_client());
+            assert!(!state.lifecycle().has_served_client());
         })
         .await;
 }

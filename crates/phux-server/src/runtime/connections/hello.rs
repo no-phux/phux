@@ -203,7 +203,7 @@ pub(super) async fn negotiate_hello(
             .with_features(server_features)
             .with_features_ext(server_features_ext(state))
             .with_compression(compression),
-        server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
+        server_id: state.with(|server| server.lifecycle().server_incarnation().as_bytes().to_vec()),
         selected_profile,
         bootstrap_limits,
     };

@@ -71,7 +71,7 @@ async fn an_uncarried_native_agent_refuses_the_upgrade_and_unseals_the_streams()
         let listener = tempfile::tempfile().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let ghost = state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 listener.as_raw_fd(),
                 dir.path().join("phux.sock"),
                 RuntimeFlags::default(),
