@@ -4,13 +4,8 @@
 //! canvas-visible PTY content. Failures leave a DOM transcript for the browser
 //! runner to capture alongside the panic.
 
-use std::time::Duration;
-
-use gloo_timers::future::sleep;
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -18,41 +13,14 @@ wasm_bindgen_test_configure!(run_in_browser);
 mod agent_resources;
 #[path = "browser_support/metrics.rs"]
 mod metrics;
+#[path = "browser_support/page.rs"]
+mod page;
+use page::{MARKER, canvas, poll, wait_for_marker};
 
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
     None => "ws://127.0.0.1:47654/",
 };
-const MARKER: &str = "PHUX_WEB_OK";
-const POLL: Duration = Duration::from_millis(50);
-const POLLS: usize = 120;
-
-fn canvas(id: &str) -> HtmlCanvasElement {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas: HtmlCanvasElement = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_id(id);
-    document
-        .document_element()
-        .unwrap()
-        .append_child(&canvas)
-        .unwrap();
-    canvas
-}
-
-async fn wait_for_marker(client: &phux_web::client::Client) -> bool {
-    for _ in 0..POLLS {
-        if client.rows_text().iter().any(|row| row.contains(MARKER)) {
-            return true;
-        }
-        sleep(POLL).await;
-    }
-    false
-}
-
 fn failure_artifact(name: &str, client: &phux_web::client::Client, detail: &str) -> String {
     let profile = format!("{:?}", client.selected_profile());
     let grid = client.rows_text().join("\n");
@@ -152,15 +120,11 @@ async fn resize_reflows_the_live_terminal_and_canvas() {
     );
 
     client.resize(100, 30);
-    let mut reflowed = false;
-    for _ in 0..POLLS {
+    let reflowed = poll(|| {
         let rows = client.rows_text();
-        if rows.len() == 30 && rows.iter().all(|row| row.chars().count() == 100) {
-            reflowed = true;
-            break;
-        }
-        sleep(POLL).await;
-    }
+        rows.len() == 30 && rows.iter().all(|row| row.chars().count() == 100)
+    })
+    .await;
     assert!(
         reflowed,
         "{}",
@@ -173,12 +137,7 @@ async fn resize_reflows_the_live_terminal_and_canvas() {
         (100.0 * f64::from(cell_w) * dpr).round() as u32,
         (30.0 * f64::from(cell_h) * dpr).round() as u32,
     );
-    for _ in 0..POLLS {
-        if (canvas.width(), canvas.height()) == expected {
-            break;
-        }
-        sleep(POLL).await;
-    }
+    poll(|| (canvas.width(), canvas.height()) == expected).await;
     assert_eq!(
         (canvas.width(), canvas.height()),
         expected,

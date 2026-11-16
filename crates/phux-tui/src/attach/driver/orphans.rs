@@ -1,20 +1,14 @@
-//! Best-effort kills for satellite panes this client spawned whose attach
-//! was then refused (the satellite already runs them and nothing references
-//! them). Replies are consumed here and logged at debug, never surfaced.
+//! Best-effort kills for satellite panes this client spawned whose attach was
+//! then refused. Replies are consumed here and logged at debug.
 //!
-//! A session switch sends no kill on the way out (the hub would hold the
-//! re-attach behind it); those panes become *strays*, killed once their
-//! satellite next answers. A late kill could hit a pane that is no longer a
-//! stray, so each retry is one of two kinds ([`StrayKill`]):
+//! A session switch sends no kill on the way out; those panes become strays,
+//! killed once their satellite next answers ([`StrayKill`]):
 //!
-//! - **Conditional** (ADR-0109): the spawn was bound to the satellite's
-//!   instance token and the hub supports `CONDITIONAL_KILL`, so the retry is
-//!   a `KILL_RESOURCE_IF` the satellite refuses after a restart or any other
-//!   use. That makes retrying safe even after unreachable signals, and lets
-//!   the record wait longer ([`BOUND_STRAY_TTL`]).
-//! - **Unconditional**: kept small and short-lived ([`STRAY_CAP`],
-//!   [`STRAY_TTL`]) and forgotten on any sign the satellite was unreachable,
-//!   since that cannot be told from a restart.
+//! - **Conditional** (ADR-0109): a bound spawn is retried as
+//!   `KILL_RESOURCE_IF`, which the satellite refuses after a restart, so it
+//!   survives unreachable signals and waits longer ([`BOUND_STRAY_TTL`]).
+//! - **Unconditional**: capped ([`STRAY_CAP`], [`STRAY_TTL`]) and forgotten
+//!   on any sign the satellite was unreachable.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -45,7 +39,7 @@ pub(super) const BOUND_STRAY_TTL: Duration = Duration::from_mins(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrayKill {
     /// `KILL_RESOURCE`: phux-c2td.23's retry, for a stray that could not be
-    /// bound or a hub without `CONDITIONAL_KILL`.
+    /// bound.
     Unconditional,
     /// `KILL_RESOURCE_IF` under this instance token with
     /// `UNATTACHED_SINCE_SPAWN`.
@@ -53,12 +47,11 @@ enum StrayKill {
 }
 
 impl StrayKill {
-    /// The kill kind for a spawn bound to `instance`, on a hub with or
-    /// without conditional kills.
-    const fn for_spawn(instance: Option<ServerInstance>, conditional_kill: bool) -> Self {
+    /// The kill kind for a spawn bound to `instance`.
+    const fn for_spawn(instance: Option<ServerInstance>) -> Self {
         match instance {
-            Some(instance) if conditional_kill => Self::Conditional(instance),
-            _ => Self::Unconditional,
+            Some(instance) => Self::Conditional(instance),
+            None => Self::Unconditional,
         }
     }
 
@@ -112,17 +105,9 @@ pub(super) struct OrphanKills {
     /// Spawns still unanswered when the loop left for a switch; a satellite
     /// pane among their replies becomes a stray.
     switch_spawns: HashSet<u32>,
-    /// Whether the hub supports `CONDITIONAL_KILL` (set per loop entry).
-    conditional_kill: bool,
 }
 
 impl OrphanKills {
-    /// Retry bound strays through `KILL_RESOURCE_IF` exactly when
-    /// `supported`, the hub's `CONDITIONAL_KILL` bit.
-    pub(super) const fn set_conditional_kill(&mut self, supported: bool) {
-        self.conditional_kill = supported;
-    }
-
     /// One `KILL_RESOURCE` per orphaned pane, each under a fresh request id
     /// taken from `next_request_id` and tracked so its reply settles here.
     pub(super) fn kill_frames(
@@ -247,11 +232,8 @@ impl OrphanKills {
     }
 
     /// Remember panes an unreachable satellite left running, for a
-    /// conditional retry. Without `CONDITIONAL_KILL` this records nothing.
+    /// conditional retry.
     pub(super) fn record_unreachable(&mut self, stranded: Vec<BoundResource>, now: Instant) {
-        if !self.conditional_kill {
-            return;
-        }
         for bound in stranded {
             self.record(bound.id, StrayKill::Conditional(bound.instance), now);
         }
@@ -305,9 +287,9 @@ impl OrphanKills {
     }
 
     /// Remember a pane a session switch stranded, retried conditionally when
-    /// its spawn was bound and the hub evaluates conditional kills.
+    /// its spawn was bound.
     fn record_spawned(&mut self, pane: SpawnedPane, now: Instant) {
-        let kill = StrayKill::for_spawn(pane.instance, self.conditional_kill);
+        let kill = StrayKill::for_spawn(pane.instance);
         self.record(pane.id, kill, now);
     }
 

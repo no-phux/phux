@@ -30,8 +30,8 @@ pub struct Color {
     pub b: u8,
 }
 
-impl From<libghostty_vt::style::RgbColor> for Color {
-    fn from(color: libghostty_vt::style::RgbColor) -> Self {
+impl From<libghostty_vt::color::Rgb> for Color {
+    fn from(color: libghostty_vt::color::Rgb) -> Self {
         Self {
             r: color.r,
             g: color.g,
@@ -377,11 +377,8 @@ fn cursor_shape(style: CoreCursorStyle) -> CursorShape {
     }
 }
 
-/// Copy one published frame into the record `UniFFI` carries.
-///
-/// The connected lane's counterpart in `crate::c` lends the very same
-/// [`crate::projection::grid::GridView`] by pointer; this one copies it,
-/// because Swift and Kotlin cannot borrow.
+/// Copy one published frame into the record `UniFFI` carries; Swift and
+/// Kotlin cannot borrow it.
 pub(crate) fn grid_projection(view: &grid::GridView<'_>, dirty_rows: Vec<u16>) -> GridProjection {
     GridProjection {
         cols: view.cols,

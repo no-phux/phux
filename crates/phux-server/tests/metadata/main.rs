@@ -19,6 +19,7 @@ mod common;
 mod event_journal;
 mod flood_counters;
 mod forward;
+mod forward_agent;
 mod get_perf;
 mod list_directory;
 mod metadata_reply;

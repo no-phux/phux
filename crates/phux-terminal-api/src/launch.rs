@@ -39,9 +39,6 @@ impl LaunchCommand {
     pub const fn get_argv(&self) -> &Vec<OsString> {
         &self.argv
     }
-    pub const fn get_argv_mut(&mut self) -> &mut Vec<OsString> {
-        &mut self.argv
-    }
     pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
         self.removed.remove(key.as_ref());
         self.env
@@ -68,9 +65,6 @@ impl LaunchCommand {
     pub fn cwd(&mut self, cwd: impl AsRef<OsStr>) {
         self.cwd = Some(cwd.as_ref().to_owned());
     }
-    pub fn clear_cwd(&mut self) {
-        self.cwd = None;
-    }
     #[must_use]
     pub const fn get_cwd(&self) -> Option<&OsString> {
         self.cwd.as_ref()
@@ -84,6 +78,21 @@ impl LaunchCommand {
     }
 }
 
+/// Baseline `TERM` for [`default_shell_command`] and [`shell_command`].
+///
+/// Ghostty's terminfo advertises kitty keyboard support, which breaks
+/// ncurses apps such as htop. This matches the `defaults.term` schema
+/// default, which [`apply_term`] overrides at runtime.
+pub const DEFAULT_TERM: &str = "xterm-256color";
+
+/// Env mark that forbids the PTY spawner from falling back to another
+/// directory when the recorded cwd cannot be entered. The spawner reads it
+/// and strips it from the child's environment.
+pub const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
+
+/// A plain interactive `shell`. With `login`, a known shell gets its login
+/// flag (`-l` for bash/zsh/sh, `--login` for fish); an unknown shell gets
+/// none, because an unrecognized flag can fail the exec.
 pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
     let mut command = LaunchCommand::new(shell);
     let name = std::path::Path::new(shell)
@@ -97,7 +106,7 @@ pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
             _ => {}
         }
     }
-    apply_term(&mut command, "xterm-256color");
+    apply_term(&mut command, DEFAULT_TERM);
     apply_shell_integration(&mut command, name);
     command
 }
@@ -196,7 +205,7 @@ pub fn apply_spawn_cwd(command: &mut LaunchCommand, cwd: Option<&str>, session: 
 }
 pub fn apply_strict_spawn_cwd(command: &mut LaunchCommand, cwd: &std::path::Path) {
     command.cwd(cwd);
-    command.env("PHUX_FD_SHRINK_STRICT_CWD", "1");
+    command.env(STRICT_CWD_KEY, "1");
 }
 
 #[must_use]
@@ -220,6 +229,72 @@ mod tests {
                 .as_deref(),
             Some("set")
         );
+    }
+
+    fn argv_strings(command: &LaunchCommand) -> Vec<String> {
+        command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn login_flags_by_shell() {
+        let cases: &[(&str, bool, &[&str])] = &[
+            ("/bin/zsh", false, &["/bin/zsh"]),
+            ("/bin/bash", true, &["/bin/bash", "-l"]),
+            ("/bin/zsh", true, &["/bin/zsh", "-l"]),
+            ("sh", true, &["sh", "-l"]),
+            (
+                "/opt/homebrew/bin/fish",
+                true,
+                &["/opt/homebrew/bin/fish", "--login"],
+            ),
+            ("/opt/exotic/rc", true, &["/opt/exotic/rc"]),
+        ];
+        for (shell, login, argv) in cases {
+            assert_eq!(
+                argv_strings(&default_shell_command(shell, *login)),
+                *argv,
+                "{shell}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_command_applies_login_flag_before_dash_c() {
+        let command = shell_command("/bin/zsh", "htop", true);
+        assert_eq!(argv_strings(&command), ["/bin/zsh", "-l", "-c", "htop"]);
+        let command = shell_command("/opt/fancy/fish", "btop --utf-force", false);
+        assert_eq!(
+            argv_strings(&command),
+            ["/opt/fancy/fish", "-c", "btop --utf-force"]
+        );
+    }
+
+    /// Ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
+    /// (htop) push kitty flags they cannot parse back (phux-7vx).
+    #[test]
+    fn default_shells_start_on_the_baseline_term() {
+        assert_eq!(DEFAULT_TERM, "xterm-256color");
+        for command in [
+            default_shell_command("/bin/sh", false),
+            shell_command("/bin/sh", "true", true),
+        ] {
+            assert_eq!(command.get_env("TERM"), Some(OsStr::new(DEFAULT_TERM)));
+        }
+    }
+
+    #[test]
+    fn strict_cwd_sets_the_directory_and_the_mark() {
+        let mut command = LaunchCommand::new("/bin/sh");
+        apply_strict_spawn_cwd(&mut command, std::path::Path::new("/gone"));
+        assert_eq!(
+            command.get_cwd().map(OsString::as_os_str),
+            Some(OsStr::new("/gone"))
+        );
+        assert_eq!(command.get_env(STRICT_CWD_KEY), Some(OsStr::new("1")));
     }
 
     #[test]

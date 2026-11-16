@@ -2,12 +2,10 @@
 # Build the canonical UniFFI mobile projection from this phux revision.
 #
 # The producer is crates/phux-client-ffi with --no-default-features
-# --features uniffi: one binding crate, one projection, two encoders
-# (ADR-0135). The `c-abi` default stays off so this artifact never carries
-# the extern "C" surface or its C-only dependency closure. The archive
-# inside the xcframework is the one cargo links, libphux_client_ffi.a: the
-# artifact carries the name of the crate that produced it, so a reader of a
-# slice, a provenance key or an `nm -u` dump lands on a crate that exists.
+# --features uniffi (ADR-0135). The archive inside the xcframework is the
+# one cargo links, libphux_client_ffi.a: the artifact carries the name of the
+# crate that produced it, so a reader of a slice, a provenance key or an
+# `nm -u` dump lands on a crate that exists.
 # The bundle, the PhuxFFI Swift module and the provenance layout are
 # unchanged.
 #

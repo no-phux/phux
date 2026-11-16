@@ -1,15 +1,7 @@
 //! TCP port forwarding (`FORWARD_*`, behind `features_ext.FORWARD_TCP`;
-//! `docs/forwarding.md`).
-//!
-//! The client asks this server to dial a TCP port, by default only on its
-//! own loopback, then pulls and pushes the connection's bytes with
-//! commands. All four commands are `INPUT` on the server: a consumer that
-//! can type into a shell here can already open the same connection.
-//!
-//! Every command is admitted on the dispatcher (a slot reserved, a half
-//! leased, a slot removed) and then runs on its own task, so neither a
-//! slow dial, a read parked on a quiet connection, nor a write the target
-//! is slow to take delays other commands. A write is answered only after
+//! `docs/forwarding.md`). Loopback by default; all commands are `INPUT`.
+//! Each is admitted on the dispatcher then runs on its own task, so a slow
+//! dial or parked read delays nothing else; a write answers after
 //! `write_all`, which is the client's backpressure.
 
 #![expect(
@@ -17,6 +9,7 @@
     reason = "the connection dispatcher reaches this facade"
 )]
 
+pub(crate) mod agent;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -70,11 +63,13 @@ pub(in crate::runtime) async fn submit(
     }
 }
 
-/// Close every forward of an ending connection.
+/// Close every forward of an ending connection, and withdraw its
+/// ssh-agent offer.
 pub(in crate::runtime) fn close_all(state: &SharedState, client: ClientId, forwards: &Forwards) {
     for closed in forwards.close_all() {
         audit_close(state, client, &closed, "disconnected");
     }
+    agent::withdraw(state, client);
 }
 
 /// `Some` is the answer now; `None` means a spawned task answers.
@@ -87,6 +82,9 @@ fn admit(
     let Command::Forward { op } = command else {
         return Some(refuse(ErrorCode::InternalError, "not a forward command"));
     };
+    if matches!(op, ForwardOp::AgentOffer | ForwardOp::AgentReply { .. }) {
+        return Some(agent::admit(&ctx, op));
+    }
     let (enabled, allow) = ctx.state.with(|s| {
         let cfg = s.forward();
         let allow = matches!(op, ForwardOp::Open { .. }).then(|| cfg.allow.clone());
@@ -119,6 +117,7 @@ fn admit(
             }
             return Some(CommandResult::Ok);
         }
+        ForwardOp::AgentOffer | ForwardOp::AgentReply { .. } => return None,
     };
     admitted.err()
 }

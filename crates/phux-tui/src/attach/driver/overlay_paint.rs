@@ -15,14 +15,10 @@ use crate::render::chrome::status_bar::Position;
 use crate::render::overlay::CopyMarks;
 use crate::render::overlay::OverlayState;
 
-/// Paint the active overlay layer. Copy mode repaints the focused pane with
-/// its selection inverted plus a status line; every other overlay floats over
-/// a repainted base frame. [`OverlayState::copy_selection`] picks the branch.
-///
-/// `base` is the render window (zoom honored), `None` for an empty workspace.
-/// The chrome keeps panes inset under an overlay (no reflow flicker), and its
-/// sidebar painter keeps the strip visible under a modal: the base repaint
-/// starts with ED2, so without the painter the sidebar vanishes.
+/// Paint the active overlay layer: copy mode repaints the focused pane with
+/// its selection plus a status line; every other overlay floats over a
+/// repainted base frame. `base` is the render window, `None` when empty.
+/// The sidebar painter is passed so the strip survives the base's `ED2`.
 pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     out: &mut W,
     overlays: &OverlayState,
@@ -161,10 +157,8 @@ pub(super) fn legend_for(room: usize) -> Option<&'static str> {
         .find(|legend| crate::render::display_width(legend) + 2 <= room)
 }
 
-/// Emit the copy-mode status strip over the bottom row of `content` (the
-/// pane columns; the sidebar keeps its own rows), then hide the hardware
-/// cursor (the reverse-video selection is the position indicator).
-/// `search` is the search line being typed or the last search's position.
+/// Emit the copy-mode status strip over the bottom row of `content`, then
+/// hide the hardware cursor (the selection marks the position).
 pub(super) fn paint_copy_mode_status<W: Write>(
     out: &mut W,
     sel: SelectionRect,

@@ -6,10 +6,9 @@ use super::{
 };
 
 impl super::SessionLoop {
-    /// Global metadata the picker and status line follow after attach. An
-    /// `ORGANIZATION` server reports renames and lifetime changes as
-    /// `SESSION_RENAMED` and `SESSION_LIFETIME_CHANGED` events (ADR-0161), so
-    /// only an older server's translated session keys are watched.
+    /// Global metadata the picker and status line follow. An `ORGANIZATION`
+    /// server reports renames as events (ADR-0161), so only an older one's
+    /// session keys are watched.
     pub(super) async fn subscribe_global_session_keys(
         &self,
         conn: &mut Connection,
@@ -178,7 +177,7 @@ impl super::SessionLoop {
         if !collapsed.remove(&key) {
             collapsed.insert(key);
         }
-        crate::attach::project_collapse::save(collapsed);
+        crate::attach::client_state::save_collapsed_projects(collapsed);
         self.peers.chrome_dirty = true;
     }
 
@@ -193,7 +192,7 @@ impl super::SessionLoop {
         if !self.sidebar_painter.set_agent_filter(filter) {
             return false;
         }
-        crate::attach::agent_filter_state::save(self.sidebar_painter.agent_filter());
+        crate::attach::client_state::save_agent_filter(self.sidebar_painter.agent_filter());
         true
     }
 

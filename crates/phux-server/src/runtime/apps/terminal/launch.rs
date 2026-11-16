@@ -3,6 +3,7 @@
 
 use crate::state::{ServerState, SharedState};
 
+use phux_protocol::native_agent;
 use phux_terminal_api::launch as engine_launch;
 /// How a pane's process starts. Opaque to the host.
 pub(crate) use phux_terminal_api::launch::LaunchCommand;
@@ -46,9 +47,9 @@ pub(crate) fn bind_native_host(
     binding: &str,
 ) {
     command.env("PHUX_SOCKET", socket);
-    command.env("PHUX_NATIVE_AGENT_ID", agent);
-    command.env("PHUX_NATIVE_ACTIVATION", activation);
-    command.env("PHUX_NATIVE_BINDING", binding);
+    command.env(native_agent::NATIVE_AGENT_ID_ENV, agent);
+    command.env(native_agent::NATIVE_ACTIVATION_ENV, activation);
+    command.env(native_agent::NATIVE_BINDING_ENV, binding);
 }
 
 /// A named session's seed command: the request argv, else the shell. An

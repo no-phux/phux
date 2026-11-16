@@ -10,13 +10,13 @@
 
 use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
 
-use super::reef::pen::{Pen, rgba};
-use super::reef::{Label, pill};
+use super::playground::labels::{Label, pill};
+use super::playground::pen::{Pen, rgba};
 use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
-use crate::reef::{Mood, Pt, Rgb};
+use crate::playground::{Mood, Pt, Rgb};
 
 mod chef;
 mod room;
@@ -341,7 +341,7 @@ fn pills(k: &Kitchen) -> Vec<El> {
                 c.who.name.clone()
             };
             let (at, r) = k.hit(c);
-            // As `ui::reef::pill` estimates and clamps its width.
+            // As `ui::playground::labels::pill` estimates and clamps its width.
             let w = text.chars().count() as f32 * 6.6 + 14.0;
             let x = (at[0] - w / 2.0).clamp(6.0, (k.w - w - 6.0).max(6.0));
             let mut y = at[1] - r - 14.0;

@@ -15,14 +15,14 @@ require() {
 }
 
 require .github/workflows/build-cli.yml 'bash scripts/build-release-binaries.sh "${{ matrix.target }}"'
-# The PhuxFFI xcframework: an explicit Rust floor per Apple target, the engine
+# The mobile xcframework: an explicit Rust floor per Apple target, the engine
 # on baseline, and no inherited RUSTFLAGS reaching a slice.
-require scripts/build-ffi-xcframework.sh 'target-cpu=apple-a7'
-require scripts/build-ffi-xcframework.sh 'target-cpu=apple-a12'
-require scripts/build-ffi-xcframework.sh 'target-cpu=apple-m1'
-require scripts/build-ffi-xcframework.sh 'LIBGHOSTTY_VT_SYS_CPU=baseline'
-require scripts/build-ffi-xcframework.sh 'unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS'
-require .github/workflows/ffi-xcframework.yml 'bash scripts/build-ffi-xcframework.sh --full'
+require scripts/build-mobile-ffi-xcframework.sh 'target-cpu=apple-a7'
+require scripts/build-mobile-ffi-xcframework.sh 'target-cpu=apple-a12'
+require scripts/build-mobile-ffi-xcframework.sh 'target-cpu=apple-m1'
+require scripts/build-mobile-ffi-xcframework.sh 'LIBGHOSTTY_VT_SYS_CPU=baseline'
+require scripts/build-mobile-ffi-xcframework.sh 'unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS'
+require .github/workflows/ffi-xcframework.yml 'bash scripts/build-mobile-ffi-xcframework.sh --full'
 
 # Run the real builder against a fake cargo in a scratch directory, so the
 # receipt it writes never lands in this checkout's target/.

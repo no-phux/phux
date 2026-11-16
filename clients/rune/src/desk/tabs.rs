@@ -89,12 +89,14 @@ pub fn list(doc: &ArrangementDoc, listed: &[ResourceId]) -> Vec<Tab> {
 
 impl Desk {
     pub(super) fn sync_tabs(&mut self, client: &Client, listed: &[ResourceId]) {
-        self.tabs.list = self
+        self.connection.tabs.list = self
             .arrangement(client)
             .map_or_else(Vec::new, |(_, doc)| list(&doc, listed));
-        let shown = self.shown.as_ref().map(|s| s.resource.clone());
-        if let (Some(tab), Some(shown)) = (self.tabs.list.iter().find(|t| t.active), shown) {
-            self.tabs.focus.insert(tab.id, shown);
+        let shown = self.connection.shown.as_ref().map(|s| s.resource.clone());
+        if let (Some(tab), Some(shown)) =
+            (self.connection.tabs.list.iter().find(|t| t.active), shown)
+        {
+            self.connection.tabs.focus.insert(tab.id, shown);
         }
     }
 
@@ -105,15 +107,15 @@ impl Desk {
         if self.phone.is_none() {
             return;
         }
-        let active = self.tabs.list.iter().position(|t| t.active);
+        let active = self.connection.tabs.list.iter().position(|t| t.active);
         let now = active.map(|at| {
-            let tab = &self.tabs.list[at];
+            let tab = &self.connection.tabs.list[at];
             (tab.id, self.tab_label(tab))
         });
-        if now == self.tabs.revealed {
+        if now == self.connection.tabs.revealed {
             return;
         }
-        self.tabs.revealed = now;
+        self.connection.tabs.revealed = now;
         if let Some(at) = active {
             tx.scroll_into_view(format!("phone-tab-{at}"));
         }
@@ -126,17 +128,18 @@ impl Desk {
             return tab.name.clone();
         }
         let terminal = self
+            .connection
             .tabs
             .focus
             .get(&tab.id)
             .filter(|id| tab.resources.contains(id))
             .or(tab.resources.first());
         terminal
-            .and_then(|id| self.topology.as_ref()?.pane(id))
+            .and_then(|id| self.connection.topology.as_ref()?.pane(id))
             .map_or_else(
                 || {
                     terminal
-                        .and_then(|id| self.resources.entries.get(id))
+                        .and_then(|id| self.connection.resources.entries.get(id))
                         .and_then(|doc| doc.record.name.clone())
                         .unwrap_or_else(|| tab.name.clone())
                 },
@@ -145,17 +148,17 @@ impl Desk {
     }
 
     pub fn select_tab(&mut self, index: usize) {
-        let Some(tab) = self.tabs.list.get(index) else {
+        let Some(tab) = self.connection.tabs.list.get(index) else {
             return;
         };
-        let remembered = self.tabs.focus.get(&tab.id);
+        let remembered = self.connection.tabs.focus.get(&tab.id);
         let target = remembered
             .filter(|id| tab.resources.contains(id))
             .or(tab.resources.first())
             .cloned();
         let session = self.selected_session_name();
         if let (Some(target), Some(session)) = (target, session) {
-            self.zoomed = None;
+            self.connection.zoomed = None;
             self.show(target, &session);
         }
     }
@@ -163,20 +166,40 @@ impl Desk {
     /// A new terminal in a new tab of the selected session; with nothing on
     /// screen to arrange beside, a plain terminal.
     pub fn new_tab(&mut self) {
-        let Some(client) = &self.client else { return };
-        if self.shown.is_none() {
-            return self.new_terminal();
+        self.new_tab_at(self.focused_cwd());
+    }
+
+    /// A new tab in `cwd`, as `new_tab`.
+    fn new_tab_at(&mut self, cwd: Option<String>) {
+        let Some(client) = &self.connection.client else {
+            return;
+        };
+        if self.connection.shown.is_none() {
+            return self.new_terminal_at(cwd);
         }
         let request = client.spawn_terminal(SpawnRequest {
             command: None,
-            cwd: self.focused_cwd(),
+            cwd,
             env: None,
             session_id: client.selected_session(),
             initial_size: None,
         });
-        self.pending_splits
+        self.connection
+            .pending_splits
             .insert(request, (self.placement_session(client), None));
-        self.zoomed = None;
+        self.connection.zoomed = None;
+    }
+
+    /// Finder's "New phux Terminal at Folder" (`services.rs`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn terminal_at_folder(&mut self, folder: std::path::PathBuf) {
+        if self.machines.current.is_some() {
+            return self.say(
+                NoticeKind::Error,
+                "That folder is on this Mac, and this window shows another machine.",
+            );
+        }
+        self.new_tab_at(Some(folder.display().to_string()));
     }
 
     pub(super) fn write_tab(&mut self, client: &Client, new: &ResourceId) -> Option<OperationId> {
@@ -209,14 +232,14 @@ impl Desk {
         let operation = client
             .replace_arrangement(session, doc)
             .map_err(|error| error.to_string())?;
-        self.layout_ops.insert(operation);
+        self.connection.layout_ops.insert(operation);
         Ok(operation)
     }
 
     /// Close every terminal of a tab. With the setting on, asks first unless
     /// each one is vouched idle.
     pub fn close_tab(&mut self, index: usize) {
-        let Some(tab) = self.tabs.list.get(index) else {
+        let Some(tab) = self.connection.tabs.list.get(index) else {
             return;
         };
         if tab.locked {
@@ -233,7 +256,7 @@ impl Desk {
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
             self.pending = Some(Pending::CloseTab(terminals));
-        } else if let Some(client) = &self.client {
+        } else if let Some(client) = &self.connection.client {
             let _ = client.close_terminals(terminals);
         }
     }
@@ -251,7 +274,11 @@ impl Desk {
         }
         let chosen =
             self.file.confirm_close.is_some() || self.prefs.get::<bool>("confirm_close").is_some();
-        let agents = self.topology.iter().flat_map(|t| &t.agent_sessions);
+        let agents = self
+            .connection
+            .topology
+            .iter()
+            .flat_map(|t| &t.agent_sessions);
         !chosen
             && agents
                 .into_iter()
@@ -263,17 +290,17 @@ impl Desk {
     /// "unknown" asks too.
     pub fn close_terminal(&mut self) {
         // A popup is closed before anything under it.
-        if self.popup.command().is_some() {
+        if self.connection.popup.command().is_some() {
             return self.dismiss_popup();
         }
-        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(terminal) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         if self.is_document(&terminal) {
             return self.hide_documents(&[terminal]);
         }
         let last_of_locked = |tab: &Tab| tab.locked && tab.resources == [terminal.clone()];
-        if self.tabs.list.iter().any(last_of_locked) {
+        if self.connection.tabs.list.iter().any(last_of_locked) {
             return self.say(NoticeKind::Info, LOCKED);
         }
         if self.asks_to_close(&terminal) {
@@ -285,7 +312,7 @@ impl Desk {
 
     /// Whether shell integration vouches this terminal is at a prompt.
     pub(super) fn vouched_idle(&self, terminal: &ResourceId) -> bool {
-        let Some(client) = &self.client else {
+        let Some(client) = &self.connection.client else {
             return false;
         };
         match client.with_control(|control| control.command_state(terminal)) {
@@ -301,27 +328,28 @@ impl Desk {
         if self.is_document(terminal) {
             return self.hide_documents(std::slice::from_ref(terminal));
         }
-        if let Some(client) = &self.client {
+        if let Some(client) = &self.connection.client {
             let _ = client.close_terminals(vec![terminal.clone()]);
         }
     }
 
     /// Lock the active tab, or unlock it if it is locked.
     pub fn toggle_tab_lock(&mut self) {
-        let Some(tab) = self.tabs.list.iter().find(|t| t.active) else {
+        let Some(tab) = self.connection.tabs.list.iter().find(|t| t.active) else {
             return;
         };
         let (group, locked) = (tab.id, !tab.locked);
-        let session = self.client.as_ref().and_then(|client| {
+        let session = self.connection.client.as_ref().and_then(|client| {
             let id = client.selected_session()?;
-            self.topology
+            self.connection
+                .topology
                 .as_ref()?
                 .sessions
                 .iter()
                 .find(|s| s.id == id)?
                 .key
         });
-        let (Some(client), Some(session)) = (&self.client, session) else {
+        let (Some(client), Some(session)) = (&self.connection.client, session) else {
             return;
         };
         if let Err(error) = client.lock_group(session, group, locked) {
@@ -330,15 +358,38 @@ impl Desk {
     }
 
     pub fn close_session(&mut self) {
-        let Some(id) = self.client.as_ref().and_then(|c| c.selected_session()) else {
+        let Some(id) = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|c| c.selected_session())
+        else {
             return;
         };
-        let session = self.topology.as_ref().and_then(|t| {
-            let session = t.sessions.iter().find(|s| s.id == id)?;
-            Some((session.key?, session.name.clone()))
-        });
-        if let Some((key, name)) = session {
-            self.pending = Some(Pending::CloseSession(key, name));
+        let key = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.sessions.iter().find(|s| s.id == id)?.key);
+        if let Some(key) = key {
+            self.close_session_key(key);
+        }
+    }
+
+    /// Ask before ending this local session, without selecting it. Resolve
+    /// its name now: a memoized sidebar control may predate a rename or close.
+    /// A stale key must never fall back to a reused name or live handle.
+    pub fn close_session_key(&mut self, key: SessionKey) {
+        if self.connection.client.is_none() {
+            return;
+        }
+        if let Some(session) = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.session_keyed(&key))
+        {
+            self.pending = Some(Pending::CloseSession(key, session.name.clone()));
         }
     }
 
@@ -347,10 +398,15 @@ impl Desk {
     }
 
     pub fn rename_selected_session(&mut self) {
-        let Some(id) = self.client.as_ref().and_then(|c| c.selected_session()) else {
+        let Some(id) = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|c| c.selected_session())
+        else {
             return;
         };
-        let session = self.topology.as_ref().and_then(|t| {
+        let session = self.connection.topology.as_ref().and_then(|t| {
             let session = t.sessions.iter().find(|s| s.id == id)?;
             Some((session.key?, session.name.clone()))
         });
@@ -360,29 +416,29 @@ impl Desk {
     }
 
     pub fn rename_tab(&mut self, index: usize) {
-        if let Some(tab) = self.tabs.list.get(index) {
+        if let Some(tab) = self.connection.tabs.list.get(index) {
             let (id, label) = (tab.id, self.tab_label(tab));
             self.open_rename(Renaming::Tab(id), label);
         }
     }
 
     pub fn rename_active_tab(&mut self) {
-        if let Some(at) = self.tabs.list.iter().position(|t| t.active) {
+        if let Some(at) = self.connection.tabs.list.iter().position(|t| t.active) {
             self.rename_tab(at);
         }
     }
 
     fn open_rename(&mut self, target: Renaming, current: String) {
-        self.tabs.renaming = Some(target);
+        self.connection.tabs.renaming = Some(target);
         let end = current.len();
-        self.tabs.rename_field = TextEdit::new(current);
-        self.tabs.rename_field.set_selection(0, end);
-        self.tabs.rename_field.focused = true;
+        self.connection.tabs.rename_field = TextEdit::new(current);
+        self.connection.tabs.rename_field.set_selection(0, end);
+        self.connection.tabs.rename_field.focused = true;
     }
 
     pub fn cancel_rename(&mut self) {
-        self.tabs.renaming = None;
-        self.tabs.rename_field.focused = false;
+        self.connection.tabs.renaming = None;
+        self.connection.tabs.rename_field.focused = false;
     }
 
     pub fn rename_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
@@ -395,11 +451,11 @@ impl Desk {
     }
 
     pub fn submit_rename(&mut self, tx: &mut Tx) {
-        let name = self.tabs.rename_field.text.trim().to_owned();
-        let target = self.tabs.renaming.clone();
+        let name = self.connection.tabs.rename_field.text.trim().to_owned();
+        let target = self.connection.tabs.renaming.clone();
         self.cancel_rename();
         tx.blur();
-        let (Some(target), Some(client)) = (target, self.client.clone()) else {
+        let (Some(target), Some(client)) = (target, self.connection.client.clone()) else {
             return;
         };
         if name.is_empty() {
@@ -423,6 +479,9 @@ impl Desk {
         }
     }
 }
+
+#[cfg(test)]
+mod close_tests;
 
 #[cfg(test)]
 mod tests {

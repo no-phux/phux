@@ -12,11 +12,9 @@ use crate::render::overlay::PromptOverlay;
 
 use super::{ActionCall, bind_satellite_spawn, spawn_place};
 
-/// Run `command` through `sh -c` in a floating pane, in the focused pane's
-/// directory and on its machine, or prompt for the command. The box is the
-/// one plugin overlay panes use: any action or the command's success closes
-/// it. Retained so a failure stays readable; a server without retention
-/// closes it on any exit.
+/// Run `command` through `sh -c` in a floating pane on the focused pane's
+/// machine and directory, or prompt for it. Retained so a failure stays
+/// readable.
 pub(in crate::attach) fn popup(
     ActionCall {
         resolved,

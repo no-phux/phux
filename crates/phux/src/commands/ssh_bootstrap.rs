@@ -197,7 +197,7 @@ fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
 fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> ExitCode {
     use std::os::unix::process::CommandExt as _;
 
-    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
+    let program = phux_client_runtime::connection::ssh_program();
     let mut command = std::process::Command::new(&program);
     command.args(phux_client_runtime::connection::ssh_control_options());
     command.arg("-t").arg(host).arg(remote_phux).arg("attach");
@@ -214,10 +214,6 @@ fn run_attach_over_ssh(host: &str, remote_phux: &str, session: Option<&str>) -> 
 /// Run `phux bootstrap` on the host and read its report. Only stdout is
 /// captured: ssh's stderr is copied through as it comes, so host-key,
 /// password, and 2FA prompts reach the operator.
-///
-/// A login sshd drops before it begins (its `MaxStartups` limit, when many
-/// connections open at once) is tried again after a jittered pause, a few
-/// times; nothing ran on the host then. A refused login or host key is not.
 fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
     let mut retry = 0;

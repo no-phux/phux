@@ -233,6 +233,20 @@ fn insert_resource_before(
     phux_protocol::ids::ResourceKey::new(bytes).expect("non-zero key")
 }
 
+/// The keys of `records`, in order, strictly after `after`.
+fn keys_after<T, K: PartialOrd + Copy>(
+    records: &[T],
+    key: impl Fn(&T) -> K,
+    after: impl Into<Option<K>>,
+) -> Vec<K> {
+    let after = after.into();
+    records
+        .iter()
+        .map(key)
+        .filter(|k| after.is_none_or(|after| *k > after))
+        .collect()
+}
+
 #[test]
 fn deleting_before_the_page_cursor_does_not_skip_the_next_record() {
     run(async {
@@ -256,12 +270,7 @@ fn deleting_before_the_page_cursor_does_not_skip_the_next_record() {
         org.delete_session(&removed);
         let (later, _) = org.drain(OrgFilter::All, 2, Some(cursor));
         let seen: Vec<_> = later.iter().map(|session| session.key).collect();
-        let expected: Vec<_> = all
-            .sessions
-            .iter()
-            .map(|session| session.key)
-            .filter(|key| *key > cursor_key)
-            .collect();
+        let expected = keys_after(&all.sessions, |s| s.key, cursor_key);
         assert_eq!(seen, expected, "a session was skipped or repeated");
         assert!(!seen.contains(&removed.key), "deleted session returned");
 
@@ -286,16 +295,8 @@ fn deleting_before_the_page_cursor_does_not_skip_the_next_record() {
         let (later_sessions, later_resources) =
             org.drain(OrgFilter::Session(session), 2, Some(cursor));
         assert!(later_sessions.is_empty(), "the session record was repeated");
-        let seen: Vec<_> = later_resources
-            .iter()
-            .map(|resource| resource.key)
-            .collect();
-        let expected: Vec<_> = full
-            .resources
-            .iter()
-            .map(|resource| resource.key)
-            .filter(|key| *key > emitted.key)
-            .collect();
+        let seen = keys_after(&later_resources, |r| r.key, None);
+        let expected = keys_after(&full.resources, |r| r.key, emitted.key);
         assert_eq!(seen, expected, "a resource was skipped or repeated");
     });
 }
@@ -323,12 +324,7 @@ fn inserting_before_the_page_cursor_does_not_repeat_a_record() {
         );
         let (later, _) = org.drain(OrgFilter::All, 2, Some(cursor));
         let seen: Vec<_> = later.iter().map(|session| session.key).collect();
-        let expected: Vec<_> = all
-            .sessions
-            .iter()
-            .map(|session| session.key)
-            .filter(|key| *key > cursor_key)
-            .collect();
+        let expected = keys_after(&all.sessions, |s| s.key, cursor_key);
         assert_eq!(seen, expected, "a session was skipped or repeated");
         assert!(
             !seen.contains(&inserted),
@@ -357,16 +353,8 @@ fn inserting_before_the_page_cursor_does_not_repeat_a_record() {
         let (later_sessions, later_resources) =
             org.drain(OrgFilter::Session(session), 2, Some(cursor));
         assert!(later_sessions.is_empty(), "session record repeated");
-        let seen: Vec<_> = later_resources
-            .iter()
-            .map(|resource| resource.key)
-            .collect();
-        let expected: Vec<_> = full
-            .resources
-            .iter()
-            .map(|resource| resource.key)
-            .filter(|key| *key > emitted)
-            .collect();
+        let seen = keys_after(&later_resources, |r| r.key, None);
+        let expected = keys_after(&full.resources, |r| r.key, emitted);
         assert_eq!(seen, expected, "a resource was skipped or repeated");
         assert!(
             !seen.contains(&inserted),

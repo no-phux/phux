@@ -7,7 +7,8 @@
 //! declaration ([`Event::AgentMetadata`]), the server-owned
 //! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md),
 //! and the server-owned `phux.pane-occupant/v1` record's background flag
-//! ([`Event::BackgroundWork`]).
+//! ([`Event::BackgroundWork`]) and foreground name, which names the pane
+//! (`PaneDescriptor::label`).
 //! `AgentAsked` only announces a question; the flag is the level that says
 //! whether one is still pending, so it is what retracts a question after a
 //! gap or a reconnect instead of leaving it to resurrect.
@@ -63,7 +64,7 @@ enum RosterKey {
     Agent,
     /// `phux.agent.asked/v1`.
     Asked,
-    /// `phux.pane-occupant/v1`, for its `background` flag.
+    /// `phux.pane-occupant/v1`, for its `background` flag and foreground.
     Occupant,
 }
 
@@ -272,13 +273,30 @@ impl ControlPlane {
                 }
                 Event::AgentAskedState { terminal_id, asked }
             }
-            RosterKey::Occupant => Event::BackgroundWork {
-                terminal_id,
-                running: value
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .and_then(|record| record["background"].as_bool())
-                    .unwrap_or(false),
-            },
+            RosterKey::Occupant => {
+                let record = value
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                let field = |key: &str| record.as_ref().map(|record| &record[key]);
+                let foreground = field("foreground")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+                    .map(str::to_owned);
+                if let Some(pane) = self
+                    .topology
+                    .as_mut()
+                    .and_then(|topology| topology.pane_mut(&terminal_id))
+                {
+                    // Names the pane (`PaneDescriptor::label`); bindings
+                    // re-read the topology on this event.
+                    pane.foreground = foreground;
+                }
+                Event::BackgroundWork {
+                    terminal_id,
+                    running: field("background")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                }
+            }
         };
         self.push_event(event);
     }

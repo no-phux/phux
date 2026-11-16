@@ -5,9 +5,7 @@ mod tests;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SpawnResource;
 
-use super::super::{
-    ControlPlane, Event, FrameKind, GroupId, Pending, ServerFeature, SpawnRequest, Status,
-};
+use super::super::{ControlPlane, Event, FrameKind, GroupId, Pending, SpawnRequest, Status};
 
 impl ControlPlane {
     /// Spawn a terminal (`SPAWN_RESOURCE`); the reply is
@@ -45,9 +43,7 @@ impl ControlPlane {
             }
             None => None,
         };
-        let keyed = allow_replay
-            && self.status == Status::Attached
-            && self.server_has(ServerFeature::SpawnIdempotency);
+        let keyed = allow_replay && self.status == Status::Attached;
         // UUID v4 sets the version bits, so its bytes cannot be all zero.
         let resource = keyed.then(|| {
             Box::new(

@@ -1,7 +1,5 @@
 //! `url-picker`: every link in the focused pane, newest first, to copy.
 
-use phux_config::keybind::ResolvedAction;
-
 use crate::attach::copy::extract_selection_text;
 use crate::attach::input_dispatch::args::str_arg;
 use crate::attach::pane_state::published_terminal;
@@ -70,10 +68,8 @@ pub(in crate::attach) fn url_picker(
     let items = found
         .into_iter()
         .map(|link| {
-            let mut action = ResolvedAction {
-                action: "copy-text".to_owned(),
-                args: std::collections::BTreeMap::default(),
-            };
+            let mut action =
+                crate::attach::resolved("copy-text", std::collections::BTreeMap::default());
             action.args.insert("text".to_owned(), link.clone().into());
             SelectItem::new(link, action)
         })

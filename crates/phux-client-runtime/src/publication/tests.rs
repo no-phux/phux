@@ -102,8 +102,6 @@ fn a_document_slot_shares_the_generation_and_never_reads_as_a_grid() {
             .acquire_document_at(&ResourceId::local(3), 1)
             .is_none()
     );
-    // A document is never deferred, so an acquire never asks for a catch-up.
-    assert!(!table.stale(&FrameKey::Default(tree.clone())));
 
     table.remove(&tree);
     assert!(table.acquire_document(&tree).is_none());

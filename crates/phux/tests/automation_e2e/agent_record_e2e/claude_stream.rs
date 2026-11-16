@@ -1,13 +1,8 @@
 /// Write an executable `claude` that paints nothing and holds, so every
 /// lifecycle edge must come from the session stream.
 fn write_quiet_claude(dir: &std::path::Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join("claude");
-    std::fs::write(&path, "#!/bin/sh\nprintf '\\033[2J\\033[H'\nsleep 120\n")
-        .expect("write quiet claude");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod quiet claude");
+    crate::common::write_executable(&path, "#!/bin/sh\nprintf '\\033[2J\\033[H'\nsleep 120\n");
     path
 }
 
@@ -82,37 +77,38 @@ impl ServerGuard {
     /// Poll the log until a record of `kind` appears and return the whole
     /// log. Panics with the last reading on timeout.
     fn await_record(&self, target: &str, kind: &str, deadline: Duration) -> Vec<serde_json::Value> {
-        let end = Instant::now() + deadline;
-        loop {
-            let records = self.agent_log(target);
-            if records.iter().any(|record| record["type"] == kind) {
-                return records;
-            }
-            assert!(
-                Instant::now() < end,
-                "{target} never logged a `{kind}` record within {deadline:?}; last: {records:?}"
-            );
-            std::thread::sleep(RECORD_POLL);
-        }
+        self.await_log(target, &format!("a `{kind}` record"), deadline, |record| {
+            record["type"] == kind
+        })
     }
 
-    /// Poll the log until a `phux.transcript/v1` entry with `role` appears
-    /// and return the whole log.
+    /// As [`Self::await_record`], for a `phux.transcript/v1` entry with `role`.
     fn await_transcript(
         &self,
         target: &str,
         role: &str,
         deadline: Duration,
     ) -> Vec<serde_json::Value> {
+        let what = format!("a `{role}` transcript entry");
+        self.await_log(target, &what, deadline, |record| is_transcript(record, role))
+    }
+
+    fn await_log(
+        &self,
+        target: &str,
+        what: &str,
+        deadline: Duration,
+        want: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
         let end = Instant::now() + deadline;
         loop {
             let records = self.agent_log(target);
-            if records.iter().any(|record| is_transcript(record, role)) {
+            if records.iter().any(&want) {
                 return records;
             }
             assert!(
                 Instant::now() < end,
-                "{target} never logged a `{role}` transcript entry within {deadline:?}; last: {records:?}"
+                "{target} never logged {what} within {deadline:?}; last: {records:?}"
             );
             std::thread::sleep(RECORD_POLL);
         }
@@ -209,6 +205,9 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
             .extend(extra.as_object().expect("object").clone());
         base
     };
+    let hook = |arm: &str, event: &str, extra: serde_json::Value| {
+        run_hook_with_payload(&shim, arm, terminal_id, &server.socket, &payload(event, extra));
+    };
     let assert_private = |records: &[serde_json::Value]| {
         let all = serde_json::to_string(records).expect("serialize log");
         assert!(
@@ -234,13 +233,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     };
 
     // --- 1. SessionStart opens the session under the pane -----------------
-    run_hook_with_payload(
-        &shim,
-        "start",
-        terminal_id,
-        &server.socket,
-        &payload("SessionStart", serde_json::json!({ "source": "startup" })),
-    );
+    hook("start", "SessionStart", serde_json::json!({ "source": "startup" }));
     let records = server.await_record(&target, "session_start", DETECT_DEADLINE);
     assert_eq!(records[0]["type"], "session_start", "{records:?}");
     let shown = server.agent_show(&target);
@@ -252,16 +245,8 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     assert_eq!(shown["agents"][0]["session"], SESSION, "{shown}");
 
     // --- 2. UserPromptSubmit: a count, never the text; working ------------
-    run_hook_with_payload(
-        &shim,
-        "working",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "UserPromptSubmit",
-            serde_json::json!({ "prompt": "hello PROMPT-MARKER world" }),
-        ),
-    );
+    let prompt = serde_json::json!({ "prompt": "hello PROMPT-MARKER world" });
+    hook("working", "UserPromptSubmit", prompt);
     let records = server.await_record(&target, "prompt", DETECT_DEADLINE);
     let prompt = records
         .iter()
@@ -278,35 +263,17 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     watch.await_agent_state("working");
 
     // --- 3. Tool records name the tool and nothing else -------------------
-    run_hook_with_payload(
-        &shim,
-        "tool-start",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "PreToolUse",
-            serde_json::json!({
+    hook("tool-start", "PreToolUse", serde_json::json!({
                 "tool_name": "Bash",
                 "tool_input": { "command": "echo INPUT-MARKER" },
                 "tool_use_id": "toolu_e2e"
-            }),
-        ),
-    );
-    run_hook_with_payload(
-        &shim,
-        "tool-end",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "PostToolUse",
-            serde_json::json!({
+            }));
+    hook("tool-end", "PostToolUse", serde_json::json!({
                 "tool_name": "Bash",
                 "tool_input": { "command": "echo INPUT-MARKER" },
                 "tool_response": "OUTPUT-MARKER",
                 "tool_use_id": "toolu_e2e"
-            }),
-        ),
-    );
+            }));
     let records = server.await_record(&target, "tool_end", DETECT_DEADLINE);
     for kind in ["tool_start", "tool_end"] {
         let record = records
@@ -336,35 +303,17 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
 
     // --- 4. PermissionRequest: ask, and blocked ---------------------------
-    run_hook_with_payload(
-        &shim,
-        "blocked",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "PermissionRequest",
-            serde_json::json!({
+    hook("blocked", "PermissionRequest", serde_json::json!({
                 "tool_name": "Bash",
                 "tool_input": { "command": "rm INPUT-MARKER" },
                 "message": "Claude wants to run: rm INPUT-MARKER"
-            }),
-        ),
-    );
+            }));
     let records = server.await_record(&target, "ask", DETECT_DEADLINE);
     assert_private(&records);
     watch.await_agent_state("blocked");
 
     // --- 5. Stop: done ----------------------------------------------------
-    run_hook_with_payload(
-        &shim,
-        "done",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "Stop",
-            serde_json::json!({ "last_assistant_message": "OUTPUT-MARKER" }),
-        ),
-    );
+    hook("done", "Stop", serde_json::json!({ "last_assistant_message": "OUTPUT-MARKER" }));
     let records = server.await_record(&target, "stop", DETECT_DEADLINE);
     assert_private(&records);
     let reply = transcript_entry(&records, "assistant");
@@ -393,16 +342,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
 
     // --- 6. SessionEnd: session_end, and the session is closed ------------
-    run_hook_with_payload(
-        &shim,
-        "clear",
-        terminal_id,
-        &server.socket,
-        &payload(
-            "SessionEnd",
-            serde_json::json!({ "reason": "prompt_input_exit" }),
-        ),
-    );
+    hook("clear", "SessionEnd", serde_json::json!({ "reason": "prompt_input_exit" }));
     // The stream wrapper ends the session without `agent clear`: the session
     // leaves the report and inventory, and the record goes back to the detector.
     let end = Instant::now() + DETECT_DEADLINE;

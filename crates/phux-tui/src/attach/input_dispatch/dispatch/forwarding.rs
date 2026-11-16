@@ -30,10 +30,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             })
             .cloned()
     }
-    /// Feed a key to predictive echo (mouse/paste/focus bypass it), peeking
-    /// the focused pane's grid so arrows can size the grapheme they cross.
-    /// ADR-0090: predictions queue on both screens; on the alternate screen
-    /// display waits for echo evidence.
+    /// Feed a key to predictive echo, peeking the focused grid so arrows can
+    /// size the grapheme they cross (ADR-0090).
     pub(super) fn feed_predict(&mut self, ev: &InputEvent) -> bool {
         use crate::predict::PredictionOutcome;
         let InputEvent::Key(key_event) = ev else {
@@ -87,7 +85,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let lines = crate::attach::paste_safety::line_count(&paste.data);
         self.ctx
             .overlays
-            .push(Box::new(crate::render::overlay::PasteConfirmOverlay::new(
+            .push(Box::new(crate::render::overlay::ConfirmOverlay::paste(
                 paste.clone(),
                 lines,
                 bracketed,

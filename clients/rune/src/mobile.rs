@@ -27,6 +27,18 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// A foreground phone app that has asked for nothing.
+    #[cfg(test)]
+    pub fn test() -> Platform {
+        Platform {
+            target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            active: true,
+            connection_requested: false,
+            paste_requested: false,
+            away_since: None,
+        }
+    }
+
     /// Note a lifecycle edge at `now`. Coming back, how long the app was
     /// away, when it had left.
     fn set_active(&mut self, active: bool, now: SystemTime) -> Option<Duration> {
@@ -338,7 +350,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
 pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
     rt.finish_composition();
     rt.update(|state, tx| {
-        state.preedit = None;
+        state.connection.preedit = None;
         let now = SystemTime::now();
         let native = state.native.as_mut();
         let away = native.and_then(|native| native.set_active(active, now));
@@ -358,9 +370,10 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
 pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
     let state = &rt.state;
     let grid = state
+        .connection
         .client
         .as_ref()
-        .zip(state.shown.as_ref())
+        .zip(state.connection.shown.as_ref())
         .and_then(|(c, s)| c.acquire_view(s.view?));
     let text = grid
         .as_ref()
@@ -383,10 +396,10 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
         })
         .unwrap_or_default();
     json!({"schema": 1, "frames": frames, "connected": grid.is_some(),
-        "session": state.selected_session_name(), "terminal_id": state.shown.as_ref().map(|s| s.resource.to_string()),
+        "session": state.selected_session_name(), "terminal_id": state.connection.shown.as_ref().map(|s| s.resource.to_string()),
         // Frames carry no soft-wrap flag, so a marker that wraps a row also counts.
         "marker_seen": !marker.is_empty() && (text.contains(marker) || text.replace('\n', "").contains(marker)),
-        "error": state.error})
+        "error": state.connection.error})
 }
 
 mod host;

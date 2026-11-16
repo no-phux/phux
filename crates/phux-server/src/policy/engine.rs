@@ -41,13 +41,19 @@ pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone)]
 pub struct ScopedPolicy {
     registry: Option<Arc<ReloadingWorkloadRegistry>>,
+    /// `[policy] tailnet-owner`: grant the owner's own tailnet devices a
+    /// paired person's device ceiling.
+    tailnet_owner: bool,
 }
 
 impl ScopedPolicy {
     /// The `local` mode: the owner's socket only.
     #[must_use]
     pub const fn local() -> Self {
-        Self { registry: None }
+        Self {
+            registry: None,
+            tailnet_owner: false,
+        }
     }
 
     /// The `paired` mode, minting scoped grants from `registry`.
@@ -55,7 +61,17 @@ impl ScopedPolicy {
     pub const fn paired(registry: Arc<ReloadingWorkloadRegistry>) -> Self {
         Self {
             registry: Some(registry),
+            tailnet_owner: false,
         }
+    }
+
+    /// Also grant a QUIC connection the admission vouched for as the owner's
+    /// own tailnet device (`docs/config.md#tailnet-owner-devices`) what a
+    /// person's paired device holds.
+    #[must_use]
+    pub const fn with_tailnet_owner(mut self, on: bool) -> Self {
+        self.tailnet_owner = on;
+        self
     }
 
     pub(super) fn decide(
@@ -74,7 +90,36 @@ impl ScopedPolicy {
             debug!(target: POLICY_TARGET, transport = ?peer.transport, "HELLO refused: no workload credential");
             return Err(PolicyError::refused());
         };
+        if crate::auth::is_tailnet_owner(credential) {
+            return self.tailnet_owner_grant(peer, credential);
+        }
         scoped_grant(registry, credential)
+    }
+
+    /// A paired person's device ceiling for an owner device, attributed to
+    /// its `tailnet:` credential; only over QUIC and only with the mode on.
+    fn tailnet_owner_grant(
+        &self,
+        peer: &PeerIdentity,
+        credential: &AuthenticatedCredential,
+    ) -> Result<ConnectionGrant, PolicyError> {
+        if !self.tailnet_owner || peer.transport != TransportType::Quic {
+            debug!(target: POLICY_TARGET, "HELLO refused: tailnet owner devices are not admitted");
+            return Err(PolicyError::refused());
+        }
+        let scopes = crate::workload::enrolled_scopes(
+            vec![crate::workload::PAIRED_DEVICE_SCOPE.to_owned()],
+            Some(crate::workload::EnrolledFor::Human),
+        );
+        let ceiling = phux_protocol::scope::TerminalScopeSet::parse_all(&scopes)
+            .map_err(|_| PolicyError::Internal("paired device ceiling".to_owned()))?;
+        ConnectionGrant::scoped(ceiling, None)
+            .map(|grant| {
+                grant
+                    .with_principal(phux_core::PrincipalId::Credential(credential.id.clone()))
+                    .with_kind(phux_core::actor::PrincipalKind::Human)
+            })
+            .map_err(|_| PolicyError::Internal("paired device ceiling".to_owned()))
     }
 }
 

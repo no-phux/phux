@@ -85,10 +85,7 @@ fn keyboard_reveal_keeps_settings_controls_clear_of_the_fades() {
         assert!(rt.accessibility_action("settings-query", Action::Focus, None));
         let mut visited = std::collections::HashSet::new();
         for _ in 0..30 {
-            rt.key(rune::KeyEvent {
-                key: rune::Key::Tab,
-                mods: rune::Mods::default(),
-            });
+            rt.key(crate::keys::plain(rune::Key::Tab));
             settle(&mut rt);
             let focused = rt
                 .elements()

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "tests")]
-
 use phux_protocol::wire::frame::ControlClass;
 use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest, TypedDocument};
 

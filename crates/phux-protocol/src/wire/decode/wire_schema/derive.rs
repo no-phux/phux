@@ -61,13 +61,9 @@ pub(super) fn field_modules() -> BTreeMap<String, Vec<(String, u32)>> {
     let mut current = None;
     for line in FIELD_RS.lines() {
         if let Some(name) = line.strip_prefix("pub mod ") {
-            if let Some(name) = name.strip_suffix(';') {
-                out.insert(name.to_owned(), external_constants(name));
-            } else {
-                let name = name.trim_end_matches(" {").to_owned();
-                out.entry(name.clone()).or_default();
-                current = Some(name);
-            }
+            let name = name.trim_end_matches(" {").to_owned();
+            out.entry(name.clone()).or_default();
+            current = Some(name);
         } else if line == "}" {
             current = None;
         } else if let Some(constant) = field_constant(line) {
@@ -78,18 +74,6 @@ pub(super) fn field_modules() -> BTreeMap<String, Vec<(String, u32)>> {
         }
     }
     out
-}
-
-fn external_constants(module: &str) -> Vec<(String, u32)> {
-    // Namespace declarations remain the registry; follow the actual module
-    // file rather than maintaining a second list for split field tables.
-    let root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let path = root.join("src/wire/field").join(format!("{module}.rs"));
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
-        .lines()
-        .filter_map(field_constant)
-        .collect()
 }
 
 fn field_constant(line: &str) -> Option<(String, u32)> {

@@ -1,9 +1,6 @@
-//! Layering guard: the attach driver is a one-way orchestrator. Shared
-//! vocabulary lives in `attach/pane_state.rs` and `attach/outcome.rs`; one
-//! `use super::driver::Foo;` in a sibling would silently reopen a module
-//! cycle. No file under `src/` may name `driver::` in code except the driver
-//! itself and `attach/mod.rs`. The comment filter is deliberately naive (a
-//! trimmed line starting with `//`).
+//! Layering guard: no file under `src/` may name `driver::` in code except
+//! the driver and `attach/mod.rs`; one such `use` would reopen a module
+//! cycle. The comment filter is deliberately naive.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]

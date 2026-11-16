@@ -9,18 +9,14 @@ pub(in crate::attach) const SYNC_OUTPUT_BEGIN: &[u8] = b"\x1b[?2026h";
 pub(in crate::attach) const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 
 thread_local! {
-    /// How many [`SyncOutput`] guards are open on this thread. DEC 2026 is a
-    /// mode, not a counter, so only the outermost guard may emit the mode
-    /// bytes. Thread-local because the two nesting layers never see each
-    /// other's state and the paint path runs on one thread.
+    /// How many [`SyncOutput`] guards are open on this thread; only the
+    /// outermost emits, since DEC 2026 is a mode, not a counter.
     static SYNC_OUTPUT_DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// An open DEC 2026 synchronized-output block, nestable: only the outermost
-/// `begin`/`end` emit `CSI ? 2026 h`/`l`. The depth is released in `Drop`, so
-/// an early return cannot strand it (the driver's sync-output watchdog backs
-/// up a transaction left open). Closing is explicit because the guard cannot
-/// hold the sink across the paint's borrow of `out`.
+/// `begin`/`end` emit. Depth is released in `Drop`, so an early return
+/// cannot strand it.
 #[derive(Debug)]
 #[must_use = "an opened synchronized-output block must be closed with `end`"]
 pub(in crate::attach) struct SyncOutput {

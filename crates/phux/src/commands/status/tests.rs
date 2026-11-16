@@ -45,22 +45,19 @@ fn keep_awake_renders_when_the_server_reports_it() {
         let lines = render_human(&report, 0);
         lines[lines.len() - 2].clone()
     };
-    assert_eq!(
-        line(serde_json::json!({ "state": "on", "working": 2 })),
-        "keep awake: on (2 agents working)"
-    );
-    assert_eq!(
-        line(serde_json::json!({ "state": "on", "working": 0 })),
-        "keep awake: on"
-    );
-    assert_eq!(
-        line(serde_json::json!({ "state": "idle", "working": 0 })),
-        "keep awake: idle"
-    );
-    assert_eq!(
-        line(serde_json::json!({ "state": "unavailable", "working": 1 })),
-        "keep awake: unavailable (1 agent working)"
-    );
+    for (state, working, expected) in [
+        ("on", 2, "keep awake: on (2 agents working)"),
+        ("on", 0, "keep awake: on"),
+        ("idle", 0, "keep awake: idle"),
+        (
+            "unavailable",
+            1,
+            "keep awake: unavailable (1 agent working)",
+        ),
+    ] {
+        let record = serde_json::json!({ "state": state, "working": working });
+        assert_eq!(line(record), expected);
+    }
 }
 
 /// The six-line human report, pinned exactly: labeled server / since /
@@ -89,42 +86,34 @@ fn human_render_is_pinned() {
 
 /// The JSON success document, pinned: `schema_version` 1, running true,
 /// the protocol triple as an object, summed clients, per-session rows
-/// with real counts, the satellite split, and both log paths.
+/// with real counts, the satellite split, the (empty) unreachable list, and
+/// both log paths. Features are named in bit order.
 #[test]
 fn json_render_is_pinned() {
-    let doc = status_document(&fabricated());
-    assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["running"], true);
-    assert_eq!(doc["pid"], 4242);
-    assert_eq!(doc["socket"], "/run/phux/phux.sock");
-    assert_eq!(doc["since_unix_secs"], 1_754_000_000_i64);
-    assert_eq!(doc["protocol"]["major"], 1);
-    assert_eq!(doc["protocol"]["minor"], 2);
-    assert_eq!(doc["protocol"]["patch"], 3);
-    assert_eq!(doc["client_protocol"]["minor"], 2);
     assert_eq!(
-        doc["features"],
-        serde_json::json!(["acknowledged_input", "report_agent_state"]),
-        "advertised features are named, in bit order"
+        status_document(&fabricated()),
+        serde_json::json!({
+            "schema_version": 1,
+            "running": true,
+            "pid": 4242,
+            "socket": "/run/phux/phux.sock",
+            "since_unix_secs": 1_754_000_000_i64,
+            "protocol": { "major": 1, "minor": 2, "patch": 3 },
+            "client_protocol": { "major": 1, "minor": 2, "patch": 3 },
+            "features": ["acknowledged_input", "report_agent_state"],
+            "clients": 2,
+            "sessions": [
+                { "name": "scratch", "windows": 1, "attached_clients": 0 },
+                { "name": "work", "windows": 3, "attached_clients": 2 },
+            ],
+            "satellite_terminals": ["build-box/@1"],
+            "unreachable": [],
+            "keep_awake": null,
+            "logs": { "server": "/state/phux/server.log", "client_dir": "/state/phux" },
+        })
     );
-    assert_eq!(doc["clients"], 2, "clients are summed across sessions");
-    assert_eq!(doc["sessions"][0]["name"], "scratch");
-    assert_eq!(doc["sessions"][1]["name"], "work");
-    assert_eq!(doc["sessions"][1]["windows"], 3);
-    assert_eq!(doc["sessions"][1]["attached_clients"], 2);
-    assert_eq!(doc["satellite_terminals"][0], "build-box/@1");
-    assert_eq!(
-        doc["unreachable"].as_array().map(Vec::len),
-        Some(0),
-        "a complete view still carries the (empty) unreachable list"
-    );
-    assert_eq!(doc["logs"]["server"], "/state/phux/server.log");
-    assert_eq!(doc["logs"]["client_dir"], "/state/phux");
 }
 
-/// A degraded fleet view surfaces in both formats: an indented
-/// `partial view:` line in the human report, the notice in the JSON
-/// `unreachable` list.
 /// A server on another minor or patch prints its own version, with this
 /// client's beside it, in both formats.
 #[test]
@@ -140,6 +129,9 @@ fn a_skewed_server_reports_its_version_and_the_clients() {
     assert_eq!(doc["client_protocol"]["patch"], 2);
 }
 
+/// A degraded fleet view surfaces in both formats: an indented
+/// `partial view:` line in the human report, the notice in the JSON
+/// `unreachable` list.
 #[test]
 fn degradation_surfaces_in_both_formats() {
     let mut report = fabricated();
@@ -180,19 +172,18 @@ fn unknown_pid_and_since_render_as_unknown() {
 fn not_running_document_is_pinned() {
     let refused = AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
     let doc = not_running_document(&refused, Path::new("/tmp/phux-test.sock"));
-    assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["running"], false);
-    assert_eq!(doc["socket"], "/tmp/phux-test.sock");
-    assert_eq!(doc["error"]["code"], "no_server");
-    assert_eq!(
-        doc["error"]["message"],
-        "no server running at /tmp/phux-test.sock"
-    );
     let remedy = doc["remedy"].as_str().unwrap();
-    assert!(remedy.contains("`phux server`"));
-    assert!(remedy.contains("phux doctor"));
-    // Exactly the five top-level keys; a consumer may deny-list nothing.
-    assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
+    assert!(remedy.contains("`phux server`") && remedy.contains("phux doctor"));
+    assert_eq!(
+        doc,
+        serde_json::json!({
+            "schema_version": 1,
+            "running": false,
+            "socket": "/tmp/phux-test.sock",
+            "error": { "code": "no_server", "message": "no server running at /tmp/phux-test.sock" },
+            "remedy": remedy,
+        })
+    );
 }
 
 /// `build_report` name-sorts sessions and splits satellite Terminals (not

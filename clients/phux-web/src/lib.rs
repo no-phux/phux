@@ -22,6 +22,7 @@ pub mod touch;
 
 pub use panes::PaneRect;
 
+pub use session::approvals::{Approval, CredentialApproval, Requester as ApprovalRequester};
 pub use session::{AgentBadge, AttachPreference, Connection, Outcome, WebDocument};
 
 use std::cell::RefCell;
@@ -301,15 +302,6 @@ impl Default for Metrics {
     }
 }
 
-/// Paint a [`Grid`] onto a 2D canvas context: row by row, a background rect
-/// per cell, then each glyph in its resolved foreground. Cells fall back to
-/// the grid defaults.
-/// When `cursor_on` is true and the grid's cursor is visible, an inverted block
-/// cursor is drawn over the cursor cell (the caller toggles `cursor_on` to blink).
-pub fn render(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, cursor_on: bool) {
-    render_selected(ctx, grid, m, cursor_on, &Overlay::default());
-}
-
 /// A highlighted run of row-major cells: a search match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mark {
@@ -343,19 +335,12 @@ const CURRENT_MARK_BG: Rgb = Rgb {
 };
 const MARK_TEXT: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
-/// [`render`] with an [`Overlay`]: selected cells inverted, search matches
-/// highlighted.
-pub fn render_selected(
-    ctx: &CanvasRenderingContext2d,
-    grid: &Grid,
-    m: &Metrics,
-    cursor_on: bool,
-    overlay: &Overlay<'_>,
-) {
-    render_selected_appearance(ctx, grid, m, cursor_on, overlay, false);
-}
-
-pub(crate) fn render_selected_appearance(
+/// Paint a [`Grid`] onto a 2D canvas context, row by row, under `overlay`
+/// (selected cells inverted, search matches highlighted). When `cursor_on`
+/// and the grid's cursor is visible, an inverted block cursor is drawn over
+/// its cell (the caller toggles `cursor_on` to blink). `glass` leaves
+/// default-background cells transparent.
+pub fn render(
     ctx: &CanvasRenderingContext2d,
     grid: &Grid,
     m: &Metrics,
@@ -373,21 +358,11 @@ pub(crate) fn render_selected_appearance(
     }
 }
 
-/// Redraw only the cursor's row of an already painted `grid`, then the
+/// Redraw only the cursor's row of an already [`render`]ed `grid`, then the
 /// cursor over it when `cursor_on`. A blink costs one row instead of the
 /// whole grid, and repaints whatever part of a neighbor's glyph (a wide
 /// character's right half) reaches into the cursor's cell.
 pub fn render_cursor_row(
-    ctx: &CanvasRenderingContext2d,
-    grid: &Grid,
-    m: &Metrics,
-    cursor_on: bool,
-    overlay: &Overlay<'_>,
-) {
-    render_cursor_row_appearance(ctx, grid, m, cursor_on, overlay, false);
-}
-
-pub(crate) fn render_cursor_row_appearance(
     ctx: &CanvasRenderingContext2d,
     grid: &Grid,
     m: &Metrics,

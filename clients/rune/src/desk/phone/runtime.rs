@@ -12,7 +12,7 @@ mod settings;
 mod sheets;
 
 fn fixture() -> (std::sync::Arc<Client>, Runtime<Desk>) {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.phone = Some(Phone::default());
     rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
@@ -39,13 +39,14 @@ fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
 #[test]
 fn a_tap_on_a_url_opens_it_and_a_drag_across_it_does_not() {
     let (_client, mut rt) =
-        crate::grid::budget::input_fixture_showing("\x1b[2J\x1b[Hsee https://phux.sh/docs now");
+        crate::test_support::input_fixture_showing("\x1b[2J\x1b[Hsee https://phux.sh/docs now");
     rt.state.phone = Some(Phone::default());
     rt.state.prefs = Prefs::memory();
     rt.set_viewport((393.0, 852.0), 2.0);
     settle(&mut rt);
     let id = rt
         .state
+        .connection
         .shown
         .as_ref()
         .expect("a terminal")
@@ -119,15 +120,15 @@ fn find_keeps_focus_when_the_drawn_keyboard_is_pressed() {
     rt.frame(0.0);
     tap(&mut rt, "phone-cap-116", 0.1);
     tap(&mut rt, "phone-cap-104", 0.3);
-    assert!(rt.state.find_query.focused);
-    assert_eq!(rt.state.find_query.text, "th");
+    assert!(rt.state.connection.find_query.focused);
+    assert_eq!(rt.state.connection.find_query.text, "th");
     let generation = rt.state.generation;
     tap(&mut rt, "phone-cap-return", 0.4);
     assert!(rt.state.generation > generation, "Return searches again");
-    assert_eq!(rt.state.find_query.text, "th");
+    assert_eq!(rt.state.connection.find_query.text, "th");
     tap(&mut rt, "phone-key-Escape", 0.5);
-    assert!(rt.state.find.is_none());
-    assert!(!rt.state.find_query.focused);
+    assert!(rt.state.connection.find.is_none());
+    assert!(!rt.state.connection.find_query.focused);
     no_terminal_input(&client);
 }
 
@@ -160,10 +161,10 @@ fn confirmation_over_find_neither_edits_nor_types_into_the_terminal() {
     rt.frame(0.0);
     tap(&mut rt, "phone-cap-116", 0.1);
     assert!(rt.state.pending.is_some());
-    assert!(rt.state.find_query.text.is_empty());
+    assert!(rt.state.connection.find_query.text.is_empty());
     tap(&mut rt, "phone-key-Escape", 0.3);
     assert!(rt.state.pending.is_none());
-    assert!(rt.state.find.is_some());
+    assert!(rt.state.connection.find.is_some());
     no_terminal_input(&client);
 }
 
@@ -211,10 +212,10 @@ fn field_typing_finishes_before_a_confirmation_replaces_it() {
         desk.pending = Some(crate::desk::Pending::Close(
             phux_protocol::ids::ResourceId::local(1),
         ));
-        desk.find_query.clear();
+        desk.connection.find_query.clear();
     });
     settle(&mut rt);
-    assert!(rt.state.find_query.text.is_empty());
+    assert!(rt.state.connection.find_query.text.is_empty());
     assert!(rt.state.pending.is_some());
     no_terminal_input(&client);
 }

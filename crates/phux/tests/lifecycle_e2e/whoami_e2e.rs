@@ -12,111 +12,25 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::{common, listeners, paired};
 
 use std::path::Path;
-use std::process::{Child, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
 
 use tempfile::TempDir;
 
-use crate::hermetic::{hermetic_env, prepare_dirs};
+use crate::hermetic::{
+    NO_ENV, Server, await_success, hermetic_env, json_doc, phux, phux_with, prepare_dirs,
+    start_server,
+};
 
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
-
-/// How long a freshly started server has to answer its first `whoami`.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
-
-/// A running `phux server`, killed on drop.
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn phux(dir: &Path, args: &[&str]) -> Output {
-    phux_with(dir, args, b"", &[])
-}
-
-fn phux_with(
-    dir: &Path,
-    args: &[&str],
-    stdin: &[u8],
-    extra: &[(&str, std::path::PathBuf)],
-) -> Output {
-    use std::io::Write as _;
-    let mut child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .envs(extra.iter().cloned())
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run phux");
-    let _ = child.stdin.take().expect("stdin").write_all(stdin);
-    child.wait_with_output().expect("wait for phux")
-}
 
 /// `[policy] mode = "paired"` in the hermetic config: the only mode that
 /// serves a remote listener (ADR-0179).
 fn paired_policy(dir: &Path) {
     paired::write_paired_policy(&dir.join("config/phux/config.toml"));
-}
-
-/// Start `phux server --socket DIR/s.sock EXTRA...` under the hermetic env.
-fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
-    let child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .envs(env.iter().copied())
-        .arg("server")
-        .arg("--socket")
-        .arg(dir.join("s.sock"))
-        .args(extra)
-        // Backstop only: the Drop kills the server, but a panic that skips it
-        // must not leave a daemon behind for long.
-        .args(["--exit-after-idle", "120"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn phux server");
-    Server(child)
-}
-
-/// Run `phux ARGS` until it succeeds, failing after [`READY_DEADLINE`].
-fn await_success(dir: &Path, args: &[&str]) -> Output {
-    await_success_with(dir, args, &[])
-}
-
-fn await_success_with(dir: &Path, args: &[&str], extra: &[(&str, std::path::PathBuf)]) -> Output {
-    let start = Instant::now();
-    loop {
-        let out = phux_with(dir, args, b"", extra);
-        if out.status.success() {
-            return out;
-        }
-        assert!(
-            start.elapsed() < READY_DEADLINE,
-            "`phux {}` never succeeded: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn json_doc(out: &Output) -> serde_json::Value {
-    serde_json::from_slice(&out.stdout).expect("whoami --json is one JSON document")
 }
 
 /// Over the local socket: the kernel peer uid, no credential, and the same
@@ -133,6 +47,7 @@ fn whoami_reports_the_local_socket_peer() {
     let doc = json_doc(&await_success(
         dir.path(),
         &["--socket", socket, "whoami", "--json"],
+        NO_ENV,
     ));
     assert_eq!(doc["schema_version"], 1, "{doc}");
     assert_eq!(doc["auth_route"], "uds", "{doc}");
@@ -218,7 +133,7 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
 fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String) {
     prepare_dirs(dir);
     paired_policy(dir);
-    let enrolled = paired::enroll_client(dir, |args, stdin| phux_with(dir, args, stdin, &[]));
+    let enrolled = paired::enroll_client(dir, |args, stdin| phux_with(dir, args, stdin, NO_ENV));
 
     // Start the listener first: `phux pair` mints only against a server
     // with a bound remote listener (ADR-0141), and the server re-reads its
@@ -242,6 +157,7 @@ fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String)
     let paired = json_doc(&await_success(
         dir,
         &["--socket", &socket, "pair", "--json"],
+        NO_ENV,
     ));
     assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
     let token = paired["token"].as_str().expect("token");
@@ -271,7 +187,7 @@ fn whoami_over_remote_reports_the_workload_credential() {
     let (_server, enrolled, _socket, _quic) = serve_paired_remote(dir.path());
 
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
-    let doc = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let doc = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(doc["auth_route"], "bearer-quic", "{doc}");
     assert_eq!(doc["credential_id"], enrolled.credential_id, "{doc}");
     assert!(doc["principal"].is_string(), "{doc}");
@@ -291,7 +207,7 @@ fn a_paired_remote_client_survives_an_upgrade() {
     let dir = TempDir::new().expect("tempdir");
     let (_server, enrolled, socket, quic) = serve_paired_remote(dir.path());
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
-    let before = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let before = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
 
     let upgrade = phux(dir.path(), &["--socket", &socket, "upgrade"]);
     assert!(
@@ -299,7 +215,7 @@ fn a_paired_remote_client_survives_an_upgrade() {
         "upgrade: {}",
         String::from_utf8_lossy(&upgrade.stderr)
     );
-    await_success(dir.path(), &["--socket", &socket, "ls"]);
+    await_success(dir.path(), &["--socket", &socket, "ls"], NO_ENV);
     let after_addr = listeners::bound_listener_addr(
         Path::new(&socket),
         listeners::RemoteListenerTransport::Quic,
@@ -310,7 +226,7 @@ fn a_paired_remote_client_survives_an_upgrade() {
         "the listener kept its address"
     );
 
-    let after = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let after = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(after["credential_id"], before["credential_id"], "{after}");
     assert_eq!(after["auth_route"], "bearer-quic", "{after}");
 }

@@ -31,13 +31,6 @@ struct LiveSession<'a> {
 
 /// Merge each local pane's live `AgentSession` into `recorded` (the
 /// `phux.agent-session/v1` records read from the server).
-///
-/// `resolve` maps a provider slug to its resume owner, or says why it has
-/// none; it is called at most once per provider. A pane with a launch record
-/// keeps it, except that a live session resolving to the same owner refreshes
-/// its native id (the provider moved to a new conversation in the same pane).
-/// A pane whose live session cannot be bridged and has no record yields a
-/// warning: it will restore as a plain shell.
 pub(super) fn bridge_live_agent_sessions(
     snapshot: &SessionSnapshot,
     mut recorded: HashMap<ResourceId, AgentSessionRecord>,

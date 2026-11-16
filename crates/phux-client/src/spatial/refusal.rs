@@ -15,11 +15,6 @@ pub(super) fn move_error(error: PaneMoveError) -> SpatialError {
 /// preflight refusal, `1` once ownership work has begun.
 fn move_refusal(error: &PaneMoveError) -> SpatialRefusal {
     let (code, remedy, exit_code) = match error {
-        PaneMoveError::ServerTooOld => (
-            codes::SERVER_TOO_OLD,
-            "upgrade it with `phux upgrade`, then retry",
-            1,
-        ),
         PaneMoveError::SatellitePane => (
             codes::SATELLITE_TARGET,
             "pick a hub-local pane for layout edits",

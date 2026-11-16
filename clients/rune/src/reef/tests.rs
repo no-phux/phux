@@ -1,4 +1,5 @@
 use super::*;
+use crate::activity::Mark;
 
 fn swimmer(n: u32, host: usize, mood: Mood) -> Swimmer {
     Swimmer {

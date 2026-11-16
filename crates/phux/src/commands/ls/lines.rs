@@ -201,8 +201,6 @@ pub(crate) fn format_session_line(s: &SessionInfo) -> String {
 /// clients. A session with no members reads `empty`, so a persistent session
 /// kept after its last process explains itself; the lifetime is omitted when
 /// the server does not report one.
-///
-/// `work: 3 members (2 running, 1 completed), 2 windows, persistent`
 pub(crate) fn format_row(row: &SessionJson) -> String {
     let mut parts = Vec::new();
     if row.members == 0 && (row.lifetime.is_some() || row.empty) {
@@ -281,9 +279,8 @@ pub(crate) fn print_sessions_json(
     snapshot: &SessionSnapshot,
     organization: Option<&OrgInventory>,
     degradation: &Degradation,
-    hosts_complete: bool,
 ) -> ExitCode {
     let list: SessionListJson =
-        phux_client::session_list::document(snapshot, organization, degradation, hosts_complete);
+        phux_client::session_list::document(snapshot, organization, degradation);
     crate::output::json(&list)
 }

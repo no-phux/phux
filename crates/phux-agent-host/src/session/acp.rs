@@ -104,6 +104,16 @@ struct Callback {
     waiting: Mutex<BTreeMap<String, oneshot::Sender<Value>>>,
     rows: Mutex<Rows>,
 }
+impl Callback {
+    fn new(sink: Sink, provider: &str) -> Self {
+        Self {
+            sink,
+            provider: provider.to_owned(),
+            waiting: Mutex::new(BTreeMap::new()),
+            rows: Mutex::new(Rows::default()),
+        }
+    }
+}
 
 pub(super) fn run(
     spec: HostSpec,
@@ -178,12 +188,7 @@ async fn run_local(
         .take()
         .ok_or_else(|| HostError::Sdk("missing ACP stdout".into()))?
         .compat();
-    let callback = Arc::new(Callback {
-        sink: sink.clone(),
-        provider: spec.provider.clone(),
-        waiting: Mutex::new(BTreeMap::new()),
-        rows: Mutex::new(Rows::default()),
-    });
+    let callback = Arc::new(Callback::new(sink, &spec.provider));
     let mut stopped = shutdown.clone();
     let driver = client_builder(callback.clone()).connect_with(
         acp::ByteStreams::new(outgoing, incoming),

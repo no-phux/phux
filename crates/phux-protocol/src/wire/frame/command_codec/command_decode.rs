@@ -43,6 +43,25 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
         return Ok(Command::DescribeApi);
     }
+    if tag == crate::wire::frame::COMMAND_TAG_CREDENTIALS {
+        let bytes = dec.read_bytes()?;
+        if bytes.len() > crate::credentials::MAX_CREDENTIAL_PAYLOAD {
+            return Err(DecodeError::InvalidCredentialPayload);
+        }
+        let op: crate::credentials::CredentialOp =
+            serde_json::from_slice(bytes).map_err(|error| {
+                if crate::wire::error::names_unknown_json(&error.to_string()) {
+                    DecodeError::UnsupportedPayload {
+                        payload: "CredentialOp",
+                    }
+                } else {
+                    DecodeError::InvalidCredentialPayload
+                }
+            })?;
+        op.validate()
+            .map_err(|_| DecodeError::InvalidCredentialPayload)?;
+        return Ok(Command::Credentials { op });
+    }
     if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
         return Ok(Command::HostChecklist);
     }
@@ -203,10 +222,7 @@ pub(super) fn decode_optional_key(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<IdempotencyKey>, DecodeError> {
     dec.read_option("Option<IdempotencyKey> tag", |dec| {
-        let mut bytes = [0; 16];
-        for byte in &mut bytes {
-            *byte = dec.read_u8()?;
-        }
+        let bytes: [u8; 16] = dec.read_array()?;
         IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)
     })
 }
@@ -369,10 +385,7 @@ pub(super) fn decode_apply_input_command(
     if command_body_len > MAX_APPLY_INPUT_COMMAND_BODY {
         return Err(DecodeError::ApplyInputLimitExceeded);
     }
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
+    let bytes: [u8; 16] = dec.read_array()?;
     let operation_id = InputOperationId::new(bytes).ok_or(DecodeError::InvalidInputOperationId)?;
     let terminal_id = decode_terminal_id(dec)?;
     let count = dec.read_u16_be()? as usize;

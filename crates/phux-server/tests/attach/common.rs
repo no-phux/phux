@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -86,13 +85,7 @@ pub(crate) async fn connect_with(path: &Path, caps: ClientCapabilities) -> UnixS
     let mut stream = wait_for_raw_socket(path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut stream,
-        &FrameKind::Hello {
-            client_name: "phux-attach-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        },
+        &phux_server_testkit::hello("phux-attach-test", caps),
     )
     .await;
     let (_, reply) = recv_typed(&mut stream).await;
@@ -121,10 +114,7 @@ pub(crate) async fn type_line(
     key: PhysicalKey,
 ) {
     for event in [ascii_key(c, key), enter_key()] {
-        let frame = FrameKind::InputKey {
-            terminal_id: pane.clone(),
-            event,
-        };
+        let frame = phux_server_testkit::input_key(pane.clone(), event);
         send_frame(stream, &frame).await;
     }
 }

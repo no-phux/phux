@@ -20,7 +20,10 @@ use libghostty_vt::render::{
     CellIteration, CellIterator, Dirty, RowIteration, RowIterator, Snapshot,
 };
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::style::{RgbColor, Style, StyleColor, Underline};
+use libghostty_vt::{
+    color::Rgb as RgbColor,
+    style::{Style, StyleColor, Underline},
+};
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
 use phux_protocol::render_pool::{RenderPool, RenderWalk};
 

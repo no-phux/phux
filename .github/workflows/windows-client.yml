@@ -15,6 +15,7 @@ on:
       - crates/phux-git/**
       - crates/phux-perf/**
       - crates/phux-protocol/**
+      - crates/quictun/**
   push:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - crates/phux-git/**
       - crates/phux-perf/**
       - crates/phux-protocol/**
+      - crates/quictun/**
 
 permissions:
   contents: read

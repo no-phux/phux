@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use futures_util::FutureExt as _;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 use super::lane::{InputLane, spawn_input_lane_with_completion_timeout};

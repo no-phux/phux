@@ -289,10 +289,6 @@ pub(super) fn check_server(socket_path: &std::path::Path) -> Check {
 }
 
 /// The hint for a socket that exists but did not answer `GET_STATE`.
-///
-/// A dead socket (`ConnectionRefused` / `NotFound`) may be called stale.
-/// A live incompatible server gets the stop-and-start recovery. Anything
-/// else gets a neutral hint.
 pub(super) fn server_probe_failure(
     socket_path: &std::path::Path,
     err: &phux_client::attach::AttachError,

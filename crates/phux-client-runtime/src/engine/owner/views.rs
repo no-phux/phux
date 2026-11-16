@@ -446,8 +446,8 @@ impl Owner {
     /// line past the viewport's top row, as a scroll. A prompt in the active
     /// area follows the tail, since the viewport cannot scroll below it.
     fn prompt_target(&self, id: &ResourceId, count: i64) -> Result<Option<Scroll>, EngineError> {
+        use libghostty_vt::point::{Coordinate, Point};
         use libghostty_vt::screen::RowSemanticPrompt;
-        use libghostty_vt::terminal::{Point, PointCoordinate};
 
         let terminal = self.terminal(id)?;
         let bar = terminal
@@ -456,7 +456,7 @@ impl Owner {
         let found = nth_prompt(bar.offset, bar.total, count, |row| {
             let y = u32::try_from(row).map_err(|_| engine_error("prompt row exceeds u32"))?;
             terminal
-                .grid_ref(Point::History(PointCoordinate { x: 0, y }))
+                .grid_ref(Point::History(Coordinate { x: 0, y }))
                 .and_then(|cell| cell.row())
                 .and_then(libghostty_vt::screen::Row::semantic_prompt)
                 .map(|prompt| prompt == RowSemanticPrompt::Prompt)
@@ -608,12 +608,12 @@ pub(super) fn replica_prompt(
 /// Whether the cursor's row holds prompt or input cells, as a prompt that a
 /// bootstrap redrew without the cursor's own semantic state still does.
 fn cursor_row_marked(terminal: &libghostty_vt::Terminal<'static, 'static>) -> bool {
+    use libghostty_vt::point::{Coordinate, Point};
     use libghostty_vt::screen::{CellSemanticContent, RowSemanticPrompt};
-    use libghostty_vt::terminal::{Point, PointCoordinate};
     let (Ok(y), Ok(cols)) = (terminal.cursor_y(), terminal.cols()) else {
         return false;
     };
-    let at = |x: u16| Point::Active(PointCoordinate { x, y: u32::from(y) });
+    let at = |x: u16| Point::Active(Coordinate { x, y: u32::from(y) });
     let row_marked = terminal
         .grid_ref(at(0))
         .and_then(|cell| cell.row())
@@ -637,15 +637,15 @@ fn cursor_row_marked(terminal: &libghostty_vt::Terminal<'static, 'static>) -> bo
 /// Whether any row of the primary screen, scrollback included, carries a
 /// prompt mark. Scans upward from the bottom, where the latest prompt is.
 fn any_prompt_row(terminal: &libghostty_vt::Terminal<'static, 'static>) -> bool {
+    use libghostty_vt::point::{Coordinate, Point};
     use libghostty_vt::screen::RowSemanticPrompt;
-    use libghostty_vt::terminal::{Point, PointCoordinate};
     let Ok(total) = terminal.total_rows() else {
         return false;
     };
     (0..total).rev().any(|row| {
         u32::try_from(row).is_ok_and(|y| {
             terminal
-                .grid_ref(Point::Screen(PointCoordinate { x: 0, y }))
+                .grid_ref(Point::Screen(Coordinate { x: 0, y }))
                 .and_then(|cell| cell.row())
                 .and_then(libghostty_vt::screen::Row::semantic_prompt)
                 .is_ok_and(|prompt| prompt != RowSemanticPrompt::None)

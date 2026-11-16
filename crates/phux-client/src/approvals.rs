@@ -9,7 +9,6 @@
 //! the server handles one connection's frames in order, so a refused
 //! decision's correlated `ERROR` arrives before the read's answer.
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::ApprovalId;
 use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, FrameKind, Scope};
 
@@ -30,13 +29,24 @@ const CONFIRM_ID: u32 = 2;
 /// The correlation id of the key listing.
 const LIST_ID: u32 = 1;
 
+/// Connect for approval review with an explicit credential-details offer.
+/// An opaque fallback must pass `false`, so it can deny but never release secrets.
+///
+/// # Errors
+/// The target could not be reached.
+pub async fn connect(
+    dial: &crate::attach::connection::Dial,
+    client_name: String,
+    credential_details: bool,
+) -> Result<Connection, AttachError> {
+    let caps =
+        phux_client_runtime::session::control_caps().with_credential_approvals(credential_details);
+    Connection::connect_dial_with_hello(dial, client_name, caps).await
+}
+
 /// Why listing or deciding failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
-    /// The server does not advertise `APPROVALS`: it holds nothing, and it
-    /// would store a decision as an ordinary value.
-    #[error("the server does not hold actions for approval (it predates approvals)")]
-    Unsupported,
     /// The server refused the request.
     #[error("{0}")]
     Refused(Refusal),
@@ -53,11 +63,8 @@ pub enum ApprovalError {
 ///
 /// # Errors
 ///
-/// [`ApprovalError::Unsupported`] before sending anything to a server
-/// without the feature; a refusal, an unparsable record, or a transport
-/// failure otherwise.
+/// A refusal, an unparsable record, or a transport failure.
 pub async fn list(conn: &mut Connection) -> Result<Vec<Approval>, ApprovalError> {
-    require_approvals(conn).await?;
     let (answer, _interleaved) = conn
         .request_metadata_keys(LIST_ID, Scope::Global)
         .await?
@@ -95,12 +102,19 @@ async fn read_record(
         .map_err(|err| ApprovalError::Malformed(format!("approval record: {err}")))
 }
 
+/// Read one pending approval without requiring Global inventory permission.
+///
+/// # Errors
+/// Denied Global observation, malformed record, or transport failure.
+pub async fn get(conn: &mut Connection, id: ApprovalId) -> Result<Option<Approval>, ApprovalError> {
+    read_record(conn, LIST_ID, id.record_key()).await
+}
+
 /// Decide the held action `id` names.
 ///
 /// # Errors
 ///
-/// [`ApprovalError::Unsupported`] before sending anything to a server
-/// without the feature; [`ApprovalError::Refused`] when the server refused
+/// [`ApprovalError::Refused`] when the server refused
 /// the decision (no such pending approval, or the held verbs not un-held
 /// on its subject); a transport failure otherwise.
 pub async fn decide(
@@ -108,7 +122,6 @@ pub async fn decide(
     id: ApprovalId,
     decision: Decision,
 ) -> Result<(), ApprovalError> {
-    require_approvals(conn).await?;
     conn.send(&FrameKind::SetMetadata {
         request_id: DECIDE_ID,
         scope: Scope::Global,
@@ -153,15 +166,6 @@ fn decision_refusal(frames: &[FrameKind]) -> Option<Refusal> {
         }),
         _ => None,
     })
-}
-
-async fn require_approvals(conn: &mut Connection) -> Result<(), ApprovalError> {
-    let features = crate::state::probe_hello_features(conn).await?;
-    if features.is_some_and(|features| features.contains(ServerFeature::Approvals)) {
-        Ok(())
-    } else {
-        Err(ApprovalError::Unsupported)
-    }
 }
 
 #[cfg(test)]

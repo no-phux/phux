@@ -1,137 +1,78 @@
 use super::*;
 
-/// phux-q0e.4: `on_frame_ack` advances `last_acked_seq` monotonically
-/// for in-order acks. Three acks (1, 2, 3) walk the field forward.
-#[test]
-fn on_frame_ack_advances_last_acked_seq_in_order() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, _rx) = dummy_outbound();
-    // State-sync consumer: its acks belong to the per-consumer tick seq
-    // space, so `on_frame_ack` folds them in (phux-38k6).
+/// A seeded 20x5 actor with `client` registered (tick-managed when
+/// `state_sync`), and the mailbox to hold so the tick does not reap it.
+fn seeded_with(client: ClientId, state_sync: bool) -> (TerminalActor, mpsc::Receiver<Outbound>) {
+    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello")
+        .expect("new_with_seed")
+        .actor;
+    let (tx, rx) = dummy_outbound();
     actor
-        .register_consumer(client, tx, 11, true)
+        .register_consumer(client, tx, 11, state_sync)
         .expect("register");
+    (actor, rx)
+}
 
+fn acked(actor: &TerminalActor, client: ClientId) -> u64 {
+    actor
+        .consumer_state(client)
+        .expect("state")
+        .sync
+        .last_acked_seq
+}
+
+/// phux-q0e.4: in-order acks walk `last_acked_seq` forward; older or
+/// duplicate acks are dropped (cumulative, SPEC §12.2).
+#[test]
+fn on_frame_ack_is_cumulative_and_monotonic() {
+    let client = ClientId(1);
+    // State-sync: its acks belong to the per-consumer tick seq space
+    // (phux-38k6).
+    let (mut actor, _rx) = seeded_with(client, true);
     for seq in 1..=3 {
         actor.vt_write_for_test(b"x");
         actor.tick_emit();
         actor.on_frame_ack(client, seq);
-        assert_eq!(
-            actor
-                .consumer_state(client)
-                .expect("state")
-                .sync
-                .last_acked_seq,
-            seq,
-            "in-order ack must advance last_acked_seq",
-        );
+        assert_eq!(acked(&actor, client), seq, "in-order ack advances");
     }
-}
-
-/// Older or duplicate acks are dropped (cumulative, SPEC §12.2).
-#[test]
-fn on_frame_ack_older_or_duplicate_is_dropped() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, _rx) = dummy_outbound();
-    // State-sync consumer so its acks are processed (phux-38k6).
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
-
-    for _ in 0..6 {
+    for _ in 0..3 {
         actor.vt_write_for_test(b"x");
         actor.tick_emit();
     }
-    actor.on_frame_ack(client, 5);
-    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 5);
-
-    // Older ack.
-    actor.on_frame_ack(client, 3);
-    assert_eq!(
-        actor.consumer_state(client).unwrap().sync.last_acked_seq,
-        5,
-        "older ack must NOT regress last_acked_seq",
-    );
-
-    // Duplicate ack.
-    actor.on_frame_ack(client, 5);
-    assert_eq!(
-        actor.consumer_state(client).unwrap().sync.last_acked_seq,
-        5,
-        "duplicate ack must NOT touch last_acked_seq",
-    );
-
-    // Higher ack still progresses.
-    actor.on_frame_ack(client, 6);
-    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 6);
+    for (ack, want) in [(5, 5), (3, 5), (5, 5), (6, 6)] {
+        actor.on_frame_ack(client, ack);
+        assert_eq!(acked(&actor, client), want, "ack {ack}");
+    }
 }
 
-/// A raw consumer's ack (a pump-local seq) does not move `last_acked_seq`.
+/// Acks that must change nothing: a raw consumer's (a pump-local seq), a
+/// stranger's, and one after detach (no resurrection).
 #[test]
-fn on_frame_ack_for_raw_consumer_is_dropped() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let mut actor = bundle.actor;
-    // Global gate OFF (production human-attach default) and a raw consumer.
-    let client = ClientId(1);
-    let (tx, _rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, false)
-        .expect("register");
-
-    let folded = actor.on_frame_ack(client, 7);
-    assert!(!folded, "raw-consumer ack produces no RTT sample");
-    assert_eq!(
-        actor
-            .consumer_state(client)
-            .expect("state")
-            .sync
-            .last_acked_seq,
-        0,
-        "raw-pump ack must not advance the per-consumer last_acked_seq",
+fn foreign_and_late_acks_are_dropped() {
+    let raw = ClientId(1);
+    let (mut actor, _rx) = seeded_with(raw, false);
+    assert!(
+        !actor.on_frame_ack(raw, 7),
+        "a raw ack yields no RTT sample"
     );
-}
-
-/// An ack for an unregistered client is a no-op.
-#[test]
-fn on_frame_ack_for_unregistered_consumer_is_noop() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let mut actor = bundle.actor;
+    assert_eq!(acked(&actor, raw), 0, "a raw-pump ack does not advance");
 
     let stranger = ClientId(999);
-    assert_eq!(actor.consumer_count(), 0);
     actor.on_frame_ack(stranger, 42);
-    assert_eq!(actor.consumer_count(), 0, "no entry created by stray ack");
-    assert!(actor.consumer_state(stranger).is_none());
-}
+    assert!(
+        actor.consumer_state(stranger).is_none(),
+        "no entry from a stray ack"
+    );
 
-/// phux-q0e.4: register, ack, then detach, then re-ack — the re-ack
-/// after detach is a no-op (no panic, no resurrection of the entry).
-#[test]
-fn on_frame_ack_after_detach_is_noop() {
-    let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let mut actor = bundle.actor;
     let client = ClientId(7);
-    let (tx, _rx) = dummy_outbound();
-    // State-sync so the pre-detach ack is folded in (phux-38k6); the
-    // point of the test is that a *post*-detach ack does not resurrect.
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, _rx) = seeded_with(client, true);
     for _ in 0..2 {
         actor.vt_write_for_test(b"x");
         actor.tick_emit();
     }
     actor.on_frame_ack(client, 2);
-    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 2);
-
+    assert_eq!(acked(&actor, client), 2);
     actor.unregister_consumer(client);
-    assert!(actor.consumer_state(client).is_none());
-
-    // Late ack after detach: must not resurrect the entry.
     actor.on_frame_ack(client, 9);
     assert!(actor.consumer_state(client).is_none());
     assert_eq!(actor.consumer_count(), 0);
@@ -139,10 +80,8 @@ fn on_frame_ack_after_detach_is_noop() {
 
 #[test]
 fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
-    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
     let client = ClientId(1);
-    let (tx, _rx) = dummy_outbound();
-    actor.register_consumer(client, tx, 11, true).unwrap();
+    let (mut actor, _rx) = seeded_with(client, true);
     actor.enable_loss_tolerance(client);
     actor.vt_write_for_test(b"one");
     actor.tick_emit();
@@ -186,9 +125,7 @@ fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
 
 #[test]
 fn ack_between_pty_mutation_and_tick_preserves_pending_row_changes() {
-    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
-    let (tx, _rx) = dummy_outbound();
-    actor.register_consumer(ClientId(1), tx, 11, true).unwrap();
+    let (mut actor, _rx) = seeded_with(ClientId(1), true);
     actor.vt_write_for_test(b"\x1b[1;1Hfirst");
     actor.tick_emit();
     actor.vt_write_for_test(b"\x1b[2;1HSECOND\x1b[1;6H");

@@ -415,7 +415,7 @@ holds ([macOS permissions](./install.md#macos-permissions)).
 
 **Held actions wait for you.** A key enrolled with a held verb such as
 `?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
-lists them. This machine's own socket is never held. See
+lists them. The owner socket skips them, credentials aside. See
 [Held actions](./approvals.md).
 
 ## Complete terminal creation

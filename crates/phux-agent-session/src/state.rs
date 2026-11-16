@@ -27,7 +27,7 @@
     reason = "items shared inside the crate; pub would widen its API"
 )]
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use phux_protocol::ids::ResourceId as WireResourceId;
 
@@ -72,19 +72,30 @@ impl EvidenceSource {
 /// Who currently owns each Terminal's `phux.agent/v1` record.
 #[derive(Debug, Default)]
 pub struct AgentRecordArbiter {
-    /// Terminals whose record an explicit `SET_METADATA` wrote with a
-    /// `state`; the detector stands down until `DELETE`.
-    declared: HashSet<WireResourceId>,
-    /// Terminals whose current record the detector wrote (and may retract).
-    detector_owned: HashSet<WireResourceId>,
-    /// Terminals whose stored record carries human-authored identity
-    /// (`name` / `session` / `attention`). The detector may own the `state`
-    /// of such a record but must never `DELETE` it.
-    explicit_identity: HashSet<WireResourceId>,
-    /// Terminals whose stored `kind` an explicit writer set, which the
-    /// detector must preserve (§3.7). Separate from `explicit_identity`,
-    /// since a bare kind does not protect a record from deletion.
-    explicit_kind: HashSet<WireResourceId>,
+    /// Each Terminal's marks; a Terminal with none set has no entry.
+    marks: HashMap<WireResourceId, Marks>,
+}
+
+/// What the arbiter knows about one Terminal's stored record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent marks on one record, each with its own writer"
+)]
+struct Marks {
+    /// An explicit `SET_METADATA` wrote the record with a `state`; the
+    /// detector stands down until `DELETE`.
+    declared: bool,
+    /// The detector wrote the current record (and may retract it).
+    detector_owned: bool,
+    /// The stored record carries human-authored identity (`name` /
+    /// `session` / `attention`). The detector may own the `state` of such a
+    /// record but must never `DELETE` it.
+    explicit_identity: bool,
+    /// An explicit writer set the stored `kind`, which the detector must
+    /// preserve (§3.7). Separate from `explicit_identity`, since a bare kind
+    /// does not protect a record from deletion.
+    explicit_kind: bool,
 }
 
 /// Which identity fields of a stored record an explicit writer owns; every
@@ -107,49 +118,47 @@ impl IdentityOwnership {
 }
 
 impl AgentRecordArbiter {
+    /// This Terminal's marks; all clear when it has none.
+    fn marks(&self, terminal: &WireResourceId) -> Marks {
+        self.marks.get(terminal).copied().unwrap_or_default()
+    }
+
+    /// Change this Terminal's marks, dropping its entry once none is set.
+    fn update(&mut self, terminal: &WireResourceId, change: impl FnOnce(&mut Marks)) {
+        let mut marks = self.marks(terminal);
+        change(&mut marks);
+        if marks == Marks::default() {
+            self.marks.remove(terminal);
+        } else {
+            self.marks.insert(terminal.clone(), marks);
+        }
+    }
+
     /// Note an explicit `SET_METADATA` on this Terminal's agent record.
     ///
     /// Supplying a real `state` makes it declared; identity-only writes
     /// leave the detector to fill in `state`. Either way the detector loses
     /// ownership. Marks track what is in the store (writes replace wholesale).
     pub fn note_explicit_set(&mut self, terminal: &WireResourceId, value: &[u8]) {
-        self.detector_owned.remove(terminal);
         let record = AgentRecordJson::decode(value);
-        let declares_state = record
-            .as_ref()
-            .is_some_and(|r| !r.state.is_empty() && r.state != "unknown");
-        if declares_state {
-            self.declared.insert(terminal.clone());
-        } else {
-            self.declared.remove(terminal);
-        }
-        // A kind alone is not identity a human would miss...
-        let supplies_identity = record
-            .as_ref()
-            .is_some_and(|r| !r.name.is_empty() || r.session.is_some() || r.attention.is_some());
-        if supplies_identity {
-            self.explicit_identity.insert(terminal.clone());
-        } else {
-            self.explicit_identity.remove(terminal);
-        }
-        // ...but an explicitly supplied kind is still preserved (§3.7).
-        let supplies_kind = record
-            .as_ref()
-            .is_some_and(|r| r.kind.as_ref().is_some_and(|k| !k.is_empty()));
-        if supplies_kind {
-            self.explicit_kind.insert(terminal.clone());
-        } else {
-            self.explicit_kind.remove(terminal);
-        }
+        let record = record.as_ref();
+        let marks = Marks {
+            declared: record.is_some_and(|r| !r.state.is_empty() && r.state != "unknown"),
+            detector_owned: false,
+            // A kind alone is not identity a human would miss...
+            explicit_identity: record.is_some_and(|r| {
+                !r.name.is_empty() || r.session.is_some() || r.attention.is_some()
+            }),
+            // ...but an explicitly supplied kind is still preserved (§3.7).
+            explicit_kind: record.is_some_and(|r| r.kind.as_ref().is_some_and(|k| !k.is_empty())),
+        };
+        self.update(terminal, |stored| *stored = marks);
     }
 
     /// Note an explicit `DELETE_METADATA`: everything clears and the detector
     /// resumes full ownership.
     pub fn note_explicit_delete(&mut self, terminal: &WireResourceId) {
-        self.declared.remove(terminal);
-        self.detector_owned.remove(terminal);
-        self.explicit_identity.remove(terminal);
-        self.explicit_kind.remove(terminal);
+        self.marks.remove(terminal);
     }
 
     /// Withdraw a declaration whose subject is provably gone (§3.7).
@@ -157,28 +166,29 @@ impl AgentRecordArbiter {
     /// Clears `declared` only: identity bookkeeping stays, and the detector
     /// does not gain ownership (its next write acquires it normally).
     pub fn note_declaration_withdrawn(&mut self, terminal: &WireResourceId) {
-        self.declared.remove(terminal);
+        self.update(terminal, |marks| marks.declared = false);
     }
 
     /// Whether the stored record carries human identity (withdraw, never
     /// `DELETE`).
     #[must_use]
     pub fn has_explicit_identity(&self, terminal: &WireResourceId) -> bool {
-        self.explicit_identity.contains(terminal)
+        self.marks(terminal).explicit_identity
     }
 
     /// Whether an explicit writer supplied the stored `kind` (preserve it).
     #[must_use]
     pub fn has_explicit_kind(&self, terminal: &WireResourceId) -> bool {
-        self.explicit_kind.contains(terminal)
+        self.marks(terminal).explicit_kind
     }
 
     /// The ownership bits for one Terminal, read together.
     #[must_use]
     pub fn identity_ownership(&self, terminal: &WireResourceId) -> IdentityOwnership {
+        let marks = self.marks(terminal);
         IdentityOwnership {
-            name: self.has_explicit_identity(terminal),
-            kind: self.has_explicit_kind(terminal),
+            name: marks.explicit_identity,
+            kind: marks.explicit_kind,
         }
     }
 
@@ -186,31 +196,28 @@ impl AgentRecordArbiter {
     /// write).
     #[must_use]
     pub fn is_declared(&self, terminal: &WireResourceId) -> bool {
-        self.declared.contains(terminal)
+        self.marks(terminal).declared
     }
 
     /// Note that the detector authored this Terminal's current record.
     pub fn note_detector_write(&mut self, terminal: &WireResourceId) {
-        self.detector_owned.insert(terminal.clone());
+        self.update(terminal, |marks| marks.detector_owned = true);
     }
 
     /// Note that the detector retracted this Terminal's record.
     pub fn note_detector_retract(&mut self, terminal: &WireResourceId) {
-        self.detector_owned.remove(terminal);
+        self.update(terminal, |marks| marks.detector_owned = false);
     }
 
     /// Whether the detector wrote the stored record (and may delete it).
     #[must_use]
     pub fn detector_owns(&self, terminal: &WireResourceId) -> bool {
-        self.detector_owned.contains(terminal)
+        self.marks(terminal).detector_owned
     }
 
     /// Drop all bookkeeping for a reaped Terminal.
     pub fn forget(&mut self, terminal: &WireResourceId) {
-        self.declared.remove(terminal);
-        self.detector_owned.remove(terminal);
-        self.explicit_identity.remove(terminal);
-        self.explicit_kind.remove(terminal);
+        self.marks.remove(terminal);
     }
 }
 

@@ -4,40 +4,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use bytes::BytesMut;
+use crate::common::dump_frame;
 use phux_protocol::forward::{ForwardChunk, ForwardOp};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
-
-fn hex_dump(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
-        let _ = write!(out, "{:08x} |", chunk_idx * 16);
-        for (i, b) in chunk.iter().enumerate() {
-            if i == 8 {
-                out.push(' ');
-            }
-            let _ = write!(out, " {b:02x}");
-        }
-        for i in 0..16 - chunk.len() {
-            if chunk.len() + i == 8 {
-                out.push(' ');
-            }
-            out.push_str("   ");
-        }
-        out.push_str(" |");
-        for b in chunk {
-            out.push(if (0x20..=0x7e).contains(b) {
-                *b as char
-            } else {
-                '.'
-            });
-        }
-        out.push('\n');
-    }
-    out
-}
 
 const fn command(request_id: u32, op: ForwardOp) -> FrameKind {
     FrameKind::Command {
@@ -94,6 +63,34 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
             "snap_command_forward_close",
             command(0x24, ForwardOp::Close { id: 0x0102 }),
         ),
+        // AGENT_OFFER (tag 0x4f): no body.
+        (
+            "snap_command_agent_offer",
+            command(0x25, ForwardOp::AgentOffer),
+        ),
+        // AGENT_REPLY (tag 0x50): SSH_AGENT_FAILURE for request 0x0102.
+        (
+            "snap_command_agent_reply",
+            command(
+                0x26,
+                ForwardOp::AgentReply {
+                    id: 0x0102,
+                    message: vec![5],
+                },
+            ),
+        ),
+        // agent_request (event tag 0x21): SSH_AGENTC_REQUEST_IDENTITIES.
+        (
+            "snap_event_agent_request",
+            FrameKind::Event {
+                terminal: None,
+                event: phux_protocol::wire::frame::AgentEvent::SshAgentRequest {
+                    id: 0x0102,
+                    message: vec![11],
+                },
+                stamp: None,
+            },
+        ),
         // FORWARD_OPENED (CommandValue 0x0f).
         (
             "snap_command_result_forward_opened",
@@ -118,9 +115,6 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
 #[test]
 fn forward_frames_match_goldens() {
     for (name, frame) in fixtures() {
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        assert_eq!(FrameKind::decode(&buf).unwrap().0, frame, "{name}");
-        insta::assert_snapshot!(name, hex_dump(&buf));
+        insta::assert_snapshot!(name, dump_frame(&frame));
     }
 }

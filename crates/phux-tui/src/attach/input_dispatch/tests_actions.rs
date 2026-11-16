@@ -5,14 +5,13 @@
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::{SatelliteHost, SessionId};
 use phux_protocol::wire::frame::{Command, FrameKind};
 use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo};
 use toml::Value;
 
-use crate::attach::actions::SplitHost;
-use crate::attach::directory_picker::{DirectorySupport, ListingHost};
+use crate::attach::actions::{Adopt, SplitHost};
+use crate::attach::directory_picker::ListingHost;
 use crate::attach::focus::FocusHistory;
 use crate::attach::jobs::{Job, JobDone, JobKind, Start};
 use crate::attach::pane_state::PaneSlot;
@@ -102,14 +101,6 @@ fn satellite_pane(cwd: Option<&str>) -> (CtxFixture, HashMap<ResourceId, PaneSlo
         fx(ArrangementDoc::single(pane.clone())),
         HashMap::from([(pane, slot)]),
     )
-}
-
-/// A hub that predates host-aware listing and spawns.
-fn older_hub(f: &mut CtxFixture) {
-    f.directory_support = DirectorySupport::from_features(ServerFeatureSet::with(&[
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ListDirectory,
-    ]));
 }
 
 // ---- small helpers and frames ----------------------------------------------
@@ -300,23 +291,6 @@ fn split_pane_spawn_carries_the_new_leafs_tile() {
     let effects = run(&split_action(), &mut ArrangementDoc::single(tid(1)));
     let (_, _, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
     assert_eq!(spawn_initial_size_of(&frame), Some((39, 23)));
-}
-
-/// Without `ServerFeature::SpawnInitialSize` the field stays absent
-/// (ADR-0061: no dependence on unadvertised surface).
-#[test]
-fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
-    for action in [split_action(), bare_action("new-window")] {
-        let mut f = fx(ArrangementDoc::single(tid(1)));
-        f.spawn_initial_size_supported = false;
-        let effects = f.run(&action);
-        let frame = effects
-            .spawn_terminal
-            .map(|(_, _, frame)| frame)
-            .or_else(|| effects.spawn_window.map(|(_, _, frame)| frame))
-            .expect("SPAWN");
-        assert_eq!(spawn_initial_size_of(&frame), None, "{}", action.action);
-    }
 }
 
 /// A window of panes 1 | (2 / 3), focused on 1.
@@ -607,13 +581,6 @@ fn go_to_directory_requests_a_listing() {
     let (_, frame) = effects.list_directory.expect("LIST_DIRECTORY");
     assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
     assert!(!effects.bell && effects.layout_mutated);
-
-    // Without `LIST_DIRECTORY` the older server would drop the frame: bell.
-    let mut f = fx(ArrangementDoc::single(tid(1)));
-    f.directory_support =
-        DirectorySupport::from_features(ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]));
-    let effects = f.run(&bare_action("go-to-directory"));
-    assert!(effects.list_directory.is_none() && effects.bell);
 }
 
 /// `find-path` asks the focused pane's own host, at its directory, and
@@ -688,19 +655,8 @@ fn inserted_path_with_control_bytes_is_rejected_before_paste() {
     );
 }
 
-/// Without the negotiated `PATH_QUERY` bit the picker bells, sending nothing.
-#[test]
-fn unsupported_host_path_query_bells_without_a_wire_request() {
-    let mut f = fx(ArrangementDoc::single(tid(1)));
-    f.path_query_supported = false;
-    let panes = HashMap::from([(tid(1), PaneSlot::new().expect("pane"))]);
-    let effects = f.run_in(&bare_action("find-path"), &panes);
-    assert!(effects.bell);
-    assert!(effects.query_path.is_none());
-}
-
 /// On a satellite pane the listing asks that satellite through the hub, at
-/// the pane's directory (or its home); an older hub keeps it on itself.
+/// the pane's directory (or its home).
 #[test]
 fn go_to_directory_on_a_satellite_pane_names_its_host() {
     for (cwd, path) in [(Some("/home/e/src"), "/home/e/src"), (None, "")] {
@@ -719,27 +675,10 @@ fn go_to_directory_on_a_satellite_pane_names_its_host() {
         );
         assert_eq!(pending.host, ListingHost::Satellite(edge()));
     }
-
-    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
-    older_hub(&mut f);
-    let (pending, frame) = f
-        .run_in(&bare_action("go-to-directory"), &panes)
-        .list_directory
-        .expect("LIST");
-    assert_eq!(
-        frame,
-        FrameKind::ListDirectory {
-            request_id: pending.request_id,
-            path: String::new(),
-            host: None
-        }
-    );
-    assert_eq!(pending.host, ListingHost::AttachedInsteadOf(edge()));
 }
 
 /// Splitting a satellite pane spawns on that satellite at its cwd (bound).
-/// A local pane's split carries that pane's directory. An older hub keeps
-/// a satellite split local and remembers the satellite it stands in for.
+/// A local pane's split carries that pane's directory.
 #[test]
 fn split_pane_follows_the_focused_panes_host() {
     let (mut f, panes) = satellite_pane(Some("/home/e/src"));
@@ -777,26 +716,6 @@ fn split_pane_follows_the_focused_panes_host() {
     );
     assert_eq!(pending.host, SplitHost::Attached);
     assert!(!asks_binding(&frame));
-
-    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
-    older_hub(&mut f);
-    let (_, pending, frame) = f
-        .run_in(&split_action(), &panes)
-        .spawn_terminal
-        .expect("SPAWN");
-    assert!(
-        matches!(
-            &frame,
-            FrameKind::SpawnResource {
-                cwd: None,
-                satellite: None,
-                ..
-            }
-        ),
-        "{frame:?}"
-    );
-    assert_eq!(pending.host, SplitHost::AttachedInsteadOf(edge()));
-    assert!(!asks_binding(&frame));
 }
 
 /// `split-pane { host }` spawns on that satellite with no owner; `split-pane
@@ -815,7 +734,7 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::Satellite(devbox));
-    assert!(pending.adopt.is_none() && pending.open_existing.is_none());
+    assert!(pending.adopt.is_none());
     assert!(asks_binding(&frame));
 
     let mut action = split_action();
@@ -826,8 +745,8 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
     let effects = run(&action, &mut workspace);
     let target = satellite_id("devbox", 7);
     let (_, pending, frame) = effects.spawn_terminal.expect("open parks an ATTACH");
-    assert_eq!(pending.open_existing.as_ref(), Some(&target));
-    assert!(pending.adopt.is_none() && effects.spawn_window.is_none());
+    assert_eq!(pending.adopt, Some(Adopt::Existing(target.clone())));
+    assert!(effects.spawn_window.is_none());
     assert!(
         matches!(&frame, FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. } if *terminal_id == target),
         "{frame:?}"
@@ -1237,11 +1156,9 @@ fn window_picker_groups_windows_under_their_session() {
     }
 }
 
-/// A peer with no cached arrangement offers one switch row. When the graph
-/// reports resource sessions (an `ORGANIZATION` server, whose window count
-/// is synthesized) its tab count is its terminal count, and a peer the graph
-/// lists no terminal for opens empty; before such a graph is cached, or
-/// from an older server, it is the reported window count.
+/// A peer with no cached arrangement offers one switch row, its tab count
+/// the terminal count once the graph reports resource sessions, else the
+/// reported window count.
 #[test]
 fn window_picker_counts_tabs_from_terminals_when_the_graph_reports_sessions() {
     let workspace = ArrangementDoc::single(tid(1));
@@ -1452,7 +1369,7 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
 #[test]
 fn session_picker_keeps_selection_across_a_live_rename() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let before = session_picker_items(
         &[sinfo(1, "alpha"), sinfo(2, "beta"), sinfo(3, "gamma")],
@@ -1483,15 +1400,7 @@ fn session_picker_keeps_selection_across_a_live_rename() {
     );
     renamed.insert(0, logs);
 
-    let press = |key| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    };
+    let press = |key| crate::test_util::press(key);
     let mut picker = SelectList::new("Sessions", before, &Theme::default())
         .with_live_key(SESSION_PICKER_LIVE_KEY);
     assert_eq!(
@@ -1751,13 +1660,13 @@ fn session_picker_groups_by_project_identity() {
 #[test]
 fn toggle_project_group_hands_the_key_to_the_driver() {
     let mut f = fx(ArrangementDoc::single(tid(1)));
-    let effects = f.run(&phux_config::keybind::ResolvedAction {
-        action: "toggle-project-group".to_owned(),
-        args: std::collections::BTreeMap::from([(
+    let effects = f.run(&crate::attach::resolved(
+        "toggle-project-group",
+        std::collections::BTreeMap::from([(
             "project".to_owned(),
             Value::String("github.com/no-phux/phux".to_owned()),
         )]),
-    });
+    ));
     assert_eq!(
         effects.toggle_project.as_deref(),
         Some("github.com/no-phux/phux")
@@ -2336,7 +2245,7 @@ fn a_machine_row_commits_switch_host() {
 #[test]
 fn session_picker_filter_spans_machines() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let hosts = machine_fixture();
     let items = host_grouped_session_items(
@@ -2348,15 +2257,7 @@ fn session_picker_filter_spans_machines() {
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
         &ArrangementDoc::single(tid(1)),
     );
-    let press = |key, text: Option<&str>| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: text.map(ToOwned::to_owned),
-        unshifted_codepoint: None,
-    };
+    let press = |key, text: Option<&str>| crate::test_util::press_text(key, text);
     let mut picker = SelectList::new("Sessions", items, &Theme::default());
     for ch in "phall".chars() {
         let _ = picker.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
@@ -2471,7 +2372,7 @@ fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
 #[test]
 fn rename_session_requests_the_effect_or_prompts() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let effects = run(
         &act("rename-session", &[("name", "notes".into())]),
@@ -2489,15 +2390,7 @@ fn rename_session_requests_the_effect_or_prompts() {
     assert!(f.overlays.is_active());
 
     let mut prompt = PromptOverlay::rename_session("work", &Theme::default());
-    let key = |key, text: Option<&str>| KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: text.map(ToOwned::to_owned),
-        unshifted_codepoint: None,
-    };
+    let key = |key, text: Option<&str>| crate::test_util::press_text(key, text);
     for _ in 0..4 {
         let _ = prompt.handle_key(&key(PhysicalKey::Backspace, None));
     }

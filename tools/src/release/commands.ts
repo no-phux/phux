@@ -16,7 +16,8 @@ export const commands: Record<string, Command> = {
     run: () => publishPlan(),
   },
   "ci-green": {
-    summary: "Fail unless SHA has green main push ci and exact-tree full native qualification.",
+    summary:
+      "Fail unless SHA has green main push ci or a qualifying merge_group ci run, plus exact-tree full native proof.",
     usage: "SHA",
     run(args) {
       const [sha, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;

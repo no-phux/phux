@@ -129,13 +129,9 @@ pub(super) struct OwedResync {
     pub(super) target: Option<ResyncTarget>,
 }
 
-/// The debounced post-resize resync. Re-armed per resize; on fire, one
-/// snapshot at the settled size. A reflow is owed to everyone, a gap only to
-/// the pumps that asked; all share one deadline and one synthesis.
-pub(super) struct ResyncDebounce {
-    /// A resync is owed once the deadline lands.
-    pending: bool,
-    /// Why the owed resync was armed; broadcast when the deadline fires.
+/// The resync a debounce window owes: why, and to whom.
+struct Owed {
+    /// Why the resync was armed; broadcast when the deadline fires.
     reason: ResyncReason,
     /// Every subscriber is owed the resync, whatever `targets` says.
     everyone: bool,
@@ -143,20 +139,28 @@ pub(super) struct ResyncDebounce {
     targets: Vec<ResyncTarget>,
 }
 
+/// The debounced post-resize resync. Re-armed per resize; on fire, one
+/// snapshot at the settled size. A reflow is owed to everyone, a gap only to
+/// the pumps that asked; all share one deadline and one synthesis.
+pub(super) struct ResyncDebounce {
+    /// The resync owed once the deadline lands, if any.
+    owed: Option<Owed>,
+}
+
 impl ResyncDebounce {
     /// Nothing owed.
     pub(super) const fn idle() -> Self {
-        Self {
-            pending: false,
-            reason: ResyncReason::Resize,
-            everyone: false,
-            targets: Vec::new(),
-        }
+        Self { owed: None }
+    }
+
+    /// Whether a resync is owed.
+    pub(super) const fn is_owed(&self) -> bool {
+        self.owed.is_some()
     }
 
     /// Whether the owed snapshot may fire (none is blocked by a bootstrap).
     const fn may_fire(&self, bootstrap_pending: bool) -> bool {
-        self.pending && !bootstrap_pending
+        self.is_owed() && !bootstrap_pending
     }
 
     /// Owe a resync for `reason` and (re)start the debounce.
@@ -166,7 +170,7 @@ impl ResyncDebounce {
     /// Resizes always re-arm (the last size wins). The audience is recorded
     /// first either way.
     fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
-        let coalesce_gap = self.pending && owed.reason == ResyncReason::OutboundGap;
+        let coalesce_gap = self.is_owed() && owed.reason == ResyncReason::OutboundGap;
         self.include(owed);
         if coalesce_gap {
             return;
@@ -175,30 +179,34 @@ impl ResyncDebounce {
     }
 
     /// Fold `owed` into the audience without touching the deadline (PTY EOF:
-    /// the snapshot is about to fire).
+    /// the snapshot is about to fire). A gap joining an owed resync keeps
+    /// that resync's reason.
     fn include(&mut self, owed: OwedResync) {
+        let debt = self.owed.get_or_insert_with(|| Owed {
+            reason: owed.reason,
+            everyone: false,
+            targets: Vec::new(),
+        });
         match owed.target {
-            None => self.everyone = true,
-            Some(target) if !self.targets.contains(&target) => self.targets.push(target),
+            None => debt.everyone = true,
+            Some(target) if !debt.targets.contains(&target) => debt.targets.push(target),
             Some(_) => {}
         }
-        if self.pending && owed.reason == ResyncReason::OutboundGap {
-            return;
+        if owed.reason != ResyncReason::OutboundGap {
+            debt.reason = owed.reason;
         }
-        self.pending = true;
-        self.reason = owed.reason;
     }
 
     /// Clear the owed resync, returning its reason and audience.
-    fn take(&mut self) -> (ResyncReason, ResyncAudience) {
-        self.pending = false;
-        let targets = std::mem::take(&mut self.targets);
-        let audience = if std::mem::replace(&mut self.everyone, false) {
-            ResyncAudience::Everyone
-        } else {
-            ResyncAudience::Only(targets.into())
-        };
-        (self.reason, audience)
+    fn take(&mut self) -> Option<(ResyncReason, ResyncAudience)> {
+        self.owed.take().map(|debt| {
+            let audience = if debt.everyone {
+                ResyncAudience::Everyone
+            } else {
+                ResyncAudience::Only(debt.targets.into())
+            };
+            (debt.reason, audience)
+        })
     }
 }
 
@@ -250,7 +258,7 @@ impl TerminalActor {
                 resync.include(owed);
             }
         }
-        if !resync.pending {
+        if !resync.is_owed() {
             return false;
         }
         self.fire_owed_resync(resync);
@@ -275,7 +283,6 @@ impl TerminalActor {
         self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
         // Resume queued captures only after both final snapshots have read
         // the canonical terminal; starting one earlier would loan it again.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
@@ -294,8 +301,9 @@ impl TerminalActor {
 
     /// Broadcast the settled-resize / gap snapshot this debounce window owed.
     fn fire_owed_resync(&self, resync: &mut ResyncDebounce) {
-        let (reason, audience) = resync.take();
-        self.broadcast_resync(reason, audience);
+        if let Some((reason, audience)) = resync.take() {
+            self.broadcast_resync(reason, audience);
+        }
     }
 
     /// Service one combined native-control / PTY-output ingress turn, then
@@ -411,7 +419,6 @@ impl TerminalActor {
         // Close an idle output burst (independent of the emitter gate).
         self.maybe_emit_idle();
         self.tick_emit();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.expire_native_cursors();
     }
 
@@ -426,7 +433,6 @@ impl TerminalActor {
         if self.in_output_burst {
             return true;
         }
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if !self.native_cursor_owners.is_empty() {
             return true;
         }
@@ -485,10 +491,7 @@ impl TerminalActor {
         } else {
             self.handle_resize(req.cols, req.rows, req.cell_px)
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let tombstoned = std::mem::take(&mut self.reflow_tombstoned);
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        let tombstoned: Vec<ResyncTarget> = Vec::new();
         if !req.resync_clients {
             return tombstoned
                 .into_iter()

@@ -1,5 +1,4 @@
 use phux_protocol::ResourceId;
-use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{IdempotencyKey, SessionKey};
 use phux_protocol::wire::frame::{Command, Refusal};
 
@@ -11,19 +10,8 @@ use crate::state::Degradation;
 
 use super::selection::{KillError, Selected};
 use super::{
-    KeyedError, KillOutcome, kill_resource, kill_resource_keyed, kill_resources,
-    kill_resources_keyed,
+    KillOutcome, kill_resource, kill_resource_keyed, kill_resources, kill_resources_keyed,
 };
-
-/// Whether the server behind `conn` takes `SESSION_KILL`.
-#[must_use]
-pub fn session_kill_supported(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features_ext
-            .contains(ServerFeatureExt::SessionKill)
-    })
-}
 
 /// Kill the whole session `session` with one `SESSION_KILL`.
 ///
@@ -77,7 +65,7 @@ pub(super) async fn kill_whole_session(
 ) -> Result<Selected, KillError> {
     let reply = match key {
         Some(key) => kill_resources_keyed(conn, 1, ids, key).await,
-        None => kill_resources(conn, 1, ids).await.map_err(KeyedError::from),
+        None => kill_resources(conn, 1, ids).await,
     };
     batch_outcome(reply, &format!("session {session:?}"))
 }
@@ -103,7 +91,7 @@ pub(super) async fn kill_keyed(
 /// disconnect is the server self-exiting after its last session was reaped,
 /// which is success.
 fn batch_outcome(
-    reply: Result<(KillOutcome, Degradation), KeyedError>,
+    reply: Result<(KillOutcome, Degradation), AttachError>,
     label: &str,
 ) -> Result<Selected, KillError> {
     match reply {
@@ -111,8 +99,7 @@ fn batch_outcome(
             interleaved: degradation.notices().to_vec(),
             killed: None,
         }),
-        Err(KeyedError::Attach(AttachError::Disconnected)) => Ok(Selected::default()),
-        Err(KeyedError::Unsupported) => Err(KillError::UnsupportedKeyedSignal),
+        Err(AttachError::Disconnected) => Ok(Selected::default()),
         Ok((KillOutcome::Refused(message), degradation)) => Err(KillError::Refused {
             label: label.to_owned(),
             message,
@@ -123,7 +110,7 @@ fn batch_outcome(
             message: crate::explain::explain_unexpected("kill", &other),
             interleaved: degradation.notices().to_vec(),
         }),
-        Err(KeyedError::Attach(err)) => Err(err.into()),
+        Err(err) => Err(err.into()),
     }
 }
 

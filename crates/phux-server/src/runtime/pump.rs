@@ -113,6 +113,61 @@ pub(super) fn is_stale(age: Duration) -> bool {
     age > STALE_OUTPUT_BUDGET
 }
 
+/// An unanswered gap: the fence and its resync retry budget, which exist
+/// only together.
+#[derive(Debug)]
+struct Gap {
+    /// Resync requests already spent on this gap. Bounded by
+    /// [`GAP_RESYNC_MAX_ATTEMPTS`].
+    attempts: u32,
+    /// Absolute response deadline. Unrelated broadcast traffic must not restart
+    /// the retry clock and keep a fenced consumer frozen indefinitely.
+    deadline: tokio::time::Instant,
+}
+
+impl Gap {
+    fn opened() -> Self {
+        Self {
+            attempts: 0,
+            deadline: tokio::time::Instant::now() + GAP_RESYNC_RETRY,
+        }
+    }
+
+    const fn budget_spent(&self) -> bool {
+        self.attempts >= GAP_RESYNC_MAX_ATTEMPTS
+    }
+
+    /// How long to wait for a response: doubles from [`GAP_RESYNC_RETRY`] to
+    /// [`GAP_RESYNC_MAX_BACKOFF`].
+    fn retry_delay(&self) -> Duration {
+        let step = self.attempts.saturating_sub(1).min(u32::BITS - 1);
+        GAP_RESYNC_RETRY
+            .saturating_mul(1_u32 << step)
+            .min(GAP_RESYNC_MAX_BACKOFF)
+    }
+
+    /// Record that a resync request went out; a request inside the current
+    /// backoff window or past the budget spends nothing.
+    fn note_requested(&mut self) {
+        if self.budget_spent() {
+            return;
+        }
+        if self.attempts != 0 && tokio::time::Instant::now() < self.deadline {
+            return;
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        self.deadline = tokio::time::Instant::now() + self.retry_delay();
+    }
+
+    const fn deadline_elapsed(&self) -> PumpWait {
+        if self.budget_spent() {
+            PumpWait::GapUnrecoverable
+        } else {
+            PumpWait::RetryResync
+        }
+    }
+}
+
 /// Where one pump has got to inside the generation it is publishing, and
 /// whether that generation may still carry live output.
 #[derive(Debug)]
@@ -130,13 +185,9 @@ pub(super) struct PumpGeneration {
     /// the replacement generation is published. While set nothing is
     /// forwarded: a skipped `seq` is a `SequenceGap` the client detaches on,
     /// and draining at memory speed is what lets the requested resync arrive.
-    gap_pending: bool,
-    /// Resync requests already spent on the current gap; reset when a
-    /// replacement generation lands. Bounded by [`GAP_RESYNC_MAX_ATTEMPTS`].
-    gap_attempts: u32,
-    /// Absolute response deadline. Unrelated broadcast traffic must not restart
-    /// the retry clock and keep a fenced consumer frozen indefinitely.
-    gap_deadline: Option<tokio::time::Instant>,
+    /// Independent of [`Self::generation_active`]: a retired pump may also be
+    /// fenced.
+    gap: Option<Gap>,
     /// When the current generation was published (opened or republished):
     /// the earliest instant [`Self::chunk_age`] measures from.
     published_at: std::time::Instant,
@@ -150,9 +201,7 @@ impl PumpGeneration {
             last_forwarded_seq: published_cut,
             bootstrap_id,
             generation_active: true,
-            gap_pending: false,
-            gap_attempts: 0,
-            gap_deadline: None,
+            gap: None,
             published_at: std::time::Instant::now(),
         }
     }
@@ -187,13 +236,13 @@ impl PumpGeneration {
 
     /// Is this pump waiting on a replacement generation after a gap?
     pub(super) const fn is_fenced(&self) -> bool {
-        self.gap_pending
+        self.gap.is_some()
     }
 
     /// May this live delta go on the wire? Not when retired, fenced, or
     /// already covered by the published bootstrap.
     pub(super) const fn forwards(&self, seq: u64) -> bool {
-        self.generation_active && !self.gap_pending && seq > self.published_cut
+        self.generation_active && self.gap.is_none() && seq > self.published_cut
     }
 
     /// Record a delta that reached the consumer.
@@ -210,50 +259,33 @@ impl PumpGeneration {
     /// Fence the generation before asking for a resync; returns whether one
     /// was already in flight.
     pub(super) fn fence_for_gap(&mut self) -> bool {
-        let already_pending = self.gap_pending;
-        self.gap_pending = true;
-        if !already_pending {
-            self.gap_deadline = Some(tokio::time::Instant::now() + GAP_RESYNC_RETRY);
+        if self.gap.is_some() {
+            return true;
         }
-        already_pending
+        self.gap = Some(Gap::opened());
+        false
     }
 
-    /// Record that a resync request went out for the current gap.
+    /// Record that a resync request went out for the current gap; a pump
+    /// that is not fenced has no gap to spend on.
     pub(super) fn note_resync_requested(&mut self) {
-        if self.gap_attempts >= GAP_RESYNC_MAX_ATTEMPTS {
-            return;
+        if let Some(gap) = &mut self.gap {
+            gap.note_requested();
         }
-        if self.gap_attempts != 0
-            && self
-                .gap_deadline
-                .is_some_and(|deadline| tokio::time::Instant::now() < deadline)
-        {
-            return;
-        }
-        self.gap_attempts = self.gap_attempts.saturating_add(1);
-        self.gap_deadline = Some(tokio::time::Instant::now() + self.gap_retry_delay());
     }
 
-    /// How long to wait for a response: doubles from [`GAP_RESYNC_RETRY`] to
-    /// [`GAP_RESYNC_MAX_BACKOFF`].
+    /// The current gap's response window; tests step the paused clock by it.
+    #[cfg(test)]
     fn gap_retry_delay(&self) -> Duration {
-        let step = self.gap_attempts.saturating_sub(1).min(u32::BITS - 1);
-        GAP_RESYNC_RETRY
-            .saturating_mul(1_u32 << step)
-            .min(GAP_RESYNC_MAX_BACKOFF)
-    }
-
-    const fn gap_deadline_elapsed(&self) -> PumpWait {
-        if self.gap_attempts >= GAP_RESYNC_MAX_ATTEMPTS {
-            PumpWait::GapUnrecoverable
-        } else {
-            PumpWait::RetryResync
-        }
+        self.gap.as_ref().map_or(GAP_RESYNC_RETRY, Gap::retry_delay)
     }
 
     /// Resync requests this gap has already cost.
     pub(super) const fn gap_attempts(&self) -> u32 {
-        self.gap_attempts
+        match &self.gap {
+            Some(gap) => gap.attempts,
+            None => 0,
+        }
     }
 
     /// Does a [`ResourceOutput::Resync`] addressed to `audience` replace this
@@ -265,7 +297,7 @@ impl PumpGeneration {
         match audience {
             ResyncAudience::Everyone => true,
             ResyncAudience::Only(_) => {
-                (self.gap_pending || !self.generation_active) && audience.includes(pump)
+                (self.gap.is_some() || !self.generation_active) && audience.includes(pump)
             }
         }
     }
@@ -281,9 +313,7 @@ impl PumpGeneration {
         self.published_cut = base_seq;
         self.last_forwarded_seq = base_seq;
         self.generation_active = true;
-        self.gap_pending = false;
-        self.gap_attempts = 0;
-        self.gap_deadline = None;
+        self.gap = None;
         self.published_at = std::time::Instant::now();
     }
 }
@@ -307,19 +337,16 @@ pub(super) async fn next_event(
     generation: &PumpGeneration,
     output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> PumpWait {
-    if !generation.is_fenced() {
-        return PumpWait::Event(output_rx.recv().await);
-    }
-    let Some(deadline) = generation.gap_deadline else {
+    let Some(gap) = &generation.gap else {
         return PumpWait::Event(output_rx.recv().await);
     };
     // timeout_at polls its inner future first; a perpetually ready broadcast
     // could otherwise win even after the absolute deadline has expired.
-    if tokio::time::Instant::now() >= deadline {
-        return generation.gap_deadline_elapsed();
+    if tokio::time::Instant::now() >= gap.deadline {
+        return gap.deadline_elapsed();
     }
-    let Ok(received) = tokio::time::timeout_at(deadline, output_rx.recv()).await else {
-        return generation.gap_deadline_elapsed();
+    let Ok(received) = tokio::time::timeout_at(gap.deadline, output_rx.recv()).await else {
+        return gap.deadline_elapsed();
     };
     PumpWait::Event(received)
 }

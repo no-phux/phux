@@ -36,7 +36,7 @@ pub struct WatchEvent {
     pub terminal: Option<ResourceId>,
     /// The event payload.
     pub event: AgentEvent,
-    /// The journal stamp (ADR-0123); `None` without `EVENT_JOURNAL` and on a
+    /// The journal stamp (ADR-0123); `None` from an unstamping peer and on a
     /// `journal_gap` notice.
     pub stamp: Option<EventStamp>,
 }
@@ -311,11 +311,14 @@ impl FleetSubscription {
     }
 }
 
-fn event_lifecycle<'a>(
-    event: &'a AgentEvent,
+/// `(terminal, spawned)` when `event` spawns or closes a Terminal.
+const fn event_lifecycle<'a>(
+    event: &AgentEvent,
     terminal: Option<&'a ResourceId>,
 ) -> Option<(&'a ResourceId, bool)> {
-    let terminal = terminal?;
+    let Some(terminal) = terminal else {
+        return None;
+    };
     match event {
         AgentEvent::ResourceSpawned {
             kind: ResourceKind::Terminal,
@@ -327,20 +330,10 @@ fn event_lifecycle<'a>(
 }
 
 const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
-    let FrameKind::Event {
-        terminal: Some(terminal),
-        event,
-        ..
-    } = frame
-    else {
-        return None;
-    };
-    match event {
-        AgentEvent::ResourceSpawned {
-            kind: ResourceKind::Terminal,
-            ..
-        } => Some((terminal, true)),
-        AgentEvent::ResourceClosed { .. } => Some((terminal, false)),
+    match frame {
+        FrameKind::Event {
+            terminal, event, ..
+        } => event_lifecycle(event, terminal.as_ref()),
         _ => None,
     }
 }
@@ -1078,11 +1071,8 @@ mod tests {
         script: Vec<FrameKind>,
         spec: ScriptSpec,
     ) -> (WatchOutcome, Vec<WatchItem>, Vec<FrameKind>) {
-        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-
         let dir = tempfile::tempdir().expect("temp dir");
         let spec = spec
-            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
             .server_id(vec![0x01, 0x02])
             .extend(script)
             .end(EndOfScript::HangUp);
@@ -1183,8 +1173,6 @@ mod tests {
     /// the watch with no cursor at all.
     #[tokio::test]
     async fn a_zero_timeout_still_anchors_a_cursor_from_a_slow_server() {
-        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("slow.sock");
         let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
@@ -1192,7 +1180,6 @@ mod tests {
             .with_journal_head(Some(30));
         let spec = ScriptSpec::new()
             .state(state)
-            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
             .server_id(vec![0x01, 0x02])
             .end(EndOfScript::ServeUntilDetach);
         let server = tokio::spawn(async move {

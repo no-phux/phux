@@ -126,10 +126,6 @@ pub(crate) trait UpgradeEnv {
 /// Ask for an upgrade, retrying transient refusals on [`TRANSIENT_BACKOFF`].
 /// One progress line is said before the first retry; a fatal refusal or a
 /// transport failure ends the attempt at once.
-///
-/// # Errors
-///
-/// The first transport failure, unchanged.
 pub(crate) fn request_with_retry(env: &mut dyn UpgradeEnv) -> Result<UpgradeAck, AttachError> {
     let mut ack = env.send_upgrade()?;
     for (attempt, delay) in TRANSIENT_BACKOFF.iter().enumerate() {
@@ -158,13 +154,6 @@ pub(crate) fn request_with_retry(env: &mut dyn UpgradeEnv) -> Result<UpgradeAck,
 /// The whole client-side upgrade: [`request_with_retry`], then, when an older
 /// server refuses because of agent sessions, close them under `consent` and
 /// ask once more.
-///
-/// `socket` is the explicit `--socket`, echoed into printed commands so they
-/// reach the same server.
-///
-/// # Errors
-///
-/// The first transport failure, unchanged.
 pub(crate) fn drive(
     env: &mut dyn UpgradeEnv,
     consent: Consent,
@@ -302,10 +291,6 @@ pub(crate) struct LiveUpgrade<'a> {
 impl<'a> LiveUpgrade<'a> {
     /// A driver environment for the server at `socket`. `quiet` keeps stderr
     /// clean for machine output.
-    ///
-    /// # Errors
-    ///
-    /// When no runtime can be built.
     pub(crate) fn new(socket: &'a Path, quiet: bool) -> Result<Self, AttachError> {
         let runtime = cli_runtime().map_err(|_| {
             AttachError::Io(std::io::Error::other(
@@ -394,9 +379,6 @@ impl UpgradeEnv for LiveUpgrade<'_> {
 
 /// Ask the server at `socket_path` to graceful-upgrade in place, once, with
 /// no retry: the attach-time skew reconciliation stays best-effort.
-///
-/// The `Err` arm carries the transport failure unchanged so the caller can
-/// render it its own way.
 pub(crate) fn request_upgrade(socket_path: &Path) -> Result<UpgradeAck, AttachError> {
     LiveUpgrade::new(socket_path, true)?.send_upgrade()
 }

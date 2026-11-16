@@ -80,6 +80,9 @@ pub struct ClientCapabilities {
     /// The device the client says it runs on (HELLO field 12); a label,
     /// absent from older clients.
     pub platform: Option<ClientPlatform>,
+    /// The client can review exact credential references and bound provider identity.
+    /// Explicit HELLO offer: legacy clients cannot approve opaque credential requests.
+    pub credential_approvals: bool,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -120,6 +123,7 @@ impl ClientCapabilities {
             quic_streams: false,
             resource_kinds: ResourceKindSet::LEGACY,
             platform: None,
+            credential_approvals: false,
         }
     }
 
@@ -127,6 +131,13 @@ impl ClientCapabilities {
     #[must_use]
     pub const fn with_platform(mut self, platform: Option<ClientPlatform>) -> Self {
         self.platform = platform;
+        self
+    }
+
+    /// Builder setter for [`Self::credential_approvals`].
+    #[must_use]
+    pub const fn with_credential_approvals(mut self, enabled: bool) -> Self {
+        self.credential_approvals = enabled;
         self
     }
 

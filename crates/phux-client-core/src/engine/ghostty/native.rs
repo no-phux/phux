@@ -1,9 +1,29 @@
 //! Native snapshot and history decoding, plus live effect hooks.
 
 use super::{
-    BootstrapProgress, Cell, ClipboardWrite, GhosttyEngineError, GhosttyTerminal,
-    HistoryApplyOutcome, NativeDecoderState, NativeReplica, Rc, RefCell,
+    BootstrapProgress, CONTINUATION_LIMIT, Cell, ClipboardWrite, FeedDecoder, GhosttyEngineError,
+    GhosttyTerminal, HistoryApplyOutcome, NativeDecoderState, NativeReplica, Rc, RefCell,
 };
+use libghostty_vt::snapshot::{FeedIncrementalDecoder, FeedProgress, ProgressKind};
+use phux_protocol::snapshot_framing::{HistoryFraming, HistoryUnit};
+
+pub(super) fn start_native(
+    pending: Rc<PendingEffects>,
+) -> Result<NativeReplica, GhosttyEngineError> {
+    // A bare PAGE gets a fixed-size, reader-local empty placement record.
+    let mut decoder = FeedDecoder::new(CONTINUATION_LIMIT + 16)?;
+    decoder.set_max_continuation_bytes(CONTINUATION_LIMIT)?;
+    // The stock decoder otherwise restores parser state but stops tracking it.
+    // Retain it from READY so Clear can export even the captured partial input.
+    decoder.set_retain_continuation(true)?;
+    Ok(NativeReplica {
+        pending,
+        decoder: NativeDecoderState::Collecting(decoder),
+        protocol_finished: false,
+        history_framing: HistoryFraming::default(),
+        history_failed: false,
+    })
+}
 
 pub(super) fn push_native(
     native: &mut NativeReplica,
@@ -20,6 +40,12 @@ pub(super) fn push_native(
             NativeDecoderState::Collecting(_) => unreachable!(),
         };
     };
+    if decoder.staged_bytes().saturating_add(input.len()) > CONTINUATION_LIMIT {
+        return Err(GhosttyEngineError::checkpoint(
+            libghostty_vt::Error::LimitExceeded,
+            0,
+        ));
+    }
     decoder
         .feed(input)
         .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
@@ -113,6 +139,7 @@ pub(super) fn finish_native(
     let mut decoder = decoder
         .ready()
         .map_err(|error| GhosttyEngineError::checkpoint(error, staged))?;
+    require_consumed_unit(&decoder, staged, staged)?;
     attach_native_callbacks(native, decoder.terminal_mut())?;
     native.decoder = NativeDecoderState::Ready(decoder);
     native.protocol_finished = true;
@@ -127,6 +154,21 @@ pub(super) fn push_history(
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
     }
+    if native.history_failed {
+        return Err(GhosttyEngineError::DecoderFailed);
+    }
+    let result = decode_history_unit(native, input, declared_rows);
+    if result.is_err() {
+        fail_history_decoder(native);
+    }
+    result
+}
+
+fn decode_history_unit(
+    native: &mut NativeReplica,
+    input: &[u8],
+    declared_rows: u32,
+) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     let NativeDecoderState::Ready(decoder) = &mut native.decoder else {
         return Err(match native.decoder {
             NativeDecoderState::Finished(_) => GhosttyEngineError::InputAfterFinish,
@@ -136,23 +178,109 @@ pub(super) fn push_history(
             }
         });
     };
-    decoder
-        .feed(input)
-        .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
-    let staged = decoder.staged_bytes();
-    let expected_rows =
-        usize::try_from(declared_rows).map_err(|_| GhosttyEngineError::DecoderFailed)?;
-    let Some(progress) = decoder
-        .next_checked(expected_rows)
-        .map_err(|error| GhosttyEngineError::checkpoint(error, staged))?
-    else {
+    let invalid = || GhosttyEngineError::checkpoint(libghostty_vt::Error::InvalidValue, 0);
+    // All original bytes, including unknown/placement suffixes, are checked
+    // before any engine mutation. Row declarations never come from the peer's
+    // unauthenticated outer metadata.
+    let (unit, suffix) = native.history_framing.prepare(input).ok_or_else(invalid)?;
+    let authenticated_rows = unit.rows();
+    if u32::try_from(authenticated_rows).ok() != Some(declared_rows) {
+        return Err(invalid());
+    }
+    let padding = suffix.as_ref().map_or(&[][..], |bytes| &bytes[..]);
+    let progress = decode_staged_history(decoder, input, padding)?;
+    let outcome = history_outcome(unit, progress)?;
+    if outcome.progress == BootstrapProgress::Finished {
         return Ok(finish_history_decoder(native));
+    }
+    Ok(outcome)
+}
+
+const fn history_outcome(
+    unit: HistoryUnit,
+    progress: Option<FeedProgress>,
+) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
+    let retained_rows = match (unit, progress) {
+        (HistoryUnit::Finish, None) => {
+            return Ok(HistoryApplyOutcome {
+                progress: BootstrapProgress::Finished,
+                retained_rows: 0,
+                authenticated_rows: 0,
+            });
+        }
+        (
+            HistoryUnit::Page { .. },
+            Some(FeedProgress {
+                kind: ProgressKind::Page { .. },
+                rows,
+                ..
+            }),
+        ) => rows,
+        (
+            HistoryUnit::Image,
+            Some(FeedProgress {
+                kind: ProgressKind::Image { .. },
+                ..
+            }),
+        ) => 0,
+        _ => {
+            return Err(GhosttyEngineError::checkpoint(
+                libghostty_vt::Error::InvalidValue,
+                0,
+            ));
+        }
     };
     Ok(HistoryApplyOutcome {
         progress: BootstrapProgress::Ready,
-        retained_rows: progress.rows,
-        authenticated_rows: progress.authenticated_rows,
+        retained_rows,
+        authenticated_rows: unit.rows(),
     })
+}
+
+fn decode_staged_history(
+    decoder: &mut FeedIncrementalDecoder<'static, 'static>,
+    input: &[u8],
+    suffix: &[u8],
+) -> Result<Option<FeedProgress>, GhosttyEngineError> {
+    decoder
+        .feed_parts(input, suffix)
+        .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
+    let staged = decoder.staged_bytes();
+    let progress = decoder
+        .next()
+        // Reader-local padding is not peer input and must not inflate errors.
+        .map_err(|error| GhosttyEngineError::checkpoint(error, input.len()))?;
+    require_consumed_unit(decoder, staged, input.len())?;
+    Ok(progress)
+}
+
+fn require_consumed_unit(
+    decoder: &FeedIncrementalDecoder<'_, '_>,
+    offered: usize,
+    wire_bytes: usize,
+) -> Result<(), GhosttyEngineError> {
+    let unread = decoder.staged_bytes();
+    if unread != 0 {
+        return Err(GhosttyEngineError::checkpoint(
+            libghostty_vt::Error::InvalidValue,
+            offered.saturating_sub(unread).min(wire_bytes),
+        ));
+    }
+    Ok(())
+}
+
+fn fail_history_decoder(native: &mut NativeReplica) {
+    let state = std::mem::replace(&mut native.decoder, NativeDecoderState::Failed);
+    // Release both the staged allocation and failed native decoder, while
+    // preserving the live terminal for rendering and live output. CRC/framing
+    // rejection leaves it unchanged; engine semantic errors are not transactional.
+    native.decoder = match state {
+        NativeDecoderState::Ready(decoder) => {
+            native.history_failed = true;
+            NativeDecoderState::Finished(decoder.into_terminal())
+        }
+        other => other,
+    };
 }
 
 fn finish_history_decoder(native: &mut NativeReplica) -> HistoryApplyOutcome {

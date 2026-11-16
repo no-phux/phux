@@ -507,16 +507,20 @@ async fn finish_history(
     (client, total_rows, pages)
 }
 
-async fn detach_attached(mut client: AttachedClient) {
-    send_frame(&mut client.stream, &FrameKind::Detach).await;
+async fn detach_requested(stream: &mut UnixStream) {
+    send_frame(stream, &FrameKind::Detach).await;
     assert!(matches!(
-        recv_until_detached(&mut client.stream).await,
+        recv_until_detached(stream).await,
         // phux-l83x: the ack for a client-sent DETACH names REQUESTED.
         FrameKind::Detached {
             reason: Some(DetachReason::Requested),
             ..
         }
     ));
+}
+
+async fn detach_attached(mut client: AttachedClient) {
+    detach_requested(&mut client.stream).await;
 }
 
 #[test]
@@ -557,7 +561,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
             negotiated.push((attach_id, wait_for_native_socket(&socket).await));
         }
         let attach_barrier = Arc::new(Barrier::new(8));
-        let mut attaching = FuturesUnordered::new();
+        let attaching = FuturesUnordered::new();
         for (attach_id, stream) in negotiated {
             attaching.push(attach_through_begin(
                 stream,
@@ -571,10 +575,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         // 1-7 continue concurrently, so a socket-local stall cannot hide
         // behind sequential attach or drain order.
         let mut clients = timeout(WIRE_RECV_TIMEOUT, async {
-            let mut beginnings = Vec::with_capacity(8);
-            while let Some(client) = attaching.next().await {
-                beginnings.push(client);
-            }
+            let mut beginnings: Vec<_> = attaching.collect().await;
             beginnings.sort_by_key(|client| client.attach_id);
             let stalled = beginnings.pop().expect("eight BEGIN clients");
             assert_eq!(stalled.attach_id, 8);
@@ -584,14 +585,11 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
             send_live_bytes(&mut established, LIVE_SENTINEL).await;
             receive_established_until(&mut established, LIVE_SENTINEL).await;
 
-            let mut active_attaches = FuturesUnordered::new();
-            for client in beginnings {
-                active_attaches.push(finish_attach(client, Some(LIVE_SENTINEL)));
-            }
-            let mut ready = Vec::with_capacity(8);
-            while let Some(client) = active_attaches.next().await {
-                ready.push(client);
-            }
+            let active_attaches: FuturesUnordered<_> = beginnings
+                .into_iter()
+                .map(|client| finish_attach(client, Some(LIVE_SENTINEL)))
+                .collect();
+            let mut ready: Vec<_> = active_attaches.collect().await;
 
             // Only after all seven active sockets have reached READY and
             // received the fenced replay do we resume the intentionally
@@ -637,19 +635,13 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         request_page(&mut stalled, stalled_cursor).await;
 
         let history_barrier = Arc::new(Barrier::new(7));
-        let mut histories = FuturesUnordered::new();
-        for client in clients {
-            histories.push(finish_history(client, Arc::clone(&history_barrier)));
-        }
-        let completed_histories = timeout(WIRE_RECV_TIMEOUT, async {
-            let mut completed = Vec::with_capacity(7);
-            while let Some(result) = histories.next().await {
-                completed.push(result);
-            }
-            completed
-        })
-        .await
-        .expect("seven independent owners did not page to FINISH within release gate");
+        let histories: FuturesUnordered<_> = clients
+            .into_iter()
+            .map(|client| finish_history(client, Arc::clone(&history_barrier)))
+            .collect();
+        let completed_histories: Vec<_> = timeout(WIRE_RECV_TIMEOUT, histories.collect())
+            .await
+            .expect("seven independent owners did not page to FINISH within release gate");
         let mut active = Vec::with_capacity(7);
         let mut expected_rows = None;
         let mut expected_pages = None;
@@ -677,17 +669,14 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         // clients receive this boundary.
         send_live_bytes(&mut established, LIVE_BOUNDARY).await;
         receive_established_until(&mut established, LIVE_BOUNDARY).await;
-        let mut active_boundaries = FuturesUnordered::new();
-        for mut client in active {
-            active_boundaries.push(async move {
+        let active_boundaries: FuturesUnordered<_> = active
+            .into_iter()
+            .map(|mut client| async move {
                 pump(&mut client, Some(LIVE_BOUNDARY)).await;
                 client
-            });
-        }
-        let mut drained = Vec::with_capacity(8);
-        while let Some(client) = active_boundaries.next().await {
-            drained.push(client);
-        }
+            })
+            .collect();
+        let mut drained: Vec<_> = active_boundaries.collect().await;
         pump(&mut stalled, Some(LIVE_BOUNDARY)).await;
         drained.push(stalled);
         drained.sort_by_key(|client| client.attach_id);
@@ -709,23 +698,10 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         // Explicit DETACH acknowledgements make owner teardown observable.
         // A fresh owner must then acquire and finish the same history without
         // colliding with any abandoned cursor lineage.
-        let mut detaches = FuturesUnordered::new();
-        for client in drained {
-            detaches.push(detach_attached(client));
-        }
-        let mut detached_count = 0;
-        while detaches.next().await.is_some() {
-            detached_count += 1;
-        }
-        assert_eq!(detached_count, 8);
-        send_frame(&mut established.stream, &FrameKind::Detach).await;
-        assert!(matches!(
-            recv_until_detached(&mut established.stream).await,
-            FrameKind::Detached {
-                reason: Some(DetachReason::Requested),
-                ..
-            }
-        ));
+        assert_eq!(drained.len(), 8);
+        let detaches: FuturesUnordered<_> = drained.into_iter().map(detach_attached).collect();
+        detaches.collect::<Vec<()>>().await;
+        detach_requested(&mut established.stream).await;
 
         let probe_stream = wait_for_native_socket(&socket).await;
         let probe = attach_through_begin(probe_stream, 9, Arc::new(Barrier::new(1))).await;

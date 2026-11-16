@@ -9,6 +9,7 @@ use crate::desk::{Desk, SettingsCategory as Category};
 #[derive(Clone, Copy)]
 pub(super) enum Entry {
     Theme,
+    HoverToolbar,
     TextSize,
     Font,
     CopySelect,
@@ -25,8 +26,9 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Theme,
+        Self::HoverToolbar,
         Self::TextSize,
         Self::Font,
         Self::CopySelect,
@@ -44,7 +46,7 @@ impl Entry {
 
     const fn category(self) -> Category {
         match self {
-            Self::Theme => Category::Appearance,
+            Self::Theme | Self::HoverToolbar => Category::Appearance,
             Self::TextSize
             | Self::Font
             | Self::CopySelect
@@ -62,6 +64,7 @@ impl Entry {
     const fn title(self) -> &'static str {
         match self {
             Self::Theme => "Theme",
+            Self::HoverToolbar => "Show toolbar on hover",
             Self::TextSize => "Text size",
             Self::Font => "Font",
             Self::CopySelect => "Copy on select",
@@ -82,6 +85,10 @@ impl Entry {
         match self {
             Self::Theme => {
                 "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
+            }
+            Self::HoverToolbar => {
+                "Tabs and buttons stay hidden until the pointer reaches the top of the window, so \
+                 the terminal fills it."
             }
             Self::TextSize => "Terminal text from 8 to 32 points.",
             Self::Font => "Terminal font. One that isn't installed shows the system's.",
@@ -107,9 +114,7 @@ impl Entry {
             }
             Self::PairPhone => super::super::pair::DETAIL,
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
-            Self::GetStarted => {
-                "The look, the phux agent skill, permissions and your key bindings, step by step."
-            }
+            Self::GetStarted => crate::onboarding::PROMISE.get_started,
             Self::Updates => {
                 "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
@@ -125,6 +130,7 @@ impl Entry {
                 "" => "System".to_owned(),
                 family => family.to_owned(),
             },
+            Self::HoverToolbar => on(desk.settings.hover_toolbar),
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
@@ -166,6 +172,7 @@ impl Entry {
     const fn aliases(self) -> &'static str {
         match self {
             Self::Theme => "colors colours appearance palette",
+            Self::HoverToolbar => "titlebar tab bar hide reveal edge to edge full window chrome",
             Self::TextSize => "font zoom typography",
             Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
@@ -178,7 +185,10 @@ impl Entry {
             Self::Hosts => "remote ssh connection",
             Self::PairPhone => "mobile iphone android qr code scan link devices revoke tailnet",
             Self::Diagnostics => "logs debug troubleshooting",
-            Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
+            Self::GetStarted if crate::onboarding::PERMISSIONS => {
+                "onboarding welcome setup skill permissions migrate import"
+            }
+            Self::GetStarted => "onboarding welcome setup skill migrate import",
             Self::Updates => {
                 "upgrade version automatic release channel stable next preview install"
             }
@@ -238,6 +248,12 @@ impl Entry {
     fn toggle(self, desk: &Desk, ink: &Ink) -> El {
         let file = &desk.file;
         let (key, value, press, managed): (_, _, fn(&mut Desk), _) = match self {
+            Self::HoverToolbar => (
+                "set-hover-toolbar",
+                desk.settings.hover_toolbar,
+                Desk::toggle_hover_toolbar,
+                false,
+            ),
             Self::CopySelect => (
                 "set-copy-select",
                 desk.settings.copy_on_select,
@@ -420,8 +436,10 @@ pub(super) fn matching(desk: &Desk) -> Vec<(Category, Vec<Entry>)> {
                     !matches!(entry, Entry::QuickTerminal | Entry::QuickChord)
                         || desk.quick_chord.available()
                 })
-                // A phone doesn't pair a phone.
-                .filter(|entry| !matches!(entry, Entry::PairPhone) || desk.phone.is_none())
+                // A phone doesn't pair a phone, and has no toolbar to hide.
+                .filter(|entry| {
+                    !matches!(entry, Entry::PairPhone | Entry::HoverToolbar) || desk.phone.is_none()
+                })
                 .filter(|entry| entry.category() == category)
                 .filter(|entry| entry.matches(desk, &query))
                 .collect();

@@ -45,6 +45,8 @@ pub(super) struct ServerConfig {
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
     /// The startup authorization posture (`docs/remote.md#who-can-connect`).
     pub(super) policy_posture: crate::policy::PolicyPosture,
+    /// `[policy] tailnet-owner` under `paired` (`docs/config.md#tailnet-owner-devices`).
+    pub(super) tailnet_owner: bool,
     /// Whether an attach-time `CreateIfMissing` seeds a real PTY pane
     /// (tests default to the cheaper PTY-less actor).
     pub(super) attach_create_seeds_pty: bool,
@@ -78,6 +80,7 @@ impl Default for ServerConfig {
             keep_awake: phux_config::KeepAwake::default(),
             policy_engine: std::sync::Arc::new(crate::policy::ScopedPolicy::local()),
             policy_posture: crate::policy::PolicyPosture::Local,
+            tailnet_owner: false,
             attach_create_seeds_pty: false,
             pre_seeded_session: None,
             retain: super::retained::RetainPolicy::default(),

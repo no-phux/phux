@@ -494,7 +494,6 @@ fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::fs;
     #[cfg(target_os = "linux")]

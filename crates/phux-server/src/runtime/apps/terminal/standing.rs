@@ -1,24 +1,12 @@
-//! Standing mirrors (`[[mirrors]]`, `docs/resource-kinds.md#standing-mirrors`).
+//! Standing mirrors (`[[mirrors]]`, `docs/resource-kinds.md#standing-mirrors`)
+//! and producers (`[[producers]]`, `docs/applications.md#standing-producers`).
 //!
-//! One task on the server `LocalSet` keeps a `phux agent surface mirror`
-//! running for each entry, in a pane of its own ephemeral session named by
-//! [`MirrorConfigEntry::session_name`]. The pane is the surface's parent, so
-//! the surface is listed and granted like any other mirror's. A hot upgrade
-//! carries the pane and the mirror re-adopts its surface by publishing; the
-//! resumed image's task finds the session by name and leaves it. A pane that
-//! exits is replaced after a backoff; a cold start recreates every one. An
-//! adopted `phux` mirror or producer whose binary was replaced since it
-//! started (`phux update`) is restarted on the installed one, so new input
-//! intents reach it; it re-adopts the same surface. A
-//! config reload re-reads the entries: a removed entry's session is closed,
-//! a changed one restarted. On macOS the server's children cannot hold
-//! Screen Recording access (TCC), so the pane only holds the session and
-//! Rune runs the mirror into it (`phux agent surface standing`), which
-//! makes the TCC prompts Rune's.
-//!
-//! `[[producers]]` (`docs/applications.md#standing-producers`) rides the
-//! same loop: each entry's command runs in a `producer-<name>` session and
-//! is restarted, adopted and reloaded exactly like a mirror.
+//! One task keeps each entry's command running in a pane of its own
+//! ephemeral session: an exited pane is replaced after a backoff, a hot
+//! upgrade's carried pane is adopted, one whose binary was replaced since it
+//! started is restarted, and a config reload closes removed entries and
+//! restarts changed ones. On macOS the pane only holds the session and Rune
+//! runs the mirror into it, so the TCC prompts are Rune's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -341,65 +329,62 @@ mod tests {
         let fake = dir.path().join("phux");
         std::fs::write(&fake, "#!/bin/sh\nexec sleep 30\n").expect("write");
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async move {
-                let state = SharedState::new();
-                state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-                state.with_mut(|s| s.set_native_host_executable(Some(fake)));
-                let token = CancellationToken::new();
-                let mirror = MirrorConfigEntry {
-                    target: "display".to_owned(),
-                    format: None,
-                    quality: None,
-                    max_width: None,
-                    interval_ms: None,
-                };
-                let producer = |name: &str, command: &[&str]| ProducerConfigEntry {
-                    name: name.to_owned(),
-                    command: command.iter().map(|w| (*w).to_owned()).collect(),
-                };
-                let producers = [
-                    producer("feed", &["phux", "agent", "doc", "notifications"]),
-                    producer("Sleep", &["/bin/sh", "-c", "exec sleep 30"]),
-                    producer("empty", &[]),
-                ];
-                let names = ["mirror-display", "producer-feed", "producer-sleep"];
-                let wanted = units(&[mirror], &producers);
-                assert_eq!(wanted.keys().map(String::as_str).collect::<Vec<_>>(), names);
-                let mut slots = BTreeMap::new();
-                tick(
-                    &state,
-                    wanted,
-                    &mut slots,
-                    &BTreeSet::new(),
-                    Instant::now(),
-                    &token,
-                );
-                for name in names {
-                    assert!(live(&state, name), "{name} started");
+        crate::runtime::test_support::local(async move {
+            let state = SharedState::new();
+            state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
+            state.with_mut(|s| s.set_native_host_executable(Some(fake)));
+            let token = CancellationToken::new();
+            let mirror = MirrorConfigEntry {
+                target: "display".to_owned(),
+                format: None,
+                quality: None,
+                max_width: None,
+                interval_ms: None,
+            };
+            let producer = |name: &str, command: &[&str]| ProducerConfigEntry {
+                name: name.to_owned(),
+                command: command.iter().map(|w| (*w).to_owned()).collect(),
+            };
+            let producers = [
+                producer("feed", &["phux", "agent", "doc", "notifications"]),
+                producer("Sleep", &["/bin/sh", "-c", "exec sleep 30"]),
+                producer("empty", &[]),
+            ];
+            let names = ["mirror-display", "producer-feed", "producer-sleep"];
+            let wanted = units(&[mirror], &producers);
+            assert_eq!(wanted.keys().map(String::as_str).collect::<Vec<_>>(), names);
+            let mut slots = BTreeMap::new();
+            tick(
+                &state,
+                wanted,
+                &mut slots,
+                &BTreeSet::new(),
+                Instant::now(),
+                &token,
+            );
+            for name in names {
+                assert!(live(&state, name), "{name} started");
+            }
+            tick(
+                &state,
+                BTreeMap::new(),
+                &mut slots,
+                &BTreeSet::new(),
+                Instant::now(),
+                &token,
+            );
+            let mut gone = false;
+            for _ in 0..100 {
+                gone = state.with(|s| names.iter().all(|n| s.find_session_by_name(n).is_none()));
+                if gone {
+                    break;
                 }
-                tick(
-                    &state,
-                    BTreeMap::new(),
-                    &mut slots,
-                    &BTreeSet::new(),
-                    Instant::now(),
-                    &token,
-                );
-                let mut gone = false;
-                for _ in 0..100 {
-                    gone =
-                        state.with(|s| names.iter().all(|n| s.find_session_by_name(n).is_none()));
-                    if gone {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-                assert!(gone, "removed entries' sessions close");
-                token.cancel();
-            })
-            .await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(gone, "removed entries' sessions close");
+            token.cancel();
+        })
+        .await;
     }
 
     /// An adopted `phux` producer keeps running until `phux update` replaces
@@ -416,54 +401,51 @@ mod tests {
             .expect("sleep");
         // macOS kills a copied system binary: link it, swap in a script.
         std::os::unix::fs::symlink(sleep, &fake).expect("link");
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async move {
-                let state = SharedState::new();
-                state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-                state.with_mut(|s| s.set_native_host_executable(Some(fake.clone())));
-                let token = CancellationToken::new();
-                let producer = ProducerConfigEntry {
-                    name: "feed".to_owned(),
-                    command: vec!["phux".to_owned(), "30".to_owned()],
-                };
-                let wanted = units(&[], &[producer]);
-                let name = "producer-feed";
-                let none = BTreeSet::new();
-                let mut started = BTreeMap::new();
-                tick(
-                    &state,
-                    wanted.clone(),
-                    &mut started,
-                    &none,
-                    Instant::now(),
-                    &token,
-                );
-                assert!(live(&state, name));
-                let panes = |state: &SharedState| {
-                    state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
-                };
-                let first = panes(&state);
-                // A hot upgrade's supervisor has no slot for what it adopts.
-                let adopted = BTreeMap::new();
-                assert!(outdated(&state, &wanted, &adopted).await.is_empty());
-                let next = dir.path().join("phux.new");
-                std::fs::write(&next, "#!/bin/sh\nexec sleep 30\n").expect("write");
-                std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755))
-                    .expect("chmod");
-                std::fs::rename(&next, &fake).expect("swap");
-                assert!(
-                    outdated(&state, &wanted, &started).await.is_empty(),
-                    "started here"
-                );
-                let found = outdated(&state, &wanted, &adopted).await;
-                assert_eq!(found.iter().map(String::as_str).collect::<Vec<_>>(), [name]);
-                let mut adopted = adopted;
-                tick(&state, wanted, &mut adopted, &found, Instant::now(), &token);
-                assert!(live(&state, name), "restarted");
-                assert_ne!(panes(&state), first, "on a new pane");
-                token.cancel();
-            })
-            .await;
+        crate::runtime::test_support::local(async move {
+            let state = SharedState::new();
+            state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
+            state.with_mut(|s| s.set_native_host_executable(Some(fake.clone())));
+            let token = CancellationToken::new();
+            let producer = ProducerConfigEntry {
+                name: "feed".to_owned(),
+                command: vec!["phux".to_owned(), "30".to_owned()],
+            };
+            let wanted = units(&[], &[producer]);
+            let name = "producer-feed";
+            let none = BTreeSet::new();
+            let mut started = BTreeMap::new();
+            tick(
+                &state,
+                wanted.clone(),
+                &mut started,
+                &none,
+                Instant::now(),
+                &token,
+            );
+            assert!(live(&state, name));
+            let panes = |state: &SharedState| {
+                state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
+            };
+            let first = panes(&state);
+            // A hot upgrade's supervisor has no slot for what it adopts.
+            let adopted = BTreeMap::new();
+            assert!(outdated(&state, &wanted, &adopted).await.is_empty());
+            let next = dir.path().join("phux.new");
+            std::fs::write(&next, "#!/bin/sh\nexec sleep 30\n").expect("write");
+            std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            std::fs::rename(&next, &fake).expect("swap");
+            assert!(
+                outdated(&state, &wanted, &started).await.is_empty(),
+                "started here"
+            );
+            let found = outdated(&state, &wanted, &adopted).await;
+            assert_eq!(found.iter().map(String::as_str).collect::<Vec<_>>(), [name]);
+            let mut adopted = adopted;
+            tick(&state, wanted, &mut adopted, &found, Instant::now(), &token);
+            assert!(live(&state, name), "restarted");
+            assert_ne!(panes(&state), first, "on a new pane");
+            token.cancel();
+        })
+        .await;
     }
 }

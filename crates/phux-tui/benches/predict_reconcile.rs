@@ -1,27 +1,13 @@
-//! Evidence-only timing of the unchanged native point reader and reconciler.
+//! Evidence-only timing of the native point reader and prediction reconciler.
 //!
 //! Run: `cargo bench --locked -p phux-tui --features testkit --bench predict_reconcile`.
-//! No sockets, windows, profiler permissions, dependencies, or timing thresholds.
 //!
-//! Each sample seeds a fresh prediction queue through the supported key API,
-//! writes authoritative VT to an in-memory 200x60 terminal, and paints before
-//! reconciling (as the focused server-frame path does). Renderer and sink storage
-//! are reused. Setup, VT parsing, queue seeding, and result assertions are untimed.
-//! `reconcile` excludes paint; `paint+reconcile` includes incremental pane paint
-//! into a reused Vec, NOT the whole attach handler, overlays, chrome, or OS I/O.
-//! Both include the real reconciler's cloning/queue removal/echo bookkeeping,
-//! reader FFI/update/row seeking/string allocation, callback counter increment,
-//! error checking, and clock overhead. No replica of the reader is measured.
-//!
-//! Nonempty confirmed payloads alternate a/b so paint sees changed content.
-//! Pending stays blank; mismatch alternates x/y; controls may remain clean.
-//! These are synthetic ASCII queue shapes, not observed burst frequencies or
-//! keystroke/device latency. Fixed-order groups do not prove warmup convergence;
-//! compare ranges of group percentiles, not confidence bounds. Resolution-limited
-//! zero-duration controls are not zero work or calibrated overhead to subtract.
-//! The source-derived update/row-step counts cover reconciliation callbacks only
-//! (not paint or arrow seeding), and are NOT native instrumentation or evidence
-//! of a full-grid copy.
+//! Each sample seeds a fresh prediction queue, writes authoritative VT to an
+//! in-memory 200x60 terminal, and paints before reconciling. Setup and VT
+//! parsing are untimed; `paint+reconcile` covers the incremental pane paint
+//! into a reused Vec, not the attach handler, chrome, or OS I/O. The queue
+//! shapes are synthetic: compare ranges of group percentiles, not
+//! confidence bounds.
 
 #![allow(
     clippy::expect_used,

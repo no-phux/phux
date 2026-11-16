@@ -2,8 +2,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::io::Read as _;
 use std::os::unix::net::{UnixListener, UnixStream};

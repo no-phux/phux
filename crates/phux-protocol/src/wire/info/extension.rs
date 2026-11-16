@@ -137,32 +137,29 @@ pub(super) fn decode_snapshot_extension(
     }
     let mut journal_head = None;
     let mut block = Decoder::new(dec.read_bytes()?);
-    while let Some((id, value)) = block.read_field()? {
-        match id {
-            field::snapshot_extension::RESOURCE_STATE => apply_resource_state(value, resources)?,
-            field::snapshot_extension::JOURNAL_HEAD => {
-                journal_head = Some(Decoder::new(value).read_u64_be()?);
-            }
-            field::snapshot_extension::RESOURCE_SESSION => {
-                let mut v = Decoder::new(value);
-                let resource = decode_terminal_id(&mut v)?;
-                let session = SessionId::new(v.read_u32_be()?);
-                if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
-                    info.session = Some(session);
-                }
-            }
-            field::snapshot_extension::SESSION_STATE => apply_session_state(value, sessions)?,
-            field::snapshot_extension::RESOURCE_PROGRAM_TITLE => {
-                let mut v = Decoder::new(value);
-                let resource = decode_terminal_id(&mut v)?;
-                let title = v.read_str()?;
-                if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
-                    info.program_title = Some(title.to_owned()).filter(|t| !t.is_empty());
-                }
-            }
-            _ => {}
+    for_each_field!(block, value, {
+        field::snapshot_extension::RESOURCE_STATE => apply_resource_state(value, resources)?,
+        field::snapshot_extension::JOURNAL_HEAD => {
+            journal_head = Some(Decoder::new(value).read_u64_be()?);
         }
-    }
+        field::snapshot_extension::RESOURCE_SESSION => {
+            let mut v = Decoder::new(value);
+            let resource = decode_terminal_id(&mut v)?;
+            let session = SessionId::new(v.read_u32_be()?);
+            if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
+                info.session = Some(session);
+            }
+        }
+        field::snapshot_extension::SESSION_STATE => apply_session_state(value, sessions)?,
+        field::snapshot_extension::RESOURCE_PROGRAM_TITLE => {
+            let mut v = Decoder::new(value);
+            let resource = decode_terminal_id(&mut v)?;
+            let title = v.read_str()?;
+            if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
+                info.program_title = Some(title.to_owned()).filter(|t| !t.is_empty());
+            }
+        }
+    });
     Ok(journal_head)
 }
 

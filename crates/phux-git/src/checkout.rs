@@ -9,8 +9,9 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::Area;
 use crate::bounded::{Bounded, Run, RunError, Stop};
-use crate::{Area, failure, parse_status};
+use crate::status::{failure, parse_status};
 
 mod beneath;
 mod parse;
@@ -117,7 +118,7 @@ impl Checkout {
             MAX_LISTING_OUTPUT,
         )?;
         let text = complete_records(&out);
-        let status = parse_status(self.root.clone(), &text);
+        let status = parse_status(&text);
         let unstaged = self.numstat(false);
         let staged = self.numstat(true);
         let mut counted_untracked = 0;

@@ -4,7 +4,8 @@
 //! owned [`EngineEvent`]s go in over a channel and owned [`EngineOutcome`]s
 //! come back. With the `engine` feature the adapter is libghostty and every
 //! damaged terminal is re-projected and published before the outcome is
-//! answered; without it a bounded `ByteAdapter` keeps the transport and
+//! answered, unless a DEC 2026 transaction is holding its last complete frame
+//! (with a bounded watchdog); without it a bounded `ByteAdapter` keeps the transport and
 //! control-plane lanes buildable with no Zig toolchain.
 
 #[cfg(feature = "engine")]
@@ -75,6 +76,19 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    #[cfg(feature = "engine")]
+    pub(crate) fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.request(|reply| Command::Query(Query::SyncOutputDeadline(reply)))
+            .ok()
+            .flatten()
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn expire_sync_output(&self, now: std::time::Instant) -> Vec<ResourceId> {
+        self.request(|reply| Command::Query(Query::ExpireSyncOutput(now, reply)))
+            .unwrap_or_default()
+    }
+
     /// Spawn the owner thread with a kernel built from `config`; with the
     /// `engine` feature it publishes every render into `publication`.
     pub(crate) fn start(
@@ -265,7 +279,7 @@ impl EngineHandle {
     /// Draw predictive echo underlined (the default) or as plain text. Takes
     /// effect from the next publication of each terminal.
     #[cfg(feature = "engine")]
-    pub fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
+    pub(crate) fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
         self.request(|reply| Command::Query(Query::PredictionUnderline(underline, reply)))
     }
 
@@ -294,7 +308,11 @@ impl EngineHandle {
 
     /// Owned facts about the current replica.
     #[cfg(feature = "engine")]
-    pub fn replica_info(&self, terminal_id: &ResourceId) -> Result<ReplicaInfo, EngineError> {
+    #[cfg(test)]
+    pub(crate) fn replica_info(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Result<ReplicaInfo, EngineError> {
         self.request(|reply| Command::Query(Query::ReplicaInfo(terminal_id.clone(), reply)))?
     }
 
@@ -322,7 +340,8 @@ impl EngineHandle {
 
     /// Track a document coordinate on the owner thread.
     #[cfg(feature = "engine")]
-    pub fn track_anchor(
+    #[cfg(test)]
+    pub(crate) fn track_anchor(
         &self,
         terminal_id: &ResourceId,
         point: EngineDocumentPoint,
@@ -332,7 +351,12 @@ impl EngineHandle {
 
     /// Release one document anchor.
     #[cfg(feature = "engine")]
-    pub fn release_anchor(&self, terminal_id: &ResourceId, anchor: u64) -> Result<(), EngineError> {
+    #[cfg(test)]
+    pub(crate) fn release_anchor(
+        &self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<(), EngineError> {
         self.request(|reply| {
             Command::Query(Query::ReleaseAnchor(terminal_id.clone(), anchor, reply))
         })?
@@ -425,7 +449,7 @@ impl EngineHandle {
     /// [`Self::search`] returning at most `max_matches` (capped at
     /// [`SEARCH_MATCH_LIMIT`]) and whether a bound hid more.
     #[cfg(feature = "engine")]
-    pub fn search_bounded(
+    pub(crate) fn search_bounded(
         &self,
         terminal_id: &ResourceId,
         query: String,

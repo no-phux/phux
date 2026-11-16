@@ -277,7 +277,7 @@ fn a_stable_plan_classifies_updates_downgrades_and_bad_tags() {
     let installed = Build::Stable(version("0.12.1"));
     let plan = |pin| plan_for(&installed, Channel::Stable, "0.13.0", &"c".repeat(40), pin);
     let newer = plan(None).unwrap();
-    assert!(newer.update_available && newer.changes_version);
+    assert!(newer.update_available() && newer.changes_version());
     assert_eq!(newer.target.tag(), "v0.13.0");
     assert_eq!(
         newer.vouched().map(|entry| entry.sha256.as_str()),
@@ -287,7 +287,7 @@ fn a_stable_plan_classifies_updates_downgrades_and_bad_tags() {
     // An explicit older tag is a change, not an update, and the manifest
     // does not vouch for it.
     let older = plan(Some("v0.11.0")).unwrap();
-    assert!(!older.update_available && older.changes_version);
+    assert!(!older.update_available() && older.changes_version());
     assert_eq!(older.target.tag(), "v0.11.0");
     assert!(older.vouched().is_none());
 
@@ -301,6 +301,7 @@ fn refusals_cover_every_non_mutable_source_and_carry_a_command() {
         (InstallSource::Nix, Refusal::ImmutableStore),
         (InstallSource::Homebrew, Refusal::PackageManaged),
         (InstallSource::Cargo, Refusal::PackageManaged),
+        (InstallSource::Pacman, Refusal::PackageManaged),
         (InstallSource::Unknown, Refusal::UnknownSource),
     ] {
         let refusal = Refusal::of(source).unwrap();

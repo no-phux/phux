@@ -65,19 +65,7 @@ impl core::fmt::Display for DialSpec {
             Self::Quic { host, port, .. } => write!(f, "quic://{host}:{port}"),
             Self::Ws { url, .. } => f.write_str(url),
             Self::Ssh { user, host, port } => {
-                f.write_str("ssh://")?;
-                if let Some(user) = user {
-                    write!(f, "{user}@")?;
-                }
-                if host.contains(':') {
-                    write!(f, "[{host}]")?;
-                } else {
-                    f.write_str(host)?;
-                }
-                if let Some(port) = port {
-                    write!(f, ":{port}")?;
-                }
-                Ok(())
+                crate::hub::write_ssh_uri(f, user.as_deref(), host, *port)
             }
             Self::Inbound => f.write_str(crate::hub::INBOUND_ENDPOINT),
         }

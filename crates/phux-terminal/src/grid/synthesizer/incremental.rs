@@ -26,25 +26,6 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(self.diff_consumer(cols, rows_n, live_cm, reference))
     }
 
-    /// Serve several consumers from one render, the way the state-sync tick
-    /// does: one `prepare_tick`, then one `diff_consumer`
-    /// per reference, in order. Each non-empty diff advances its reference.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::synthesize_against_reference`].
-    pub fn synthesize_tick(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        references: &mut [ConsumerReference],
-    ) -> Result<Vec<SnapshotBytes>, SynthesisError> {
-        let (cols, rows_n, live_cm) = self.prepare_tick(terminal)?;
-        Ok(references
-            .iter_mut()
-            .map(|reference| self.diff_consumer(cols, rows_n, live_cm, reference))
-            .collect())
-    }
-
     /// The generation every pooled walk passes to [`RenderPool::begin`],
     /// bumped first (forcing a rebuild) if a foreign walk drained the
     /// terminal's dirty bits since the last pooled walk. Every pooled reader

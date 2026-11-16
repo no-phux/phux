@@ -16,12 +16,8 @@
 //!
 //! Either way the request is judged first with [`plan_rename`].
 //!
-//! This module is synchronous on purpose. `phux_client::session::rename_checked`
-//! performs the round trip for the CLI and MCP, on a connection that can
-//! block for the reply. The TUI attach loop and the FFI bridge cannot: the
-//! attach connection is full-duplex, and the bridge queues frames. Both call
-//! these functions and correlate the barrier themselves. `phux-client`
-//! re-exports this module as `phux_client::rename`.
+//! The module is synchronous so the full-duplex TUI loop and the FFI bridge
+//! can correlate the barrier themselves; `phux-client` re-exports it.
 
 use phux_protocol::ids::{OperationId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
@@ -102,7 +98,7 @@ pub enum SessionNameError {
 /// # Errors
 ///
 /// The first [`SessionNameError`] the name trips.
-pub fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
+pub(crate) fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
     if name.trim().is_empty() {
         return Err(SessionNameError::Empty);
     }
@@ -116,7 +112,7 @@ pub fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
 }
 
 /// Accept `name` only when the server would store it as given
-/// ([`check_session_name_text`]) and the selector `name` would address this
+/// (`check_session_name_text`) and the selector `name` would address this
 /// session.
 ///
 /// Every frontend that creates or renames a session (CLI, TUI, MCP, and the

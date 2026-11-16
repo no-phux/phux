@@ -10,6 +10,33 @@ use phux_protocol::wire::info::SessionSnapshot;
 use super::ScriptedServer;
 use super::{EndOfScript, FIXTURE_BOOTSTRAP_ID, FIXTURE_STREAM_ID, OrgFixture, ScriptSpec};
 
+/// What every 1.x server advertises (wire 1.0 first shipped in v0.111.0).
+///
+/// every word-0 bit but the transport-gated `QUIC_STREAMS`, and the extended
+/// bits `PATH_QUERY` through `HOST_SERVICE_HTTP`. Later bits stay opt-in.
+#[must_use]
+pub const fn baseline_features() -> (ServerFeatureSet, ServerFeatureExtSet) {
+    use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
+    (
+        ServerFeatureSet::all().without(ServerFeature::QuicStreams),
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::PathQuery,
+            ServerFeatureExt::ResizeCellPx,
+            ServerFeatureExt::CommittedTeardown,
+            ServerFeatureExt::AgentStreamResume,
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+            ServerFeatureExt::NativeAgent,
+            ServerFeatureExt::PerfControl,
+            ServerFeatureExt::SessionProject,
+            ServerFeatureExt::FileDownload,
+            ServerFeatureExt::Checkout,
+            ServerFeatureExt::NativeAgentLaunch,
+            ServerFeatureExt::HostServiceHttp,
+        ]),
+    )
+}
+
 impl ScriptSpec {
     /// Inject one reply payload for every mutating organization request.
     /// Frame ordering and correlation stay those of the reference server.
@@ -19,10 +46,16 @@ impl ScriptSpec {
         self
     }
 
-    /// An empty script: handshake answered, every command acked `Ok`.
+    /// An empty script: handshake answered with the 1.x baseline features
+    /// (see [`baseline_features`]), every command acked `Ok`.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let (server_features, server_features_ext) = baseline_features();
+        Self {
+            server_features,
+            server_features_ext,
+            ..Self::default()
+        }
     }
 
     /// The synthesized raw-VT bootstrap the server pushes before the
@@ -388,8 +421,6 @@ impl ScriptSpec {
 
     /// Answer every organization command (`docs/organization.md`) from
     /// `fixture`, and `GET_STATE` too when no snapshot payload is set.
-    /// Advertise `features_ext.ORGANIZATION` with
-    /// [`Self::server_features_ext`] for a client to send them.
     #[must_use]
     pub fn organization(mut self, fixture: OrgFixture) -> Self {
         self.organization = Some(fixture);

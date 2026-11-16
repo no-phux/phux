@@ -6,11 +6,37 @@ use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView
 use phux_protocol::wire::frame::FrameKind;
 
 #[test]
+fn retained_field_text_does_not_reauthorize_a_native_edit_from_the_old_runtime() {
+    let (client, mut rt, mut bridge) = field("palette-query");
+    assert!(replace(&mut bridge, &mut rt, "keep this draft", 15, 15).unwrap());
+    let old = bridge.snapshot(&rt);
+    rt.update(|desk, _| {
+        desk.replace_connection(crate::desk::link::Replacement::Retry);
+        desk.connection.client = Some(client.clone());
+    });
+    rt.frame(0.0);
+    let accepted = bridge
+        .apply(
+            &mut rt,
+            Operation {
+                token: old.token,
+                revision: old.revision,
+                action: Action::Text {
+                    text: "stale".into(),
+                },
+            },
+        )
+        .unwrap();
+    assert!(!accepted);
+    assert_eq!(rt.state.palette_query.text, "keep this draft");
+}
+
+#[test]
 fn unmounted_acp_focus_does_not_capture_later_terminal_accessory_input() {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     native(&mut rt.state);
     rt.state.prefs = rune::prefs::Prefs::memory();
-    rt.state.topology = client.with_control(|control| control.topology().cloned());
+    rt.state.connection.topology = client.with_control(|control| control.topology().cloned());
     let id = "acp-question:retained";
     let question = NativeQuestion {
         id: id.into(),
@@ -21,7 +47,7 @@ fn unmounted_acp_focus_does_not_capture_later_terminal_accessory_input() {
         questions: vec![],
         fields: serde_json::Value::Null,
     };
-    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
+    let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
     rt.state.inbox.questions.views.insert(
         terminal,
         (

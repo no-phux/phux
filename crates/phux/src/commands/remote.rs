@@ -76,12 +76,6 @@ impl RemoteEntry {
     /// hardware), required-paired when `PHUX_WORKLOAD_REQUIRE_PAIRED`
     /// is set, or `None` when the entry enrolled none (the dialer then reads
     /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` as before).
-    ///
-    /// # Errors
-    ///
-    /// Half an identity, a relative path, or a hardware key this machine
-    /// cannot use, any of which would otherwise dial without the
-    /// certificate the operator enrolled.
     pub(crate) fn client_identity(&self) -> Result<Option<TlsClientIdentity>, String> {
         let paths = phux_config::remote::client_identity_paths(
             &self.name,

@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ServerFeature};
 use phux_protocol::ids::{FileUploadId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -47,10 +46,7 @@ fn attach_resource(pane: &ResourceId, role_policy: Option<RolePolicy>) -> Comman
 }
 
 fn route_input(pane: &ResourceId) -> Command {
-    Command::RouteInput {
-        terminal_id: pane.clone(),
-        event: InputEvent::Focus(FocusEvent::Gained),
-    }
+    phux_server_testkit::route_input(pane.clone(), InputEvent::Focus(FocusEvent::Gained))
 }
 
 fn acquire(pane: &ResourceId, ttl_ms: u32) -> Command {
@@ -67,6 +63,16 @@ async fn assert_code(stream: &mut UnixStream, request_id: u32, cmd: Command, wan
         matches!(&result, CommandResult::Error { code, .. } if *code == want),
         "expected {want:?}, got {result:?}"
     );
+}
+
+async fn assert_denied(stream: &mut UnixStream, request_id: u32, pane: &ResourceId) {
+    assert_code(
+        stream,
+        request_id,
+        route_input(pane),
+        ErrorCode::PermissionDenied,
+    )
+    .await;
 }
 
 async fn assert_ok(stream: &mut UnixStream, request_id: u32, cmd: Command) {
@@ -178,18 +184,8 @@ fn attach_without_role_policy_is_byte_identical_and_behaves_as_before() {
     phux_server_testkit::run_local(async {
         let server = Server::start(Some(SESSION), |_| {});
         // The server advertises the feature in HELLO_OK.
-        let mut client = phux_server_testkit::wait_for_raw_socket(
-            &server.socket,
-            phux_server_testkit::SOCKET_CONNECT_DEADLINE,
-        )
-        .await;
-        let hello = FrameKind::Hello {
-            client_name: "roles".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new(),
-        };
+        let mut client = server.connect_raw().await;
+        let hello = phux_server_testkit::hello("roles", ClientCapabilities::new());
         send_frame(&mut client, &hello).await;
         let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut client).await.1 else {
             panic!("expected HELLO_OK");
@@ -286,13 +282,7 @@ fn widening_is_a_journaled_fresh_attach_and_detach_keeps_the_tombstone() {
 
         assert_ok(&mut viewer, 1, viewing.clone()).await;
         assert_no_control(&mut events, QUIET, |a| a == ControlAction::RoleChanged).await;
-        assert_code(
-            &mut viewer,
-            2,
-            route_input(&pane),
-            ErrorCode::PermissionDenied,
-        )
-        .await;
+        assert_denied(&mut viewer, 2, &pane).await;
         assert_ok(
             &mut viewer,
             3,
@@ -345,13 +335,7 @@ fn widening_is_a_journaled_fresh_attach_and_detach_keeps_the_tombstone() {
             },
         )
         .await;
-        assert_code(
-            &mut viewer,
-            8,
-            route_input(&pane),
-            ErrorCode::PermissionDenied,
-        )
-        .await;
+        assert_denied(&mut viewer, 8, &pane).await;
         assert_ok(&mut viewer, 9, attach_resource(&pane, None)).await;
         control(&mut events, ControlAction::RoleChanged).await;
         assert_ok(&mut viewer, 10, route_input(&pane)).await;
@@ -359,13 +343,7 @@ fn widening_is_a_journaled_fresh_attach_and_detach_keeps_the_tombstone() {
         let mut session_viewer = server.connect().await;
         attach_session(&mut session_viewer, Some(RolePolicy::VIEWER)).await;
         send_frame(&mut session_viewer, &FrameKind::Detach).await;
-        assert_code(
-            &mut session_viewer,
-            1,
-            route_input(&pane),
-            ErrorCode::PermissionDenied,
-        )
-        .await;
+        assert_denied(&mut session_viewer, 1, &pane).await;
 
         drop((owner, events, legacy, viewer, session_viewer));
         server.stop().await;
@@ -476,13 +454,7 @@ fn a_session_role_applies_to_every_terminal_it_returns_or_spawns() {
         );
         let own = spawned(&mut viewer, 7, sh("cat")).await;
         for (request_id, pane) in [(1, &first), (2, &second), (3, &own)] {
-            assert_code(
-                &mut viewer,
-                request_id,
-                route_input(pane),
-                ErrorCode::PermissionDenied,
-            )
-            .await;
+            assert_denied(&mut viewer, request_id, pane).await;
         }
         assert_ok(&mut owner, 2, route_input(&own)).await;
 

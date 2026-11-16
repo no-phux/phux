@@ -22,7 +22,7 @@ fn three() -> LayoutNode {
 }
 
 fn focus(rt: &Runtime<Desk>) -> ResourceId {
-    rt.state.shown.as_ref().unwrap().resource.clone()
+    rt.state.connection.shown.as_ref().unwrap().resource.clone()
 }
 
 fn stored(client: &Client) -> ArrangementDoc {
@@ -47,12 +47,11 @@ fn replace_records(client: &Client, records: Vec<ResourceRecord>) {
             .with_live(Some(SessionId::new(1))),
     ])
     .with_resources(records);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 fn accept_hide(
@@ -97,15 +96,22 @@ fn closing_a_phone_document_group_never_reopens_a_document_from_the_hide_batch()
     let (client, mut rt) = phone_fixture(&records, &arrangement_doc);
     let before = stored(&client);
     rt.update(|d, _| d.close_tab(0));
-    assert!(rt.state.shown.is_none());
-    assert!(rt.state.wanted.is_none(), "no closing sibling is requested");
-    assert!(rt.state.resources.dismissed.contains(&key(1)));
-    assert!(rt.state.resources.dismissed.contains(&key(2)));
+    assert!(rt.state.connection.shown.is_none());
+    assert!(
+        rt.state.connection.wanted.is_none(),
+        "no closing sibling is requested"
+    );
+    assert!(rt.state.connection.resources.dismissed.contains(&key(1)));
+    assert!(rt.state.connection.resources.dismissed.contains(&key(2)));
     accept_hide(&client, &records, &before, &[id(1), id(2)]);
     step(&mut rt);
     assert_eq!(focus(&rt), id(3));
-    assert_eq!(rt.state.resources.entries.len(), 3, "producers stay live");
-    assert!(rt.state.resources.dismissed.contains(&key(2)));
+    assert_eq!(
+        rt.state.connection.resources.entries.len(),
+        3,
+        "producers stay live"
+    );
+    assert!(rt.state.connection.resources.dismissed.contains(&key(2)));
     assert_eq!(
         stored(&client).groups.len(),
         1,
@@ -125,17 +131,20 @@ fn phone_hide_skips_excluded_predecessors_and_chooses_a_surviving_group_leaf() {
     let before = stored(&client);
     rt.update(|d, _| d.focus_pane(&id(2)));
     rt.update(|d, _| d.hide_documents(&[id(1), id(2)]));
-    assert_eq!(rt.state.wanted.as_ref().map(|(id, _)| id), Some(&id(3)));
+    assert_eq!(
+        rt.state.connection.wanted.as_ref().map(|(id, _)| id),
+        Some(&id(3))
+    );
     accept_hide(&client, &records, &before, &[id(1), id(2)]);
     step(&mut rt);
     assert_eq!(focus(&rt), id(3));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_some());
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_some());
     assert_eq!(
         leaves(rt.state.phone.as_ref().unwrap().tree.as_ref().unwrap()),
         [id(3)]
     );
-    assert!(rt.state.resources.dismissed.contains(&key(1)));
-    assert!(rt.state.resources.dismissed.contains(&key(2)));
+    assert!(rt.state.connection.resources.dismissed.contains(&key(1)));
+    assert!(rt.state.connection.resources.dismissed.contains(&key(2)));
     assert_eq!(
         leaves(stored(&client).groups[0].state.tree.as_ref().unwrap()),
         [id(3)]
@@ -172,10 +181,10 @@ fn phone_document_replacement_restores_the_same_key_ahead_of_a_temporary_fallbac
         step(&mut rt);
         assert_eq!(focus(&rt), id(handle), "same key wins on handle {handle}");
         assert!(matches!(
-            rt.state.resources.entries[&id(handle)].body,
+            rt.state.connection.resources.entries[&id(handle)].body,
             Body::Pending
         ));
-        assert!(rt.state.resources.returning.is_none());
+        assert!(rt.state.connection.resources.returning.is_none());
         assert!(
             rt.state
                 .notice
@@ -234,8 +243,8 @@ fn phone_batched_terminal_closures_skip_dead_siblings_in_either_event_order() {
                 id(1),
                 "order {order:?}, removed {remove_identity}"
             );
-            assert!(rt.state.wanted.is_none());
-            assert!(rt.state.others.is_empty());
+            assert!(rt.state.connection.wanted.is_none());
+            assert!(rt.state.connection.others.is_empty());
             assert!(!rt.state.layout_is_stale());
             if !remove_identity {
                 assert_eq!(
@@ -274,7 +283,10 @@ fn phone_fallback_uses_the_latest_organization_even_while_topology_is_stale() {
             tx,
         );
     });
-    assert_eq!(rt.state.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
+    assert_eq!(
+        rt.state.connection.wanted.as_ref().map(|(id, _)| id),
+        Some(&id(1))
+    );
 }
 
 #[test]
@@ -299,7 +311,10 @@ fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
         );
         // No observation has refreshed the document map or retained group yet.
         rt.update(|d, _| d.close_shown(&client, &[]));
-        assert_eq!(rt.state.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
+        assert_eq!(
+            rt.state.connection.wanted.as_ref().map(|(id, _)| id),
+            Some(&id(1))
+        );
     }
 }
 
@@ -326,10 +341,13 @@ fn supported_document_kinds_are_viewless_phone_fallbacks_and_stay_closed() {
             "{kind:?} remains a valid neighboring mirror"
         );
         assert!(
-            rt.state.shown.as_ref().unwrap().view.is_none(),
+            rt.state.connection.shown.as_ref().unwrap().view.is_none(),
             "documents never allocate terminal views"
         );
-        assert_eq!(rt.state.resources.entries[&id(2)].record.kind, kind);
+        assert_eq!(
+            rt.state.connection.resources.entries[&id(2)].record.kind,
+            kind
+        );
         close(&client, 2);
         step(&mut rt);
         rt.update(|d, _| {
@@ -337,12 +355,12 @@ fn supported_document_kinds_are_viewless_phone_fallbacks_and_stay_closed() {
         });
         step(&mut rt);
         assert_eq!(focus(&rt), id(1));
-        assert!(rt.state.shown.as_ref().unwrap().view.is_some());
+        assert!(rt.state.connection.shown.as_ref().unwrap().view.is_some());
         assert!(
             !rt.state.is_document(&id(2)),
             "stale inventory cannot reopen a closed {kind:?}"
         );
-        assert!(rt.state.wanted.is_none());
+        assert!(rt.state.connection.wanted.is_none());
         assert_eq!(
             stored(&client),
             before,

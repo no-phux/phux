@@ -55,12 +55,13 @@ impl Desk {
 
     /// A pane's grid area in points, from its last layout.
     pub fn pane_area(&self, terminal: &ResourceId) -> Option<[f32; 2]> {
-        self.areas.get(terminal).copied()
+        self.connection.areas.get(terminal).copied()
     }
 
     /// Output that arrived below a pane scrolled into history.
     pub fn unread_rows(&self, terminal: &ResourceId) -> u64 {
         let info = self
+            .connection
             .client
             .as_ref()
             .and_then(|c| c.engine().zip(self.view_of(terminal)))
@@ -70,11 +71,17 @@ impl Desk {
 
     /// A pane's grid moved or resized: `[x, y, w, h]` in window points.
     pub fn laid_out(&mut self, terminal: ResourceId, [x, y, w, h]: [f32; 4]) {
-        if self.phone.is_some() && !self.shown.as_ref().is_some_and(|s| s.resource == terminal) {
+        if self.phone.is_some()
+            && !self
+                .connection
+                .shown
+                .as_ref()
+                .is_some_and(|s| s.resource == terminal)
+        {
             return;
         }
-        self.origins.insert(terminal.clone(), [x, y]);
-        self.areas.insert(terminal, [w, h]);
+        self.connection.origins.insert(terminal.clone(), [x, y]);
+        self.connection.areas.insert(terminal, [w, h]);
         self.fit();
     }
 
@@ -83,19 +90,19 @@ impl Desk {
     pub(super) fn fit(&mut self) {
         // A divider on the move resizes only what is drawn; the programs get
         // one resize on release, not a redraw per frame of the drag.
-        if self.dragging.is_some() {
+        if self.connection.dragging.is_some() {
             return;
         }
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let mut on_screen: Vec<ResourceId> = if self.phone.is_some() {
             Vec::new()
         } else {
-            self.others.keys().cloned().collect()
+            self.connection.others.keys().cloned().collect()
         };
-        on_screen.extend(self.shown.as_ref().map(|s| s.resource.clone()));
-        on_screen.extend(self.popup.terminal().cloned());
+        on_screen.extend(self.connection.shown.as_ref().map(|s| s.resource.clone()));
+        on_screen.extend(self.connection.popup.terminal().cloned());
         let metrics = self.metrics();
         let cell = metrics.cell_px();
         for terminal in on_screen {
@@ -107,10 +114,11 @@ impl Desk {
     /// say), as typing on the phone does: the size follows whoever is
     /// driving. A fit the live grid no longer shows is forgotten and re-sent.
     pub(super) fn reclaim_fits(&mut self) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let stale: Vec<ResourceId> = self
+            .connection
             .fitted
             .iter()
             .filter(|(terminal, (size, _))| {
@@ -124,7 +132,7 @@ impl Desk {
             return;
         }
         for terminal in &stale {
-            self.fitted.remove(terminal);
+            self.connection.fitted.remove(terminal);
         }
         self.fit();
     }
@@ -139,7 +147,7 @@ impl Desk {
         if self.view_of(&terminal).is_none() {
             return;
         }
-        let Some(area) = self.areas.get(&terminal).copied() else {
+        let Some(area) = self.connection.areas.get(&terminal).copied() else {
             return;
         };
         if area[0] < 1.0 || area[1] < 1.0 {
@@ -147,7 +155,7 @@ impl Desk {
         }
         let size = metrics.fit(area);
         if self.defer_phone_fit(&terminal, (size, cell))
-            || self.fitted.get(&terminal) == Some(&(size, cell))
+            || self.connection.fitted.get(&terminal) == Some(&(size, cell))
         {
             return;
         }
@@ -155,7 +163,7 @@ impl Desk {
             control.resize_terminal_with_cell(&terminal, size.0.into(), size.1.into(), Some(cell))
         });
         if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
-            self.fitted.insert(terminal, (size, cell));
+            self.connection.fitted.insert(terminal, (size, cell));
         }
     }
 
@@ -163,10 +171,12 @@ impl Desk {
     /// exact publication is still current on the same connection. This is
     /// a next-frame receipt; it never clears a newer fence.
     pub fn drawn(&self) {
-        let Some(painted) = self.painted.take() else {
+        let Some(painted) = self.connection.painted.take() else {
             return;
         };
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         if client.connection_epoch() != painted.epoch {
             return;
         }
@@ -182,8 +192,8 @@ impl Desk {
     /// Note the frame a view build is about to paint, when it can clear a
     /// fence: attached, and at the live tail the input landed in.
     pub fn painting(&self, view: ViewId, frame: &Arc<GridFrame>) {
-        let painted = self.client.as_ref().and_then(|client| {
-            if self.status != Status::Attached || !frame.scrollbar.at_tail() {
+        let painted = self.connection.client.as_ref().and_then(|client| {
+            if self.connection.status != Status::Attached || !frame.scrollbar.at_tail() {
                 return None;
             }
             let fence =
@@ -196,7 +206,7 @@ impl Desk {
                 epoch: client.connection_epoch(),
             })
         });
-        self.painted.replace(painted);
+        self.connection.painted.replace(painted);
     }
 }
 
@@ -207,12 +217,12 @@ mod tests {
     #[test]
     fn the_cursor_blinks_only_while_the_connection_is_up() {
         // DECSCUSR 1: a blinking block.
-        let (client, mut rt) = crate::grid::budget::input_fixture_showing("\x1b[1 q");
+        let (client, mut rt) = crate::test_support::input_fixture_showing("\x1b[1 q");
         rt.frame(0.0);
         let mut blink_at = |clock: f64, status: Status| {
             rt.update(|desk, tx| {
                 desk.clock = clock;
-                desk.status = status;
+                desk.connection.status = status;
                 desk.blink(&client, tx);
             });
             (rt.state.blink_on, rt.state.generation)

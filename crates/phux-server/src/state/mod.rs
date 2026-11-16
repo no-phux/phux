@@ -29,6 +29,7 @@ mod conditional_kill;
 mod config;
 mod construct;
 mod controller;
+pub(crate) mod credentials;
 mod cwd;
 mod defaults;
 mod delegations;
@@ -88,7 +89,6 @@ use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
-pub use leases::{LeaseEvidence, LeaseInterval};
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
@@ -195,6 +195,8 @@ pub struct ServerState {
     hub: HubState,
     /// Satellite uplinks this server keeps to hubs (ADR-0182).
     uplinks: crate::uplink::Uplinks,
+    /// The ssh-agent broker (`docs/forwarding.md#ssh-agent`).
+    forward_agent: crate::runtime::forward::agent::Broker,
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
@@ -237,6 +239,7 @@ pub struct ServerState {
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
     /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
+    pub(crate) credentials: credentials::CredentialBroker,
     /// Each app's own state, which the host holds without knowing its
     /// type; see [`app_slots`].
     app_slots: app_slots::AppSlots,

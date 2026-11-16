@@ -1,18 +1,15 @@
-//! Client-local copy-mode extraction and clipboard emission.
-//!
-//! A client-side projection (ADR-0030), not a wire tier: on commit the
-//! overlay's viewport [`CopyRequest`] becomes a one-shot [`Selection`] on the
-//! focused pane's own terminal, formatted and written to the host clipboard
-//! via OSC 52.
+//! Client-local copy-mode extraction (ADR-0030): the overlay's
+//! [`CopyRequest`] becomes a one-shot [`Selection`] on the focused pane's
+//! terminal, written to the host clipboard via OSC 52.
 
 use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     fmt::{Format, Formatter},
-    screen::GridRef,
+    grid_ref::GridRef,
+    point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
     selection::{SelectLineOptions, SelectWordOptions, Selection},
-    terminal::{Point, PointCoordinate, PointSpace},
 };
 use phux_client_core::engine::DocumentSpace;
 use phux_protocol::ids::ResourceId;
@@ -23,12 +20,9 @@ use crate::render::overlay::{CopyRequest, ScreenSelectionPoint, SearchMatch, Sel
 /// Base64 alphabet (RFC 4648 §4, standard, with `+`/`/` and `=` padding).
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// The plain text of `req`'s selection in `terminal`.
-///
-/// `Rect` builds a two-corner selection (rectangular when `req.rectangle`);
-/// the other grabs use libghostty's `select_*` at the overlay cursor
-/// (`Output` needs OSC-133 zones). `None` when nothing is selectable or a
-/// call fails (best-effort).
+/// The plain text of `req`'s selection in `terminal`: two corners for
+/// `Rect`, libghostty's `select_*` at the cursor otherwise (`Output` needs
+/// OSC-133 zones). `None` when nothing is selectable or a call fails.
 #[must_use]
 pub fn extract_selection_text(
     terminal: &GhosttyTerminal<'_, '_>,
@@ -198,9 +192,7 @@ pub fn viewport_top(terminal: &GhosttyTerminal<'_, '_>) -> Option<u32> {
 }
 
 /// Every hit for `needle` in `terminal_id`'s loaded history, oldest first,
-/// through the kernel's document search (the engine's case policy and wrap
-/// handling). The engine anchors are released before returning: copy-mode
-/// keeps plain document rows, valid until history is trimmed.
+/// through the kernel's document search, as plain document rows.
 pub(crate) fn search_loaded(
     kernel: &mut AttachKernel,
     terminal_id: &ResourceId,
@@ -265,11 +257,8 @@ pub fn osc52_set_clipboard(text: &str) -> Vec<u8> {
     out
 }
 
-/// The copy-mode extraction bridge (ADR-0045).
-///
-/// Resolves `req` against the focused pane's own engine and, when the
-/// selection is non-empty, writes an OSC 52 clipboard sequence to `out`.
-/// Nothing goes on the wire. Best-effort.
+/// The copy-mode extraction bridge (ADR-0045): resolve `req` against the
+/// focused pane's engine and, when non-empty, write OSC 52 to `out`.
 pub fn copy_to_host_clipboard<W: Write>(
     out: &mut W,
     terminal: &GhosttyTerminal<'_, '_>,

@@ -26,17 +26,15 @@ use super::{FrameReader, FrameWriter, Incoming, LENGTH_PREFIX};
 
 /// Upper bound on the token preamble body: room for a longer future token,
 /// never a large allocation.
-const MAX_TOKEN_PREAMBLE: usize = 256;
+pub(crate) const MAX_TOKEN_PREAMBLE: usize = 256;
 
-/// Idle timeout for a connection with no traffic and no keep-alive.
-pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Idle timeout and keep-alive interval, shared with the dialer so neither
+/// side reaps a quiet peer before the other's keep-alive fires.
+pub(crate) use phux_dial::quic::{IDLE_TIMEOUT, KEEP_ALIVE};
 
-/// Keep-alive interval, well under [`IDLE_TIMEOUT`], so a quiet attached
-/// client survives NATs.
-pub(super) const KEEP_ALIVE: Duration = Duration::from_secs(10);
-
-/// QUIC application close code for a connection refused at admission.
-const AUTH_FAILED_CODE: u32 = 0x01;
+/// QUIC application close code for a connection refused at admission, shared
+/// with the dialer and relay (`docs/protocol.md#transports`).
+pub(crate) use phux_dial::quic::AUTH_FAILED_CODE;
 
 /// Cap on client-opened bidi streams per connection (docs/protocol.md#quic-stream-routing): far
 /// above panes-per-attach, far below task exhaustion. quinn enforces it.
@@ -62,6 +60,9 @@ pub(crate) struct QuicListener {
     admissions: super::Admissions<QuicAccepted>,
     /// Refused preambles, warned about at a bounded rate.
     refusals: Arc<super::RefusalWarnings>,
+    /// `[policy] tailnet-owner`: admit the owner's own tailnet devices
+    /// without a certificate or token ([`Self::with_tailnet_owner`]).
+    tailnet_owner: bool,
 }
 
 /// Whom a [`QuicListener`] admits.
@@ -104,6 +105,7 @@ impl QuicListener {
             satellites: None,
             admissions: super::Admissions::new(),
             refusals: Arc::new(super::RefusalWarnings::new()),
+            tailnet_owner: false,
         })
     }
 
@@ -138,6 +140,16 @@ impl QuicListener {
     #[must_use]
     pub(crate) fn with_satellites(mut self, adopter: crate::hub::adopt::SatelliteAdopter) -> Self {
         self.satellites = Some(adopter);
+        self
+    }
+
+    /// Admit the owner's own tailnet devices that present no client
+    /// certificate, with no token (`[policy] tailnet-owner`). Takes effect
+    /// only with a workload registry (`paired`) and on a listener bound to
+    /// this machine's tailnet address; every other connection is unchanged.
+    #[must_use]
+    pub(crate) const fn with_tailnet_owner(mut self, on: bool) -> Self {
+        self.tailnet_owner = on;
         self
     }
 }
@@ -343,6 +355,9 @@ impl Incoming for QuicListener {
                     self.satellites
                         .clone()
                         .map(|adopter| (adopter, self.endpoint.clone())),
+                    self.tailnet_owner
+                        .then(|| self.endpoint.local_addr().ok().map(|addr| addr.ip()))
+                        .flatten(),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
                     as super::Admission<QuicAccepted>)

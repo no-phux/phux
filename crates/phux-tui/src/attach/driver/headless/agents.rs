@@ -68,11 +68,10 @@ impl HeadlessSession {
                 continue;
             }
             let request_id = self.take_agent_request_id();
-            let after_seq = conn
-                .server_features_ext()
-                .contains(phux_protocol::ServerFeatureExt::AgentStreamResume)
-                .then(|| self.mirror.engine_kernel.agent_stream_info(id))
-                .flatten()
+            let after_seq = self
+                .mirror
+                .engine_kernel
+                .agent_stream_info(id)
                 .map(|stream| stream.last_seq);
             self.mirror
                 .pending_resource_ops

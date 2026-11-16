@@ -222,12 +222,8 @@ impl BatchEffects {
 /// the canvas unless the page prefers reduced motion or a flash is showing.
 fn ring_bell(app: &Rc<RefCell<App>>) {
     let canvas = app.borrow().canvas.clone();
-    let init = web_sys::CustomEventInit::new();
-    init.set_bubbles(true);
-    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(BELL_EVENT, &init) {
-        // Dispatched with no borrow held: a listener may call the client.
-        let _ = canvas.dispatch_event(&event);
-    }
+    // Dispatched with no borrow held: a listener may call the client.
+    dispatch_custom(&canvas, BELL_EVENT, None);
     {
         let app = app.borrow();
         let Ok(now) = monotonic_now_ms() else {
@@ -300,6 +296,9 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
     }
     if path_reply {
         path_picker::paint(&a);
+    }
+    if outcome.approvals {
+        approvals::paint(&a);
     }
     BatchEffects {
         flow: ReceiveFlow::Continue,

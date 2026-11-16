@@ -6,15 +6,13 @@ use super::*;
 /// time, not a silent exit 1 from the dispatcher.
 #[test]
 fn kill_requires_a_target_or_server() {
-    let err = crate::parse_cli(["phux", "kill"]).expect_err("bare `phux kill` must not parse");
+    let err = parse("phux kill").expect_err("bare `phux kill` must not parse");
     assert!(err.contains("TARGET"), "{err}");
-    for argv in [
-        &["phux", "kill", "work"][..],
-        &["phux", "kill", "--server"][..],
-    ] {
-        crate::parse_cli(argv).unwrap_or_else(|err| panic!("{argv:?}: {err}"));
-    }
-    assert!(crate::parse_cli(["phux", "kill", "work", "--server"]).is_err());
+    assert_parses(&[
+        ("phux kill work", true),
+        ("phux kill --server", true),
+        ("phux kill work --server", false),
+    ]);
 }
 
 /// `phux signal` takes the POSIX names a `kill(1)` user types, in any
@@ -65,68 +63,38 @@ fn completion_accepts_every_powershell_spelling() {
 /// taken after `--`.
 #[test]
 fn new_positional_is_session_name_command_requires_dash_dash() {
-    let cli = crate::parse_cli(["phux", "new", "foo"]).expect("`phux new foo` must parse");
-    let Some(Command::New(crate::commands::NewArgs {
-        name,
-        session,
-        command,
-        ..
-    })) = cli.command
-    else {
-        panic!("expected New");
-    };
-    assert_eq!(
-        name.as_deref(),
-        Some("foo"),
-        "positional is the session name"
-    );
-    assert_eq!(session, None, "-s not given");
-    assert!(
-        command.is_empty(),
-        "no command without `--`; got {command:?}"
-    );
-
-    // Name + an explicit `-- CMD …`.
-    let cli = crate::parse_cli(["phux", "new", "work", "--", "htop", "-d", "1"])
-        .expect("`phux new work -- htop -d 1` must parse");
-    let Some(Command::New(crate::commands::NewArgs { name, command, .. })) = cli.command else {
-        panic!("expected New");
-    };
-    assert_eq!(name.as_deref(), Some("work"));
-    assert_eq!(command, vec!["htop", "-d", "1"]);
-
-    // No name, command-only via `--` ⇒ auto-named session running CMD.
-    let cli = crate::parse_cli(["phux", "new", "--", "htop"]).expect("`phux new -- htop` parses");
-    let Some(Command::New(crate::commands::NewArgs { name, command, .. })) = cli.command else {
-        panic!("expected New");
-    };
-    assert_eq!(name, None, "no positional ⇒ auto-name");
-    assert_eq!(command, vec!["htop"]);
-
-    // `-s` still works and stays distinct from a positional.
-    let cli =
-        crate::parse_cli(["phux", "new", "-s", "flagged"]).expect("`phux new -s flagged` parses");
-    let Some(Command::New(crate::commands::NewArgs { name, session, .. })) = cli.command else {
-        panic!("expected New");
-    };
-    assert_eq!(name, None);
-    assert_eq!(session.as_deref(), Some("flagged"));
+    for (line, want_name, want_session, want_command) in [
+        ("phux new foo", Some("foo"), None, &[][..]),
+        (
+            "phux new work -- htop -d 1",
+            Some("work"),
+            None,
+            &["htop", "-d", "1"][..],
+        ),
+        // No name, command-only via `--` ⇒ auto-named session running CMD.
+        ("phux new -- htop", None, None, &["htop"][..]),
+        // `-s` still works and stays distinct from a positional.
+        ("phux new -s flagged", None, Some("flagged"), &[][..]),
+    ] {
+        let Ok(Some(Command::New(crate::commands::NewArgs {
+            name,
+            session,
+            command,
+            ..
+        }))) = parse(line).map(|cli| cli.command)
+        else {
+            panic!("{line}: expected New");
+        };
+        assert_eq!(name.as_deref(), want_name, "{line}");
+        assert_eq!(session.as_deref(), want_session, "{line}");
+        assert_eq!(command, want_command, "{line}");
+    }
 }
 
 #[test]
 fn new_json_accepts_repeatable_environment_assignments() {
-    let cli = crate::parse_cli([
-        "phux",
-        "new",
-        "--json",
-        "-s",
-        "managed",
-        "--env",
-        "GC_SESSION=managed",
-        "--env",
-        "COMPLEX=a=b",
-    ])
-    .expect("`phux new --json --env KEY=VALUE` must parse");
+    let cli = parse("phux new --json -s managed --env GC_SESSION=managed --env COMPLEX=a=b")
+        .expect("`phux new --json --env KEY=VALUE` must parse");
     let Some(Command::New(crate::commands::NewArgs { env, .. })) = cli.command else {
         panic!("expected New");
     };
@@ -137,48 +105,29 @@ fn new_json_accepts_repeatable_environment_assignments() {
         vec![("GC_SESSION", "managed"), ("COMPLEX", "a=b")],
     );
 
-    assert!(
-        crate::parse_cli(["phux", "new", "-s", "interactive", "--env", "KEY=value"]).is_err(),
-        "--env must require headless --json until CreateIfMissing carries environment",
-    );
-    assert!(
-        crate::parse_cli([
-            "phux",
-            "new",
-            "--json",
-            "-s",
-            "managed",
-            "--env",
-            "MISSING_EQUALS",
-        ])
-        .is_err(),
-        "--env must reject values that are not KEY=VALUE",
-    );
+    // --env requires headless --json, and only KEY=VALUE.
+    assert_parses(&[
+        ("phux new -s interactive --env KEY=value", false),
+        ("phux new --json -s managed --env MISSING_EQUALS", false),
+    ]);
 }
 
-/// phux-foz.5: `phux config reload` parses, with and without an
-/// explicit `--socket`.
 #[test]
 fn spawn_and_launch_placement_flags_validate() {
-    let cli = crate::parse_cli([
-        "phux", "spawn", "--target", ".", "--split", "vertical", "--ratio", "0.3",
-    ])
-    .expect("explicit spawn placement parses");
+    let cli = parse("phux spawn --target . --split vertical --ratio 0.3")
+        .expect("explicit spawn placement parses");
     let Some(Command::Spawn(crate::commands::SpawnArgs { target, ratio, .. })) = cli.command else {
         panic!("expected Spawn");
     };
     assert_eq!(target.as_deref(), Some("."));
     assert!((ratio - 0.3).abs() < f32::EPSILON);
 
-    assert!(crate::parse_cli(["phux", "spawn", "--ratio", "0.3"]).is_err());
-    assert!(crate::parse_cli(["phux", "spawn", "--target", ".", "--ratio", "1.0"]).is_err());
-    assert!(crate::parse_cli(["phux", "spawn", "--target", ".", "--satellite", "edge"]).is_err());
-    assert!(
-        crate::parse_cli([
-            "phux", "launch", "codex", "--target", ".", "--split", "vertical"
-        ])
-        .is_ok()
-    );
+    assert_parses(&[
+        ("phux spawn --ratio 0.3", false),
+        ("phux spawn --target . --ratio 1.0", false),
+        ("phux spawn --target . --satellite edge", false),
+        ("phux launch codex --target . --split vertical", true),
+    ]);
 }
 
 /// `--ratio` on the spatial verbs now validates at parse time
@@ -201,52 +150,27 @@ fn spatial_ratio_validates_at_parse_time() {
 }
 
 /// `take --ttl` beyond the u32 millisecond range is a usage error, not a
-/// silent clamp.
+/// silent clamp; the exact boundary (4294967 * 1000 <= `u32::MAX`), an
+/// explicit 0, and no `--ttl` parse.
 #[test]
 fn take_ttl_above_u32_ms_range_validates_at_parse_time() {
-    assert!(
-        crate::parse_cli(["phux", "take", "@1", "--ttl", "4294968"]).is_err(),
-        "4294968s * 1000 overflows u32 ms and must fail at clap"
-    );
-    assert!(
-        crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967295"]).is_err(),
-        "a wildly out-of-range value must fail at clap"
-    );
-    assert!(
-        crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967"]).is_ok(),
-        "the exact u32-ms boundary (4294967 * 1000 <= u32::MAX) must parse"
-    );
-    assert!(
-        crate::parse_cli(["phux", "take", "@1", "--ttl", "0"]).is_ok(),
-        "0 (explicit no-TTL) must still parse"
-    );
-    assert!(
-        crate::parse_cli(["phux", "take", "@1"]).is_ok(),
-        "omitting --ttl entirely must still parse"
-    );
+    assert_parses(&[
+        ("phux take @1 --ttl 4294968", false),
+        ("phux take @1 --ttl 4294967295", false),
+        ("phux take @1 --ttl 4294967", true),
+        ("phux take @1 --ttl 0", true),
+        ("phux take @1", true),
+    ]);
 }
 
-/// `new --json` without `-s NAME` is refused by clap itself
-/// (`requires = session` via the verb's arg group), replacing the old
-/// runtime gate.
+/// `new --json` without `-s NAME` is refused by clap itself; a positional
+/// NAME does not satisfy it, since `--json` documents an explicit `-s`.
 #[test]
 fn new_json_requires_session_at_the_clap_level() {
-    crate::parse_cli(["phux", "new", "--json"])
-        .expect_err("`new --json` without -s must be a usage error");
-
-    // A positional NAME does not satisfy the rule: `--json` documents an
-    // explicit `-s`.
-    assert!(
-        crate::parse_cli(["phux", "new", "work", "--json"]).is_err(),
-        "positional NAME must not satisfy --json's -s requirement"
-    );
-
-    assert!(
-        crate::parse_cli(["phux", "new", "--json", "-s", "work"]).is_ok(),
-        "`new --json -s NAME` must parse"
-    );
-    assert!(
-        crate::parse_cli(["phux", "new", "-s", "work"]).is_ok(),
-        "-s without --json stays valid"
-    );
+    assert_parses(&[
+        ("phux new --json", false),
+        ("phux new work --json", false),
+        ("phux new --json -s work", true),
+        ("phux new -s work", true),
+    ]);
 }

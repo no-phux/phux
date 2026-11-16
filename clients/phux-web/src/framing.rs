@@ -1,11 +1,6 @@
-//! Byte-stream reframing for stream-shaped transports (WebTransport).
-//!
-//! The WebSocket path delivers one complete encoded frame per binary message,
-//! so no reassembly is needed there. A WebTransport bidirectional stream is a
-//! plain byte stream — chunks arrive at arbitrary boundaries — so the reader
-//! accumulates bytes here and pulls out complete length-prefixed frames
-//! (`docs/protocol.md#framing`: 4-byte big-endian length, then `length` bytes),
-//! exactly the reassembly the server's UDS/QUIC readers perform on their side.
+//! Byte-stream reframing for WebTransport, whose stream chunks arrive at
+//! arbitrary boundaries (a WebSocket message is already one frame): complete
+//! length-prefixed frames (`docs/protocol.md#framing`) are pulled out here.
 
 use phux_protocol::wire::frame::MAX_FRAME_LEN;
 
@@ -137,56 +132,28 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn one_chunk_may_hold_many_frames() {
-        let mut fb = FrameBuffer::new();
-        let mut stream = Vec::new();
-        for _ in 0..3 {
-            stream.extend_from_slice(&FRAME);
-        }
-        fb.push(&stream);
-        assert_eq!(fb.next_frame().as_deref(), Some(&FRAME[..]));
-        assert_eq!(fb.next_frame().as_deref(), Some(&FRAME[..]));
-        assert_eq!(fb.next_frame().as_deref(), Some(&FRAME[..]));
-        assert!(fb.next_frame().is_none());
-        assert_eq!(
-            fb.compacted_bytes(),
-            0,
-            "draining must not copy frame tails"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn many_small_frames_avoid_quadratic_tail_copying() {
+    fn one_chunk_of_many_frames_drains_without_copying_tails() {
         const COUNT: usize = 2_048;
         let mut fb = FrameBuffer::new();
-        let stream = FRAME.repeat(COUNT);
-        fb.push(&stream);
+        fb.push(&FRAME.repeat(COUNT));
         for _ in 0..COUNT {
             assert_eq!(fb.next_frame().as_deref(), Some(&FRAME[..]));
         }
+        assert!(fb.next_frame().is_none());
         assert_eq!(fb.pending_bytes(), 0);
-        assert_eq!(fb.compacted_bytes(), 0);
-
-        let old_split_off_tail_bytes = FRAME.len() * COUNT * (COUNT - 1) / 2;
-        assert_eq!(old_split_off_tail_bytes, 14_672_896);
+        assert_eq!(fb.compacted_bytes(), 0, "no quadratic tail copying");
     }
 
     #[wasm_bindgen_test]
-    fn zero_length_poisons() {
-        let mut fb = FrameBuffer::new();
-        fb.push(&[0, 0, 0, 0, 1, 2, 3]);
-        assert!(fb.next_frame().is_none());
-        assert!(fb.poisoned());
-        // Poisoned buffers stay dead.
-        fb.push(&FRAME);
-        assert!(fb.next_frame().is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn oversized_length_poisons() {
-        let mut fb = FrameBuffer::new();
-        fb.push(&u32::MAX.to_be_bytes());
-        assert!(fb.next_frame().is_none());
-        assert!(fb.poisoned());
+    fn zero_or_oversized_length_poisons_for_good() {
+        for header in [0, u32::MAX] {
+            let mut fb = FrameBuffer::new();
+            fb.push(&header.to_be_bytes());
+            fb.push(&[1, 2, 3]);
+            assert!(fb.next_frame().is_none());
+            assert!(fb.poisoned());
+            fb.push(&FRAME);
+            assert!(fb.next_frame().is_none(), "poisoned buffers stay dead");
+        }
     }
 }

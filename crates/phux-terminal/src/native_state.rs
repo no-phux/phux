@@ -19,7 +19,6 @@ use phux_client_core::engine::ghostty::snapshot::{
     EncodedSnapshot, SnapshotCaptureError, SnapshotCaptureLimits, SnapshotHistoryRecord,
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
-use thiserror::Error;
 
 /// Opaque manager-local generation identity: SHA-256 of READY bytes and nonce.
 pub use phux_terminal_api::native_state::{OpaqueHistoryCursor, TOKEN_LEN};
@@ -37,122 +36,31 @@ pub(crate) const NATIVE_BOOTSTRAP_FRAMING_FRAMES: usize = 2;
 #[cfg(test)]
 pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES;
 
-/// Failures from native capture, history, and generation management.
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-pub enum NativeStateError {
-    /// The linked engine cannot encode an official snapshot.
-    #[error("native checkpoint feature unsupported")]
-    UnsupportedFeature,
-    /// Snapshot envelope version is not supported.
-    #[error("unknown checkpoint version")]
-    UnknownVersion,
-    /// Authentication or structural validation failed.
-    #[error("checkpoint corrupted")]
-    Corruption,
-    /// End of input arrived before a required checkpoint.
-    #[error("checkpoint truncated")]
-    Truncated,
-    /// A caller-supplied codec or history limit was exceeded.
-    #[error("native limit exceeded")]
-    LimitExceeded,
-    /// The history cursor's snapshot cut is no longer live.
-    #[error("history cursor is stale")]
-    Stale,
-    /// Requested history was pruned after the cut was acquired.
-    #[error("requested history was pruned")]
-    Pruned,
-    /// The requested screen or history generation does not match.
-    #[error("history generation mismatch")]
-    WrongGeneration,
-    /// An operation was attempted with a different terminal.
-    #[error("operation used the wrong terminal")]
-    WrongTerminal,
-    /// A checkpoint, capability, or native handle is invalid.
-    #[error("invalid native handle")]
-    InvalidHandle,
-    /// The destination already has an active history import.
-    #[error("history import already active")]
-    ImportBusy,
-    /// Allocation failed.
-    #[error("out of memory")]
-    OutOfMemory,
-    /// The caller-owned buffer or import budget is too small.
-    #[error("out of space: {required_bytes} bytes, {required_rows} rows")]
-    OutOfSpace {
-        /// Exact required byte count, when the operation can report one.
-        required_bytes: usize,
-        /// Exact required row count, when the operation can report one.
-        required_rows: usize,
-    },
-    /// The operation is not valid in the current state.
-    #[error("invalid native state")]
-    InvalidState,
-    /// A canonical parser continuation could not be captured or replayed.
-    #[error("continuation unavailable")]
-    ContinuationUnavailable,
-    /// A terminal reset invalidated the history generation.
-    #[error("terminal reset invalidated the history generation")]
-    Reset,
-    /// A terminal resize invalidated the history generation.
-    #[error("terminal resize invalidated the history generation")]
-    Resize,
-}
+pub use phux_terminal_api::native_state::NativeStateError;
 
-impl From<GhosttyError> for NativeStateError {
-    fn from(error: GhosttyError) -> Self {
-        match error {
-            GhosttyError::OutOfMemory => Self::OutOfMemory,
-            GhosttyError::OutOfSpace { required } => Self::OutOfSpace {
-                required_bytes: required,
-                required_rows: 0,
-            },
-            GhosttyError::LimitExceeded => Self::LimitExceeded,
-            GhosttyError::IoError => Self::Corruption,
-            // `InvalidValue`, and result codes libghostty adds later
-            // (`Error` is non-exhaustive), such as `Rejected`.
-            _ => Self::UnsupportedFeature,
-        }
+/// The native-state failure an engine error amounts to.
+pub(crate) const fn engine_error(error: GhosttyError) -> NativeStateError {
+    match error {
+        GhosttyError::OutOfMemory => NativeStateError::OutOfMemory,
+        GhosttyError::OutOfSpace { required } => NativeStateError::OutOfSpace {
+            required_bytes: required,
+            required_rows: 0,
+        },
+        GhosttyError::LimitExceeded => NativeStateError::LimitExceeded,
+        GhosttyError::IoError => NativeStateError::Corruption,
+        // `InvalidValue`, and result codes libghostty adds later
+        // (`Error` is non-exhaustive), such as `Rejected`.
+        _ => NativeStateError::UnsupportedFeature,
     }
 }
 
-impl From<SnapshotCaptureError> for NativeStateError {
-    fn from(error: SnapshotCaptureError) -> Self {
-        match error {
-            SnapshotCaptureError::LimitExceeded => Self::LimitExceeded,
-            SnapshotCaptureError::OutOfMemory => Self::OutOfMemory,
-            SnapshotCaptureError::InvalidSnapshot => Self::Corruption,
-            SnapshotCaptureError::Engine(error) => error.into(),
-        }
-    }
-}
-
-impl From<NativeStateError> for phux_terminal_api::native_state::NativeStateError {
-    fn from(error: NativeStateError) -> Self {
-        match error {
-            NativeStateError::UnsupportedFeature => Self::UnsupportedFeature,
-            NativeStateError::UnknownVersion => Self::UnknownVersion,
-            NativeStateError::Corruption => Self::Corruption,
-            NativeStateError::Truncated => Self::Truncated,
-            NativeStateError::LimitExceeded => Self::LimitExceeded,
-            NativeStateError::Stale => Self::Stale,
-            NativeStateError::Pruned => Self::Pruned,
-            NativeStateError::WrongGeneration => Self::WrongGeneration,
-            NativeStateError::WrongTerminal => Self::WrongTerminal,
-            NativeStateError::InvalidHandle => Self::InvalidHandle,
-            NativeStateError::ImportBusy => Self::ImportBusy,
-            NativeStateError::OutOfMemory => Self::OutOfMemory,
-            NativeStateError::OutOfSpace {
-                required_bytes,
-                required_rows,
-            } => Self::OutOfSpace {
-                required_bytes,
-                required_rows,
-            },
-            NativeStateError::InvalidState => Self::InvalidState,
-            NativeStateError::ContinuationUnavailable => Self::ContinuationUnavailable,
-            NativeStateError::Reset => Self::Reset,
-            NativeStateError::Resize => Self::Resize,
-        }
+/// The native-state failure a snapshot capture error amounts to.
+pub(crate) const fn capture_error(error: &SnapshotCaptureError) -> NativeStateError {
+    match error {
+        SnapshotCaptureError::LimitExceeded => NativeStateError::LimitExceeded,
+        SnapshotCaptureError::OutOfMemory => NativeStateError::OutOfMemory,
+        SnapshotCaptureError::InvalidSnapshot => NativeStateError::Corruption,
+        SnapshotCaptureError::Engine(error) => engine_error(*error),
     }
 }
 

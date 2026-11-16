@@ -8,7 +8,6 @@ pub(crate) const fn refusal_code(refusal: &Refusal) -> &'static str {
         Refusal::MultilineText { .. } => codes::PROMPT_MULTILINE,
         Refusal::TooLarge { .. } => codes::INPUT_TOO_LARGE,
         Refusal::SatelliteTarget { .. } => codes::SATELLITE_TARGET,
-        Refusal::NoAcknowledgedInput => codes::SERVER_TOO_OLD,
         Refusal::NoAgentRecord => codes::NO_AGENT_RECORD,
         Refusal::AgentMismatch(_) => codes::AGENT_MISMATCH,
         Refusal::InputLeaseHeld(_) => codes::INPUT_LEASE_HELD,
@@ -198,10 +197,6 @@ fn remedy_for(refusal: &Refusal) -> String {
              not refusing to relay out of caution: it cannot own the receipt, and \
              synthesizing one would be a lie"
         ),
-        Refusal::NoAcknowledgedInput => "upgrade the server (`phux update`), then retry. This \
-             verb will not fall back to fire-and-forget input: `phux send-keys` is the \
-             fire-and-forget verb, and it says so"
-            .to_owned(),
         Refusal::NoAgentRecord => "`phux send-keys` addresses the pane and checks no identity — \
              use it when that is what you mean. To make this pane addressable as an \
              agent, run `phux agent set` or `phux agent install-claude`"
@@ -283,7 +278,6 @@ mod tests {
             Refusal::SatelliteTarget {
                 host: "devbox".to_owned(),
             },
-            Refusal::NoAcknowledgedInput,
             Refusal::NoAgentRecord,
             Refusal::AgentMismatch("'builder', not 'reviewer'".to_owned()),
             Refusal::InputLeaseHeld("held".to_owned()),
@@ -316,6 +310,6 @@ mod tests {
             });
             assert!(remedy.contains("split"), "{remedy}");
         }
-        assert!(codes.len() >= 12, "codes must not collapse: {codes:?}");
+        assert!(codes.len() >= 11, "codes must not collapse: {codes:?}");
     }
 }

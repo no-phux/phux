@@ -14,14 +14,13 @@ use std::f32::consts::TAU;
 
 use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
 
-use super::reef::drift::edges;
-use super::reef::pen::{Pen, clip_convex};
-use super::reef::rgba;
+use super::playground::edges::edges;
+use super::playground::pen::{Pen, clip_convex, rgba};
 use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
 use crate::creature;
 use crate::desk::Desk;
 use crate::hive::{AMBER, Hive, RANKS, place_pills};
-use crate::reef::{Mood, Pt, Rgb, mix};
+use crate::playground::{Mood, Pt, Rgb, mix};
 
 mod bee;
 mod comb;

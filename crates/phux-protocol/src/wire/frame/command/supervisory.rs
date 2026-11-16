@@ -18,6 +18,12 @@ macro_rules! supervisory_commands {
     /// Gated on
     /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
     PrivacyStatus,
+    /// Ephemeral 1Password exchange, gated on `features_ext.CREDENTIALS`.
+    /// Requests always need an explicit approval, including on the owner socket.
+    Credentials {
+        /// Exact operation; secrets have redacted Debug output.
+        op: crate::credentials::CredentialOp,
+    },
     /// What works on this host: agent status, notifications, remote reach,
     /// file transfer, restore after restart, the agent skill, each with a
     /// status, the reason and the fix. Answered `OkWith(Json)` with the
@@ -247,10 +253,11 @@ macro_rules! supervisory_commands {
         /// The exchange [`CommandValue::ServiceHttpHead`] named.
         exchange: u64,
     },
-    /// One step of a TCP forward (`docs/forwarding.md`), gated on
-    /// `features_ext.FORWARD_TCP`.
+    /// One step of a TCP forward, gated on `features_ext.FORWARD_TCP`, or
+    /// of ssh-agent forwarding, gated on `features_ext.FORWARD_AGENT`
+    /// (`docs/forwarding.md`).
     Forward {
-        /// Open, read, write, or close.
+        /// Open, read, write, or close; or an ssh-agent offer or reply.
         op: crate::forward::ForwardOp,
     },
     /// Report that an agent in `terminal_id` is blocked on a question

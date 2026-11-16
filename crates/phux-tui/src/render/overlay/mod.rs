@@ -1,9 +1,7 @@
 //! Overlay layer: modals, the action finder, and pickers.
 //!
-//! An active overlay captures input and pauses pane stdout flushes (ADR-0020)
-//! while the pane mirrors keep ingesting; dismiss triggers a full repaint.
-//! [`OverlayState`] is a stack: the top captures input, rendering walks it
-//! bottom-up.
+//! [`OverlayState`] is a stack: the top captures input and pauses pane
+//! flushes (ADR-0020); dismiss triggers a full repaint.
 
 use std::io::{self, Write};
 
@@ -15,14 +13,11 @@ use ratatui::style::Color;
 
 use crate::render::{ChromeBreakpoints, Theme};
 
-pub mod clipboard_confirm;
+pub mod confirm;
 pub mod copy_mode;
-pub mod kill_confirm;
 pub mod line_edit;
 pub mod menu;
-pub mod paste_confirm;
 pub mod path_picker;
-pub mod pending;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
@@ -32,15 +27,12 @@ pub mod toast;
 pub mod which_key;
 pub mod widgets;
 
-pub use clipboard_confirm::ClipboardConfirmOverlay;
+pub use confirm::{ConfirmOverlay, SharedTarget};
 pub use copy_mode::{
     CopyModeOverlay, CopyMotionRequest, CopySearchRequest, CopySearchResult, CopySearchView,
 };
-pub use kill_confirm::{KillConfirmOverlay, SharedTarget};
 pub use menu::{ContextMenu, MenuRow};
-pub use paste_confirm::PasteConfirmOverlay;
 pub use path_picker::PathPicker;
-pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
 pub use settings::SettingsOverlay;
@@ -150,11 +142,8 @@ pub trait RenderOverlay {
         false
     }
 
-    /// Whether this overlay's geometry survives a viewport resize. Centered
-    /// overlays reflow from `area` every paint; the context menu pins its box
-    /// to the pointer, so it returns `false` and is dropped on SIGWINCH
-    /// ([`OverlayState::dismiss_stale_on_resize`]) rather than capture keys
-    /// off screen.
+    /// Whether this overlay's geometry survives a viewport resize. The
+    /// pointer-pinned context menu does not, and is dropped on SIGWINCH.
     fn survives_resize(&self) -> bool {
         true
     }
@@ -169,7 +158,7 @@ pub trait RenderOverlay {
         false
     }
 
-    /// The request id this placeholder overlay ([`PendingOverlay`]) awaits.
+    /// The request id this placeholder overlay ([`ToastOverlay::listing`]) awaits.
     fn pending_request(&self) -> Option<u32> {
         None
     }

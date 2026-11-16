@@ -26,15 +26,7 @@ async fn the_prefix_press_shows_its_chip_on_the_bar_until_the_chord_completes() 
 
     let press = |spec: &str| {
         let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(KeyEvent {
-            action: KeyAction::Press,
-            key: chord.key,
-            mods: chord.modifiers,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
     };
     out.clear();
     state
@@ -132,15 +124,7 @@ async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
 /// A key press for `spec`, as the attach parser decodes it.
 fn chord_press(spec: &str) -> InputEvent {
     let chord = phux_config::keybind::parse_chord(spec).expect("chord");
-    InputEvent::Key(KeyEvent {
-        action: KeyAction::Press,
-        key: chord.key,
-        mods: chord.modifiers,
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    })
+    InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
 }
 
 /// A bootstrapped loop showing panes 1 and 2 side by side, focus on 1, plus

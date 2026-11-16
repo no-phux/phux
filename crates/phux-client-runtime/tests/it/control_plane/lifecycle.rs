@@ -102,12 +102,7 @@ fn frames_the_plane_does_not_consume_reach_a_binding_and_commands_correlate() {
     let request_id = plane.send_command(Command::GetState {
         scope: phux_protocol::wire::frame::StateScope::Server,
     });
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: phux_protocol::wire::frame::CommandResult::Ok,
-        })
-        .expect("reply");
+    plane.reply(request_id, phux_protocol::wire::frame::CommandResult::Ok);
     assert!(plane.take_events().iter().any(|event| matches!(
         event,
         Event::CommandResult { request_id: id, .. } if *id == request_id

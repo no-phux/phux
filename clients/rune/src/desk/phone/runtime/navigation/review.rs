@@ -7,14 +7,14 @@ fn session_confirmation_keeps_its_key_when_selection_and_names_change() {
     let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
     inventory(&mut rt);
     rt.update(|d, _| {
-        d.topology.as_mut().unwrap().sessions[0].key = Some(key);
+        d.connection.topology.as_mut().unwrap().sessions[0].key = Some(key);
         d.close_session();
     });
     settle(&mut rt);
     let question = Some(crate::desk::Pending::CloseSession(key, "budget".into()));
     assert_eq!(rt.state.pending, question);
     rt.update(|d, _| {
-        d.topology.as_mut().unwrap().sessions[0].name = "renamed".into();
+        d.connection.topology.as_mut().unwrap().sessions[0].name = "renamed".into();
         client.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
             "empty".into(),
         ));
@@ -79,18 +79,12 @@ fn hardware_search_and_escape_release_focus_without_typing_behind_navigation() {
     settle(&mut rt);
     tap(&mut rt, "phone-session-query", 0.1);
     let _ = client.take_outbound();
-    rt.key(rune::KeyEvent {
-        key: Key::Text("review".into()),
-        mods: rune::Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("review".into())));
     settle(&mut rt);
     assert_eq!(rt.state.phone.as_ref().unwrap().query.text, "review");
     assert!(rt.find("phone-session-pane-@2").is_some());
     assert!(rt.find("phone-session-pane-@1").is_none());
-    rt.key(rune::KeyEvent {
-        key: Key::Escape,
-        mods: rune::Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Escape));
     settle(&mut rt);
     assert!(rt.state.phone_page().is_none());
     assert!(!rt.state.phone.as_ref().unwrap().query.focused);
@@ -115,7 +109,10 @@ fn desktop_pointer_and_touch_select_the_same_resource_without_terminal_input() {
         } else {
             tap(&mut rt, key, 0.1);
         }
-        assert_eq!(rt.state.wanted.as_ref().unwrap().0, ResourceId::local(2));
+        assert_eq!(
+            rt.state.connection.wanted.as_ref().unwrap().0,
+            ResourceId::local(2)
+        );
         assert!(rt.state.phone_page().is_none());
         no_terminal_input(&client);
     }

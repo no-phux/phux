@@ -48,10 +48,7 @@ fn bar_env(position: Position, with_painter: bool) -> Env<'static> {
     Env::new(fx)
 }
 
-/// Bar-row clicks: a left press on window 1's tab selects it (bottom or top
-/// dock); a right press also opens its menu, and off the tabs opens the
-/// session menu; a non-tab cell or a missing painter is consumed. Nothing
-/// reaches a pane.
+/// Bar-row clicks select tabs or open menus and never reach a pane.
 #[tokio::test]
 async fn bar_clicks_select_tabs_and_never_reach_a_pane() {
     let cases = [

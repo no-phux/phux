@@ -28,7 +28,6 @@ pub(crate) const IMAGE_CONTENT_KEY: &str = "_mcp_image_content";
 
 const SCHEMA_VERSION: u8 = 1;
 const WAIT_DEFAULT_SECS: u64 = 60;
-const WAIT_MAX_SECS: u64 = 3600;
 
 pub(crate) fn schemas() -> Vec<Value> {
     let mut schemas = schemas_read();
@@ -58,7 +57,7 @@ fn schemas_read() -> Vec<Value> {
             json!({
                 "target": target(),
                 "until": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": WAIT_MAX_SECS },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS },
                 "socket": string_schema(),
             }),
             &["target", "until"],
@@ -133,13 +132,7 @@ async fn tree_wait(args: &Value) -> Result<Value, ToolError> {
     if until.is_empty() {
         return Err(ToolError::new("`until` must not be empty"));
     }
-    let secs = match args.get("timeout_secs") {
-        None => WAIT_DEFAULT_SECS,
-        Some(value) => value
-            .as_u64()
-            .filter(|secs| (1..=WAIT_MAX_SECS).contains(secs))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))?,
-    };
+    let secs = crate::tools::bounded_timeout_secs(args, Some(WAIT_DEFAULT_SECS))?;
     let (mut conn, id) = connect(args).await?;
     let mut matched = None;
     let follow = tree::follow(&mut conn, &id, |document: Document| {

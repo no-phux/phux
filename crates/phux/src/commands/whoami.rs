@@ -282,7 +282,7 @@ mod tests {
     /// A server without the feature bit is refused before any read.
     #[tokio::test]
     async fn an_older_server_is_refused_with_server_too_old() {
-        let result = exchange(ScriptSpec::new()).await;
+        let result = exchange(ScriptSpec::new().server_features(ServerFeatureSet::new())).await;
         let err = result.expect_err("no WHOAMI bit");
         assert!(matches!(err, WhoamiError::Unsupported), "{err:?}");
         let contract = answer_error(&err);

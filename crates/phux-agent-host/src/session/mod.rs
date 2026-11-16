@@ -282,6 +282,20 @@ impl Sink {
     fn view(&self) -> NativeView {
         self.0.view.lock().clone()
     }
+    fn front(&self) -> Option<Output> {
+        self.0
+            .backlog
+            .lock()
+            .rows
+            .front()
+            .map(|(output, _)| output.clone())
+    }
+    fn pop_delivered(&self) {
+        let mut backlog = self.0.backlog.lock();
+        if let Some((_, bytes)) = backlog.rows.pop_front() {
+            backlog.bytes -= bytes;
+        }
+    }
     fn state(&self, state: NativeState) -> Result<(), HostError> {
         let mut view = self.0.view.lock();
         if state == NativeState::Done {
@@ -382,19 +396,26 @@ fn validate_spec(spec: &HostSpec) -> Result<(), HostError> {
 }
 
 fn sink_for(spec: &HostSpec) -> Sink {
+    let mode = spec.env.get("PHUX_AGENT_TRANSCRIPT").map(String::as_str);
+    new_sink(
+        &spec.activation,
+        &spec.backend,
+        common::TranscriptMode::from_env(mode),
+    )
+}
+
+fn new_sink(activation: &str, backend: &str, transcript_mode: common::TranscriptMode) -> Sink {
     Sink(Arc::new(Shared {
         backlog: Mutex::new(Backlog::default()),
         wake: Notify::new(),
         responders: Mutex::new(BTreeMap::new()),
-        transcript_mode: common::TranscriptMode::from_env(
-            spec.env.get("PHUX_AGENT_TRANSCRIPT").map(String::as_str),
-        ),
+        transcript_mode,
         ledger: Mutex::new(Ledger {
             entries: BTreeMap::new(),
         }),
         view: Mutex::new(NativeView {
-            activation: spec.activation.clone(),
-            backend: spec.backend.clone(),
+            activation: activation.to_owned(),
+            backend: backend.to_owned(),
             capabilities: NativeCapabilities::default(),
             connected: false,
             turn_id: None,
@@ -420,11 +441,8 @@ fn spawn_worker(
     let thread = std::thread::Builder::new()
         .name("phux-native-sdk".into())
         .spawn(move || {
-            let result = match spec.backend.as_str() {
-                "acp" => acp::run(spec, sink, receive, stopped),
-                _ => Err(HostError::Invalid("unsupported native backend".into())),
-            };
-            let _ = exit_tx.send(result);
+            // `validate_spec` admits only the `acp` backend.
+            let _ = exit_tx.send(acp::run(spec, sink, receive, stopped));
         })?;
     Ok(Worker { thread, exit })
 }
@@ -573,10 +591,7 @@ async fn publish_outputs(controller: &NativeController, sink: &Sink) -> Result<(
             continue;
         };
         deliver(controller, sink, next).await?;
-        let mut backlog = sink.0.backlog.lock();
-        if let Some((_, bytes)) = backlog.rows.pop_front() {
-            backlog.bytes -= bytes;
-        }
+        sink.pop_delivered();
     }
 }
 
@@ -596,21 +611,11 @@ async fn finish_worker(
     view.capabilities = NativeCapabilities::default();
     sink.update(NativeUpdate::View { view })?;
     loop {
-        let next = sink
-            .0
-            .backlog
-            .lock()
-            .rows
-            .front()
-            .map(|(output, _)| output.clone());
-        let Some(next) = next else {
+        let Some(next) = sink.front() else {
             return Ok(());
         };
         deliver(controller, sink, next).await?;
-        let mut backlog = sink.0.backlog.lock();
-        if let Some((_, bytes)) = backlog.rows.pop_front() {
-            backlog.bytes -= bytes;
-        }
+        sink.pop_delivered();
     }
 }
 
@@ -674,24 +679,7 @@ pub(crate) mod tests {
         sink_with_mode(common::TranscriptMode::Content)
     }
     fn sink_with_mode(transcript_mode: common::TranscriptMode) -> Sink {
-        Sink(Arc::new(Shared {
-            backlog: Mutex::new(Backlog::default()),
-            wake: Notify::new(),
-            responders: Mutex::new(BTreeMap::new()),
-            transcript_mode,
-            ledger: Mutex::new(Ledger {
-                entries: BTreeMap::new(),
-            }),
-            view: Mutex::new(NativeView {
-                activation: "a".into(),
-                backend: "acp".into(),
-                capabilities: NativeCapabilities::default(),
-                connected: false,
-                turn_id: None,
-                provider_session_id: None,
-                questions: Vec::new(),
-            }),
-        }))
+        new_sink("a", "acp", transcript_mode)
     }
     #[test]
     fn identity_is_provider_supplied_and_activation_fenced() {

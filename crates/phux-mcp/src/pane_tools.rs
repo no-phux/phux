@@ -10,7 +10,6 @@ use phux_client::selector::{self, Selector, format_terminal_id};
 use phux_client::spatial::{Direction, SpatialError, SpatialOp};
 use phux_client::spawn::{Placement, RollbackOutcome};
 use phux_client::state;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResource, SpawnResult};
 use phux_protocol::wire::info::SessionSnapshot;
@@ -176,7 +175,6 @@ pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
     let request = SpawnRequest::parse(args)?;
     let socket = socket_arg(args)?;
     let frame = request.frame();
-    refuse_unsupported(&socket, &request, &frame).await?;
     let result = match request.target.as_deref() {
         Some(target) => spawn_placed(&socket, frame, target, &request).await?,
         None => {
@@ -187,45 +185,6 @@ pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
         }
     };
     spawn_document(result)
-}
-
-/// Refuse a durable spawn the server would silently downgrade (it lacks the
-/// feature `retain_secs` or `idempotency_key` needs).
-async fn refuse_unsupported(
-    socket: &Path,
-    request: &SpawnRequest,
-    frame: &FrameKind,
-) -> Result<(), ToolError> {
-    if request.retain_secs.is_none() && request.idempotency_key.is_none() {
-        return Ok(());
-    }
-    let features = phux_client::spawn::server_features(socket)
-        .await
-        .map_err(|err| transport_error(&err, socket, "spawn"))?;
-    let Some(missing) = phux_client::spawn::missing_spawn_feature(frame, features) else {
-        return Ok(());
-    };
-    let (flag, name) = match missing {
-        ServerFeature::RetainOnExit => ("--retain", "retain_on_exit"),
-        _ => ("--idempotency-key", "spawn_idempotency"),
-    };
-    Err(contract_error(
-        "unsupported_server",
-        format!("this server does not support {flag}: it does not advertise {name}"),
-        "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
-        2,
-    ))
-}
-
-/// The refusal for a keyed kill or signal to a server without
-/// `KEYED_SIGNAL`, which would ignore the key and run a retry again.
-pub(crate) fn unsupported_keyed_signal() -> ToolError {
-    contract_error(
-        "unsupported_server",
-        "this server does not support --idempotency-key: it does not advertise keyed_signal",
-        "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
-        2,
-    )
 }
 
 /// Resolve an explicit local owner, spawn into its exact window, then

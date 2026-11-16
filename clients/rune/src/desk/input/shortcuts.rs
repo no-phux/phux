@@ -44,13 +44,16 @@ impl Desk {
             Shortcut::Kitchen => self.toggle_kitchen(),
             Shortcut::PitLane => self.toggle_pitlane(),
             Shortcut::Hive => self.toggle_hive(),
+            Shortcut::Playground => self.open_palette(crate::palette::Mode::Playground),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.switch_sessions(),
             Shortcut::InsertPath => self.open_paths(),
+            Shortcut::QuickLook => self.quick_look(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::WhatWorksHere => self.what_works_here(),
             Shortcut::PairPhone => self.open_pairing(),
             Shortcut::RetryConnection => self.reconnect(),
             Shortcut::CopyDiagnostics => {
@@ -85,7 +88,7 @@ impl Desk {
     }
 
     fn active_tab(&self) -> Option<usize> {
-        self.tabs.list.iter().position(|tab| tab.active)
+        self.connection.tabs.list.iter().position(|tab| tab.active)
     }
 
     fn close_active_tab(&mut self) {
@@ -96,7 +99,7 @@ impl Desk {
 
     /// The tab `step` along from the active one, wrapping.
     fn step_tab(&mut self, step: isize) {
-        let count = self.tabs.list.len() as isize;
+        let count = self.connection.tabs.list.len() as isize;
         if let Some(index) = self.active_tab() {
             let next = (index as isize + step).rem_euclid(count) as usize;
             self.select_tab(next);

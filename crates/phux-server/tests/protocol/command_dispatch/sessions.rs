@@ -211,10 +211,9 @@ fn headless_session_create_forwards_env_and_arms_last_session_exit() {
 
         let state = snapshot(&mut stream, 12).await;
         assert_eq!(state.sessions.len(), 2, "bootstrap + managed");
-        let kill = Command::KillResources {
-            ids: state.resources.into_iter().map(|pane| pane.id).collect(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill_all(
+            state.resources.into_iter().map(|pane| pane.id).collect(),
+        );
         assert_eq!(command(&mut stream, 13, kill).await, CommandResult::Ok);
         drop(stream);
         timeout(Duration::from_secs(2), server)
@@ -238,10 +237,7 @@ fn session_rename_applies_and_broadcasts_only_applied_renames() {
         attach(&mut subscriber, "work").await;
         send_frame(
             &mut subscriber,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: SESSION_NAME_KEY.to_owned(),
-            },
+            &phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_NAME_KEY),
         )
         .await;
         let _ = snapshot(&mut subscriber, 1).await; // barrier: subscription installed

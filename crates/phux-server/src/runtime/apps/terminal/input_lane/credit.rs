@@ -1,20 +1,9 @@
 //! Pane input credits (ADR-0144): typed input waits for room instead of
-//! being dropped.
-//!
-//! Each Terminal owns a pool of [`INPUT_CREDITS`] permits. A request bound
-//! for its encoded-input mailbox holds one from the moment its sender takes
-//! it until the PTY writer has written it, so the mailbox (and the writer
-//! queue behind it) always has a slot for credited input. A client's read
-//! loop takes the credit before handing an event to the input lane and, when
-//! the pane is saturated, waits for one: it stops reading that connection,
-//! and transport flow control pushes back on the sender. No lock is held
-//! while waiting, and the lane itself never waits, so one stalled pane never
-//! blocks another pane's input.
-//!
-//! The wait is bounded by [`INPUT_STALL_LIMIT`]. A pane that drains nothing
-//! for that long (its process stopped reading its terminal) refuses the
-//! event explicitly, and until it drains again refuses at once, so one wedged
-//! pane cannot freeze the rest of the connection.
+//! being dropped. Each Terminal owns [`INPUT_CREDITS`] permits; a request
+//! holds one from its sender until the PTY writer wrote it. A saturated pane
+//! makes the client's read loop wait (transport backpressure); the lane
+//! itself never waits. A pane that drains nothing for [`INPUT_STALL_LIMIT`]
+//! refuses explicitly until it drains again.
 //!
 //! [`INPUT_CREDITS`]: phux_terminal_api::actor::INPUT_CREDITS
 #![allow(

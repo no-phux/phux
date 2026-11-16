@@ -1,8 +1,5 @@
-/// `C-a H` moved the divider on screen but never resized the panes' PTYs:
-/// the batch reflowed only on a zoom or sidebar change, so the shells kept
-/// their old width and painted letterboxed (or cropped) in the new tiles.
-/// A resize of the active window's own layout must send `RESIZE_TERMINAL`
-/// for the leaves whose rect moved.
+/// A resize of the active window's layout sends `RESIZE_TERMINAL` for the
+/// leaves whose rect moved (`C-a H` once moved only the divider).
 #[tokio::test(flavor = "current_thread")]
 async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};
@@ -37,15 +34,7 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
 
     let press = |spec: &str| {
         let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(KeyEvent {
-            action: KeyAction::Press,
-            key: chord.key,
-            mods: chord.modifiers,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
     };
     // Layout actions wait for the initial shared layout read.
     state.layout_read_complete = true;
@@ -77,10 +66,8 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     drop(server);
 }
 
-/// #1207: a session whose layout key is missing, or names fewer panes than
-/// the session owns, must not hide the rest. Every live session pane gets a
-/// place, the attach focus stays, a peer session's pane stays out, and the
-/// healed layout is saved.
+/// #1207: a missing or partial layout must not hide the session's panes:
+/// each gets a place, focus stays, a peer's pane stays out, and it is saved.
 #[tokio::test(flavor = "current_thread")]
 async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
     let focus = ResourceId::local(1);

@@ -1,6 +1,8 @@
 //! Detach, directory listings, and metadata values and broadcasts.
 
-use phux_client::agent_meta::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY};
+use phux_client::agent_meta::{
+    RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, parse_pane_occupant,
+};
 use phux_client::layout_ops::LayoutKeyOwner;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
@@ -52,6 +54,9 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
     if let Some(terminal) = ctx.agent_meta.asked_pending.remove(&request_id) {
         return Ok(apply_asked_flag(ctx, terminal, value.as_deref()));
     }
+    if let Some(terminal) = ctx.agent_meta.occupant_pending.remove(&request_id) {
+        return Ok(apply_occupant(ctx, &terminal, value.as_deref()));
+    }
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
         let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
         if changed {
@@ -102,15 +107,18 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
     }
 }
 
-/// A pending metadata GET answered with a correlated `ERROR` (a newer
-/// server's `UNSUPPORTED`, or a reply this build cannot read). The request
-/// settles; nothing was read, so no stored record or layout is replaced and
-/// the layout write fence stays up. `None` when no GET waits on the id.
+/// A pending metadata GET answered with a correlated `ERROR`: the request
+/// settles, nothing is replaced, and the layout write fence stays up.
 pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
 ) -> Option<FrameOutcome> {
     if ctx.agent_meta.asked_pending.remove(&request_id).is_some()
+        || ctx
+            .agent_meta
+            .occupant_pending
+            .remove(&request_id)
+            .is_some()
         || ctx.agent_meta.pending.remove(&request_id).is_some()
     {
         return Some(FrameOutcome::default());
@@ -122,6 +130,27 @@ pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
         )],
         ..FrameOutcome::default()
     })
+}
+
+/// The pane's foreground from its `phux.pane-occupant/v1` record: it names
+/// an auto-numbered window, so a change repaints the chrome.
+fn apply_occupant<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal: &ResourceId,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    let foreground = value
+        .and_then(parse_pane_occupant)
+        .map(|record| record.foreground);
+    let Some(slot) = ctx.panes.get_mut(terminal) else {
+        return FrameOutcome::default();
+    };
+    let changed = slot.foreground != foreground;
+    slot.foreground = foreground;
+    FrameOutcome {
+        chrome_dirty: changed,
+        ..FrameOutcome::default()
+    }
 }
 
 /// A sibling's layout broadcast: adopt topology (ADR-0049: never its
@@ -140,6 +169,12 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
             return Ok(FrameOutcome::default());
         };
         return Ok(apply_asked_flag(ctx, terminal.clone(), value.as_deref()));
+    }
+    if key == RESOURCE_PANE_OCCUPANT_KEY {
+        let Scope::Resource(terminal) = scope else {
+            return Ok(FrameOutcome::default());
+        };
+        return Ok(apply_occupant(ctx, terminal, value.as_deref()));
     }
     // The config-reload doorbell; the value is a nonce, a tombstone is not a
     // request.

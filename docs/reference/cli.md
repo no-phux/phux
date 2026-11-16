@@ -66,6 +66,7 @@ Agents:
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
+  credentials   Use 1Password credentials with one-time approval
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -75,7 +76,7 @@ Machines:
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
-  forward       Forward a local TCP port to a port on the server's machine
+  forward       Forward a port or your ssh-agent to the server's machine
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -1745,7 +1746,8 @@ Approve a held action
 
 Releases the held action ID once: the server runs it as the workload that asked,
 under that workload's own grant, and answers that workload. Asks on a terminal;
-pass `--yes` when stdin is not one.
+pass `--yes` when stdin is not one. Credential requests require interactive
+review of the exact references and identities; `--yes` cannot approve them.
 
 Usage: phux approve [--yes] [--json] <ID>
 
@@ -1753,7 +1755,7 @@ Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
-      --yes            Approve without asking.
+      --yes            Approve a noncredential held action without asking.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -2645,6 +2647,95 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux credentials`
+
+```text
+Use 1Password credentials with one-time approval
+
+Start `serve` on the machine with the 1Password desktop app. `run` starts a
+LOCAL process only after approval and provider completion. Review requests with
+`phux approvals`; decide them with `phux approve ID` or `phux deny ID`.
+
+Usage: phux credentials <SUBCOMMAND>
+
+Commands:
+  run    Execute a LOCAL command with approved secrets injected into its
+         environment.
+  serve  Serve approved requests using the local 1Password desktop integration.
+  help   Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux credentials run`
+
+```text
+Execute a LOCAL command with approved secrets injected into its environment.
+
+Usage: phux credentials run <FLAGS> <COMMAND>…
+
+Arguments:
+  <COMMAND>…  Local executable and arguments, after --. Never use a secret as an
+              argument.
+
+Flags:
+      --provider <NAME>           Provider name on the connected broker.
+      --env <NAME=op://VAULT/ITEM/FIELD>  Environment assignment to a reference;
+                                  repeat for multiple variables.
+      --purpose <TEXT>            Human-readable reason shown in the approval
+                                  request.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux credentials serve`
+
+```text
+Serve approved requests using the local 1Password desktop integration.
+
+Usage: phux credentials serve <FLAGS>
+
+Flags:
+      --name <NAME>               Provider name requesters select.
+      --account <ACCOUNT>         1Password account selector (not a secret).
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
 ## `phux deny`
 
 ```text
@@ -2803,11 +2894,24 @@ dials only its own loopback (`localhost`, `127.0.0.1`, `::1`) unless its
 phux connection drops, open connections are closed, the listener stays, and new
 connections are served once it reconnects.
 
-Usage: phux forward <-L <SPEC>> [--remote <[USER@]HOST[:PORT]>]
+`--agent` serves this machine's ssh-agent to the panes on that server instead,
+like `ssh -A`, when the server has `[forward] agent = true`: `ssh` and `git` in
+a pane there can list your keys and ask for signatures, and every signature is
+shown here for a yes or no first. Nothing can add or remove keys. Runs in the
+foreground until Ctrl-C.
+
+Usage: phux forward [FLAGS]
 
 Flags:
   -L <SPEC>                       What to forward:
                                   `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+      --agent                     Serve this machine's ssh-agent
+                                  (`SSH_AUTH_SOCK`) to the server's panes,
+                                  asking here before each signature.
+      --yes                       With `--agent`: sign without asking. Any
+                                  process in any pane on that server can then
+                                  use your keys while this runs, the same risk
+                                  as `ssh -A`.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -4678,7 +4782,8 @@ Flags:
                              the address itself).
       --name <NAME>          Human-readable server name to embed in the connect
                              link, shown by the device in its server list.
-                             Omitted: the device picks a default.
+                             Omitted: this machine's name, its `MagicDNS` short
+                             name when the link dials by it, else its host name.
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
@@ -6415,6 +6520,11 @@ Flags:
                             running process itself is never adopted: neither
                             launchd nor systemd can restart-supervise a process
                             it did not start.
+
+                            When the live server is the one this systemd unit
+                            already runs, the unit is rewritten, and a listener
+                            it gains comes up by restarting that server in
+                            place, panes kept (`phux upgrade`).
       --print               Print the unit (and the restore wrapper) to stdout
                             without writing or loading anything.
   -h, --help                Print help

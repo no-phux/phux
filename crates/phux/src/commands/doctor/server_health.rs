@@ -136,9 +136,6 @@ pub(super) fn server_health_checks(
 
 /// Choose the remedy by release ordering. Checkout builds that cannot be
 /// ordered retain auto-attach's replaced-binary hand-over policy.
-///
-/// `recovery` is set when the live server refused this protocol. That case
-/// cannot hand over in place, so the hint is the stop-and-start recovery.
 fn version_skew_hint(
     theirs: &str,
     ours: &str,

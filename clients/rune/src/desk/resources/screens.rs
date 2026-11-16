@@ -57,16 +57,21 @@ impl Desk {
     /// Open the picker and ask every host.
     pub(in crate::desk) fn open_screens(&mut self) {
         self.open_palette(Mode::Screens);
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let mut hosts: Vec<Option<String>> = vec![None];
-        for session in self.topology.iter().flat_map(|t| &t.satellite_sessions) {
+        for session in self
+            .connection
+            .topology
+            .iter()
+            .flat_map(|t| &t.satellite_sessions)
+        {
             if !hosts.contains(&Some(session.host.clone())) {
                 hosts.push(Some(session.host.clone()));
             }
         }
-        let screens = &mut self.resources.screens;
+        let screens = &mut self.connection.resources.screens;
         screens.rows.clear();
         screens.failed.clear();
         for host in hosts {
@@ -77,7 +82,7 @@ impl Desk {
 
     /// Start `target` on `host`; its surface opens once it answers.
     pub(in crate::desk) fn start_screen(&mut self, host: Option<String>, target: String) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let op = MirrorOp::Start {
@@ -102,7 +107,7 @@ impl Desk {
         call: Result<MirrorCall, MirrorError>,
         wrap: fn(Option<String>, Result<serde_json::Value, MirrorError>) -> Answer,
     ) {
-        let screens = &mut self.resources.screens;
+        let screens = &mut self.connection.resources.screens;
         let inbox = screens.inbox.clone();
         screens.waiting += 1;
         let waker = self.waker.clone();
@@ -119,13 +124,14 @@ impl Desk {
 
     /// Fold in the workers' answers. True when anything changed.
     pub(in crate::desk) fn take_screens(&mut self) -> bool {
-        let answers = match self.resources.screens.inbox.lock() {
+        let answers = match self.connection.resources.screens.inbox.lock() {
             Ok(mut inbox) => std::mem::take(&mut *inbox),
             Err(_) => return false,
         };
         let changed = !answers.is_empty();
         for answer in answers {
-            self.resources.screens.waiting = self.resources.screens.waiting.saturating_sub(1);
+            self.connection.resources.screens.waiting =
+                self.connection.resources.screens.waiting.saturating_sub(1);
             match answer {
                 Answer::Targets(host, Ok(doc)) => {
                     let rows = doc["targets"].as_array().cloned().unwrap_or_default();
@@ -133,12 +139,16 @@ impl Desk {
                         let text = |key: &str| t[key].as_str().unwrap_or_default().to_owned();
                         if !text("target").is_empty() {
                             let row = (host.clone(), text("target"), text("label"), text("kind"));
-                            self.resources.screens.rows.push(row);
+                            self.connection.resources.screens.rows.push(row);
                         }
                     }
                 }
                 Answer::Targets(host, Err(why)) => {
-                    self.resources.screens.failed.push((host, why.to_string()));
+                    self.connection
+                        .resources
+                        .screens
+                        .failed
+                        .push((host, why.to_string()));
                 }
                 Answer::Started(host, result) => self.screen_started(host, result),
             }
@@ -175,7 +185,7 @@ impl Desk {
     /// The picker's rows for `query`, best first; a host that failed says
     /// why, and picking it asks again.
     pub(in crate::desk) fn screen_hits(&self, query: &str) -> Vec<Hit> {
-        let screens = &self.resources.screens;
+        let screens = &self.connection.resources.screens;
         let mut items: Vec<Item> = screens
             .rows
             .iter()
@@ -207,8 +217,8 @@ mod tests {
     #[test]
     fn answers_become_rows_and_failures_say_why() {
         let mut desk = Desk::new(&crate::launch::Resolved::offline("test"));
-        let inbox = desk.resources.screens.inbox.clone();
-        desk.resources.screens.waiting = 2;
+        let inbox = desk.connection.resources.screens.inbox.clone();
+        desk.connection.resources.screens.waiting = 2;
         inbox.lock().unwrap().extend([
             Answer::Targets(
                 None,
@@ -226,7 +236,7 @@ mod tests {
             ),
         ]);
         assert!(desk.take_screens());
-        assert_eq!(desk.resources.screens.waiting, 0);
+        assert_eq!(desk.connection.resources.screens.waiting, 0);
         let hits = desk.screen_hits("safari");
         assert_eq!(
             hits[0].item.target,

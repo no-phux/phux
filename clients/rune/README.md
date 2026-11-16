@@ -65,21 +65,25 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Getting started.** An installed app's first connection walks through
   five steps in the terminal area: **Welcome**; **Look** (colour scheme,
   sidebar, themes and, on macOS, a Glass slider from solid to Liquid Glass
-  behind the window chrome, all applied live); **Agents & permissions** (`phux skill
-  setup --json`, and on macOS a sheet that opens each privacy pane with
+  behind the window chrome, all applied live); **Agents** (`phux skill
+  setup --json`; on macOS also permissions, with a sheet that opens each privacy pane with
   `phux server permissions --open SERVICE`, offers the server's app to drag
   in, and polls until it is granted); **Bring your setup**, shown only with
   Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
   opens the agent's pane beside it; key bindings move, themes and fonts
-  don't); and **All set**, with three keys from the keymap. Enter
+  don't); and **All set**, which starts an agent it found (**Start Claude
+  Code here**, after `phux skill setup`) in a session of its own through
+  your login shell, or offers the keys tour when none is installed, with
+  three keys from the keymap. Enter
   continues; Escape goes back. A quit resumes at the same step. An older
   phux reads **Update phux to enable this**. **Get Started** in the palette
   or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
-  keep running wherever they are. **Add a machine** takes `me@host` or a
-  machine from your tailnet and runs `phux host add --install` over the ssh
-  access you already have. A window shows one machine at a time. On a new
+  keep running wherever they are. **Add a machine** takes `me@host`, a
+  machine from your tailnet or a host from `~/.ssh/config`, and runs
+  `phux host add --install` over the ssh access you already have.
+  Onboarding offers the same hosts to tick and sets them up one by one. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
   only once that machine is added. Opening a `phux://connect?...` or
   `https://phux.sh/connect?...` link from `phux pair` (relay links too)
@@ -126,13 +130,26 @@ session (or `--session NAME`). It never creates a session on its own.
   what it is doing: a declared agent's name and state (working pulses,
   blocked or asking needs you, done waits until you look), a running
   command, a long command that finished or failed while you were elsewhere,
-  and a bell. Session headers count what needs you; ⌘J jumps to the next.
-  ⌘B folds the sidebar.
+  and a bell. Every session has a separate header with its resource count,
+  disclosure arrow and visible **×** close button, including empty sessions.
+  Closing asks before ending the named session and its running work; it does
+  not first switch away from the session you are using. Click a header to
+  open it, double-click its name to rename it, or drag its name to reorder.
+  Drag a terminal or document row onto another session's header or resource
+  rows to move it there; an empty or collapsed session accepts drops too.
+  Dragging a tab onto a session moves its members together. Moves stay on the
+  same machine and take effect after the server accepts them; dropping outside
+  the session list or cancelling leaves them alone. Disclosure is independent
+  of selection, so navigating does not unfold sessions you have tucked away.
+  The machine picker and Inbox share the traffic-light row; machine identity
+  stays in its labelled dot rather than a window-wide colour strip.
+  Session badges count what needs you; ⌘J jumps to the next. ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
   action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
   worth learning first, each row runnable, with every chord one row further;
   the first time a window connects, a tip offers it. Hovering **+ Terminal**
-  or **+ Session** at the foot of the sidebar shows the keys that do the same.
+  or **+ Session** at the foot of the sidebar shows their keys in a tooltip,
+  without shifting either button.
 - **Changes.** **Show Changes** in the palette opens what Git says changed
   in the focused terminal's checkout: the branch, each staged, unstaged and
   untracked file, and the picked file's diff. ↑ and ↓ pick a file, `r` or

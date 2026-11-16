@@ -11,6 +11,7 @@ use super::status::placeholder;
 use super::{CARD_GAP, CARD_RADIUS, Ink, PAD, overlay};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
+use crate::ui::Cover;
 use crate::{grid, perf};
 
 /// The gutter between two cards, all of it the divider's hit area.
@@ -18,14 +19,14 @@ pub(crate) const DIVIDER: f32 = CARD_GAP;
 
 pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.scale.set(cx.env().scale);
-    desk.painted.replace(None);
+    desk.connection.painted.replace(None);
     let area = el()
         .key("terminal")
         .grow(1.0)
         .w_full()
         .min_h(0.0)
         .min_w(0.0);
-    let Some(tree) = desk.layout.clone() else {
+    let Some(tree) = desk.connection.layout.clone() else {
         let waiting = el()
             .w_full()
             .h_full()
@@ -222,9 +223,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
                 .clip_rounded(CARD_RADIUS),
         )
         .child(
-            el().absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
+            el().cover()
                 .radius(CARD_RADIUS)
                 .continuous_corners()
                 // A faint sheen from the top, as light catches glass.
@@ -242,7 +241,11 @@ fn float(id: &ResourceId, card: El) -> El {
 }
 
 pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let focused = desk.shown.as_ref().is_some_and(|s| &s.resource == id);
+    let focused = desk
+        .connection
+        .shown
+        .as_ref()
+        .is_some_and(|s| &s.resource == id);
     if desk.is_document(id) {
         let lit = if focused && several {
             Lit::Focused
@@ -263,6 +266,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     perf::RENDERS.incr();
     let acquiring = Instant::now();
     let frame = desk
+        .connection
         .client
         .as_ref()
         .zip(view)
@@ -311,7 +315,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
         // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()));
+        .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()));
     float(id, framed(desk, host, ground, lit, ink))
 }
 
@@ -346,7 +350,7 @@ fn terminal_layer(
     if keyboard && desk.modal().is_none() && !editing {
         layer = layer.child(grid::ime_layer(
             frame,
-            desk.preedit.as_deref(),
+            desk.connection.preedit.as_deref(),
             &metrics,
             (ink.text, ink.raised),
             desk.settings.option_as_meta,
@@ -357,7 +361,13 @@ fn terminal_layer(
 
 /// Only terminal cards install terminal mouse, drop, and history handlers.
 fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
-    if desk.phone.is_some() && !desk.shown.as_ref().is_some_and(|s| &s.resource == id) {
+    if desk.phone.is_some()
+        && !desk
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| &s.resource == id)
+    {
         return host.inert();
     }
     let (wheel, press, moved, left, dropped, menu) = (

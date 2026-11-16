@@ -271,18 +271,6 @@ fn report_failure(
             ),
             crate::exit_codes::EXIT_USAGE,
         ),
-        PromptError::Refused(refusal @ Refusal::NoAcknowledgedInput) => json_err::emit(
-            json,
-            &json_err::CliError::new(
-                refusal_code(refusal),
-                format!("{label}: {refusal}; nothing was sent"),
-                "upgrade the server (`phux update`), then retry. This verb will not fall \
-                 back to fire-and-forget input, because its all-or-nothing promise now \
-                 covers delivery and `ROUTE_INPUT` cannot keep it — `phux send-keys` is \
-                 the fire-and-forget verb, and it says so",
-            ),
-            crate::exit_codes::EXIT_USAGE,
-        ),
         PromptError::Refused(refusal @ Refusal::SatelliteTarget { .. }) => json_err::emit(
             json,
             &json_err::CliError::new(

@@ -1,10 +1,5 @@
 //! Exercise the production broker/record actor boundary, without a provider
 //! model or an echo adapter. Host credentials are real narrowed delegations.
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "isolated broker regressions"
-)]
 use super::binding::NativeBinding;
 use super::binding::fingerprint;
 use super::closure::*;

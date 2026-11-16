@@ -1,15 +1,9 @@
 //! Actual HELLO/ATTACH dispatch with all four resource engines.
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use bytes::{Bytes, BytesMut};
 use phux_core::{Actor, LaunchSpec, SessionLifetime};
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapStreamProfile};
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_tree::{
     DocumentActor, DocumentKind, DocumentResource as _, SurfaceDocument, TreeDocument,
 };
@@ -77,17 +71,7 @@ impl Connection {
     ) -> Self {
         let client = state.with_mut(|s| {
             let client = s.new_client_id();
-            s.set_peer_identity(
-                client,
-                PeerIdentity {
-                    uid: nix::unistd::geteuid().as_raw(),
-                    pid: None,
-                    exe_path: None,
-                    mcp_host_key: None,
-                    transport: TransportType::UnixSocket,
-                    source_addr: None,
-                },
-            );
+            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
         let (tx, input) = mpsc::channel(64);
@@ -369,160 +353,157 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, true);
-            let (tree, handle) = tree(&state, parent, session);
-            publish::<TreeDocument>(&handle, Bytes::from_static(b"{}")).await;
-            let (surface, surface_handle) = document::<SurfaceDocument>(
-                &state,
-                parent,
-                session,
-                LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
-                    target: "pixels".to_owned(),
-                }),
-            );
-            let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-            png.extend_from_slice(&1_u32.to_be_bytes());
-            png.extend_from_slice(&1_u32.to_be_bytes());
-            publish::<SurfaceDocument>(&surface_handle, Bytes::from(png)).await;
-            state.with_mut(|s| {
-                assert!(s.registry_mut().set_recent(session, Some(tree)));
-                assert_eq!(s.active_resource_of_session(session), Some(tree));
-                assert_eq!(s.active_pane_of_session(session), Some(parent));
-                let wire = s.intern_resource_wire(tree);
-                assert_eq!(
-                    s.build_session_snapshot(session).unwrap().focused_resource,
-                    wire
-                );
-            });
-            let agent = state.with_mut(|s| {
-                s.new_agent_session(
-                    parent,
-                    &phux_core::resource::AgentFacet {
-                        provider: "test".to_owned(),
-                        native_id: None,
-                        state: None,
-                    },
-                )
-                .unwrap()
-            });
-            let token = CancellationToken::new();
-            let bundle = phux_agent_session::session::AgentSessionActor::build(
-                parent,
-                "test",
-                None,
-                token.clone(),
-                4096,
-            );
-            state.with_mut(|s| {
-                s.register_resource_handle(agent, bundle.handle.clone(), token)
-                    .unwrap();
-            });
-            tokio::task::spawn_local(bundle.actor.run());
-            let mut connection = Connection::start(&state, true).await;
-            connection.attach(1).await;
-            let profiles = prefix(&mut connection, 4, 1).await;
-            assert_eq!(profiles.len(), 3);
-            assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
-            assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
-            let wire = state.with_mut(|s| s.intern_resource_wire(agent));
-            connection.send(FrameKind::Command {
-                request_id: 70,
-                command: phux_protocol::wire::frame::Command::attach_agent_session(wire.clone(), None, None),
-            }).await;
-            assert!(matches!(connection.next().await, FrameKind::BootstrapBegin {
-                terminal_id, profile: BootstrapStreamProfile::AgentEventsJsonlV1, ..
-            } if terminal_id == wire));
-            assert!(matches!(connection.next().await, FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == wire));
-            assert!(matches!(connection.next().await, FrameKind::CommandResult {
-                request_id: 70, result: phux_protocol::wire::frame::CommandResult::Ok
-            }));
-            for core in [agent, tree, surface] {
-                assert!(state.with(|s| s.input_lease_holder(core).is_none()));
-            }
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, true);
+        let (tree, handle) = tree(&state, parent, session);
+        publish::<TreeDocument>(&handle, Bytes::from_static(b"{}")).await;
+        let (surface, surface_handle) = document::<SurfaceDocument>(
+            &state,
+            parent,
+            session,
+            LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                target: "pixels".to_owned(),
+            }),
+        );
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&1_u32.to_be_bytes());
+        png.extend_from_slice(&1_u32.to_be_bytes());
+        publish::<SurfaceDocument>(&surface_handle, Bytes::from(png)).await;
+        state.with_mut(|s| {
+            assert!(s.registry_mut().set_recent(session, Some(tree)));
+            assert_eq!(s.active_resource_of_session(session), Some(tree));
+            assert_eq!(s.active_pane_of_session(session), Some(parent));
+            let wire = s.intern_resource_wire(tree);
             assert_eq!(
-                state.with(|s| s.viewport_terminals(connection.client)),
-                [parent]
+                s.build_session_snapshot(session).unwrap().focused_resource,
+                wire
             );
-            assert_eq!(
-                state.with(|s| s.input_lease_holder(parent)),
-                Some(connection.client)
-            );
-            connection.finish().await;
-        })
-        .await;
+        });
+        let agent = state.with_mut(|s| {
+            s.new_agent_session(
+                parent,
+                &phux_core::resource::AgentFacet {
+                    provider: "test".to_owned(),
+                    native_id: None,
+                    state: None,
+                },
+            )
+            .unwrap()
+        });
+        let token = CancellationToken::new();
+        let bundle = phux_agent_session::session::AgentSessionActor::build(
+            parent,
+            "test",
+            None,
+            token.clone(),
+            4096,
+        );
+        state.with_mut(|s| {
+            s.register_resource_handle(agent, bundle.handle.clone(), token)
+                .unwrap();
+        });
+        tokio::task::spawn_local(bundle.actor.run());
+        let mut connection = Connection::start(&state, true).await;
+        connection.attach(1).await;
+        let profiles = prefix(&mut connection, 4, 1).await;
+        assert_eq!(profiles.len(), 3);
+        assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
+        assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
+        let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+        connection.send(FrameKind::Command {
+            request_id: 70,
+            command: phux_protocol::wire::frame::Command::attach_agent_session(wire.clone(), None, None),
+        }).await;
+        assert!(matches!(connection.next().await, FrameKind::BootstrapBegin {
+            terminal_id, profile: BootstrapStreamProfile::AgentEventsJsonlV1, ..
+        } if terminal_id == wire));
+        assert!(matches!(connection.next().await, FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == wire));
+        assert!(matches!(connection.next().await, FrameKind::CommandResult {
+            request_id: 70, result: phux_protocol::wire::frame::CommandResult::Ok
+        }));
+        for core in [agent, tree, surface] {
+            assert!(state.with(|s| s.input_lease_holder(core).is_none()));
+        }
+        assert_eq!(
+            state.with(|s| s.viewport_terminals(connection.client)),
+            [parent]
+        );
+        assert_eq!(
+            state.with(|s| s.input_lease_holder(parent)),
+            Some(connection.client)
+        );
+        connection.finish().await;
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn mixed_without_terminal_profile_refuses_before_subscription_or_geometry() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, true);
-            let (tree, _) = tree(&state, parent, session);
-            let before = state.with(|s| s.registry().terminal(parent).unwrap().dims);
-            let mut connection = Connection::start(&state, false).await;
-            connection.attach(1).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::Error {
-                    code: ErrorCode::CodecUnavailable,
-                    ..
-                }
-            ));
-            state.with(|s| {
-                assert!(!s.attached().contains_key(&connection.client));
-                assert!(
-                    !s.subscribers_for_resource(tree)
-                        .contains(&connection.client)
-                );
-                assert_eq!(s.registry().terminal(parent).unwrap().dims, before);
-                assert!(s.input_lease_holder(parent).is_none());
-            });
-            connection.send(FrameKind::Ping { nonce: 9 }).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::Pong { nonce: 9 }
-            ));
-            connection.finish().await;
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, true);
+        let (tree, _) = tree(&state, parent, session);
+        let before = state.with(|s| s.registry().terminal(parent).unwrap().dims);
+        let mut connection = Connection::start(&state, false).await;
+        connection.attach(1).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::Error {
+                code: ErrorCode::CodecUnavailable,
+                ..
+            }
+        ));
+        state.with(|s| {
+            assert!(!s.attached().contains_key(&connection.client));
+            assert!(
+                !s.subscribers_for_resource(tree)
+                    .contains(&connection.client)
+            );
+            assert_eq!(s.registry().terminal(parent).unwrap().dims, before);
+            assert!(s.input_lease_holder(parent).is_none());
+        });
+        connection.send(FrameKind::Ping { nonce: 9 }).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::Pong { nonce: 9 }
+        ));
+        connection.finish().await;
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn captured_document_output_waits_for_every_resource_ready() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, false);
-            let (_, handle) = tree(&state, parent, session);
-            publish::<TreeDocument>(&handle, Bytes::from_static(b"{}")).await;
-            let (_, parked, actor) = parked_tree(&state, parent, session);
-            let mut connection = Connection::start(&state, false).await;
-            connection.attach(1).await;
-            wait_for_capture(&parked).await;
-            handle
-                .output
-                .send(ResourceOutput::Live {
-                    seq: 2,
-                    bytes: Bytes::from_static(b"{\"during_capture\":true}"),
-                    at: std::time::Instant::now(),
-                })
-                .unwrap();
-            tokio::task::yield_now().await;
-            assert!(
-                connection.rx.try_recv().is_err(),
-                "no partial publication or document-generation leak"
-            );
-            tokio::task::spawn_local(actor.run());
-            prefix(&mut connection, 2, 1).await;
-            assert!(matches!(
-                connection.next().await,
-                FrameKind::ResourceOutput { seq: 2, .. }
-            ));
-            connection.finish().await;
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, false);
+        let (_, handle) = tree(&state, parent, session);
+        publish::<TreeDocument>(&handle, Bytes::from_static(b"{}")).await;
+        let (_, parked, actor) = parked_tree(&state, parent, session);
+        let mut connection = Connection::start(&state, false).await;
+        connection.attach(1).await;
+        wait_for_capture(&parked).await;
+        handle
+            .output
+            .send(ResourceOutput::Live {
+                seq: 2,
+                bytes: Bytes::from_static(b"{\"during_capture\":true}"),
+                at: std::time::Instant::now(),
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            connection.rx.try_recv().is_err(),
+            "no partial publication or document-generation leak"
+        );
+        tokio::task::spawn_local(actor.run());
+        prefix(&mut connection, 2, 1).await;
+        assert!(matches!(
+            connection.next().await,
+            FrameKind::ResourceOutput { seq: 2, .. }
+        ));
+        connection.finish().await;
+    })
+    .await;
 }

@@ -76,6 +76,8 @@ pub struct Settings {
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
     pub glass: u8,
+    /// The toolbar hides until the pointer reaches the window's top edge.
+    pub hover_toolbar: bool,
 }
 
 impl Settings {
@@ -92,6 +94,7 @@ impl Settings {
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
+            hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
         }
     }
 
@@ -107,6 +110,7 @@ impl Settings {
             copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
+            hover_toolbar: self.hover_toolbar,
         }
     }
 }
@@ -172,7 +176,7 @@ impl Desk {
             s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
         });
         let _ = self.prefs.set("font_size", &self.font_size);
-        self.fitted.clear();
+        self.connection.fitted.clear();
         self.fit();
     }
 
@@ -351,7 +355,7 @@ impl Desk {
     }
 
     fn install_terminal_theme(&self) {
-        if let Some(client) = &self.client {
+        if let Some(client) = &self.connection.client {
             let dark = self.system_dark.get().unwrap_or(true);
             client.set_terminal_theme(
                 self.settings
@@ -413,6 +417,13 @@ impl Desk {
             .prefs
             .set("theme", &theme.map_or(String::new(), |t| t.id.to_owned()));
         self.apply_theme();
+    }
+
+    pub fn toggle_hover_toolbar(&mut self) {
+        self.settings.hover_toolbar = !self.settings.hover_toolbar;
+        let _ = self
+            .prefs
+            .set("hover_toolbar", &self.settings.hover_toolbar);
     }
 
     pub fn toggle_notifications(&mut self) {
@@ -482,23 +493,6 @@ impl Desk {
 fn starts_search(event: &KeyEvent) -> bool {
     let chord = event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo;
     matches!(&event.key, Key::Text(t) if !chord && !t.chars().any(char::is_control))
-}
-
-#[cfg(test)]
-impl Desk {
-    /// An isolated window for UI interaction/render tests, including actions
-    /// that persist preferences. Never let an acceptance render write real prefs.
-    pub(crate) fn settings_test_fixture() -> Self {
-        let resolved = crate::launch::Resolved::offline("settings layout");
-        let mut desk = Self::new(&resolved);
-        desk.prefs = Prefs::memory();
-        desk.settings = Settings::load(&desk.prefs);
-        desk.updater = super::updates::Updater::new(&desk.prefs, &resolved);
-        desk.font_size = grid::DEFAULT_FONT_SIZE;
-        desk.font_family = String::new();
-        desk.settings_open = true;
-        desk
-    }
 }
 
 #[cfg(test)]

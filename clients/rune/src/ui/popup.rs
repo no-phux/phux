@@ -5,13 +5,14 @@ use rune::{Color, El, Transition, col, el, row, text};
 
 use super::{CAPTION, Ink, LABEL_STRONG, PAD, icons, overlay, panes, status};
 use crate::desk::Desk;
+use crate::ui::Cover;
 
 /// The share of the window the box takes, each way.
 const SHARE: f32 = 0.8;
 
 pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
-    let command = desk.popup.command()?;
-    let body = match desk.popup.terminal() {
+    let command = desk.connection.popup.command()?;
+    let body = match desk.connection.popup.terminal() {
         Some(id) => panes::pane(desk, id, false, p),
         // Laid out first, so the command starts at the size it will have.
         None => el()
@@ -67,9 +68,7 @@ pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
     Some(
         col()
             .key("popup-scrim")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .items_center()
             .fill(Color::BLACK.alpha(0.4))
             .transition(Transition::opacity())

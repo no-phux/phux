@@ -178,6 +178,8 @@ export XDG_RUNTIME_DIR="$work/run"
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 unset PHUX_SOCKET PHUX_PROFILE PHUX_INSTALL_DIR
+# The archive into this private HOME, never the system apt or dnf repository.
+export PHUX_NO_REPO=1
 export SHELL="${SHELL:-/bin/sh}"
 
 phase=install

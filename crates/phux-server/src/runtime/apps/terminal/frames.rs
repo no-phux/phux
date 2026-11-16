@@ -4,18 +4,14 @@
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
-use super::commands::{
-    handle_frame_ack, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
-};
+use super::commands::{handle_frame_ack, handle_terminal_input, handle_terminal_resize};
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::history::{HistoryPageRequest, serve_history_request};
 use super::input_lane::{InputLaneHandle, InputStalled, RoutedInput};
 use crate::runtime::apps::ResourceFrame;
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow, direction_invalid};
-use crate::runtime::connections::hello::NegotiatedConnection;
-use crate::state::{ClientId, Outbound, SharedState};
+use crate::state::{ClientId, SharedState};
 use phux_terminal_api::TerminalInput;
-use tokio::sync::mpsc;
 
 /// Serve one `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` or `HISTORY_REQUEST`
 /// frame about a Terminal.
@@ -44,19 +40,10 @@ pub(super) async fn serve_frame(ctx: ResourceFrame<'_>, frame: FrameKind) -> Fra
             };
             return route_input(ctx, terminal_id, input).await;
         }
-        FrameKind::InputTerminalReply { terminal_id, bytes } => {
-            let Some(selection) = ctx.negotiated else {
-                return FrameFlow::Continue(());
-            };
-            dispatch_terminal_reply(
-                ctx.client_id,
-                selection,
-                &terminal_id,
-                bytes,
-                &ctx.plumbing.out_tx,
-            )
-            .await;
-        }
+        // Discarded (docs/protocol.md#terminal-queries): the canonical terminal
+        // already answered the query, and a second answer would reach the
+        // child as typed input.
+        FrameKind::InputTerminalReply { .. } => {}
         FrameKind::ResizeTerminal {
             terminal_id,
             cols,
@@ -164,27 +151,6 @@ async fn route_input(
     // count accepted input a second time after waiting for its lane credit.
     route_client_input(ctx.state, lane, ctx.client_id, terminal_id, input, credit).await;
     FrameFlow::Continue(())
-}
-
-/// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised
-/// it; otherwise report the type without ending the connection.
-async fn dispatch_terminal_reply(
-    client_id: ClientId,
-    selection: NegotiatedConnection,
-    terminal_id: &WireResourceId,
-    bytes: bytes::Bytes,
-    out_tx: &mpsc::Sender<Outbound>,
-) {
-    if !selection.accepts_terminal_reply() {
-        crate::runtime::send_error(
-            out_tx,
-            ErrorCode::UnknownMessageType,
-            "INPUT_TERMINAL_REPLY was not advertised for this connection",
-        )
-        .await;
-        return;
-    }
-    handle_terminal_reply(client_id, terminal_id, &bytes);
 }
 
 /// Write one legacy printable key on the receive task when the PTY writer

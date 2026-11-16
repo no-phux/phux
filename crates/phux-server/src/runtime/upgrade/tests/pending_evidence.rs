@@ -1,5 +1,4 @@
 //! Handoff cannot silently discard a lifecycle report refused by persistence.
-#![allow(clippy::unwrap_used)]
 use super::super::*;
 
 #[test]

@@ -23,6 +23,7 @@ mod command_tasks;
 pub mod commands;
 mod committed_close;
 pub mod connections;
+mod credentials;
 pub mod delegation;
 mod directory;
 mod download;

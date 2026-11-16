@@ -151,3 +151,31 @@ fn a_redial_publishes_a_new_incarnation_with_the_same_ids() {
     assert_eq!(ids(&first), ids(&second));
     remote.stop_connection();
 }
+
+/// A machine never paired is trusted on first contact only on the tailnet:
+/// the probe refuses a loopback server before any handshake.
+#[test]
+fn the_tailnet_authority_probe_refuses_an_address_off_the_tailnet() {
+    let server = QuicServer::start_with(true);
+    let error = super::super::endpoint::tailnet_authority(format!("quic://{}", server.addr))
+        .expect_err("loopback is not the tailnet");
+    assert!(
+        format!("{error:?}").contains("not on your tailnet"),
+        "{error:?}"
+    );
+}
+
+#[test]
+#[ignore = "live: LIVE_TAILNET_URL names a phux server on this machine's tailnet"]
+fn live_tailnet_authority_probe() {
+    let url = std::env::var("LIVE_TAILNET_URL").expect("LIVE_TAILNET_URL");
+    let ca = super::super::endpoint::tailnet_authority(url.clone()).expect("probe");
+    assert!(ca.starts_with("sha256:"));
+    // What the phone does next: the host name, the probed pin, no token.
+    let remote = RemoteClient::new(url, 80, 24, None, None);
+    remote.set_authority_pin(Some(ca));
+    remote.connect().expect("connect");
+    remote.attach_session("default".to_owned());
+    wait_for(&remote, |remote| remote.status() == WireStatus::Attached);
+    remote.stop_connection();
+}

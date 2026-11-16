@@ -96,13 +96,10 @@ fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generati
         let mut watcher = UnixStream::connect(&server.socket).await.unwrap();
         send_frame(
             &mut watcher,
-            &FrameKind::Hello {
-                client_name: "agent-resume-test".to_owned(),
-                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-                client_caps: phux_protocol::caps::ClientCapabilities::new(),
-            },
+            &phux_server_testkit::hello(
+                "agent-resume-test",
+                phux_protocol::caps::ClientCapabilities::new(),
+            ),
         )
         .await;
         let caps = wait_frame(&mut watcher, "resume capability", |frame| match frame {
@@ -147,16 +144,8 @@ fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generati
         .await;
         let first_live = next_output(&mut watcher, &session).await;
         assert_eq!((first_live.0, record_seqs(&first_live.1)), (5, vec![4, 5]));
-        send_frame(
-            &mut watcher,
-            &FrameKind::Command {
-                request_id: 103,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut watcher, 103, phux_server_testkit::get_state())
+            .await;
         wait_frame(&mut watcher, "live generation fence", |frame| match frame {
             FrameKind::ResourceOutput { terminal_id, .. } if terminal_id == session => {
                 panic!("a replaced agent pump emitted duplicate live output");
@@ -235,9 +224,8 @@ fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes(
         let (server, mut owner) = start(|_| {}).await;
         let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
         let mut watcher = server.connect().await;
-        let route = || Command::RouteInput {
-            terminal_id: parent.clone(),
-            event: InputEvent::Focus(FocusEvent::Gained),
+        let route = || {
+            phux_server_testkit::route_input(parent.clone(), InputEvent::Focus(FocusEvent::Gained))
         };
         let before_input = command(&mut watcher, 100, route()).await;
         let before = state(&mut owner, 2).await;
@@ -248,13 +236,7 @@ fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes(
                 Command::attach_agent_session(parent.clone(), Some(role_policy), Some(0)),
             )
             .await;
-            assert!(matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    ..
-                }
-            ));
+            assert_command_error(&result, ErrorCode::InvalidCommand);
         }
         assert_eq!(
             command(&mut watcher, 103, route()).await,

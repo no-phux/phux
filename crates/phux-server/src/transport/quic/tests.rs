@@ -269,21 +269,10 @@ fn enrolled_client(
     crate::workload::RegisteredCredential,
 ) {
     let client_key = rcgen::KeyPair::generate().unwrap();
-    let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
-        .unwrap()
-        .serialize_request(&client_key)
-        .unwrap();
-    let material =
-        crate::workload::ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
-    let expires = chrono::Utc::now().timestamp() + 3600;
-    let prepared = crate::workload::prepare_enrollment(paths, &material, expires).unwrap();
     let certificate = dir.join("client.pem");
     let private_key = dir.join("client.key");
-    std::fs::write(&certificate, prepared.issued_chain_pem().unwrap()).unwrap();
+    let registered = paths.enroll_test_key(&client_key, &certificate);
     std::fs::write(&private_key, client_key.serialize_pem()).unwrap();
-    let registered = prepared
-        .commit(&paths.registry, vec!["*@global".to_owned()], expires)
-        .unwrap();
     (
         phux_dial::TlsClientIdentity::PemFiles {
             certificate,
@@ -299,11 +288,7 @@ fn enrolled_client(
 #[tokio::test]
 async fn an_ephemeral_listener_in_workload_mode_requires_an_enrolled_certificate() {
     let (dir, cert, key) = cert_pair();
-    let paths = crate::workload::WorkloadPaths {
-        ca_cert: dir.path().join("ca.pem"),
-        ca_key: dir.path().join("ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = crate::workload::WorkloadPaths::in_dir(dir.path());
     crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
     let (identity, enrolled) = enrolled_client(&paths, dir.path());
     let ca_certificate = crate::workload::authority_certificate(&paths.ca_cert).unwrap();

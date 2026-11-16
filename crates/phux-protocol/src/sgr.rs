@@ -4,7 +4,10 @@
 
 use std::io::Write as _;
 
-use libghostty_vt::style::{RgbColor, Style, StyleColor, Underline};
+use libghostty_vt::{
+    color::Rgb as RgbColor,
+    style::{Style, StyleColor, Underline},
+};
 
 /// Append `CSI 0 m` plus the SGR parameters for `style` and resolved colors.
 ///
@@ -116,7 +119,7 @@ fn write_underline_color(out: &mut Vec<u8>, style: &Style, wrote_any: &mut bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libghostty_vt::style::PaletteIndex;
+    use libghostty_vt::color::PaletteIndex;
 
     fn encode(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> String {
         let mut out = Vec::new();

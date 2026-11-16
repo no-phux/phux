@@ -24,6 +24,7 @@
 //! - [`agent_record`] — the one `phux.agent/v1` record reader.
 //! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
 //!   with.
+//! - [`pane_label`] — what a list calls a pane, shared by every client.
 //! - [`document_view`] — what a document publication draws as, by its
 //!   content type.
 //!
@@ -40,6 +41,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod agent_record;
+pub mod approvals;
 pub mod ask;
 pub mod document_input;
 pub mod document_view;
@@ -57,6 +59,7 @@ pub mod newer_server;
 pub mod org_ops;
 pub mod organization;
 pub mod organize;
+pub mod pane_label;
 pub mod perf;
 pub mod predict;
 pub mod rename;

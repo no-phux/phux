@@ -1,7 +1,7 @@
 //! Resource kinds: the additive spawn, close, and append shapes.
 
 use super::{
-    AgentEvent, BytesMut, CloseReason, Command, DecodeError, FrameKind, GroupId, MAX_APPEND_BYTES,
+    AgentEvent, CloseReason, Command, DecodeError, FrameKind, GroupId, MAX_APPEND_BYTES,
     MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, ResourceId, ResourceKind,
     SpawnResource, assert_round_trip, framed_tlv, local_id_bytes, tlv_field,
 };
@@ -43,9 +43,8 @@ fn spawn_terminal_without_kind_field_decodes_as_terminal() {
         initial_size: None,
         resource: Some(Box::new(SpawnResource::default())),
     };
-    let mut buf = BytesMut::new();
-    spelled.encode(&mut buf);
-    assert_eq!(buf.as_ref(), bytes.as_slice());
+    let buf = crate::common::encode(&spelled);
+    assert_eq!(buf.as_slice(), bytes.as_slice());
     let (decoded, _) = FrameKind::decode(&buf).unwrap();
     assert!(matches!(
         decoded,
@@ -60,9 +59,8 @@ fn spawn_terminal_explicit_terminal_kind_is_accepted_and_reencodes_absent() {
     // canonical Terminal image stays the pre-kind one.
     let bytes = spawn_terminal_frame(&[(11, &[0u8])]);
     let (decoded, _) = FrameKind::decode(&bytes).unwrap();
-    let mut buf = BytesMut::new();
-    decoded.encode(&mut buf);
-    assert_eq!(buf.as_ref(), spawn_terminal_frame(&[]).as_slice());
+    let buf = crate::common::encode(&decoded);
+    assert_eq!(buf.as_slice(), spawn_terminal_frame(&[]).as_slice());
 }
 
 #[test]
@@ -180,9 +178,8 @@ fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
         stamp: None,
     };
     assert_eq!(decoded, expected);
-    let mut buf = BytesMut::new();
-    expected.encode(&mut buf);
-    assert_eq!(buf.as_ref(), bytes.as_slice());
+    let buf = crate::common::encode(&expected);
+    assert_eq!(buf.as_slice(), bytes.as_slice());
     // An unknown field id inside the body is skipped by length.
     let mut body = Vec::new();
     tlv_field(&mut body, 1, &[1u8]);
@@ -298,9 +295,8 @@ fn terminal_closed_reason_is_additive_and_forgiving() {
             ..
         }
     ));
-    let mut buf = BytesMut::new();
-    decoded.encode(&mut buf);
-    assert_eq!(buf.as_ref(), bytes.as_slice());
+    let buf = crate::common::encode(&decoded);
+    assert_eq!(buf.as_slice(), bytes.as_slice());
 }
 
 #[test]

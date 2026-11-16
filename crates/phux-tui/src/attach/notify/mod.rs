@@ -1,12 +1,7 @@
-//! Agent notifications: the edges worth interrupting a human for.
-//!
-//! The input is the same agent list the sidebar's Agents zone paints (one
-//! [`NotifyRow`] per agent-running pane, local and peer), so a notification
-//! and the `!` badge always agree. [`decide`] is the pure edge rule; the
-//! [`Notifier`] holds the per-pane track, coalesces a burst into one post,
-//! cancels a pending post the user already looked at, and rate-limits a
-//! flapping agent. [`deliver`] turns a [`Note`] into bytes for the outer
-//! terminal or an argv for the desktop notifier.
+//! Agent notifications, from the same agent rows the sidebar paints so a
+//! notification and the badge agree. [`decide`] is the pure edge rule;
+//! [`Notifier`] tracks, coalesces, cancels, and rate-limits; [`deliver`]
+//! turns a [`Note`] into bytes or a desktop-notifier argv.
 
 pub(super) mod deliver;
 
@@ -131,16 +126,11 @@ impl NotifyKind {
     }
 }
 
-/// The pure edge rule: prior track, the new row, whether the outer terminal
-/// window has focus, whether first sightings may fire, and the config, to the
-/// next track and the edge to post (if any).
-///
-/// - Into [`Phase::Blocked`] from anything else fires a blocked edge. A first
-///   sighting fires only once `primed` (past the attach grace).
-/// - Into [`Phase::Settled`] fires a done edge once per run: only when the
-///   agent worked since its last finish.
-/// - Nothing fires with `mode = "off"`, for a disabled kind, or (with
-///   `suppress-focused`) for the pane the user is looking at.
+/// The pure edge rule: prior track and new row to the next track and the
+/// edge to post. Into [`Phase::Blocked`] fires (a first sighting only once
+/// `primed`); into [`Phase::Settled`] fires once per run of work. Nothing
+/// fires with `mode = "off"`, a disabled kind, or (with `suppress-focused`)
+/// for the focused pane.
 pub(super) fn decide(
     prior: Option<Track>,
     row: &NotifyRow,

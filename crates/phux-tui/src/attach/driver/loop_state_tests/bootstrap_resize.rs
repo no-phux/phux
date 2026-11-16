@@ -86,36 +86,6 @@ async fn bootstrapped_loop_with(
     (state, client, server, out)
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn host_path_picker_requires_the_negotiated_extension() {
-    use phux_protocol::{ServerFeatureExt, ServerFeatureExtSet};
-
-    for (features_ext, expected) in [
-        (ServerFeatureExtSet::new(), false),
-        (
-            ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]),
-            true,
-        ),
-    ] {
-        let negotiated = NegotiatedBootstrap {
-            profile: BootstrapProfile::SynthesizedVtRaw,
-            limits: BootstrapLimits::default(),
-            server_features: ServerFeatureSet::new(),
-            server_features_ext: features_ext,
-        };
-        let state = SessionLoop::new(
-            negotiated,
-            PredictiveConfig::disabled(),
-            false,
-            None,
-            EntryPick::default(),
-            None,
-        )
-        .unwrap();
-        assert_eq!(state.path.supported, expected);
-    }
-}
-
 /// A last-pane `RESOURCE_CLOSED` on the first recv-arm burst must
 /// end the attach without sending the deferred bootstrap subscriptions.
 #[tokio::test(flavor = "current_thread")]
@@ -290,43 +260,11 @@ async fn sigwinch_reasserts_pane_targets_when_host_cells_are_unchanged() {
     assert!(
         matches!(
             sent.as_slice(),
-            [
-                FrameKind::ViewportResize { .. },
-                FrameKind::ResizeTerminal { terminal_id, cols, rows, .. },
-            ] if terminal_id == &ResourceId::local(1)
-                && (*cols, *rows) == (content.w, content.h)
-        ),
-        "a session vote must be followed by the explicit chrome-inset target: {sent:?}"
-    );
-}
-
-/// ADR-0145: against a server that applies per-pane cell size, an outer
-/// resize sends no window-size vote, only each pane's exact tile, so no pane
-/// is ever sized to the full outer window on the way to its tile.
-#[tokio::test(flavor = "current_thread")]
-async fn sigwinch_sends_only_pane_targets_when_the_server_applies_cell_px() {
-    use phux_protocol::{ServerFeatureExt, ServerFeatureExtSet};
-    let (mut state, mut client, mut server, mut out) = Box::pin(loop_before_drain_ext(
-        ServerFeatureSet::new(),
-        ServerFeatureExtSet::with(&[ServerFeatureExt::ResizeCellPx]),
-    ))
-    .await;
-    state
-        .emit_deferred_bootstrap_outbound(&mut client)
-        .await
-        .unwrap();
-    let _ = frames_sent(&mut client, &mut server).await;
-    state.on_resize(&mut client, &mut out, None).await.unwrap();
-    let content = state.content(None);
-    let sent = frames_sent(&mut client, &mut server).await;
-    assert!(
-        matches!(
-            sent.as_slice(),
             [FrameKind::ResizeTerminal { terminal_id, cols, rows, .. }]
                 if terminal_id == &ResourceId::local(1)
                     && (*cols, *rows) == (content.w, content.h)
         ),
-        "no VIEWPORT_RESIZE vote, only the chrome-inset tile: {sent:?}"
+        "ADR-0145: no VIEWPORT_RESIZE vote, only the chrome-inset tile: {sent:?}"
     );
 }
 

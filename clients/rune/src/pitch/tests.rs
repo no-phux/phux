@@ -3,7 +3,7 @@ use phux_protocol::ids::ResourceId;
 use super::sim::STEP;
 use super::*;
 use crate::creature::Work;
-use crate::reef::{CLAUDE, CODEX};
+use crate::playground::{CLAUDE, CODEX};
 
 fn hosts(names: &[&str]) -> Vec<(String, bool)> {
     names.iter().map(|n| (n.to_string(), true)).collect()

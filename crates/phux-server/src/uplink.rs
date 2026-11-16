@@ -1,20 +1,14 @@
 //! Satellite uplinks: dialing out to a hub (ADR-0182, `docs/remote.md#linking-machines`).
 //!
-//! A server the hub cannot reach joins as a satellite by dialing the hub. On
-//! the hub, `phux host ticket NAME` mints a [`JoinCode`]; on this server,
-//! [`join`] enrolls a key it generates with that code's single-use ticket
-//! over the enrollment ALPN and stores the issued identity owner-only. Each
-//! `[[uplink]]` entry then gets one supervisor ([`Uplinks`]) that keeps a
-//! QUIC connection to the hub under [`SATELLITE_ALPN`], presenting that
-//! identity and pinning the hub's CA. The hub opens the streams. Each one is
-//! an ordinary phux connection, spliced byte for byte to this server's own
-//! owner socket, so the hub holds this server owner's authority, as an
-//! `ssh://` hub does through `phux stdio-bridge`.
-//!
-//! A lost or refused connection is redialed with the hub links' capped
-//! backoff, re-reading the identity files every attempt. The config-reload
-//! doorbell re-reads `[[uplink]]` and starts, stops, or redials exactly the
-//! uplinks that changed.
+//! A server the hub cannot reach joins by dialing it: [`join`] enrolls a
+//! generated key with a [`JoinCode`]'s single-use ticket and stores the issued
+//! identity owner-only. Each `[[uplink]]` entry then gets a supervisor
+//! ([`Uplinks`]) holding a QUIC connection under [`SATELLITE_ALPN`] that pins
+//! the hub's CA. Each stream the hub opens is spliced byte for byte to this
+//! server's owner socket, so the hub holds the owner's authority, as an
+//! `ssh://` hub does. Lost connections redial with backoff, re-reading the
+//! identity each attempt; config reload starts, stops or redials only what
+//! changed.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -34,10 +28,7 @@ mod enroll;
 
 pub use enroll::{JOIN_PREFIX, JoinCode, Joined, join};
 
-use crate::hub::link::Backoff;
-
-const BACKOFF_BASE: Duration = Duration::from_millis(500);
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
+use crate::hub::link::{BACKOFF_BASE, BACKOFF_CAP, Backoff};
 
 /// How long joining may wait for the hub's enrollment answer.
 const JOIN_DEADLINE: Duration = Duration::from_secs(15);
@@ -46,8 +37,7 @@ const JOIN_DEADLINE: Duration = Duration::from_secs(15);
 /// link session, so this only bounds a misbehaving hub.
 const MAX_HUB_STREAMS: usize = 16;
 
-/// The QUIC listener's `AUTH_FAILED` application close.
-const AUTH_FAILED_CODE: u64 = 0x01;
+use crate::transport::quic::AUTH_FAILED_CODE;
 
 /// Why an `[[uplink]]` entry cannot be supervised; refused before anything
 /// binds.
@@ -358,7 +348,7 @@ async fn splice(send: quinn::SendStream, recv: quinn::RecvStream, socket: &Path)
 fn loss_reason(err: &quinn::ConnectionError) -> String {
     match err {
         quinn::ConnectionError::ApplicationClosed(close)
-            if close.error_code.into_inner() == AUTH_FAILED_CODE =>
+            if close.error_code.into_inner() == u64::from(AUTH_FAILED_CODE) =>
         {
             "the hub refused this satellite: its credential is revoked or expired, or the \
              hub has no enabled inbound:// [[satellites]] entry for it"

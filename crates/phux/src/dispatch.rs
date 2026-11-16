@@ -83,6 +83,7 @@ pub(crate) fn dispatch(
         Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
             commands::approvals::run_approvals(json.json, socket)
         }
+        Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
         Some(Command::Approve(commands::ApproveArgs { id, yes, json })) => {
             commands::approvals::run_approve(&id, yes, json.json, socket)
         }
@@ -122,8 +123,9 @@ pub(crate) fn dispatch(
         }
         Some(Command::Upload(args)) => panes::upload(args, socket),
         Some(Command::Download(args)) => machines::download(args, socket),
-        Some(Command::Forward(commands::ForwardArgs { local, remote })) => {
-            commands::forward::run(&local, remote.with_socket(socket))
+        Some(Command::Forward(args)) => {
+            let spec = args.remote.with_socket(socket);
+            commands::forward::run(args.local.as_deref(), args.yes, spec)
         }
         Some(Command::Paste(commands::PasteArgs {
             target,

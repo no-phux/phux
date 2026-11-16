@@ -27,6 +27,7 @@ pub mod session_name;
 pub mod settings;
 pub mod shell;
 pub mod tailnet;
+pub mod tailnet_owner;
 pub mod theme;
 pub mod theme_slots;
 pub mod toml_registry;

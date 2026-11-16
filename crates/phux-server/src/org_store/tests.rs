@@ -62,6 +62,53 @@ fn op_id(n: u8) -> OperationId {
     OperationId::from_bytes([n; 16])
 }
 
+fn create(n: u8, resource: NewResource) -> Command {
+    Command {
+        operation: op_id(n),
+        op: Op::ResourceCreate {
+            placement: None,
+            session: None,
+            resource,
+        },
+    }
+}
+
+/// Apply `cmd` as `actor` at `at`, commit it to `store` as journal `seq`,
+/// and mirror it into `registry`.
+fn commit(
+    store: &mut SqliteOrgStore,
+    registry: &mut Registry,
+    keys: &mut SequentialKeys,
+    cmd: &Command,
+    actor: &Actor,
+    seq: u64,
+    at: Stamp,
+) {
+    let applied = phux_core::apply(registry.org(), cmd, actor, at, keys).unwrap();
+    store.commit(&applied.transition, seq, at).unwrap();
+    let _ = registry.commit(&applied.transition);
+}
+
+fn reload(path: &Path) -> StoredOrg {
+    SqliteOrgStore::open(path)
+        .unwrap()
+        .load()
+        .unwrap()
+        .expect("written")
+}
+
+fn restore(stored: StoredOrg, instance: InstanceId) -> Org {
+    Org::restore(
+        stored.authority,
+        instance,
+        stored.sessions,
+        stored.resources,
+        stored.arrangements,
+        stored.receipts,
+    )
+    .unwrap()
+}
+
 #[test]
 fn intake_defaults_and_persisted_designation_names_keep_their_identity() {
     for name in ["intake", "inbox", "my queue"] {
@@ -85,11 +132,7 @@ fn intake_defaults_and_persisted_designation_names_keep_their_identity() {
         let mut store = SqliteOrgStore::open(&path).unwrap();
         store.import(&saved, None, Stamp(1_000)).unwrap();
         drop(store);
-        let stored = SqliteOrgStore::open(&path)
-            .unwrap()
-            .load()
-            .unwrap()
-            .unwrap();
+        let stored = reload(&path);
         assert_eq!(stored.authority.intake_session(), key);
         assert_eq!(stored.sessions[0].key, key);
         assert_eq!(stored.sessions[0].name, name);
@@ -121,31 +164,22 @@ fn a_fresh_file_loads_as_nothing_and_round_trips_commits() {
             resource: Some(shell()),
         },
     };
-    let applied = phux_core::apply(
-        registry.org(),
+    commit(
+        &mut store,
+        &mut registry,
+        &mut keys,
         &cmd,
         &Actor::owner(),
+        7,
         Stamp(2_000),
-        &mut keys,
-    )
-    .unwrap();
-    store.commit(&applied.transition, 7, Stamp(2_000)).unwrap();
-    let _ = registry.commit(&applied.transition);
+    );
     drop(store);
 
     let mut reopened = SqliteOrgStore::open(&path).unwrap();
     assert!(reopened.has_migration(LIVE_IMPORT_MIGRATION).unwrap());
     let stored = reopened.load().unwrap().expect("written");
     assert_eq!(stored.journal_seq, 7);
-    let back = Org::restore(
-        stored.authority,
-        registry.org().instance(),
-        stored.sessions,
-        stored.resources,
-        stored.arrangements,
-        stored.receipts,
-    )
-    .unwrap();
+    let back = restore(stored, registry.org().instance());
     assert_eq!(&back, registry.org());
 }
 
@@ -164,24 +198,16 @@ fn a_receipt_persists_env_hashes_not_plaintext() {
     launch
         .env
         .push(("SECRET".to_owned(), "super-secret-value".to_owned()));
-    let create = Command {
-        operation: op_id(1),
-        op: Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: spec,
-        },
-    };
-    let applied = phux_core::apply(
-        registry.org(),
+    let create = create(1, spec);
+    commit(
+        &mut store,
+        &mut registry,
+        &mut keys,
         &create,
         &Actor::owner(),
+        1,
         Stamp(0),
-        &mut keys,
-    )
-    .unwrap();
-    store.commit(&applied.transition, 1, Stamp(0)).unwrap();
-    let _ = registry.commit(&applied.transition);
+    );
     let blob: String = rusqlite::Connection::open(&path)
         .unwrap()
         .query_row("SELECT receipt FROM receipts", [], |row| row.get(0))
@@ -193,20 +219,8 @@ fn a_receipt_persists_env_hashes_not_plaintext() {
         .query_row("SELECT record FROM resources", [], |row| row.get(0))
         .unwrap();
     assert!(record.contains("super-secret-value"));
-    let reopened = SqliteOrgStore::open(&path)
-        .unwrap()
-        .load()
-        .unwrap()
-        .unwrap();
-    let back = Org::restore(
-        reopened.authority,
-        registry.org().instance(),
-        reopened.sessions,
-        reopened.resources,
-        reopened.arrangements,
-        reopened.receipts,
-    )
-    .unwrap();
+    let reopened = reload(&path);
+    let back = restore(reopened, registry.org().instance());
     let replay = phux_core::apply(&back, &create, &Actor::owner(), Stamp(1), &mut keys).unwrap();
     assert!(replay.replayed);
 }
@@ -219,24 +233,16 @@ fn a_removed_resource_leaves_a_tombstone_and_receipts_prune() {
     let mut store = SqliteOrgStore::open(&path).unwrap();
     let mut registry = Registry::new(org(&mut keys));
     store.import(registry.org(), None, Stamp(0)).unwrap();
-    let create = Command {
-        operation: op_id(1),
-        op: Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: shell(),
-        },
-    };
-    let applied = phux_core::apply(
-        registry.org(),
+    let create = create(1, shell());
+    commit(
+        &mut store,
+        &mut registry,
+        &mut keys,
         &create,
         &Actor::owner(),
+        1,
         Stamp(0),
-        &mut keys,
-    )
-    .unwrap();
-    store.commit(&applied.transition, 1, Stamp(0)).unwrap();
-    let _ = registry.commit(&applied.transition);
+    );
     let resource = registry.org().resources().next().unwrap().key;
     let end = Command {
         operation: op_id(2),
@@ -248,9 +254,15 @@ fn a_removed_resource_leaves_a_tombstone_and_receipts_prune() {
             diagnostic: None,
         },
     };
-    let applied =
-        phux_core::apply(registry.org(), &end, &Actor::system(), Stamp(5), &mut keys).unwrap();
-    store.commit(&applied.transition, 2, Stamp(5)).unwrap();
+    commit(
+        &mut store,
+        &mut registry,
+        &mut keys,
+        &end,
+        &Actor::system(),
+        2,
+        Stamp(5),
+    );
     assert_eq!(store.count("resources").unwrap(), 0);
     assert_eq!(store.count("tombstones").unwrap(), 1);
     assert_eq!(store.count("receipts").unwrap(), 1);
@@ -271,14 +283,7 @@ fn the_cap_drops_the_receipts_memory_drops() {
     let dir = tempfile::tempdir().unwrap();
     let mut keys = SequentialKeys::new(*b"storetst");
     let mut registry = Registry::new(org(&mut keys));
-    let create = Command {
-        operation: op_id(1),
-        op: Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: shell(),
-        },
-    };
+    let create = create(1, shell());
     registry
         .execute(&create, &Actor::owner(), Stamp(5), &mut keys)
         .unwrap();
@@ -348,20 +353,16 @@ fn store_with_two_receipts(path: &Path) -> Registry {
     let mut registry = Registry::new(org(&mut keys));
     store.import(registry.org(), None, Stamp(0)).unwrap();
     for n in 1..=2 {
-        let cmd = Command {
-            operation: op_id(n),
-            op: Op::ResourceCreate {
-                placement: None,
-                session: None,
-                resource: shell(),
-            },
-        };
-        let applied =
-            phux_core::apply(registry.org(), &cmd, &Actor::owner(), Stamp(5), &mut keys).unwrap();
-        store
-            .commit(&applied.transition, u64::from(n), Stamp(5))
-            .unwrap();
-        let _ = registry.commit(&applied.transition);
+        let cmd = create(n, shell());
+        commit(
+            &mut store,
+            &mut registry,
+            &mut keys,
+            &cmd,
+            &Actor::owner(),
+            u64::from(n),
+            Stamp(5),
+        );
     }
     registry
 }
@@ -388,15 +389,7 @@ fn an_undecodable_receipt_stays_claimed_and_stored_on_a_healthy_store() {
 
     // Whole-org writes and commits must not take the row away from the
     // binary that can read it.
-    let restored = Org::restore(
-        stored.authority,
-        registry.org().instance(),
-        stored.sessions,
-        stored.resources,
-        stored.arrangements,
-        stored.receipts,
-    )
-    .unwrap();
+    let restored = restore(stored, registry.org().instance());
     store.import(&restored, None, Stamp(6)).unwrap();
     store.commit(&Transition::default(), 9, Stamp(6)).unwrap();
     assert_eq!(store.count("receipts").unwrap(), 2);
@@ -420,11 +413,7 @@ fn a_receipt_row_with_no_usable_id_claims_nothing() {
             [op_id(1).as_bytes().as_slice()],
         )
         .unwrap();
-    let stored = SqliteOrgStore::open(&path)
-        .unwrap()
-        .load()
-        .unwrap()
-        .expect("written");
+    let stored = reload(&path);
     assert_eq!(stored.receipts.len(), 1);
     assert!(stored.unreadable_receipts.is_empty());
 }

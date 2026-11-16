@@ -55,14 +55,12 @@ fn a_closed_satellite_terminal_leaves_no_lease_mirror_state() {
         state.with_mut(|s| {
             s.mirror_satellite_lease_event(&host(), id, false, Some(1));
         });
-        session
-            .handle_inbound(&encode(&FrameKind::ResourceClosed {
-                terminal_id: ResourceId::local(id),
-                exit_status: None,
-                reason: CloseReason::Exited,
-                signal: None,
-            }))
-            .unwrap();
+        session.feed(&FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(id),
+            exit_status: None,
+            reason: CloseReason::Exited,
+            signal: None,
+        });
     }
     assert_eq!(
         state.with(crate::state::ServerState::satellite_lease_mirror_entries),

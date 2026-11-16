@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn gestures_prediction_and_teardown_are_isolated() {
+fn gestures_and_teardown_are_isolated() {
     let (owner, publication) = owner();
     let terminal = id(104);
     attach(&owner, &terminal, b"abc");
@@ -16,8 +16,6 @@ fn gestures_prediction_and_teardown_are_isolated() {
         .view_selection_gesture(a, gesture(1, press.handle, 2))
         .unwrap();
     assert_ne!(selected.start, 0);
-    owner.predict_view_text(b, "Z".into()).unwrap();
-    assert_eq!(publication.acquire_view(b).unwrap().text(), "abcZ");
     assert_eq!(publication.acquire_view(a).unwrap().text(), "abc");
     let slot = publication.view_slot(a).unwrap();
     let held = slot.acquire().unwrap();
@@ -28,8 +26,6 @@ fn gestures_prediction_and_teardown_are_isolated() {
     assert!(owner.destroy_view(a).is_err());
     assert!(owner.has_projection(&terminal));
     assert!(owner.input_ready(&terminal));
-    assert_eq!(publication.acquire_view(b).unwrap().text(), "abcZ");
-    owner.clear_view_predictions(b).unwrap();
     assert_eq!(publication.acquire_view(b).unwrap().text(), "abc");
     owner.reset_connection();
     assert!(publication.acquire_view(b).is_none());

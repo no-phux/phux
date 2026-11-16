@@ -215,13 +215,9 @@ thread_local! {
 // Public entry points
 // -----------------------------------------------------------------------------
 
-/// Render the divider layer for `layout` to `out`.
-///
-/// `content` is the tiled pane area and `rail` the row reserved above it, as
-/// `attach::paint::content_layout` reports (not inferred from `content.y`: a
-/// top bar also pushes content down). `focused` is the client's focused
-/// pane; `label_of` gives each pane's title. Emits SGR-reset-bracketed runs
-/// and no final cursor position; never writes into a pane interior.
+/// Render the divider layer for `layout` to `out`. `content` and `rail` are
+/// `attach::paint::content_layout`'s; `label_of` titles each pane. Emits
+/// SGR-reset-bracketed runs, never into a pane interior.
 ///
 /// # Errors
 ///
@@ -517,10 +513,8 @@ fn draw_one_title(
     }
 }
 
-/// Inset ` ↑ N ` at the right end of the rule when the pane is scrolled
-/// back `rows` rows, in the focus accent so the state is seen, not
-/// searched for. Returns the cells it took off the title's budget (its
-/// text, the padding, and one rule cell before it), or 0.
+/// Inset ` ↑ N ` at the rule's right end when the pane is scrolled back,
+/// returning the cells taken off the title's budget (or 0).
 fn draw_scroll_mark(
     cells: &mut ChromeCells,
     rect: Rect,

@@ -22,10 +22,7 @@ async fn the_viewport_reports_the_cell_grid_in_pixels() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Connection::new(&vt, 80, 24);
     session.set_cell_size(9, 18);
-    let attach = session.on_frame(hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    ));
+    let attach = session.on_frame(synth_hello());
     assert_eq!(
         reported_pixels(&attach_after_state(&mut session, &attach)),
         (Some(80 * 9), Some(24 * 18))
@@ -47,10 +44,7 @@ async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
         session.resize_frame(100, 30).is_none(),
         "no stateful frame before HELLO_OK"
     );
-    let attach = session.on_frame(hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    ));
+    let attach = session.on_frame(synth_hello());
     let FrameKind::Attach { viewport, .. } = decode_one(&attach_after_state(&mut session, &attach))
     else {
         panic!("the session list is answered by ATTACH");
@@ -84,48 +78,15 @@ async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() 
     use phux_protocol::input::InputEvent;
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 20, 3);
-    let terminal_id = ResourceId::local(1);
-    let (stream_id, bootstrap_id) = (stream(1), bootstrap(1));
-    session.on_frame(hello_ok(
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    ));
-    session.on_frame(attached(terminal_id.clone(), 20, 3));
-    session.on_frame(begin(
-        terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-        20,
-        3,
-        0,
-    ));
-    let replayed = session.on_frame(FrameKind::BootstrapChunk {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        chunk_seq: 0,
-        payload: Bytes::from_static(b"old\x07"),
-    });
-    assert!(!replayed.bell, "replayed state never rings");
-    session.on_frame(FrameKind::BootstrapReady {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        history_cursor: None,
-    });
-    let ready = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    let mut session = hello_session(20, 3).await;
+    let pane = generation(1, 1, 1);
+    session.on_frame(attached(pane.id.clone(), 20, 3));
+    let replayed = pane.publish(&mut session, RAW, (20, 3), &b"old\x07"[..]);
+    assert!(!replayed[1].bell, "replayed state never rings");
+    let ready = session.on_frame(ATTACH_READY);
     assert!(!ready.bell, "a bootstrap bell does not ring at publication");
 
-    let output = |seq, bytes: &'static [u8]| FrameKind::ResourceOutput {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        seq,
-        bytes: Bytes::from_static(bytes),
-    };
+    let output = |seq, bytes: &'static [u8]| pane.output(seq, bytes);
     assert!(
         !session.on_frame(output(1, b"\x1b]0;title\x07")).bell,
         "an OSC terminator is not a bell"

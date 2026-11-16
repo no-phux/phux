@@ -1,12 +1,8 @@
-//! OSC 52 clipboard reads (`docs/program-sequences.md#clipboard-osc-52`).
-//!
-//! `defaults.clipboard-read` decides: `deny` drops every read, `allow`
-//! answers, `ask` raises [`ClipboardReadOverlay`] (allow once, allow for this
-//! pane, deny). Only the focused pane of a focused window may read, one read
-//! is in flight at a time, and a pane may prompt at most once per
-//! [`PROMPT_COOLDOWN`]. An allowed read asks the host terminal for its
-//! clipboard with OSC 52, the way writes reach it; its answer goes back to
-//! the asking pane as `CLIPBOARD_REPLY`, only if that pane still has focus.
+//! OSC 52 clipboard reads: `defaults.clipboard-read` denies, allows, or asks
+//! ([`ClipboardReadOverlay`]). Only the focused pane of a focused window may
+//! read, one at a time, prompting at most once per [`PROMPT_COOLDOWN`]; the
+//! host's answer goes back as `CLIPBOARD_REPLY` only if that pane still has
+//! focus.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +20,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 
-use crate::render::overlay::widgets::{Modal, centered_panel};
+use crate::render::overlay::widgets::Modal;
 use crate::render::overlay::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -60,6 +56,57 @@ pub(in crate::attach) enum Choice {
     Deny,
 }
 
+/// Where the one read in flight stands.
+#[derive(Debug, Default)]
+pub(in crate::attach) enum ReadPhase {
+    /// No read in flight.
+    #[default]
+    Idle,
+    /// A prompt is up, since when.
+    Asking(Instant),
+    /// Allowed, not yet asked of the host terminal.
+    Approved(ResourceId, ClipboardSelection),
+    /// Asked of the host terminal, and when.
+    Awaiting(ResourceId, ClipboardSelection, Instant),
+}
+
+impl ReadPhase {
+    /// Whether this phase holds off another read at `now`. A prompt or a
+    /// host query that outlived its timeout no longer does.
+    fn in_flight(&self, now: Instant) -> bool {
+        match self {
+            Self::Idle => false,
+            Self::Asking(at) => now.duration_since(*at) < ASK_TIMEOUT,
+            Self::Approved(..) => true,
+            Self::Awaiting(_, _, at) => now.duration_since(*at) < REPLY_TIMEOUT,
+        }
+    }
+
+    /// Leave `Approved` for `Idle`, handing back the read; any other phase
+    /// stays as it is.
+    fn take_approved(&mut self) -> Option<(ResourceId, ClipboardSelection)> {
+        match std::mem::take(self) {
+            Self::Approved(pane, selection) => Some((pane, selection)),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// Leave `Awaiting` for `Idle`, handing back the read; any other phase
+    /// stays as it is.
+    fn take_awaiting(&mut self) -> Option<(ResourceId, ClipboardSelection, Instant)> {
+        match std::mem::take(self) {
+            Self::Awaiting(pane, selection, at) => Some((pane, selection, at)),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(in crate::attach) struct ClipboardReads {
     /// Whether the server takes `CLIPBOARD_REPLY`; without it nothing is
@@ -72,12 +119,8 @@ pub(in crate::attach) struct ClipboardReads {
     granted: HashSet<ResourceId>,
     /// When each pane last prompted.
     prompted: HashMap<ResourceId, Instant>,
-    /// A prompt is up, since when.
-    asking: Option<Instant>,
-    /// Allowed, not yet asked of the host terminal.
-    approved: Option<(ResourceId, ClipboardSelection)>,
-    /// Asked of the host terminal, and when.
-    awaiting: Option<(ResourceId, ClipboardSelection, Instant)>,
+    /// The read in flight, if any.
+    phase: ReadPhase,
 }
 
 impl ClipboardReads {
@@ -104,20 +147,13 @@ impl ClipboardReads {
         policy: ClipboardRead,
         now: Instant,
     ) -> ReadAction {
-        let in_flight = self
-            .asking
-            .is_some_and(|at| now.duration_since(at) < ASK_TIMEOUT)
-            || self.approved.is_some()
-            || self
-                .awaiting
-                .as_ref()
-                .is_some_and(|(_, _, at)| now.duration_since(*at) < REPLY_TIMEOUT);
+        let in_flight = self.phase.in_flight(now);
         let focused = focused && self.window_focused;
         if !self.supported || !focused || policy == ClipboardRead::Deny || in_flight {
             return ReadAction::Drop;
         }
         if policy == ClipboardRead::Allow || self.granted.contains(pane) {
-            self.approved = Some((pane.clone(), selection));
+            self.phase = ReadPhase::Approved(pane.clone(), selection);
             return ReadAction::Query;
         }
         if self
@@ -128,35 +164,38 @@ impl ClipboardReads {
             return ReadAction::Drop;
         }
         self.prompted.insert(pane.clone(), now);
-        self.asking = Some(now);
+        self.phase = ReadPhase::Asking(now);
         ReadAction::Ask
     }
 
-    /// Record the person's answer for `pane`.
+    /// Record the person's answer for `pane`. A pane grant always sticks,
+    /// but only an open prompt's answer starts a read: a prompt whose phase
+    /// a later read already replaced must not overwrite it.
     pub(in crate::attach) fn decide(
         &mut self,
         pane: &ResourceId,
         selection: ClipboardSelection,
         choice: Choice,
     ) {
-        self.asking = None;
-        match choice {
-            Choice::Deny => {}
-            Choice::AllowPane => {
-                self.granted.insert(pane.clone());
-                self.approved = Some((pane.clone(), selection));
-            }
-            Choice::AllowOnce => self.approved = Some((pane.clone(), selection)),
+        if choice == Choice::AllowPane {
+            self.granted.insert(pane.clone());
         }
+        if !matches!(self.phase, ReadPhase::Asking(_)) {
+            return;
+        }
+        self.phase = match choice {
+            Choice::Deny => ReadPhase::Idle,
+            Choice::AllowOnce | Choice::AllowPane => ReadPhase::Approved(pane.clone(), selection),
+        };
     }
 
     /// The OSC 52 query to write to the host terminal for an allowed read.
     pub(in crate::attach) fn take_query(&mut self, now: Instant) -> Option<Vec<u8>> {
-        let (pane, selection) = self.approved.take()?;
+        let (pane, selection) = self.phase.take_approved()?;
         let mut query = b"\x1b]52;".to_vec();
         query.push(selection.byte());
         query.extend_from_slice(b";?\x1b\\");
-        self.awaiting = Some((pane, selection, now));
+        self.phase = ReadPhase::Awaiting(pane, selection, now);
         Some(query)
     }
 
@@ -169,7 +208,7 @@ impl ClipboardReads {
         focused: Option<&ResourceId>,
         now: Instant,
     ) -> Option<(ResourceId, ClipboardSelection, String)> {
-        let (pane, selection, at) = self.awaiting.take()?;
+        let (pane, selection, at) = self.phase.take_awaiting()?;
         if focused != Some(&pane) || now.duration_since(at) >= REPLY_TIMEOUT {
             return None;
         }
@@ -221,10 +260,7 @@ impl ClipboardReadOverlay {
     }
 
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        let wide = centered_panel(outer, 5, 20, 3, bp);
-        let h = 3.min(outer.height);
-        let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-        Rect::new(wide.x, y, wide.width, h)
+        crate::render::overlay::confirm::lines_modal_area(outer, 1, bp)
     }
 
     fn decide(&self, choice: Choice) -> OverlayCommand {

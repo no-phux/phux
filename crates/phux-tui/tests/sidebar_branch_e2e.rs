@@ -1,8 +1,5 @@
-//! End-to-end: the sidebar's VCS branch line derives from a real server's
-//! `ATTACHED` snapshot cwd (spawn cwd -> `ResourceInfo::cwd` ->
-//! `handle_server_frame` -> `VcsIndex` -> painted row), not client-side
-//! injection. The fixture is a hand-written `.git/HEAD` whose branch name
-//! appears nowhere else in the scenario.
+//! End-to-end: the sidebar's branch line derives from a real server's
+//! `ATTACHED` snapshot cwd and a hand-written `.git/HEAD`, not injection.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

@@ -62,7 +62,7 @@ impl FarHost {
                  cat > \"$2\" <<'INSTALLER'\n{installer}INSTALLER\n",
                 log = shell_quote(&root.join("curl-calls").display().to_string()),
             );
-            write_executable(&root.join("bin/curl"), &curl);
+            crate::common::write_executable(root.join("bin/curl"), &curl);
         }
         // A remote listener runs only under `paired` (ADR-0179); `host add`
         // enrolls the certificate the direct route then presents.
@@ -117,13 +117,15 @@ impl FarHost {
              while [ \"$1\" = -o ]; do shift 2; done\n\
              shift\n\
              case \"$*\" in\n\
-               *\"phux service install\"*) exec \"$1\" server --ensure ;;\n\
+               *\"phux service install\"*)\n\
+                 [ \"$1\" = 'umask 077;' ] && shift\n\
+                 exec \"$1\" server --ensure ;;\n\
                *) exec /bin/sh -c \"$*\" ;;\n\
              esac\n",
             calls = shell_quote(&root.join("ssh-calls").display().to_string()),
             bin = shell_quote(&root.join("bin").display().to_string()),
         );
-        write_executable(&root.join("fake-ssh"), &script);
+        crate::common::write_executable(root.join("fake-ssh"), &script);
 
         host
     }
@@ -306,12 +308,6 @@ fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
         // bearer token) the real one takes.
         ("PHUX_WS_SECURE", PathBuf::from("1")),
     ]
-}
-
-fn write_executable(path: &Path, script: &str) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::write(path, script).expect("write script");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod script");
 }
 
 fn shell_quote(word: &str) -> String {

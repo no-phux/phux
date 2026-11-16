@@ -6,7 +6,6 @@ use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 use tokio::sync::{Notify, watch};
 
-use super::ping::is_ping_frame;
 use super::*;
 use crate::connection::io::SEND_BUDGET;
 use crate::control::{ControlOptions, ControlPlane, encode};
@@ -271,21 +270,38 @@ async fn a_quiet_attached_session_probes() {
     );
 }
 
-/// Pings are answered on the driver; every other frame, and a ping that
-/// does not decode, stays queued for the consumer in order.
-#[test]
-fn only_decodable_pings_are_peeled() {
-    let ping = encode(&FrameKind::Ping { nonce: 9 });
-    let other = encode(&FrameKind::Pong { nonce: 3 });
-    let mut truncated_ping = ping.clone();
-    truncated_ping.truncate(ping.len() - 1);
-    let (keep, pongs) = peel_queued_pings(
-        [&other, &ping, &truncated_ping, &vec![0, 0]]
-            .map(|frame| bytes::Bytes::copy_from_slice(frame))
-            .into(),
+/// An answered probe publishes its round trip: off QUIC, the time since the
+/// probe went out. A new connection forgets the last one.
+#[tokio::test(start_paused = true)]
+async fn an_answered_probe_publishes_its_round_trip() {
+    use tokio::io::AsyncWriteExt as _;
+    let mut fixture = WriteFixture::new(64 * 1024);
+    let wake: Wake = Arc::new(|| {});
+    let mut pump = Pump::new(
+        "round-trip",
+        &mut fixture.io,
+        ConnectOptions::default(),
+        &fixture.shared,
+        &mut fixture.signals,
+        &wake,
     );
-    assert_eq!(keep, vec![other, truncated_ping, vec![0, 0]]);
-    assert_eq!(pongs, vec![encode(&FrameKind::Pong { nonce: 9 })]);
-    assert!(is_ping_frame(&ping));
-    assert!(!is_ping_frame(&[]));
+    let running = pump.run();
+    tokio::pin!(running);
+    assert!(running.as_mut().now_or_never().is_none());
+    fixture.rebind.send_modify(|n| *n += 1);
+    assert!(running.as_mut().now_or_never().is_none());
+    assert_eq!(lock(&fixture.shared).round_trip(), None);
+
+    tokio::time::advance(Duration::from_millis(40)).await;
+    let mut peer = fixture.peer;
+    peer.write_all(&encode(&FrameKind::Pong { nonce: 1 }))
+        .await
+        .unwrap();
+    assert!(running.as_mut().now_or_never().is_none());
+    assert_eq!(
+        lock(&fixture.shared).round_trip(),
+        Some(Duration::from_millis(40))
+    );
+    lock(&fixture.shared).connection_opened();
+    assert_eq!(lock(&fixture.shared).round_trip(), None);
 }

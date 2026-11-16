@@ -2,15 +2,16 @@
 //! to token-authenticated WSS without placing the bearer in the WebSocket URL
 //! or echoing it as the negotiated subprotocol.
 
-use std::time::Duration;
-
-use gloo_timers::future::sleep;
 use js_sys::{Array, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-use web_sys::{HtmlCanvasElement, WebSocket};
+use web_sys::WebSocket;
 
 wasm_bindgen_test_configure!(run_in_browser);
+
+#[path = "browser_support/page.rs"]
+mod page;
+use page::{canvas, wait_for_marker};
 
 const WSS_URL: &str = match option_env!("PHUX_TEST_WSS_URL") {
     Some(url) => url,
@@ -24,7 +25,6 @@ const TOKEN: &str = match option_env!("PHUX_TEST_TOKEN") {
     Some(token) => token,
     None => "00",
 };
-const MARKER: &str = "PHUX_WEB_OK";
 
 struct WebSocketCapture;
 
@@ -87,32 +87,6 @@ impl Drop for WebSocketCapture {
             "#,
         );
     }
-}
-
-fn canvas(id: &str) -> HtmlCanvasElement {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas: HtmlCanvasElement = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_id(id);
-    document
-        .document_element()
-        .unwrap()
-        .append_child(&canvas)
-        .unwrap();
-    canvas
-}
-
-async fn wait_for_marker(client: &phux_web::client::Client) -> bool {
-    for _ in 0..120 {
-        if client.rows_text().iter().any(|row| row.contains(MARKER)) {
-            return true;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    false
 }
 
 fn immediate_failed_wt_url(token: Option<&str>) -> String {

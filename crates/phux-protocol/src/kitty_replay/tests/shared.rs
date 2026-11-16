@@ -1,6 +1,6 @@
 //! Panes sharing one outer terminal keep their images apart.
 
-use libghostty_vt::style::{PaletteIndex, StyleColor};
+use libghostty_vt::{color::PaletteIndex, style::StyleColor};
 
 use super::*;
 
@@ -65,7 +65,7 @@ fn a_placeholder_colour_names_its_own_panes_outer_image() {
         "B's virtual placement is on B's outer image"
     );
     // The same colour spelled as RGB maps the same way.
-    let rgb = held_b.placeholder_fg(StyleColor::Rgb(libghostty_vt::style::RgbColor {
+    let rgb = held_b.placeholder_fg(StyleColor::Rgb(libghostty_vt::color::Rgb {
         r: 0,
         g: 0,
         b: 7,
@@ -119,7 +119,7 @@ fn release_and_drop_delete_what_the_outer_terminal_holds() {
 }
 
 fn rgb_low(g: u8, b: u8) -> StyleColor {
-    StyleColor::Rgb(libghostty_vt::style::RgbColor { r: 0, g, b })
+    StyleColor::Rgb(libghostty_vt::color::Rgb { r: 0, g, b })
 }
 
 /// Past the bound, mappings no stored image, held image or painted

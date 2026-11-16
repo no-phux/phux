@@ -169,8 +169,6 @@ pub struct DocumentHandle<K: DocumentKind> {
 pub type TreeHandle = DocumentHandle<TreeDocument>;
 /// The `PixelSurface` facet.
 pub type SurfaceHandle = DocumentHandle<SurfaceDocument>;
-/// The `Document` facet; its `target` is the content type.
-pub type TypedHandle = DocumentHandle<TypedDocument>;
 
 impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
@@ -232,9 +230,6 @@ pub struct DocumentBundle<K: DocumentKind> {
     pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
-/// A tree engine and its handle.
-pub type TreeBundle = DocumentBundle<TreeDocument>;
-
 /// The producer-fed replicated-document engine.
 #[derive(Debug)]
 pub struct DocumentActor<K: DocumentKind> {
@@ -248,8 +243,6 @@ pub struct DocumentActor<K: DocumentKind> {
 
 /// The accessibility-tree engine.
 pub type TreeActor = DocumentActor<TreeDocument>;
-/// The pixel-surface engine.
-pub type SurfaceActor = DocumentActor<SurfaceDocument>;
 
 impl<K: DocumentKind> DocumentActor<K> {
     /// Build a document of `target` bound to `parent`, whose run loop

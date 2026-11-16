@@ -17,6 +17,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+phux-protocol = { path = "../../crates/phux-protocol", default-features = false }
 wasm-bindgen = "=0.2.130"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

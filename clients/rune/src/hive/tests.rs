@@ -1,5 +1,5 @@
 use super::*;
-use crate::reef::{CLAUDE, CODEX};
+use crate::playground::{CLAUDE, CODEX};
 
 fn forager(n: u32, host: usize, mood: Mood) -> Forager {
     Forager {

@@ -173,7 +173,6 @@ fn retained_durable_inspection_agrees_with_receipts_for_real_execs() {
             .unwrap();
         let inventory = runtime
             .block_on(phux_client::org::fetch_from_socket(&server.socket))
-            .unwrap()
             .unwrap();
         let row = inventory
             .resources

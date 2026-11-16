@@ -125,7 +125,7 @@ impl TerminalActor {
             return false;
         }
         match slot {
-            11 if state.resync.pending => deadline
+            11 if state.resync.is_owed() => deadline
                 .now_or_never()
                 .map(|()| self.fire_owed_resync(&mut state.resync))
                 .is_some(),

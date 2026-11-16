@@ -68,6 +68,13 @@ impl Owner {
     #[cfg(feature = "engine")]
     fn query_presentation(&mut self, query: Query) -> Option<Query> {
         match query {
+            Query::SyncOutputDeadline(reply) => {
+                let _ = reply.send(self.sync_output_deadline());
+            }
+            Query::ExpireSyncOutput(now, reply) => {
+                let expired = self.expire_sync_output(now);
+                let _ = reply.send(expired);
+            }
             Query::Scroll(id, scroll, reply) => {
                 let _ = reply.send(self.scroll(&id, scroll));
             }
@@ -137,9 +144,6 @@ impl Owner {
             Query::ReplicaInfo(id, reply) => {
                 let _ = reply.send(self.replica_info(&id));
             }
-            Query::Present(id, reply) => {
-                let _ = reply.send(self.present(&id));
-            }
             Query::MouseMode(id, reply) => {
                 let _ = reply.send(self.mouse_mode(&id));
             }
@@ -198,9 +202,6 @@ impl Owner {
             }
             Query::SelectAll(id, reply) => {
                 let _ = reply.send(self.select_all(&id));
-            }
-            Query::RegionText(id, region, max_bytes, reply) => {
-                let _ = reply.send(self.region_text(&id, region, max_bytes));
             }
             _ => {}
         }

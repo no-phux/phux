@@ -3,12 +3,11 @@
 use proptest::prelude::*;
 
 use super::{
-    BootstrapId, BootstrapStreamProfile, BytesMut, ClientCapabilities, ClientId, ColorSupport,
-    DecodeError, Decoder, EngineCodec, ErrorCode, FrameKind, ImageProtocol, ImageProtocolSet,
-    KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, OutputMode, ResourceId, ResourceInfo,
-    SessionId, SessionSnapshot, StreamId, TerminalColor, TerminalDefaultColors, WindowId,
-    arb_frame_kind, arb_resource_info, arb_terminal_id, assert_round_trip, common, framed_tlv,
-    tlv_field,
+    BootstrapId, BootstrapStreamProfile, ClientCapabilities, ClientId, ColorSupport, DecodeError,
+    Decoder, EngineCodec, ErrorCode, FrameKind, ImageProtocol, ImageProtocolSet, KeyboardProtocol,
+    KeyboardProtocolSet, Layer, LayerSet, OutputMode, ResourceId, ResourceInfo, SessionId,
+    SessionSnapshot, StreamId, TerminalColor, TerminalDefaultColors, WindowId, arb_frame_kind,
+    arb_resource_info, arb_terminal_id, assert_round_trip, common, framed_tlv, tlv_field,
 };
 
 proptest! {
@@ -353,14 +352,9 @@ fn unknown_field_id_is_skipped_forward_compat() {
     // decode the rest of the message normally. Encode a real PING (nonce field
     // id 1), then splice in an unknown field id (99) carrying junk *before* the
     // known field; the nonce must still decode and the unknown field is ignored.
-    let real = {
-        let mut buf = BytesMut::new();
-        FrameKind::Ping {
-            nonce: 0x0102_0304_0506_0708,
-        }
-        .encode(&mut buf);
-        buf.to_vec()
-    };
+    let real = crate::common::encode(&FrameKind::Ping {
+        nonce: 0x0102_0304_0506_0708,
+    });
     // Reconstruct the body with an extra unknown field prepended.
     let type_byte = real[4];
     let known_fields = &real[5..]; // the PING nonce field
@@ -385,14 +379,9 @@ fn unknown_trailing_field_id_is_skipped_forward_compat() {
     // The same skip-by-length rule for an unknown field appended *after* the
     // known fields — the shape a newer peer produces when it adds a field an
     // older decoder does not know.
-    let real = {
-        let mut buf = BytesMut::new();
-        FrameKind::Bell {
-            terminal_id: ResourceId::local(0x2A),
-        }
-        .encode(&mut buf);
-        buf.to_vec()
-    };
+    let real = crate::common::encode(&FrameKind::Bell {
+        terminal_id: ResourceId::local(0x2A),
+    });
     let type_byte = real[4];
     let mut fields = real[5..].to_vec(); // the Bell terminal_id field
     tlv_field(&mut fields, 250, &[1, 2, 3, 4, 5, 6]); // unknown trailing field
@@ -424,8 +413,7 @@ fn invalid_utf8_in_hello_client_name() {
 #[test]
 fn tail_is_returned_after_single_frame() {
     let frame = FrameKind::Ping { nonce: 7 };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
+    let mut buf = crate::common::encode(&frame);
     buf.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
 
     let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -469,6 +457,8 @@ fn error_code_wire_values_match_spec() {
         (ErrorCode::UnknownMessageType, 2),
         (ErrorCode::MalformedMessage, 3),
         (ErrorCode::FrameTooLarge, 4),
+        (ErrorCode::CodecUnavailable, 6),
+        (ErrorCode::Unsupported, 7),
         (ErrorCode::NotAttached, 100),
         (ErrorCode::AlreadyAttached, 101),
         (ErrorCode::SessionNotFound, 102),
@@ -489,6 +479,10 @@ fn error_code_wire_values_match_spec() {
         (ErrorCode::NotProducer, 209),
         (ErrorCode::RecordInvalid, 210),
         (ErrorCode::Overflow, 211),
+        (ErrorCode::PreconditionFailed, 212),
+        (ErrorCode::IncarnationChanged, 213),
+        (ErrorCode::NotFound, 214),
+        (ErrorCode::Unavailable, 215),
         (ErrorCode::InternalError, 65535),
     ] {
         assert_eq!(code.as_wire(), wire, "{code:?}");

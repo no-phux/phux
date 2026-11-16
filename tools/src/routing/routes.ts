@@ -27,6 +27,8 @@ const DOC_INPUTS: Record<string, Surface[]> = {
   "docs/agents.md": ["phux"],
   // examples_e2e runs this page's automation example.
   "docs/scripting.md": ["phux"],
+  // client_contract.rs checks this page's JSON examples.
+  "docs/build-a-client.md": ["phux"],
   "CHANGELOG.md": [],
 };
 
@@ -133,7 +135,7 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/{brand,update-brand,test_brand_update}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
-  "scripts/{build-ffi-xcframework,build-mobile-ffi-android}.sh": [],
+  "scripts/build-mobile-ffi-android.sh": [],
   "scripts/ci/setup-android-ndk.sh": [],
 };
 

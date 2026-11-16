@@ -1,7 +1,5 @@
-//! `lock-window` / `unlock-window`, and the refusal a locked tab's close
-//! gets. The lock is server state (`ARRANGEMENT_LOCK`), written on the
-//! dedicated control dial like session management; the arrangement change
-//! it causes brings the flag back into the tab bar.
+//! `lock-window` / `unlock-window` and the refusal a locked tab's close
+//! gets; the lock is server state written on the control dial.
 
 use phux_client::layout_ops::LayoutOps;
 

@@ -151,6 +151,10 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
     }
 }
 
+/// Terminal-scoped key holding the public native-agent launch recipe (a
+/// serialized `SpawnNativeAgent`) that `relaunch` replays. Stored opaquely.
+pub const RESOURCE_NATIVE_LAUNCH_KEY: &str = "phux.native-launch/v1";
+
 /// Terminal-scoped key holding freeform tags as a JSON array of unique,
 /// non-empty strings (`docs/scripting.md#organizing-panes`, ADR-0027). Stored opaquely.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
@@ -195,7 +199,10 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// connection changes and deleted when that connection closes. `client_name`
 /// and `platform` are the sender's own `HELLO` words and `route` the whoami
 /// `auth_route` word, so the record is a hint and never an authentication
-/// fact. Clients must not set or delete it.
+/// fact. `client_name` stays free-form. phux's own programs send
+/// `phux-tui/<version>`, `phux-cli/<version>`, or `phux-mcp/<version>`;
+/// split on the last `/`, the same parse as the older `phux-client/<version>`.
+/// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
 /// Server-owned OSC 7501 record index and active status (L3 §3.7.3).

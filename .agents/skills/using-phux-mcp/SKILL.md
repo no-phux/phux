@@ -3,7 +3,7 @@ name: using-phux-mcp
 description: Drives persistent terminals and terminal-hosted agents through the phux MCP server. Use when phux MCP tools are available for interactive programs, durable shell state, bounded observation, or agent supervision; use using-phux for direct CLI work.
 compatibility: Requires an MCP host configured to launch the installed phux mcp stdio server.
 metadata:
-  version: "0.149.0" # x-release-please-version
+  version: "0.154.0" # x-release-please-version
 ---
 
 # Using phux through MCP
@@ -32,7 +32,9 @@ MCP's `phux_ls`, or native `retain_seconds` with MCP's `retain_secs`.
    `phux_agent_wait`, or `phux_resource_wait` for a process's exit (spawn it
    with `retain_secs` so a finished run keeps its status).
 5. Re-read state. A quiet pane, successful write, or ended watcher is not proof
-   of completion.
+   of completion. Close a spawned pane with `phux_kill` (`confirm: true`)
+   once you have read a successful run; leave a failed one for the human.
+   Quick commands belong in your own shell tool, not a spawned pane.
 6. Diagnose unexpected state with the read-only `phux_status` and `phux_doctor`
    tools before guessing.
 

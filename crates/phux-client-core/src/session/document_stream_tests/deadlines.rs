@@ -2,9 +2,10 @@
 //! begins is reported; and every update reclaims what stalled elsewhere.
 
 use phux_protocol::wire::frame::TombstoneReason;
-use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
+use phux_protocol::{BootstrapProfile, BootstrapStreamProfile, ResourceId};
 
 use super::super::kernel_rig::RigAdapter;
+use super::super::test_rig::Gen;
 use super::super::{
     EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus,
     MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_IDLE_MS, SessionKernel,
@@ -21,77 +22,43 @@ fn kernel() -> Kernel {
     SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw)
 }
 
-fn ids(raw: u64) -> (StreamId, BootstrapId) {
-    (stream(), generation(raw))
+/// Generation `raw` of `id` on stream 3.
+fn surface_gen(id: &ResourceId, raw: u64) -> Gen {
+    Gen {
+        id: id.clone(),
+        s: stream(),
+        b: generation(raw),
+    }
 }
 
 fn begin(kernel: &mut Kernel, now_ms: u64, id: &ResourceId, raw: u64) -> Outcome {
-    let terminal = *id != surface();
-    kernel.update_at(
-        now_ms,
-        KernelInput::BootstrapBegin {
-            terminal_id: id,
-            stream_id: stream(),
-            bootstrap_id: generation(raw),
-            profile: if terminal {
-                BootstrapStreamProfile::SynthesizedVtRaw
-            } else {
-                BootstrapStreamProfile::PixelSurfacePngV1
-            },
-            geometry: if terminal {
-                CanonicalGeometry { cols: 80, rows: 24 }
-            } else {
-                CanonicalGeometry { cols: 0, rows: 0 }
-            },
-            base_seq: 4,
-        },
-        &mut EffectBuffer::new(),
-    )
+    let g = surface_gen(id, raw);
+    let input = if *id == surface() {
+        g.begin_gridless(BootstrapStreamProfile::PixelSurfacePngV1, 4)
+    } else {
+        g.begin(4)
+    };
+    kernel.update_at(now_ms, input, &mut EffectBuffer::new())
 }
 
 fn chunk(kernel: &mut Kernel, now_ms: u64, chunk_seq: u32, payload: &[u8]) -> Outcome {
-    let (stream_id, bootstrap_id) = ids(1);
+    let g = surface_gen(&surface(), 1);
     kernel.update_at(
         now_ms,
-        KernelInput::BootstrapChunk {
-            terminal_id: &surface(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        },
+        g.chunk(chunk_seq, payload),
         &mut EffectBuffer::new(),
     )
 }
 
 fn ready(kernel: &mut Kernel, now_ms: u64, raw: u64, effects: &mut EffectBuffer) -> Outcome {
-    let (stream_id, bootstrap_id) = ids(raw);
-    kernel.update_at(
-        now_ms,
-        KernelInput::BootstrapReady {
-            terminal_id: &surface(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        effects,
-    )
+    kernel.update_at(now_ms, surface_gen(&surface(), raw).ready(None), effects)
 }
 
 fn tombstone(kernel: &mut Kernel, now_ms: u64, raw: u64) {
-    let (stream_id, bootstrap_id) = ids(raw);
+    let g = surface_gen(&surface(), raw);
+    let input = g.tombstone(TombstoneReason::OutboundGap, 4);
     kernel
-        .update_at(
-            now_ms,
-            KernelInput::Tombstone {
-                terminal_id: &surface(),
-                stream_id,
-                bootstrap_id,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 4,
-            },
-            &mut EffectBuffer::new(),
-        )
+        .update_at(now_ms, input, &mut EffectBuffer::new())
         .unwrap();
 }
 
@@ -321,17 +288,8 @@ fn a_stalled_cut_from_an_earlier_connection_stops_holding_the_ceiling() {
 }
 
 fn output_to(kernel: &mut Kernel, raw: u64, seq: u64) -> Outcome {
-    let (stream_id, bootstrap_id) = ids(raw);
-    kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &surface(),
-            stream_id,
-            bootstrap_id,
-            seq,
-            payload: b"doc",
-        },
-        &mut EffectBuffer::new(),
-    )
+    let g = surface_gen(&surface(), raw);
+    kernel.update(g.output(seq, b"doc"), &mut EffectBuffer::new())
 }
 
 #[test]
@@ -392,19 +350,9 @@ fn a_run_of_frames_off_the_current_generation_asks_for_recovery() {
     ready(&mut kernel, 0, 1, &mut effects).unwrap();
     let mut last = EffectBuffer::new();
     for seq in 0..64 {
-        let (stream_id, other) = ids(9);
+        let g = surface_gen(&surface(), 9);
         kernel
-            .update_at(
-                0,
-                KernelInput::ResourceOutput {
-                    terminal_id: &surface(),
-                    stream_id,
-                    bootstrap_id: other,
-                    seq: seq + 5,
-                    payload: b"mis-tagged",
-                },
-                &mut last,
-            )
+            .update_at(0, g.output(seq + 5, b"mis-tagged"), &mut last)
             .unwrap_err();
         assert_eq!(stalls(&last).is_empty(), seq < 63, "frame {seq}");
     }

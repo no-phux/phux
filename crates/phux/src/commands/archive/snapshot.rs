@@ -430,6 +430,30 @@ mod tests {
 
     use super::*;
 
+    /// Everything [`archive_from_snapshot`] reads besides the snapshot.
+    #[derive(Default)]
+    struct Inputs {
+        attached: HashMap<ResourceId, AgentSessionRecord>,
+        layouts: HashMap<SessionId, ArrangementDoc>,
+        projects: HashMap<String, String>,
+        hosts: HashMap<String, String>,
+        directories: HashMap<String, String>,
+    }
+
+    fn export_with(snapshot: &SessionSnapshot, inputs: &Inputs) -> (WorkspaceArchive, Vec<String>) {
+        archive_from_snapshot(
+            snapshot,
+            AgentRecords {
+                attached: &inputs.attached,
+                native: &HashMap::new(),
+            },
+            &inputs.layouts,
+            &inputs.projects,
+            &inputs.hosts,
+            &inputs.directories,
+        )
+    }
+
     #[test]
     fn projects_snapshot_into_workspace_archive() {
         let session = SessionInfo::new(SessionId::new(1), "ops")
@@ -451,16 +475,12 @@ mod tests {
                 .expect("valid record"),
         )]);
 
-        let (archive, warnings) = archive_from_snapshot(
+        let (archive, warnings) = export_with(
             &snapshot,
-            AgentRecords {
-                attached: &agent_sessions,
-                native: &HashMap::new(),
+            &Inputs {
+                attached: agent_sessions,
+                ..Inputs::default()
             },
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
 
@@ -507,17 +527,7 @@ mod tests {
                 .with_windows(vec![inactive_window, active_window])
                 .with_resources(panes);
 
-        let (archive, warnings) = archive_from_snapshot(
-            &snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
-            },
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let (archive, warnings) = export_with(&snapshot, &Inputs::default());
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert!(!archive.sessions[0].windows[0].active);
@@ -545,16 +555,12 @@ mod tests {
         let mut projects = HashMap::new();
         projects.insert("api".to_owned(), "phux".to_owned());
 
-        let (archive, warnings) = archive_from_snapshot(
+        let (archive, warnings) = export_with(
             &snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
+            &Inputs {
+                projects,
+                ..Inputs::default()
             },
-            &HashMap::new(),
-            &projects,
-            &HashMap::new(),
-            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
@@ -582,16 +588,13 @@ mod tests {
         let mut projects = HashMap::new();
         projects.insert("api".to_owned(), "phux".to_owned());
 
-        let (archive, warnings) = archive_from_snapshot(
+        let (archive, warnings) = export_with(
             &snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
+            &Inputs {
+                projects,
+                hosts,
+                ..Inputs::default()
             },
-            &HashMap::new(),
-            &projects,
-            &hosts,
-            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
@@ -617,16 +620,12 @@ mod tests {
         let mut directories = HashMap::new();
         directories.insert("api".to_owned(), "/src/api".to_owned());
 
-        let (archive, warnings) = archive_from_snapshot(
+        let (archive, warnings) = export_with(
             &snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
+            &Inputs {
+                directories,
+                ..Inputs::default()
             },
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &directories,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
@@ -659,16 +658,12 @@ mod tests {
         snapshot: &SessionSnapshot,
         layouts: &HashMap<SessionId, ArrangementDoc>,
     ) -> (WorkspaceArchive, Vec<String>) {
-        archive_from_snapshot(
+        export_with(
             snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
+            &Inputs {
+                layouts: layouts.clone(),
+                ..Inputs::default()
             },
-            layouts,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
         )
     }
 
@@ -783,17 +778,7 @@ mod tests {
             ])
             .with_resources(vec![pane(3, "/ops/a"), pane(4, "/ops/b")]);
 
-        let (archive, _) = archive_from_snapshot(
-            &snapshot,
-            AgentRecords {
-                attached: &HashMap::new(),
-                native: &HashMap::new(),
-            },
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let (archive, _) = export_with(&snapshot, &Inputs::default());
         assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/ops/b"));
     }
 }

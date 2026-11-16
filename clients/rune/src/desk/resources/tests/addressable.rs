@@ -10,7 +10,7 @@ fn a_local_document_has_a_sidebar_row_a_palette_row_a_cycle_stop_and_a_title() {
         record(2, ResourceKind::AccessibilityTree),
     ];
     let (_client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
     assert_eq!(rt.state.window_title(), "Mirror 1 — work");
 
     assert!(rt.find("pane-@1").is_some(), "its terminal");
@@ -37,15 +37,15 @@ fn a_local_document_has_a_sidebar_row_a_palette_row_a_cycle_stop_and_a_title() {
 
     rt.update(|d, _| d.cycle(1));
     step(&mut rt);
-    let shown = rt.state.shown.as_ref().unwrap();
+    let shown = rt.state.connection.shown.as_ref().unwrap();
     assert_eq!((&shown.resource, shown.view), (&id(2), None));
     assert_eq!(rt.state.window_title(), "Mirror 2 — work");
     rt.update(|d, _| d.cycle(1));
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
     rt.update(|d, _| d.cycle(-1));
     step(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(2));
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
     ];
     let (_client, mut rt) = fixture(&records, &doc(LayoutNode::Leaf(id(1))));
     let unsessioned = |d: &mut Desk| {
-        let topology = d.topology.as_mut().unwrap();
+        let topology = d.connection.topology.as_mut().unwrap();
         let listed = topology.resources.iter_mut().find(|r| r.id == id(2));
         listed.unwrap().session_id = 0;
     };
@@ -66,7 +66,7 @@ fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
     assert_eq!(named.session, "work");
 
     rt.update(|d, _| {
-        let entry = d.resources.entries.get_mut(&id(2)).unwrap();
+        let entry = d.connection.resources.entries.get_mut(&id(2)).unwrap();
         entry.record.session = SessionKey::new([9; 16]).unwrap();
     });
     assert_eq!(document(&rt.state), None, "no session row called \"\"");
@@ -89,10 +89,13 @@ fn stepping_in_session_walks_tabs_then_panes_and_wraps() {
     arrangement.add_group("second".to_owned(), id(3));
     arrangement.active = 0;
     let (_client, mut rt) = fixture(&records, &arrangement);
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
     for (step_by, want) in [(1, 2), (1, 3), (1, 1), (-1, 3)] {
         rt.update(|d, _| d.cycle_in_session(step_by));
         step(&mut rt);
-        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(want));
+        assert_eq!(
+            rt.state.connection.shown.as_ref().unwrap().resource,
+            id(want)
+        );
     }
 }

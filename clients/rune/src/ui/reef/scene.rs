@@ -5,8 +5,9 @@
 use std::f32::consts::{PI, TAU};
 
 use super::Label;
-use super::pen::{Pen, Xf, clip_convex, quad};
-use crate::reef::{Jelly, Kelp, Mood, Pal, Pt, Reef, Rgb, Zone, mix};
+use crate::playground::{Mood, Pt, Rgb, mix};
+use crate::reef::{Jelly, Kelp, Pal, Reef, Zone};
+use crate::ui::playground::pen::{Pen, Xf, clip_convex, quad};
 
 const WHITE: Rgb = [255.0, 255.0, 255.0];
 const BLACK: Rgb = [0.0, 0.0, 0.0];

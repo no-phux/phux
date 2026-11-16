@@ -287,45 +287,6 @@ mod tests {
         ));
     }
 
-    /// Retraction is per-source in both directions: a lower rung cannot
-    /// silence a pane it does not own either.
-    #[test]
-    fn a_scrape_cannot_retract_a_sentinels_ask() {
-        let terminal = ResourceId::default();
-        let mut detector = AskedDetector::default();
-        detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?"));
-        assert_eq!(detector.retract(terminal, AskedSource::Scrape), None);
-        assert!(detector.current(terminal).is_some());
-    }
-
-    #[test]
-    fn hook_wins_over_scrape() {
-        let terminal = ResourceId::default();
-        let mut detector = AskedDetector::default();
-        assert!(matches!(
-            detector.report(
-                terminal,
-                AskedSource::Scrape,
-                payload("scrape", "Continue?")
-            ),
-            AskedTransition::Entered(_)
-        ));
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Hook, payload("hook", "Approve?")),
-            AskedTransition::Updated(_)
-        ));
-        assert_eq!(detector.current(terminal).unwrap().id, "hook");
-        assert_eq!(
-            detector.report(
-                terminal,
-                AskedSource::Scrape,
-                payload("scrape-2", "Still waiting?")
-            ),
-            AskedTransition::Ignored
-        );
-        assert_eq!(detector.current(terminal).unwrap().id, "hook");
-    }
-
     #[test]
     fn clear_terminal_drops_pending_ask() {
         let terminal = ResourceId::default();

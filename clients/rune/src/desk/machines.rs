@@ -10,8 +10,11 @@ use std::time::Duration;
 use phux_client_runtime::Target;
 use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 
-use super::{Desk, NoticeKind};
+use super::Desk;
 use crate::machines::{self, Add, Glance, Host, Peer};
+
+pub mod checklist;
+pub mod ssh;
 
 /// How often an expanded machine's sessions are listed again, in seconds.
 const GLANCE_EVERY: f64 = 30.0;
@@ -48,8 +51,6 @@ pub struct Machines {
     pub picking: Option<String>,
     /// The other machines whose sessions the sidebar shows; `None` is this computer.
     pub expanded: HashSet<Option<String>>,
-    /// The sidebar hides this window's own sessions under its machine.
-    pub folded: bool,
     /// What each expanded machine last listed.
     pub glances: HashMap<Option<String>, Result<Vec<Glance>, String>>,
     /// When each machine's listing last started, on the app clock, and the
@@ -75,6 +76,9 @@ pub struct Machines {
     pub pending: Vec<String>,
     /// A link waiting for the person to accept pairing with it.
     pub offer: Option<crate::connect::Offer>,
+    /// What works here, out under one machine's row.
+    pub checklist: Option<checklist::Checklist>,
+    pub ssh: ssh::Ssh,
 }
 
 impl Machines {
@@ -92,7 +96,6 @@ impl Machines {
             removing: None,
             picking: None,
             expanded: HashSet::new(),
-            folded: false,
             glances: HashMap::new(),
             glanced: HashMap::new(),
             peeking: HashSet::new(),
@@ -106,6 +109,8 @@ impl Machines {
             window: None,
             pending: Vec::new(),
             offer: None,
+            checklist: None,
+            ssh: ssh::Ssh::default(),
         }
     }
 
@@ -136,6 +141,7 @@ impl Machines {
     fn refresh(&mut self) -> u64 {
         self.refreshes += 1;
         let refresh = self.refreshes;
+        self.ssh.hosts = crate::ssh_config::read();
         if let Some(phux) = self.phux.clone() {
             self.worker(move |send| {
                 let hosts = machines::registered(&phux);
@@ -249,12 +255,9 @@ impl Machines {
 }
 
 impl Desk {
-    /// Open or close a machine in the sidebar. This window's own machine
-    /// folds its sessions away; another lists its sessions to glance at.
+    /// Open or close another machine's session preview in the navigator.
     pub fn toggle_host(&mut self, host: Option<String>) {
-        if host == self.machines.current {
-            self.machines.folded = !self.machines.folded;
-        } else if !self.machines.expanded.remove(&host) {
+        if !self.machines.expanded.remove(&host) {
             self.machines.expanded.insert(host.clone());
             self.machines.peek(host, self.clock);
         }
@@ -429,14 +432,10 @@ impl Desk {
             let saved = machine.clone().unwrap_or_default();
             let _ = self.prefs.set("machine", &saved);
         }
-        self.left_server();
-        let mut launch = self.launch.clone();
-        launch.session = session;
-        let mut next = Desk::open(&launch, machine.clone());
-        self.carry_into(&mut next);
-        next.machines.current = machine;
-        next.close_machines();
-        *self = next;
+        self.replace_connection(super::link::Replacement::Machine);
+        self.launch.session = session;
+        self.machines.current = machine;
+        self.close_machines();
         self.dial();
     }
 
@@ -470,7 +469,7 @@ impl Desk {
                             self.machines.awaited = Some(self.machines.refresh());
                         }
                         Err(error) => {
-                            let request = self.machines.request.take();
+                            let request = self.machines.take_failed(&error);
                             let paired = request.is_some_and(|request| request.code.is_some());
                             self.machines.outcome = Some(Err(if paired {
                                 pairing_failure(&error)
@@ -504,24 +503,8 @@ impl Desk {
                 }
             }
         }
+        self.machines.next_queued();
         changed
-    }
-
-    /// An add finished. With the sheet still open that's a wish to go there,
-    /// and the sheet says so. With it closed the person has gone back to
-    /// work, so the window stays and only offers: moving it would send their
-    /// next keys to another computer.
-    fn landed(&mut self, host: String) {
-        if !self.machines.open {
-            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
-            let offer = format!("{host} is set up. Switch to it from Machines.");
-            return self.say(NoticeKind::Info, offer);
-        }
-        self.rebuild(Some(host.clone()), None);
-        self.machines.open = true;
-        if self.machines.current.as_ref() == Some(&host) {
-            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
-        }
     }
 }
 

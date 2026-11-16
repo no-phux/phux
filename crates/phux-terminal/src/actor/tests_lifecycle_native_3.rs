@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -63,7 +62,6 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
 }
 
 /// Recapturing one `(owner, stream_id)` tombstones only that binding.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");
@@ -151,7 +149,6 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
 
 /// Two pumps of one client joining one capture both stay waiters and
 /// activate publication.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn two_same_client_pumps_can_share_one_pending_capture() {
     let bundle = TerminalActor::new(20, 5).expect("new actor");

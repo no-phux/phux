@@ -380,6 +380,10 @@ pub struct PolicyCfg {
     /// Unset is `local`, and a configured remote entry point or workload
     /// authority location then refuses to start (ADR-0179).
     pub mode: Option<PolicyMode>,
+    /// Under `paired`, admit this machine's owner's own tailnet devices over
+    /// the tailnet QUIC listener with no token or certificate, on the local
+    /// Tailscale client's word (`docs/config.md#tailnet-owner-devices`).
+    pub tailnet_owner: bool,
 }
 
 /// The two closed policy modes (`docs/remote.md#who-can-connect`).

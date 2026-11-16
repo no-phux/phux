@@ -15,7 +15,7 @@ use std::io::{BufRead, Write as _};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client_runtime::pairing::{
     CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
@@ -24,11 +24,15 @@ pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
 #[cfg(test)]
 mod endpoint_tests;
+mod link_name;
 #[cfg(test)]
 mod link_tests;
+use link_name::{link_name, percent_encode};
 mod manage;
+mod rebind;
 use manage::{parse_expires, run_credential_action};
 use phux_config::overlay::MagicDns;
+use rebind::wait_for_rebind;
 
 use usage::Subcommands;
 
@@ -180,26 +184,6 @@ fn legacy_connect_link(link: &str) -> Option<String> {
         .map(|query| format!("{LEGACY_CONNECT_URI_PREFIX}{query}"))
 }
 
-/// Percent-encode everything outside RFC 3986 `unreserved` — conservative on
-/// purpose, since the value lands inside a URI query a phone must parse.
-fn percent_encode(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => {
-                out.push('%');
-                out.push(HEX[usize::from(byte >> 4)] as char);
-                out.push(HEX[usize::from(byte & 0x0F)] as char);
-            }
-        }
-    }
-    out
-}
-
 /// Turn a live listener bind into a device-dialable endpoint. An unspecified
 /// bind (`0.0.0.0`/`::`) uses the first overlay address; loopback is not
 /// advertised to another device. An address the host's `MagicDNS` name stands
@@ -257,18 +241,8 @@ fn resolve_quic_endpoint(
 /// The `HOST:PORT` another machine dials this server's live QUIC listener at,
 /// resolved as a pairing link's `quic` is (overlay address, `MagicDNS`
 /// name). `Ok(None)` when no QUIC listener is bound or it binds loopback.
-///
-/// # Errors
-///
-/// No server answers, or it has no remote listener bound.
 pub(crate) fn advertised_quic_endpoint(socket: &Path) -> Result<Option<String>, String> {
-    let live = match query_live_listeners(socket) {
-        Ok(live) => live,
-        Err(ListenerQueryError::Unavailable(message)) => return Err(message),
-        Err(ListenerQueryError::Unbound { disabled }) => {
-            return Err(other_unbound_refusal(socket, &disabled));
-        }
-    };
+    let live = bound_or_refusal(socket, query_live_listeners(socket))?;
     let overlay = phux_config::overlay::detect();
     let magic_dns = phux_config::overlay::detect_magic_dns();
     Ok(
@@ -557,10 +531,8 @@ fn other_unbound_refusal(socket: &Path, disabled: &[String]) -> String {
     )
 }
 
-/// The listeners a mint may use, or a printed refusal. A bound listener is
-/// returned as the server reported it. An unset `[policy] mode` is the one
-/// case that offers to write `paired` and restart; any other unbound cause
-/// is a refusal.
+/// [`ensure_remote_listener`] on the terminal and the real server, printing
+/// the refusal.
 fn bound_remote_listener(socket: &Path, enable: bool, json: bool) -> Option<LiveListeners> {
     ensure_remote_listener(
         socket,
@@ -603,19 +575,23 @@ fn ensure_remote_listener(
     }
     setup.write_paired()?;
     setup.rebind()?;
-    match setup.query() {
-        Ok(live) => Ok(live),
-        Err(ListenerQueryError::Unavailable(message)) => Err(message),
-        Err(ListenerQueryError::Unbound { disabled }) => {
-            Err(other_unbound_refusal(socket, &disabled))
-        }
-    }
+    bound_or_refusal(socket, setup.query())
 }
 
-/// Ask the server to re-exec so the config just written takes effect, then
-/// wait until it answers again. Panes stay attached across that re-exec
-/// (`phux upgrade`).
-fn rebind_server(socket: &Path) -> Result<(), String> {
+/// A listener query whose unbound answer is the mode-agnostic refusal.
+fn bound_or_refusal(
+    socket: &Path,
+    queried: Result<LiveListeners, ListenerQueryError>,
+) -> Result<LiveListeners, String> {
+    queried.map_err(|err| match err {
+        ListenerQueryError::Unavailable(message) => message,
+        ListenerQueryError::Unbound { disabled } => other_unbound_refusal(socket, &disabled),
+    })
+}
+
+/// Re-exec the server so the config just written takes effect, then wait
+/// until it answers again. Panes stay attached (`phux upgrade`).
+pub(crate) fn rebind_server(socket: &Path) -> Result<(), String> {
     let outcome = super::upgrade::LiveUpgrade::new(socket, false).and_then(|mut env| {
         // Same consent as `phux upgrade` with no `--close-agent-sessions`:
         // a current server re-binds without a second question. Only a
@@ -636,43 +612,6 @@ fn rebind_server(socket: &Path) -> Result<(), String> {
         )),
         Err(err) => Err(format!(
             "could not restart the server at {} to bind a listener: {err}",
-            socket.display()
-        )),
-    }
-}
-
-/// Poll until a listener is bound, or until the restarted server has been
-/// up long enough that overlay detection would have recorded one.
-fn wait_for_rebind(socket: &Path) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("could not build a runtime to wait for the server: {err}"))?;
-    let deadline = Instant::now() + REBIND_WAIT;
-    let mut saw_gap = false;
-    let mut up_since: Option<Instant> = None;
-    while Instant::now() < deadline {
-        match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
-            Ok(_) => return Ok(()),
-            Err(ListenerQueryError::Unbound { .. }) => {
-                if saw_gap {
-                    let since = up_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= LISTENER_SETTLE {
-                        return Ok(());
-                    }
-                }
-            }
-            Err(ListenerQueryError::Unavailable(_)) => {
-                saw_gap = true;
-                up_since = None;
-            }
-        }
-        std::thread::sleep(REBIND_POLL);
-    }
-    match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
-        Ok(_) | Err(ListenerQueryError::Unbound { .. }) => Ok(()),
-        Err(ListenerQueryError::Unavailable(message)) => Err(format!(
-            "the server at {} did not come back after the restart: {message}",
             socket.display()
         )),
     }
@@ -972,7 +911,7 @@ fn present_listener_credential(
         build_connect_link_pinned(
             url,
             addresses.quic_endpoint.as_deref(),
-            output.name,
+            Some(&link_name(output.name, addresses.magic_dns_name.as_deref())),
             pins,
             token,
         )
@@ -995,24 +934,14 @@ fn present_listener_credential(
         return crate::output::json(&document);
     }
 
-    if present_human_secret(&HumanSecret {
-        credential_id: &minted.id,
+    let secret = HumanSecret::new(
+        &minted.id,
         token,
-        fingerprint: fingerprint.as_deref(),
-        link: link.as_deref(),
-        expires_at: output.expires_at,
-        expires_label: output.expires_label,
-        first_use_by: output.first_use_by,
-        qr: output.qr,
-        default_qr: output.default_qr,
-        secret_file: output.secret_file,
-        hide_bearer,
-    }) != ExitCode::SUCCESS
-    {
-        return ExitCode::FAILURE;
-    }
-    outln!("Token written to {}", tokens.display());
-    ExitCode::SUCCESS
+        fingerprint.as_deref(),
+        link.as_deref(),
+        output,
+    );
+    finish_human_mint(&secret, tokens)
 }
 
 /// Whether a mint prints the QR beneath its text link by default: on a
@@ -1209,7 +1138,13 @@ fn mint_relay_link(
         authority: Some(authority.as_str()),
         enrollment: ticket.as_ref().map(|ticket| ticket.secret_hex.as_str()),
     };
-    let link = build_relay_connect_link(&connector.relay, &relay.route, output.name, pins, &token);
+    let link = build_relay_connect_link(
+        &connector.relay,
+        &relay.route,
+        Some(&link_name(output.name, None)),
+        pins,
+        &token,
+    );
     let expires_text = output.expires_at.map(format_rfc3339);
     if output.json {
         let mut doc = pair_document(
@@ -1248,24 +1183,8 @@ fn mint_relay_link(
     }
     outln!("  server certificate authority {authority} (verified end to end through the relay)");
     outln!();
-    if present_human_secret(&HumanSecret {
-        credential_id: &minted.id,
-        token: &token,
-        fingerprint,
-        link: Some(&link),
-        expires_at: output.expires_at,
-        expires_label: output.expires_label,
-        first_use_by: output.first_use_by,
-        qr: output.qr,
-        default_qr: output.default_qr,
-        secret_file: output.secret_file,
-        hide_bearer,
-    }) != ExitCode::SUCCESS
-    {
-        return ExitCode::FAILURE;
-    }
-    outln!("Token written to {}", tokens.display());
-    ExitCode::SUCCESS
+    let secret = HumanSecret::new(&minted.id, &token, fingerprint, Some(&link), output);
+    finish_human_mint(&secret, tokens)
 }
 
 /// The validated route and the `[[connector]]` entry its link dials.
@@ -1704,6 +1623,38 @@ struct HumanSecret<'a> {
     hide_bearer: bool,
 }
 
+impl<'a> HumanSecret<'a> {
+    const fn new(
+        credential_id: &'a str,
+        token: &'a str,
+        fingerprint: Option<&'a str>,
+        link: Option<&'a str>,
+        output: LinkOutput<'a>,
+    ) -> Self {
+        Self {
+            credential_id,
+            token,
+            fingerprint,
+            link,
+            expires_at: output.expires_at,
+            expires_label: output.expires_label,
+            first_use_by: output.first_use_by,
+            qr: output.qr,
+            default_qr: output.default_qr,
+            secret_file: output.secret_file,
+            hide_bearer: hides_bearer(output.qr, output.secret_file.is_some(), output.json),
+        }
+    }
+}
+
+fn finish_human_mint(secret: &HumanSecret<'_>, tokens: &Path) -> ExitCode {
+    if present_human_secret(secret) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+    outln!("Token written to {}", tokens.display());
+    ExitCode::SUCCESS
+}
+
 fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
     print_expiry_banner(secret);
     if secret.hide_bearer {
@@ -1883,11 +1834,7 @@ fn print_camera_qr(link: &str) -> bool {
     let scale = columns.map_or(1, |columns| qr_scale_that_fits(link, columns));
     match render_qr_scaled(link, scale) {
         Ok(art) => {
-            let width = art
-                .lines()
-                .map(|line| line.chars().count())
-                .max()
-                .unwrap_or(0);
+            let width = art_width(&art);
             outln!("Scan to pair (module scale {scale}, {width} columns). The code must not wrap.");
             if let Some(columns) = columns
                 && width > usize::from(columns)
@@ -1925,16 +1872,18 @@ fn qr_scale_that_fits(payload: &str, columns: u16) -> u32 {
         let Ok(art) = render_qr_scaled(payload, scale) else {
             return 1;
         };
-        let width = art
-            .lines()
-            .map(|line| line.chars().count())
-            .max()
-            .unwrap_or(0);
-        if width <= usize::from(columns) {
+        if art_width(&art) <= usize::from(columns) {
             return scale;
         }
     }
     1
+}
+
+fn art_width(art: &str) -> usize {
+    art.lines()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// The `phux pair --json` document. Pure, so the shape (including
@@ -2008,7 +1957,7 @@ mod tests {
     /// omitted.
     #[test]
     fn pair_document_pins_the_contract_shape() {
-        let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let overlay = [V4];
         let doc = pair_document(
             "deadbeef",
             Some("AB:CD"),
@@ -2092,125 +2041,67 @@ mod tests {
         );
     }
 
+    const V4: IpAddr = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2));
+    const V6: IpAddr = IpAddr::V6(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1));
+
     #[test]
     fn host_flag_wins_and_gets_wss_scheme() {
-        // Bare host:port gets the wss:// the remote path always uses.
-        assert_eq!(
-            resolve_server_url(Some("100.64.0.2:8787"), &[], None, None),
-            Some("wss://100.64.0.2:8787".to_owned())
-        );
-        // A full URL passes through untouched (loopback dev path stays ws://).
-        assert_eq!(
-            resolve_server_url(Some("ws://127.0.0.1:8787"), &[], None, None),
-            Some("ws://127.0.0.1:8787".to_owned())
-        );
-        assert_eq!(
-            resolve_server_url(Some("wss://mini.tail-net.ts.net:8787"), &[], None, None),
-            Some("wss://mini.tail-net.ts.net:8787".to_owned())
-        );
+        for (host, expected) in [
+            // Bare host:port gets the wss:// the remote path always uses.
+            ("100.64.0.2:8787", "wss://100.64.0.2:8787"),
+            // A full URL passes through untouched (loopback dev path stays ws://).
+            ("ws://127.0.0.1:8787", "ws://127.0.0.1:8787"),
+            (
+                "wss://mini.tail-net.ts.net:8787",
+                "wss://mini.tail-net.ts.net:8787",
+            ),
+        ] {
+            assert_eq!(
+                resolve_server_url(Some(host), &[], None, None).as_deref(),
+                Some(expected)
+            );
+        }
         // The flag also beats the bound listener and a detected overlay address.
-        let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 9))];
         assert_eq!(
-            resolve_server_url(Some("mini:1"), &overlay, None, addr("100.64.0.9:2")),
-            Some("wss://mini:1".to_owned())
+            resolve_server_url(Some("mini:1"), &[V4], None, addr("100.64.0.2:2")).as_deref(),
+            Some("wss://mini:1")
         );
     }
 
-    /// Without `--host` the link names the address the server's wss listener
-    /// is actually bound to, never a guessed port.
+    /// Without `--host`, the wss URL and the QUIC endpoint name the live bind
+    /// as a device dials it: concrete addresses keep their port, a wildcard
+    /// bind uses an overlay address of the same family, loopback is never
+    /// advertised, and IPv6 is bracketed.
     #[test]
-    fn derived_url_is_the_bound_wss_listener() {
-        let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
-        // The auto-overlay listener binds the overlay address itself.
-        assert_eq!(
-            resolve_server_url(None, &overlay, None, addr("100.64.0.2:8787")),
-            Some("wss://100.64.0.2:8787".to_owned())
-        );
-        // A concrete routable bind is dialed as bound, on its real port.
-        assert_eq!(
-            resolve_server_url(None, &overlay, None, addr("192.168.1.5:9000")),
-            Some("wss://192.168.1.5:9000".to_owned())
-        );
-        // An unspecified bind is dialed on the overlay address, bound port...
-        assert_eq!(
-            resolve_server_url(None, &overlay, None, addr("0.0.0.0:9001")),
-            Some("wss://100.64.0.2:9001".to_owned())
-        );
-        // ...and yields nothing with no overlay address to dial it on.
-        assert_eq!(
-            resolve_server_url(None, &[], None, addr("0.0.0.0:9001")),
-            None
-        );
-        // A loopback bind is unreachable from a device.
-        assert_eq!(
-            resolve_server_url(None, &overlay, None, addr("127.0.0.1:8787")),
-            None
-        );
-        // No wss listener bound: no link, whatever the overlay says.
-        assert_eq!(resolve_server_url(None, &overlay, None, None), None);
-        // A v6 address is bracketed so the URL stays parseable.
-        let v6 = [IpAddr::V6(Ipv6Addr::new(
-            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
-        ))];
-        assert_eq!(
-            resolve_server_url(None, &v6, None, addr("[::]:8787")),
-            Some("wss://[fd7a:115c:a1e0::1]:8787".to_owned())
-        );
-    }
-
-    /// QUIC link endpoints follow the same device-reachability rules as WSS:
-    /// concrete addresses keep their live port, wildcard binds use an overlay,
-    /// loopback is never advertised, and IPv6 is bracketed by `SocketAddr`.
-    #[test]
-    fn derived_quic_endpoint_is_live_and_device_dialable() {
-        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
-        assert_eq!(
-            resolve_quic_endpoint(&v4, None, addr("100.64.0.2:8788")),
-            Some("quic://100.64.0.2:8788".to_owned())
-        );
-        assert_eq!(
-            resolve_quic_endpoint(&v4, None, addr("192.168.1.5:9000")),
-            Some("quic://192.168.1.5:9000".to_owned())
-        );
-        assert_eq!(
-            resolve_quic_endpoint(&v4, None, addr("0.0.0.0:9001")),
-            Some("quic://100.64.0.2:9001".to_owned())
-        );
-        assert_eq!(resolve_quic_endpoint(&[], None, addr("0.0.0.0:9001")), None);
-        let v6_only = [IpAddr::V6(Ipv6Addr::LOCALHOST)];
-        assert_eq!(
-            resolve_quic_endpoint(&v6_only, None, addr("0.0.0.0:9001")),
-            None,
-            "an IPv4 wildcard does not make an IPv6 address dialable"
-        );
-        assert_eq!(
-            resolve_quic_endpoint(&v4, None, addr("127.0.0.1:8788")),
-            None
-        );
-        assert_eq!(resolve_quic_endpoint(&v4, None, None), None);
-
-        let v6 = [IpAddr::V6(Ipv6Addr::new(
-            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
-        ))];
-        assert_eq!(
-            resolve_quic_endpoint(&v6, None, addr("[::]:8788")),
-            Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned())
-        );
-        let mixed = [v4[0], v6[0]];
-        assert_eq!(
-            resolve_quic_endpoint(&mixed, None, addr("[::]:8788")),
-            Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned()),
-            "a wildcard bind uses an overlay address of the same family"
-        );
+    fn derived_endpoints_are_the_live_device_dialable_binds() {
+        let v4: &[IpAddr] = &[V4];
+        let v6: &[IpAddr] = &[V6];
+        let mixed: &[IpAddr] = &[V4, V6];
+        let v6_loopback: &[IpAddr] = &[IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        let none: &[IpAddr] = &[];
+        for (overlay, bound, expected) in [
+            (v4, Some("100.64.0.2:8787"), Some("100.64.0.2:8787")),
+            (v4, Some("192.168.1.5:9000"), Some("192.168.1.5:9000")),
+            (v4, Some("0.0.0.0:9001"), Some("100.64.0.2:9001")),
+            (none, Some("0.0.0.0:9001"), None),
+            (v6_loopback, Some("0.0.0.0:9001"), None),
+            (v4, Some("127.0.0.1:8787"), None),
+            (v4, None, None),
+            (v6, Some("[::]:8787"), Some("[fd7a:115c:a1e0::1]:8787")),
+            (mixed, Some("[::]:8788"), Some("[fd7a:115c:a1e0::1]:8788")),
+        ] {
+            let bound = bound.and_then(addr);
+            let wss = resolve_server_url(None, overlay, None, bound);
+            assert_eq!(wss, expected.map(|e| format!("wss://{e}")), "{bound:?}");
+            let quic = resolve_quic_endpoint(overlay, None, bound);
+            assert_eq!(quic, expected.map(|e| format!("quic://{e}")), "{bound:?}");
+        }
     }
 
     fn magic_dns() -> MagicDns {
         MagicDns {
             name: "studio.tail9a8b.ts.net".to_owned(),
-            addresses: vec![
-                IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2)),
-                IpAddr::V6(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1)),
-            ],
+            addresses: vec![V4, V6],
         }
     }
 
@@ -2221,54 +2112,44 @@ mod tests {
     #[test]
     fn magic_dns_names_the_tailnet_endpoints() {
         let magic = magic_dns();
-        let magic = Some(&magic);
-        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
-        let v6 = [IpAddr::V6(Ipv6Addr::new(
-            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
-        ))];
-
-        // The auto-overlay bind, and a wildcard bind dialed on the overlay.
+        let wss = |host, overlay: &[IpAddr], bound| {
+            resolve_server_url(host, overlay, Some(&magic), addr(bound))
+        };
+        let quic =
+            |overlay: &[IpAddr], bound| resolve_quic_endpoint(overlay, Some(&magic), addr(bound));
+        let name = "studio.tail9a8b.ts.net";
         assert_eq!(
-            resolve_server_url(None, &v4, magic, addr("100.64.0.2:8787")),
-            Some("wss://studio.tail9a8b.ts.net:8787".to_owned())
+            wss(None, &[V4], "100.64.0.2:8787"),
+            Some(format!("wss://{name}:8787"))
         );
         assert_eq!(
-            resolve_server_url(None, &v4, magic, addr("0.0.0.0:9001")),
-            Some("wss://studio.tail9a8b.ts.net:9001".to_owned())
+            wss(None, &[V4], "0.0.0.0:9001"),
+            Some(format!("wss://{name}:9001"))
         );
         assert_eq!(
-            resolve_quic_endpoint(&v4, magic, addr("100.64.0.2:8788")),
-            Some("quic://studio.tail9a8b.ts.net:8788".to_owned())
+            quic(&[V4], "100.64.0.2:8788"),
+            Some(format!("quic://{name}:8788"))
         );
+        // The name stands for the v6 tailnet address too, unbracketed.
         assert_eq!(
-            resolve_quic_endpoint(&v6, magic, addr("[::]:8788")),
-            Some("quic://studio.tail9a8b.ts.net:8788".to_owned()),
-            "the name stands for the v6 tailnet address too, unbracketed"
+            quic(&[V6], "[::]:8788"),
+            Some(format!("quic://{name}:8788"))
         );
-
         // A bind the name does not resolve to keeps its address.
         assert_eq!(
-            resolve_server_url(None, &v4, magic, addr("192.168.1.5:9000")),
-            Some("wss://192.168.1.5:9000".to_owned())
+            wss(None, &[V4], "192.168.1.5:9000").as_deref(),
+            Some("wss://192.168.1.5:9000")
         );
         assert_eq!(
-            resolve_quic_endpoint(&[], magic, addr("100.64.0.9:8788")),
-            Some("quic://100.64.0.9:8788".to_owned())
+            quic(&[], "100.64.0.9:8788").as_deref(),
+            Some("quic://100.64.0.9:8788")
         );
         // Loopback and unresolvable wildcards are still not advertised.
-        assert_eq!(
-            resolve_quic_endpoint(&v4, magic, addr("127.0.0.1:8788")),
-            None
-        );
-        assert_eq!(
-            resolve_quic_endpoint(&[], magic, addr("0.0.0.0:8788")),
-            None
-        );
+        assert_eq!(quic(&[V4], "127.0.0.1:8788"), None);
+        assert_eq!(quic(&[], "0.0.0.0:8788"), None);
         // `--host` is the operator's claim and wins over the name.
-        assert_eq!(
-            resolve_server_url(Some("100.64.0.2:8787"), &v4, magic, addr("100.64.0.2:8787")),
-            Some("wss://100.64.0.2:8787".to_owned())
-        );
+        let host = wss(Some("100.64.0.2:8787"), &[V4], "100.64.0.2:8787");
+        assert_eq!(host.as_deref(), Some("wss://100.64.0.2:8787"));
     }
 
     /// A `MagicDNS` link is the same shape, and both legs parse: the CLI's own
@@ -2277,7 +2158,7 @@ mod tests {
     #[test]
     fn a_magic_dns_link_round_trips_and_names_its_sans() {
         let magic = magic_dns();
-        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let v4 = [V4];
         let url = resolve_server_url(None, &v4, Some(&magic), addr("100.64.0.2:8787"));
         let quic = resolve_quic_endpoint(&v4, Some(&magic), addr("100.64.0.2:8788"));
         let link = build_connect_link(
@@ -2322,7 +2203,7 @@ mod tests {
     #[test]
     fn an_uncovered_magic_dns_name_is_not_warned_about() {
         let addresses = PairAddresses {
-            overlay: vec![IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))],
+            overlay: vec![V4],
             live: live(Some("100.64.0.2:8787"), None),
             server_url: Some("wss://studio.tail9a8b.ts.net:8787".to_owned()),
             quic_endpoint: None,
@@ -2516,7 +2397,7 @@ mod tests {
     /// host with no scheme, no port, and no v6 brackets (phux-q9a0).
     #[test]
     fn advertised_names_are_the_hosts_a_client_verifies() {
-        let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let overlay = [V4];
 
         // The link host leads, and the overlay address it was derived from
         // does not repeat.
@@ -2673,42 +2554,6 @@ mod tests {
         );
     }
 
-    /// A link with no `name`/`fp` (the minimal shape the builder emits) is
-    /// still parseable — those two are genuinely optional.
-    #[test]
-    fn connect_link_without_optional_fields_parses() {
-        let link = build_connect_link("wss://mini.ts.net:8787", None, None, None, "abc123");
-        let parsed = parse_connect_link(&link).expect("parse");
-        assert_eq!(parsed.quic, None);
-        assert_eq!(parsed.name, None);
-        assert_eq!(parsed.cert_fingerprint, None);
-        assert_eq!(parsed.token, "abc123");
-    }
-
-    /// Shells and chat clients wrap a pasted link in quotes; stripping them
-    /// is cheaper than teaching every operator to remove them.
-    #[test]
-    fn connect_link_tolerates_pasted_quotes_and_whitespace() {
-        let link = build_connect_link("wss://mini:8787", None, None, Some("AB"), "tok");
-        let pasted = format!("  '{link}'\n");
-        assert_eq!(
-            parse_connect_link(&pasted).expect("parse"),
-            parse_connect_link(&link).expect("parse"),
-        );
-    }
-
-    /// A newer minting phux must be able to add a query key without breaking
-    /// an older `--code`.
-    #[test]
-    fn connect_link_tolerates_unknown_query_keys() {
-        let parsed = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://mini:8788&brand_new=42&token=tok",
-        )
-        .expect("parse");
-        assert_eq!(parsed.quic.as_deref(), Some("quic://mini:8788"));
-        assert_eq!(parsed.token, "tok");
-    }
-
     /// The custom-scheme spelling parses to identical credentials.
     #[test]
     fn legacy_scheme_is_the_same_link_under_another_prefix() {
@@ -2734,25 +2579,6 @@ mod tests {
             None
         );
         assert_eq!(legacy_connect_link("https://example.com/connect?x=1"), None);
-    }
-
-    /// A link minted before the move to `phux.sh` still pairs.
-    #[test]
-    fn connect_link_still_parses_the_legacy_host() {
-        let parsed = parse_connect_link(
-            "https://phux.phall.io/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef",
-        )
-        .expect("a link on the pre-move host must still pair");
-        assert_eq!(parsed.url.as_deref(), Some("wss://10.0.0.2:8787"));
-        assert_eq!(parsed.name.as_deref(), Some("mini"));
-        assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
-        assert_eq!(parsed.token, "deadbeef");
-
-        // But it is no longer what we emit.
-        assert!(
-            build_connect_link("wss://h:1", None, None, None, "tok")
-                .starts_with("https://phux.sh/")
-        );
     }
 
     /// The two fields a dial cannot proceed without are rejected loudly,
@@ -2889,12 +2715,7 @@ mod tests {
         assert!(!is_affirmative(""));
         assert!(!is_affirmative("yep"));
 
-        let mut prompt = ScriptedPrompt {
-            interactive: true,
-            answer: Some("y\n".to_owned()),
-            prompted: 0,
-            reads: 0,
-        };
+        let mut prompt = ScriptedPrompt::terminal(Some("y\n"));
         assert!(accept_paired_mode(false, false, &mut prompt));
         assert_eq!((prompt.prompted, prompt.reads), (1, 1));
 
@@ -2954,13 +2775,8 @@ mod tests {
     #[test]
     fn an_unset_mode_on_a_terminal_writes_paired_mode_only_on_yes() {
         let socket = Path::new("/run/phux.sock");
-        for answer in [Some("n\n".to_owned()), Some("\n".to_owned()), None] {
-            let mut prompt = ScriptedPrompt {
-                interactive: true,
-                answer,
-                prompted: 0,
-                reads: 0,
-            };
+        for answer in [Some("n\n"), Some("\n"), None] {
+            let mut prompt = ScriptedPrompt::terminal(answer);
             let mut setup = ScriptedSetup::unbound(None);
             let err = ensure_remote_listener(socket, false, false, &mut prompt, &mut setup)
                 .expect_err("declined");
@@ -2971,12 +2787,7 @@ mod tests {
             assert_eq!(setup.queries.len(), 0, "a decline does not ask again");
         }
 
-        let mut prompt = ScriptedPrompt {
-            interactive: true,
-            answer: Some("y\n".to_owned()),
-            prompted: 0,
-            reads: 0,
-        };
+        let mut prompt = ScriptedPrompt::terminal(Some("y\n"));
         let mut setup = ScriptedSetup::unbound(None);
         setup
             .queries
@@ -3013,12 +2824,7 @@ mod tests {
     #[test]
     fn json_on_a_terminal_does_not_ask_and_leaves_the_config() {
         let socket = Path::new("/run/phux.sock");
-        let mut prompt = ScriptedPrompt {
-            interactive: true,
-            answer: Some("y\n".to_owned()),
-            prompted: 0,
-            reads: 0,
-        };
+        let mut prompt = ScriptedPrompt::terminal(Some("y\n"));
         let mut setup = ScriptedSetup::unbound(None);
         let err = ensure_remote_listener(socket, false, true, &mut prompt, &mut setup)
             .expect_err("json does not ask");
@@ -3048,12 +2854,7 @@ mod tests {
     /// continues, and it does not prompt even on a terminal.
     #[test]
     fn enable_writes_paired_mode_without_asking() {
-        let mut prompt = ScriptedPrompt {
-            interactive: true,
-            answer: Some("n\n".to_owned()),
-            prompted: 0,
-            reads: 0,
-        };
+        let mut prompt = ScriptedPrompt::terminal(Some("n\n"));
         let mut setup = ScriptedSetup::unbound(None);
         setup
             .queries
@@ -3080,12 +2881,7 @@ mod tests {
             phux_config::PolicyMode::Paired,
             phux_config::PolicyMode::Local,
         ] {
-            let mut prompt = ScriptedPrompt {
-                interactive: true,
-                answer: Some("y\n".to_owned()),
-                prompted: 0,
-                reads: 0,
-            };
+            let mut prompt = ScriptedPrompt::terminal(Some("y\n"));
             let mut setup = ScriptedSetup::unbound(Some(mode));
             setup.queries.clear();
             setup.queries.push_back(Err(ListenerQueryError::Unbound {
@@ -3151,7 +2947,14 @@ width = 30 # keep
         fn silent() -> Self {
             Self {
                 interactive: false,
-                answer: None,
+                ..Self::terminal(None)
+            }
+        }
+
+        fn terminal(answer: Option<&str>) -> Self {
+            Self {
+                interactive: true,
+                answer: answer.map(str::to_owned),
                 prompted: 0,
                 reads: 0,
             }
