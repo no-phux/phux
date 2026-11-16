@@ -17,6 +17,7 @@ use super::frame::{
     decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
+use super::tlv::TlvValue;
 use crate::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
@@ -70,17 +71,17 @@ pub(crate) fn utf8_value(value: &[u8]) -> Result<String, DecodeError> {
 
 /// A field value's leading `u8`; bytes after it are ignored.
 pub(crate) fn u8_value(value: &[u8]) -> Result<u8, DecodeError> {
-    Decoder::new(value).read_u8()
+    u8::take(value, "")
 }
 
 /// A field value's leading big-endian `u32`; bytes after it are ignored.
 pub(crate) fn u32_value(value: &[u8]) -> Result<u32, DecodeError> {
-    Decoder::new(value).read_u32_be()
+    u32::take(value, "")
 }
 
 /// A field value's leading big-endian `u64`; bytes after it are ignored.
 pub(crate) fn u64_value(value: &[u8]) -> Result<u64, DecodeError> {
-    Decoder::new(value).read_u64_be()
+    u64::take(value, "")
 }
 
 /// Cursor-style decoder over a borrowed byte slice; `read_*` methods advance
