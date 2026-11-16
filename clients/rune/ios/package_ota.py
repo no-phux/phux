@@ -26,6 +26,15 @@ def checked_base_url(value):
     return value.rstrip("/") + "/"
 
 
+def checked_keychain(value):
+    if value is None:
+        return None
+    keychain = Path(value).resolve(strict=True)
+    if not keychain.is_file():
+        raise ValueError("keychain must be an existing file")
+    return keychain
+
+
 def authorized_entitlements(profile, identity, now=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     expires = profile["ExpirationDate"].replace(tzinfo=datetime.timezone.utc)
@@ -116,11 +125,12 @@ def validate_frameworks(app):
         raise ValueError("embedded TailscaleKit must be an iOS device framework")
 
 
-def sign_frameworks(app, identity):
+def sign_frameworks(app, identity, keychain=None):
     # Frameworks inherit no app/keychain entitlements. Sign inside-out, never
     # use --deep signing to guess executable ownership or provisioning.
+    scope = ("--keychain", keychain) if keychain is not None else ()
     for framework in (app / "Frameworks").glob("*.framework"):
-        run("/usr/bin/codesign", "--force", "--sign", identity, "--timestamp=none", framework)
+        run("/usr/bin/codesign", "--force", "--sign", identity, *scope, "--timestamp=none", framework)
         run("/usr/bin/codesign", "--verify", "--strict", framework)
 
 
@@ -131,9 +141,11 @@ def require_devices(profile, devices):
         raise ValueError("provisioning profile does not cover every requested device")
 
 
-def package(app, profile_path, identity, base_url, out, devices):
+def package(app, profile_path, identity, base_url, out, devices, keychain=None):
     base_url = checked_base_url(base_url)
-    profile = plistlib.loads(run("/usr/bin/security", "cms", "-D", "-i", profile_path))
+    keychain = checked_keychain(keychain)
+    decode_scope = ("-k", keychain) if keychain is not None else ()
+    profile = plistlib.loads(run("/usr/bin/security", "cms", "-D", *decode_scope, "-i", profile_path))
     entitlements = authorized_entitlements(profile, identity)
     require_devices(profile, devices)
     info = device_bundle_info(app)
@@ -144,8 +156,9 @@ def package(app, profile_path, identity, base_url, out, devices):
     shutil.copy2(profile_path, signed / "embedded.mobileprovision")
     xcent = out / "entitlements.plist"
     xcent.write_bytes(plistlib.dumps(entitlements))
-    sign_frameworks(signed, identity)
-    run("/usr/bin/codesign", "--force", "--sign", identity, "--entitlements", xcent,
+    sign_frameworks(signed, identity, keychain)
+    sign_scope = ("--keychain", keychain) if keychain is not None else ()
+    run("/usr/bin/codesign", "--force", "--sign", identity, *sign_scope, "--entitlements", xcent,
         "--generate-entitlement-der", "--timestamp=none", signed)
     run("/usr/bin/codesign", "--verify", "--strict", "--deep", signed)
     signed_entitlements = plistlib.loads(run("/usr/bin/codesign", "-d", "--entitlements", ":-", signed))
@@ -167,13 +180,15 @@ def main():
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--identity", required=True, help="SHA-1 of a local Apple Distribution identity")
+    parser.add_argument("--keychain", type=Path,
+                        help="existing keychain for profile decoding and signing; does not change defaults")
     parser.add_argument("--device-udid", action="append", required=True,
                         help="required device coverage; repeat to authorize multiple phones")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     print(package(args.app.resolve(), args.profile.resolve(), args.identity,
-                  args.base_url, args.out.resolve(), args.device_udid))
+                  args.base_url, args.out.resolve(), args.device_udid, args.keychain))
 
 
 if __name__ == "__main__":
