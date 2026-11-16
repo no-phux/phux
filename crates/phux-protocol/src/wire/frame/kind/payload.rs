@@ -1,7 +1,9 @@
-//! [`FrameKind::encode`]'s dispatch: every variant routed to the family
-//! writer that owns its field order.
+//! [`FrameKind::encode`]'s dispatch: every variant routed to its generated
+//! `field::<frame>::encode` or to the family writer that owns its field
+//! order.
 
 use crate::wire::encode::Encoder;
+use crate::wire::field;
 
 use super::FrameKind;
 
@@ -40,15 +42,16 @@ impl FrameKind {
             | Self::HistoryRejected { .. }
             | Self::Bell { .. }
             | Self::Error { .. } => self.encode_stream_payload(enc),
-            Self::GetMetadata { .. }
-            | Self::SetMetadata { .. }
-            | Self::DeleteMetadata { .. }
-            | Self::ListMetadata { .. }
-            | Self::SubscribeMetadata { .. }
-            | Self::MetadataChanged { .. }
-            | Self::MetadataValue { .. }
-            | Self::MetadataKeys { .. }
-            | Self::ListDirectory { .. }
+            Self::GetMetadata { .. } | Self::DeleteMetadata { .. } => {
+                field::get_metadata::encode(self, enc);
+            }
+            Self::SetMetadata { .. } => field::set_metadata::encode(self, enc),
+            Self::ListMetadata { .. } => field::list_metadata::encode(self, enc),
+            Self::SubscribeMetadata { .. } => field::subscribe_metadata::encode(self, enc),
+            Self::MetadataChanged { .. } => field::metadata_changed::encode(self, enc),
+            Self::MetadataValue { .. } => field::metadata_value::encode(self, enc),
+            Self::MetadataKeys { .. } => field::metadata_keys::encode(self, enc),
+            Self::ListDirectory { .. }
             | Self::DirectoryListing { .. }
             | Self::PathQuery { .. }
             | Self::PathResults { .. } => self.encode_metadata_payload(enc),

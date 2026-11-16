@@ -158,14 +158,13 @@ pub use whoami::{
 pub(in crate::wire) use codec::{
     decode_actor_ref, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
     decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_env, decode_focus_event,
-    decode_idempotency_key, decode_key_event, decode_metadata_scope_key, decode_mouse_event,
-    decode_move_result, decode_optional_u32, decode_paste_event, decode_scope,
-    decode_server_instance, decode_spawn_result, decode_stream_id, decode_string_list,
-    decode_terminal_id, decode_viewport_info, encode_actor_ref, encode_attach_target,
-    encode_bootstrap_codec, encode_bootstrap_profile, encode_env, encode_focus_event,
-    encode_key_event, encode_mouse_event, encode_move_result, encode_paste_event, encode_scope,
-    encode_server_instance, encode_spawn_result, encode_string_list, encode_terminal_id,
-    encode_viewport_info,
+    decode_idempotency_key, decode_key_event, decode_mouse_event, decode_move_result,
+    decode_optional_u32, decode_paste_event, decode_scope, decode_server_instance,
+    decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
+    decode_viewport_info, encode_actor_ref, encode_attach_target, encode_bootstrap_codec,
+    encode_bootstrap_profile, encode_env, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_move_result, encode_paste_event, encode_scope, encode_server_instance,
+    encode_spawn_result, encode_string_list, encode_terminal_id, encode_viewport_info,
 };
 pub(in crate::wire) use command_codec::{
     decode_agent_event, decode_command, decode_command_result, decode_optional_i32,

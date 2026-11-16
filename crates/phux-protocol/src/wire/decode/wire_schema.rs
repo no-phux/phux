@@ -4,7 +4,7 @@
 //! top-level TLV field, its id, name, value type, and presence. Everything
 //! except the value type is derived here from the codec itself: frame names
 //! from the frame catalog (`wire/frame/catalog.rs`), field names and ids from
-//! `wire/field.rs`, presence from encoding samples of every variant and
+//! the `FIELDS` table `tlv_body!` emits in each `wire/field` module, presence from encoding samples of every variant and
 //! decoding each with one field stripped, and retired ids from the gaps in a
 //! frame's id range. The rendered result must equal the committed file byte
 //! for byte, so the codec cannot change shape without a schema diff in the
@@ -27,8 +27,8 @@ use super::{
     Decoder, decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
     decode_bootstrap_profile, decode_client_capabilities, decode_command, decode_command_result,
     decode_env, decode_key_event, decode_mouse_event, decode_move_result, decode_paste_event,
-    decode_scope, decode_server_capabilities, decode_session_snapshot, decode_spawn_result,
-    decode_string_list, decode_terminal_id, decode_viewport_info,
+    decode_server_capabilities, decode_session_snapshot, decode_spawn_result, decode_string_list,
+    decode_terminal_id, decode_viewport_info,
 };
 use crate::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Compression, ServerCapabilities,
@@ -38,6 +38,7 @@ use crate::ids::{
     WindowId,
 };
 use crate::wire::encode::wire_type;
+use crate::wire::frame::decode_scope;
 use crate::wire::frame::{
     ActorRef, AgentEvent, CloseReason, CommandResult, CommandValue, DetachReason, DirectoryEntry,
     DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode, EventStamp, FrameKind,
@@ -56,7 +57,7 @@ mod samples;
 mod stream_samples;
 mod types;
 
-use derive::{decodes, derive, field_modules, fields, type_byte};
+use derive::{decodes, derive, fields, type_byte};
 use frames::{FRAME_COMPRESSED, FRAME_VARIANTS, frame_entry};
 use model::{FieldEntry, FrameEntry, Presence, Schema, render};
 use samples::{Sample, actor, frame_samples, generation, key, samples, stream, terminal};
@@ -70,30 +71,6 @@ const SCHEMA_PATH: &str = "docs/spec/wire-schema.json";
 
 /// Set to regenerate the schema from the codec instead of checking it.
 const UPDATE_ENV: &str = "PHUX_UPDATE_WIRE_SCHEMA";
-
-/// The field-id table the codec encodes and decodes by: the modules
-/// `field.rs` re-exports, one source file per frame family.
-const FIELD_RS: &str = concat!(
-    include_str!("../field/connection.rs"),
-    include_str!("../field/metadata.rs"),
-    include_str!("../field/lifecycle.rs"),
-    include_str!("../field/organization.rs"),
-);
-
-/// `field.rs` modules that number a field-tagged record nested inside a
-/// positional value, not a frame body. The schema covers frame bodies only.
-const NESTED_RECORD_MODULES: [&str; 10] = [
-    "event_journal_gap",
-    "event_source_gap",
-    "snapshot_extension",
-    "resource_state",
-    "session_state",
-    "event_asked",
-    "event_pane_spawned",
-    "org",
-    "org_launch",
-    "org_page",
-];
 
 /// Placeholder `type` the regenerator writes for a field it has not seen.
 const UNSET_TYPE: &str = "?";
@@ -278,20 +255,19 @@ fn declared_types_are_exactly_the_checked_ones() {
 }
 
 #[test]
-fn every_field_module_is_a_frame_or_a_nested_record() {
+fn every_frame_module_is_a_sampled_frame() {
     let mut frames: BTreeSet<&str> = frame_samples()
         .iter()
         .map(|frame| frame_entry(frame).2)
         .filter(|module| !module.is_empty())
         .collect();
     frames.insert(FRAME_COMPRESSED.1);
-    let nested: BTreeSet<&str> = NESTED_RECORD_MODULES.into_iter().collect();
-    let catalog = field_modules();
-    let modules: BTreeSet<&str> = catalog.keys().map(String::as_str).collect();
-    assert!(frames.is_disjoint(&nested));
+    let listed: BTreeSet<&str> = crate::wire::field::FRAME_MODULES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
     assert_eq!(
-        modules,
-        frames.union(&nested).copied().collect(),
-        "a field.rs module is neither a sampled frame nor a listed nested record"
+        listed, frames,
+        "field::FRAME_MODULES must list exactly the sampled frames' modules"
     );
 }

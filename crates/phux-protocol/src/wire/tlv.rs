@@ -239,3 +239,161 @@ impl TlvValue for ClipboardData {
         utf8_value(value).map(ClipboardData)
     }
 }
+
+/// Declare a frame's field-id module and, for a regular frame, its body
+/// codec.
+///
+/// The module keeps the exact `pub const NAME: u32 = id;` lines a reader
+/// greps for. A regular frame is one whose every wire field maps 1:1 to
+/// one variant field: its module names the variants it serves
+/// (`for Variant => decoder_method, ...`) and each const gains
+/// `=> presence field: Type`, where `Type: TlvValue` and presence is:
+///
+/// - `required`: always written; absent on decode is `UnexpectedEof`.
+/// - `default`: always written; absent on decode is `Type::default()`.
+/// - `optional`: the variant field is `Option<Type>`, written only when
+///   `Some`; absent decodes as `None`.
+///
+/// Every module also lists its fields as `FIELDS`, the table the wire
+/// schema test names fields by. The macro then emits `encode(frame, enc)`, which writes the fields in
+/// declaration order (the bytes are the contract), and one `Decoder`
+/// method per variant, which reads fields in wire order: the last of a
+/// repeated id wins, an unknown id is skipped by its length, and each
+/// value is checked by its [`TlvValue::take`] before it is kept. A frame
+/// with any other shape keeps a hand-written codec and lists only its
+/// consts.
+macro_rules! tlv_body {
+    (
+        $(#[$doc:meta])*
+        pub mod $module:ident for $($variant:ident => $decode:ident),+ {
+            $(
+                $(#[$fdoc:meta])*
+                pub const $name:ident: u32 = $id:literal => $mode:ident $field:ident: $ty:ty;
+            )*
+        }
+    ) => {
+        $(#[$doc])*
+        pub mod $module {
+            $(
+                $(#[$fdoc])*
+                pub const $name: u32 = $id;
+            )*
+
+            tlv_body!(@fields $($name = $id),*);
+
+            tlv_body!(@encode_arms [$($variant),+] { $($field),* } {
+                $($name $mode $field;)*
+            });
+        }
+
+        tlv_body!(@decoders $module [$($variant => $decode),+] {
+            $($name $mode $field: $ty;)*
+        });
+    };
+    (
+        $(#[$doc:meta])*
+        pub mod $module:ident {
+            $(
+                $(#[$fdoc:meta])*
+                pub const $name:ident: u32 = $id:literal;
+            )*
+        }
+    ) => {
+        $(#[$doc])*
+        pub mod $module {
+            $(
+                $(#[$fdoc])*
+                pub const $name: u32 = $id;
+            )*
+
+            tlv_body!(@fields $($name = $id),*);
+        }
+    };
+    (@fields $($name:ident = $id:literal),*) => {
+        /// `(NAME, id)` of each field, in declaration order: what
+        /// `docs/spec/wire-schema.json` names this frame's fields by.
+        #[cfg(test)]
+        pub(crate) const FIELDS: &[(&str, u32)] = &[$((stringify!($name), $id)),*];
+    };
+    (@encode_arms [$($variant:ident),+] $pat:tt $fields:tt) => {
+        tlv_body!(@encode [$($crate::wire::frame::FrameKind::$variant $pat)|+] $fields);
+    };
+    (@encode [$($arm:tt)*] { $($name:ident $mode:ident $field:ident;)* }) => {
+        /// Write this frame's body: every field, in declaration order.
+        pub(crate) fn encode(
+            frame: &$crate::wire::frame::FrameKind,
+            enc: &mut $crate::wire::encode::Encoder<'_>,
+        ) {
+            // The parentheses group a shared body's or-pattern.
+            #[allow(unused_parens)]
+            let ($($arm)*) = frame else {
+                unreachable!("encode_payload routes only this module's frames here");
+            };
+            $(tlv_body!(@put $mode enc $name $field);)*
+        }
+    };
+    (@decoders $module:ident [$($variant:ident => $decode:ident),+] $fields:tt) => {
+        $(tlv_body!(@decode $module $variant $decode $fields);)+
+    };
+    (@decode $module:ident $variant:ident $decode:ident {
+        $($name:ident $mode:ident $field:ident: $ty:ty;)*
+    }) => {
+        impl $crate::wire::decode::Decoder<'_> {
+            pub(in crate::wire) fn $decode(
+                &mut self,
+            ) -> Result<$crate::wire::frame::FrameKind, $crate::wire::error::DecodeError> {
+                $(let mut $field = tlv_body!(@init $mode $ty);)*
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        $($module::$name => {
+                            let label = concat!(stringify!($variant), ".", stringify!($field));
+                            $field = tlv_body!(@take $mode $ty, value, label);
+                        })*
+                        _ => {}
+                    }
+                }
+                Ok($crate::wire::frame::FrameKind::$variant {
+                    $($field: tlv_body!(@finish $mode $field),)*
+                })
+            }
+        }
+    };
+    (@put optional $enc:ident $name:ident $field:ident) => {
+        if let Some(value) = $field {
+            $crate::wire::tlv::TlvValue::put(value, $enc, $name);
+        }
+    };
+    (@put required $enc:ident $name:ident $field:ident) => {
+        $crate::wire::tlv::TlvValue::put($field, $enc, $name);
+    };
+    (@put default $enc:ident $name:ident $field:ident) => {
+        $crate::wire::tlv::TlvValue::put($field, $enc, $name);
+    };
+    (@init required $ty:ty) => {
+        None::<$ty>
+    };
+    (@init optional $ty:ty) => {
+        None::<$ty>
+    };
+    (@init default $ty:ty) => {
+        <$ty as Default>::default()
+    };
+    (@take required $ty:ty, $value:ident, $label:ident) => {
+        Some(<$ty as $crate::wire::tlv::TlvValue>::take($value, $label)?)
+    };
+    (@take optional $ty:ty, $value:ident, $label:ident) => {
+        Some(<$ty as $crate::wire::tlv::TlvValue>::take($value, $label)?)
+    };
+    (@take default $ty:ty, $value:ident, $label:ident) => {
+        <$ty as $crate::wire::tlv::TlvValue>::take($value, $label)?
+    };
+    (@finish required $field:ident) => {
+        $field.ok_or($crate::wire::error::DecodeError::UnexpectedEof)?
+    };
+    (@finish optional $field:ident) => {
+        $field
+    };
+    (@finish default $field:ident) => {
+        $field
+    };
+}
