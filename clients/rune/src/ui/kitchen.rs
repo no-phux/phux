@@ -8,11 +8,12 @@
 //! canvas, the stations, pass, chefs, air and night in another, then the
 //! line signs, the neon, name pills, the chefs' press targets and the readout.
 
-use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
 use super::playground::labels::{Label, pill};
 use super::playground::pen::{Pen, rgba};
-use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
+use super::playground::readout::{Picked, Readout, working};
+use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
@@ -371,76 +372,28 @@ fn pills(k: &Kitchen) -> Vec<El> {
 }
 
 fn readout(k: &Kitchen, waiting: usize, p: &Ink) -> El {
-    let working = k
-        .chefs
-        .iter()
-        .filter(|c| c.who.mood == Mood::Working)
-        .count();
-    let picked = k.selected_chef().map(|c| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            c.who.name,
-            c.who.mood.word(),
-            k.line_of(c).host
-        );
-        let rank = match c.who.work {
+    let picked = k.selected_chef().map(|c| Picked {
+        name: &c.who.name,
+        mood: c.who.mood,
+        host: &k.line_of(c).host,
+        // Its rank always; its work when its machine publishes agent stats.
+        card: Some(match c.who.work {
             Some(w) => format!("Rank: {} · Work: {}", RANK[c.tier], creature::work_line(&w)),
             None => format!("Rank: {}", RANK[c.tier]),
-        };
-        pressable("kitchen-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", c.who.name))
-            .on_press(Desk::open_chef)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .child(text(rank).font(CAPTION).color(p.dim)),
-            )
+        }),
     });
-    let y = if k.h > 0.0 { k.h - 44.0 } else { 42.0 };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        k.lines.len(),
-                        k.chefs.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("kitchen-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::kitchen_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "kitchen-close",
-            p,
-            Desk::close_kitchen,
-        ))
+    let readout = Readout {
+        scene: "kitchen",
+        hosts: k.lines.len(),
+        agents: k.chefs.len(),
+        working: working(k.chefs.iter().map(|c| c.who.mood)),
+        waiting,
+        h: k.h,
+        unlaid_y: 42.0,
+        picked,
+        open: Desk::open_chef,
+        next_waiting: Desk::kitchen_next_waiting,
+        close: Desk::close_kitchen,
+    };
+    super::playground::readout::readout(readout, p)
 }
