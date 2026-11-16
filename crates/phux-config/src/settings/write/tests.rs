@@ -29,6 +29,15 @@ fn set(text: &str, key: &str, value: impl Into<toml::Value>) -> EditOutcome {
     apply(text, key, Edit::Set(value.into())).expect("edit applies")
 }
 
+/// The edited text, loaded with defaults.
+fn load(out: &EditOutcome) -> crate::Config {
+    crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads")
+}
+
+fn mtime(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path).unwrap().modified().unwrap()
+}
+
 /// (a) Untouched lines survive byte-for-byte: comments, blank lines,
 /// odd spacing, the trailing newline.
 #[test]
@@ -88,7 +97,7 @@ fn setting_a_key_whose_table_is_absent_appends_the_table() {
 fn setting_a_key_in_an_implicit_parent_table_loads_correctly() {
     let text = "[keybindings.prefix-table]\n\"x\" = \"kill-pane\"\n";
     let out = set(text, "keybindings.prefix", "C-b");
-    let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
+    let cfg = load(&out);
     assert_eq!(cfg.keybindings.prefix, "C-b");
     assert_eq!(
         cfg.keybindings.prefix_table.get("x"),
@@ -129,71 +138,66 @@ fn unset_removes_the_leaf_and_reports_previous() {
 /// (e) Invalid values are rejected with an error naming the problem.
 #[test]
 fn invalid_values_are_rejected_and_the_error_names_the_problem() {
-    let err = apply("", "sidebar.width", Edit::Set("wide".into())).expect_err("wrong type");
-    let text = err.to_string();
-    assert!(
-        text.contains("sidebar.width") && text.contains("bad value"),
-        "{text}"
-    );
-
-    let err =
-        apply("", "keybindings.prefix", Edit::Set("not a chord".into())).expect_err("bad chord");
-    let text = err.to_string();
-    assert!(
-        text.contains("keybindings.prefix") && text.contains("bad chord"),
-        "{text}"
-    );
-
     let over = i64::from(crate::MAX_HISTORY_BYTES) + 1;
-    let err = apply("", "defaults.history-bytes", Edit::Set(over.into())).expect_err("cap");
-    let text = err.to_string();
-    assert!(
-        text.contains("defaults.history-bytes") && text.contains("67108864"),
-        "{text}"
-    );
-
-    let err = apply("", "sidebar.position", Edit::Set("middle".into())).expect_err("variant");
-    assert!(err.to_string().contains("sidebar.position"), "{err}");
-
-    // An unknown key is a schema finding at that key.
-    let err = apply("", "sidebar.widht", Edit::Set(1.into())).expect_err("typo");
-    let text = err.to_string();
-    assert!(
-        text.contains("sidebar.widht") && text.contains("unknown key"),
-        "{text}"
-    );
+    // (key, value, every substring the error must contain)
+    let cases: [(&str, toml::Value, &[&str]); 5] = [
+        (
+            "sidebar.width",
+            "wide".into(),
+            &["sidebar.width", "bad value"],
+        ),
+        (
+            "keybindings.prefix",
+            "not a chord".into(),
+            &["keybindings.prefix", "bad chord"],
+        ),
+        (
+            "defaults.history-bytes",
+            over.into(),
+            &["defaults.history-bytes", "67108864"],
+        ),
+        ("sidebar.position", "middle".into(), &["sidebar.position"]),
+        // An unknown key is a schema finding at that key.
+        ("sidebar.widht", 1.into(), &["sidebar.widht", "unknown key"]),
+    ];
+    for (key, value, needles) in cases {
+        let text = apply("", key, Edit::Set(value)).expect_err(key).to_string();
+        for needle in needles {
+            assert!(text.contains(needle), "{key}: {needle:?} not in {text}");
+        }
+    }
 }
 
 #[test]
 fn malformed_paths_and_shapes_are_rejected() {
-    assert!(matches!(
-        apply("", "width", Edit::Set(1.into())),
-        Err(ConfigError::Edit { .. })
-    ));
-    assert!(matches!(
-        apply("", "sidebar..width", Edit::Set(1.into())),
-        Err(ConfigError::Edit { .. })
-    ));
-    assert!(matches!(
-        apply("", ".width", Edit::Set(1.into())),
-        Err(ConfigError::Edit { .. })
-    ));
-    // Path through a scalar.
-    let err = apply(
-        "[sidebar]\nwidth = 1\n",
-        "sidebar.width.x",
-        Edit::Set(1.into()),
-    )
-    .expect_err("through scalar");
-    assert!(err.to_string().contains("not a table"), "{err}");
-    // The leaf is a table.
-    let err = apply(
-        "[keybindings.prefix-table]\n",
-        "keybindings.prefix-table",
-        Edit::Unset,
-    )
-    .expect_err("table leaf");
-    assert!(err.to_string().contains("holds a table"), "{err}");
+    for key in ["width", "sidebar..width", ".width"] {
+        assert!(
+            matches!(
+                apply("", key, Edit::Set(1.into())),
+                Err(ConfigError::Edit { .. })
+            ),
+            "{key}"
+        );
+    }
+    for (what, text, key, edit, needle) in [
+        (
+            "path through a scalar",
+            "[sidebar]\nwidth = 1\n",
+            "sidebar.width.x",
+            Edit::Set(1.into()),
+            "not a table",
+        ),
+        (
+            "the leaf is a table",
+            "[keybindings.prefix-table]\n",
+            "keybindings.prefix-table",
+            Edit::Unset,
+            "holds a table",
+        ),
+    ] {
+        let err = apply(text, key, edit).expect_err(what);
+        assert!(err.to_string().contains(needle), "{what}: {err}");
+    }
     // Date-times are refused before the schema even sees them.
     let dt: toml::Value = toml::from_str::<toml::Table>("v = 1979-05-27T07:32:00Z")
         .unwrap()
@@ -222,14 +226,11 @@ fn argv_values_round_trip() {
         out.text,
         "[voice]\ntranscriber = [\"curl\", \"-F\", \"file=@{path}\"]\n"
     );
-    let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-    assert!(cfg.voice.is_configured());
+    assert!(load(&out).voice.is_configured());
     let out = set(&out.text, "voice.timeout-secs", 5);
-    let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-    assert_eq!(cfg.voice.timeout_secs, Some(5));
+    assert_eq!(load(&out).voice.timeout_secs, Some(5));
     let out = set("", "experimental.predictive-echo", false);
-    let cfg = crate::parse_with_defaults(&out.text, Path::new(PATH)).expect("loads");
-    assert_eq!(cfg.experimental.predictive_echo, Some(false));
+    assert_eq!(load(&out).experimental.predictive_echo, Some(false));
 }
 
 /// (f) A missing file is created along with its parent directory.
@@ -261,23 +262,17 @@ fn the_file_is_untouched_when_the_edit_is_rejected() {
     let path = dir.path().join("config.toml");
     let original = "# precious\n[sidebar]\nwidth = 28\n";
     std::fs::write(&path, original).unwrap();
-    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let before = mtime(&path);
 
     let err = write_edit(&path, "sidebar.width", Edit::Set("wide".into())).expect_err("bad");
     assert!(matches!(err, ConfigError::Edit { .. }), "{err}");
     assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().modified().unwrap(),
-        before
-    );
+    assert_eq!(mtime(&path), before);
     assert!(temp_files_in(dir.path()).is_empty());
 
     // A no-op unset does not rewrite the file either.
     write_edit(&path, "chrome.compact-cols", Edit::Unset).expect("noop");
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().modified().unwrap(),
-        before
-    );
+    assert_eq!(mtime(&path), before);
 }
 
 /// A user with a pre-existing problem elsewhere still cannot write,

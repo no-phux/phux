@@ -5,6 +5,23 @@ use phux_config::plugin;
 use crate::common;
 use common::{manifest, write_manifest};
 
+/// Write `manifest(id, extra)` into `dir` and load it.
+fn load(
+    dir: &std::path::Path,
+    id: &str,
+    extra: &str,
+) -> Result<plugin::PluginManifest, plugin::PluginManifestError> {
+    plugin::load_plugin_manifest(&write_manifest(dir, &manifest(id, extra)))
+}
+
+/// The load error for `manifest(id, extra)` written into `dir`.
+fn refusal(dir: &std::path::Path, id: &str, extra: &str) -> String {
+    load(dir, id, extra)
+        .err()
+        .unwrap_or_else(|| panic!("{id}: manifest loaded successfully: {extra}"))
+        .to_string()
+}
+
 #[test]
 fn provider_fixture_loads() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = std::path::PathBuf::from(
@@ -27,11 +44,10 @@ fn provider_fixture_loads() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn plugin_manifest_loads_actions_events_and_panes() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.agent-tools",
-            r#"
+        "example.agent-tools",
+        r#"
 description = "Agent workflow helpers"
 platforms = ["linux", "macos"]
 
@@ -82,10 +98,7 @@ id = "board-role"
 pane = "board"
 role = "board"
 "#,
-        ),
-    );
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
 
     assert_eq!(loaded.id, "example.agent-tools");
     assert_eq!(loaded.plugin_root, dir.path().canonicalize()?);
@@ -121,11 +134,10 @@ role = "board"
 fn plugin_manifest_reads_workspaces_as_a_profiles_alias() -> Result<(), Box<dyn std::error::Error>>
 {
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.legacy",
-            r#"
+        "example.legacy",
+        r#"
 [[panes]]
 id = "board"
 title = "Board"
@@ -140,9 +152,7 @@ id = "main"
 pane = "board"
 role = "board"
 "#,
-        ),
-    );
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
     assert_eq!(loaded.profiles[0].id, "bench");
     assert_eq!(loaded.profiles[0].panes[0].pane, "board");
     Ok(())
@@ -310,12 +320,9 @@ key = "com.example/status"
 
     for (what, extra, want) in cases {
         let dir = TempDir::new()?;
-        let path = write_manifest(dir.path(), &manifest("example.reject", extra));
-        let Err(err) = plugin::load_plugin_manifest(&path) else {
-            return Err(format!("{what}: manifest loaded successfully").into());
-        };
+        let err = refusal(dir.path(), "example.reject", extra);
         assert!(
-            err.to_string().contains(want),
+            err.contains(want),
             "{what}: error should contain {want:?}; got {err}"
         );
     }
@@ -369,11 +376,10 @@ fn plugin_manifest_parse_errors_use_supplied_symlink_path() -> Result<(), Box<dy
 fn plugin_action_keys_field_parses_and_defaults_to_none() -> Result<(), Box<dyn std::error::Error>>
 {
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.keys",
-            r#"
+        "example.keys",
+        r#"
 [[actions]]
 id = "bound"
 title = "Bound action"
@@ -391,10 +397,7 @@ title = "Blank keys action"
 command = ["true"]
 keys = "   "
 "#,
-        ),
-    );
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
 
     assert_eq!(loaded.actions[0].keys.as_deref(), Some("g"));
     assert_eq!(loaded.actions[1].keys, None, "keys defaults to None");
@@ -466,11 +469,10 @@ command = ["true"]
 #[test]
 fn plugin_manifest_loads_widget_contributions() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.battery",
-            r#"
+        "example.battery",
+        r#"
 [[widgets]]
 id = "battery"
 slot = "right"
@@ -483,10 +485,7 @@ id = "branch"
 kind = "exec"
 command = ["git-branch-widget"]
 "#,
-        ),
-    );
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
 
     assert_eq!(loaded.widgets.len(), 2);
     assert_eq!(loaded.widgets[0].id, "battery");
@@ -512,11 +511,10 @@ command = ["git-branch-widget"]
 #[test]
 fn plugin_manifest_loads_sidebar_sections() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.sections",
-            r#"
+        "example.sections",
+        r#"
 [[sidebar]]
 id = "agents-at-work"
 title = "  At work  "
@@ -528,10 +526,7 @@ id = "failures"
 title = "Failures"
 format = "{index}:{window} exit {exit}"
 "#,
-        ),
-    );
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
 
     assert_eq!(loaded.sidebar.len(), 2);
     assert_eq!(loaded.sidebar[0].id, "agents-at-work");
@@ -552,11 +547,10 @@ fn merge_widget_contributions_appends_after_user_widgets_and_drops_invalid()
     use phux_config::{StatusCfg, Widget};
 
     let dir = TempDir::new()?;
-    let manifest = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.mixed",
-            r#"
+        "example.mixed",
+        r#"
 [[widgets]]
 id = "ok"
 slot = "left"
@@ -572,9 +566,7 @@ id = "bad-opts"
 kind = "exec"
 interval = "30s"
 "#,
-        ),
-    );
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    )?;
 
     let mut status = StatusCfg {
         left: vec![Widget::Bare("session-name".to_owned())],
@@ -658,14 +650,11 @@ fn plugin_manifest_loads_and_validates_themes() -> Result<(), Box<dyn std::error
         "themes/night/colors.toml",
         "mode = \"dark\"\nbackground = \"#000000\"\nforeground = \"#ffffff\"\n",
     );
-    let manifest_path = write_manifest(
+    let loaded = load(
         dir.path(),
-        &manifest(
-            "example.theme-pack",
-            "[[themes]]\nname = \"night\"\npath = \"themes/night\"\n",
-        ),
-    );
-    let loaded = plugin::load_plugin_manifest(&manifest_path)?;
+        "example.theme-pack",
+        "[[themes]]\nname = \"night\"\npath = \"themes/night\"\n",
+    )?;
     assert_eq!(loaded.themes.len(), 1);
     assert_eq!(loaded.themes[0].name, "night");
     assert_eq!(
@@ -692,11 +681,7 @@ fn plugin_manifest_loads_and_validates_themes() -> Result<(), Box<dyn std::error
             "duplicate",
         ),
     ] {
-        let path = write_manifest(dir.path(), &manifest("example.theme-pack", body));
-        let err = plugin::load_plugin_manifest(&path)
-            .err()
-            .ok_or("expected a refusal")?
-            .to_string();
+        let err = refusal(dir.path(), "example.theme-pack", body);
         assert!(err.contains(needle), "{body}: {err}");
     }
     Ok(())
@@ -714,14 +699,12 @@ fn startup_entries_follow_action_id_rules_and_cap_at_eight()
             "[[startup]]\nid = \"job{n}\"\ncommand = [\"sleep\", \"1\"]\n"
         );
     }
-    let path = write_manifest(dir.path(), &manifest("example.startup", &body));
-    let loaded = plugin::load_plugin_manifest(&path)?;
+    let loaded = load(dir.path(), "example.startup", &body)?;
     assert_eq!(loaded.startup.len(), 8);
     assert_eq!(loaded.startup[0].command, ["sleep", "1"]);
 
     body.push_str("[[startup]]\nid = \"job8\"\ncommand = [\"sleep\", \"1\"]\n");
-    let path = write_manifest(dir.path(), &manifest("example.startup", &body));
-    let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
+    let err = refusal(dir.path(), "example.startup", &body);
     assert!(err.contains("at most 8"), "{err}");
 
     for (extra, needle) in [
@@ -763,16 +746,15 @@ fn startup_entries_follow_action_id_rules_and_cap_at_eight()
             "timeout",
         ),
     ] {
-        let path = write_manifest(dir.path(), &manifest("example.startup", extra));
-        let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
+        let err = refusal(dir.path(), "example.startup", extra);
         assert!(err.contains(needle), "{extra}: {err}");
     }
     for id in [".", "..", "server"] {
-        let path = write_manifest(
+        let err = refusal(
             dir.path(),
-            &manifest(id, "[[startup]]\nid = \"web\"\ncommand = [\"true\"]\n"),
+            id,
+            "[[startup]]\nid = \"web\"\ncommand = [\"true\"]\n",
         );
-        let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
         assert!(err.contains("invalid plugin id"), "{id}: {err}");
     }
     Ok(())
