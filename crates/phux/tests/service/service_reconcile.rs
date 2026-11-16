@@ -10,16 +10,11 @@ use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::support::LiveServer;
+
 /// The profile these tests pin, so the unit path is a fact rather than a
 /// consequence of where cargo put the binary.
 const PROFILE: &str = "dev";
-
-/// Stop whatever server ended up on `socket`, so a failing assertion cannot
-/// leak a daemon holding a PTY (phux-whhd).
-struct Cleanup {
-    _server: common::AutoSpawnedServer,
-    _dir: tempfile::TempDir,
-}
 
 /// Where this host's `phux service install` would have written its unit,
 /// under a sandboxed home.
@@ -98,37 +93,14 @@ fn plant_legacy_unit(home: &Path, socket: &Path) -> PathBuf {
     unit
 }
 
-/// Start a real server on a temp socket and return the guard that stops it.
-fn live_server() -> (PathBuf, Cleanup) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "incumbent", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
-    assert!(
-        out.status.success(),
-        "phux new must start a server.\nstderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
-    assert!(common::wait_until_accepting(&socket), "server must be up");
-    (socket, cleanup)
-}
-
 /// The policy is corrected, the operator's flags (`--hub`, `--socket`)
 /// survive, and the running server is still running.
 #[test]
 fn reconcile_corrects_the_policy_without_stopping_the_server() {
-    let (socket, _cleanup) = live_server();
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
     let home = tempfile::tempdir().expect("sandboxed home");
-    let unit = plant_legacy_unit(home.path(), &socket);
+    let unit = plant_legacy_unit(home.path(), socket);
 
     let out = sandboxed(home.path())
         .args(["service", "reconcile"])
@@ -179,7 +151,7 @@ fn reconcile_corrects_the_policy_without_stopping_the_server() {
     // have SIGTERMed this server, and the session created above — plus every
     // process inside it — would be gone.
     assert!(
-        std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+        std::os::unix::net::UnixStream::connect(socket).is_ok(),
         "reconcile stopped the running server; that is the bug this verb exists to avoid"
     );
 }
@@ -188,9 +160,10 @@ fn reconcile_corrects_the_policy_without_stopping_the_server() {
 /// unit live; launchd keeps the bootstrapped policy until the job restarts.
 #[test]
 fn reconcile_says_whether_the_new_policy_is_actually_in_force() {
-    let (socket, _cleanup) = live_server();
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
     let home = tempfile::tempdir().expect("sandboxed home");
-    plant_legacy_unit(home.path(), &socket);
+    plant_legacy_unit(home.path(), socket);
 
     let out = sandboxed(home.path())
         .args(["service", "reconcile"])
@@ -266,14 +239,15 @@ fn print_renders_the_reconciled_unit_without_writing_it() {
 /// non-destructive `reconcile` instead of "stop the server".
 #[test]
 fn install_over_a_live_server_points_at_the_non_destructive_path() {
-    let (socket, _cleanup) = live_server();
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
     let home = tempfile::tempdir().expect("sandboxed home");
-    let unit = plant_legacy_unit(home.path(), &socket);
+    let unit = plant_legacy_unit(home.path(), socket);
     let before = std::fs::read_to_string(&unit).expect("read planted unit");
 
     let out = sandboxed(home.path())
         .args(["service", "install", "--socket"])
-        .arg(&socket)
+        .arg(socket)
         .output()
         .expect("run phux service install");
     assert!(

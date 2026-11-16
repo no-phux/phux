@@ -15,12 +15,7 @@ use crate::common;
 use std::path::Path;
 use std::process::Command;
 
-/// Stop whatever server ended up on `socket`, so a failing assertion cannot
-/// leak a daemon holding a PTY (phux-whhd).
-struct Cleanup {
-    _server: common::AutoSpawnedServer,
-    _dir: tempfile::TempDir,
-}
+use crate::support::LiveServer;
 
 /// Every unit path `phux service install` could write under a sandboxed home:
 /// both platforms and both profiles (a test binary resolves `dev`), so the
@@ -52,31 +47,13 @@ fn sandboxed(home: &Path) -> Command {
 /// The regression: install against a live socket must fail, and must say why.
 #[test]
 fn install_refuses_while_a_server_holds_the_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "incumbent", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
-    assert!(
-        out.status.success(),
-        "phux new must start a server.\nstderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
 
     let home = tempfile::tempdir().expect("sandboxed home");
     let install = sandboxed(home.path())
         .args(["service", "install", "--socket"])
-        .arg(&socket)
+        .arg(socket)
         .output()
         .expect("run phux service install");
 
@@ -113,27 +90,13 @@ fn install_refuses_while_a_server_holds_the_socket() {
 /// `--print` is a dry run and must keep working whatever is running.
 #[test]
 fn print_still_renders_while_a_server_holds_the_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "incumbent", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
-    assert!(out.status.success(), "phux new must start a server");
-    assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
 
     let home = tempfile::tempdir().expect("sandboxed home");
     let printed = sandboxed(home.path())
         .args(["service", "install", "--print", "--socket"])
-        .arg(&socket)
+        .arg(socket)
         .output()
         .expect("run phux service install --print");
 
@@ -161,31 +124,13 @@ fn print_still_renders_while_a_server_holds_the_socket() {
 /// does not claim the running server is now supervised.
 #[test]
 fn adopt_installs_over_a_live_server_without_stopping_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "incumbent", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
-    assert!(
-        out.status.success(),
-        "phux new must start a server.\nstderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let server = LiveServer::start("incumbent");
+    let socket = &server.socket;
 
     let home = tempfile::tempdir().expect("sandboxed home");
     let install = sandboxed(home.path())
         .args(["service", "install", "--adopt", "--socket"])
-        .arg(&socket)
+        .arg(socket)
         .output()
         .expect("run phux service install --adopt");
 
@@ -200,7 +145,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
     // regression that stops the incumbent must fail here even if everything
     // else about the install is right.
     assert!(
-        std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+        std::os::unix::net::UnixStream::connect(socket).is_ok(),
         "the incumbent server must still be accepting after an adopt install.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
@@ -251,7 +196,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
 
     let diagnosed = sandboxed(home.path())
         .args(["doctor", "--json", "--socket"])
-        .arg(&socket)
+        .arg(socket)
         .output()
         .expect("run phux doctor --json against the adopted socket");
     assert!(
