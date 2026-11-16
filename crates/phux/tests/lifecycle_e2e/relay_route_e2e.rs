@@ -14,13 +14,12 @@
 
 use crate::{common, paired};
 
-use std::io::{BufRead as _, BufReader, Read as _};
+use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
 /// The route the relay enrolls the server's connector under.
@@ -234,51 +233,20 @@ fn list_over_relay(home: &Home, name: &str) -> serde_json::Value {
 /// the TTY preflight) until it reports the pairing, then kill it: the attach
 /// that follows would hold the PTY forever.
 fn pair_from_code(home: &Home, name: &str, link: &str) -> String {
-    let pty = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("openpty");
-    let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-    cmd.args(["attach", "--remote", name, "--code", link]);
-    cmd.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        cmd.env("PATH", path);
-    }
-    if let Some(tmp) = std::env::var_os("TMPDIR") {
-        cmd.env("TMPDIR", tmp);
-    }
-    for (key, value) in home.env() {
-        cmd.env(key, value);
-    }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-    let mut child = pty.slave.spawn_command(cmd).expect("spawn attach");
-    drop(pty.slave);
-    let mut reader = pty.master.try_clone_reader().expect("clone reader");
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
     let needle = format!("paired {name} ->");
     let enrolled = "enrolled a workload certificate";
-    let start = Instant::now();
-    let mut seen = String::new();
-    while !(seen.contains(&needle) && seen.contains(enrolled)) && start.elapsed() < DEADLINE {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-            seen.push_str(&String::from_utf8_lossy(&chunk));
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    let seen = common::pty_transcript(
+        &["attach", "--remote", name, "--code", link],
+        |cmd| {
+            common::clear_pty_env(cmd);
+            for (key, value) in home.env() {
+                cmd.env(key, value);
+            }
+        },
+        |seen| seen.contains(&needle) && seen.contains(enrolled),
+        Duration::ZERO,
+        DEADLINE,
+    );
     assert!(
         seen.contains(&needle) && seen.contains(enrolled),
         "no pairing and enrollment lines from --code: {seen}"

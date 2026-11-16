@@ -14,17 +14,14 @@
 
 use crate::{common, paired};
 
-use std::io::Read as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, Dial, QuicDial};
 use phux_protocol::caps::ServerFeature;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
 /// How long a run has to reach the line a test waits for.
@@ -135,62 +132,20 @@ impl Home {
 
     /// [`Self::run_until`], reading on for `settle` after `needle`.
     fn run_until_then(&self, args: &[&str], needle: &str, settle: Duration) -> String {
-        let pty = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("openpty");
-        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-        for key in common::ambient_phux_keys() {
-            cmd.env_remove(key);
-        }
-        cmd.args(args);
-        for (key, value) in self.env() {
-            cmd.env(key, value);
-        }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-        let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
-        drop(pty.slave);
-        let mut reader = pty.master.try_clone_reader().expect("clone reader");
-
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut buf = [0_u8; 4096];
-            while let Ok(n) = reader.read(&mut buf) {
-                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                    break;
+        crate::common::pty_transcript(
+            args,
+            |cmd| {
+                for key in common::ambient_phux_keys() {
+                    cmd.env_remove(key);
                 }
-            }
-        });
-
-        let start = Instant::now();
-        let mut seen = String::new();
-        let mut settle_until = None;
-        loop {
-            let budget = settle_until.map_or_else(
-                || DEADLINE.saturating_sub(start.elapsed()),
-                |until: Instant| until.saturating_duration_since(Instant::now()),
-            );
-            if budget.is_zero() {
-                break;
-            }
-            match rx.recv_timeout(budget) {
-                Ok(chunk) => {
-                    seen.push_str(&String::from_utf8_lossy(&chunk));
-                    if settle_until.is_none() && seen.contains(needle) {
-                        settle_until = Some(Instant::now() + settle);
-                    }
+                for (key, value) in self.env() {
+                    cmd.env(key, value);
                 }
-                Err(_) => break,
-            }
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        seen
+            },
+            |seen| seen.contains(needle),
+            settle,
+            DEADLINE,
+        )
     }
 }
 

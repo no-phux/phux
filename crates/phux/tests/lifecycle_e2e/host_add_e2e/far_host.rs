@@ -1,13 +1,10 @@
 //! The far machine `host add` sets up: a real server behind a loopback QUIC
 //! listener and a fake `ssh` that runs the remote half locally.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
 /// How long the freshly started server has to bind its socket.
@@ -209,66 +206,18 @@ impl FarHost {
     /// Run `phux ARGS` on a PTY until `needle` appears or [`DEADLINE`]
     /// passes, then kill it. The attach's TTY preflight needs the PTY.
     pub(super) fn run_until(&self, args: &[&str], needle: &str) -> String {
-        let pty = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("openpty");
-        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-        cmd.args(args);
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        }
-        if let Some(tmp) = std::env::var_os("TMPDIR") {
-            cmd.env("TMPDIR", tmp);
-        }
-        for (key, value) in self.env() {
-            cmd.env(key, value);
-        }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-        let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
-        drop(pty.slave);
-        let mut reader = pty.master.try_clone_reader().expect("clone reader");
-
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut buf = [0_u8; 4096];
-            while let Ok(n) = reader.read(&mut buf) {
-                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                    break;
+        crate::common::pty_transcript(
+            args,
+            |cmd| {
+                crate::common::clear_pty_env(cmd);
+                for (key, value) in self.env() {
+                    cmd.env(key, value);
                 }
-            }
-        });
-
-        let start = Instant::now();
-        let mut seen = String::new();
-        let mut settle_until = None;
-        loop {
-            let budget = settle_until.map_or_else(
-                || DEADLINE.saturating_sub(start.elapsed()),
-                |until: Instant| until.saturating_duration_since(Instant::now()),
-            );
-            if budget.is_zero() {
-                break;
-            }
-            match rx.recv_timeout(budget) {
-                Ok(chunk) => {
-                    seen.push_str(&String::from_utf8_lossy(&chunk));
-                    if settle_until.is_none() && seen.contains(needle) {
-                        settle_until = Some(Instant::now() + SETTLE);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        seen
+            },
+            |seen| seen.contains(needle),
+            SETTLE,
+            DEADLINE,
+        )
     }
 }
 

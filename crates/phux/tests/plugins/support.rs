@@ -119,13 +119,7 @@ pub fn init_repo(repo: &Path, message: &str) -> String {
 
 /// A minimal installable plugin in `dir`: a manifest with one action, any
 /// `build` table, and a payload file.
-pub fn write_fixture_plugin(
-    dir: &Path,
-    id: &str,
-    version: &str,
-    min_phux: &str,
-    build: &str,
-) {
+pub fn write_fixture_plugin(dir: &Path, id: &str, version: &str, min_phux: &str, build: &str) {
     std::fs::create_dir_all(dir).expect("create plugin dir");
     std::fs::write(
         dir.join("phux-plugin.toml"),

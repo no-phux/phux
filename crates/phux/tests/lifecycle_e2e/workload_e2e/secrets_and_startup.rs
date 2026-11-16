@@ -1,62 +1,23 @@
 /// Run `phux ARGS` on a PTY with the hermetic environment until one of
 /// `needles` appears (or 30 s pass), then kill it; what it printed.
 fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::io::Read as _;
-    let pty = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("openpty");
-    let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-    cmd.args(args);
-    cmd.env_clear();
-    for var in ["PATH", "TMPDIR"] {
-        if let Some(value) = std::env::var_os(var) {
-            cmd.env(var, value);
-        }
-    }
-    for (name, value) in hermetic_env(dir) {
-        cmd.env(name, value);
-    }
-    cmd.env("HOME", dir);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("PHUX_SOCKET", dir.join("client.sock"));
-    cmd.env("PHUX_NO_AUTO_LISTEN", "1");
-    cmd.env("PHUX_NO_UPDATE_CHECK", "1");
-    cmd.cwd(dir);
-    let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
-    drop(pty.slave);
-    let mut reader = pty.master.try_clone_reader().expect("clone reader");
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                break;
+    common::pty_transcript(
+        args,
+        |cmd| {
+            common::clear_pty_env(cmd);
+            for (name, value) in hermetic_env(dir) {
+                cmd.env(name, value);
             }
-        }
-    });
-    let deadline = Instant::now() + READY_DEADLINE;
-    let mut seen = String::new();
-    while !needles.iter().any(|needle| seen.contains(needle)) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
-            Err(_) => break,
-        }
-    }
-    // Let the line that matched finish.
-    std::thread::sleep(Duration::from_millis(200));
-    while let Ok(chunk) = rx.try_recv() {
-        seen.push_str(&String::from_utf8_lossy(&chunk));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    seen
+            cmd.env("HOME", dir);
+            cmd.env("PHUX_SOCKET", dir.join("client.sock"));
+            cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+            cmd.cwd(dir);
+        },
+        |seen| needles.iter().any(|needle| seen.contains(needle)),
+        // Let the line that matched finish.
+        Duration::from_millis(200),
+        READY_DEADLINE,
+    )
 }
 
 /// `docs/remote.md#who-can-connect` secret sweep across an enrolled lifecycle,
