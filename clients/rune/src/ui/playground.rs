@@ -10,6 +10,7 @@ use crate::desk::surfaces::Playground;
 pub(super) mod edges;
 pub(super) mod labels;
 pub(super) mod pen;
+pub(super) mod readout;
 
 /// How a playground view draws; how it closes is its `Playground::ALL` row.
 type View = fn(&Desk, &Ink, &mut Cx<Desk>) -> El;
