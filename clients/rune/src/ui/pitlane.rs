@@ -9,10 +9,11 @@
 //! one canvas, then the garages' boards, name pills, the cars' press targets
 //! and the readout. The camera stays put: a car laps too fast to follow.
 
-use rune::{Cx, El, canvas, col, el, row, text};
+use rune::{Cx, El, canvas, el, row, text};
 
 use super::playground::pen::{Pen, rgba};
-use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use super::playground::readout::{Picked, Readout, working};
+use super::{CAPTION, Ink, TITLEBAR_H};
 use crate::creature;
 use crate::desk::Desk;
 use crate::pitlane::{AMBER, Mode, PitLane, RANKS};
@@ -228,82 +229,33 @@ fn stack(pills: &[(Pt, f32)], view_w: f32) -> Vec<Pt> {
 }
 
 fn readout(r: &PitLane, waiting: usize, p: &Ink) -> El {
-    let working = r
-        .cars
-        .iter()
-        .filter(|c| c.who.mood == Mood::Working)
-        .count();
-    let picked = r.selected_car().map(|c| {
-        let host = r.garages.get(r.host_of(c)).map_or("", |g| g.host.as_str());
-        let line = format!("{} · {} · {host}  ↩", c.who.name, c.who.mood.word());
+    let picked = r.selected_car().map(|c| Picked {
+        name: &c.who.name,
+        mood: c.who.mood,
+        host: r.garages.get(r.host_of(c)).map_or("", |g| g.host.as_str()),
         // Its rank and work, when its machine publishes agent stats.
-        let card = c.who.work.map(|w| {
+        card: c.who.work.map(|w| {
             format!(
                 "Rank: {} · Work: {}",
                 RANKS[c.tier.min(4)],
                 creature::work_line(&w)
             )
-        });
-        pressable("pitlane-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", c.who.name))
-            .on_press(Desk::open_car)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        }),
     });
-    let y = if r.h > 0.0 {
-        r.h - 44.0
-    } else {
-        TITLEBAR_H + 4.0
+    let readout = Readout {
+        scene: "pitlane",
+        hosts: r.garages.len(),
+        agents: r.cars.len(),
+        working: working(r.cars.iter().map(|c| c.who.mood)),
+        waiting,
+        h: r.h,
+        unlaid_y: TITLEBAR_H + 4.0,
+        picked,
+        open: Desk::open_car,
+        next_waiting: Desk::pitlane_next_waiting,
+        close: Desk::close_pitlane,
     };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        r.garages.len(),
-                        r.cars.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("pitlane-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::pitlane_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "pitlane-close",
-            p,
-            Desk::close_pitlane,
-        ))
+    super::playground::readout::readout(readout, p)
 }
 
 #[cfg(test)]
