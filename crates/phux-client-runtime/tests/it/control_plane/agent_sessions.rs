@@ -243,11 +243,68 @@ fn publications_of(events: Vec<Event>) -> Vec<(Vec<u64>, bool)> {
 
 fn commit_initial_agent(plane: &mut ControlPlane, request_id: u32) {
     // Reference-server ordering: the bootstrap can precede COMMAND_RESULT.
-    agent_begin(plane, 1, None, 2);
-    agent_chunk(plane, 1, 0, agent_payload(&[(1, "prompt"), (2, "ask")])).unwrap();
-    agent_ready(plane, 1).unwrap();
+    publish_agent(plane);
     plane.reply(request_id, CommandResult::Ok);
     assert_eq!(take_agent_records(plane), [(vec![1, 2], true)]);
+}
+
+/// A resume-capable plane attached and ready with the agent committed at
+/// seq 2 (generation 1).
+fn resumed_with_initial_agent() -> ControlPlane {
+    let (mut plane, attach_id) = subscribing_with_resume(true, true);
+    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
+    let requests = agent_requests(&mut plane);
+    commit_initial_agent(&mut plane, requests[0].0);
+    plane
+}
+
+fn agent_info(plane: &ControlPlane) -> Option<phux_client_runtime::engine::AgentStreamInfo> {
+    plane
+        .engine()
+        .unwrap()
+        .agent_stream_info(&ResourceId::local(AGENT))
+}
+
+fn agent_cursor(plane: &ControlPlane) -> Option<u64> {
+    plane.agent_after_seq(&ResourceId::local(AGENT))
+}
+
+/// The agent's full delta bootstrap of generation `generation`: begin, one
+/// chunk of `records`, ready.
+fn agent_bootstrap(
+    plane: &mut ControlPlane,
+    generation: u64,
+    after_seq: Option<u64>,
+    records: &[(u64, &str)],
+) {
+    agent_begin(plane, generation, after_seq, records.last().unwrap().0);
+    agent_chunk(plane, generation, 0, agent_payload(records)).unwrap();
+    agent_ready(plane, generation).unwrap();
+}
+
+/// Close the agent resource (`close`) or detach its parent; either retires
+/// the agent once, reporting the cursor it stood at.
+fn retire_agent(plane: &mut ControlPlane, close: bool) -> Vec<Option<u64>> {
+    if close {
+        plane
+            .feed(phux_wire_fixtures::closed(&ResourceId::local(AGENT), None))
+            .unwrap();
+    } else {
+        let request_id = plane.detach_terminal(&terminal());
+        plane.reply(request_id, CommandResult::Ok);
+    }
+    plane
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::AgentSessionClosed {
+                terminal_id,
+                stream,
+                ..
+            } if terminal_id == ResourceId::local(AGENT) => Some(stream.map(|s| s.last_seq)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -258,21 +315,11 @@ fn same_incarnation_reconnect_requests_the_kernel_committed_agent_cursor() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].1, None, "no committed generation yet");
     commit_initial_agent(&mut plane, requests[0].0);
-    let old = plane
-        .engine()
-        .unwrap()
-        .agent_stream_info(&ResourceId::local(AGENT))
-        .unwrap();
+    let old = agent_info(&plane).unwrap();
     let requests = reconnect_agents(&mut plane, true, 0xAB);
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].1, Some(2));
-    assert_eq!(
-        plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT)),
-        Some(old)
-    );
+    assert_eq!(agent_info(&plane), Some(old));
     agent_begin(&mut plane, 2, Some(2), 4);
     agent_chunk(&mut plane, 2, 0, agent_payload(&[(3, "tool_start")])).unwrap();
     agent_chunk(&mut plane, 2, 1, agent_payload(&[(4, "provider_raw")])).unwrap();
@@ -280,23 +327,20 @@ fn same_incarnation_reconnect_requests_the_kernel_committed_agent_cursor() {
         take_agent_records(&mut plane).is_empty(),
         "no staging publication"
     );
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(2));
+    assert_eq!(agent_cursor(&plane), Some(2));
     agent_ready(&mut plane, 2).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![3, 4], false)]);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(4));
+    assert_eq!(agent_cursor(&plane), Some(4));
     agent_live(&mut plane, 2, &[(5, "stop")]).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![5], false)]);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(5));
+    assert_eq!(agent_cursor(&plane), Some(5));
     assert!(agent_live(&mut plane, 1, &[(3, "stop")]).is_err());
     assert!(take_agent_records(&mut plane).is_empty());
 }
 
 #[test]
 fn a_full_bootstrap_answering_an_evicted_resume_cursor_replaces() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     assert_eq!(reconnect_agents(&mut plane, true, 0xAB).len(), 1);
     agent_begin(&mut plane, 2, None, 5);
     agent_chunk(
@@ -311,70 +355,42 @@ fn a_full_bootstrap_answering_an_evicted_resume_cursor_replaces() {
     assert_eq!(take_agent_records(&mut plane), [(vec![4, 5], true)]);
     let requests = reconnect_agents(&mut plane, true, 0xAB);
     assert_eq!(requests[0].1, Some(5));
-    agent_begin(&mut plane, 3, None, 8);
-    agent_chunk(
-        &mut plane,
-        3,
-        0,
-        agent_payload(&[(7, "prompt"), (8, "stop")]),
-    )
-    .unwrap();
-    agent_ready(&mut plane, 3).unwrap();
+    agent_bootstrap(&mut plane, 3, None, &[(7, "prompt"), (8, "stop")]);
     assert_eq!(take_agent_records(&mut plane), [(vec![7, 8], true)]);
 }
 
 #[test]
 fn new_incarnation_forgets_agent_cursors_before_subscribing_recycled_ids() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     let requests = reconnect_agents(&mut plane, true, 0xAC);
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].1, None);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
-    assert!(
-        plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT))
-            .is_none()
-    );
+    assert_eq!(agent_cursor(&plane), None);
+    assert!(agent_info(&plane).is_none());
     assert_eq!(
         plane.take_events().into_iter().filter(|event| matches!(event, Event::AgentSessionClosed { terminal_id, .. } if *terminal_id == ResourceId::local(AGENT))).count(),
         1
     );
-    agent_begin(&mut plane, 1, None, 1);
-    agent_chunk(&mut plane, 1, 0, agent_payload(&[(1, "prompt")])).unwrap();
-    agent_ready(&mut plane, 1).unwrap();
+    agent_bootstrap(&mut plane, 1, None, &[(1, "prompt")]);
     assert_eq!(take_agent_records(&mut plane), [(vec![1], true)]);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(1));
+    assert_eq!(agent_cursor(&plane), Some(1));
 }
 
 #[test]
 fn zero_missed_agent_records_resume_without_duplicates_then_handoff_to_live() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     let requests = reconnect_agents(&mut plane, true, 0xAB);
     assert_eq!(requests[0].1, Some(2));
     agent_begin(&mut plane, 2, Some(2), 2);
     agent_ready(&mut plane, 2).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![], false)]);
-    let committed = plane
-        .engine()
-        .unwrap()
-        .agent_stream_info(&ResourceId::local(AGENT))
-        .unwrap();
+    let committed = agent_info(&plane).unwrap();
     assert_eq!((committed.stream_id, committed.bootstrap_id), agent_ids(2));
     assert_eq!(committed.last_seq, 2);
     agent_live(&mut plane, 2, &[(3, "stop")]).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![3], false)]);
     // Explicit same-connection reattach also appends only the missed suffix.
-    agent_begin(&mut plane, 3, Some(3), 4);
-    agent_chunk(&mut plane, 3, 0, agent_payload(&[(4, "prompt")])).unwrap();
-    agent_ready(&mut plane, 3).unwrap();
+    agent_bootstrap(&mut plane, 3, Some(3), &[(4, "prompt")]);
     assert_eq!(take_agent_records(&mut plane), [(vec![4], false)]);
     agent_live(&mut plane, 3, &[(5, "stop")]).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![5], false)]);
@@ -392,45 +408,28 @@ fn failed_agent_delta_bootstraps_never_publish_or_advance_a_resume_cursor() {
         (0, agent_payload(&[(3, "stop")]) + "{\"seq\":4}\n"),
         (1, agent_payload(&[(3, "stop"), (4, "ask")])),
     ] {
-        let (mut plane, attach_id) = subscribing_with_resume(true, true);
-        attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-        let requests = agent_requests(&mut plane);
-        commit_initial_agent(&mut plane, requests[0].0);
-        let committed = plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT));
+        let mut plane = resumed_with_initial_agent();
+        let committed = agent_info(&plane);
         agent_begin(&mut plane, 2, Some(2), 4);
         let _ = agent_chunk(&mut plane, 2, chunk_seq, payload);
         assert!(agent_ready(&mut plane, 2).is_err());
         assert!(take_agent_records(&mut plane).is_empty());
-        assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(2));
-        assert_eq!(
-            plane
-                .engine()
-                .unwrap()
-                .agent_stream_info(&ResourceId::local(AGENT)),
-            committed
-        );
+        assert_eq!(agent_cursor(&plane), Some(2));
+        assert_eq!(agent_info(&plane), committed);
         let requests = reconnect_agents(&mut plane, true, 0xAB);
         assert_eq!(requests[0].1, Some(2));
-        agent_begin(&mut plane, 3, Some(2), 3);
-        agent_chunk(&mut plane, 3, 0, agent_payload(&[(3, "stop")])).unwrap();
-        agent_ready(&mut plane, 3).unwrap();
+        agent_bootstrap(&mut plane, 3, Some(2), &[(3, "stop")]);
         assert_eq!(take_agent_records(&mut plane), [(vec![3], false)]);
     }
 }
 
 #[test]
 fn empty_full_agent_bootstrap_is_a_consumer_visible_replacement() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     agent_begin(&mut plane, 2, None, 2);
     agent_ready(&mut plane, 2).unwrap();
     assert_eq!(take_agent_records(&mut plane), [(vec![], true)]);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(2));
+    assert_eq!(agent_cursor(&plane), Some(2));
 }
 
 #[test]
@@ -447,64 +446,27 @@ fn reconnect_before_agent_ready_requests_full_instead_of_unverified_records() {
     )
     .unwrap();
     assert!(take_agent_records(&mut plane).is_empty());
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
+    assert_eq!(agent_cursor(&plane), None);
     let requests = reconnect_agents(&mut plane, true, 0xAB);
     assert_eq!(requests[0].1, None);
-    agent_begin(&mut plane, 2, None, 3);
-    agent_chunk(
+    agent_bootstrap(
         &mut plane,
         2,
-        0,
-        agent_payload(&[(1, "prompt"), (2, "ask"), (3, "stop")]),
-    )
-    .unwrap();
-    agent_ready(&mut plane, 2).unwrap();
+        None,
+        &[(1, "prompt"), (2, "ask"), (3, "stop")],
+    );
     assert_eq!(take_agent_records(&mut plane), [(vec![1, 2, 3], true)]);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), Some(3));
+    assert_eq!(agent_cursor(&plane), Some(3));
 }
 
 #[test]
 fn resource_close_and_parent_detach_clear_the_committed_agent_cursor() {
     for close in [true, false] {
-        let (mut plane, attach_id) = subscribing_with_resume(true, true);
-        attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-        let requests = agent_requests(&mut plane);
-        commit_initial_agent(&mut plane, requests[0].0);
-        if close {
-            plane
-                .feed(FrameKind::ResourceClosed {
-                    terminal_id: ResourceId::local(AGENT),
-                    exit_status: None,
-                    signal: None,
-                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
-                })
-                .unwrap();
-        } else {
-            let request_id = plane.detach_terminal(&terminal());
-            plane.reply(request_id, CommandResult::Ok);
-        }
-        assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
-        assert!(
-            plane
-                .engine()
-                .unwrap()
-                .agent_stream_info(&ResourceId::local(AGENT))
-                .is_none()
-        );
-        let closed: Vec<_> = plane
-            .take_events()
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::AgentSessionClosed {
-                    terminal_id,
-                    stream,
-                    ..
-                } if terminal_id == ResourceId::local(AGENT) => Some(stream),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(closed.len(), 1);
-        assert_eq!(closed[0].map(|stream| stream.last_seq), Some(2));
+        let mut plane = resumed_with_initial_agent();
+        let closed = retire_agent(&mut plane, close);
+        assert_eq!(agent_cursor(&plane), None, "close={close}");
+        assert!(agent_info(&plane).is_none(), "close={close}");
+        assert_eq!(closed, [Some(2)], "close={close}");
     }
 }
 
@@ -512,6 +474,32 @@ fn ready(plane: &mut ControlPlane, attach_id: u32, parent: ResourceId) {
     let generation = u64::from(attach_id);
     empty_bootstrap(plane, &parent, [generation, generation]);
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+}
+
+/// Answer the agent's `ATTACH_RESOURCE` among the queued subscriptions.
+fn confirm_agent_subscription(plane: &mut ControlPlane) {
+    let agent_request = attach_resources(plane)
+        .into_iter()
+        .find(|(_, id)| *id == ResourceId::local(AGENT))
+        .expect("agent subscription")
+        .0;
+    plane.reply(agent_request, CommandResult::Ok);
+}
+
+/// `OK`, or a `PERMISSION_DENIED` refusal saying `message`.
+fn refused_or_ok(refused: bool, message: &str) -> CommandResult {
+    if refused {
+        CommandResult::Error {
+            code: ErrorCode::PermissionDenied,
+            message: message.into(),
+        }
+    } else {
+        CommandResult::Ok
+    }
+}
+
+fn state(snapshot: SessionSnapshot) -> CommandResult {
+    CommandResult::OkWith(CommandValue::State(snapshot))
 }
 
 fn close_count(plane: &mut ControlPlane) -> usize {
@@ -537,10 +525,7 @@ fn reconnect_to_beta(plane: &mut ControlPlane) -> u32 {
     // A caller can request inventory before ATTACHED. That read must not
     // turn an in-progress session attach into a ready browsing connection.
     let request_id = plane.refresh_topology().unwrap();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-    );
+    plane.reply(request_id, state(beta_snapshot()));
     assert_eq!(plane.status(), Status::Negotiated);
     assert_eq!(close_count(plane), 0);
     attach_to(plane, attach_id, beta_snapshot());
@@ -584,10 +569,7 @@ fn reconnect_after_switch_retires_home_subscription_once_and_can_follow_it_again
 
     let request_id = plane.refresh_topology().unwrap();
     // ATTACHED fences its earlier inventory; answer that and then the fresh read.
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
-    );
+    plane.reply(request_id, state(with_agent(terminal())));
     assert_eq!(close_count(&mut plane), 0);
     let request_id = plane.attach_terminal(&terminal());
     let _ = plane.take_outbound();
@@ -608,13 +590,7 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
         // survives reconnect, unlike an ordinary old home/spawn pump.
         let request_id = plane.attach_terminal_preserving_geometry(&terminal());
         plane.reply(request_id, CommandResult::Ok);
-        let subscriptions = attach_resources(&mut plane);
-        let agent_request = subscriptions
-            .iter()
-            .find(|(_, id)| *id == ResourceId::local(AGENT))
-            .unwrap()
-            .0;
-        plane.reply(agent_request, CommandResult::Ok);
+        confirm_agent_subscription(&mut plane);
         // Set the reconnect target to the current home session.
         assert!(!plane.attach_session(AttachTarget::ByName("beta".into())));
         let _ = plane.take_outbound();
@@ -627,28 +603,13 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
         // An inventory may optimistically subscribe the agent while its
         // parent's replay is pending; a refusal must still retire it.
         let inventory_request = plane.refresh_topology().unwrap();
-        plane.reply(
-            inventory_request,
-            CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-        );
+        plane.reply(inventory_request, state(beta_snapshot()));
         let subscriptions = attach_resources(&mut plane);
         assert_eq!(subscriptions.len(), 1);
         assert_eq!(subscriptions[0].1, ResourceId::local(AGENT));
         plane.reply(subscriptions[0].0, CommandResult::Ok);
         assert_eq!(close_count(&mut plane), 0);
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: if refused {
-                    CommandResult::Error {
-                        code: ErrorCode::PermissionDenied,
-                        message: "denied".into(),
-                    }
-                } else {
-                    CommandResult::Ok
-                },
-            })
-            .unwrap();
+        plane.reply(request_id, refused_or_ok(refused, "denied"));
         assert_eq!(close_count(&mut plane), usize::from(refused));
         assert!(attach_resources(&mut plane).is_empty());
     }
@@ -662,40 +623,18 @@ fn refused_parent_detach_preserves_agent_subscription_and_success_releases_once(
         ready(&mut plane, attach_id, terminal());
         let request_id = plane.attach_terminal(&ResourceId::local(8));
         plane.reply(request_id, CommandResult::Ok);
-        let subscriptions = attach_resources(&mut plane);
-        let agent_request = subscriptions
-            .iter()
-            .find(|(_, id)| *id == ResourceId::local(AGENT))
-            .unwrap()
-            .0;
-        plane.reply(agent_request, CommandResult::Ok);
+        confirm_agent_subscription(&mut plane);
         assert_eq!(close_count(&mut plane), 0);
 
         let detach_request = plane.detach_terminal(&ResourceId::local(8));
         let inventory_request = plane.refresh_topology().unwrap();
         let _ = plane.take_outbound();
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: inventory_request,
-                result: CommandResult::OkWith(CommandValue::State(with_agent(ResourceId::local(
-                    8,
-                )))),
-            })
-            .unwrap();
+        plane.reply(inventory_request, state(with_agent(ResourceId::local(8))));
         assert_eq!(close_count(&mut plane), 0, "detach admission is unsettled");
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id: detach_request,
-                result: if refused {
-                    CommandResult::Error {
-                        code: ErrorCode::PermissionDenied,
-                        message: "parent detach refused".into(),
-                    }
-                } else {
-                    CommandResult::Ok
-                },
-            })
-            .unwrap();
+        plane.reply(
+            detach_request,
+            refused_or_ok(refused, "parent detach refused"),
+        );
         assert_eq!(plane.terminal_is_admitted(&ResourceId::local(8)), refused);
         assert_eq!(close_count(&mut plane), usize::from(!refused));
         let releases = plane
@@ -733,24 +672,13 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
     ready(&mut plane, attach_id, terminal());
     let request_id = plane.attach_terminal(&parent);
     plane.reply(request_id, CommandResult::Ok);
-    let subscriptions = attach_resources(&mut plane);
-    let agent_request = subscriptions
-        .iter()
-        .find(|(_, id)| *id == ResourceId::local(AGENT))
-        .unwrap()
-        .0;
-    plane.reply(agent_request, CommandResult::Ok);
+    confirm_agent_subscription(&mut plane);
     assert_eq!(close_count(&mut plane), 0);
 
     let detach_request = plane.detach_terminal(&parent);
     let _ = plane.take_outbound();
     plane
-        .feed(FrameKind::ResourceClosed {
-            terminal_id: parent.clone(),
-            exit_status: Some(0),
-            signal: None,
-            reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        })
+        .feed(phux_wire_fixtures::closed(&parent, Some(0)))
         .unwrap();
     assert!(plane.engine().unwrap().is_closed(&parent));
     plane
@@ -768,81 +696,36 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
     // Repeated reads must not attach it under the closed parent.
     for _ in 0..3 {
         let request_id = plane.refresh_topology().unwrap();
-        plane.reply(
-            request_id,
-            CommandResult::OkWith(CommandValue::State(with_agent(parent.clone()))),
-        );
+        plane.reply(request_id, state(with_agent(parent.clone())));
         assert!(attach_resources(&mut plane).is_empty());
         assert_eq!(close_count(&mut plane), 0);
     }
 }
 
-fn replace_without_loss(plane: &mut ControlPlane) {
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(agent_hello(true, 0xAB)).unwrap();
-    let attach_id = plane.queued_attach_id();
-    attach_ready_to(plane, attach_id, with_agent(terminal()));
-}
-
 #[test]
 fn undrained_frames_replay_in_order_after_replacement_without_loss() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();
     agent_live(&mut plane, 1, &[(4, "tool_end")]).unwrap();
     // Replacement can open without a preceding connection_lost.
-    replace_without_loss(&mut plane);
+    replace_attached(&mut plane, with_agent(terminal()));
     assert_eq!(
         take_agent_records(&mut plane),
         [(vec![3], false), (vec![4], false)]
     );
     let requests = agent_requests(&mut plane);
     assert_eq!(requests[0].1, Some(4));
-    agent_begin(&mut plane, 2, Some(4), 5);
-    agent_chunk(&mut plane, 2, 0, agent_payload(&[(5, "stop")])).unwrap();
-    agent_ready(&mut plane, 2).unwrap();
+    agent_bootstrap(&mut plane, 2, Some(4), &[(5, "stop")]);
     assert_eq!(take_agent_records(&mut plane), [(vec![5], false)]);
 }
 
 #[test]
 fn close_and_detach_do_not_replay_undrained_publications() {
     for close in [true, false] {
-        let (mut plane, attach_id) = subscribing_with_resume(true, true);
-        attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-        let requests = agent_requests(&mut plane);
-        commit_initial_agent(&mut plane, requests[0].0);
+        let mut plane = resumed_with_initial_agent();
         agent_live(&mut plane, 1, &[(3, "stop")]).unwrap();
-        if close {
-            plane
-                .feed(FrameKind::ResourceClosed {
-                    terminal_id: ResourceId::local(AGENT),
-                    exit_status: None,
-                    signal: None,
-                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
-                })
-                .unwrap();
-        } else {
-            let request_id = plane.detach_terminal(&terminal());
-            plane.reply(request_id, CommandResult::Ok);
-        }
-        let closed: Vec<_> = plane
-            .take_events()
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::AgentSessionClosed {
-                    terminal_id,
-                    stream,
-                    ..
-                } if terminal_id == ResourceId::local(AGENT) => Some(stream),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(closed.len(), 1);
-        assert_eq!(closed[0].map(|stream| stream.last_seq), Some(3));
-        replace_without_loss(&mut plane);
+        assert_eq!(retire_agent(&mut plane, close), [Some(3)], "close={close}");
+        replace_attached(&mut plane, with_agent(terminal()));
         assert!(take_agent_records(&mut plane).is_empty());
     }
 }
@@ -870,9 +753,7 @@ fn declare_agent(plane: &mut ControlPlane) {
 }
 
 fn publish_agent(plane: &mut ControlPlane) {
-    agent_begin(plane, 1, None, 2);
-    agent_chunk(plane, 1, 0, agent_payload(&[(1, "prompt"), (2, "ask")])).unwrap();
-    agent_ready(plane, 1).unwrap();
+    agent_bootstrap(plane, 1, None, &[(1, "prompt"), (2, "ask")]);
 }
 
 #[test]
@@ -880,21 +761,14 @@ fn option_false_omitted_attach_withholds_until_explicit_declare() {
     let (mut plane, attach_id) = subscribing(false);
     attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
     publish_agent(&mut plane);
-    let cursor = plane
-        .engine()
-        .unwrap()
-        .agent_stream_info(&ResourceId::local(AGENT))
-        .unwrap();
+    let cursor = agent_info(&plane).unwrap();
     replace_attached(&mut plane, two_session_snapshot(false));
     assert!(
         take_agent_records(&mut plane).is_empty(),
         "a partial ATTACHED must not release an omitted agent"
     );
     assert_eq!(
-        plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT)),
+        agent_info(&plane),
         Some(cursor),
         "a partial ATTACHED must not drop the owner cursor"
     );
@@ -921,21 +795,13 @@ fn option_false_authoritative_omit_forgets_the_cursor_and_does_not_resurrect() {
         Event::AgentSessionClosed { terminal_id, .. } | Event::TerminalClosed { terminal_id, .. }
             if *terminal_id == ResourceId::local(AGENT)
     )));
-        assert!(
-            plane
-                .engine()
-                .unwrap()
-                .agent_stream_info(&ResourceId::local(AGENT))
-                .is_none()
-        );
+        assert!(agent_info(&plane).is_none());
         declare_agent(&mut plane);
         assert!(
             take_agent_records(&mut plane).is_empty(),
             "discarded rows must not resurrect on re-admit"
         );
-        agent_begin(&mut plane, 2, None, 1);
-        agent_chunk(&mut plane, 2, 0, agent_payload(&[(1, "prompt")])).unwrap();
-        agent_ready(&mut plane, 2).unwrap();
+        agent_bootstrap(&mut plane, 2, None, &[(1, "prompt")]);
         assert_eq!(take_agent_records(&mut plane), [(vec![1], true)]);
     }
 }
@@ -945,50 +811,27 @@ fn authoritative_registry_omission_drops_queued_records_before_delivery() {
     let (mut plane, attach_id) = subscribing(false);
     attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
     publish_agent(&mut plane);
-    assert_eq!(
-        plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT))
-            .unwrap()
-            .last_seq,
-        2
-    );
+    assert_eq!(agent_info(&plane).unwrap().last_seq, 2);
     plane.reconcile_agent_delivery_catalog(&two_session_snapshot(false));
     assert!(
         take_agent_records(&mut plane).is_empty(),
         "an absent resource must not return through a queued publication"
     );
-    assert!(
-        plane
-            .engine()
-            .unwrap()
-            .agent_stream_info(&ResourceId::local(AGENT))
-            .is_none()
-    );
+    assert!(agent_info(&plane).is_none());
 }
 
 #[test]
 fn authoritative_rebind_publishes_catalog_before_held_agent_records() {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
+    let mut plane = resumed_with_initial_agent();
     agent_live(&mut plane, 1, &[(3, "tool_start")]).unwrap();
     replace_attached(&mut plane, two_session_snapshot(false));
     assert!(take_agent_records(&mut plane).is_empty());
     let request_id = plane.refresh_topology().unwrap();
     // ATTACHED fences the inventory queued before its admission barrier.
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
-    );
+    plane.reply(request_id, state(two_session_snapshot(false)));
     let request_id = plane.refresh_topology().unwrap();
     let _ = plane.take_events();
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(with_agent(terminal()))),
-    );
+    plane.reply(request_id, state(with_agent(terminal())));
     let events = plane.take_events();
     let catalog = events
         .iter()
