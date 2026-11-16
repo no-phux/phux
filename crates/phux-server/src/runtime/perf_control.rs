@@ -24,17 +24,10 @@ pub(super) async fn handle(state: &crate::state::SharedState, op: PerfOp) -> Com
         PerfOp::AllocOff => alloc_switch(false),
         // The decoder refuses an undefined op first; one built in process
         // gets the same answer.
-        PerfOp::Unknown(value) => refuse(
+        PerfOp::Unknown(value) => CommandResult::error(
             ErrorCode::Unsupported,
             format!("PERF_CONTROL: unknown op {value:#04x}"),
         ),
-    }
-}
-
-fn refuse(code: ErrorCode, message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.into(),
     }
 }
 
@@ -52,7 +45,7 @@ const KEEP_TRACES: usize = 20;
 
 fn trace_start(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult {
     if !trace::start(trace::DEFAULT_MAX_EVENTS) {
-        return refuse(
+        return CommandResult::error(
             ErrorCode::InvalidCommand,
             "PERF_CONTROL: a trace is already recording",
         );
@@ -78,7 +71,7 @@ fn trace_start(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult {
 
 async fn trace_stop(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult {
     let Some(capture) = trace::stop() else {
-        return refuse(
+        return CommandResult::error(
             ErrorCode::InvalidCommand,
             "PERF_CONTROL: no trace is recording",
         );
@@ -90,9 +83,9 @@ async fn trace_stop(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult 
         Ok(Ok(reply)) => ok_json(&reply),
         Ok(Err(message)) => {
             tracing::warn!(%message, "perf trace not written");
-            refuse(ErrorCode::InternalError, format!("PERF_CONTROL: {message}"))
+            CommandResult::error(ErrorCode::InternalError, format!("PERF_CONTROL: {message}"))
         }
-        Err(err) => refuse(
+        Err(err) => CommandResult::error(
             ErrorCode::InternalError,
             format!("PERF_CONTROL: trace writer failed: {err}"),
         ),

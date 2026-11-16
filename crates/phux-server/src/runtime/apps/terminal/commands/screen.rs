@@ -58,10 +58,10 @@ pub(crate) async fn handle_get_screen(
 ) -> CommandResult {
     let selector = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK;
     if selector > MAX_SCREEN_FORMAT {
-        return CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: format!("unknown GET_SCREEN format: {format}"),
-        };
+        return CommandResult::error(
+            ErrorCode::InvalidCommand,
+            format!("unknown GET_SCREEN format: {format}"),
+        );
     }
     match request_screen(
         state,
@@ -92,9 +92,11 @@ fn screen_reply_result(reply: ScreenReply) -> CommandResult {
             ),
         },
         ScreenReply::Projection(screen) => serde_json::to_string(&screen).map_or_else(
-            |err| CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: format!("screen serialization failed: {err}"),
+            |err| {
+                CommandResult::error(
+                    ErrorCode::InternalError,
+                    format!("screen serialization failed: {err}"),
+                )
             },
             |json| CommandResult::OkWith(CommandValue::Json(json)),
         ),
@@ -128,10 +130,10 @@ pub(crate) async fn handle_get_terminal_state(
     };
     // `format: 0` never yields `TooLarge`.
     let ScreenReply::Projection(screen_state) = reply else {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "unexpected oversized-capture refusal for GET_TERMINAL_STATE".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "unexpected oversized-capture refusal for GET_TERMINAL_STATE",
+        );
     };
 
     let viewport_cells = viewport_cells_json(&screen_state);
@@ -180,10 +182,10 @@ pub(crate) async fn handle_get_terminal_state(
     });
     match serde_json::to_string(&terminal_state_json) {
         Ok(json) => CommandResult::OkWith(CommandValue::Json(json)),
-        Err(err) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: format!("terminal state serialization failed: {err}"),
-        },
+        Err(err) => CommandResult::error(
+            ErrorCode::InternalError,
+            format!("terminal state serialization failed: {err}"),
+        ),
     }
 }
 

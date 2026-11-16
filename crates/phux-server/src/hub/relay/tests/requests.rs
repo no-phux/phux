@@ -71,10 +71,7 @@ fn session_maps_correlated_error_frames_to_command_errors() {
     });
     assert_eq!(
         rx.try_recv().expect("resolved"),
-        CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "nope".to_owned(),
-        }
+        CommandResult::error(ErrorCode::TerminalNotFound, "nope")
     );
 }
 

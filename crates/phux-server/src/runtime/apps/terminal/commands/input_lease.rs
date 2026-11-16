@@ -24,18 +24,18 @@ pub(crate) async fn handle_acquire_input(
             && let Some(holder) = prior
             && holder != client_id
         {
-            return Err(CommandResult::Error {
-                code: ErrorCode::InputLeaseHeld,
-                message: format!("input lease held by client {}", holder.0),
-            });
+            return Err(CommandResult::error(
+                ErrorCode::InputLeaseHeld,
+                format!("input lease held by client {}", holder.0),
+            ));
         }
         // ADR-0163 §6: a non-human principal never takes a human's lease,
         // however deliberately it asks.
         if s.lease_protected_from(core, client_id) {
-            return Err(CommandResult::Error {
-                code: ErrorCode::InputLeaseHeld,
-                message: "input lease held by a human; an agent cannot take it".to_owned(),
-            });
+            return Err(CommandResult::error(
+                ErrorCode::InputLeaseHeld,
+                "input lease held by a human; an agent cannot take it",
+            ));
         }
         s.set_input_lease(core, client_id);
         let action = match prior {

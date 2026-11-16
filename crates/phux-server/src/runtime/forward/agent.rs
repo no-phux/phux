@@ -23,7 +23,6 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::refuse;
 use crate::runtime::commands::CommandContext;
 use crate::state::{ClientId, Outbound, SharedState};
 
@@ -144,7 +143,7 @@ pub(super) fn withdraw(state: &SharedState, client: ClientId) {
 pub(super) fn admit(ctx: &CommandContext, op: phux_protocol::forward::ForwardOp) -> CommandResult {
     use phux_protocol::forward::ForwardOp;
     if ctx.state.with(|s| s.forward_agent().socket().is_none()) {
-        return refuse(
+        return CommandResult::error(
             ErrorCode::Unsupported,
             "ssh-agent forwarding is turned off on this server (`[forward] agent = false`)",
         );
@@ -173,13 +172,13 @@ pub(super) fn admit(ctx: &CommandContext, op: phux_protocol::forward::ForwardOp)
             {
                 CommandResult::Ok
             } else {
-                refuse(
+                CommandResult::error(
                     ErrorCode::NotFound,
                     format!("no ssh-agent request {id} is waiting on this connection"),
                 )
             }
         }
-        _ => refuse(ErrorCode::InternalError, "not an ssh-agent command"),
+        _ => CommandResult::error(ErrorCode::InternalError, "not an ssh-agent command"),
     }
 }
 

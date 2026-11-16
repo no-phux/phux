@@ -113,27 +113,24 @@ pub(crate) async fn attach_document<A: DocumentApi>(
     connection_token: &CancellationToken,
 ) -> CommandResult {
     let Ok(document) = handle.document::<A>() else {
-        return CommandResult::Error {
-            code: ErrorCode::WrongResourceKind,
-            message: format!("not a {}", A::LABEL),
-        };
+        return CommandResult::error(ErrorCode::WrongResourceKind, format!("not a {}", A::LABEL));
     };
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
-        return CommandResult::Error {
-            code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::ResourceExhausted,
+            "ATTACH_RESOURCE bootstrap id space exhausted",
+        );
     };
     let stream_id = crate::runtime::stream_id_from(client_id.0);
     // Subscribe before the cut so nothing published between them is lost.
     let live = handle.output.subscribe();
     crate::runtime::pump::stop_output(state, client_id, core).await;
     let Some(cut) = snapshot(&document.snapshot).await else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("the {} closed before its snapshot was cut", A::LABEL),
-        };
+        return CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            format!("the {} closed before its snapshot was cut", A::LABEL),
+        );
     };
 
     let (cancel, done, last_seq, prior) =
@@ -149,10 +146,10 @@ pub(crate) async fn attach_document<A: DocumentApi>(
             last_valid_seq: prior_seq.load(Ordering::Acquire),
         };
         if out_tx.send(Outbound::Frame(tombstone)).await.is_err() {
-            return CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "the client went away before its replacement bootstrap".to_owned(),
-            };
+            return CommandResult::error(
+                ErrorCode::ResourceExhausted,
+                "the client went away before its replacement bootstrap",
+            );
         }
     }
     for frame in bootstrap_frames(
@@ -165,10 +162,10 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         limits,
     ) {
         if out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "the client went away mid-bootstrap".to_owned(),
-            };
+            return CommandResult::error(
+                ErrorCode::ResourceExhausted,
+                "the client went away mid-bootstrap",
+            );
         }
     }
     last_seq.store(cut.base_seq, Ordering::Release);

@@ -16,8 +16,6 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::refuse;
-
 /// Most forwards one connection holds dialing or open.
 pub(super) const MAX_FORWARDS: usize = 32;
 /// A forward never read or written this long after its dial is closed.
@@ -98,7 +96,7 @@ impl Forwards {
     pub(super) fn reserve(&self, target: String) -> Result<Reservation, CommandResult> {
         let slots = &mut self.0.borrow_mut().slots;
         if slots.len() >= MAX_FORWARDS {
-            return Err(refuse(
+            return Err(CommandResult::error(
                 ErrorCode::ResourceExhausted,
                 format!("this connection already holds {MAX_FORWARDS} forwards; close one"),
             ));
@@ -153,12 +151,12 @@ impl Forwards {
         let fin = slot.fin;
         let half = take(slot).ok_or_else(|| {
             if fin && what == "write" {
-                return refuse(
+                return CommandResult::error(
                     ErrorCode::InvalidCommand,
                     format!("forward {id} already carried its last write"),
                 );
             }
-            refuse(
+            CommandResult::error(
                 ErrorCode::ResourceExhausted,
                 format!("forward {id} is still dialing or already has a {what} in flight"),
             )
@@ -229,7 +227,7 @@ impl Forwards {
 }
 
 pub(super) fn not_open(id: u64) -> CommandResult {
-    refuse(ErrorCode::NotFound, format!("no open forward {id}"))
+    CommandResult::error(ErrorCode::NotFound, format!("no open forward {id}"))
 }
 
 /// A reserved slot, freed on drop unless fulfilled.

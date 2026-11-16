@@ -39,6 +39,7 @@ pub mod perf_control;
 mod privacy;
 mod process_env;
 mod pump;
+mod reply;
 mod resume;
 pub mod revocation;
 #[cfg(test)]

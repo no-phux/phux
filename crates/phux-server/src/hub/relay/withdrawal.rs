@@ -81,10 +81,10 @@ impl RelaySession {
         if subs.iter().any(|s| s.client == client && s.seq >= seq) {
             debug!(satellite = %self.host, terminal, ?client,
                 "stale terminal unsubscribe superseded by a newer re-attach; dropping");
-            return Err(CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "terminal detach was superseded by a newer attachment".to_owned(),
-            });
+            return Err(CommandResult::error(
+                ErrorCode::InvalidCommand,
+                "terminal detach was superseded by a newer attachment",
+            ));
         }
         subs.retain(|s| s.client != client);
         if !subs.is_empty() {

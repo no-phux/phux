@@ -38,10 +38,10 @@ pub(super) async fn dispatch_local(
     {
         return match crate::runtime::apps::app_serving(state, terminal_id) {
             Some(app) => app.command(ctx, command, claim).await,
-            None => CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "command not supported by this server".to_owned(),
-            },
+            None => CommandResult::error(
+                ErrorCode::InvalidCommand,
+                "command not supported by this server",
+            ),
         };
     }
 
@@ -137,10 +137,10 @@ pub(super) async fn dispatch_local(
             .await
         }
         // A known-but-unwired tag of the `#[non_exhaustive]` catalog (SPEC §5).
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "command not supported by this server".to_owned(),
-        },
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
     }
 }
 

@@ -145,10 +145,10 @@ fn unknown_history_keeps_its_codec_first_tombstone_without_a_default_app() {
         let unknown = ResourceId::local(u32::MAX);
         assert_eq!(
             publish(&mut owner, 90, &unknown, "{}").await,
-            CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "command not supported by this server".to_owned(),
-            }
+            CommandResult::error(
+                ErrorCode::InvalidCommand,
+                "command not supported by this server"
+            )
         );
         for frame in frames(&unknown).into_iter().take(7) {
             // The default test client advertised terminal replies.

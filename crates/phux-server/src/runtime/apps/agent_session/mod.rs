@@ -171,10 +171,10 @@ impl ResourceApp for AgentSessionApp {
                     )
                     .await
                 }
-                _ => CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    message: "command not supported by this server".to_owned(),
-                },
+                _ => CommandResult::error(
+                    ErrorCode::InvalidCommand,
+                    "command not supported by this server",
+                ),
             }
         }
         .boxed_local()

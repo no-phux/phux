@@ -391,10 +391,10 @@ async fn serve(
                 lane.begin_apply(state, client_id, operation_id, terminal_id, events)
                     .await
             }
-            None => CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "acknowledged input lane unavailable".to_owned(),
-            },
+            None => CommandResult::error(
+                ErrorCode::InternalError,
+                "acknowledged input lane unavailable",
+            ),
         },
         Command::GetTerminalState {
             terminal_id,
@@ -473,10 +473,10 @@ async fn serve(
             terminal_id,
             state: reported,
         } => handle_report_agent_state(state, &terminal_id, reported).await,
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "command not supported by this server".to_owned(),
-        },
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
     }
 }
 

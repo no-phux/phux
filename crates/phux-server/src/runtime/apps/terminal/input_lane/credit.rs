@@ -40,10 +40,7 @@ impl InputStalled {
     }
 
     pub(crate) fn result(terminal_id: &WireResourceId) -> CommandResult {
-        CommandResult::Error {
-            code: ErrorCode::ResourceExhausted,
-            message: Self::message(terminal_id),
-        }
+        CommandResult::error(ErrorCode::ResourceExhausted, Self::message(terminal_id))
     }
 }
 

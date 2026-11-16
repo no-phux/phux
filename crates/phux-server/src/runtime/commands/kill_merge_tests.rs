@@ -192,10 +192,7 @@ async fn a_keyed_signal_that_was_not_delivered_answers_its_failure_on_retry() {
         claim,
         ..
     } = committed_signal().await;
-    let failure = CommandResult::Error {
-        code: ErrorCode::InternalError,
-        message: "no PTY child to signal".to_owned(),
-    };
+    let failure = CommandResult::error(ErrorCode::InternalError, "no PTY child to signal");
     record_signal_failure(Some(&claim), &failure);
     crate::runtime::keyed_ops::settle(Some(claim), &failure);
     assert!(

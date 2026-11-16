@@ -29,10 +29,7 @@ fn satellite_error_rolls_back_the_commands_subscription() {
     };
     session.feed(&FrameKind::CommandResult {
         request_id,
-        result: CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "nope".to_owned(),
-        },
+        result: CommandResult::error(ErrorCode::TerminalNotFound, "nope"),
     });
     assert!(matches!(
         reply_rx.try_recv().expect("resolved"),

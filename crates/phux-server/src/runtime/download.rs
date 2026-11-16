@@ -25,8 +25,8 @@ pub(super) async fn handle_get_file(request: GetFileRequest) -> CommandResult {
     .await
     {
         Ok(Ok(chunk)) => CommandResult::OkWith(CommandValue::FileChunk(chunk)),
-        Ok(Err((code, message))) => error(code, message),
-        Err(join_error) => error(
+        Ok(Err((code, message))) => CommandResult::error(code, message),
+        Err(join_error) => CommandResult::error(
             ErrorCode::InternalError,
             format!("file download worker failed: {join_error}"),
         ),
@@ -124,13 +124,6 @@ fn io_error(err: std::io::Error) -> (ErrorCode, String) {
         ErrorCode::InternalError,
         format!("file download I/O failed: {err}"),
     )
-}
-
-fn error(code: ErrorCode, message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]

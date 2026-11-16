@@ -58,10 +58,10 @@ pub(super) fn encode_input(
     }
 }
 fn input_saturated() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::ResourceExhausted,
-        message: "terminal input is saturated; nothing was written".into(),
-    }
+    CommandResult::error(
+        ErrorCode::ResourceExhausted,
+        "terminal input is saturated; nothing was written",
+    )
 }
 pub(super) fn handoff_encoded(
     pane: phux_core::ids::ResourceId,
@@ -92,9 +92,9 @@ pub(super) fn handoff_encoded(
             );
             Err(input_saturated())
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for ROUTE_INPUT".into(),
-        }),
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for ROUTE_INPUT",
+        )),
     }
 }

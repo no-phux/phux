@@ -34,10 +34,10 @@ fn locked_tab_refusal(
             .collect();
         phux_core::arrangement::locked_tab_closed_by(s.org(), &keys)
     })?;
-    Some(CommandResult::Error {
-        code: ErrorCode::PreconditionFailed,
-        message: format!("{tab} is locked; unlock it first"),
-    })
+    Some(CommandResult::error(
+        ErrorCode::PreconditionFailed,
+        format!("{tab} is locked; unlock it first"),
+    ))
 }
 
 /// `KILL_RESOURCE`: close the pane through the same teardown a natural exit
@@ -107,10 +107,10 @@ fn kill_if_refusal(
 ) -> CommandResult {
     match refusal {
         crate::state::KillIfRefusal::NotFound => terminal_not_found(terminal_id),
-        crate::state::KillIfRefusal::Precondition(why) => CommandResult::Error {
-            code: ErrorCode::PreconditionFailed,
-            message: format!("{terminal_id} not killed: {why}"),
-        },
+        crate::state::KillIfRefusal::Precondition(why) => CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            format!("{terminal_id} not killed: {why}"),
+        ),
     }
 }
 

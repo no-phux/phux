@@ -58,11 +58,11 @@ pub(super) async fn handle_shutdown(
             ?transport,
             "SHUTDOWN refused: local socket only"
         );
-        let refusal = CommandResult::Error {
-            code: ErrorCode::PermissionDenied,
-            message: "SHUTDOWN is accepted on the local socket only".to_owned(),
-        };
-        send_result(out_tx, request_id, refusal).await;
+        let refusal = CommandResult::error(
+            ErrorCode::PermissionDenied,
+            "SHUTDOWN is accepted on the local socket only",
+        );
+        reply::send(out_tx, request_id, refusal).await;
         return;
     }
 
@@ -77,7 +77,7 @@ pub(super) async fn handle_shutdown(
             );
         }
     });
-    send_result(out_tx, request_id, CommandResult::Ok).await;
+    reply::send(out_tx, request_id, CommandResult::Ok).await;
     // Let the ack reach the writer before the teardown races it.
     tokio::task::yield_now().await;
     root_token.cancel();
@@ -94,7 +94,7 @@ pub(super) async fn handle_upgrade(
     let result = match super::super::upgrade::prepare_upgrade(state).await {
         Ok(plan) => {
             // Best-effort ack flushed before exec; the client reconnects.
-            send_result(out_tx, request_id, CommandResult::Ok).await;
+            reply::send(out_tx, request_id, CommandResult::Ok).await;
             tokio::task::yield_now().await;
             info!("UPGRADE: re-exec'ing the new binary");
             let err = plan.exec().await;
@@ -106,13 +106,10 @@ pub(super) async fn handle_upgrade(
         }
         Err(err) => {
             warn!(error = %err, "UPGRADE preparation failed");
-            CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: format!("upgrade failed: {err}"),
-            }
+            CommandResult::error(ErrorCode::InternalError, format!("upgrade failed: {err}"))
         }
     };
-    send_result(out_tx, request_id, result).await;
+    reply::send(out_tx, request_id, result).await;
 }
 
 /// Force-detach the session-attached clients of `session` (all when `None`)

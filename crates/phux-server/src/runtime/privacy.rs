@@ -18,10 +18,10 @@ use crate::state::{ClientId, ServerState, SharedState};
 pub(super) fn handle(state: &SharedState, client_id: ClientId) -> CommandResult {
     if !state.with(|s| from_local_socket(s, client_id)) {
         warn!(?client_id, "PRIVACY_STATUS refused: local socket only");
-        return CommandResult::Error {
-            code: ErrorCode::PermissionDenied,
-            message: "PRIVACY_STATUS is accepted on the local socket only".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::PermissionDenied,
+            "PRIVACY_STATUS is accepted on the local socket only",
+        );
     }
     CommandResult::OkWith(CommandValue::Json(report().to_string()))
 }

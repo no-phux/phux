@@ -121,7 +121,7 @@ pub(super) fn handle_delegate_agent(
     });
     if let Some((credential, socket_path, same_session)) = prior {
         if !same_session {
-            return error(
+            return CommandResult::error(
                 ErrorCode::InvalidCommand,
                 "DELEGATE_AGENT: this operation already minted a credential for another session",
             );
@@ -135,7 +135,7 @@ pub(super) fn handle_delegate_agent(
         );
     }
     let Some(core_session) = state.with(|s| s.registry().session_id(&key)) else {
-        return error(
+        return CommandResult::error(
             ErrorCode::SessionNotFound,
             "DELEGATE_AGENT: no such session",
         );
@@ -172,7 +172,7 @@ pub(super) fn handle_delegate_agent(
                 DelegationError::Random(_) | DelegationError::Socket(_) => ErrorCode::InternalError,
             };
             warn!(error = %refusal, "DELEGATE_AGENT refused");
-            error(code, &format!("DELEGATE_AGENT: {refusal}"))
+            CommandResult::error(code, format!("DELEGATE_AGENT: {refusal}"))
         }
     }
 }
@@ -191,13 +191,6 @@ fn delegation_value(session: WireSessionKey, agent: &DelegatedAgent) -> CommandR
         agent.socket_path.to_string_lossy().into_owned(),
         u64::try_from(agent.credential.expires_at.timestamp_millis()).unwrap_or(0),
     ))))
-}
-
-fn error(code: ErrorCode, message: &str) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.to_owned(),
-    }
 }
 
 /// Withdraw delegated credential `id`: close its socket and revoke every

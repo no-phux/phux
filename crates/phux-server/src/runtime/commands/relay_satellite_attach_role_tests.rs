@@ -44,10 +44,7 @@ impl Fixture {
         self.settle_attach(
             terminal,
             role,
-            CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "no such terminal".to_owned(),
-            },
+            CommandResult::error(ErrorCode::TerminalNotFound, "no such terminal"),
         )
         .await
     }

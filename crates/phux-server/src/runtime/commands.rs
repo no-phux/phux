@@ -31,6 +31,7 @@ mod satellite;
 pub(crate) mod satellite_lease;
 mod state_query;
 
+use super::reply;
 pub(crate) use attach_terminal::*;
 use attach_terminal::{
     handle_attach_terminal, invalid_agent_cursor, refuse_invalid_role_policy,
@@ -43,7 +44,6 @@ pub(crate) use lifecycle::*;
 use lifecycle::{handle_shutdown, handle_upgrade};
 pub(crate) use resource_events::*;
 pub(crate) use results::*;
-use routing::send_result;
 pub(crate) use routing::*;
 pub(in crate::runtime) use satellite::*;
 use satellite::{handle_satellite_command, relay_stream_establishing};

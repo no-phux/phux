@@ -153,15 +153,9 @@ impl Drop for Cleanup {
 }
 
 fn invalid(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::InvalidCommand, message)
 }
 
 fn denied(message: &str) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::PermissionDenied,
-        message: message.to_owned(),
-    }
+    CommandResult::error(ErrorCode::PermissionDenied, message)
 }

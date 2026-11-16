@@ -21,10 +21,7 @@ async fn cancellation_interrupts_a_blocked_satellite_reply() {
         9,
         &host,
         &command,
-        CommandResult::Error {
-            code: ErrorCode::SatelliteUnreachable,
-            message: "offline".to_owned(),
-        },
+        CommandResult::error(ErrorCode::SatelliteUnreachable, "offline"),
     );
     tokio::pin!(reply);
     assert!(futures_util::poll!(&mut reply).is_pending());
@@ -194,10 +191,7 @@ async fn refused_hub_detach_preserves_the_newer_proxy_input_registration() {
     };
     reply.apply(|| {
         (
-            CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "superseded".to_owned(),
-            },
+            CommandResult::error(ErrorCode::InvalidCommand, "superseded"),
             Vec::new(),
         )
     });

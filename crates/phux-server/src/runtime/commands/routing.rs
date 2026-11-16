@@ -47,21 +47,6 @@ pub(crate) const fn take_named_host(command: &mut Command) -> Option<String> {
     }
 }
 
-/// Queue `result` as the `COMMAND_RESULT` for `request_id`; a closed mailbox
-/// means the connection is already gone.
-pub(super) async fn send_result(
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    request_id: u32,
-    result: CommandResult,
-) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
-}
-
 /// One connection's negotiated dispatch context: everything a command needs
 /// to run as that connection's, now or later (a held command, ADR-0128).
 pub(crate) struct CommandContext {
@@ -127,7 +112,7 @@ pub(in crate::runtime) async fn handle_command(
         client_id = ?ctx.client_id,
         request_id, "COMMAND dispatched; sending COMMAND_RESULT"
     );
-    send_result(&ctx.out_tx, request_id, result).await;
+    reply::send(&ctx.out_tx, request_id, result).await;
 }
 
 /// Everything that answers a command before local dispatch: the
@@ -172,11 +157,11 @@ async fn route_command(
             && let Some(result) =
                 crate::runtime::apps::claim_relaunch(ctx, *operation, resource, *expected)
         {
-            send_result(out_tx, request_id, result).await;
+            reply::send(out_tx, request_id, result).await;
             return None;
         }
         let result = super::super::organization::handle(state, client_id, command, root_token);
-        send_result(out_tx, request_id, result).await;
+        reply::send(out_tx, request_id, result).await;
         return None;
     }
 
@@ -203,7 +188,7 @@ async fn route_command(
     // ADR-0127: `{ VIEWER, DELIBERATE }` is refused before anything is
     // subscribed or relayed.
     if let Some(result) = refuse_invalid_role_policy(&command) {
-        send_result(out_tx, request_id, result).await;
+        reply::send(out_tx, request_id, result).await;
         return None;
     }
     if let Command::AttachResource {
@@ -219,7 +204,7 @@ async fn route_command(
                 })
         })
     {
-        send_result(out_tx, request_id, invalid_agent_cursor()).await;
+        reply::send(out_tx, request_id, invalid_agent_cursor()).await;
         return None;
     }
 
@@ -264,7 +249,7 @@ async fn route_command(
         super::super::keyed_ops::KeyedAdmission::Unkeyed => None,
         super::super::keyed_ops::KeyedAdmission::Owner(claim) => Some(claim),
         super::super::keyed_ops::KeyedAdmission::Answer(result) => {
-            send_result(out_tx, request_id, result).await;
+            reply::send(out_tx, request_id, result).await;
             return None;
         }
     };

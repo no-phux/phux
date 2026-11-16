@@ -224,10 +224,10 @@ async fn relay_conditional_kill(
         ..
     } = command
     else {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "a conditional-kill relay was handed another command".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "a conditional-kill relay was handed another command",
+        );
     };
     if !hub_vouches_for_kill(state, host, terminal_id, precondition) {
         return CommandResult::Error {
@@ -310,10 +310,10 @@ pub(super) async fn relay_stream_establishing(
         .state
         .with(|s| s.client_connection_cancellation(ctx.client_id));
     let Some(consumer_cancel) = consumer_cancel else {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "client connection cancellation is unavailable".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "client connection cancellation is unavailable",
+        );
     };
     // Only ATTACH_RESOURCE opens a content stream with a snapshot to await.
     let content = matches!(command, Command::AttachResource { .. });

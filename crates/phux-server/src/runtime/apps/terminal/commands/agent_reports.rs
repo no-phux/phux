@@ -18,10 +18,10 @@ pub(crate) async fn handle_report_agent_state(
         s.resource_from_wire(terminal_id)
             .is_some_and(|core| s.native_owned_terminal(core))
     }) {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "SDK-owned lifecycle requires its native controller".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "SDK-owned lifecycle requires its native controller",
+        );
     }
     // One borrow, so a `session_end` cannot land between the two reads.
     let (resolved, live_session) = state.with(|server| {
@@ -52,10 +52,10 @@ pub(crate) async fn handle_report_agent_state(
         None => false,
     };
     if !delivered {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for REPORT_AGENT_STATE".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for REPORT_AGENT_STATE",
+        );
     }
     actor_reply(
         result.await,
@@ -78,10 +78,10 @@ pub(crate) fn handle_report_asked(
         Err(refusal) => return refusal,
     };
     if state.with(|s| s.native_owned_terminal(terminal)) {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "SDK-owned questions require its native controller".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "SDK-owned questions require its native controller",
+        );
     }
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {

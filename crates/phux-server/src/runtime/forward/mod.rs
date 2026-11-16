@@ -18,7 +18,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use phux_protocol::forward::{ForwardChunk, ForwardOp};
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -28,7 +28,8 @@ pub(crate) use slots::Forwards;
 use slots::{Closed, Lease, Reservation};
 
 use super::commands::CommandContext;
-use crate::state::{ClientId, Outbound, SharedState};
+use super::reply;
+use crate::state::{ClientId, SharedState};
 
 /// How long one read waits for bytes before answering with none.
 const READ_IDLE: Duration = Duration::from_secs(20);
@@ -36,13 +37,6 @@ const READ_IDLE: Duration = Duration::from_secs(20);
 const DIAL_DEADLINE: Duration = Duration::from_secs(10);
 /// How often a connection with forwards checks for abandoned ones.
 const REAP_INTERVAL: Duration = Duration::from_secs(15);
-
-fn refuse(code: ErrorCode, message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code,
-        message: message.into(),
-    }
-}
 
 /// Whether `command` runs here rather than in the command handler.
 pub(crate) const fn is_forward(command: &Command) -> bool {
@@ -59,7 +53,7 @@ pub(in crate::runtime) async fn submit(
 ) {
     let out_tx = ctx.out_tx.clone();
     if let Some(result) = admit(ctx, forwards, request_id, command) {
-        send_result(&out_tx, request_id, result).await;
+        reply::send(&out_tx, request_id, result).await;
     }
 }
 
@@ -80,7 +74,10 @@ fn admit(
     command: Command,
 ) -> Option<CommandResult> {
     let Command::Forward { op } = command else {
-        return Some(refuse(ErrorCode::InternalError, "not a forward command"));
+        return Some(CommandResult::error(
+            ErrorCode::InternalError,
+            "not a forward command",
+        ));
     };
     if matches!(op, ForwardOp::AgentOffer | ForwardOp::AgentReply { .. }) {
         return Some(agent::admit(&ctx, op));
@@ -91,7 +88,7 @@ fn admit(
         (cfg.tcp, allow.unwrap_or_default())
     });
     if !enabled {
-        return Some(refuse(
+        return Some(CommandResult::error(
             ErrorCode::Unsupported,
             "TCP forwarding is turned off on this server (`[forward] tcp = false`)",
         ));
@@ -102,13 +99,13 @@ fn admit(
         ForwardOp::Read { id, max_bytes } => admit_read(forwards, id, max_bytes).map(|lease| {
             tokio::task::spawn_local(async move {
                 let result = read(&ctx, lease, max_bytes, READ_IDLE).await;
-                send_result(&ctx.out_tx, request_id, result).await;
+                reply::send(&ctx.out_tx, request_id, result).await;
             });
         }),
         ForwardOp::Write { id, bytes, fin } => forwards.lease_write(id).map(|lease| {
             tokio::task::spawn_local(async move {
                 let result = write(&ctx, lease, &bytes, fin).await;
-                send_result(&ctx.out_tx, request_id, result).await;
+                reply::send(&ctx.out_tx, request_id, result).await;
             });
         }),
         ForwardOp::Close { id } => {
@@ -136,7 +133,10 @@ enum Target {
 /// and any other name must be one `allow` spells out.
 fn target(addr: &str, port: u16, allow: &[String]) -> Result<Target, CommandResult> {
     if port == 0 {
-        return Err(refuse(ErrorCode::InvalidCommand, "a forward needs a port"));
+        return Err(CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "a forward needs a port",
+        ));
     }
     let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, port));
@@ -148,7 +148,7 @@ fn target(addr: &str, port: u16, allow: &[String]) -> Result<Target, CommandResu
     }
     let literal = literal(addr, port);
     if !allow.contains(&literal) {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::PermissionDenied,
             format!(
                 "{literal} is not on this server's loopback: phux forwards only to localhost, \
@@ -198,7 +198,7 @@ fn admit_read(
     max_bytes: u32,
 ) -> Result<Lease<OwnedReadHalf>, CommandResult> {
     if max_bytes == 0 {
-        return Err(refuse(
+        return Err(CommandResult::error(
             ErrorCode::InvalidCommand,
             "a forward read must ask for at least one byte",
         ));
@@ -224,7 +224,7 @@ fn spawn_open(ctx: CommandContext, forwards: &Forwards, request_id: u32, dial: D
             () = token.cancelled() => return,
             opened = open(&ctx, dial.reservation, dial.label, connect(dial.target), DIAL_DEADLINE) => opened,
         };
-        send_result(&ctx.out_tx, request_id, result).await;
+        reply::send(&ctx.out_tx, request_id, result).await;
     });
 }
 
@@ -266,13 +266,13 @@ async fn open(
     let stream = match tokio::time::timeout(deadline, connecting).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
-            return refuse(
+            return CommandResult::error(
                 ErrorCode::Unavailable,
                 format!("could not connect to {label}: {err}"),
             );
         }
         Err(_) => {
-            return refuse(
+            return CommandResult::error(
                 ErrorCode::Unavailable,
                 format!("no answer from {label} within {} s", deadline.as_secs()),
             );
@@ -383,7 +383,7 @@ fn failed<H>(ctx: &CommandContext, lease: Lease<H>, err: &std::io::Error) -> Com
     if let Some(closed) = lease.fail() {
         audit_close(&ctx.state, ctx.client_id, &closed, "error");
     }
-    refuse(ErrorCode::Unavailable, format!("forward {id} ended: {err}"))
+    CommandResult::error(ErrorCode::Unavailable, format!("forward {id} ended: {err}"))
 }
 
 /// `forward.close`: the byte counts each way and why, never the bytes.
@@ -406,17 +406,4 @@ fn audit_close(state: &SharedState, client: ClientId, closed: &Closed, reason: &
             "reason": reason,
         }),
     );
-}
-
-async fn send_result(
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    request_id: u32,
-    result: CommandResult,
-) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
 }

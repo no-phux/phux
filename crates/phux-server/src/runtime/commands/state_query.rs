@@ -67,10 +67,7 @@ pub(crate) fn handle_get_state(
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "unsupported GET_STATE scope".to_owned(),
-        },
+        _ => CommandResult::error(ErrorCode::InvalidCommand, "unsupported GET_STATE scope"),
     }
 }
 

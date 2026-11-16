@@ -20,7 +20,7 @@ use phux_protocol::ids::SatelliteHost;
 use phux_protocol::service_http::{
     ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest, head_fits,
 };
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 
 pub(crate) use exchanges::Exchanges;
 use exchanges::{Lease, Reservation, Upstream};
@@ -30,7 +30,8 @@ use upstream::{BodyReader, Prepared};
 use tokio_util::sync::CancellationToken;
 
 use super::commands::CommandContext;
-use crate::state::{Outbound, SharedState};
+use super::reply;
+use crate::state::SharedState;
 
 /// How long one read waits for body bytes before answering with none.
 const READ_IDLE: Duration = Duration::from_secs(20);
@@ -93,10 +94,7 @@ impl Refusal {
     }
 
     fn into_result(self) -> CommandResult {
-        CommandResult::Error {
-            code: self.code,
-            message: self.message,
-        }
+        CommandResult::error(self.code, self.message)
     }
 }
 
@@ -120,7 +118,7 @@ pub(in crate::runtime) async fn submit(
 ) {
     let out_tx = ctx.out_tx.clone();
     if let Some(result) = admit(ctx, exchanges, request_id, command) {
-        send_result(&out_tx, request_id, result).await;
+        reply::send(&out_tx, request_id, result).await;
     }
 }
 
@@ -239,7 +237,7 @@ fn spawn_open(
             () = token.cancelled() => return,
             opened = open(&ctx.state, reservation, target) => opened,
         };
-        send_result(&ctx.out_tx, request_id, result).await;
+        reply::send(&ctx.out_tx, request_id, result).await;
     });
 }
 
@@ -271,7 +269,7 @@ fn spawn_reaper(state: SharedState, token: CancellationToken, exchanges: Exchang
 fn spawn_read(ctx: CommandContext, request_id: u32, lease: Lease, max_bytes: u32) {
     tokio::task::spawn_local(async move {
         let result = read(&ctx.state, lease, max_bytes, READ_IDLE).await;
-        send_result(&ctx.out_tx, request_id, result).await;
+        reply::send(&ctx.out_tx, request_id, result).await;
     });
 }
 
@@ -417,17 +415,4 @@ fn release(state: &SharedState, upstream: Upstream) {
     tokio::task::spawn_local(async move {
         let _ = relay.command(Command::ServiceHttpClose { exchange }).await;
     });
-}
-
-async fn send_result(
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    request_id: u32,
-    result: CommandResult,
-) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
 }

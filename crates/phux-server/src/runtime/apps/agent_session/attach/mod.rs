@@ -44,13 +44,17 @@ async fn capture_cut(
             after_seq,
         })
         .await
-        .map_err(|_| CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before its bootstrap was cut".to_owned(),
+        .map_err(|_| {
+            CommandResult::error(
+                ErrorCode::TerminalNotFound,
+                "the session closed before its bootstrap was cut",
+            )
         })?;
-    let cut = rx.await.map_err(|_| CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: "the session closed before its bootstrap was cut".to_owned(),
+    let cut = rx.await.map_err(|_| {
+        CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            "the session closed before its bootstrap was cut",
+        )
     })?;
     validate_cut(&cut).map_err(|message| CommandResult::Error {
         code: ErrorCode::CodecUnavailable,
@@ -78,17 +82,14 @@ pub(crate) async fn attach_agent_session(
     after_seq: Option<u64>,
 ) -> CommandResult {
     let Ok(session) = handle.agent_session() else {
-        return CommandResult::Error {
-            code: ErrorCode::WrongResourceKind,
-            message: "not an agent session".to_owned(),
-        };
+        return CommandResult::error(ErrorCode::WrongResourceKind, "not an agent session");
     };
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
-        return CommandResult::Error {
-            code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::ResourceExhausted,
+            "ATTACH_RESOURCE bootstrap id space exhausted",
+        );
     };
     let stream_id = crate::runtime::stream_id_from(client_id.0);
     let live = handle.output.subscribe();
@@ -121,18 +122,18 @@ pub(crate) async fn attach_agent_session(
             last_valid_seq: prior_seq.load(std::sync::atomic::Ordering::Acquire),
         };
         if out_tx.send(Outbound::Frame(tombstone)).await.is_err() {
-            return CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "the client went away before its replacement bootstrap".to_owned(),
-            };
+            return CommandResult::error(
+                ErrorCode::ResourceExhausted,
+                "the client went away before its replacement bootstrap",
+            );
         }
     }
     for frame in bootstrap_frames(terminal_id, stream_id, bootstrap_id, &cut, limits) {
         if out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "the client went away mid-bootstrap".to_owned(),
-            };
+            return CommandResult::error(
+                ErrorCode::ResourceExhausted,
+                "the client went away mid-bootstrap",
+            );
         }
     }
     last_seq.store(cut.base_seq, std::sync::atomic::Ordering::Release);

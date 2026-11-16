@@ -323,10 +323,10 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                 // The catalog gives these to the `PixelSurface` row alone.
                 Command::Mirror { op, .. } => mirror::handle(&ctx.state, op).await,
                 Command::MirrorProvide { targets } => mirror::provide(&ctx.state, &targets),
-                _ => CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    message: "command not supported by this server".to_owned(),
-                },
+                _ => CommandResult::error(
+                    ErrorCode::InvalidCommand,
+                    "command not supported by this server",
+                ),
             }
         }
         .boxed_local()
@@ -409,19 +409,19 @@ async fn publish<A: DocumentApi>(
 ) -> CommandResult {
     let (state, client_id) = (&ctx.state, ctx.client_id);
     if !state.with(|s| s.client_may_produce(client_id)) {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "publishing a resource's state requires a local owner connection".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "publishing a resource's state requires a local owner connection",
+        );
     }
     let Some((core, handle)) = state.with(|s| {
         let core = s.resource_from_wire(terminal_id)?;
         Some((core, s.resource_handle(core)?.clone()))
     }) else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such resource: {terminal_id}"),
-        };
+        return CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            format!("no such resource: {terminal_id}"),
+        );
     };
     let document = match handle.document::<A>() {
         Ok(document) => document,
@@ -433,10 +433,10 @@ async fn publish<A: DocumentApi>(
         .try_send(PublishRequest { bytes, reply })
         .is_err()
     {
-        return CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: format!("the {}'s publish queue is full", A::LABEL),
-        };
+        return CommandResult::error(
+            ErrorCode::Overflow,
+            format!("the {}'s publish queue is full", A::LABEL),
+        );
     }
     match rx.await {
         Ok(Ok(published)) => {
@@ -451,17 +451,16 @@ async fn publish<A: DocumentApi>(
                 published.seq, published.ts_ms
             )))
         }
-        Ok(Err(PublishRejection::Invalid(error))) => CommandResult::Error {
-            code: ErrorCode::RecordInvalid,
-            message: error,
-        },
-        Ok(Err(PublishRejection::Overflow)) => CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: format!("the {}'s sequence space is exhausted", A::LABEL),
-        },
-        Err(_) => CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("the {} closed before the publish landed", A::LABEL),
-        },
+        Ok(Err(PublishRejection::Invalid(error))) => {
+            CommandResult::error(ErrorCode::RecordInvalid, error)
+        }
+        Ok(Err(PublishRejection::Overflow)) => CommandResult::error(
+            ErrorCode::Overflow,
+            format!("the {}'s sequence space is exhausted", A::LABEL),
+        ),
+        Err(_) => CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            format!("the {} closed before the publish landed", A::LABEL),
+        ),
     }
 }

@@ -22,22 +22,13 @@ use subtle::ConstantTimeEq as _;
 
 use phux_agent_session::session::AgentSessionResource as _;
 pub(super) fn refusal(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::InvalidCommand, message)
 }
 pub(super) fn denied(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::PermissionDenied,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::PermissionDenied, message)
 }
 pub(super) fn closed(message: impl Into<String>) -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: message.into(),
-    }
+    CommandResult::error(ErrorCode::TerminalNotFound, message)
 }
 pub(super) fn json<T: Serialize>(value: &T) -> CommandResult {
     match serde_json::to_string(value) {
@@ -68,10 +59,10 @@ pub(super) fn authenticated_host_binding<'a>(
         ));
     }
     if generation.is_some_and(|generation| generation != binding.generation) {
-        return Err(CommandResult::Error {
-            code: ErrorCode::PreconditionFailed,
-            message: "native controller generation is fenced".into(),
-        });
+        return Err(CommandResult::error(
+            ErrorCode::PreconditionFailed,
+            "native controller generation is fenced",
+        ));
     }
     binding.host_pid = Some(pid);
     Ok(binding)
@@ -231,30 +222,39 @@ pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> Comm
 
 fn sealed_request(state: &SharedState, request: &NativeRequest) -> Option<CommandResult> {
     match request {
-        NativeRequest::Command { agent_session_id, command } => {
+        NativeRequest::Command {
+            agent_session_id,
+            command,
+        } => {
             let prior = state.with(|s| {
-                s.native_agents().bindings.get(agent_session_id)
+                s.native_agents()
+                    .bindings
+                    .get(agent_session_id)
                     .and_then(|binding| binding.operations.get(&command.operation_id))
                     .filter(|operation| operation.command == *command)
                     .map(|operation| operation.result.clone())
             });
-            Some(json(&prior.unwrap_or_else(|| refused_command(
-                command.operation_id,
-                "daemon upgrade cut is sealed; no model input was dispatched",
-            ))))
+            Some(json(&prior.unwrap_or_else(|| {
+                refused_command(
+                    command.operation_id,
+                    "daemon upgrade cut is sealed; no model input was dispatched",
+                )
+            })))
         }
-        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. } => Some(CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "daemon upgrade is in progress; no agent was started; reconnect before launching again".into(),
-        }),
+        NativeRequest::Spawn { .. } | NativeRequest::LaunchIntegration { .. } => {
+            Some(CommandResult::error(
+                ErrorCode::Overflow,
+                "daemon upgrade is in progress; no agent was started; reconnect before launching again",
+            ))
+        }
         NativeRequest::Complete { .. }
-        | NativeRequest::Publish { .. } | NativeRequest::Close { .. } => {
-            Some(CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message: "native broker upgrade cut is sealed; retry the identical publication/receipt after reconnect".into(),
-            })
-        }
-        NativeRequest::Register { .. } | NativeRequest::Receive { .. }
+        | NativeRequest::Publish { .. }
+        | NativeRequest::Close { .. } => Some(CommandResult::error(
+            ErrorCode::Overflow,
+            "native broker upgrade cut is sealed; retry the identical publication/receipt after reconnect",
+        )),
+        NativeRequest::Register { .. }
+        | NativeRequest::Receive { .. }
         | NativeRequest::ListIntegrations {} => None,
     }
 }

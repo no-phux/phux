@@ -157,10 +157,10 @@ impl CommandTasks {
 }
 
 fn busy() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::ResourceExhausted,
-        message: "bulk command capacity exhausted; wait for pending commands to finish".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::ResourceExhausted,
+        "bulk command capacity exhausted; wait for pending commands to finish",
+    )
 }
 
 #[cfg(test)]

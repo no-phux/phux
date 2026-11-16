@@ -92,10 +92,10 @@ pub(super) fn acknowledge_publication(
     ) {
         Ok(changed) => changed,
         Err(error) => {
-            return CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message: format!("native publication accepted but durable recipe pending: {error}"),
-            };
+            return CommandResult::error(
+                ErrorCode::Overflow,
+                format!("native publication accepted but durable recipe pending: {error}"),
+            );
         }
     };
     // A question closing while the turn remains blocked must still

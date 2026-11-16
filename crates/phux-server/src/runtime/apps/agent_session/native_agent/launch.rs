@@ -184,10 +184,10 @@ fn resolve_spawn_target(
     spec: &SpawnNativeAgent,
 ) -> Result<NativeSpawnTarget, CommandResult> {
     if s.native_agents().sealed {
-        return Err(CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "native broker upgrade cut is sealed; no guardian was created".into(),
-        });
+        return Err(CommandResult::error(
+            ErrorCode::Overflow,
+            "native broker upgrade cut is sealed; no guardian was created",
+        ));
     }
     let session = s
         .find_session_by_name(&spec.session)

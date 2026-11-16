@@ -54,10 +54,10 @@ pub(super) async fn relay_satellite_acquire_input(
         && let Some(holder) = target.holder()
         && holder != target.client_id
     {
-        return CommandResult::Error {
-            code: ErrorCode::InputLeaseHeld,
-            message: format!("input lease held by client {}", holder.0),
-        };
+        return CommandResult::error(
+            ErrorCode::InputLeaseHeld,
+            format!("input lease held by client {}", holder.0),
+        );
     }
     // Mark the lease pending before relaying: replies and events are not
     // ordered on the link, so a stale Released/Expired from an earlier lease
@@ -150,10 +150,10 @@ pub(super) async fn relay_satellite_attach(
         return invalid_agent_cursor();
     }
     if ctx.profile.is_none() && crate::hub::relay::stream_needs_terminal_profile(kind) {
-        return CommandResult::Error {
-            code: ErrorCode::CodecUnavailable,
-            message: crate::runtime::apps::NO_TERMINAL_PROFILE.to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::CodecUnavailable,
+            crate::runtime::apps::NO_TERMINAL_PROFILE,
+        );
     }
     // Narrow before the relay so no input slips through; widen only once the
     // satellite accepted the attach.
@@ -302,10 +302,10 @@ pub(super) async fn relay_satellite_route_input(
     if let Some(holder) = target.holder()
         && holder != target.client_id
     {
-        return CommandResult::Error {
-            code: ErrorCode::InputLeaseHeld,
-            message: "input lease held by another client".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::InputLeaseHeld,
+            "input lease held by another client",
+        );
     }
     relay.command_from(command.clone(), target.client_id).await
 }

@@ -18,10 +18,10 @@ impl RelaySession {
             catalog.terminal_profile = None;
         }
         for (_, pending) in self.pending.drain() {
-            let _ = pending.reply.send(CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: format!("satellite {} is unreachable: {why}", self.host),
-            });
+            let _ = pending.reply.send(CommandResult::error(
+                ErrorCode::SatelliteUnreachable,
+                format!("satellite {} is unreachable: {why}", self.host),
+            ));
         }
         for (_, (reply, _)) in self.pending_spawns.drain() {
             let _ = reply.send(SpawnResult::Err(SpawnError::SatelliteUnreachable(format!(

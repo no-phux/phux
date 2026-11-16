@@ -398,10 +398,7 @@ fn detach_without_a_proxy_retires_automatic_spawn_output() {
 #[test]
 fn upstream_detach_barrier_refusal_fails_the_link_closed() {
     for result in [
-        CommandResult::Error {
-            code: ErrorCode::SatelliteUnreachable,
-            message: "refused".to_owned(),
-        },
+        CommandResult::error(ErrorCode::SatelliteUnreachable, "refused"),
         CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::Json(
             "{}".to_owned(),
         )),

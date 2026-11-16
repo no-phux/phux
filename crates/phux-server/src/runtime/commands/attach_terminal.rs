@@ -93,10 +93,7 @@ pub(super) async fn handle_attach_terminal(
                     })
                     .await;
             }
-            CommandResult::Error {
-                code: failure.code,
-                message: failure.message,
-            }
+            CommandResult::error(failure.code, failure.message)
         }
     }
 }
@@ -255,10 +252,10 @@ pub(super) async fn subscribe_deferred_attach(
 }
 
 pub(super) fn invalid_agent_cursor() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: "an agent resume cursor is valid only for AgentSession resources".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::InvalidCommand,
+        "an agent resume cursor is valid only for AgentSession resources",
+    )
 }
 
 /// `{ VIEWER, DELIBERATE }` on `ATTACH_RESOURCE` is `INVALID_COMMAND`

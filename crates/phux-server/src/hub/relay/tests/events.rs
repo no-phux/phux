@@ -252,10 +252,10 @@ fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
             operation_id: None,
         }
     );
-    let refusal = CommandResult::Error {
-        code: ErrorCode::PreconditionFailed,
-        message: "satellite incarnation changed".into(),
-    };
+    let refusal = CommandResult::error(
+        ErrorCode::PreconditionFailed,
+        "satellite incarnation changed",
+    );
     session.feed(&FrameKind::CommandResult {
         request_id,
         result: refusal.clone(),
