@@ -76,6 +76,22 @@ fn schema_is_exactly_the_live_tools_list_catalog() {
     assert_eq!(schema, response["result"]["tools"]);
 }
 
+/// The served catalog, byte for byte: tool order, schemas, and derived
+/// hints are an MCP contract. Comparing two renders of the same catalog
+/// cannot catch a reorder; this pins the bytes.
+#[test]
+fn schema_matches_the_catalog_golden() {
+    let schema = run(&["--schema"]);
+    assert!(schema.status.success());
+    assert!(schema.stderr.is_empty());
+    assert!(
+        schema.stdout.as_slice() == include_bytes!("golden/catalog.json").as_slice(),
+        "`phux-mcp --schema` drifted from tests/golden/catalog.json; regenerate it with \
+         `cargo run -p phux-mcp -- --schema > crates/phux-mcp/tests/golden/catalog.json` \
+         only for an intended catalog change"
+    );
+}
+
 #[test]
 fn standalone_modes_reject_ambiguity_and_unknown_arguments() {
     for args in [&["--skill", "--schema"][..], &["unknown"][..]] {
