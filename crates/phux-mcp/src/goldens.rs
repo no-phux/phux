@@ -30,6 +30,7 @@ use tokio::net::UnixListener;
 
 use crate::cli_adapter::spawn_record;
 
+mod residue;
 mod sweep;
 
 const WORK: SessionId = SessionId::new(1);

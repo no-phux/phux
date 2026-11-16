@@ -1,0 +1,1 @@
+{"schema_version":1,"error":{"code":"no_such_target","message":"no such target: @99"},"remedy":"run `phux ls` to see live sessions and panes","exit_code":1}
