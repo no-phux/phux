@@ -6,12 +6,16 @@
 //! ```
 //!
 //! [`Refusal`] is one failure (a stable `code` from [`codes`], the human
-//! `message`, the `remedy`) and [`error_document`] renders it. Each surface
+//! `message`, the `remedy`), [`error_document`] renders it, and
+//! [`transport_refusal`] classifies a local transport failure. Each surface
 //! decorates and prints the refusal on its own channel; the CLI's
 //! process-global auto-start context stays in the CLI, because a long-lived
 //! MCP server would read it stale. Consumers read
 //! `docs/scripting.md#json-output-and-errors`.
 
+use std::path::Path;
+
+use crate::attach::AttachError;
 use crate::recovery::Recovery;
 
 /// Version of the JSON error document. Additive fields do not bump it.
@@ -99,9 +103,88 @@ pub fn error_document(err: &Refusal, exit_code: u8) -> serde_json::Value {
     })
 }
 
+/// How to start a server when none is listening, on every surface.
+/// `phux server --ensure` returns once the server is up; bare `phux server`
+/// would hold the caller in the foreground.
+pub const START_SERVER_REMEDY: &str =
+    "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`";
+
+/// `ConnectionRefused` or `NotFound`: nothing is listening at the socket.
+fn is_no_server(err: &AttachError) -> bool {
+    matches!(
+        err,
+        AttachError::Io(io) if matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
+        )
+    )
+}
+
+/// The refusal for a failed exchange with the local server at `socket`.
+///
+/// `no_server` for a connect failure, `server_disconnected` for a dropped
+/// connection, `transport` otherwise. `pid` is the socket owner, used only
+/// by the old-protocol recovery. Exit 1 on every arm.
+#[must_use]
+pub fn transport_refusal(
+    err: &AttachError,
+    socket: &Path,
+    verb: &str,
+    pid: Option<i32>,
+) -> Refusal {
+    let server_log = phux_config::instance::server_log_path();
+    let doctor = format!(
+        "server log: {}; run `phux doctor` for a health check",
+        server_log.display()
+    );
+    if is_no_server(err) {
+        return Refusal::new(
+            codes::NO_SERVER,
+            format!("no server running at {}", socket.display()),
+            format!("{START_SERVER_REMEDY}; {doctor}"),
+        );
+    }
+    match err {
+        AttachError::Disconnected => Refusal::new(
+            codes::SERVER_DISCONNECTED,
+            format!("server closed the connection during {verb}"),
+            doctor,
+        ),
+        AttachError::Io(io_err) => Refusal::new(
+            codes::TRANSPORT,
+            unreachable_socket_message(verb, io_err, socket),
+            doctor,
+        ),
+        // Same `transport` code as any other non-connect failure. The remedy
+        // is the old-server recovery, not a new JSON code.
+        AttachError::IncompatibleProtocol(_) => Refusal::new(
+            codes::TRANSPORT,
+            format!("{verb} failed: {err}"),
+            crate::explain::old_server_recovery_lines(socket, pid).join("\n"),
+        ),
+        other => Refusal::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
+    }
+}
+
+/// The sentence for a socket that exists but cannot be dialed.
+///
+/// Permission denied, not a socket, a path too long for `sockaddr_un`: it
+/// names the path and the OS reason, never the client's internal "attach
+/// loop" wording.
+#[must_use]
+pub fn unreachable_socket_message(verb: &str, io_err: &std::io::Error, socket: &Path) -> String {
+    format!(
+        "{verb}: cannot reach the server socket {}: {io_err}",
+        socket.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ERROR_SCHEMA_VERSION, Refusal, codes, error_document};
+    use std::path::Path;
+
+    use super::{ERROR_SCHEMA_VERSION, Refusal, codes, error_document, transport_refusal};
+    use crate::attach::AttachError;
 
     #[test]
     fn recovery_is_additive_and_never_extracted_from_message_text() {
@@ -146,6 +229,105 @@ mod tests {
         // The emitted form is one line.
         let line = serde_json::to_string(&doc).unwrap_or_default();
         assert!(!line.contains('\n'), "error line must be single-line");
+    }
+
+    /// Every attach-error arm maps onto the closed vocabulary, each with a
+    /// remedy naming the server log and doctor.
+    #[test]
+    fn transport_refusals_use_the_closed_vocabulary() {
+        let socket = Path::new("/tmp/phux-test.sock");
+        let refused = AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        let err = transport_refusal(&refused, socket, "ls", None);
+        assert_eq!(err.code, codes::NO_SERVER);
+        assert!(err.message.contains("/tmp/phux-test.sock"));
+        assert!(
+            err.remedy.contains("`phux server --ensure`"),
+            "{}",
+            err.remedy
+        );
+        assert!(err.remedy.contains("server log: "), "{}", err.remedy);
+        assert!(err.remedy.contains("phux doctor"));
+
+        let err = transport_refusal(&AttachError::Disconnected, socket, "kill", None);
+        assert_eq!(err.code, codes::SERVER_DISCONNECTED);
+        assert!(err.message.contains("kill"));
+        assert!(err.remedy.contains("server log: "), "{}", err.remedy);
+
+        let denied = AttachError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let err = transport_refusal(&denied, socket, "tag", None);
+        assert_eq!(err.code, codes::TRANSPORT);
+        assert!(
+            err.message
+                .starts_with("tag: cannot reach the server socket /tmp/phux-test.sock: "),
+            "{}",
+            err.message
+        );
+
+        let err = transport_refusal(
+            &AttachError::Refused("policy said no".to_owned()),
+            socket,
+            "tag",
+            None,
+        );
+        assert_eq!(err.code, codes::TRANSPORT);
+        assert!(err.message.contains("policy said no"));
+        assert!(err.remedy.contains("phux doctor"));
+    }
+
+    /// An old-protocol server stays on the existing `transport` code. The
+    /// remedy is the stop-and-start recovery, with the pid when it is known.
+    #[test]
+    fn an_incompatible_server_keeps_transport_and_names_the_stop_recovery() {
+        const FORBIDDEN: [&str; 6] = [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ];
+        let socket = Path::new("/tmp/old.sock");
+        let err = AttachError::IncompatibleProtocol(
+            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+             update the phux server so protocol major.minor match"
+                .to_owned(),
+        );
+        let with_pid = transport_refusal(&err, socket, "ls", Some(4242));
+        assert_eq!(with_pid.code, codes::TRANSPORT);
+        assert!(
+            with_pid.message.contains("server refused the request"),
+            "{}",
+            with_pid.message
+        );
+        let remedy = &with_pid.remedy;
+        assert!(remedy.contains("kill 4242"), "{remedy}");
+        assert!(
+            remedy.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+            "{remedy}"
+        );
+        assert!(
+            remedy.contains("phux server --ensure --socket '/tmp/old.sock'`"),
+            "{remedy}"
+        );
+        for forbidden in FORBIDDEN {
+            assert!(!remedy.contains(forbidden), "{forbidden}: {remedy}");
+            assert!(
+                !with_pid.message.contains(forbidden),
+                "{forbidden}: {}",
+                with_pid.message
+            );
+        }
+        let line = serde_json::to_string(&error_document(&with_pid, 1)).unwrap_or_default();
+        assert!(!line.contains('\n'), "error line must be single-line");
+
+        let unknown = transport_refusal(&err, socket, "ls", None);
+        assert_eq!(unknown.code, codes::TRANSPORT);
+        let remedy = &unknown.remedy;
+        assert!(remedy.contains("`lsof -nP -- '/tmp/old.sock'`"), "{remedy}");
+        assert!(!remedy.contains("`kill "), "{remedy}");
+        for forbidden in FORBIDDEN {
+            assert!(!remedy.contains(forbidden), "{forbidden}: {remedy}");
+        }
     }
 
     /// The agent verbs' codes are part of the closed vocabulary frozen by

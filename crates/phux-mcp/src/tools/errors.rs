@@ -80,8 +80,9 @@ pub(crate) fn refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
     ToolError::with_document(document.to_string(), document)
 }
 
-/// A transport failure on the `--json` error contract, with the codes the
-/// CLI uses for one: `no_server`, `server_disconnected`, or `transport`.
+/// A transport failure on the `--json` error contract, classified by the
+/// same [`transport_refusal`] as the CLI: `no_server`,
+/// `server_disconnected`, or `transport`.
 pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> ToolError {
     let pid = phux_client::attach::is_incompatible_protocol(err)
         .then(|| phux_client::explain::server_pid(socket))
@@ -97,34 +98,5 @@ pub(crate) fn render_transport_error(
     verb: &str,
     pid: Option<i32>,
 ) -> ToolError {
-    const DOCTOR: &str = "run `phux doctor` for a health check";
-    match err {
-        AttachError::Io(io)
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
-            contract_error(
-                "no_server",
-                format!("no server running at {}", socket.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server`; \
-                 run `phux doctor` for a health check",
-                1,
-            )
-        }
-        AttachError::Disconnected => contract_error(
-            "server_disconnected",
-            format!("server closed the connection during {verb}"),
-            DOCTOR,
-            1,
-        ),
-        AttachError::IncompatibleProtocol(_) => contract_error(
-            "transport",
-            format!("{verb} failed: {err}"),
-            &phux_client::explain::old_server_recovery_lines(socket, pid).join("\n"),
-            1,
-        ),
-        other => contract_error("transport", format!("{verb} failed: {other}"), DOCTOR, 1),
-    }
+    refusal_error(&transport_refusal(err, socket, verb, pid), 1)
 }

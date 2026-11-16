@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use phux_client::attach::{AttachError, is_incompatible_protocol};
+use phux_client::contract::START_SERVER_REMEDY;
 
 use crate::commands::json_err;
 
@@ -96,32 +97,14 @@ pub(super) fn no_server_lines(
     server_log: &Path,
     pid: Option<i32>,
 ) -> Vec<String> {
-    let mut lines = match err {
-        AttachError::Io(io_err)
-            if matches!(
-                io_err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-            ) =>
-        {
-            vec![
-                format!("no server running at {}", socket_path.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
-                    .to_owned(),
-            ]
-        }
-        AttachError::Disconnected => {
-            vec![format!("server closed the connection during {verb}")]
-        }
-        AttachError::Io(io_err) => vec![json_err::unreachable_socket_message(
-            verb,
-            io_err,
-            socket_path,
-        )],
-        AttachError::IncompatibleProtocol(_) => {
-            return old_server_recovery_lines(socket_path, pid);
-        }
-        other => vec![format!("{verb} failed: {other}")],
-    };
+    if is_incompatible_protocol(err) {
+        return old_server_recovery_lines(socket_path, pid);
+    }
+    let refusal = json_err::transport_refusal(err, socket_path, verb, pid);
+    let mut lines = vec![refusal.message];
+    if refusal.code == json_err::codes::NO_SERVER {
+        lines.push(START_SERVER_REMEDY.to_owned());
+    }
     lines.push(format!("server log: {}", server_log.display()));
     lines.push("run `phux doctor` for a health check".to_owned());
     lines
