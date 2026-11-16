@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub use phux_config::instance::server_log_path;
 /// Re-exported so binaries can hold the guard without depending on
 /// `tracing-appender`; dropping it stops the non-blocking writer.
 pub use tracing_appender::non_blocking::WorkerGuard;
@@ -229,13 +230,6 @@ pub fn default_client_log_path() -> PathBuf {
     let mut dir = state_dir();
     dir.push(format!("client-{}.log", std::process::id()));
     dir
-}
-
-/// The canonical server log, `<state dir>/server.log`, used by every writer
-/// and reader of "the server log".
-#[must_use]
-pub fn server_log_path() -> PathBuf {
-    state_dir().join("server.log")
 }
 
 /// phux's per-user, per-profile state directory
