@@ -10,7 +10,8 @@
 //!
 //! Each sentinel prints on its own row; the typed echo carries a literal
 //! `%d`, so only the printed marker parses. A per-run nonce plus last-match
-//! scanning keeps stale markers out. Assumes a POSIX shell.
+//! scanning keeps stale markers out. The line is POSIX except in fish, which
+//! rejects `$?` at parse time and gets `$status` instead.
 //!
 //! Markers are matched on [`ScreenState::unwrapped_rows`], never raw `lines`:
 //! a sentinel longer than a narrow pane is soft-wrapped across rows and would
@@ -27,7 +28,7 @@ use phux_core::screen::{ROW_WINDOW_ALL, ScreenState};
 use phux_protocol::ResourceId;
 use serde::Serialize;
 
-use crate::agent_meta::{ShellAvailability, pane_shell_availability};
+use crate::agent_meta::{ShellAvailability, pane_shell_reading};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::deadline::Deadline;
@@ -117,12 +118,22 @@ fn rc_prefix(nonce: &str) -> String {
     format!("PHUXrun{nonce}RC=")
 }
 
+/// The exit-status expression for the pane shell named `foreground`: fish
+/// refuses to parse `$?`, so a line using it would run nothing.
+fn status_var(foreground: Option<&str>) -> &'static str {
+    if foreground == Some("fish") {
+        "$status"
+    } else {
+        "$?"
+    }
+}
+
 /// Build the shell line to submit: a `BEGIN` sentinel, the user command,
-/// then an `RC` sentinel carrying the exit code — each `printf` on its own
-/// fresh row.
-fn command_line(cmd: &str, nonce: &str) -> String {
+/// then an `RC` sentinel carrying the exit code (`status`, from
+/// [`status_var`]) — each `printf` on its own fresh row.
+fn command_line(cmd: &str, nonce: &str, status: &str) -> String {
     format!(
-        "printf '{}\\n'; {cmd}; printf '\\n{}%d=END\\n' $?",
+        "printf '{}\\n'; {cmd}; printf '\\n{}%d=END\\n' {status}",
         begin_marker(nonce),
         rc_prefix(nonce),
     )
@@ -196,11 +207,14 @@ async fn submit_and_poll(
     deadline: Deadline,
     force: bool,
 ) -> Result<RunOutcome, AttachError> {
-    if let Some(refusal) = check_shell(socket, &pane, cmd, deadline, force).await {
-        drop(conn);
-        return Ok(refusal);
-    }
-    let keys = [command_line(cmd, nonce), "Enter".to_owned()];
+    let status = match check_shell(socket, &pane, cmd, deadline, force).await {
+        Ok(status) => status,
+        Err(refusal) => {
+            drop(conn);
+            return Ok(refusal);
+        }
+    };
+    let keys = [command_line(cmd, nonce, status), "Enter".to_owned()];
     let submission = submit(&mut conn, &pane, &keys, deadline).await?;
     drop(conn);
     if submission != Submission::Complete {
@@ -209,25 +223,29 @@ async fn submit_and_poll(
     poll_for_rc(socket, pane, cmd, nonce, deadline).await
 }
 
-/// The available-shell precondition, as an outcome to return instead of
-/// typing (`None` means go ahead). Fails closed: an unevaluable check or an
-/// expired budget never lets the line through.
+/// The available-shell precondition: the shell's exit-status expression to
+/// type, or an outcome to return instead of typing. Fails closed: an
+/// unevaluable check or an expired budget never lets the line through.
+/// `force` reads nothing and assumes a POSIX shell.
 async fn check_shell(
     socket: &Path,
     pane: &ResourceId,
     cmd: &str,
     deadline: Deadline,
     force: bool,
-) -> Option<RunOutcome> {
+) -> Result<&'static str, RunOutcome> {
     if force {
-        return None;
+        return Ok(status_var(None));
     }
-    let Some(availability) = deadline.run(pane_shell_availability(socket, pane)).await else {
-        return Some(not_sent(cmd, deadline));
+    let Some((occupant, availability)) = deadline.run(pane_shell_reading(socket, pane)).await
+    else {
+        return Err(not_sent(cmd, deadline));
     };
     match availability {
-        ShellAvailability::Available => None,
-        availability => Some(RunOutcome::Refused {
+        ShellAvailability::Available => {
+            Ok(status_var(occupant.as_ref().map(|o| o.foreground.as_str())))
+        }
+        availability => Err(RunOutcome::Refused {
             command: cmd.to_owned(),
             availability,
         }),
@@ -350,9 +368,19 @@ mod tests {
     #[test]
     fn command_line_brackets_with_begin_and_rc_sentinels() {
         assert_eq!(
-            command_line("ls -la", "42"),
+            command_line("ls -la", "42", status_var(Some("zsh"))),
             "printf 'PHUXrun42BEGIN\\n'; ls -la; printf '\\nPHUXrun42RC=%d=END\\n' $?"
         );
+    }
+
+    /// fish rejects `$?` when it parses the line, so nothing would run.
+    #[test]
+    fn a_fish_pane_gets_its_own_status_variable() {
+        assert_eq!(
+            command_line("ls", "42", status_var(Some("fish"))),
+            "printf 'PHUXrun42BEGIN\\n'; ls; printf '\\nPHUXrun42RC=%d=END\\n' $status"
+        );
+        assert_eq!(status_var(None), "$?");
     }
 
     /// The echo row (literal `%d`) never parses, and the last printed

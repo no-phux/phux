@@ -16,7 +16,7 @@ nested terminal UI or replace the harness's execution policy.
 |---|---|
 | Discover exact panes and ownership | `phux_panes` |
 | Create a sibling shell | `phux_create` |
-| Run one command in an existing POSIX shell | `phux_run` |
+| Run one command in an existing sh, bash, zsh or fish shell | `phux_run` |
 | Start a persistent process from argv | `phux_spawn` |
 | Insert multiline text into a REPL/editor | `phux_paste`, then separately `phux_send_keys` |
 | Observe output without attaching or resizing | `phux_snapshot` |
