@@ -22,9 +22,15 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
 
 /// A verb refused for the resource's kind: `wrong_resource_kind`, exit 2.
 pub(crate) fn wrong_kind(json: bool, err: &WrongKind) -> ExitCode {
-    json_err::emit(
-        json,
-        &CliError::new(codes::WRONG_RESOURCE_KIND, err.to_string(), err.remedy()),
+    wrong_kind_refusal(err).emit(json)
+}
+
+/// The refusal behind [`wrong_kind`].
+pub(crate) fn wrong_kind_refusal(err: &WrongKind) -> json_err::Refusal {
+    json_err::Refusal::new(
+        codes::WRONG_RESOURCE_KIND,
+        err.to_string(),
+        err.remedy(),
         EXIT_USAGE,
     )
 }

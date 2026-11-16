@@ -20,11 +20,7 @@ impl Refusal {
             OrgError::NotFound(_) => "run `phux ls` to see sessions and panes",
             _ => "run `phux ls` to see the current state, then retry",
         };
-        {
-            let mut refusal = Self::new(err.code(), format!("{verb}: {err}"), remedy, exit);
-            refusal.err = refusal.err.with_recovery(err.recovery());
-            refusal
-        }
+        Self::new(err.code(), format!("{verb}: {err}"), remedy, exit).with_recovery(err.recovery())
     }
 }
 

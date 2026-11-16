@@ -55,7 +55,9 @@ async fn resolve(
     if let Some(id) = selector.explicit_id() {
         return Ok(id);
     }
-    resolve_target(socket, &selector, verb, json).await
+    resolve_target(socket, &selector, verb)
+        .await
+        .map_err(|refusal| refusal.emit(json))
 }
 
 fn run_show(socket: &Path, target: Option<&str>, json: bool) -> ExitCode {

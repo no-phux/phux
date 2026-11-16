@@ -156,7 +156,9 @@ async fn resolve_routed(
     terminal_flags: &[(&'static str, bool)],
     json: bool,
 ) -> Result<(Resolved, Route), ExitCode> {
-    let resolved = resolve_resource(socket_path, selector, "wait", json, false).await?;
+    let resolved = resolve_resource(socket_path, selector, "wait", false)
+        .await
+        .map_err(|refusal| refusal.emit(json))?;
     let route = phux_client::read::route(Verb::Wait, &resolved)
         .map_err(|err| read_kind::wrong_kind(json, &err))?;
     phux_client::read::terminal_only(&resolved, route, terminal_flags)

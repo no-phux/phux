@@ -165,17 +165,11 @@ pub(super) fn run_agent_send_keys(
     let key_count = keys.len();
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(
-            &socket_path,
-            &selector,
-            Verb::AgentSendKeys,
-            json,
-        )
-        .await
-        {
-            Ok(id) => id,
-            Err(code) => return code,
-        };
+        let pane =
+            match resolve_target_for_input(&socket_path, &selector, Verb::AgentSendKeys).await {
+                Ok(id) => id,
+                Err(refusal) => return refusal.emit(json),
+            };
         let label = phux_client::selector::format_terminal_id(&pane);
         let verify = |record: &AgentRecord| {
             identity_mismatch(record, expect_agent.as_deref(), expect_kind.as_deref())

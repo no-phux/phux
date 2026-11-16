@@ -155,9 +155,9 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
         let direct = after.is_some().then(|| selector.explicit_id()).flatten();
         let terminal_id = match direct {
             Some(id) => id,
-            None => match resolve_target(&socket_path, &selector, "watch", json).await {
+            None => match resolve_target(&socket_path, &selector, "watch").await {
                 Ok(id) => id,
-                Err(code) => return code,
+                Err(refusal) => return refusal.emit(json),
             },
         };
 

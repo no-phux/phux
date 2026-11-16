@@ -57,16 +57,11 @@ pub(crate) fn run_run(
     rt.block_on(async move {
         let deadline = Deadline::new(timeout);
         let pane = match deadline
-            .run(resolve_target_for_input(
-                &socket_path,
-                &selector,
-                Verb::Run,
-                json,
-            ))
+            .run(resolve_target_for_input(&socket_path, &selector, Verb::Run))
             .await
         {
             Some(Ok(id)) => id,
-            Some(Err(code)) => return code,
+            Some(Err(refusal)) => return refusal.emit(json),
             None => {
                 return json_err::emit(
                     json,

@@ -67,6 +67,85 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
     );
 }
 
+/// The verbs that run on the shared CLI context (`commands::ctx`) report
+/// every refusal through one renderer, so under `--json` each refused path
+/// is exactly ONE contract line on stderr: a dead server, a selector that
+/// does not parse, a malformed id. Nothing here needs a live server.
+#[test]
+fn every_ctx_verb_reports_a_refusal_as_one_contract_line() {
+    let tmp = TempDir::new().expect("tempdir");
+    let sock_file = tmp.path().join("dead.sock");
+    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
+    let sock = sock_file.to_str().expect("utf-8 temp path");
+    let id = "0123456789abcdef0123456789abcdef";
+
+    for args in [
+        &["resize", "work", "80x24", "--json", "--socket", sock][..],
+        &["tag", "add", "work", "ci", "--json", "--socket", sock],
+        &["tag", "rm", "work", "ci", "--json", "--socket", sock],
+        // KEYS is variadic: flags go before the target.
+        &["send-keys", "--json", "--socket", sock, "work", "x"],
+        &["paste", "work", "text", "--json", "--socket", sock],
+        &["rename", "work", "other", "--json", "--socket", sock],
+        &["take", "work", "--json", "--socket", sock],
+        &["give", "work", "--json", "--socket", sock],
+        &["signal", "work", "freeze", "--json", "--socket", sock],
+        &["approvals", "--json", "--socket", sock],
+        &["approve", id, "--yes", "--json", "--socket", sock],
+        &["deny", id, "--json", "--socket", sock],
+        &["detach", "--yes", "--json", "--socket", sock],
+        &["whoami", "--json", "--socket", sock],
+    ] {
+        assert_no_server_json_contract(args, None, sock);
+    }
+
+    let bad = "work:1.x";
+    for args in [
+        &["resize", bad, "80x24", "--json", "--socket", sock][..],
+        &["send-keys", "--json", "--socket", sock, bad, "x"],
+        &["paste", bad, "text", "--json", "--socket", sock],
+        &["take", bad, "--json", "--socket", sock],
+        &["give", bad, "--json", "--socket", sock],
+        &["signal", bad, "freeze", "--json", "--socket", sock],
+    ] {
+        let _ = assert_json_error_contract(args, None, "invalid_selector", 1);
+    }
+    for args in [
+        &["approve", "not-an-id", "--yes", "--json", "--socket", sock][..],
+        &["deny", "not-an-id", "--json", "--socket", sock],
+    ] {
+        let _ = assert_json_error_contract(args, None, "usage_error", 2);
+    }
+}
+
+/// Without `--json` the same refusals keep the prose each verb has always
+/// printed: the shared no-server block, and the one-line selector error.
+#[test]
+fn ctx_verbs_keep_their_prose_without_json() {
+    let tmp = TempDir::new().expect("tempdir");
+    let sock_file = tmp.path().join("dead.sock");
+    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
+    let sock = sock_file.to_str().expect("utf-8 temp path");
+
+    let (code, _stdout, stderr) = run(&["send-keys", "--socket", sock, "work", "x"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains(sock) && stderr.contains("phux doctor"),
+        "the no-server block names the socket and its remedies; got {stderr:?}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err(),
+        "{stderr:?}"
+    );
+
+    let (code, _stdout, stderr) = run(&["resize", "work:1.x", "80x24", "--socket", sock]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains("invalid target 'work:1.x'") && stderr.trim().lines().count() == 1,
+        "a bad selector is one prose line; got {stderr:?}"
+    );
+}
+
 /// Assert the per-verb contract: the expected exit code, empty stdout, and
 /// ONE stderr line parsing as the contract document with the expected
 /// `error.code`, matching `exit_code`, and a non-empty remedy.

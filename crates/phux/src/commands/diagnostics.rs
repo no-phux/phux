@@ -72,17 +72,22 @@ fn is_dead_socket(err: &AttachError) -> bool {
 /// one otherwise. Returns the failure exit code for the caller to bubble.
 pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str) -> ExitCode {
     crate::output::error_block(
-        no_server_lines(
-            err,
-            socket_path,
-            verb,
-            &phux_config::instance::server_log_path(),
-            recovery_pid(err, socket_path),
-        )
-        .iter()
-        .map(String::as_str),
+        report_lines(err, socket_path, verb)
+            .iter()
+            .map(String::as_str),
     );
     ExitCode::FAILURE
+}
+
+/// The lines [`report_no_server`] prints, against this process's server log.
+pub(crate) fn report_lines(err: &AttachError, socket_path: &Path, verb: &str) -> Vec<String> {
+    no_server_lines(
+        err,
+        socket_path,
+        verb,
+        &phux_config::instance::server_log_path(),
+        recovery_pid(err, socket_path),
+    )
 }
 
 /// The lines [`report_no_server`] prints, pure so tests can pin every arm

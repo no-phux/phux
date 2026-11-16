@@ -29,9 +29,9 @@ pub(crate) fn run_ask(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask, json).await {
+        let pane = match resolve_terminal_target(&socket_path, &selector, Verb::Ask).await {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let payload = AskedPayload {
             id,

@@ -294,11 +294,10 @@ pub(super) fn run_agent_answer(
     };
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentAnswer, json)
-            .await
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentAnswer).await
         {
             Ok(pane) => pane,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let label = phux_client::selector::format_terminal_id(&pane);
         if !pane.is_local() {

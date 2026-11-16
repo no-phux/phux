@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use phux_client::state::Degradation;
 
-use crate::commands::json_err::{self, CliError, codes};
+use crate::commands::json_err::{Refusal, codes};
 
 /// Exit status 3: no answer, because the fleet view was incomplete. Retrying
 /// once the satellite is back is right for 3 and wrong for 1.
@@ -34,17 +34,7 @@ pub(crate) fn warn_partial_view(verb: &str, degradation: &Degradation) {
 /// and return [`EXIT_PARTIAL_VIEW`] or `1`. `target` is `None` for the
 /// focused-pane default.
 pub(crate) fn report_target_miss(target: Option<&str>, degradation: &Degradation) -> ExitCode {
-    report_miss(target, degradation, ExitCode::from(EXIT_PARTIAL_VIEW))
-}
-
-/// As [`report_target_miss`] but always exiting `1`, for verbs whose exit
-/// space is taken (`run` mirrors the child's code, `wait` owns 124). The
-/// sentence still refuses to call the target absent.
-pub(crate) fn report_target_miss_keeping_status(
-    target: Option<&str>,
-    degradation: &Degradation,
-) -> ExitCode {
-    report_miss(target, degradation, ExitCode::FAILURE)
+    target_miss(target, degradation, EXIT_PARTIAL_VIEW).emit(false)
 }
 
 /// Json-aware [`report_target_miss`]: `no_such_target`/1 for a whole fleet,
@@ -54,50 +44,51 @@ pub(crate) fn report_target_miss_for(
     target: Option<&str>,
     degradation: &Degradation,
 ) -> ExitCode {
-    if !json {
-        return report_target_miss(target, degradation);
-    }
-    let (err, exit_code) = miss_error(target, degradation, EXIT_PARTIAL_VIEW);
-    json_err::emit(true, &err, exit_code)
+    target_miss(target, degradation, EXIT_PARTIAL_VIEW).emit(json)
 }
 
-/// Json-aware [`report_target_miss_keeping_status`]: the document still says
-/// `partial_view`, the status stays `1`.
+/// [`report_target_miss_for`] but always exiting `1`, for verbs whose exit
+/// space is taken (`run` mirrors the child's code, `wait` owns 124): the
+/// document still says `partial_view`, and the sentence still refuses to
+/// call the target absent.
 pub(crate) fn report_target_miss_keeping_status_for(
     json: bool,
     target: Option<&str>,
     degradation: &Degradation,
 ) -> ExitCode {
-    if !json {
-        return report_target_miss_keeping_status(target, degradation);
-    }
-    let (err, exit_code) = miss_error(target, degradation, 1);
-    json_err::emit(true, &err, exit_code)
+    target_miss_keeping_status(target, degradation).emit(json)
 }
 
-/// The [`CliError`] and exit code for a selector miss; `degraded_status` is
-/// the partial-view status.
-fn miss_error(
+/// [`target_miss`] for the verbs whose exit space is taken: the partial
+/// view still says `partial_view`, but the status stays `1`.
+pub(crate) fn target_miss_keeping_status(
+    target: Option<&str>,
+    degradation: &Degradation,
+) -> Refusal {
+    target_miss(target, degradation, crate::exit_codes::EXIT_FAILURE)
+}
+
+/// The refusal for a selector miss; `degraded_status` is the partial-view
+/// status. A whole-fleet miss is `no_such_target`, exit 1, worded as scripts
+/// already grep for. A partial-view miss never says "no such target": this
+/// client does not know that (see the module docs).
+pub(crate) fn target_miss(
     target: Option<&str>,
     degradation: &Degradation,
     degraded_status: u8,
-) -> (CliError, u8) {
+) -> Refusal {
     if degradation.is_complete() {
         let message = target.map_or_else(
             || "no such target".to_owned(),
             |target| format!("no such target: {target}"),
         );
-        return (
-            CliError::new(
-                codes::NO_SUCH_TARGET,
-                message,
-                "run `phux ls` to see live sessions and panes",
-            ),
-            1,
+        return Refusal::new(
+            codes::NO_SUCH_TARGET,
+            message,
+            "run `phux ls` to see live sessions and panes",
+            crate::exit_codes::EXIT_FAILURE,
         );
     }
-    // Deliberately never the words "no such target": this client does not
-    // know that (see the module docs).
     let message = target.map_or_else(
         || {
             "could not resolve the target: this server's view of the fleet is \
@@ -111,55 +102,20 @@ fn miss_error(
             )
         },
     );
-    let unreachable = degradation
+    let unreachable: Vec<String> = degradation
         .notices()
         .iter()
         .map(|notice| format!("unreachable — {notice}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    (
-        CliError::new(
-            codes::PARTIAL_VIEW,
-            message,
-            format!("retry once the satellite link is back; {unreachable}"),
-        ),
-        degraded_status,
-    )
-}
-
-/// Shared body: the wording is identical; only the degraded status differs.
-fn report_miss(
-    target: Option<&str>,
-    degradation: &Degradation,
-    degraded_status: ExitCode,
-) -> ExitCode {
-    if degradation.is_complete() {
-        // Unchanged from before this module: a complete view that contains no
-        // match is a real miss, and the wording scripts already grep for.
-        match target {
-            Some(target) => error!("no such target: {target}"),
-            None => error!("no such target"),
-        }
-        // The same remedy the `--json` document carries.
-        hint!("run `phux ls` to see live sessions and panes");
-        return ExitCode::FAILURE;
-    }
-    // Deliberately never the word "no such target": this client does not know
-    // that, and the sentence it would print is the one a user acts on.
-    match target {
-        Some(target) => error!(
-            "could not resolve '{target}': this server's view of the fleet is \
-             incomplete, so a miss here does not mean the target is gone"
-        ),
-        None => error!(
-            "could not resolve the target: this server's view of the fleet is \
-             incomplete, so a miss here does not mean the target is gone"
-        ),
-    }
-    for notice in degradation.notices() {
-        hint!("unreachable — {notice}");
-    }
-    degraded_status
+        .collect();
+    let remedy = format!(
+        "retry once the satellite link is back; {}",
+        unreachable.join("; ")
+    );
+    // A human reads one hint per unreachable satellite instead.
+    let human = std::iter::once(message.clone())
+        .chain(unreachable)
+        .collect();
+    Refusal::new(codes::PARTIAL_VIEW, message, remedy, degraded_status).with_human(human)
 }
 
 #[cfg(test)]
@@ -171,8 +127,8 @@ fn report_miss(
 )]
 mod tests {
     use super::{
-        EXIT_PARTIAL_VIEW, miss_error, report_target_miss, report_target_miss_for,
-        report_target_miss_keeping_status,
+        EXIT_PARTIAL_VIEW, report_target_miss, report_target_miss_for, target_miss,
+        target_miss_keeping_status,
     };
     use crate::commands::json_err::codes;
     use phux_client::state::Degradation;
@@ -213,13 +169,15 @@ mod tests {
     /// `partial_view` exit 3 — and the message still never claims absence.
     #[test]
     fn json_miss_errors_split_no_such_target_from_partial_view() {
-        let (err, exit_code) = miss_error(Some("@9"), &Degradation::default(), EXIT_PARTIAL_VIEW);
+        let refusal = target_miss(Some("@9"), &Degradation::default(), EXIT_PARTIAL_VIEW);
+        let (err, exit_code) = (refusal.err, refusal.exit);
         assert_eq!(err.code, codes::NO_SUCH_TARGET);
         assert_eq!(exit_code, 1);
         assert_eq!(err.message, "no such target: @9");
         assert!(!err.remedy.is_empty());
 
-        let (err, exit_code) = miss_error(Some("@9"), &degraded(), EXIT_PARTIAL_VIEW);
+        let refusal = target_miss(Some("@9"), &degraded(), EXIT_PARTIAL_VIEW);
+        let (err, exit_code) = (refusal.err, refusal.exit);
         assert_eq!(err.code, codes::PARTIAL_VIEW);
         assert_eq!(exit_code, EXIT_PARTIAL_VIEW);
         assert!(
@@ -246,7 +204,8 @@ mod tests {
     /// is not spent, but the machine reader still learns the reason.
     #[test]
     fn json_keeping_status_miss_keeps_exit_one_but_names_partial_view() {
-        let (err, exit_code) = miss_error(Some("@9"), &degraded(), 1);
+        let refusal = target_miss(Some("@9"), &degraded(), 1);
+        let (err, exit_code) = (refusal.err, refusal.exit);
         assert_eq!(err.code, codes::PARTIAL_VIEW);
         assert_eq!(exit_code, 1);
     }
@@ -254,7 +213,7 @@ mod tests {
     #[test]
     fn the_shared_resolver_keeps_its_status_and_still_refuses_to_claim_absence() {
         // `run` keeps status 1; the sentence must still differ.
-        let code = report_target_miss_keeping_status(Some("@9"), &degraded());
+        let code = target_miss_keeping_status(Some("@9"), &degraded()).emit(false);
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
         assert_ne!(
             format!("{code:?}"),

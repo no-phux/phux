@@ -105,9 +105,9 @@ pub(super) fn run_agent_wait(
                 Err(err) => report_wait_error(err, &socket_path, json),
             };
         }
-        let terminal = match resolve_target(&socket_path, &selector, "agent wait", json).await {
+        let terminal = match resolve_target(&socket_path, &selector, "agent wait").await {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         if let Some(err) = satellite_refusal(&terminal) {
             return json_err::emit(json, &err, crate::exit_codes::EXIT_USAGE);

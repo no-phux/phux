@@ -31,12 +31,17 @@ pub(crate) use phux_client::contract::{
 /// name the CLI's verbs already use.
 pub(crate) type CliError = phux_client::contract::Refusal;
 
-/// A verb's failure decided in one place: the error document and the status
-/// to exit with.
+/// A verb's failure decided in one place: the error document, the status
+/// to exit with, and, when the prose a human reads is not the document's
+/// message and remedy, the lines printed instead.
 #[derive(Debug)]
 pub(crate) struct Refusal {
-    pub(crate) err: CliError,
+    /// Boxed so a `Result<_, Refusal>` stays small on the happy path.
+    pub(crate) err: Box<CliError>,
     pub(crate) exit: u8,
+    /// The human rendering, first line the error and the rest hints, when it
+    /// differs from `err`. `None` prints `err` itself.
+    human: Option<Vec<String>>,
 }
 
 impl Refusal {
@@ -46,15 +51,55 @@ impl Refusal {
         remedy: impl Into<String>,
         exit: u8,
     ) -> Self {
+        Self::from_error(CliError::new(code, message, remedy), exit)
+    }
+
+    /// Refuse with an error built elsewhere.
+    pub(crate) fn from_error(err: CliError, exit: u8) -> Self {
         Self {
-            err: CliError::new(code, message, remedy),
+            err: Box::new(err),
             exit,
+            human: None,
         }
+    }
+
+    /// Print `lines` instead of the document without `--json`: the
+    /// verb-specific prose a human has always read for this failure.
+    pub(crate) fn with_human(mut self, lines: Vec<String>) -> Self {
+        self.human = Some(lines);
+        self
+    }
+
+    /// Attach what a retry needs to know to the error document.
+    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
+        self.err = Box::new(self.err.with_recovery(recovery));
+        self
+    }
+
+    /// The no-server refusal for a failed exchange with the local server at
+    /// `socket_path`: [`no_server_error`] under `--json`, the shared
+    /// no-server diagnostic otherwise, exit 1.
+    pub(crate) fn no_server(err: &AttachError, socket_path: &Path, verb: &str) -> Self {
+        Self::from_error(
+            no_server_error(err, socket_path, verb),
+            crate::exit_codes::EXIT_FAILURE,
+        )
+        .with_human(crate::commands::diagnostics::report_lines(
+            err,
+            socket_path,
+            verb,
+        ))
     }
 
     /// Report on the verb's own channels and return the exit code.
     pub(crate) fn emit(&self, json: bool) -> ExitCode {
-        emit(json, &self.err, self.exit)
+        match (&self.human, json) {
+            (Some(lines), false) => {
+                crate::output::error_block(lines.iter().map(String::as_str));
+                ExitCode::from(self.exit)
+            }
+            _ => emit(json, &self.err, self.exit),
+        }
     }
 }
 
@@ -112,10 +157,7 @@ pub(crate) fn report_no_server(
     socket_path: &Path,
     verb: &str,
 ) -> ExitCode {
-    if !json {
-        return crate::commands::report_no_server(err, socket_path, verb);
-    }
-    emit(true, &no_server_error(err, socket_path, verb), 1)
+    Refusal::no_server(err, socket_path, verb).emit(json)
 }
 
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded

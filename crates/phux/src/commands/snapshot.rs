@@ -148,9 +148,9 @@ async fn terminal_or_document(
     read: &ReadOpts,
     json: bool,
 ) -> ControlFlow<ExitCode, phux_protocol::ids::ResourceId> {
-    let resolved = match resolve_resource(socket_path, selector, "snapshot", json, false).await {
+    let resolved = match resolve_resource(socket_path, selector, "snapshot", false).await {
         Ok(resolved) => resolved,
-        Err(code) => return ControlFlow::Break(code),
+        Err(refusal) => return ControlFlow::Break(refusal.emit(json)),
     };
     let route = match phux_client::read::route(Verb::Snapshot, &resolved) {
         Ok(route) => route,
@@ -253,7 +253,9 @@ async fn rendered_attach_target(
     if let Selector::Session(name) = selector {
         return Ok(AttachTarget::ByName(name));
     }
-    let pane = resolve_target(socket_path, &selector, "snapshot", json).await?;
+    let pane = resolve_target(socket_path, &selector, "snapshot")
+        .await
+        .map_err(|refusal| refusal.emit(json))?;
     let snapshot = phux_client::state::get_state(socket_path)
         .await
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, "snapshot"))?

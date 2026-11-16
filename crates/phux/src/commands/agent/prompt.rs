@@ -119,11 +119,10 @@ pub(super) fn run_agent_prompt(
     let text = text.to_owned();
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentPrompt, json)
-            .await
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentPrompt).await
         {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let label = phux_client::selector::format_terminal_id(&pane);
         // ADR-0076 point 4: the same identity comparison `agent send-keys` does.

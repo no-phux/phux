@@ -25,13 +25,13 @@ use phux_record::render::{OutputFormat, RenderOptions, render_cast};
 use phux_record::timeline::clamp_idle;
 use usage::Subcommands;
 
-use crate::commands::{
-    RecFormat, cli_runtime, json_err, parse_selector, resolve_target, resolve_terminal_target,
-};
+use crate::commands::{RecFormat, cli_runtime, json_err, parse_selector, resolve_terminal_target};
 
 pub(crate) use spec::RecordSpec;
 
+mod attach_target;
 mod mark;
+use attach_target::composited_attach_target;
 use mark::run_mark;
 
 /// How often the headless capture repaints its stderr progress line.
@@ -233,7 +233,9 @@ fn capture(
     let rt = cli_runtime()?;
 
     rt.block_on(async move {
-        let terminal_id = resolve_terminal_target(&socket_path, &selector, Verb::Rec, json).await?;
+        let terminal_id = resolve_terminal_target(&socket_path, &selector, Verb::Rec)
+            .await
+            .map_err(|refusal| refusal.emit(json))?;
 
         // Progress is a live counter on stderr, rewritten in place. It is
         // suppressed under `--json` so a consumer that reads stderr for
@@ -396,55 +398,6 @@ fn composite_cells(size: Option<&str>, json: bool) -> Result<(u16, u16), ExitCod
         })?,
     };
     Ok(phux_record::cells_for_pixels(width, height))
-}
-
-/// The session a composited recording attaches to. A bare session name (or
-/// no TARGET) attaches as written; any other selector resolves to its pane
-/// first and attaches that pane's session.
-async fn composited_attach_target(
-    session: Option<&str>,
-    socket_path: &Path,
-    json: bool,
-) -> Result<phux_protocol::wire::frame::AttachTarget, ExitCode> {
-    use phux_client::selector::Selector;
-    use phux_protocol::wire::frame::AttachTarget;
-    let Some(raw) = session else {
-        return Ok(AttachTarget::Last);
-    };
-    let selector = parse_selector(Some(raw))?;
-    if let Selector::Session(name) = selector {
-        return Ok(AttachTarget::ByName(name));
-    }
-    let pane = resolve_target(socket_path, &selector, "rec", json).await?;
-    let snapshot = phux_client::state::get_state(socket_path)
-        .await
-        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "rec"))?
-        .into_snapshot_ignoring_degradation();
-    let Some(name) = session_name_of_pane(&snapshot, &pane) else {
-        return Err(json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::NO_SUCH_TARGET,
-                format!("{raw} is not in a local session that can be recorded"),
-                "pass a session name, or a pane selector in a local session",
-            ),
-            1,
-        ));
-    };
-    Ok(AttachTarget::ByName(name))
-}
-
-/// The name of the session that holds `pane`.
-fn session_name_of_pane(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    pane: &phux_protocol::ids::ResourceId,
-) -> Option<String> {
-    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
-    snapshot
-        .sessions
-        .iter()
-        .find(|candidate| candidate.id == session)
-        .map(|session| session.name.clone())
 }
 
 /// `phux rec` without `--out`. `phux rec mark` never reaches here.
