@@ -76,16 +76,23 @@ fn schema_is_exactly_the_live_tools_list_catalog() {
     assert_eq!(schema, response["result"]["tools"]);
 }
 
-/// The served catalog, byte for byte: tool order, schemas, and derived
-/// hints are an MCP contract. Comparing two renders of the same catalog
-/// cannot catch a reorder; this pins the bytes.
+/// The served catalog against a checked-in golden: tool order, schemas, and
+/// derived hints are an MCP contract. Comparing two renders of the same
+/// catalog cannot catch a reorder; this pins the catalog.
+///
+/// The comparison is on parsed JSON, not bytes. Object key order follows
+/// `serde_json`'s `preserve_order` feature, which workspace builds turn on
+/// through other crates, so the key order inside an object is not stable
+/// across builds. Array order, including the tool order, is still compared.
 #[test]
 fn schema_matches_the_catalog_golden() {
     let schema = run(&["--schema"]);
     assert!(schema.status.success());
     assert!(schema.stderr.is_empty());
+    let served: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let golden: Value = serde_json::from_slice(include_bytes!("golden/catalog.json")).unwrap();
     assert!(
-        schema.stdout.as_slice() == include_bytes!("golden/catalog.json").as_slice(),
+        served == golden,
         "`phux-mcp --schema` drifted from tests/golden/catalog.json; regenerate it with \
          `cargo run -p phux-mcp -- --schema > crates/phux-mcp/tests/golden/catalog.json` \
          only for an intended catalog change"
