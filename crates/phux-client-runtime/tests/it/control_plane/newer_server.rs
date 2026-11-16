@@ -123,10 +123,7 @@ type Reply = fn(&mut ControlPlane, u32) -> Result<(), ControlError>;
 
 /// An attached plane with one spawn in flight; returns its request id.
 fn pending_spawn() -> (ControlPlane, u32) {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
+    let mut plane = home();
     let request_id = plane.spawn_terminal(SpawnRequest::default());
     let _ = plane.take_outbound();
     (plane, request_id)

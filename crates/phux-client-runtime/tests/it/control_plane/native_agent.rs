@@ -1,7 +1,7 @@
 //! Consumer contract: native intents never become PTY input or replay on loss.
 
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event};
-use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::native_agent::{
     MAX_NATIVE_PENDING, NativeCommandResult, NativeDisposition, NativeIntent, NativeRequest,
 };
@@ -13,21 +13,43 @@ use phux_protocol::{PROTOCOL_VERSION, ResourceId};
 use crate::embedded;
 use phux_wire_fixtures::command_err;
 
-fn connected() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions {
+fn manual() -> ControlOptions {
+    ControlOptions {
         automatic_lifecycle: false,
         ..ControlOptions::default()
-    });
-    plane.connection_opened();
-    plane.take_outbound();
-    let mut hello = embedded::hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        server_caps.features_ext = ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent]);
     }
-    plane.feed(hello).unwrap();
+}
+
+fn connected() -> ControlPlane {
+    let mut plane = embedded::opened(
+        manual(),
+        super::hello_ok_ext(&[ServerFeatureExt::NativeAgent]),
+    );
     plane.take_events();
     plane.take_outbound();
     plane
+}
+
+const AGENT: ResourceId = ResourceId::local(22);
+
+/// Submit `prompt()` to `AGENT`; returns its operation and request ids.
+fn submit(plane: &mut ControlPlane) -> (u64, u32) {
+    let operation_id = plane
+        .native_agent_command(&AGENT, "activation-A", prompt())
+        .unwrap();
+    let (request_id, _) = sent(plane);
+    (operation_id, request_id)
+}
+
+fn answer_receipt(plane: &mut ControlPlane, request_id: u32, receipt: &NativeCommandResult) {
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::Json(
+                serde_json::to_string(receipt).unwrap(),
+            )),
+        })
+        .unwrap();
 }
 
 fn prompt() -> NativeIntent {
@@ -51,7 +73,7 @@ fn sent(plane: &mut ControlPlane) -> (u32, u64) {
             else {
                 panic!("dedicated command")
             };
-            assert_eq!(agent_session_id, ResourceId::local(22));
+            assert_eq!(agent_session_id, AGENT);
             assert_eq!(command.activation, "activation-A");
             assert_eq!(command.intent, prompt());
             (request_id, command.operation_id)
@@ -62,14 +84,10 @@ fn sent(plane: &mut ControlPlane) -> (u32, u64) {
 
 #[test]
 fn requires_native_capability_before_scheduling() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        automatic_lifecycle: false,
-        ..ControlOptions::default()
-    });
-    embedded::reopen(&mut plane, embedded::hello_ok(PROTOCOL_VERSION.patch));
+    let mut plane = embedded::opened(manual(), embedded::hello_ok(PROTOCOL_VERSION.patch));
     plane.take_outbound();
     assert_eq!(
-        plane.native_agent_command(&ResourceId::local(22), "activation-A", prompt()),
+        plane.native_agent_command(&AGENT, "activation-A", prompt()),
         None,
         "a successful legacy handshake does not authorize a new command tag"
     );
@@ -80,7 +98,7 @@ fn requires_native_capability_before_scheduling() {
 fn validates_before_scheduling_and_bounds_pending_commands() {
     let mut offline = ControlPlane::new(ControlOptions::default());
     assert_eq!(
-        offline.native_agent_command(&ResourceId::local(22), "activation-A", prompt()),
+        offline.native_agent_command(&AGENT, "activation-A", prompt()),
         None
     );
     assert!(offline.take_outbound().is_empty());
@@ -101,16 +119,13 @@ fn validates_before_scheduling_and_bounds_pending_commands() {
         },
     ] {
         assert_eq!(
-            plane.native_agent_command(&ResourceId::local(22), "activation-A", intent),
+            plane.native_agent_command(&AGENT, "activation-A", intent),
             None
         );
     }
+    assert_eq!(plane.native_agent_command(&AGENT, "", prompt()), None);
     assert_eq!(
-        plane.native_agent_command(&ResourceId::local(22), "", prompt()),
-        None
-    );
-    assert_eq!(
-        plane.native_agent_command(&ResourceId::local(22), &"a".repeat(16 * 1024), prompt()),
+        plane.native_agent_command(&AGENT, &"a".repeat(16 * 1024), prompt()),
         None,
         "the complete request must fit even when the intent alone is valid"
     );
@@ -119,14 +134,14 @@ fn validates_before_scheduling_and_bounds_pending_commands() {
     let mut ids = std::collections::HashSet::new();
     for _ in 0..MAX_NATIVE_PENDING {
         let id = plane
-            .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
+            .native_agent_command(&AGENT, "activation-A", prompt())
             .unwrap();
         assert_ne!(id, 0);
         assert!(ids.insert(id));
         assert_eq!(sent(&mut plane).1, id);
     }
     assert_eq!(
-        plane.native_agent_command(&ResourceId::local(22), "activation-A", prompt()),
+        plane.native_agent_command(&AGENT, "activation-A", prompt()),
         None
     );
     assert!(plane.take_outbound().is_empty());
@@ -142,28 +157,18 @@ fn keeps_all_native_dispositions_and_provider_detail_without_input_receipts() {
         NativeDisposition::Refused,
         NativeDisposition::Unknown,
     ] {
-        let operation_id = plane
-            .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
-            .unwrap();
-        let (request_id, _) = sent(&mut plane);
+        let (operation_id, request_id) = submit(&mut plane);
         let receipt = NativeCommandResult {
             operation_id,
             disposition,
             detail: Some("SDK submission only".into()),
         };
-        plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::OkWith(CommandValue::Json(
-                    serde_json::to_string(&receipt).unwrap(),
-                )),
-            })
-            .unwrap();
+        answer_receipt(&mut plane, request_id, &receipt);
         let events = plane.take_events();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::NativeAgentResult {
             agent_session_id, operation_id: received, disposition: actual, detail,
-        } if *agent_session_id == ResourceId::local(22) && *received == operation_id && *actual == disposition && detail.as_deref() == Some("SDK submission only")));
+        } if *agent_session_id == AGENT && *received == operation_id && *actual == disposition && detail.as_deref() == Some("SDK submission only")));
         assert!(events[0].is_lossless());
     }
 }
@@ -171,10 +176,7 @@ fn keeps_all_native_dispositions_and_provider_detail_without_input_receipts() {
 #[test]
 fn lost_receipt_is_unknown_and_never_replays_on_reconnect() {
     let mut plane = connected();
-    let operation_id = plane
-        .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
-        .unwrap();
-    sent(&mut plane);
+    let (operation_id, _) = submit(&mut plane);
     plane.connection_lost(Some("ack lost".into()));
     let events = plane.take_events();
     assert_eq!(events.iter().filter(|event| matches!(event, Event::NativeAgentResult { operation_id: id, disposition: NativeDisposition::Unknown, .. } if *id == operation_id)).count(), 1);
@@ -191,23 +193,13 @@ fn lost_receipt_is_unknown_and_never_replays_on_reconnect() {
 #[test]
 fn mismatched_receipt_is_unknown_and_later_provider_completion_preserves_exact_agent() {
     let mut plane = connected();
-    let operation_id = plane
-        .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
-        .unwrap();
-    let (request_id, _) = sent(&mut plane);
+    let (operation_id, request_id) = submit(&mut plane);
     let receipt = NativeCommandResult {
         operation_id: operation_id.wrapping_add(1),
         disposition: NativeDisposition::Completed,
         detail: None,
     };
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::Json(
-                serde_json::to_string(&receipt).unwrap(),
-            )),
-        })
-        .unwrap();
+    answer_receipt(&mut plane, request_id, &receipt);
     assert!(matches!(
         plane.take_events().as_slice(),
         [Event::NativeAgentResult {
@@ -222,7 +214,7 @@ fn mismatched_receipt_is_unknown_and_later_provider_completion_preserves_exact_a
             terminal: Some(ResourceId::local(7)),
             stamp: None,
             event: AgentEvent::NativeAgentResult {
-                agent_session_id: ResourceId::local(22),
+                agent_session_id: AGENT,
                 operation_id,
                 disposition: NativeDisposition::Completed,
                 detail: Some("provider finished".into()),
@@ -232,17 +224,14 @@ fn mismatched_receipt_is_unknown_and_later_provider_completion_preserves_exact_a
     assert!(
         matches!(plane.take_events().as_slice(), [Event::NativeAgentResult {
         agent_session_id, operation_id: id, disposition: NativeDisposition::Completed, detail,
-    }] if *agent_session_id == ResourceId::local(22) && *id == operation_id && detail.as_deref() == Some("provider finished"))
+    }] if *agent_session_id == AGENT && *id == operation_id && detail.as_deref() == Some("provider finished"))
     );
 }
 
 #[test]
 fn broker_refusal_is_not_fabricated_as_delivery() {
     let mut plane = connected();
-    plane
-        .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
-        .unwrap();
-    let (request_id, _) = sent(&mut plane);
+    let (_, request_id) = submit(&mut plane);
     plane
         .feed(command_err(
             request_id,
@@ -268,10 +257,7 @@ fn unsupported_is_refused_and_unreadable_or_newer_codes_are_unknown() {
         (ErrorCode::Unknown(299), NativeDisposition::Unknown),
     ] {
         let mut plane = connected();
-        plane
-            .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
-            .unwrap();
-        let (request_id, _) = sent(&mut plane);
+        let (_, request_id) = submit(&mut plane);
         plane
             .feed(command_err(request_id, code, "newer server"))
             .unwrap();

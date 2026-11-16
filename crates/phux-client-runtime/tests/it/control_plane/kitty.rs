@@ -174,10 +174,8 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 fn resize_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
+    outbound(plane)
+        .into_iter()
         .filter(|frame| matches!(frame, FrameKind::ResizeTerminal { .. }))
         .collect()
 }

@@ -178,10 +178,8 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
 }
 
 fn geometry_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
+    outbound(plane)
+        .into_iter()
         .filter(|frame| {
             matches!(
                 frame,

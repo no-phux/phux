@@ -166,6 +166,32 @@ fn global_changed(plane: &mut ControlPlane, key: &str, value: Option<&[u8]>) {
         .unwrap();
 }
 
+/// A plane attached to `main` on a `SPAWN_IDEMPOTENCY` server, drained.
+fn idempotent_home() -> ControlPlane {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        ..ControlOptions::default()
+    });
+    reopen(
+        &mut plane,
+        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
+    );
+    let attach_id = outbound_attach_id(&mut plane);
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    plane
+}
+
+/// [`negotiated`], attached to `main` showing `home`, drained.
+fn home() -> ControlPlane {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+    plane
+}
+
 /// Every queued outbound frame, decoded.
 fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane

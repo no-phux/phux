@@ -1,22 +1,5 @@
 use super::*;
 
-/// A plane attached to `main` on a `SPAWN_IDEMPOTENCY` server, drained.
-fn idempotent_home() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        ..ControlOptions::default()
-    });
-    reopen(
-        &mut plane,
-        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
-    );
-    let attach_id = outbound_attach_id(&mut plane);
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
-    plane
-}
-
 fn sends_no_spawn(plane: &mut ControlPlane) -> bool {
     plane
         .take_outbound()

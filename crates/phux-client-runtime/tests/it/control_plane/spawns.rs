@@ -4,21 +4,14 @@ use super::*;
 
 #[test]
 fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_events();
-    let _ = plane.take_outbound();
+    let mut plane = home();
     refresh_to(&mut plane, two_session_snapshot(false));
 
     let _ = plane.take_outbound(); // Metadata discovery belongs to the refresh.
     assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
     assert_eq!(plane.attached_session(), Some(1));
     assert_eq!(plane.selected_session(), Some(2));
-    let switched = plane
-        .take_outbound()
-        .into_iter()
-        .map(|frame| decode(&frame))
-        .collect::<Vec<_>>();
+    let switched = outbound(&mut plane);
     assert_eq!(switched.len(), 2, "one attach and its required resize");
     assert!(matches!(
         &switched[0],
@@ -35,11 +28,7 @@ fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
 
     assert!(!plane.attach_session(AttachTarget::ByName("main".to_owned())));
     assert_eq!(plane.selected_session(), Some(1));
-    let home = plane
-        .take_outbound()
-        .into_iter()
-        .map(|frame| decode(&frame))
-        .collect::<Vec<_>>();
+    let home = outbound(&mut plane);
     assert_eq!(home.len(), 1, "home already rides the session pumps");
     assert!(matches!(
         &home[0],
@@ -52,10 +41,7 @@ fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
 
 #[test]
 fn a_picked_up_foreign_pane_is_not_attached_again_on_session_switch() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_events();
-    let _ = plane.take_outbound();
+    let mut plane = home();
     refresh_to(&mut plane, two_session_snapshot(false));
     let _ = plane.take_outbound();
 
@@ -87,27 +73,20 @@ fn a_picked_up_foreign_pane_is_not_attached_again_on_session_switch() {
 
     assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
     assert!(
-        plane
-            .take_outbound()
-            .iter()
-            .map(|frame| decode(frame))
-            .all(|frame| !matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::AttachResource { terminal_id, .. },
-                    ..
-                } if terminal_id == ResourceId::local(8)
-            )),
+        outbound(&mut plane).into_iter().all(|frame| !matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource { terminal_id, .. },
+                ..
+            } if terminal_id == ResourceId::local(8)
+        )),
         "session switch must reuse the existing foreign stream"
     );
 }
 
 #[test]
 fn own_spawns_are_never_attached_a_second_time() {
-    let (mut plane, attach_id) = negotiated();
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_events();
-    let _ = plane.take_outbound();
+    let mut plane = home();
     let request_id = plane.spawn_terminal(SpawnRequest::default());
     let _ = plane.take_outbound();
     plane
@@ -120,11 +99,7 @@ fn own_spawns_are_never_attached_a_second_time() {
     refresh_to(&mut plane, two_session_snapshot(true));
 
     assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
-    let frames = plane
-        .take_outbound()
-        .into_iter()
-        .map(|frame| decode(&frame))
-        .collect::<Vec<_>>();
+    let frames = outbound(&mut plane);
     assert!(frames.iter().any(|frame| matches!(
         frame,
         FrameKind::Command {
@@ -151,18 +126,7 @@ fn own_spawns_are_never_attached_a_second_time() {
 
 #[test]
 fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        ..ControlOptions::default()
-    });
-    reopen(
-        &mut plane,
-        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
-    );
-    let first_attach = outbound_attach_id(&mut plane);
-    attach(&mut plane, first_attach, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
+    let mut plane = idempotent_home();
 
     let request_id = plane.spawn_terminal(SpawnRequest::default());
     let sent = plane.take_outbound();
@@ -211,10 +175,8 @@ fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
     });
     assert!(!plane.votes_on_geometry());
     reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let attach = plane
-        .take_outbound()
+    let attach = outbound(&mut plane)
         .into_iter()
-        .map(|frame| decode(&frame))
         .find_map(|frame| match frame {
             FrameKind::Attach {
                 attach_id,
@@ -230,10 +192,8 @@ fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
     let _ = plane.take_outbound();
 
     let _ = plane.spawn_terminal(SpawnRequest::default());
-    let spawned = plane
-        .take_outbound()
+    let spawned = outbound(&mut plane)
         .into_iter()
-        .map(|frame| decode(&frame))
         .find_map(|frame| match frame {
             FrameKind::SpawnResource { initial_size, .. } => Some(initial_size),
             _ => None,
