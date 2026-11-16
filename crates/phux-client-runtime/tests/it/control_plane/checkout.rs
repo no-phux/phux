@@ -60,13 +60,11 @@ fn checkout_requires_the_capability_and_correlates_typed_answers() {
     let denied = plane.checkout(terminal(), CheckoutRequest::Status);
     let _ = plane.take_outbound();
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: denied,
-            result: CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: "satellite lacks CHECKOUT".to_owned(),
-            },
-        })
+        .feed(command_err(
+            denied,
+            ErrorCode::UnsupportedSatelliteRoute,
+            "satellite lacks CHECKOUT",
+        ))
         .unwrap();
     assert!(matches!(
         &plane.take_checkout_answers()[..],

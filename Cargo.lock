@@ -3129,6 +3129,7 @@ dependencies = [
  "phux-protocol",
  "phux-server",
  "phux-server-testkit",
+ "phux-wire-fixtures",
  "quinn",
  "rcgen",
  "rustls",

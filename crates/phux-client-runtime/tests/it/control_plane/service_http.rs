@@ -108,13 +108,11 @@ fn open_read_and_close_resolve_their_calls() {
     let close = plane.service_http_close(9).unwrap();
     let (request_id, _) = sent_request_id(&mut plane);
     plane
-        .feed(FrameKind::CommandResult {
+        .feed(command_err(
             request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "OpenCode is not installed".to_owned(),
-            },
-        })
+            ErrorCode::Unavailable,
+            "OpenCode is not installed",
+        ))
         .unwrap();
     assert!(matches!(
         ready(close),

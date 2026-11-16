@@ -5,8 +5,6 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![allow(clippy::panic, reason = "test assertions")]
 
-#[cfg(feature = "engine")]
-use bytes::BytesMut;
 use phux_client_runtime::control::{
     ControlError, ControlOptions, ControlPlane, DeliveryOutcome, Event, FileUploadOutcome,
     MAX_PATH_ANSWERS, PathFailure, PathMatchKind, PathSearchStatus, SpawnRequest, Status,
@@ -32,6 +30,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use crate::embedded::*;
+use phux_wire_fixtures::command_err;
 
 mod agent_sessions;
 mod approvals;
@@ -107,27 +106,9 @@ fn dropping_client_retires_views_even_with_an_external_owner_clone() {
 }
 
 fn hello_ok_with(features: &[ServerFeature]) -> FrameKind {
-    let FrameKind::HelloOk {
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-        server_caps,
-        server_id,
-        selected_profile,
-        bootstrap_limits,
-    } = hello_ok(PROTOCOL_VERSION.patch)
-    else {
-        unreachable!()
-    };
-    FrameKind::HelloOk {
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-        server_caps: server_caps.with_features(ServerFeatureSet::with(features)),
-        server_id,
-        selected_profile,
-        bootstrap_limits,
-    }
+    server_hello()
+        .features(ServerFeatureSet::with(features))
+        .build()
 }
 
 fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
@@ -155,46 +136,33 @@ fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
 }
 
 #[cfg(feature = "engine")]
-fn encode(frame: &FrameKind) -> Vec<u8> {
-    let mut bytes = BytesMut::new();
-    frame.encode(&mut bytes);
-    bytes.to_vec()
-}
+use phux_wire_fixtures::encode;
 
 /// A plane past `HELLO_OK`, with the attach id its `ATTACH` carried.
 fn negotiated() -> (ControlPlane, u32) {
-    let mut plane = ControlPlane::new(ControlOptions {
+    let options = ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         viewport: (20, 4),
         ..ControlOptions::default()
-    });
-    assert_eq!(plane.status(), Status::Idle);
-    plane.connection_opened();
-    let opening = plane.take_outbound();
-    assert_eq!(opening.len(), 1);
-    assert!(matches!(decode(&opening[0]), FrameKind::Hello { .. }));
-    assert_eq!(plane.status(), Status::Connecting);
-
-    plane
-        .feed(hello_ok(PROTOCOL_VERSION.patch))
-        .expect("HELLO_OK");
+    };
+    let (plane, followups) = negotiate(options, hello_ok(PROTOCOL_VERSION.patch), Some(2));
     assert_eq!(plane.status(), Status::Negotiated);
-    let followups = plane.take_outbound();
-    assert_eq!(followups.len(), 2, "SUBSCRIBE_EVENTS then ATTACH");
     assert!(matches!(
-        decode(&followups[0]),
+        followups[0],
         FrameKind::SubscribeEvents {
             terminal: None,
             after_seq: None
         }
     ));
     let FrameKind::Attach {
-        attach_id, target, ..
-    } = decode(&followups[1])
+        attach_id,
+        ref target,
+        ..
+    } = followups[1]
     else {
         panic!("second follow-up is ATTACH");
     };
-    assert_eq!(target, AttachTarget::ByName("main".to_owned()));
+    assert_eq!(*target, AttachTarget::ByName("main".to_owned()));
     (plane, attach_id)
 }
 
@@ -359,13 +327,11 @@ fn unknown_input_delivery(plane: &mut ControlPlane) -> u64 {
         })
         .expect("APPLY_INPUT attempt");
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: ErrorCode::InputDeliveryUnknown,
-                message: "ambiguous test delivery".into(),
-            },
-        })
+        .feed(command_err(
+            request,
+            ErrorCode::InputDeliveryUnknown,
+            "ambiguous test delivery",
+        ))
         .unwrap();
     assert!(plane.delivery_fenced(&terminal()));
     delivery

@@ -9,10 +9,7 @@
 
 use phux_client_core::org_ops::{ORG_JOURNAL_MAX_OPS, OrgOutcome, SubmitError};
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
-};
+use phux_protocol::caps::{ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{
     ActivationId, AuthorityId, OperationId, ResourceId, ResourceKey, Revision, ServerInstance,
     SessionKey,
@@ -34,27 +31,23 @@ fn resource(n: usize) -> ResourceKey {
     ResourceKey::new(key).unwrap()
 }
 
-mod hello;
-use hello::hello;
+use crate::embedded::{answer, commands};
+use phux_wire_fixtures::HelloOk;
 
-fn commands(plane: &mut ControlPlane) -> Vec<(u32, Command)> {
-    plane
-        .take_outbound()
-        .iter()
-        .filter_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
-            FrameKind::Command {
-                request_id,
-                command,
-            } => Some((request_id, command)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
-    plane
-        .feed(FrameKind::CommandResult { request_id, result })
-        .unwrap();
+/// A bare server, advertising `ORGANIZATION` and `SESSION_KILL` when
+/// `supported`.
+fn hello(supported: bool) -> FrameKind {
+    let ext = if supported {
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+        ])
+    } else {
+        ServerFeatureExtSet::new()
+    };
+    HelloOk::new([0xAB; 16], ServerCapabilities::new())
+        .features_ext(ext)
+        .build()
 }
 
 fn inventory(count: usize, moved: usize, revision: u64, authority: u8) -> OrganizationPage {

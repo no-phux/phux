@@ -106,6 +106,8 @@ tempfile.workspace = true
 phux-server-testkit.workspace = true
 # Its policy seam, for a scoped-grant server (already built by the testkit).
 phux-server.workspace = true
+# Frame builders for the fed-frame tests.
+phux-wire-fixtures.workspace = true
 
 [[test]]
 name = "publish_pacing"

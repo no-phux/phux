@@ -155,13 +155,11 @@ fn an_unsupported_input_reply_refuses_the_delivery() {
     let mut plane = acknowledged_plane();
     let (delivery, request) = apply_input_request(&mut plane);
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: ErrorCode::Unsupported,
-                message: "unknown enum value".into(),
-            },
-        })
+        .feed(command_err(
+            request,
+            ErrorCode::Unsupported,
+            "unknown enum value",
+        ))
         .unwrap();
     assert_eq!(outcome(&mut plane, delivery), DeliveryOutcome::Refused);
     assert!(!plane.delivery_fenced(&terminal()));

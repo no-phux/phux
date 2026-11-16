@@ -26,10 +26,7 @@ fn record(id: ApprovalId, requested_at_ms: u64) -> Vec<u8> {
 }
 
 fn negotiated(features: &[ServerFeature]) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.feed(hello_ok_with(features)).unwrap();
-    let _ = plane.take_outbound();
+    let (mut plane, _) = negotiate(ControlOptions::default(), hello_ok_with(features), None);
     let _ = plane.take_events();
     plane
 }

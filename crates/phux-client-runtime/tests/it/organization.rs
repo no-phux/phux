@@ -7,11 +7,7 @@
 
 use phux_client_core::org_ops::{OrgOutcome, SubmitError};
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, ReplicaState};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, Layer, LayerSet, ServerCapabilities, ServerFeature,
-    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
-};
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
 use phux_protocol::ids::{
     ActivationId, AuthorityId, OperationId, ResourceId, ResourceKey, Revision, ServerInstance,
     SessionId, SessionKey, WindowId,
@@ -23,34 +19,24 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
-mod hello;
-use hello::hello;
+use crate::embedded::{answer, commands, negotiate, server_hello};
 
-fn decode(frame: &[u8]) -> FrameKind {
-    let (decoded, rest) = FrameKind::decode(frame).expect("outbound frame decodes");
-    assert!(rest.is_empty());
-    decoded
-}
-
-/// Every outbound `COMMAND`, with its request id.
-fn commands(plane: &mut ControlPlane) -> Vec<(u32, Command)> {
-    plane
-        .take_outbound()
-        .iter()
-        .filter_map(|bytes| match decode(bytes) {
-            FrameKind::Command {
-                request_id,
-                command,
-            } => Some((request_id, command)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
-    plane
-        .feed(FrameKind::CommandResult { request_id, result })
-        .expect("command result");
+/// The fixture server, advertising `ORGANIZATION` (and the session verbs
+/// that ride with it) when `organization`.
+fn hello(organization: bool) -> FrameKind {
+    let ext = if organization {
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+            ServerFeatureExt::SessionProject,
+        ])
+    } else {
+        ServerFeatureExtSet::new()
+    };
+    server_hello()
+        .features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources]))
+        .features_ext(ext)
+        .build()
 }
 
 fn event(plane: &mut ControlPlane, seq: Option<u64>, event: AgentEvent) {
@@ -109,23 +95,19 @@ fn committed(operation: OperationId, revision: u64) -> CommandResult {
 /// A browsing plane past `HELLO_OK`; returns the seed request's id when the
 /// server advertises `ORGANIZATION`.
 fn negotiated(organization: bool) -> (ControlPlane, Option<u32>) {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello(organization)).expect("HELLO_OK");
-    let seed = commands(&mut plane)
-        .into_iter()
-        .find(|(_, command)| {
-            matches!(
-                command,
+    let (plane, followups) = negotiate(ControlOptions::default(), hello(organization), None);
+    let seed = followups.into_iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command:
                 Command::GetOrganization {
                     filter: OrgFilter::All,
                     cursor: None,
                     ..
-                }
-            )
-        })
-        .map(|(id, _)| id);
+                },
+        } => Some(request_id),
+        _ => None,
+    });
     (plane, seed)
 }
 

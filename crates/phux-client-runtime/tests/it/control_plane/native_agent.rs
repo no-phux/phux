@@ -11,6 +11,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::{PROTOCOL_VERSION, ResourceId};
 
 use crate::embedded;
+use phux_wire_fixtures::command_err;
 
 fn connected() -> ControlPlane {
     let mut plane = ControlPlane::new(ControlOptions {
@@ -251,13 +252,11 @@ fn broker_refusal_is_not_fabricated_as_delivery() {
         .unwrap();
     let (request_id, _) = sent(&mut plane);
     plane
-        .feed(FrameKind::CommandResult {
+        .feed(command_err(
             request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "question already answered".into(),
-            },
-        })
+            ErrorCode::PermissionDenied,
+            "question already answered",
+        ))
         .unwrap();
     assert!(
         matches!(plane.take_events().as_slice(), [Event::NativeAgentResult {
@@ -282,13 +281,7 @@ fn unsupported_is_refused_and_unreadable_or_newer_codes_are_unknown() {
             .unwrap();
         let (request_id, _) = sent(&mut plane);
         plane
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code,
-                    message: "newer server".into(),
-                },
-            })
+            .feed(command_err(request_id, code, "newer server"))
             .unwrap();
         assert!(
             matches!(plane.take_events().as_slice(), [Event::NativeAgentResult {

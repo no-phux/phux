@@ -67,13 +67,7 @@ fn a_mirror_request_is_refused_by_an_older_server_and_answered_by_a_newer() {
         panic!("expected MIRROR");
     };
     plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "open Rune".to_owned(),
-            },
-        })
+        .feed(command_err(request_id, ErrorCode::Unavailable, "open Rune"))
         .unwrap();
     assert!(matches!(
         ready(refused),

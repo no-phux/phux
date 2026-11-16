@@ -733,13 +733,11 @@ fn refused_parent_detach_preserves_agent_subscription_and_success_releases_once(
         // parent admission as a side effect of the restoration path.
         let request_id = plane.detach_terminal(&ResourceId::local(99));
         plane
-            .feed(FrameKind::CommandResult {
+            .feed(command_err(
                 request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    message: "unknown parent".into(),
-                },
-            })
+                ErrorCode::PermissionDenied,
+                "unknown parent",
+            ))
             .unwrap();
         assert!(!plane.terminal_is_admitted(&ResourceId::local(99)));
         assert_eq!(close_count(&mut plane), 0);
@@ -775,13 +773,11 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
         .unwrap();
     assert!(plane.engine().unwrap().is_closed(&parent));
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: detach_request,
-            result: CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "detach refused after parent closed".into(),
-            },
-        })
+        .feed(command_err(
+            detach_request,
+            ErrorCode::PermissionDenied,
+            "detach refused after parent closed",
+        ))
         .unwrap();
     assert!(!plane.terminal_is_admitted(&parent));
     assert_eq!(close_count(&mut plane), 1);
