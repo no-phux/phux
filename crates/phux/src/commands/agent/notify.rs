@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client_core::note::{MAX_NOTE_BYTES, Note, NoteLevel, parse_note};
-use phux_protocol::wire::frame::{FrameKind, RESOURCE_NOTE_KEY, Scope};
 
 use super::record::with_target_pane;
 use crate::commands::json_err::{self, CliError, codes};
@@ -53,23 +52,10 @@ pub(crate) fn run_notify(
         json,
         move |conn, pane| {
             Box::pin(async move {
-                let scope = Scope::Resource(pane.clone());
-                conn.send(&FrameKind::SetMetadata {
-                    request_id: 100,
-                    scope: scope.clone(),
-                    key: RESOURCE_NOTE_KEY.to_owned(),
-                    value: value.clone(),
-                })
-                .await?;
-                let (answer, interleaved) = conn
-                    .request_metadata(101, scope, RESOURCE_NOTE_KEY.to_owned())
-                    .await?
-                    .into_parts();
-                warn_interleaved_degradation(&phux_client::state::Degradation::from_interleaved(
-                    &interleaved,
-                ));
+                let (held, degradation) = phux_client::note::post(conn, 100, &pane, value).await?;
+                warn_interleaved_degradation(&degradation);
                 let selector = phux_client::selector::format_terminal_id(&pane);
-                if answer.ok().flatten().as_deref() != Some(value.as_slice()) {
+                if !held {
                     return Ok(json_err::emit(
                         json,
                         &CliError::new(
