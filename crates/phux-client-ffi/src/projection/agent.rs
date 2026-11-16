@@ -117,37 +117,30 @@ mod tests {
         }
     }
 
+    /// A tombstone, an empty name and a whitespace-only name each clear the
+    /// badge to the same no-record reading.
     #[test]
-    fn a_tombstone_clears_the_badge() {
-        let cleared = badge(&ResourceId::local(3), None);
-        assert!(cleared.name.is_empty());
-        assert_eq!(cleared.state, AgentState::Unknown);
-        assert_eq!(cleared.attention, AgentAttention::Low);
-        assert_eq!(cleared.state_reading, StateReading::NoRecord);
-        assert_eq!(cleared.attention_reading, AttentionReading::Derived);
-    }
-
-    #[test]
-    fn a_nameless_record_clears_the_badge() {
-        let cleared = badge(
-            &ResourceId::local(4),
-            Some(br#"{"name":"","state":"working"}"#),
-        );
-        assert!(cleared.name.is_empty());
-        assert_eq!(cleared.state, AgentState::Unknown);
-        assert_eq!(cleared.state_reading, StateReading::NoRecord);
-    }
-
-    #[test]
-    fn a_whitespace_only_name_clears_the_badge() {
-        let cleared = badge(
-            &ResourceId::local(4),
-            Some(br#"{"name":"   ","state":"blocked"}"#),
-        );
-        assert!(cleared.name.is_empty());
-        assert_eq!(cleared.state, AgentState::Unknown);
-        assert_eq!(cleared.attention, AgentAttention::Low);
-        assert_eq!(cleared.state_reading, StateReading::NoRecord);
+    fn a_tombstone_or_an_unusable_name_clears_the_badge() {
+        let cases: [(&str, Option<&[u8]>); 3] = [
+            ("tombstone", None),
+            ("nameless", Some(br#"{"name":"","state":"working"}"#)),
+            (
+                "whitespace name",
+                Some(br#"{"name":"   ","state":"blocked"}"#),
+            ),
+        ];
+        for (label, record) in cases {
+            let cleared = badge(&ResourceId::local(3), record);
+            assert!(cleared.name.is_empty(), "{label}");
+            assert_eq!(cleared.state, AgentState::Unknown, "{label}");
+            assert_eq!(cleared.attention, AgentAttention::Low, "{label}");
+            assert_eq!(cleared.state_reading, StateReading::NoRecord, "{label}");
+            assert_eq!(
+                cleared.attention_reading,
+                AttentionReading::Derived,
+                "{label}"
+            );
+        }
     }
 
     #[test]
