@@ -139,7 +139,7 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         let act = move |input: &tree::DocumentInput, frame| injector.act(input, frame);
         #[cfg(target_os = "linux")]
         let act = platform::injector(&target, dry_run_input);
-        let mut platform_capture = platform::capturer(target, frames);
+        let mut platform_capture = capturer(target, frames);
         let mut faked = false;
         // A dry run goes on without a capture grant, on a blank frame.
         let mut capture = move || match platform_capture() {
@@ -188,6 +188,41 @@ pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
         )
         .await
     })
+}
+
+/// The platform capturer, switching to JPEG for good once a PNG frame is
+/// over the publish limit (a big or many-output display), which the server
+/// would refuse.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn capturer(
+    target: platform::Target,
+    frames: super::surface::Frames,
+) -> impl FnMut() -> Result<Vec<u8>, String> {
+    #[allow(
+        clippy::clone_on_copy,
+        reason = "the macOS target is Copy, the Linux one is not"
+    )]
+    let mut jpeg_target = frames.jpeg.is_none().then(|| target.clone());
+    let mut capture = platform::capturer(target, frames);
+    move || {
+        let frame = capture()?;
+        if frame.len() <= phux_protocol::wire::frame::MAX_PUBLISH_BYTES {
+            return Ok(frame);
+        }
+        let Some(target) = jpeg_target.take() else {
+            return Ok(frame);
+        };
+        eprintln!(
+            "a PNG frame is over the publish limit; sending JPEG frames instead \
+             (pass --format jpeg, and --max-width if JPEG is still too big)"
+        );
+        let jpeg = super::surface::Frames {
+            jpeg: Some(70),
+            ..frames
+        };
+        capture = platform::capturer(target, jpeg);
+        capture()
+    }
 }
 
 /// Publish every changed capture until Ctrl-C, and `act` on every intent
