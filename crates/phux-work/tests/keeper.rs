@@ -41,15 +41,23 @@ fn wait_for_socket(endpoint: &Endpoint) {
     }
 }
 
-#[test]
-fn concurrent_callers_share_one_keeper_and_lose_nothing() {
+type Keeper = thread::JoinHandle<Result<KeeperExit, Error>>;
+
+/// A keeper serving a fresh store, its socket bound; it exits after `idle`.
+fn start_keeper(idle: Duration) -> (tempfile::TempDir, Endpoint, Keeper) {
     let root = tempfile::tempdir().expect("tempdir");
     let endpoint = endpoint(root.path());
     let keeper = {
         let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(500)))
+        thread::spawn(move || run_keeper(&endpoint, idle))
     };
     wait_for_socket(&endpoint);
+    (root, endpoint, keeper)
+}
+
+#[test]
+fn concurrent_callers_share_one_keeper_and_lose_nothing() {
+    let (_root, endpoint, keeper) = start_keeper(Duration::from_millis(500));
 
     let callers: Vec<_> = (0..16)
         .map(|index| {
@@ -82,13 +90,7 @@ fn concurrent_callers_share_one_keeper_and_lose_nothing() {
 
 #[test]
 fn replaying_an_operation_through_the_keeper_returns_the_first_result() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let endpoint = endpoint(root.path());
-    let keeper = {
-        let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(300)))
-    };
-    wait_for_socket(&endpoint);
+    let (_root, endpoint, keeper) = start_keeper(Duration::from_millis(300));
     let client = Client::new(endpoint, None);
     let request = add("phux", "once");
     let first = client.add(request.clone()).expect("first");
@@ -106,13 +108,7 @@ fn replaying_an_operation_through_the_keeper_returns_the_first_result() {
 
 #[test]
 fn a_second_keeper_for_the_same_store_steps_aside() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let endpoint = endpoint(root.path());
-    let first = {
-        let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(500)))
-    };
-    wait_for_socket(&endpoint);
+    let (_root, endpoint, first) = start_keeper(Duration::from_millis(500));
     let second = run_keeper(&endpoint, Duration::from_secs(30)).expect("second");
     assert_eq!(second, KeeperExit::AlreadyRunning);
     assert!(
@@ -127,13 +123,7 @@ fn a_second_keeper_for_the_same_store_steps_aside() {
 
 #[test]
 fn a_request_from_another_build_retires_the_keeper() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let endpoint = endpoint(root.path());
-    let keeper = {
-        let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, Duration::from_secs(30)))
-    };
-    wait_for_socket(&endpoint);
+    let (_root, endpoint, keeper) = start_keeper(Duration::from_secs(30));
     let mut stream = UnixStream::connect(&endpoint.socket).expect("connect");
     stream
         .write_all(
@@ -154,13 +144,7 @@ fn a_request_from_another_build_retires_the_keeper() {
 #[test]
 fn fenced_leases_cross_the_keeper_without_losing_mutation_preconditions() {
     use phux_work::{ClaimFilter, ClaimOutcome, ReleaseClaim, RenewClaim, TakeClaim};
-    let root = tempfile::tempdir().expect("tempdir");
-    let endpoint = endpoint(root.path());
-    let keeper = {
-        let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, Duration::from_millis(500)))
-    };
-    wait_for_socket(&endpoint);
+    let (_root, endpoint, keeper) = start_keeper(Duration::from_millis(500));
     let client = Client::new(endpoint, None);
     let request = TakeClaim {
         holder: "pi@749".into(),
@@ -208,14 +192,8 @@ fn fenced_leases_cross_the_keeper_without_losing_mutation_preconditions() {
 
 #[test]
 fn the_keeper_stays_up_while_work_is_open_and_exits_once_it_is_not() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let endpoint = endpoint(root.path());
     let idle = Duration::from_millis(300);
-    let keeper = {
-        let endpoint = endpoint.clone();
-        thread::spawn(move || run_keeper(&endpoint, idle))
-    };
-    wait_for_socket(&endpoint);
+    let (_root, endpoint, keeper) = start_keeper(idle);
     let client = Client::new(endpoint.clone(), None);
     let added = client.add(add("phux", "open")).expect("add");
     client
