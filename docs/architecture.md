@@ -228,8 +228,8 @@ host method an app serves, by the catalog rows authorization uses, and
 `app_for` answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
 them: it asks any resource only for its lifecycle (`ResourceOps`), and holds
 each app's own state in a typed slot it cannot read (`state/app_slots.rs`).
-A new kind does not compile until `app_for` names its app, and neither
-`ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
+A new kind does not compile until `app_for` names its app, and no
+`ResourceApp`, `InteractiveApp` or `ResourceOps` method has a default; a new kind
 also takes one `APP_KINDS` row, which a test holds to the catalog. A graceful
 upgrade goes through the apps too: at the cut each app writes the upgrade-blob
 fields its kind owns, and on resume it rebuilds them, in `APP_KINDS` order so
