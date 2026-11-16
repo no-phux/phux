@@ -14,14 +14,13 @@
 
 use crate::common;
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::ServerGuard;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use common::{PtyAttach, ServerGuard};
+use portable_pty::CommandBuilder;
 
 /// The pre-seeded session every scenario drives against.
 const SESSION: &str = "work";
@@ -155,160 +154,46 @@ fn run_captured(cmd: &mut Command) -> (i32, String, String) {
     )
 }
 
-/// A real `phux attach` TUI on a pseudo-terminal, with everything it paints
-/// (stdout AND stderr — a PTY merges them) captured for assertions. Killed
-/// on drop so a failing assertion never leaks a client.
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
-    output: Arc<Mutex<Vec<u8>>>,
+/// A real `phux attach` TUI on a PTY inside `iso`, attached to `session`
+/// (which need not exist). Killed on drop so a failing assertion never leaks
+/// a client.
+fn attach(server: &ServerGuard, iso: &Isolation, session: &str) -> PtyAttach {
+    PtyAttach::start_with(&server.socket, &[session], (100, 24), |_config, cmd| {
+        iso.apply_pty(cmd);
+        cmd.env("SHELL", "/bin/sh");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("RUST_LOG", "off");
+    })
 }
 
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl AttachedClient {
-    fn start(server: &ServerGuard, iso: &Isolation) -> Self {
-        Self::start_named(server, iso, SESSION)
-    }
-
-    /// Attach to `session`, which need not exist.
-    fn start_named(server: &ServerGuard, iso: &Isolation, session: &str) -> Self {
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows: 24,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
+/// Block until the server reports `client` attached to `name` (`ls --json`
+/// `attached_clients`), a real barrier rather than a sleep.
+fn wait_until_attached(client: &mut PtyAttach, server: &ServerGuard, iso: &Isolation, name: &str) {
+    let deadline = Instant::now() + CLIENT_DEADLINE;
+    while Instant::now() < deadline {
+        assert!(
+            client.is_running(),
+            "attach client exited before the scenario ran; output:\n{}",
+            client.painted(),
+        );
+        let (code, stdout, _stderr) = run_captured(&mut server.cmd_in(iso, &["ls", "--json"]));
+        if code == 0
+            && let Ok(doc) = serde_json::from_str::<serde_json::Value>(&stdout)
+            && doc["sessions"].as_array().is_some_and(|sessions| {
+                sessions
+                    .iter()
+                    .any(|session| is_attached_session(session, name))
             })
-            .expect("open attach PTY");
-        let mut command = CommandBuilder::new(crate::runner::phux_bin());
-        command.args([
-            "attach",
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket path"),
-            session,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        iso.apply_pty(&mut command);
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-
-        // Capture everything: the teardown lines arrive on this stream, and
-        // draining keeps the PTY from backpressuring the client.
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&output);
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(read) = reader.read(&mut bytes) {
-                if read == 0 {
-                    break;
-                }
-                sink.lock()
-                    .expect("output lock")
-                    .extend_from_slice(&bytes[..read]);
-            }
-        });
-        let writer = pair.master.take_writer().expect("take PTY writer");
-        Self {
-            child,
-            writer,
-            output,
+        {
+            return;
         }
+        std::thread::sleep(POLL);
     }
-
-    /// Block until the server reports this client attached to `SESSION`
-    /// (`ls --json` `attached_clients`), a real barrier rather than a sleep.
-    fn wait_until_attached(&mut self, server: &ServerGuard, iso: &Isolation) {
-        self.wait_until_attached_to(server, iso, SESSION);
-    }
-
-    /// [`Self::wait_until_attached`] for session `name`.
-    fn wait_until_attached_to(&mut self, server: &ServerGuard, iso: &Isolation, name: &str) {
-        let deadline = Instant::now() + CLIENT_DEADLINE;
-        while Instant::now() < deadline {
-            assert!(
-                self.child.try_wait().expect("client try_wait").is_none(),
-                "attach client exited before the scenario ran; output:\n{}",
-                self.output_text(),
-            );
-            let (code, stdout, _stderr) = run_captured(&mut server.cmd_in(iso, &["ls", "--json"]));
-            if code == 0
-                && let Ok(doc) = serde_json::from_str::<serde_json::Value>(&stdout)
-                && doc["sessions"].as_array().is_some_and(|sessions| {
-                    sessions
-                        .iter()
-                        .any(|session| is_attached_session(session, name))
-                })
-            {
-                return;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "attach client never registered as attached to {name} within \
-             {CLIENT_DEADLINE:?}; output:\n{}",
-            self.output_text(),
-        );
-    }
-
-    /// A pause for the client's own stdin reader: a keystroke written before
-    /// it exists is dropped, and nothing crosses the wire to wait on. Only
-    /// for scenarios that type into the attach PTY.
-    fn settle_for_local_keystrokes() {
-        std::thread::sleep(Duration::from_millis(500));
-    }
-
-    fn send(&mut self, bytes: &[u8]) {
-        self.writer.write_all(bytes).expect("write to attach PTY");
-        self.writer.flush().expect("flush attach PTY");
-    }
-
-    /// Everything captured so far, lossily decoded.
-    fn output_text(&self) -> String {
-        String::from_utf8_lossy(&self.output.lock().expect("output lock")).into_owned()
-    }
-
-    /// Wait until the captured output contains `needle`.
-    fn wait_for_output(&self, needle: &str) {
-        let deadline = Instant::now() + CLIENT_DEADLINE;
-        while Instant::now() < deadline {
-            if self.output_text().contains(needle) {
-                return;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "attach client never printed {needle:?} within {CLIENT_DEADLINE:?}; output:\n{}",
-            self.output_text(),
-        );
-    }
-
-    /// Wait for the client process to exit, returning its status.
-    fn wait_exit(&mut self) -> portable_pty::ExitStatus {
-        let deadline = Instant::now() + CLIENT_DEADLINE;
-        while Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait().expect("client try_wait") {
-                return status;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "attach client did not exit within {CLIENT_DEADLINE:?}; output:\n{}",
-            self.output_text(),
-        );
-    }
+    panic!(
+        "attach client never registered as attached to {name} within \
+         {CLIENT_DEADLINE:?}; output:\n{}",
+        client.painted(),
+    );
 }
 
 #[test]
@@ -381,18 +266,20 @@ fn malformed_chord_keeps_detach_alive() {
     iso.write_config("[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\nd = \"detach\"\n");
     let server = start_server(&iso);
 
-    let mut client = AttachedClient::start(&server, &iso);
-    client.wait_until_attached(&server, &iso);
-    AttachedClient::settle_for_local_keystrokes();
+    let mut client = attach(&server, &iso, SESSION);
+    wait_until_attached(&mut client, &server, &iso, SESSION);
+    // A pause for the client's own stdin reader: a keystroke written before
+    // it exists is dropped, and nothing crosses the wire to wait on.
+    std::thread::sleep(Duration::from_millis(500));
 
     // The default prefix (C-a) then `d`: detach must still resolve.
     client.send(b"\x01d");
-    let status = client.wait_exit();
+    let status = client.wait_exit(CLIENT_DEADLINE);
     assert!(
         status.success(),
         "detach must survive one malformed chord (exit {:?}); output:\n{}",
         status.exit_code(),
-        client.output_text(),
+        client.painted(),
     );
 }
 
@@ -404,15 +291,15 @@ fn attaching_a_missing_session_names_phux_new() {
     let iso = Isolation::new();
     let server = start_server(&iso);
 
-    let mut client = AttachedClient::start_named(&server, &iso, "nosuch");
-    let status = client.wait_exit();
+    let mut client = attach(&server, &iso, "nosuch");
+    let status = client.wait_exit(CLIENT_DEADLINE);
     assert!(
         !status.success(),
         "attaching a missing session must fail; output:\n{}",
-        client.output_text(),
+        client.painted(),
     );
-    client.wait_for_output("no session named \"nosuch\"");
-    client.wait_for_output("phux new nosuch");
+    client.await_painted(&["no session named \"nosuch\""], CLIENT_DEADLINE);
+    client.await_painted(&["phux new nosuch"], CLIENT_DEADLINE);
 
     let (code, stdout, stderr) = run_captured(&mut server.cmd_in(&iso, &["ls", "--json"]));
     assert_eq!(code, 0, "ls must succeed; stderr:\n{stderr}");
@@ -433,20 +320,20 @@ fn last_pane_death_surfaces_its_exit_status() {
     let (code, _stdout, stderr) =
         run_captured(&mut server.cmd_in(&iso, &["new", "--json", "--ephemeral", "-s", "solo"]));
     assert_eq!(code, 0, "new must succeed; stderr:\n{stderr}");
-    let mut client = AttachedClient::start_named(&server, &iso, "solo");
-    client.wait_until_attached_to(&server, &iso, "solo");
+    let mut client = attach(&server, &iso, "solo");
+    wait_until_attached(&mut client, &server, &iso, "solo");
 
     let (code, _stdout, stderr) =
         run_captured(&mut server.cmd_in(&iso, &["kill", "--yes", "solo:0.0"]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
-    let status = client.wait_exit();
+    let status = client.wait_exit(CLIENT_DEADLINE);
     assert!(
         status.success(),
         "a last-pane death is an explained ending, not a client failure; output:\n{}",
-        client.output_text(),
+        client.painted(),
     );
-    client.wait_for_output("the last pane");
+    client.await_painted(&["the last pane"], CLIENT_DEADLINE);
 }
 
 #[test]
@@ -455,8 +342,8 @@ fn session_kill_detaches_with_its_explanation() {
     let iso = Isolation::new();
     let server = start_server(&iso);
 
-    let mut client = AttachedClient::start(&server, &iso);
-    client.wait_until_attached(&server, &iso);
+    let mut client = attach(&server, &iso, SESSION);
+    wait_until_attached(&mut client, &server, &iso, SESSION);
 
     // Killing the persistent session terminates its pane, removes it, and
     // deletes the session; a deleted session detaches its clients (R15), and
@@ -465,13 +352,13 @@ fn session_kill_detaches_with_its_explanation() {
         run_captured(&mut server.cmd_in(&iso, &["kill", "--yes", SESSION]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
-    let status = client.wait_exit();
+    let status = client.wait_exit(CLIENT_DEADLINE);
     assert!(
         status.success(),
         "a session kill is an explained ending, not a client failure; output:\n{}",
-        client.output_text(),
+        client.painted(),
     );
-    client.wait_for_output("the session was killed");
+    client.await_painted(&["the session was killed"], CLIENT_DEADLINE);
 }
 
 #[test]
@@ -480,13 +367,13 @@ fn server_sigkill_shows_the_reconnect_indicator() {
     let iso = Isolation::new();
     let mut server = start_server(&iso);
 
-    let mut client = AttachedClient::start(&server, &iso);
-    client.wait_until_attached(&server, &iso);
+    let mut client = attach(&server, &iso, SESSION);
+    wait_until_attached(&mut client, &server, &iso, SESSION);
 
     server.sigkill();
 
     // The first line only, independent of the reconnect window's outcome.
-    client.wait_for_output("lost the server connection");
+    client.await_painted(&["lost the server connection"], CLIENT_DEADLINE);
 }
 
 #[test]
