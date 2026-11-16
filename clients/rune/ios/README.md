@@ -118,6 +118,19 @@ It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
 
+The native surface presents layout-driven frames in UIKit's Core Animation
+transaction so keyboard geometry and Metal contents move together. Ordinary
+display-link frames remain nontransactional. An unavailable drawable keeps
+an owed frame, retried with backoff up to 250 ms while active and visible,
+instead of abandoning it after three attempts. Exposed space during resize
+uses the last drawn frame's ground, not the launch colour.
+
+The shared runtime holds every terminal presentation during DEC 2026
+synchronized output, including independent views and on-demand catch-up.
+It keeps the last committed frame until the end marker; a one-second
+watchdog on the connection driver's deadline lane releases a missing end
+marker and wakes the consumer even without more terminal output.
+
 The initial launch never requests termination: the fixture owns a newly
 created simulator with a freshly installed app, so no previous process can
 exist. This avoids a redundant SpringBoard termination/registration round

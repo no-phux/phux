@@ -149,6 +149,7 @@ impl Owner {
     fn publish_damaged(&mut self, damaged: Vec<ResourceId>) {
         self.release_pending();
         for id in damaged {
+            self.track_sync_output(&id);
             if let Err(error) = self.render_damage(&id) {
                 tracing::warn!(terminal = %id, %error, "grid projection failed");
             }
@@ -186,6 +187,8 @@ impl Owner {
             };
             let id = &damage.terminal_id;
             if damage.kind == KernelDamageKind::Removed {
+                #[cfg(feature = "engine")]
+                self.sync_output.remove(id);
                 self.visible.remove(id);
                 damaged.retain(|damaged| damaged != id);
                 #[cfg(feature = "engine")]

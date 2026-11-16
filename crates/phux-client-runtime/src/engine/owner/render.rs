@@ -58,6 +58,9 @@ impl Owner {
         let Some((token, geometry, stream, bootstrap, sequence)) = self.replica_identity(id) else {
             return Ok(false);
         };
+        if self.hold_output(id, token)? {
+            return Ok(false);
+        }
         self.ensure_projector(id, token, geometry)?;
         self.install_presentation(id)?;
         let Some(mut slot) = self.projectors.remove(id) else {
@@ -73,6 +76,16 @@ impl Owner {
         let projected = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
         slot.valid = projected.is_ok();
         self.projectors.insert(id.clone(), slot);
+        self.finish_projection(id, projected)?;
+        Ok(true)
+    }
+
+    /// A failed projection/publication invalidates incremental row damage.
+    fn finish_projection(
+        &mut self,
+        id: &ResourceId,
+        projected: Result<GridFrame, EngineError>,
+    ) -> Result<(), EngineError> {
         let result = projected.and_then(|frame| self.publish_frame(id, frame));
         if result.is_err() {
             if let Some(slot) = self.projectors.get_mut(id) {
@@ -82,7 +95,7 @@ impl Owner {
         }
         result?;
         crate::perf::PUBLISHED.incr();
-        Ok(true)
+        Ok(())
     }
 
     fn project_frame(
