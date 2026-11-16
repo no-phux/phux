@@ -4,6 +4,11 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
+There is no published SDK or client library yet. A program builds on the
+entry points below: the versioned `--json` CLI, the MCP server, the server
+protocol, or the Rust crates `phux-client-runtime` and `phux-client-ffi`,
+which are not on crates.io yet ([Not shipped](#not-shipped)).
+
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
@@ -137,7 +142,7 @@ the hub.
 
 ## Not shipped
 
-There is no public SDK. [Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
+[Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
 says this repository ships no Python or JavaScript package for driving
 phux. `phux-client-core` and `phux-client-runtime` set `publish = false`.
 [Embedding](./embedding.md) says none of the embed crates is on crates.io
