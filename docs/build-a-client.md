@@ -3,8 +3,9 @@
 Show the coding agents running in phux in your own app, and let a person
 answer the ones that are waiting.
 
-This page is for a dashboard, a menu-bar app, or an agent terminal. It needs
-no library: the app runs the `phux` binary and reads JSON. Everything here is
+This page is for a dashboard, a menu-bar app, or an agent terminal. There is
+no published SDK or client library yet, and this page needs none: the app
+runs the `phux` binary and reads JSON. Everything here is
 in one script you can run,
 [`examples/agents/06-client.sh`](../examples/agents/06-client.sh).
 

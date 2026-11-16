@@ -122,6 +122,7 @@ impl Desk {
             }
             Event::OrganizationOperation { operation, outcome } => {
                 self.quick_move_outcome(client, operation, &outcome)
+                    | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
             // OSC 52 only from the terminal on screen, while the window has
@@ -136,6 +137,11 @@ impl Desk {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::Note {
+                terminal_id,
+                note: Some(note),
+                live: true,
+            } => self.note_posted(&terminal_id, &note),
             Event::CommandResult {
                 request_id,
                 ref result,

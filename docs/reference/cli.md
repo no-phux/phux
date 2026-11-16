@@ -63,6 +63,7 @@ Agents:
   mission       Track tasks in the local work store
   mail          Send, read and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
+  notify        Post a note for a pane, shown as a toast
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -4555,6 +4556,42 @@ Global flags:
                                   `$PHUX_SOCKET`)
 ```
 
+## `phux notify`
+
+```text
+Post a note for a pane.
+
+Rune and the TUI show the note as a toast. When the pane is out of sight, a
+`warn` or `error` note also raises a system notification. Each note replaces the
+pane's last one, so a progress note can be updated in place. Inside a pane the
+note is about that pane; elsewhere, the focused pane.
+
+Examples:
+phux notify "formatted 3 files"
+phux notify --level error "build failed" "3 errors in src/lib.rs"
+phux notify --pane @4 "deploy 90%"
+
+Usage: phux notify [FLAGS] <TITLE> [BODY]
+
+Arguments:
+  <TITLE>  What the note says, on one line.
+  [BODY]   More detail, shown under the title.
+
+Flags:
+      --level <LEVEL>  How much it matters.
+                       [possible values: info, warn, error]
+                       (default: info)
+      --pane <TARGET>  The pane the note is about (a selector). Default: this
+                       pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux omarchy`
 
 ```text
@@ -6199,7 +6236,7 @@ Global flags:
 Run a command in a pane and capture its exit code.
 
 Reports the command's exit code, output, and duration. Brackets the command with
-sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh) — and
+sentinels to capture the exit status, so it drives sh, bash, zsh, and fish — and
 refuses (exit 2) when a shell is not what is reading the pane, since against
 `vim` or `less` the same bytes are keystrokes, not a command; `--force` skips
 that precondition. The process exit code mirrors the command's — and is 125 when

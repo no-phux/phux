@@ -134,12 +134,36 @@ impl GhosttyReplica {
                 _ => return Err(GhosttyEngineError::LiveOutputBeforeReady),
             },
         };
+        // Local cell pitch is not a PTY geometry change. libghostty's resize
+        // clears DEC 2026 even with unchanged rows/columns; keep the app's
+        // transaction intact while a new view installs its pixel metrics.
+        let held = terminal.mode(libghostty_vt::mode::Mode::SYNC_OUTPUT)?;
         terminal.resize(
             terminal.cols()?,
             terminal.rows()?,
             u32::from(width.max(1)),
             u32::from(height.max(1)),
         )?;
+        terminal.set_mode(libghostty_vt::mode::Mode::SYNC_OUTPUT, held)?;
+        Ok(())
+    }
+
+    /// Release a timed-out DEC 2026 hold. Reset the engine mode itself so a
+    /// later start marker is a new transaction, even inside one output payload.
+    ///
+    /// # Errors
+    ///
+    /// The replica is not ready, or libghostty rejects the mode change.
+    pub fn release_render_hold(&mut self) -> Result<(), GhosttyEngineError> {
+        let terminal = match &mut self.state {
+            ReplicaState::Synthesized { terminal, .. } => terminal,
+            ReplicaState::Native(native) => match &mut native.decoder {
+                NativeDecoderState::Finished(terminal) => terminal,
+                NativeDecoderState::Ready(decoder) => decoder.terminal_mut(),
+                _ => return Err(GhosttyEngineError::LiveOutputBeforeReady),
+            },
+        };
+        terminal.set_mode(libghostty_vt::mode::Mode::SYNC_OUTPUT, false)?;
         Ok(())
     }
 

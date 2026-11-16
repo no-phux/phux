@@ -5,6 +5,7 @@ mod hook_payload;
 mod hook_transcript;
 mod list;
 mod native_host;
+mod notify;
 mod offline;
 mod prompt;
 mod record;
@@ -34,6 +35,7 @@ use crate::commands::{cli_runtime, json_err, parse_selector, partial};
 use self::record::{run_agent_clear, run_agent_set};
 
 pub(crate) use self::action::AgentAction;
+pub(crate) use self::notify::run_notify;
 pub(crate) use self::record::fetch_agent_index;
 pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
 

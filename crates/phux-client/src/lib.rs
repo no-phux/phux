@@ -22,6 +22,7 @@ pub mod agent;
 pub mod agent_meta;
 // `phux.agent/v1` wire round trips (ADR-0040); the record type is `agent_meta`.
 pub mod agent_record;
+pub mod note;
 // The AgentSession resource (ADR-0103).
 pub mod agent_session;
 // Provider-native session provenance (`phux.agent-session/v1`), distinct

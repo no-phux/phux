@@ -101,7 +101,7 @@ fn encode(ev: &KeyEvent, flags: libghostty_vt::key::KittyKeyFlags) -> Vec<u8> {
     out
 }
 
-/// Under the host kitty flags phux pushes (disambiguate), a key typed in
+/// Under the host kitty flags phux pushes (disambiguate, report-alternates), a key typed in
 /// the host round-trips: the host encodes it, phux decodes it, and the
 /// server re-encodes it to exactly what native Ghostty would send a pane
 /// with or without kitty flags.
@@ -149,7 +149,10 @@ fn host_kitty_disambiguate_round_trips_like_native_ghostty() {
         text(PhysicalKey::Numpad1, ModSet::empty(), '1', "1"),
     ];
     for native in cases {
-        let host = encode(&native, KittyKeyFlags::DISAMBIGUATE);
+        let host = encode(
+            &native,
+            KittyKeyFlags::DISAMBIGUATE | KittyKeyFlags::REPORT_ALTERNATES,
+        );
         let decoded = one_key(&host);
         for pane in [KittyKeyFlags::DISABLED, KittyKeyFlags::DISAMBIGUATE] {
             assert_eq!(
@@ -267,4 +270,38 @@ fn legacy_ctrl_bracket_right_is_not_dropped() {
         encode(&key, libghostty_vt::key::KittyKeyFlags::DISABLED),
         b"\x1d"
     );
+}
+
+/// On a non-Latin layout the key reports its own codepoint (Russian `с`,
+/// U+0441, on the C key); the base-layout key the host adds under
+/// report-alternates names the physical key, so Ctrl+С is ^C and bindings
+/// on Ctrl+C fire (#2606).
+#[test]
+fn non_latin_chords_act_on_the_base_layout_key() {
+    use libghostty_vt::key::KittyKeyFlags;
+    let host_flags = KittyKeyFlags::DISAMBIGUATE | KittyKeyFlags::REPORT_ALTERNATES;
+    for mods in [ModSet::CTRL, ModSet::ALT, ModSet::CTRL | ModSet::ALT] {
+        let native = KeyEvent {
+            unshifted_codepoint: Some(0x441),
+            ..make_named_key(PhysicalKey::C, mods)
+        };
+        let host = encode(&native, host_flags);
+        let decoded = one_key(&host);
+        assert_eq!(
+            (decoded.key, decoded.mods),
+            (PhysicalKey::C, mods),
+            "{host:?}"
+        );
+        for pane in [KittyKeyFlags::DISABLED, KittyKeyFlags::DISAMBIGUATE] {
+            assert_eq!(
+                encode(&decoded, pane),
+                encode(&native, pane),
+                "{host:?}, {pane:?}"
+            );
+        }
+    }
+    let ctrl_c = one_key(b"\x1b[1089::99;5u");
+    assert_eq!((ctrl_c.key, ctrl_c.mods), (PhysicalKey::C, ModSet::CTRL));
+    // Without a base-layout key there is nothing to map to.
+    assert_eq!(one_key(b"\x1b[1089;5u").key, PhysicalKey::Unidentified);
 }

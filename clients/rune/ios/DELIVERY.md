@@ -13,6 +13,7 @@ outside the public website**:
   "device_udid": "REGISTERED_PHONE_UDID",
   "profile": "/absolute/private/Rune.mobileprovision",
   "identity": "APPLE_DISTRIBUTION_CERTIFICATE_SHA1",
+  "keychain": "/absolute/private/login.keychain-db",
   "hosting_metadata": "/absolute/private/existing-hosting.json",
   "site_directory": "/absolute/existing-public-root/scheduled",
   "base_url": "https://private.example/rune-preview/scheduled/",
@@ -25,6 +26,13 @@ Validate this as data, never shell-source it. Require `schema == 1`;
 Require `enabled == true` and complete, well-formed fields before proceeding.
 Reject malformed configuration and missing fields; never guess another device,
 profile, signing identity, path or host.
+
+`keychain` is optional. When supplied, require an absolute existing file and
+pass it as `package_ota.py --keychain`; it scopes CMS decoding and every
+signature without changing global keychain defaults, trust or key access.
+Check lock state and the configured identity in that exact keychain. A
+process-default system keychain being locked does not mean the selected login
+keychain is locked.
 
 Use owner-only permissions. `hosting_metadata` describes the already running
 private HTTPS host; verify it answers before using it. Do not create another

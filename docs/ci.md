@@ -9,7 +9,10 @@ The hosted counterpart of [local validation](./development.md#validating-a-chang
 One classifier, `bun tools/main.ts detect-changes` over
 [`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts), decides
 which lanes a change can affect. Unknown paths fail closed and run everything;
-handwritten docs normally run only guards. Docs read by tests, including
+handwritten docs normally run only guards. An add, rename, or delete of a
+top-level `docs/*.md` also runs the docs catalog job. That job reads
+`no-phux/website` main's `scripts/docs-catalog.ts` at runtime, so a change
+on website main can alter phux CI results. Docs read by tests, including
 `docs/agents.md` and generated references, select their Rust consumers.
 A library change runs the tests of its dependents.
 
@@ -34,8 +37,8 @@ There is no merge queue. A pull request merges once its required `ci` and
 `commitlint` checks pass on its own diff; the ruleset does not make it
 re-run against a newer `main`. Slow lanes run first on `main`'s push:
 native setup, rust icount, full Rune Linux qualification, and the Apple
-legs in `rune-macos`. Releases still ship only from a green `ci` push, so
-a red `main` blocks a release, not a merge.
+legs in `rune-macos`. Stable drafts still ship only from a green `ci` push, so
+a red `main` blocks that release, not a merge. Rune tags use `ci-green`.
 
 When a `ci` or `rune-macos` push run on `main` fails,
 [`main-red.yml`](../.github/workflows/main-red.yml) opens one `ci/main-red`
@@ -51,8 +54,8 @@ on `linux-x86_64` only: no package, no packaged launch, and no
 main push cannot reuse it for those. The merge queue, a main push, and a
 manual `ci` dispatch package and launch both Linux hosts. Nightly
 `cache-warm.yml` does the same with the default inputs. `rune-client.yml`
-does too, and its preflight still requires the green main `ci` that carried
-that qualification. A pull request reports a passing `rune-macos` check
+does too. Its preflight is `ci-green`, described below. A pull request
+reports a passing `rune-macos` check
 without starting Apple runners; that receipt covers no Apple work.
 `rune-macos.yml` runs macOS and the native iOS simulator/device
 qualification on main pushes, nightly, and manually. Every Rune-affecting
@@ -73,10 +76,32 @@ revision, workflow and both-leg
 coverage. PR and Linux-only receipts cannot attest Apple work.
 Nightly and manual runs always qualify the full tree.
 Native main pushes upload full-coverage receipts after the aggregate succeeds.
-Every stable draft and Rune tag requires that exact release SHA's successful
-main push plus full native receipt: same tree, workflow and both-leg coverage.
-A skipped/cheap green, ancestor receipt, other SHA, PR or dispatch cannot
-substitute. Missing or expired proof blocks publication.
+A stable draft still needs that exact SHA's successful main push `ci` plus a
+full native receipt: same tree, workflow and both-leg coverage. `ci-green`
+(the Rune tag preflight) accepts that same push proof. It also accepts one
+`merge_group` `ci.yml` run for the exact SHA, and only when no push `ci` run
+exists (`missing`). A push that is queued, in progress, waiting, pending, or
+requested keeps the push refusal: a Rune tag cannot be undone if that push
+later goes red. When the fallback does apply, every part of this holds.
+`head_sha` is that SHA, the event is `merge_group`, the conclusion is
+`success`, and `head_branch` starts with `gh-readonly-queue/`. The SHA is
+reachable from `main`: `compare` of `main...SHA` reports `behind` or
+`identical`. Every job the push plan for that SHA requires ran and passed.
+That set comes from the planner (`tools/src/routing` plan and detect), read
+off `ci.yml`'s plan gates, not from a second list. A skipped or cancelled
+required job is missing. The only exception is an identical-tree receipt
+that proves the lane (`tools/src/routing/receipt.ts`): same tree, workflow
+and coverage, and not a lane reuse still runs (`ffi`, native setup, rust
+icount). That lookup does not pass a push SHA, so it accepts an
+identical-tree pull-request receipt as well as a merge group, the same
+reuse routing already uses. The `rune-macos` workflow called inside that same run passed.
+The full-coverage native receipt is still required on either path. A
+skipped or cheap green, an ancestor receipt, another SHA, a pull request,
+or a dispatch cannot substitute. Fallback (C), only when no push run
+exists and this queue evidence is not enough, is a push-equivalent `ci`
+run on that exact SHA. `ci.yml`'s
+`workflow_dispatch` has no inputs, and nothing dispatches `ci` for an
+arbitrary SHA. Missing or expired proof blocks publication.
 
 This deliberately qualifies even integration-only metadata releases rather
 than introducing ancestry tracking or product-specific exemptions. Arbitrary
@@ -86,10 +111,10 @@ See [releasing](./releasing.md).
 
 Missing or expired receipts hold a draft; rerunning the original qualified
 push can refresh its proof. A batch merge may produce a push only for its
-final commit. Intermediate version commits without their own push run remain
-blocked under the exact-push policy. Another batch SHA, arbitrary queue/PR
-green or a dispatch is not a substitute; qualified intermediate-main
-eligibility is a separate policy decision.
+final commit. An intermediate SHA with no push run can still pass `ci-green` when its own
+`merge_group` run meets the rule above. A push that is still running cannot. Another SHA, a pull-request green,
+or a dispatch is not a substitute. `release.yml` still requires the push
+`ci` conclusion for a stable draft.
 
 ## Concurrency
 

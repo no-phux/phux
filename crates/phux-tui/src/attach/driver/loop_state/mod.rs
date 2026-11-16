@@ -112,42 +112,6 @@ pub(super) fn apply_graph_rename(
     }
 }
 
-/// The satellite panes a frame's parked windows and splits were spawned as;
-/// each proves its satellite answered a relayed spawn.
-pub(super) fn spawned_satellite_panes(parked: &[ParkedAdopt]) -> Vec<ResourceId> {
-    parked
-        .iter()
-        .filter_map(ParkedAdopt::pane)
-        .cloned()
-        .collect()
-}
-
-/// The panes this client spawned for windows/splits still awaiting attach.
-pub(super) fn parked_spawned_panes(
-    windows: &HashMap<u32, PendingWindow>,
-    splits: &HashMap<u32, PendingSplit>,
-) -> Vec<crate::attach::actions::SpawnedPane> {
-    let windows = windows.values().filter_map(PendingWindow::spawned_pane);
-    let splits = splits.values().filter_map(PendingSplit::spawned_pane);
-    windows.chain(splits).cloned().collect()
-}
-
-/// Request ids of windows and splits whose spawn has not answered yet.
-pub(super) fn unanswered_spawns(
-    windows: &HashMap<u32, PendingWindow>,
-    splits: &HashMap<u32, PendingSplit>,
-) -> HashSet<u32> {
-    let windows = windows
-        .iter()
-        .filter(|(_, window)| window.adopt.is_none())
-        .map(|(id, _)| *id);
-    let splits = splits
-        .iter()
-        .filter(|(_, split)| split.awaiting_spawn())
-        .map(|(id, _)| *id);
-    windows.chain(splits).collect()
-}
-
 /// Window before a pending bare ESC is taken as the Escape key: a key's
 /// sequence arrives in one burst, and modal-editor users pay this per Escape.
 pub(super) const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
@@ -327,6 +291,8 @@ pub(super) struct SessionLoop {
     /// One-entry focus MRU, deliberately outside `ArrangementDoc` so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
+    /// The DEC 1004 reports the panes have had (`report_focus`).
+    focus_reports: crate::attach::focus::FocusReports,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.
     own_client_id: Option<ClientId>,
     /// The in-flight layout GET's request id.
@@ -571,6 +537,7 @@ impl SessionLoop {
                 PredictionState::new(predict_cfg, 80, 24),
             ),
             focus_history: crate::attach::focus::FocusHistory::default(),
+            focus_reports: crate::attach::focus::FocusReports::default(),
             own_client_id: None,
             layout_get_request_id: None,
             layout_read_complete: false,
@@ -667,9 +634,12 @@ pub(super) use inventory::answers::{
     HostAnswers, federation_notices, host_answers, host_inventory_overdue,
     unexplained_unreachable_notices,
 };
+mod focus;
 mod notify;
 mod paint;
 mod panes;
+mod spawns;
+pub(super) use spawns::{parked_spawned_panes, spawned_satellite_panes, unanswered_spawns};
 mod peers;
 mod project_tag;
 mod step;

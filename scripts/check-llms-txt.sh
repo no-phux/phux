@@ -102,11 +102,14 @@ check_links() {
         path="${link%%#*}"
         anchor=""
         [[ "$link" == *'#'* ]] && anchor="${link#*#}"
+        # A bare #anchor is this file, the same rule as scripts/check-docs.sh.
         if [[ -z "$path" ]]; then
-            violate "${file#"$ROOT"/}:$lineno empty link"
-            continue
-        fi
-        if ! resolved="$(resolve_target "$dir" "$path")"; then
+            if [[ -z "$anchor" ]]; then
+                violate "${file#"$ROOT"/}:$lineno empty link"
+                continue
+            fi
+            resolved="$file"
+        elif ! resolved="$(resolve_target "$dir" "$path")"; then
             violate "${file#"$ROOT"/}:$lineno $link does not exist"
             continue
         fi
@@ -185,7 +188,7 @@ check_tree() {
 
     require_phrase "$hub" 'evidence-ranked; screen is the floor'
     require_phrase "$hub" 'It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.'
-    require_phrase "$hub" 'There is no public SDK.'
+    require_phrase "$hub" 'There is no published SDK or client library yet.'
     require_phrase "$hub" 'There is no JSON socket.'
     require_phrase "$hub" 'There is no example application.'
     require_phrase "$hub" 'The static plugin index is built from the GitHub topic `phux-plugin`'
@@ -264,6 +267,8 @@ It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, 
 
 ## Not shipped
 
+There is no published SDK or client library yet.
+[Not shipped](#not-shipped)
 There is no public SDK.
 There is no JSON socket.
 There is no example application.
@@ -326,6 +331,27 @@ EOF
     ROOT="$repo" check_links "$repo/docs/missing.md" >"$scratch/out" 2>"$scratch/err"
     if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'has no heading #missing-anchor' "$scratch/err"; then
         printf 'self-test: a missing anchor should still fail\n' >&2
+        cat "$scratch/err" >&2
+        exit 1
+    fi
+
+    # A same-page #anchor that is not a heading fails. A resolving one is
+    # [Not shipped](#not-shipped) in the fixture above, which must pass.
+    VIOLATIONS=0
+    printf '# Same\n\n## Present\n\n[gone](#not-a-heading)\n' >"$repo/docs/same-page.md"
+    ROOT="$repo" check_links "$repo/docs/same-page.md" >"$scratch/out" 2>"$scratch/err"
+    if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'has no heading #not-a-heading' "$scratch/err"; then
+        printf 'self-test: a missing same-page anchor should fail\n' >&2
+        cat "$scratch/err" >&2
+        exit 1
+    fi
+
+    # A bare "#" has no path and no anchor. That stays an empty link.
+    VIOLATIONS=0
+    printf '[blank](#)\n' >"$repo/docs/empty-link.md"
+    ROOT="$repo" check_links "$repo/docs/empty-link.md" >"$scratch/out" 2>"$scratch/err"
+    if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'empty link' "$scratch/err"; then
+        printf 'self-test: an empty link should still fail\n' >&2
         cat "$scratch/err" >&2
         exit 1
     fi

@@ -196,7 +196,7 @@ fn usage_error(json: bool, message: &str) -> ExitCode {
 /// `agent show`) and run `body` against it on a fresh connection; `body`
 /// decides the exit code. Failures before `body` report on `json`'s channel.
 /// A `terminal_only` verb refuses a resource of another kind first.
-pub(super) fn with_target_pane<F>(
+pub(in crate::commands::agent) fn with_target_pane<F>(
     target: Option<&str>,
     socket: Option<PathBuf>,
     verb: &'static str,

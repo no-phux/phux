@@ -10,6 +10,10 @@ use super::{
     ReplicaPrompt, Scroll, SearchResults, SelectionGestureEvent, SelectionGestureResult, views,
 };
 pub(super) enum Query {
+    #[cfg(feature = "engine")]
+    SyncOutputDeadline(Sender<Option<std::time::Instant>>),
+    #[cfg(feature = "engine")]
+    ExpireSyncOutput(std::time::Instant, Sender<Vec<ResourceId>>),
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),
@@ -47,7 +51,11 @@ pub(super) enum Query {
     #[cfg(feature = "engine")]
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
-    BracketedPaste(ResourceId, Sender<Result<bool, EngineError>>),
+    Mode(
+        ResourceId,
+        libghostty_vt::mode::Mode,
+        Sender<Result<bool, EngineError>>,
+    ),
     #[cfg(feature = "engine")]
     Prompt(ResourceId, Sender<ReplicaPrompt>),
     #[cfg(feature = "engine")]

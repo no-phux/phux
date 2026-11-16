@@ -12,7 +12,8 @@ macro_rules! connection_frames {
     /// `HELLO` — client to server handshake (`docs/protocol.md#handshake`). A
     /// missing or truncated capability record is malformed.
     Hello {
-        /// Free-form client identifier (e.g. `"phux-client 0.1.0"`).
+        /// Free-form client identifier (e.g. `"phux-cli/0.1.0"`). Split on
+        /// the last `/` for a `name/version` token.
         client_name: String,
         /// Highest protocol major version the client supports.
         protocol_major: u16,

@@ -38,10 +38,8 @@ fn desk() -> Desk {
 }
 
 #[test]
-fn this_machine_folds_and_the_others_open() {
+fn other_machine_previews_open_and_close() {
     let mut desk = desk();
-    desk.toggle_host(None);
-    assert!(desk.machines.folded);
     desk.toggle_host(Some("mini".to_owned()));
     assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
     desk.toggle_host(Some("mini".to_owned()));

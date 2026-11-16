@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
+import { repoPath } from "../lib/repo.ts";
 import { str, table, type Table } from "../lib/value.ts";
 import {
   action,
@@ -189,10 +190,15 @@ test("the existing required ci check depends on real Apple qualification on the 
 });
 
 test("ci rejects a failed or cancelled native queue dependency", () => {
-  const script = run(steps(job(workflow("ci.yml"), "ci"))[0] ?? {});
+  const script = run(
+    steps(job(workflow("ci.yml"), "ci")).find((step) =>
+      run(step).includes("scripts/ci/ci-aggregate.sh"),
+    ) ?? {},
+  );
   expect(needs(job(workflow("ci.yml"), "ci"))).toContain("queue-apple");
   for (const state of ["success", "failure", "cancelled", "skipped"]) {
     const proc = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      cwd: repoPath("."),
       env: {
         ...process.env,
         EVENT_NAME: "merge_group",

@@ -141,6 +141,80 @@ fn find_file(dir: &Path, name: &str) -> bool {
     })
 }
 
+/// Run log, sidecar log, and pidfiles under the test state directory.
+fn append_startup_evidence(dir: &Path, out: &mut String) {
+    use std::fmt::Write as _;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            append_startup_evidence(&path, out);
+            continue;
+        }
+        let name = path.file_name().and_then(|name| name.to_str());
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        let keep = name == Some("plugin-runs.jsonl")
+            || extension.is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("log") || ext.eq_ignore_ascii_case("pid")
+            });
+        if !keep {
+            continue;
+        }
+        let _ = write!(
+            out,
+            "\n== {} ==\n{}\n",
+            path.display(),
+            std::fs::read_to_string(&path).unwrap_or_default()
+        );
+    }
+}
+
+fn plugin_runs(state: &Path) -> String {
+    fn find(dir: &Path) -> Option<String> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(text) = find(&path) {
+                    return Some(text);
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("plugin-runs.jsonl") {
+                return std::fs::read_to_string(path).ok();
+            }
+        }
+        None
+    }
+    find(state).unwrap_or_default()
+}
+
+/// Startup `note` values, in log order.
+fn startup_notes(state: &Path) -> Vec<String> {
+    plugin_runs(state)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("startup"))
+        .filter_map(|value| {
+            value
+                .get("note")
+                .and_then(|note| note.as_str())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn sidecar_death_dump(root: &Path, state: &Path, pids: &Path, second: i32, server: u32) -> String {
+    let mut out = format!(
+        "server={server}\npids:\n{}\nlife:\n{}\nstat:{:?}\n",
+        std::fs::read_to_string(pids).unwrap_or_default(),
+        std::fs::read_to_string(root.join("life")).unwrap_or_default(),
+        std::fs::read_to_string(format!("/proc/{second}/stat")).ok(),
+    );
+    append_startup_evidence(state, &mut out);
+    out
+}
+
 struct Reap(i32);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -155,7 +229,12 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
     let root = tempfile::tempdir().unwrap();
     let manifest = write_plugin(
         root.path(),
-        "echo $$ >> \"$PHUX_PLUGIN_ROOT/pids\"\n\
+        "trap 'echo \"TERM $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' TERM\n\
+         trap 'echo \"HUP $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' HUP\n\
+         trap 'echo \"INT $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' INT\n\
+         trap 'echo \"EXIT $$ status=$?\" >> \"$PHUX_PLUGIN_ROOT/life\"' EXIT\n\
+         echo $$ >> \"$PHUX_PLUGIN_ROOT/pids\"\n\
+         echo \"start $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"\n\
          env | sort > \"$PHUX_PLUGIN_ROOT/env.$$\"\n\
          pwd > \"$PHUX_PLUGIN_ROOT/cwd.$$\"\n\
          umask > \"$PHUX_PLUGIN_ROOT/umask.$$\"\n\
@@ -165,7 +244,9 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
            case \"$t\" in socket:*) bad=1 ;; esac\n\
          done\n\
          echo \"$bad\" > \"$PHUX_PLUGIN_ROOT/fds.$$\"\n\
-         sleep 1000\n",
+         echo \"sleeping $$\" >> \"$PHUX_PLUGIN_ROOT/life\"\n\
+         sleep 1000\n\
+         echo \"exit $$ $?\" >> \"$PHUX_PLUGIN_ROOT/life\"\n",
     );
     let xdg = XdgDirs::fresh("startup-upgrade");
     install_config(&xdg, &manifest);
@@ -228,28 +309,67 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         "upgrade should ack: {}",
         String::from_utf8_lossy(&upgrade.stderr)
     );
+    // #2576: a non-zero exit restarts, so the sidecar that stays up is the
+    // latest live pid, not necessarily line 2. A kill-and-respawn still
+    // fails the run-log checks below.
+    let mut second = 0;
     assert!(
         poll_until(Duration::from_secs(30), || {
-            let text = std::fs::read_to_string(&pids).unwrap_or_default();
-            text.ends_with('\n')
-                && text.lines().filter(|line| !line.is_empty()).count() >= 2
-                && !alive(first)
+            let Ok(text) = std::fs::read_to_string(&pids) else {
+                return false;
+            };
+            if !text.ends_with('\n') || alive(first) {
+                return false;
+            }
+            let Some(pid) = text
+                .lines()
+                .rev()
+                .find(|line| !line.is_empty())
+                .and_then(|line| line.trim().parse::<i32>().ok())
+            else {
+                return false;
+            };
+            if pid == first || !alive(pid) {
+                return false;
+            }
+            second = pid;
+            true
         }),
-        "upgrade should replace the sidecar; pids={:?} first alive={}",
+        "upgrade should replace the sidecar; pids={:?} first alive={}\n{}",
         std::fs::read_to_string(&pids),
-        alive(first)
+        alive(first),
+        sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
     );
-    let second: i32 = std::fs::read_to_string(&pids)
-        .unwrap()
-        .lines()
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
     reap.0 = second;
-    assert!(alive(second));
     assert_ne!(first, second);
+    assert!(
+        alive(second),
+        "replacement {second} died\n{}",
+        sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
+    );
+    let notes = startup_notes(&xdg.state);
+    let stopped_at = notes.iter().rposition(|note| note == "stopped");
+    let after_stopped = match stopped_at {
+        Some(index) => &notes[index + 1..],
+        None => &[],
+    };
+    let dump = sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid());
+    assert!(
+        notes.iter().any(|note| note == "stopped"),
+        "run log has no stopped; notes={notes:?}\n{dump}"
+    );
+    assert_eq!(
+        after_stopped
+            .iter()
+            .filter(|note| *note == "started")
+            .count(),
+        1,
+        "expected exactly one started after stopped; notes={notes:?}\n{dump}"
+    );
+    assert!(
+        !after_stopped.iter().any(|note| *note == "restarting"),
+        "restarting after stopped; notes={notes:?}\n{dump}"
+    );
     wait_for_sidecar_files(root.path(), second);
     let env = std::fs::read_to_string(root.path().join(format!("env.{second}"))).unwrap();
     assert!(

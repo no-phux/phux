@@ -21,6 +21,8 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 use crate::embedded::{answer, commands, negotiate, server_hello};
 
+mod empty_spawn;
+
 /// The fixture server, advertising `ORGANIZATION` (and the session verbs
 /// that ride with it) when `organization`.
 fn hello(organization: bool) -> FrameKind {

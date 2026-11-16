@@ -4,7 +4,8 @@
 //! owned [`EngineEvent`]s go in over a channel and owned [`EngineOutcome`]s
 //! come back. With the `engine` feature the adapter is libghostty and every
 //! damaged terminal is re-projected and published before the outcome is
-//! answered; without it a bounded `ByteAdapter` keeps the transport and
+//! answered, unless a DEC 2026 transaction is holding its last complete frame
+//! (with a bounded watchdog); without it a bounded `ByteAdapter` keeps the transport and
 //! control-plane lanes buildable with no Zig toolchain.
 
 #[cfg(feature = "engine")]
@@ -51,6 +52,8 @@ mod apply;
 /// The headless replica: a bounded byte buffer per terminal.
 #[cfg(not(feature = "engine"))]
 pub mod byte_adapter;
+#[cfg(feature = "engine")]
+mod modes;
 mod owner;
 /// Predictive local echo over a projected grid.
 #[cfg(feature = "engine")]
@@ -75,6 +78,19 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    #[cfg(feature = "engine")]
+    pub(crate) fn sync_output_deadline(&self) -> Option<std::time::Instant> {
+        self.request(|reply| Command::Query(Query::SyncOutputDeadline(reply)))
+            .ok()
+            .flatten()
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn expire_sync_output(&self, now: std::time::Instant) -> Vec<ResourceId> {
+        self.request(|reply| Command::Query(Query::ExpireSyncOutput(now, reply)))
+            .unwrap_or_default()
+    }
+
     /// Spawn the owner thread with a kernel built from `config`; with the
     /// `engine` feature it publishes every render into `publication`.
     pub(crate) fn start(
@@ -306,13 +322,6 @@ impl EngineHandle {
     #[cfg(feature = "engine")]
     pub fn mouse_mode(&self, terminal_id: &ResourceId) -> Result<MouseMode, EngineError> {
         self.request(|reply| Command::Query(Query::MouseMode(terminal_id.clone(), reply)))?
-    }
-
-    /// Whether the replica has DEC 2004 bracketed paste on: the mode the
-    /// server will encode a paste against, as this replica last saw it.
-    #[cfg(feature = "engine")]
-    pub fn bracketed_paste(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
-        self.request(|reply| Command::Query(Query::BracketedPaste(terminal_id.clone(), reply)))?
     }
 
     /// Where the replica's shell is in its prompt cycle, from its OSC 133

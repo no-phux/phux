@@ -150,7 +150,7 @@ before any further send to that pane. Two prompts at once to the same
 pane are refused. See
 [driving an agent in a pane](./agents.md#driving-an-agent-in-a-pane).
 
-`phux run` types a command into a POSIX shell, waits, and exits with that
+`phux run` types a command into sh, bash, zsh or fish, waits, and exits with that
 command's status (125 when `--timeout` fires). It exits 2 when the
 foreground program is not a shell. Prompt an agent with `send-keys` or
 `agent prompt`.
