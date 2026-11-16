@@ -13,31 +13,29 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::policy::PolicyEngine;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, await_command_result, command,
-    join_after_shutdown, recv_typed, recv_until, send_frame, spawn_server_with,
-    wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, WIRE_RECV_TIMEOUT, await_command_result, command,
+    recv_typed, recv_until, send_frame, wait_for_raw_socket,
 };
 use serde_json::Value;
-use tempfile::TempDir;
+
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 
 pub(super) const HELD: u32 = 100;
 pub(super) const PROVIDER: &str = "vault-mac";
 
-pub(super) struct Server {
-    tmp: TempDir,
-    handles: ServerHandles,
-}
+pub(super) struct Server(SpawnedServer);
 
 impl Server {
     pub(super) fn start(ttl_secs: u32, policy: Option<Arc<dyn PolicyEngine>>) -> Self {
-        let tmp = TempDir::new().unwrap();
-        let handles = spawn_server_with(tmp.path().join("phux.sock"), Some("demo"), |cfg| {
-            cfg.approval_ttl_secs = ttl_secs;
-            cfg.policy_engine = policy;
-        });
-        Self { tmp, handles }
+        let server = SpawnedServer::builder()
+            .session("demo")
+            .configure(move |cfg| {
+                cfg.approval_ttl_secs = ttl_secs;
+                cfg.policy_engine = policy;
+            })
+            .start();
+        Self(server)
     }
 
     pub(super) async fn connect(&self, name: &str) -> UnixStream {
@@ -49,8 +47,7 @@ impl Server {
         name: &str,
         details: bool,
     ) -> UnixStream {
-        let mut stream =
-            wait_for_raw_socket(&self.tmp.path().join("phux.sock"), SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&self.0.socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
             &mut stream,
             &FrameKind::Hello {
@@ -86,7 +83,7 @@ impl Server {
     }
 
     pub(super) async fn stop(self) {
-        join_after_shutdown(self.handles.0, self.handles.1).await;
+        self.0.stop().await;
     }
 }
 

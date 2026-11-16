@@ -28,7 +28,7 @@ mod server;
 pub mod tracing_capture;
 pub use phux_server::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 pub use server::{
-    ServerHandles, SpawnedServer, hangup_proof_script, seed_pty, spawn_server,
+    ServerBuilder, ServerHandles, SpawnedServer, hangup_proof_script, seed_pty, spawn_server,
     spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
     spawn_server_with_seed_cmd, terminal_server,
 };

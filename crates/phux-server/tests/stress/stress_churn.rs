@@ -114,7 +114,7 @@ fn attach_racing_pty_eof_does_not_panic() {
             .seed_cmd(sh("printf RACEEOF; sleep 0.15"))
             .spawn()
             .await;
-        let socket_path = harness.socket_path.clone();
+        let socket_path = harness.server.socket.clone();
         harness.clients.remove(0).detach();
 
         for _ in 0..8 {
