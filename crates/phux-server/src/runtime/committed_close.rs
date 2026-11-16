@@ -86,10 +86,10 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained_outcome(resource).unwrap_or(ExitOutcome::UNKNOWN);
     // Interned before the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_resource_wire(resource);
+    let wire_terminal_id = s.idspace.intern_resource(resource);
     let parent = s
         .resource_parent(resource)
-        .map(|parent| s.intern_resource_wire(parent));
+        .map(|parent| s.idspace.intern_resource(parent));
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets = s.terminal_fanout_targets(resource);
     let publication_fences = s.attach_publication_fences(resource);

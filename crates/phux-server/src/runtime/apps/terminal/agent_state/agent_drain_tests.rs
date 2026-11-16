@@ -330,7 +330,7 @@ async fn an_ask_sentinel_lands_in_the_ledger_the_hook_shares() {
         let state = SharedState::new();
         let (pane, terminal) = state.with_mut(|s| {
             let (_session, pane) = s.seed_session("demo");
-            (pane, s.intern_resource_wire(pane))
+            (pane, s.idspace.intern_resource(pane))
         });
         let ask = AskedPayload {
             id: "q1".to_owned(),

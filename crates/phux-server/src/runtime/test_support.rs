@@ -390,7 +390,7 @@ pub(super) fn alpha_world(
     .unwrap();
     let alpha = state.with_mut(|s| {
         s.config_mut().policy_engine = engine;
-        s.intern_resource_wire(alpha_core)
+        s.idspace.intern_resource(alpha_core)
     });
     (state, alpha, alpha_core)
 }

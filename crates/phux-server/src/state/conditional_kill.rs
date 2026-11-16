@@ -52,6 +52,7 @@ impl ServerState {
             ));
         }
         let core = self
+            .idspace
             .resource_from_wire(terminal)
             .ok_or(KillIfRefusal::NotFound)?;
         if let Some(why) = self.attachment_refusal(core, precondition.conditions) {
@@ -91,7 +92,7 @@ impl ServerState {
     /// Note that `client` used `terminal` in a verb (ADR-0109, L1 §5.2.1);
     /// satellite or unknown ids are ignored.
     pub fn note_resource_use(&mut self, terminal: &WireResourceId, client: super::ClientId) {
-        if let Some(core) = self.resource_from_wire(terminal) {
+        if let Some(core) = self.idspace.resource_from_wire(terminal) {
             self.resources.note_use(client, core);
         }
     }
@@ -122,7 +123,7 @@ mod tests {
     ) {
         let mut state = ServerState::new();
         let (_, core) = state.seed_session("main");
-        let wire = state.intern_resource_wire(core);
+        let wire = state.idspace.intern_resource(core);
         (state, core, wire)
     }
 
@@ -136,7 +137,7 @@ mod tests {
             state.admit_conditional_kill(wire, precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert!(state.resource_from_wire(wire).is_some(), "kept");
+        assert!(state.idspace.resource_from_wire(wire).is_some(), "kept");
     }
 
     fn untouched(state: &ServerState) -> KillPrecondition {
@@ -208,7 +209,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            replacement.resource_from_wire(&wire),
+            replacement.idspace.resource_from_wire(&wire),
             Some(core),
             "recycled resource survives"
         );

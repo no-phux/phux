@@ -25,6 +25,7 @@ fn history_terminal(
 ) -> Option<phux_terminal_api::actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
+            .idspace
             .resource_from_wire(terminal_id)
             .and_then(|pane| server.resource_handle(pane).cloned())
     });

@@ -79,7 +79,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
             state.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
             let (_, original) = state.seed_session("already-here");
             state.persist_first_start().unwrap();
-            let original_wire = state.intern_resource_wire(original);
+            let original_wire = state.idspace.intern_resource(original);
             let before = SqliteOrgStore::open(&path)
                 .unwrap()
                 .load()
@@ -116,8 +116,14 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
             assert!(matches!(result, Err(RebuildError::Registration(_))));
             tokio::task::yield_now().await;
             assert!(!rejected_ran.get());
-            assert_eq!(state.resource_from_wire(&original_wire), Some(original));
-            assert_eq!(state.resource_wire_of(original), Some(original_wire));
+            assert_eq!(
+                state.idspace.resource_from_wire(&original_wire),
+                Some(original)
+            );
+            assert_eq!(
+                state.idspace.resource_wire(original).cloned(),
+                Some(original_wire)
+            );
             assert_eq!(
                 session_names(&state),
                 vec!["already-here".to_owned(), "intake".to_owned()]

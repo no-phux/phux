@@ -108,12 +108,12 @@ impl ServerState {
         for sid in sessions {
             let _ = self.idspace.intern_session(sid);
             if !self.legacy_panes_of(sid).is_empty() {
-                let _ = self.intern_window_wire(sid);
+                let _ = self.idspace.intern_window(sid);
             }
         }
         for id in self.resource_ids() {
             if self.sessions.registry.resource(id).is_some() {
-                let _ = self.intern_resource_wire(id);
+                let _ = self.idspace.intern_resource(id);
             }
         }
     }

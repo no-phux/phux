@@ -125,7 +125,7 @@ impl ServerState {
     ) -> Option<EntryTarget> {
         match id {
             WireResourceId::Local { .. } => {
-                let core = self.resource_from_wire(id)?;
+                let core = self.idspace.resource_from_wire(id)?;
                 let key = self.registry().resource_key(core)?;
                 members.contains(&key).then_some(EntryTarget::Member(key))
             }
@@ -188,7 +188,7 @@ impl ServerState {
             EntryTarget::Member(key) => {
                 let id = self.registry().resource_id(key)?;
                 self.resource_handle(id)?;
-                Some(self.intern_resource_wire(id))
+                Some(self.idspace.intern_resource(id))
             }
             EntryTarget::Satellite { host, id } => {
                 Some(WireResourceId::satellite(host.as_str(), *id))
@@ -229,7 +229,10 @@ mod tests {
         let b = state.add_pane_to_session(session).unwrap();
         handle_for(&mut state, a);
         handle_for(&mut state, b);
-        let (wa, wb) = (state.intern_resource_wire(a), state.intern_resource_wire(b));
+        let (wa, wb) = (
+            state.idspace.intern_resource(a),
+            state.idspace.intern_resource(b),
+        );
         let stranger = WireResourceId::local(999);
         let doc = ArrangementDoc {
             groups: vec![Group::with_id(

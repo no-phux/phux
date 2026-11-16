@@ -68,7 +68,6 @@ mod sessions;
 mod snapshot;
 pub(crate) mod upgrade_blob;
 mod viewport;
-mod wire_ids;
 
 pub(crate) use app_slots::AppSlot;
 pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};

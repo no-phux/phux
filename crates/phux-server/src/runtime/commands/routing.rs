@@ -115,6 +115,18 @@ pub(in crate::runtime) async fn handle_command(
     reply::send(&ctx.out_tx, request_id, result).await;
 }
 
+/// Whether `terminal_id` names a local resource whose app cannot resume an
+/// agent stream from a cursor, so an `agent_after_seq` attach is refused.
+fn refuses_agent_cursor(
+    s: &crate::state::ServerState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) -> bool {
+    s.idspace
+        .resource_from_wire(terminal_id)
+        .and_then(|core| s.resource_handle(core))
+        .is_some_and(|handle| !crate::runtime::apps::app_for(handle.kind).resumes_from_cursor())
+}
+
 /// Everything that answers a command before local dispatch: the
 /// process-level verbs, organization commands, refusals, satellite routing,
 /// and keyed-command admission. `None` when the command has been answered;
@@ -196,13 +208,7 @@ async fn route_command(
         agent_after_seq: Some(_),
         ..
     } = &command
-        && state.with(|s| {
-            s.resource_from_wire(terminal_id)
-                .and_then(|core| s.resource_handle(core))
-                .is_some_and(|handle| {
-                    !crate::runtime::apps::app_for(handle.kind).resumes_from_cursor()
-                })
-        })
+        && state.with(|s| refuses_agent_cursor(s, terminal_id))
     {
         reply::send(out_tx, request_id, invalid_agent_cursor()).await;
         return None;

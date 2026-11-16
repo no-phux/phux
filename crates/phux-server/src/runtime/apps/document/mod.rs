@@ -415,7 +415,7 @@ async fn publish<A: DocumentApi>(
         );
     }
     let Some((core, handle)) = state.with(|s| {
-        let core = s.resource_from_wire(terminal_id)?;
+        let core = s.idspace.resource_from_wire(terminal_id)?;
         Some((core, s.resource_handle(core)?.clone()))
     }) else {
         return CommandResult::error(

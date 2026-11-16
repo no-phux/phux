@@ -66,7 +66,7 @@ pub(in crate::runtime) fn register_pty_command(
     cmd: &mut phux_terminal_api::launch::LaunchCommand,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
-    let wire = s.intern_resource_wire(terminal);
+    let wire = s.idspace.intern_resource(terminal);
     phux_terminal_api::launch::apply_terminal_id(cmd, &wire);
     phux_terminal_api::launch::apply_server_socket(cmd, s.config().server_socket_path());
     // Only with `[forward] agent = true`: otherwise the pane keeps whatever

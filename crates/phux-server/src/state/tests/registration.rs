@@ -34,7 +34,7 @@ fn mismatched_registration_preserves_the_existing_engine_and_wire_identity() {
     let retained = state.resource_handle(core).unwrap();
     assert_eq!(retained.kind, ResourceKind::AccessibilityTree);
     assert!(retained.output.same_channel(&bundle.handle.output));
-    assert_eq!(state.resource_wire_of(core), Some(wire));
+    assert_eq!(state.idspace.resource_wire(core).cloned(), Some(wire));
     assert!(!token.is_cancelled());
     assert!(!replacement.is_cancelled());
 }
@@ -53,7 +53,7 @@ fn refused_actor_registration_neither_allocates_a_wire_nor_spawns() {
             &phux_core::Actor::owner(),
         )
         .unwrap();
-    assert_eq!(state.resource_wire_of(core), None);
+    assert_eq!(state.idspace.resource_wire(core).cloned(), None);
     let error = state
         .spawn_resource_actor(
             core,
@@ -63,7 +63,7 @@ fn refused_actor_registration_neither_allocates_a_wire_nor_spawns() {
         )
         .unwrap_err();
     assert!(matches!(error, ResourceRegistrationError::WrongKind { .. }));
-    assert_eq!(state.resource_wire_of(core), None);
+    assert_eq!(state.idspace.resource_wire(core).cloned(), None);
     assert!(state.resource_handle(core).is_none());
 
     state.retire_record(core, phux_core::ExitOutcome::UNKNOWN);
@@ -76,6 +76,6 @@ fn refused_actor_registration_neither_allocates_a_wire_nor_spawns() {
         )
         .unwrap_err();
     assert_eq!(absent, ResourceRegistrationError::NotFound(core));
-    assert_eq!(state.resource_wire_of(core), None);
+    assert_eq!(state.idspace.resource_wire(core).cloned(), None);
     assert!(state.resource_handle(core).is_none());
 }

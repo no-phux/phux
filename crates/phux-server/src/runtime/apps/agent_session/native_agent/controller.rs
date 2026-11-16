@@ -73,6 +73,7 @@ fn verify_guardian_process(
     pid: u32,
 ) -> Result<(), CommandResult> {
     let core = s
+        .idspace
         .resource_from_wire(agent)
         .ok_or_else(|| closed("native agent session is gone"))?;
     if s.resource_handle(core).is_none() {
@@ -296,7 +297,7 @@ fn submit_command(
         };
     }
     let parent = binding.parent.clone();
-    let Some(core_parent) = s.resource_from_wire(&parent) else {
+    let Some(core_parent) = s.idspace.resource_from_wire(&parent) else {
         return refused_command(operation_id, "native guardian is closed");
     };
     if !native_source_live(s, agent, core_parent) {
@@ -336,6 +337,7 @@ fn native_source_live(
     core_parent: phux_core::ids::ResourceId,
 ) -> bool {
     let source_live = s
+        .idspace
         .resource_from_wire(agent)
         .and_then(|core| s.resource_handle(core))
         .and_then(|handle| handle.agent_session().ok())

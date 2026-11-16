@@ -211,6 +211,7 @@ fn selected_guardian(
             return Err(refusal("native insertion requires a local guardian"));
         }
         return s
+            .idspace
             .resource_from_wire(wire)
             .map(Some)
             .ok_or_else(|| refusal("guardian does not exist"));
@@ -378,7 +379,7 @@ fn create_native_resources(
                 }
             };
         let parent_wire = terminal::register_pty_command(s, parent, command);
-        let agent_wire = s.intern_resource_wire(agent);
+        let agent_wire = s.idspace.intern_resource(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
             phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY,

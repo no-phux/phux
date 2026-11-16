@@ -15,7 +15,8 @@ pub(crate) async fn handle_report_agent_state(
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
     if state.with(|s| {
-        s.resource_from_wire(terminal_id)
+        s.idspace
+            .resource_from_wire(terminal_id)
             .is_some_and(|core| s.native_owned_terminal(core))
     }) {
         return CommandResult::error(

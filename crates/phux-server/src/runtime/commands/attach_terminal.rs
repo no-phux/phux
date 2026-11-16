@@ -158,7 +158,10 @@ pub(crate) fn subscribe_attach_terminal(
 ) -> Result<AttachSubscription, CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
     state.with_mut(|s| {
-        let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
+        let core = s
+            .idspace
+            .resource_from_wire(terminal_id)
+            .ok_or_else(not_found)?;
         let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.

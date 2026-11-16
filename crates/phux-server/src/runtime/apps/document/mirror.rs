@@ -166,7 +166,7 @@ fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
                 && s.resource_handle(id).is_some())
             .then_some(id)
         })?;
-    match s.intern_resource_wire(surface) {
+    match s.idspace.intern_resource(surface) {
         phux_protocol::ids::ResourceId::Local { id } => Some(id),
         phux_protocol::ids::ResourceId::Satellite { .. } => None,
     }

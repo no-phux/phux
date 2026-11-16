@@ -379,7 +379,8 @@ impl Fixture {
     }
     pub(super) async fn cut(&self) -> phux_agent_session::session::AgentSessionBootstrap {
         let bootstrap = self.state.with(|s| {
-            s.resource_from_wire(&self.agent)
+            s.idspace
+                .resource_from_wire(&self.agent)
                 .and_then(|core| s.resource_handle(core))
                 .unwrap()
                 .agent_session()

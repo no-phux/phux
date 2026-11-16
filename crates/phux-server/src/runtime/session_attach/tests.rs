@@ -329,7 +329,7 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
         state.with_mut(|s| s.config_mut().window_size = phux_config::WindowSize::Smallest);
         let (core, handle) = tree(&state, parent, session);
         publish::<TreeDocument>(&handle, Bytes::from_static(b"{\"cut\":1}")).await;
-        let wire = state.with_mut(|s| s.intern_resource_wire(core));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(core));
         let mut connection = Connection::start(&state, false).await;
         for attach_id in [1, 2] {
             connection.attach(attach_id).await;
@@ -375,7 +375,7 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
             assert!(s.registry_mut().set_recent(session, Some(tree)));
             assert_eq!(s.active_resource_of_session(session), Some(tree));
             assert_eq!(s.active_pane_of_session(session), Some(parent));
-            let wire = s.intern_resource_wire(tree);
+            let wire = s.idspace.intern_resource(tree);
             assert_eq!(
                 s.build_session_snapshot(session).unwrap().focused_resource,
                 wire
@@ -411,7 +411,7 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
         assert_eq!(profiles.len(), 3);
         assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
         assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
-        let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(agent));
         connection.send(FrameKind::Command {
             request_id: 70,
             command: phux_protocol::wire::frame::Command::attach_agent_session(wire.clone(), None, None),

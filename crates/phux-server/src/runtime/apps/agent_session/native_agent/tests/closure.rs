@@ -2,7 +2,7 @@ use super::*;
 
 async fn seal(fx: &Fixture, value: bool) {
     let bootstrap = fx.state.with(|s| {
-        s.resource_handle(s.resource_from_wire(&fx.agent).unwrap())
+        s.resource_handle(s.idspace.resource_from_wire(&fx.agent).unwrap())
             .unwrap()
             .agent_session()
             .unwrap()

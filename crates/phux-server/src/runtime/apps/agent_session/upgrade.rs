@@ -141,7 +141,8 @@ fn uncarried(
         .values()
         .filter(|binding| !binding.closed)
         .find(|binding| {
-            s.resource_from_wire(&binding.agent)
+            s.idspace
+                .resource_from_wire(&binding.agent)
                 .is_none_or(|id| !cuts.contains_key(&id))
         })
         .map(|binding| binding.agent.clone())

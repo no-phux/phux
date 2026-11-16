@@ -39,7 +39,7 @@ fn assert_not_asked(fx: &Fixture) {
         assert!(binding.closed);
         assert!(!binding.view.connected);
         assert!(binding.view.questions.is_empty());
-        let core = s.resource_from_wire(&fx.agent).unwrap();
+        let core = s.idspace.resource_from_wire(&fx.agent).unwrap();
         assert_eq!(
             s.registry()
                 .resource(core)

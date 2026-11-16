@@ -46,7 +46,7 @@ fn admit<'a, A: DocumentApi>(
             A::LABEL
         )));
     }
-    let Some(core_parent) = spawn.state.with(|s| s.resource_from_wire(&parent)) else {
+    let Some(core_parent) = spawn.state.with(|s| s.idspace.resource_from_wire(&parent)) else {
         debug!(client_id = ?spawn.client_id, request_id = spawn.request_id, %parent, "SPAWN_RESOURCE: document parent not found");
         return Err(SpawnError::ParentNotFound);
     };

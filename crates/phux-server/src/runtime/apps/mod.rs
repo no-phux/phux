@@ -408,7 +408,8 @@ pub(crate) fn app_serving(
     wire: &WireResourceId,
 ) -> Option<&'static dyn ResourceApp> {
     let kind = state.with(|s| {
-        s.resource_from_wire(wire)
+        s.idspace
+            .resource_from_wire(wire)
             .and_then(|core| s.resource_handle(core))
             .map(|handle| handle.kind)
     });

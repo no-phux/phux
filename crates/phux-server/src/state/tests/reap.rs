@@ -156,15 +156,15 @@ fn reap_clears_pane_bookkeeping() {
     let (_sid, pid) = s.seed_session("default");
     let cid = s.new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    let wire = s.intern_resource_wire(pid);
+    let wire = s.idspace.intern_resource(pid);
     assert!(!s.subscribers_for_resource(pid).is_empty());
-    assert_eq!(s.resource_from_wire(&wire), Some(pid));
+    assert_eq!(s.idspace.resource_from_wire(&wire), Some(pid));
 
     s.reap_resource(pid);
 
     assert!(s.subscribers_for_resource(pid).is_empty());
     assert!(
-        s.resource_from_wire(&wire).is_none(),
+        s.idspace.resource_from_wire(&wire).is_none(),
         "wire id retired on reap",
     );
 }

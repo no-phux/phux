@@ -147,7 +147,7 @@ fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
 
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("scope-test"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     set(&state, &scope, "phux.test/v1", b"live");
     assert_eq!(get(&state, &scope, "phux.test/v1"), Some(b"live".to_vec()));
 
@@ -227,7 +227,7 @@ fn clients_cannot_forge_server_owned_or_reserved_keys() {
     assert!(get(&state, &Scope::Global, &reserved_key).is_none());
 
     let (_session, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let key = phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
     let authoritative = br#"{"foreground":"zsh","is_pane_shell":true}"#.to_vec();
     state.with_mut(|s| s.metadata_set(&scope, key, authoritative.clone()));
@@ -249,7 +249,7 @@ fn controller_record_follows_the_typing_connection() {
     let key = phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY;
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("typed"));
-    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+    let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
     let scope = Scope::Resource(wire.clone());
     let record = || {
         get(&state, &scope, key)
@@ -374,7 +374,7 @@ fn explicit_agent_record_writes_fire_agent_state_changed_on_real_edges() {
         s.set_hook_dispatcher(crate::hooks::HookDispatcher::from_sender(tx));
     });
     let (_session, pane) = state.with_mut(|s| s.seed_session("hook-test"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let mut next = || rx.try_recv().ok();
     let edge = |event: &crate::hooks::HookEvent| {
         (
@@ -435,7 +435,7 @@ fn an_agent_record_over_its_byte_limit_is_refused() {
 
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("record-cap"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let record_of = |len: usize| {
         let frame = br#"{"name":"a","session":""}"#.len();
         format!(r#"{{"name":"a","session":"{}"}}"#, "x".repeat(len - frame)).into_bytes()

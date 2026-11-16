@@ -9,7 +9,8 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 /// Whether the pane `wire_terminal_id` names is retained after its process
 /// exited (ADR-0124).
 fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
-    s.resource_from_wire(wire_terminal_id)
+    s.idspace
+        .resource_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
 
@@ -90,7 +91,7 @@ fn drain_ask_sentinel(
 ) -> Option<phux_agent_session::asked::AskedPayload> {
     use phux_agent_session::asked::AskedSource;
 
-    let terminal = s.resource_from_wire(wire_terminal_id)?;
+    let terminal = s.idspace.resource_from_wire(wire_terminal_id)?;
     let emitted = if let Some(payload) = ask {
         s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
             .emit_payload()

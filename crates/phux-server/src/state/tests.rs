@@ -255,7 +255,7 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     assert_eq!(ids, HashSet::from([pid_a, pid_c]));
     for pane in panes {
         assert_eq!(
-            s.resource_from_wire(&pane.wire_terminal_id),
+            s.idspace.resource_from_wire(&pane.wire_terminal_id),
             Some(pane.terminal_id),
             "wire id should resolve back to the same pane",
         );

@@ -34,6 +34,7 @@ fn report(s: &mut ServerState, terminal: &ResourceId, token: Option<ResumeToken>
         return;
     }
     let Some(record) = s
+        .idspace
         .resource_from_wire(terminal)
         .and_then(|id| s.registry().record(id))
     else {
@@ -109,7 +110,7 @@ mod tests {
     fn a_normal_exit_clears_the_token_even_if_the_engine_clear_is_drained_late() {
         let state = SharedState::new();
         let pane = retained(&state);
-        let terminal = state.with_mut(|s| s.intern_resource_wire(pane));
+        let terminal = state.with_mut(|s| s.idspace.intern_resource(pane));
         state.with_mut(|s| report(s, &terminal, ResumeToken::new("demo", "finished")));
         assert!(stored(&state, pane).resume.is_some());
         state.with_mut(|s| s.activation_ended(pane, ExitOutcome::exited(0), false));
@@ -123,7 +124,7 @@ mod tests {
     fn a_reported_token_lands_on_the_launch_record_and_resume_empty_clears_it() {
         let state = SharedState::new();
         let (_session, pane) = state.with_mut(|s| s.seed_session("resume"));
-        let terminal = state.with_mut(|s| s.intern_resource_wire(pane));
+        let terminal = state.with_mut(|s| s.idspace.intern_resource(pane));
         let before = stored(&state, pane);
         assert_eq!(before.resume, None);
 

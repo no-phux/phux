@@ -141,7 +141,7 @@ fn retain_exited_pane(
     let retention = s.retain_exited(pane, exit, crate::state::now_unix_ms())?;
     // The record keeps its outcome (`ExitPolicy::Retain`).
     s.activation_ended(pane, exit, false);
-    let wire_terminal_id = s.intern_resource_wire(pane);
+    let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
@@ -253,13 +253,13 @@ fn reap_exited_pane(
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained_outcome(pane).unwrap_or(exit);
     // Interned before the cascade and the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_resource_wire(pane);
+    let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
     let parent = s
         .resource_parent(pane)
-        .map(|parent| s.intern_resource_wire(parent));
+        .map(|parent| s.idspace.intern_resource(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
@@ -319,7 +319,7 @@ fn cascade_children(
         } else {
             recorded
         };
-        let wire_child_id = s.intern_resource_wire(child);
+        let wire_child_id = s.idspace.intern_resource(child);
         let child_targets = s.terminal_fanout_targets(child);
         let publication_fences = s.attach_publication_fences(child);
         let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);

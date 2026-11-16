@@ -67,8 +67,8 @@ fn world() -> World {
     let mut state = ServerState::new();
     let (alpha_session, alpha_core) = state.seed_session("alpha");
     let (beta_session, beta_core) = state.seed_session("beta");
-    let alpha = state.intern_resource_wire(alpha_core);
-    let beta = state.intern_resource_wire(beta_core);
+    let alpha = state.idspace.intern_resource(alpha_core);
+    let beta = state.idspace.intern_resource(beta_core);
     let alpha_group = state.idspace.intern_session(alpha_session).get();
     state.idspace.intern_session(beta_session);
     let (arrangement, operation) = arrange(&mut state, alpha_session, alpha_core);
@@ -121,7 +121,7 @@ fn agent_child(world: &mut World) -> WireResourceId {
             },
         )
         .unwrap();
-    world.state.intern_resource_wire(child)
+    world.state.idspace.intern_resource(child)
 }
 
 fn session_group_id(world: &World, name: &str) -> u32 {

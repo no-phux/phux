@@ -49,7 +49,7 @@ fn terminal_resize_forwards_cell_px_or_keeps_the_last() {
     let (_, pane) = state.with_mut(|s| s.seed_session("home"));
     let mut rx = register_stub(&state, pane);
     let client = attach_client(&state, "home");
-    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+    let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
 
     handle_terminal_resize(&state, client, &wire, (100, 40), Some((9, 18)));
     let sized = rx.resize.try_recv().expect("resize queued");
@@ -84,7 +84,7 @@ fn pane_sizing_attach_resizes_each_pane_at_most_once() {
         state.with_mut(|s| crate::state::AttachSnapshotPane {
             terminal_id: pane,
             handle: s.resource_handle(pane).unwrap().clone(),
-            wire_terminal_id: s.intern_resource_wire(pane),
+            wire_terminal_id: s.idspace.intern_resource(pane),
         })
     };
     let no_vote = ViewportInfo::new(0, 0);
@@ -130,8 +130,12 @@ fn vote_free_detach_resets_only_an_unusably_small_pane() {
     let mut tiny_rx = register_stub(&state, tiny);
     let mut normal_rx = register_stub(&state, normal);
     let client = attach_client(&state, "home");
-    let (tiny_wire, normal_wire) =
-        state.with_mut(|s| (s.intern_resource_wire(tiny), s.intern_resource_wire(normal)));
+    let (tiny_wire, normal_wire) = state.with_mut(|s| {
+        (
+            s.idspace.intern_resource(tiny),
+            s.idspace.intern_resource(normal),
+        )
+    });
     handle_terminal_resize(&state, client, &tiny_wire, (1, 1), None);
     handle_terminal_resize(&state, client, &normal_wire, (116, 37), None);
     tiny_rx.resize.try_recv().expect("tile resize");
@@ -172,7 +176,7 @@ fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
         s.unsubscribe_resource(client, unsubscribed);
         s.restore_retained_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
     });
-    let foreign_wire = state.with_mut(|s| s.intern_resource_wire(foreign));
+    let foreign_wire = state.with_mut(|s| s.idspace.intern_resource(foreign));
     handle_terminal_resize(&state, client, &foreign_wire, (137, 57), None);
     receivers[3]
         .resize
@@ -238,7 +242,7 @@ fn viewport_resize_preserves_policy_and_zero_vote_protection() {
         let request = receiver.resize.try_recv().expect("policy geometry");
         assert_eq!((request.cols, request.rows), expected);
     }
-    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+    let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
     handle_terminal_resize(&state, large, &wire, (99, 33), None);
     receiver.resize.try_recv().expect("exact resize");
     state.with_mut(|s| s.config_mut().window_size = WindowSize::Smallest);
@@ -269,7 +273,7 @@ fn closed_resize_delivery_never_advances_registry_geometry() {
     let target = state.with_mut(|s| crate::state::AttachSnapshotPane {
         terminal_id: pane,
         handle: s.resource_handle(pane).unwrap().clone(),
-        wire_terminal_id: s.intern_resource_wire(pane),
+        wire_terminal_id: s.idspace.intern_resource(pane),
     });
     handle_viewport_resize(&state, client, &ViewportInfo::new(140, 50));
     assert_eq!(

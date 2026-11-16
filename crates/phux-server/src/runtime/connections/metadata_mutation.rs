@@ -21,7 +21,8 @@ fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
         return;
     };
     let handle = state.with(|s| {
-        s.resource_from_wire(wire)
+        s.idspace
+            .resource_from_wire(wire)
             .and_then(|pane| s.resource_handle(pane).cloned())
     });
     if let Some(handle) = handle
@@ -44,7 +45,10 @@ fn reject_unknown_local_terminal_scope(
     let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
-    if state.with(|s| s.resource_from_wire(terminal)).is_some() {
+    if state
+        .with(|s| s.idspace.resource_from_wire(terminal))
+        .is_some()
+    {
         return false;
     }
     warn!(

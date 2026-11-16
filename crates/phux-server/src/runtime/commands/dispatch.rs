@@ -153,7 +153,8 @@ async fn dispatch_attach_resource(
     // A deferring kind's content subscription waits for STREAM_BIND. Kind
     // resolution precedes routing.
     let kind = ctx.state.with(|s| {
-        s.resource_from_wire(terminal_id)
+        s.idspace
+            .resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
             .map(|handle| handle.kind)
     });

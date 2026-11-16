@@ -349,6 +349,6 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
     if !terminal_id.is_local() {
         return true;
     }
-    s.resource_from_wire(terminal_id)
+    s.idspace.resource_from_wire(terminal_id)
         .is_some_and(|core| s.subscribers_for_resource(core).contains(&client))
 }

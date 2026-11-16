@@ -89,7 +89,7 @@ async fn append_output(
     let native_identity = publication.clone();
     let (core, handle) = state
         .with(|s| {
-            s.resource_from_wire(terminal_id).and_then(|core| {
+            s.idspace.resource_from_wire(terminal_id).and_then(|core| {
                 s.resource_handle(core)
                     .cloned()
                     .map(|handle| (core, handle))
@@ -271,7 +271,7 @@ fn publish_stream_ask(
         return;
     };
     let (payload, wire_parent) = state.with_mut(|s| {
-        let wire = s.intern_resource_wire(parent);
+        let wire = s.idspace.intern_resource(parent);
         let payload = if let Some(ask) = ask {
             s.report_stream_ask(
                 parent,

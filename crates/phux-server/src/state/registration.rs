@@ -105,7 +105,7 @@ impl ServerState {
                 actual: handle.kind,
             });
         }
-        let wire = self.intern_resource_wire(terminal);
+        let wire = self.idspace.intern_resource(terminal);
         self.resources.register(terminal, handle, token);
         Ok(wire)
     }

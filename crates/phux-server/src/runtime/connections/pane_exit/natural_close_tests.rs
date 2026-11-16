@@ -365,7 +365,7 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
         assert!(
             fixture
                 .state
-                .with(|s| s.resource_from_wire(&fixture.wire).is_none())
+                .with(|s| s.idspace.resource_from_wire(&fixture.wire).is_none())
         );
         let close = announce_close(&fixture.state, reap, false);
         tokio::pin!(close);

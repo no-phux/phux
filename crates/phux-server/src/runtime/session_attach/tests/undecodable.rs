@@ -55,8 +55,8 @@ async fn an_undecodable_kind_is_listed_but_never_streamed_or_attached() {
         publish::<SurfaceDocument>(&surface_handle, png()).await;
         let (tree_wire, surface_wire) = state.with_mut(|s| {
             (
-                s.intern_resource_wire(tree),
-                s.intern_resource_wire(surface),
+                s.idspace.intern_resource(tree),
+                s.idspace.intern_resource(surface),
             )
         });
         let kinds = ResourceKindSet::with(&[ResourceKind::AccessibilityTree]);
@@ -178,7 +178,7 @@ async fn a_spawner_is_streamed_only_the_kinds_it_lists() {
     crate::runtime::test_support::local(async {
         let state = SharedState::new();
         let (_, parent) = parent(&state, true);
-        let parent_wire = state.with_mut(|s| s.intern_resource_wire(parent));
+        let parent_wire = state.with_mut(|s| s.idspace.intern_resource(parent));
         let kinds = ResourceKindSet::with(&[ResourceKind::AgentSession]);
         let mut connection = Connection::start_with(&state, true, 64, Some(kinds)).await;
 

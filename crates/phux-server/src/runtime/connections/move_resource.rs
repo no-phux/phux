@@ -71,9 +71,11 @@ fn move_local_terminal(
         return Err(MoveError::UnsupportedSatelliteRoute);
     }
     let moved = s
+        .idspace
         .resource_from_wire(terminal)
         .ok_or_else(|| failed("terminal was not found on this server"))?;
     let owner = s
+        .idspace
         .resource_from_wire(owner_terminal)
         .ok_or_else(|| failed("owner terminal was not found on this server"))?;
     let to = s

@@ -102,7 +102,7 @@ fn controlled_document(s: &ServerState, request: Request<'_>) -> Option<Point> {
     };
     let document = match terminal_id {
         WireResourceId::Local { .. } => {
-            let core = s.resource_from_wire(terminal_id)?;
+            let core = s.idspace.resource_from_wire(terminal_id)?;
             ControlPoint {
                 class: s.resource_control(core),
                 host: None,
@@ -166,7 +166,7 @@ pub(super) fn watched_document(s: &ServerState, wire: &WireResourceId) -> Option
     if !wire.is_local() {
         return None;
     }
-    let core = s.resource_from_wire(wire)?;
+    let core = s.idspace.resource_from_wire(wire)?;
     let class = s
         .resource_control(core)
         .filter(|class| class.guards_observe())?;

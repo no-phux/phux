@@ -111,7 +111,7 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
     let Some((core_parent, wire_parent)) = state.with(|s| {
         parent
             .is_local()
-            .then(|| s.resource_from_wire(&parent))
+            .then(|| s.idspace.resource_from_wire(&parent))
             .flatten()
             .map(|core| (core, parent.clone()))
     }) else {

@@ -73,7 +73,7 @@ pub(super) async fn relay<A: DocumentApi>(
     relayed: Option<&OnBehalfOf>,
 ) -> CommandResult {
     let found = ctx.state.with(|s| {
-        let core = s.resource_from_wire(terminal_id)?;
+        let core = s.idspace.resource_from_wire(terminal_id)?;
         let handle = s.resource_handle(core)?.clone();
         let producer = s.resource_producer(core);
         let spawner = s.resource_spawner(core);

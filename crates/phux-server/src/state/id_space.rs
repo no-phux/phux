@@ -131,19 +131,19 @@ impl IdSpace {
     /// # Panics
     ///
     /// If the space is exhausted.
-    pub(super) fn intern_resource(&mut self, terminal: ResourceId) -> WireResourceId {
+    pub(crate) fn intern_resource(&mut self, terminal: ResourceId) -> WireResourceId {
         self.terminals.intern(terminal)
     }
 
     /// Reverse lookup; `None` for satellite ids by design.
     #[must_use]
-    pub(super) fn resource_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
+    pub(crate) fn resource_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
         self.terminals.resolve(wire)
     }
 
     /// Forward lookup without allocating.
     #[must_use]
-    pub(super) fn resource_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
+    pub(crate) fn resource_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
         self.terminals.wire(terminal)
     }
 
@@ -177,7 +177,7 @@ impl IdSpace {
     /// # Panics
     ///
     /// If the space is exhausted.
-    pub(super) fn intern_window(&mut self, session: SessionId) -> WireWindowId {
+    pub(crate) fn intern_window(&mut self, session: SessionId) -> WireWindowId {
         self.windows.intern(session)
     }
 

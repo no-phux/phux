@@ -18,6 +18,7 @@ pub(crate) async fn handle_detach_terminal(
         s.unsubscribe_resource_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
         let core = s
+            .idspace
             .resource_from_wire(terminal_id)
             .or_else(|| s.draining_resource_from_wire(terminal_id))?;
         s.unsubscribe_resource(client_id, core);
@@ -160,7 +161,7 @@ pub(crate) fn create_named_session(
             // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {
                 s.lifecycle_mut().arm_self_exit();
-                s.intern_resource_wire(core_terminal)
+                s.idspace.intern_resource(core_terminal)
             });
             Ok(wire)
         }

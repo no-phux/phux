@@ -77,7 +77,8 @@ impl ServerState {
     /// `false` for unknown or satellite ids.
     #[must_use]
     pub(crate) fn resource_has_live_session(&self, wire: &phux_protocol::ids::ResourceId) -> bool {
-        self.resource_from_wire(wire)
+        self.idspace
+            .resource_from_wire(wire)
             .is_some_and(|core| self.has_live_agent_session_child(core))
     }
 

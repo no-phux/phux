@@ -88,7 +88,7 @@ async fn agent_only_and_document_sessions_defer_cuts_without_closing_live_agents
                 tree(&state, parent, session);
             }
             let (agent, mut requests) = agent_stub(&state, parent, session);
-            let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+            let wire = state.with_mut(|s| s.idspace.intern_resource(agent));
             let output = state.with(|s| s.resource_handle(agent).unwrap().output.clone());
             let mut connection = Connection::start(&state, false).await;
             for attach_id in [1, 2] {

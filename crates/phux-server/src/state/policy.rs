@@ -265,14 +265,4 @@ impl ServerState {
             .get_mut(&client_id)
             .is_some_and(|grant| grant.admit_denial_error(now))
     }
-
-    /// The wire id already interned for a local resource, without
-    /// allocating one: the dispatch guard reads, it never mints ids.
-    #[must_use]
-    pub(crate) fn resource_wire_of(
-        &self,
-        terminal: phux_core::ids::ResourceId,
-    ) -> Option<phux_protocol::ids::ResourceId> {
-        self.idspace.resource_wire(terminal).cloned()
-    }
 }

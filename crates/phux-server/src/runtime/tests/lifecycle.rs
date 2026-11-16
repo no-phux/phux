@@ -106,7 +106,7 @@ fn focus_hooks_fire_only_for_authorized_focus_gained() {
         let mut hooks = capture_hooks(&state);
         let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
         let _rx = register_stub(&state, pane);
-        let wire_terminal_id = state.with_mut(|s| s.intern_resource_wire(pane));
+        let wire_terminal_id = state.with_mut(|s| s.idspace.intern_resource(pane));
         let client_id = attach_client(&state, "focus");
 
         let focus = |client, event| {

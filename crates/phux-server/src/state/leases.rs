@@ -109,7 +109,7 @@ impl ServerState {
         else {
             return;
         };
-        let wire = self.intern_resource_wire(terminal);
+        let wire = self.idspace.intern_resource(terminal);
         crate::audit::emit(
             crate::audit::Kind::InputLease,
             actor.map_or_else(crate::audit::AuditActor::server, |actor| {

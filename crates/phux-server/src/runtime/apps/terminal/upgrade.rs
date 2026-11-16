@@ -159,6 +159,7 @@ pub(crate) fn carry_handoffs(
 ) {
     for pane in blob.panes.iter_mut().filter(|p| p.retained_exit.is_none()) {
         let handoff = s
+            .idspace
             .resource_from_wire(&WireResourceId::local(pane.wire_id))
             .and_then(|id| handoffs.get(&id));
         if let Some(handoff) = handoff {
@@ -303,7 +304,7 @@ where
         std::mem::take(&mut self.wired)
             .into_iter()
             .filter_map(|(pane, wiring)| {
-                let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+                let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
                 Some((pane, wiring.start(state, &wire)?))
             })
             .collect()

@@ -24,7 +24,7 @@ fn document(world: &mut World, control: Option<phux_protocol::wire::frame::Contr
         None => bundle.handle,
     };
     world.state.register_resource_handle(core, handle, token).unwrap();
-    world.state.intern_resource_wire(core)
+    world.state.idspace.intern_resource(core)
 }
 
 fn input_to(document: &WireResourceId) -> Command {
@@ -37,7 +37,7 @@ fn input_to(document: &WireResourceId) -> Command {
 }
 
 fn resource_scope(world: &World, document: &WireResourceId) -> String {
-    let core = world.state.resource_from_wire(document).unwrap();
+    let core = world.state.idspace.resource_from_wire(document).unwrap();
     let key = crate::org_wire::resource_key(world.state.registry().resource_key(core).unwrap());
     format!("input@resource:{}", key.unwrap())
 }
