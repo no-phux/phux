@@ -190,7 +190,7 @@ impl Connection {
             }
             match (&mut self.layout, leaves.last()) {
                 (Some(layout), Some(last)) => {
-                    layout.insert(last, id, Axis::Vertical);
+                    crate::panes::insert(layout, last, id, Axis::Vertical);
                 }
                 _ => self.layout = Some(Layout::Leaf(id)),
             }
@@ -209,7 +209,7 @@ impl Connection {
         let Some((last, _)) = rects.iter().rev().find(|(id, _)| self.is_document(id)) else {
             return;
         };
-        self.layout = self.layout.take().and_then(|layout| layout.remove(last));
+        self.layout = self.layout.take().and_then(|layout| crate::panes::remove(layout, last));
     }
 
     /// Mark a document whose stream faulted: the kernel retired it, and this

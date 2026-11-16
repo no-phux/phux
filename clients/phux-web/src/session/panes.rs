@@ -14,7 +14,8 @@ impl Connection {
     pub fn pane_rects(&self) -> Vec<(ResourceId, PaneRect)> {
         let mut panes = Vec::with_capacity(4);
         if let Some(layout) = &self.layout {
-            layout.rects(
+            crate::panes::rects(
+                layout,
                 PaneRect {
                     x: 0,
                     y: 0,
@@ -176,7 +177,7 @@ impl Connection {
         self.layout = self
             .layout
             .take()
-            .and_then(|layout| layout.remove(&terminal_id));
+            .and_then(|layout| crate::panes::remove(layout, &terminal_id));
         self.pane_sizes.remove(&terminal_id);
         self.place_documents();
         self.cancel_path_query();

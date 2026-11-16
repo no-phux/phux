@@ -27,7 +27,7 @@ impl Connection {
         let mut previous = leaves.first().cloned();
         for id in ids {
             if let (Some(layout), Some(target)) = (&mut self.layout, &previous) {
-                layout.insert(target, id.clone(), Axis::Vertical);
+                crate::panes::insert(layout, target, id.clone(), Axis::Vertical);
             }
             previous = Some(id.clone());
         }
@@ -238,11 +238,11 @@ impl Connection {
             return;
         };
         if let Some(layout) = self.layout.as_mut() {
-            if !layout.insert(&pending.target, id.clone(), pending.axis)
+            if !crate::panes::insert(layout, &pending.target, id.clone(), pending.axis)
                 && let Some(target) = self.terminal_order.first()
             {
                 // The requested source may naturally exit while spawn is in flight.
-                layout.insert(target, id.clone(), pending.axis);
+                crate::panes::insert(layout, target, id.clone(), pending.axis);
             }
         } else {
             self.layout = Some(Layout::Leaf(id.clone()));
