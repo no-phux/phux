@@ -31,9 +31,7 @@ pub(crate) async fn handle_detach_terminal(
     state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
     // Fence engine-emitted output before COMMAND_RESULT is queued.
     if let Some(handle) = &handle {
-        crate::runtime::apps::app_for(handle.kind)
-            .fence_consumer(handle, client_id)
-            .await;
+        crate::runtime::apps::fence_consumer(handle, client_id).await;
     }
     debug!(?client_id, ?terminal_id, "DETACH_RESOURCE unsubscribed");
     CommandResult::Ok

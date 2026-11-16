@@ -48,12 +48,15 @@ fn launch(
         return;
     };
     let result = if spec.kind() == kind {
-        crate::runtime::apps::app_for(kind).launch(crate::runtime::apps::ResourceLaunch {
-            state,
-            resource: id,
-            spec,
-            root_token,
-        })
+        crate::runtime::apps::launch(
+            kind,
+            crate::runtime::apps::ResourceLaunch {
+                state,
+                resource: id,
+                spec,
+                root_token,
+            },
+        )
     } else {
         Err("committed resource kind and launch spec disagree".to_owned())
     };

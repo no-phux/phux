@@ -5,10 +5,8 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{
-    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
-};
-use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
+use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -30,12 +28,9 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
-    fn supports_organization_launch(&self) -> bool {
-        false
-    }
-
-    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
-        Err("an agent-session projection must be opened by its producer".to_owned())
+    fn interactive(&self) -> Option<&'static dyn super::InteractiveApp> {
+        // A producer feeds it: no client launches, sizes or seeds one.
+        None
     }
 
     fn stage_session<'a>(
@@ -48,50 +43,6 @@ impl ResourceApp for AgentSessionApp {
         // but let ATTACH_RESOURCE request the committed suffix instead of
         // overwriting it with an unsolicited full retained bootstrap.
         std::future::ready(Ok(())).boxed_local()
-    }
-
-    fn refresh_for_attach<'a>(&'a self, _state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn prepare_attach<'a>(
-        &'a self,
-        _attach: crate::runtime::session_attach::SessionAttach<'a>,
-        _panes: &'a [crate::state::AttachSnapshotPane],
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn attach_viewport(
-        &self,
-        _s: &mut crate::state::ServerState,
-        _panes: &[crate::state::AttachSnapshotPane],
-        _viewport: phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        // A record stream has no grid to size.
-    }
-
-    fn after_attach<'a>(
-        &'a self,
-        _attach: crate::runtime::session_attach::SessionAttach<'a>,
-        _panes: &'a [crate::state::AttachSnapshotPane],
-        _role: phux_protocol::wire::frame::RolePolicy,
-    ) -> LocalBoxFuture<'a, ()> {
-        // Only a Terminal has an input role to take.
-        Box::pin(std::future::ready(()))
-    }
-
-    fn abort_attach<'a>(
-        &'a self,
-        _client: ClientId,
-        _handles: &'a [ResourceHandle],
-    ) -> LocalBoxFuture<'a, ()> {
-        // The stream is deferred to `ATTACH_RESOURCE`: nothing was staged.
-        Box::pin(std::future::ready(()))
-    }
-
-    fn defers_stream_bootstrap(&self) -> bool {
-        false
     }
 
     fn resumes_from_cursor(&self) -> bool {
@@ -133,22 +84,13 @@ impl ResourceApp for AgentSessionApp {
         std::future::ready(frames::serve(&ctx, &frame)).boxed_local()
     }
 
-    fn metrics(&self, _state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
-        Vec::new()
-    }
-
-    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
-        // The record stream keeps nothing per consumer in the engine: a
-        // client's pump is host-side and `pump::stop_output` ends it.
-    }
-
-    fn fence_consumer<'a>(
-        &'a self,
-        _handle: &'a ResourceHandle,
+    fn command_refused(
+        &self,
+        _s: &crate::state::ServerState,
         _client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        // Nothing to fence: the engine emits only to the shared broadcast.
-        Box::pin(std::future::ready(()))
+        _command: &Command,
+        _result: &CommandResult,
+    ) {
     }
 
     fn command<'a>(
@@ -226,16 +168,6 @@ impl ResourceApp for AgentSessionApp {
         native_agent::source_exited(state, resource).boxed_local()
     }
 
-    fn exit_retained(
-        &self,
-        _s: &mut crate::state::ServerState,
-        _wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<crate::hooks::HookEvent> {
-        // A record stream is removed on exit; its native controller closes
-        // through `resource_exited`.
-        None
-    }
-
     fn claim_relaunch(
         &self,
         ctx: &CommandContext,
@@ -244,53 +176,5 @@ impl ResourceApp for AgentSessionApp {
         expected: Revision,
     ) -> Option<CommandResult> {
         native_agent::claim_relaunch(ctx, operation, resource, expected)
-    }
-
-    fn start(&self, _state: &SharedState) -> std::io::Result<Option<super::RunningLane>> {
-        Ok(None)
-    }
-
-    fn bootstrap_capabilities(
-        &self,
-        _state: &SharedState,
-    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
-        None
-    }
-
-    fn seed_session<'a>(
-        &'a self,
-        seed: super::SessionSeed<'a>,
-    ) -> Result<LocalBoxFuture<'a, Option<String>>, super::SessionSeed<'a>> {
-        // An agent session runs under its producer, never as a session's seed.
-        Err(seed)
-    }
-
-    fn viewport_resize(
-        &self,
-        _state: &SharedState,
-        _client: ClientId,
-        _viewport: &phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        // A record stream has no grid to size.
-    }
-
-    fn client_activity(&self, _state: &SharedState, _client: ClientId) {}
-
-    fn command_refused(
-        &self,
-        _s: &crate::state::ServerState,
-        _client: ClientId,
-        _command: &Command,
-        _result: &CommandResult,
-    ) {
-    }
-
-    fn keep_standing(
-        &self,
-        _state: &SharedState,
-        _source: &crate::runtime::MirrorSource,
-        _root_token: &tokio_util::sync::CancellationToken,
-    ) -> bool {
-        false
     }
 }

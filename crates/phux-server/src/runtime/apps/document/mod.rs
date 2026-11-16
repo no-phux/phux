@@ -15,9 +15,7 @@ use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use tokio::sync::oneshot;
 
-use super::{
-    FrameAdmission, ResourceApp, ResourceFrame, ResourceLaunch, ResourceSpawn, StreamBootstrap,
-};
+use super::{FrameAdmission, ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -93,15 +91,9 @@ pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::m
 pub(crate) static DOCUMENT_APP: DocumentApp<TypedDocument> = DocumentApp(std::marker::PhantomData);
 
 impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
-    fn supports_organization_launch(&self) -> bool {
-        false
-    }
-
-    fn launch(&self, _launch: ResourceLaunch<'_>) -> Result<(), String> {
-        Err(format!(
-            "a {} projection must be opened by its producer",
-            A::LABEL
-        ))
+    fn interactive(&self) -> Option<&'static dyn super::InteractiveApp> {
+        // A producer feeds it: no client launches, sizes or seeds one.
+        None
     }
 
     fn stage_session<'a>(
@@ -113,50 +105,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         attach::stage_session::<A>(capture, staging, pane).boxed_local()
     }
 
-    fn refresh_for_attach<'a>(&'a self, _state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn prepare_attach<'a>(
-        &'a self,
-        _attach: crate::runtime::session_attach::SessionAttach<'a>,
-        _panes: &'a [crate::state::AttachSnapshotPane],
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn attach_viewport(
-        &self,
-        _s: &mut crate::state::ServerState,
-        _panes: &[crate::state::AttachSnapshotPane],
-        _viewport: phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        // A document takes its producer's size, never a viewer's.
-    }
-
-    fn after_attach<'a>(
-        &'a self,
-        _attach: crate::runtime::session_attach::SessionAttach<'a>,
-        _panes: &'a [crate::state::AttachSnapshotPane],
-        _role: phux_protocol::wire::frame::RolePolicy,
-    ) -> LocalBoxFuture<'a, ()> {
-        // Only a Terminal has an input role to take.
-        Box::pin(std::future::ready(()))
-    }
-
-    fn abort_attach<'a>(
-        &'a self,
-        _client: ClientId,
-        _handles: &'a [ResourceHandle],
-    ) -> LocalBoxFuture<'a, ()> {
-        // A document keeps no per-consumer state in its engine.
-        Box::pin(std::future::ready(()))
-    }
-
-    fn defers_stream_bootstrap(&self) -> bool {
-        false
-    }
-
     fn resumes_from_cursor(&self) -> bool {
         false
     }
@@ -166,24 +114,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
             required: ResourceKind::Terminal,
             actual: A::KIND,
         })
-    }
-
-    fn metrics(&self, _state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
-        Vec::new()
-    }
-
-    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
-        // The engine keeps nothing per consumer: every viewer reads the one
-        // newest document, and a client's pump is host-side.
-    }
-
-    fn fence_consumer<'a>(
-        &'a self,
-        _handle: &'a ResourceHandle,
-        _client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        // Nothing to fence: the engine emits only to the shared watch.
-        Box::pin(std::future::ready(()))
     }
 
     fn begin_upgrade(&self, _state: &SharedState) -> Option<Box<dyn super::UpgradeCut>> {
@@ -204,15 +134,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         Box::pin(std::future::ready(()))
     }
 
-    fn exit_retained(
-        &self,
-        _s: &mut ServerState,
-        _wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<crate::hooks::HookEvent> {
-        // A document is removed on exit; nothing of it outlives its process.
-        None
-    }
-
     fn claim_relaunch(
         &self,
         _ctx: &CommandContext,
@@ -228,36 +149,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
         spawn_document::<A>(spawn).boxed_local()
     }
-
-    fn start(&self, _state: &SharedState) -> std::io::Result<Option<super::RunningLane>> {
-        Ok(None)
-    }
-
-    fn bootstrap_capabilities(
-        &self,
-        _state: &SharedState,
-    ) -> Option<phux_protocol::caps::BootstrapCapabilities> {
-        None
-    }
-
-    fn seed_session<'a>(
-        &'a self,
-        seed: super::SessionSeed<'a>,
-    ) -> Result<LocalBoxFuture<'a, Option<String>>, super::SessionSeed<'a>> {
-        // A document opens through its producer, never as a session's seed.
-        Err(seed)
-    }
-
-    fn viewport_resize(
-        &self,
-        _state: &SharedState,
-        _client: ClientId,
-        _viewport: &phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        // A document takes its producer's size, never a viewer's.
-    }
-
-    fn client_activity(&self, _state: &SharedState, _client: ClientId) {}
 
     fn command_refused(
         &self,
@@ -283,15 +174,6 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                 result,
             );
         }
-    }
-
-    fn keep_standing(
-        &self,
-        _state: &SharedState,
-        _source: &crate::runtime::MirrorSource,
-        _root_token: &tokio_util::sync::CancellationToken,
-    ) -> bool {
-        false
     }
 
     fn command<'a>(

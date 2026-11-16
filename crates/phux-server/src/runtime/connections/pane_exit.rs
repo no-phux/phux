@@ -161,8 +161,8 @@ fn retain_exited_pane(
     let app_hook = s
         .registry()
         .resource(pane)
-        .map(|resource| crate::runtime::apps::app_for(resource.kind))
-        .and_then(|app| app.exit_retained(s, &wire_terminal_id));
+        .map(|resource| resource.kind)
+        .and_then(|kind| crate::runtime::apps::exit_retained(kind, s, &wire_terminal_id));
     Some(RetainedExit {
         retention,
         wire_terminal_id,

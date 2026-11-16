@@ -163,8 +163,7 @@ async fn dispatch_attach_resource(
     {
         return undecodable_kind(crate::id_bridge::wire_kind(kind));
     }
-    let defers =
-        kind.is_some_and(|kind| crate::runtime::apps::app_for(kind).defers_stream_bootstrap());
+    let defers = kind.is_some_and(crate::runtime::apps::defers_stream_bootstrap);
     if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await
     } else {

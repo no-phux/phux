@@ -1,7 +1,10 @@
 //! The apps this server hosts, one per resource kind. The runtime reaches a
 //! kind only through [`app_for`] and [`app_owning`], and every
 //! [`ResourceApp`] method is required, so no kind inherits an answer by
-//! omission. `state` sits below this module.
+//! omission. A kind a client drives also answers every [`InteractiveApp`]
+//! method through [`ResourceApp::interactive`]; the rest answer `None`
+//! there, and the host keeps their one fixed answer here. `state` sits
+//! below this module.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -41,13 +44,10 @@ pub(crate) use upgrade::{KindResume, UpgradeCut};
 
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
-    /// Whether ordinary organization creation/relaunch can execute this kind.
-    /// Producer-bound projections instead open through their producer's app.
-    fn supports_organization_launch(&self) -> bool;
-
-    /// Execute a committed launch. A failure is reported against the effect's
-    /// activation by the host; it cannot undo the accepted operation.
-    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String>;
+    /// This kind's interactive half, if a client can drive it: a kind
+    /// without one launches only through its producer, keeps no engine-side
+    /// consumer state and answers none of [`InteractiveApp`]'s questions.
+    fn interactive(&self) -> Option<&'static dyn InteractiveApp>;
 
     /// Stage this kind's bounded session bootstrap and a parked live pump.
     /// Nothing may publish until the host opens the aggregate live gate.
@@ -59,6 +59,94 @@ pub(crate) trait ResourceApp: Sync {
         staging: &'a mut super::session_attach::staging::SessionStaging,
         pane: crate::state::AttachSnapshotPane,
     ) -> LocalBoxFuture<'a, Result<(), super::session_attach::staging::CaptureFailure>>;
+
+    /// Whether `ATTACH_RESOURCE` may carry a replay cursor for this kind.
+    fn resumes_from_cursor(&self) -> bool;
+
+    /// May a client take over this kind's input? `Err` names why not.
+    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind>;
+
+    /// Serve a facet command this kind owns in the catalog.
+    fn command<'a>(
+        &'a self,
+        ctx: &'a CommandContext,
+        command: Command,
+        claim: Option<&'a OperationClaim>,
+    ) -> LocalBoxFuture<'a, CommandResult>;
+
+    /// Bootstrap one client's stream onto a resource of this kind.
+    fn bootstrap<'a>(
+        &'a self,
+        stream: StreamBootstrap<'a>,
+    ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
+
+    /// Serve a `SPAWN_RESOURCE` of this kind.
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()>;
+
+    /// Begin carrying this kind's resources across a graceful upgrade;
+    /// `None` while another upgrade holds them.
+    fn begin_upgrade(&self, state: &SharedState) -> Option<Box<dyn UpgradeCut>>;
+
+    /// This kind's half of resuming from an upgrade blob, made before the
+    /// rebuild takes the state lock.
+    fn resume(&self, state: &SharedState) -> Box<dyn KindResume>;
+
+    /// The tree came back from an upgrade blob and no client is connected.
+    fn resumed(&self, state: &SharedState);
+
+    /// Any resource's engine exited. Runs before the host retires it.
+    fn resource_exited<'a>(
+        &'a self,
+        state: &'a SharedState,
+        resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()>;
+
+    /// Serve a relaunch this kind recognizes as its own, leaving the rest to
+    /// the organization path.
+    fn claim_relaunch(
+        &self,
+        ctx: &CommandContext,
+        operation: OperationId,
+        resource: &ResourceKey,
+        expected: Revision,
+    ) -> Option<CommandResult>;
+
+    /// Which connection check precedes this kind's handling of `frame`.
+    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission;
+
+    /// Serve a stream or input frame about a resource of this kind: the
+    /// `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` and `HISTORY_REQUEST`
+    /// frames. A kind owns no frame it did not opt into: one it does not
+    /// serve is refused with `ERROR(WRONG_RESOURCE_KIND)` and the
+    /// connection stays.
+    fn frame<'a>(
+        &'a self,
+        ctx: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow>;
+
+    /// The command guard refused `command` with `result`.
+    fn command_refused(
+        &self,
+        s: &ServerState,
+        client: ClientId,
+        command: &Command,
+        result: &CommandResult,
+    );
+}
+
+/// What the host asks of a kind a client drives interactively: organization
+/// launch, a session `ATTACH`'s presentation and viewport, engine-side
+/// consumers, and the server-wide services the kind runs. Every method is
+/// required; a kind opts in through [`ResourceApp::interactive`].
+pub(crate) trait InteractiveApp: Sync {
+    /// Whether ordinary organization creation/relaunch can execute this kind.
+    /// Producer-bound projections instead open through their producer's app.
+    fn supports_organization_launch(&self) -> bool;
+
+    /// Execute a committed launch. A failure is reported against the effect's
+    /// activation by the host; it cannot undo the accepted operation.
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String>;
 
     /// Before a session `ATTACH` reads membership: refresh what its snapshot
     /// reports of this kind's resources (a Terminal's live cwd).
@@ -103,12 +191,6 @@ pub(crate) trait ResourceApp: Sync {
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;
 
-    /// Whether `ATTACH_RESOURCE` may carry a replay cursor for this kind.
-    fn resumes_from_cursor(&self) -> bool;
-
-    /// May a client take over this kind's input? `Err` names why not.
-    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind>;
-
     /// Drop `client`'s engine-side consumer state now, best effort. Safe under
     /// the state lock.
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId);
@@ -121,41 +203,6 @@ pub(crate) trait ResourceApp: Sync {
         client: ClientId,
     ) -> LocalBoxFuture<'a, ()>;
 
-    /// Serve a facet command this kind owns in the catalog.
-    fn command<'a>(
-        &'a self,
-        ctx: &'a CommandContext,
-        command: Command,
-        claim: Option<&'a OperationClaim>,
-    ) -> LocalBoxFuture<'a, CommandResult>;
-
-    /// Bootstrap one client's stream onto a resource of this kind.
-    fn bootstrap<'a>(
-        &'a self,
-        stream: StreamBootstrap<'a>,
-    ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
-
-    /// Serve a `SPAWN_RESOURCE` of this kind.
-    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()>;
-
-    /// Begin carrying this kind's resources across a graceful upgrade;
-    /// `None` while another upgrade holds them.
-    fn begin_upgrade(&self, state: &SharedState) -> Option<Box<dyn UpgradeCut>>;
-
-    /// This kind's half of resuming from an upgrade blob, made before the
-    /// rebuild takes the state lock.
-    fn resume(&self, state: &SharedState) -> Box<dyn KindResume>;
-
-    /// The tree came back from an upgrade blob and no client is connected.
-    fn resumed(&self, state: &SharedState);
-
-    /// Any resource's engine exited. Runs before the host retires it.
-    fn resource_exited<'a>(
-        &'a self,
-        state: &'a SharedState,
-        resource: phux_core::ids::ResourceId,
-    ) -> LocalBoxFuture<'a, ()>;
-
     /// A resource of this kind exited and is retained (ADR-0124): withdraw
     /// what its exit invalidates, in the lock that retains it, after its
     /// `Exited` event. Returns a hook the withdrawal owes, fired off-lock.
@@ -164,30 +211,6 @@ pub(crate) trait ResourceApp: Sync {
         s: &mut crate::state::ServerState,
         wire: &WireResourceId,
     ) -> Option<crate::hooks::HookEvent>;
-
-    /// Serve a relaunch this kind recognizes as its own, leaving the rest to
-    /// the organization path.
-    fn claim_relaunch(
-        &self,
-        ctx: &CommandContext,
-        operation: OperationId,
-        resource: &ResourceKey,
-        expected: Revision,
-    ) -> Option<CommandResult>;
-
-    /// Which connection check precedes this kind's handling of `frame`.
-    fn frame_admission(&self, frame: &FrameKind) -> FrameAdmission;
-
-    /// Serve a stream or input frame about a resource of this kind: the
-    /// `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` and `HISTORY_REQUEST`
-    /// frames. A kind owns no frame it did not opt into: one it does not
-    /// serve is refused with `ERROR(WRONG_RESOURCE_KIND)` and the
-    /// connection stays.
-    fn frame<'a>(
-        &'a self,
-        ctx: ResourceFrame<'a>,
-        frame: FrameKind,
-    ) -> LocalBoxFuture<'a, FrameFlow>;
 
     /// This kind's tables of the `GET_PERF` report, its engine's included.
     fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]>;
@@ -214,15 +237,6 @@ pub(crate) trait ResourceApp: Sync {
     /// A connection used one of its views, with structured input to any
     /// resource, local or not.
     fn client_activity(&self, state: &SharedState, client: ClientId);
-
-    /// The command guard refused `command` with `result`.
-    fn command_refused(
-        &self,
-        s: &ServerState,
-        client: ClientId,
-        command: &Command,
-        result: &CommandResult,
-    );
 
     /// Keep the standing mirrors and producers `source` names running, if
     /// this kind runs them; says whether it does.
@@ -281,28 +295,89 @@ const _: () = {
     }
 };
 
-/// `items` split by kind, each with the app serving it, in [`APP_KINDS`]
-/// order; a kind with none is left out.
-pub(crate) fn by_kind<T: Clone>(
+/// The one app a client drives interactively; `apps/tests.rs` holds
+/// [`APPS`] to exactly one.
+fn interactive() -> Option<&'static dyn InteractiveApp> {
+    APPS.iter().find_map(|app| app.interactive())
+}
+
+/// `items` split by kind, each with the interactive app serving it, in
+/// [`APP_KINDS`] order; a kind with none, or with no interactive half, is
+/// left out: a session `ATTACH` asks such a kind nothing.
+pub(crate) fn interactive_by_kind<T: Clone>(
     items: &[T],
     kind_of: impl Fn(&T) -> ResourceKind,
-) -> Vec<(&'static dyn ResourceApp, Vec<T>)> {
+) -> Vec<(&'static dyn InteractiveApp, Vec<T>)> {
     APP_KINDS
         .iter()
         .filter_map(|&kind| {
+            let app = app_for(kind).interactive()?;
             let of_kind: Vec<T> = items
                 .iter()
                 .filter(|item| kind_of(item) == kind)
                 .cloned()
                 .collect();
-            (!of_kind.is_empty()).then(|| (app_for(kind), of_kind))
+            (!of_kind.is_empty()).then_some((app, of_kind))
         })
         .collect()
 }
 
-/// Ask every app to refresh what a session `ATTACH` snapshot reports.
+/// Whether ordinary organization creation/relaunch can execute `kind`; a
+/// producer-bound projection cannot.
+pub(crate) fn supports_organization_launch(kind: ResourceKind) -> bool {
+    app_for(kind)
+        .interactive()
+        .is_some_and(InteractiveApp::supports_organization_launch)
+}
+
+/// Execute a committed launch of `kind`; a producer-bound projection
+/// refuses it.
+pub(crate) fn launch(kind: ResourceKind, effect: ResourceLaunch<'_>) -> Result<(), String> {
+    let Some(app) = app_for(kind).interactive() else {
+        return Err(format!(
+            "this {kind} projection must be opened by its producer"
+        ));
+    };
+    app.launch(effect)
+}
+
+/// Whether a multi-stream connection waits for `STREAM_BIND` before
+/// bootstrapping `kind`'s content.
+pub(crate) fn defers_stream_bootstrap(kind: ResourceKind) -> bool {
+    app_for(kind)
+        .interactive()
+        .is_some_and(InteractiveApp::defers_stream_bootstrap)
+}
+
+/// Drop `client`'s engine-side consumer state of `handle` now, best effort.
+/// Safe under the state lock.
+pub(crate) fn release_consumer(handle: &ResourceHandle, client: ClientId) {
+    if let Some(app) = app_for(handle.kind).interactive() {
+        app.release_consumer(handle, client);
+    }
+}
+
+/// Drop `client`'s consumer state of `handle` and wait until its engine
+/// has stopped emitting to it.
+pub(crate) async fn fence_consumer(handle: &ResourceHandle, client: ClientId) {
+    if let Some(app) = app_for(handle.kind).interactive() {
+        app.fence_consumer(handle, client).await;
+    }
+}
+
+/// A retained resource of `kind` exited: the hook its app's withdrawal
+/// owes, if any.
+pub(crate) fn exit_retained(
+    kind: ResourceKind,
+    s: &mut ServerState,
+    wire: &WireResourceId,
+) -> Option<crate::hooks::HookEvent> {
+    app_for(kind).interactive()?.exit_retained(s, wire)
+}
+
+/// Refresh what a session `ATTACH` snapshot reports.
 pub(crate) async fn refresh_for_attach(state: &SharedState) {
-    for app in APPS {
+    if let Some(app) = interactive() {
         app.refresh_for_attach(state).await;
     }
 }
@@ -310,39 +385,28 @@ pub(crate) async fn refresh_for_attach(state: &SharedState) {
 /// Seed `seed`'s session with the default resource of the app that seeds
 /// sessions; `None` when no app does.
 pub(crate) fn seed_session(seed: SessionSeed<'_>) -> Option<LocalBoxFuture<'_, Option<String>>> {
-    let mut seed = seed;
-    for app in APPS {
-        match app.seed_session(seed) {
-            Ok(seeding) => return Some(seeding),
-            Err(declined) => seed = declined,
-        }
-    }
-    None
+    interactive()?.seed_session(seed).ok()
 }
 
-/// Start every app for the server's lifetime; the server's input lane, when
-/// an app runs one.
+/// Start what the interactive app runs for the server's lifetime; the
+/// server's input lane, when it runs one.
 pub(crate) fn start(state: &SharedState) -> std::io::Result<Option<RunningLane>> {
-    let mut input_lane = None;
-    for app in APPS {
-        if let Some(lane) = app.start(state)? {
-            debug_assert!(input_lane.is_none(), "the server runs one input lane");
-            input_lane.get_or_insert(lane);
-        }
-    }
-    Ok(input_lane)
+    let Some(app) = interactive() else {
+        return Ok(None);
+    };
+    app.start(state)
 }
 
-/// Tell every app a connection's `VIEWPORT_RESIZE`.
+/// Tell the interactive app a connection's `VIEWPORT_RESIZE`.
 pub(crate) fn viewport_resize(state: &SharedState, client: ClientId, viewport: &ViewportInfo) {
-    for app in APPS {
+    if let Some(app) = interactive() {
         app.viewport_resize(state, client, viewport);
     }
 }
 
-/// Tell every app a connection used one of its views.
+/// Tell the interactive app a connection used one of its views.
 pub(crate) fn client_activity(state: &SharedState, client: ClientId) {
-    for app in APPS {
+    if let Some(app) = interactive() {
         app.client_activity(state, client);
     }
 }
@@ -369,10 +433,7 @@ pub(crate) fn keep_standing(
     let Some(source) = source else {
         return;
     };
-    if !APPS
-        .iter()
-        .any(|app| app.keep_standing(state, &source, root_token))
-    {
+    if !interactive().is_some_and(|app| app.keep_standing(state, &source, root_token)) {
         tracing::warn!("no app runs standing mirrors; [[mirrors]] and [[producers]] are ignored");
     }
 }
@@ -417,15 +478,17 @@ pub(crate) fn app_serving(
     kind.map(app_for)
 }
 
-/// Every app's tables of the `GET_PERF` report.
+/// The interactive app's tables of the `GET_PERF` report.
 pub(crate) fn metric_tables(state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
-    APPS.iter().flat_map(|app| app.metrics(state)).collect()
+    interactive()
+        .map(|app| app.metrics(state))
+        .unwrap_or_default()
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.
 pub(crate) fn bootstrap_capabilities(state: &SharedState) -> BootstrapCapabilities {
-    APPS.iter()
-        .find_map(|app| app.bootstrap_capabilities(state))
+    interactive()
+        .and_then(|app| app.bootstrap_capabilities(state))
         .unwrap_or_default()
 }
 
