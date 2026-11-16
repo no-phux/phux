@@ -98,7 +98,7 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     .stderr(stderr)
     .spawn()
     .expect("spawn phux server");
-    let server = Server(server);
+    let server = Server::from_child(server, dir.path().join("s.sock"));
     register_loopback_remote(dir.path());
 
     let identity = [

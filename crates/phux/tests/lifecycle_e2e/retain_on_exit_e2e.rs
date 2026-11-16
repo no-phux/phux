@@ -14,7 +14,7 @@
 
 use crate::common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command as Process, Stdio};
 use std::time::{Duration, Instant};
 
@@ -30,56 +30,10 @@ const DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(50);
 
 /// A `phux server` child with a long-lived seed pane, killed on drop.
-struct Server {
-    process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
-}
-
-impl Server {
-    fn start() -> Self {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir
-            .path()
-            .join(format!("retain-{}.sock", std::process::id()));
-        let child = common::phux_cmd(crate::runner::phux_bin())
-            .args([
-                "server",
-                "--session",
-                "work",
-                "--seed-command",
-                "exec sleep 600",
-                "--socket",
-            ])
-            .arg(&socket)
-            // A backstop under the drop kill (ADR-0063), as upgrade_e2e.
-            .args(["--exit-after-idle", "600"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let server = Self {
-            process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        let deadline = Instant::now() + DEADLINE;
-        while !server.socket.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the server never bound its socket"
-            );
-            std::thread::sleep(POLL);
-        }
-        server
-    }
-}
-
-impl Server {
-    fn pid(&mut self) -> u32 {
-        self.process.child_mut().id()
-    }
+fn start_server() -> common::ServerGuard {
+    common::ServerGuard::builder("retain")
+        .seed_command("exec sleep 600")
+        .start()
 }
 
 /// Pseudoterminal descriptors `pid` holds, or `None` where `lsof` cannot
@@ -236,7 +190,7 @@ async fn wait_for(
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn spawn_retain_then_wait_exit_after_the_fact_reads_status() {
-    let mut server = Server::start();
+    let server = start_server();
     let pid = server.pid();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

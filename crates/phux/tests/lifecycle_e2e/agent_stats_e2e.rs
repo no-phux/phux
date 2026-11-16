@@ -3,29 +3,19 @@
 //! the pane when it exits.
 
 #![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 
 use crate::common;
 
 use std::path::Path;
-use std::process::{Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 use tempfile::TempDir;
 
-use crate::hermetic::{Server, hermetic_env, prepare_dirs};
+use crate::hermetic::{phux, prepare_dirs, start_server};
 
 const DEADLINE: Duration = Duration::from_secs(30);
-
-fn phux(dir: &Path, args: &[&str]) -> Output {
-    common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux")
-}
 
 fn stored(socket: &Path) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -46,15 +36,8 @@ fn stored(socket: &Path) -> Option<Value> {
 }
 
 /// Poll until `ready` holds, panicking with `what` at the deadline.
-fn until<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-    let start = Instant::now();
-    loop {
-        if let Some(value) = ready() {
-            return value;
-        }
-        assert!(start.elapsed() < DEADLINE, "never: {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+fn until<T>(what: &str, ready: impl FnMut() -> Option<T>) -> T {
+    common::until(DEADLINE, ready).unwrap_or_else(|| panic!("never: {what}"))
 }
 
 #[test]
@@ -78,17 +61,7 @@ fn plugin_hooks_count_work_and_prune_exited_panes() {
     .unwrap();
     let socket = dir.path().join("s.sock");
     let sock = socket.to_str().expect("utf-8 path");
-    let _server = Server(
-        common::phux_cmd(crate::runner::phux_bin())
-            .envs(hermetic_env(dir.path()))
-            .env("PHUX_BIN", crate::runner::phux_bin())
-            .args(["server", "--socket", sock, "--exit-after-idle", "120"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server"),
-    );
+    let _server = start_server(dir.path(), &[], &[("PHUX_BIN", crate::runner::phux_bin())]);
     let created: Value = until("a pane", || {
         let out = phux(
             dir.path(),

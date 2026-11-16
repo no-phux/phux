@@ -10,8 +10,8 @@
 use std::ffi::OsStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use crate::common;
 
@@ -21,15 +21,8 @@ pub const READY_DEADLINE: Duration = Duration::from_secs(30);
 /// No extra environment for [`phux_with`] and [`await_success`].
 pub const NO_ENV: &[(&str, &Path)] = &[];
 
-/// A running `phux server`, killed on drop.
-pub struct Server(pub Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+/// A running `phux server`, killed and reaped on drop.
+pub type Server = common::ServerProcess;
 
 /// The environment every process in a hermetic test runs under.
 pub fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
@@ -116,23 +109,25 @@ pub fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server 
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn phux server");
-    Server(child)
+    Server::from_child(child, dir.join("s.sock"))
 }
 
 /// Run `phux ARGS` until it succeeds, failing after [`READY_DEADLINE`].
 pub fn await_success<V: AsRef<OsStr>>(dir: &Path, args: &[&str], extra: &[(&str, V)]) -> Output {
-    let start = Instant::now();
-    loop {
+    let mut last = None;
+    common::until(READY_DEADLINE, || {
         let out = phux_with(dir, args, b"", extra);
         if out.status.success() {
-            return out;
+            return Some(out);
         }
-        assert!(
-            start.elapsed() < READY_DEADLINE,
+        last = Some(out);
+        None
+    })
+    .unwrap_or_else(|| {
+        panic!(
             "`phux {}` never succeeded: {}",
             args.join(" "),
-            text(&out.stderr)
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+            last.map_or_else(String::new, |out| text(&out.stderr))
+        )
+    })
 }

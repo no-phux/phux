@@ -10,35 +10,33 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use crate::common;
+use crate::common::{self, Out};
 
 use std::path::Path;
-use std::process::{Output, Stdio};
 
 /// Run one `phux` verb against `socket`, with the idle backstop set so a
 /// daemon this test fails to reap cannot outlive it.
-fn phux(args: &[&str], socket: &Path) -> Output {
+fn phux(args: &[&str], socket: &Path) -> Out {
     let (key, value) = common::AutoSpawnedServer::IDLE_BACKSTOP;
     // Ahead of the verb: anything after a `--` is the seed's argv.
-    common::phux_cmd(crate::runner::phux_bin())
-        .arg("--socket")
-        .arg(socket)
-        .args(args)
-        .env(key, value)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux")
+    Out::of(
+        common::phux_cmd(crate::runner::phux_bin())
+            .arg("--socket")
+            .arg(socket)
+            .args(args)
+            .env(key, value),
+    )
 }
 
 /// The session names `phux ls --json` reports.
 fn session_names(socket: &Path) -> Vec<String> {
     let out = phux(&["ls", "--json"], socket);
     assert!(
-        out.status.success(),
+        out.success(),
         "phux ls --json failed.\nstderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        out.stderr
     );
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("ls json");
+    let doc: serde_json::Value = serde_json::from_str(&out.stdout).expect("ls json");
     doc["sessions"]
         .as_array()
         .expect("sessions array")
@@ -55,13 +53,13 @@ fn new_empty_starts_only(name: &str) {
     let out = phux(&["new", "--empty", "--json", "-s", name], &socket);
     let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     assert!(
-        out.status.success(),
+        out.success(),
         "phux new --empty must start a server and create {name:?}.\nstderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        out.stderr
     );
     server.capture_pid();
 
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("new json");
+    let doc: serde_json::Value = serde_json::from_str(&out.stdout).expect("new json");
     assert_eq!(doc["session"], name);
     assert_eq!(doc["empty"], true);
     assert!(doc["terminal_id"].is_null());
@@ -97,7 +95,7 @@ fn new_json_for_a_taken_name_is_a_json_error() {
     let socket = dir.path().join("phux.sock");
     let first = phux(&["new", "--empty", "--json", "-s", "taken"], &socket);
     let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    assert!(first.status.success(), "{first:?}");
+    assert!(first.success(), "{first:?}");
     server.capture_pid();
 
     for args in [
@@ -105,9 +103,9 @@ fn new_json_for_a_taken_name_is_a_json_error() {
         &["new", "--json", "-s", "taken"][..],
     ] {
         let out = phux(args, &socket);
-        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        assert_eq!(out.code, 1, "{args:?}: {out:?}");
         assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
-        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = &out.stderr;
         let doc: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap_or_else(|err| {
             panic!("{args:?}: stderr is not one JSON line ({err}): {stderr}")
         });
@@ -136,7 +134,7 @@ fn new_json_with_a_seed_that_ends_at_once_succeeds() {
     let socket = dir.path().join("phux.sock");
     let first = phux(&["new", "--empty", "--json", "-s", "parked"], &socket);
     let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    assert!(first.status.success(), "{first:?}");
+    assert!(first.success(), "{first:?}");
     server.capture_pid();
 
     for i in 0..40 {
@@ -148,11 +146,11 @@ fn new_json_with_a_seed_that_ends_at_once_succeeds() {
         };
         let out = phux(&["new", "--json", "-s", &name, "--", seed], &socket);
         assert!(
-            out.status.success(),
+            out.success(),
             "{name} ({seed}) must be created.\nstderr: {}",
-            String::from_utf8_lossy(&out.stderr)
+            out.stderr
         );
-        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("new json");
+        let doc: serde_json::Value = serde_json::from_str(&out.stdout).expect("new json");
         assert_eq!(doc["session"], name.as_str(), "{doc}");
         assert!(doc["terminal_id"].is_u64(), "{doc}");
     }
