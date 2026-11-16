@@ -135,7 +135,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
         .windows(16)
         .position(|window| window == [0x6b; 16])
         .expect("upload id bytes");
-    let mut zero_id = encoded.to_vec();
+    let mut zero_id = encoded;
     zero_id[id_offset..id_offset + 16].fill(0);
     assert_eq!(
         FrameKind::decode(&zero_id).unwrap_err(),

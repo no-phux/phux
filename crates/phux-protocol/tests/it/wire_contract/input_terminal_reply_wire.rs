@@ -43,7 +43,7 @@ fn hello_ok_explicitly_negotiates_terminal_replies() {
     assert!(server_caps.features.contains(ServerFeature::TerminalReply));
 }
 
-fn reply(terminal: u32, bytes: Bytes) -> FrameKind {
+const fn reply(terminal: u32, bytes: Bytes) -> FrameKind {
     FrameKind::InputTerminalReply {
         terminal_id: ResourceId::local(terminal),
         bytes,

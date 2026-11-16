@@ -40,7 +40,7 @@ const fn bootstrap(raw: u64) -> BootstrapId {
 
 /// The ids every history builder below shares: terminal 1, stream 2,
 /// bootstrap 3.
-fn ids() -> (ResourceId, StreamId, BootstrapId) {
+const fn ids() -> (ResourceId, StreamId, BootstrapId) {
     (ResourceId::local(1), stream(2), bootstrap(3))
 }
 

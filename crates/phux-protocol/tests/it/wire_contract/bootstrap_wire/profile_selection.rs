@@ -8,11 +8,11 @@ use super::{
 };
 
 /// Bootstrap capabilities offering `codec` with every required native feature.
-fn native(codec: EngineCodec) -> BootstrapCapabilities {
+const fn native(codec: EngineCodec) -> BootstrapCapabilities {
     BootstrapCapabilities::new().with_native(codec, EngineFeatureSet::required_native())
 }
 
-fn client_with(bootstrap: BootstrapCapabilities) -> ClientCapabilities {
+const fn client_with(bootstrap: BootstrapCapabilities) -> ClientCapabilities {
     ClientCapabilities::new().with_bootstrap(bootstrap)
 }
 

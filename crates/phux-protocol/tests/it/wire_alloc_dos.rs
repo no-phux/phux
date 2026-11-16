@@ -117,7 +117,9 @@ const GROUP_1: [u8; 4] = 1u32.to_be_bytes();
 
 /// Every positional list a hostile peer can inflate: (label, type byte,
 /// fields before the list, list field id).
-const HUGE_COUNT_CASES: &[(&str, u8, &[(u32, &[u8])], u32)] = &[
+type HugeCountCase = (&'static str, u8, &'static [(u32, &'static [u8])], u32);
+
+const HUGE_COUNT_CASES: &[HugeCountCase] = &[
     // METADATA_KEYS (0xD2): KEYS (id 2) is a u32 count + strings.
     ("metadata keys", 0xD2, &[(1, &REQUEST_ID)], 2),
     // DIRECTORY_LISTING (0xD3): ENTRIES (id 4) is a u32 count + (name, flags).

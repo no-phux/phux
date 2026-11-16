@@ -14,12 +14,10 @@ fn load(
     plugin::load_plugin_manifest(&write_manifest(dir, &manifest(id, extra)))
 }
 
-/// The load error for `manifest(id, extra)` written into `dir`.
+/// The load error for `manifest(id, extra)` written into `dir`, or a marker
+/// no expected error contains when it loads.
 fn refusal(dir: &std::path::Path, id: &str, extra: &str) -> String {
-    load(dir, id, extra)
-        .err()
-        .unwrap_or_else(|| panic!("{id}: manifest loaded successfully: {extra}"))
-        .to_string()
+    load(dir, id, extra).map_or_else(|e| e.to_string(), |_| "<loaded>".to_owned())
 }
 
 #[test]
