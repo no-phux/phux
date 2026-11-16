@@ -74,7 +74,7 @@ impl Drop for Mcp {
 
 impl Mcp {
     fn start(socket: &Path) -> Self {
-        let mut command = Command::new(mcp_bin());
+        let mut command = Command::new(runner::mcp_bin());
         for key in common::ambient_phux_keys() {
             command.env_remove(key);
         }
@@ -147,19 +147,6 @@ impl Mcp {
         }
         panic!("mcp timed out waiting for {method}");
     }
-}
-
-fn mcp_bin() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("PHUX_TEST_MCP_BIN") {
-        return path.into();
-    }
-    let built = Path::new(runner::phux_bin()).with_file_name("phux-mcp");
-    assert!(
-        built.exists(),
-        "{} is missing: build phux-mcp or set PHUX_TEST_MCP_BIN",
-        built.display()
-    );
-    built
 }
 
 fn drain_controllers(lines: &Receiver<String>, names: &mut Vec<String>) {

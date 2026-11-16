@@ -15,21 +15,6 @@ mod runner;
 use common::ServerGuard;
 use serde_json::Value;
 
-/// The `phux-mcp` binary: `$PHUX_TEST_MCP_BIN`, else the one a workspace
-/// build put beside `phux`.
-fn mcp_bin() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("PHUX_TEST_MCP_BIN") {
-        return path.into();
-    }
-    let built = std::path::Path::new(runner::phux_bin()).with_file_name("phux-mcp");
-    assert!(
-        built.exists(),
-        "{} is missing: build the workspace (`cargo nextest run --workspace`) or set PHUX_TEST_MCP_BIN",
-        built.display()
-    );
-    built
-}
-
 #[test]
 fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
     let help = common::phux_cmd(runner::phux_bin())
@@ -191,9 +176,6 @@ fn upload_refused_and_unknown_keep_receipts_and_do_not_retry() {
 #[test]
 #[ignore = "real MCP tools/call on a private server; runs in the e2e lane"]
 fn mcp_upload_calls_keep_completed_refused_and_unknown_receipts() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-    let mcp = mcp_bin();
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("local.bin");
     let data = vec![0x33; phux_protocol::wire::frame::MAX_FILE_UPLOAD_CHUNK + 11];
@@ -210,43 +192,17 @@ fn mcp_upload_calls_keep_completed_refused_and_unknown_receipts() {
             builder = builder.env("PHUX_TEST_UPLOAD_HOLD", &hold);
         }
         let server = builder.start();
-        let mut cmd = common::phux_cmd(&mcp);
-        server.xdg.apply(&mut cmd);
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut input = child.stdin.take().unwrap();
-        writeln!(
-            input,
-            "{}",
-            serde_json::json!({"jsonrpc":"2.0", "id":1,"method":"tools/list"})
-        )
-        .unwrap();
-        writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0", "id":2,"method":"tools/call", "params":{"name":"phux_upload", "arguments":{"target":"work", "path": source, "socket":server.socket, "timeout_secs": if outcome == "unknown" {1} else {60}}}})).unwrap();
-        // Keep stdin alive until tools/call completes: EOF intentionally cancels in-flight MCP calls.
-        let mut reader = BufReader::new(child.stdout.take().unwrap());
-        let mut replies = Vec::new();
-        for _ in 0..2 {
-            let mut line = String::new();
-            assert!(
-                reader.read_line(&mut line).unwrap() > 0,
-                "MCP ended before reply"
-            );
-            replies.push(serde_json::from_str::<Value>(&line).unwrap());
-        }
-        drop(input);
-        let output = child.wait_with_output().unwrap();
+        let timeout_secs = if outcome == "unknown" { 1 } else { 60 };
+        let replies = mcp_exchange(
+            &server,
+            &[
+                serde_json::json!({"jsonrpc":"2.0", "id":1,"method":"tools/list"}),
+                serde_json::json!({"jsonrpc":"2.0", "id":2,"method":"tools/call", "params":{"name":"phux_upload", "arguments":{"target":"work", "path": source, "socket":server.socket, "timeout_secs": timeout_secs}}}),
+            ],
+        );
         if outcome == "unknown" {
             std::fs::write(hold.join("release"), []).unwrap();
         }
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
         let catalog = &replies.iter().find(|reply| reply["id"] == 1).unwrap()["result"]["tools"];
         let tool = catalog
             .as_array()
@@ -490,10 +446,25 @@ fn assert_owner_upload(
 }
 
 fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::Path) -> Value {
+    let replies = mcp_exchange(
+        server,
+        &[
+            serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"phux_upload", "arguments":{"target":target, "path":source, "socket":server.socket, "timeout_secs":30}}}),
+        ],
+    );
+    let reply = &replies[0];
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// Send `requests` to a real `phux-mcp` on `server`'s state and read one
+/// reply per request. Stdin stays open until every reply has arrived: EOF
+/// intentionally cancels in-flight MCP calls. The process must exit 0.
+fn mcp_exchange(server: &ServerGuard, requests: &[Value]) -> Vec<Value> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
-    let mcp = mcp_bin();
-    let mut cmd = common::phux_cmd(mcp);
+    let mut cmd = common::phux_cmd(runner::mcp_bin());
     server.xdg.apply(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -502,13 +473,19 @@ fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::
         .spawn()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
-    writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"phux_upload", "arguments":{"target":target, "path":source, "socket":server.socket, "timeout_secs":30}}})).unwrap();
+    for request in requests {
+        writeln!(input, "{request}").unwrap();
+    }
     let mut reader = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    assert!(
-        reader.read_line(&mut line).unwrap() > 0,
-        "MCP ended before reply"
-    );
+    let mut replies = Vec::new();
+    for _ in requests {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).unwrap() > 0,
+            "MCP ended before reply"
+        );
+        replies.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
     drop(input);
     let output = child.wait_with_output().unwrap();
     assert!(
@@ -516,10 +493,7 @@ fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let reply: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(reply["id"], 1);
-    assert_eq!(reply["result"]["isError"], false, "{reply}");
-    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    replies
 }
 
 /// A fake `ssh` that runs `phux stdio-bridge` on `socket`, whatever host it
