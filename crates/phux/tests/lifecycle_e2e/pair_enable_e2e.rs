@@ -12,13 +12,10 @@
 
 use crate::{common, listeners};
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::ServerGuard;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const UNSET_CONFIG: &str = "\
 # keep-me
@@ -252,89 +249,36 @@ fn wait_child(parent: u32) -> u32 {
 }
 
 /// Run `phux pair` on a pty. Wait until `needle` is visible, write `reply`,
-/// then wait for the process to exit. Returns the exit code and the visible
-/// transcript.
+/// then wait for the process to exit. Returns the exit code (`None` if it
+/// never exited) and the visible transcript.
 fn drive_pty(
     server: &ServerGuard,
     args: &[&str],
     needle: &str,
     reply: &str,
 ) -> (Option<i32>, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 40,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .expect("openpty");
-    let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
-    for key in common::ambient_phux_keys() {
-        cmd.env_remove(key);
-    }
-    cmd.env("XDG_STATE_HOME", &server.xdg.state);
-    cmd.env("XDG_CONFIG_HOME", &server.xdg.config);
-    cmd.env(common::NO_UPDATE_CHECK_ENV, common::NO_UPDATE_CHECK_VALUE);
-    cmd.env("TERM", "xterm-256color");
-    cmd.arg("pair");
-    cmd.arg("--socket");
-    cmd.arg(&server.socket);
-    cmd.args(args);
-    let mut child = pair.slave.spawn_command(cmd).expect("spawn phux pair");
-    drop(pair.slave);
-    let mut reader = pair.master.try_clone_reader().expect("clone reader");
-    let mut writer = pair.master.take_writer().expect("pty writer");
-    let transcript = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let sink = Arc::clone(&transcript);
-    std::thread::spawn(move || {
-        let mut buf = [0_u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            sink.lock()
-                .expect("transcript")
-                .extend_from_slice(&buf[..n]);
-        }
+    let socket = server.socket.to_str().expect("UTF-8 socket path");
+    let mut pair_args = vec!["--socket", socket];
+    pair_args.extend_from_slice(args);
+    let mut client = common::PtyAttach::start_client("pair", &pair_args, (120, 40), |_, cmd| {
+        cmd.env("XDG_STATE_HOME", &server.xdg.state);
+        cmd.env("XDG_CONFIG_HOME", &server.xdg.config);
     });
-
-    let visible = |bytes: &[u8]| common::strip_terminal_controls(bytes);
     let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let text = visible(&transcript.lock().expect("transcript"));
-        if text.contains(needle) {
-            break;
-        }
-        if let Some(status) = child.try_wait().expect("poll pair") {
+    while !client.painted().contains(needle) {
+        if let Some(status) = client.exit_within(Duration::ZERO) {
             std::thread::sleep(Duration::from_millis(100));
-            let text = visible(&transcript.lock().expect("transcript"));
-            return (Some(exit_code(&status)), text);
+            return (Some(exit_code(&status)), client.painted());
         }
         if Instant::now() > deadline {
-            let _ = child.kill();
-            return (None, text);
+            return (None, client.painted());
         }
         std::thread::sleep(Duration::from_millis(30));
     }
-    writer.write_all(reply.as_bytes()).expect("write reply");
-    writer.flush().expect("flush reply");
-
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("poll pair") {
-            break Some(status);
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(30));
-    };
+    client.send(reply.as_bytes());
+    let status = client.exit_within(Duration::from_secs(45));
     std::thread::sleep(Duration::from_millis(100));
-    let text = visible(&transcript.lock().expect("transcript"));
-    let code = status.as_ref().map(exit_code);
-    (code, text)
+    (status.as_ref().map(exit_code), client.painted())
 }
 
 fn exit_code(status: &portable_pty::ExitStatus) -> i32 {

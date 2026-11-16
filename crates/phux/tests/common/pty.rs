@@ -187,26 +187,35 @@ impl PtyAttach {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Poll until the client exits, or `None` once `within` passes (the
+    /// client is then killed on drop).
+    pub fn exit_within(&mut self, within: Duration) -> Option<portable_pty::ExitStatus> {
+        let deadline = Instant::now() + within;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("client try_wait") {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
     /// Everything painted so far, with terminal control sequences removed.
     pub fn painted(&self) -> String {
         strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
     }
 
-    /// Wait for the `phux attach` process to exit and return its status;
-    /// panic with the transcript once `within` passes.
+    /// Wait for the client to exit and return its status; panic with the
+    /// transcript once `within` passes.
     pub fn wait_exit(&mut self, within: Duration) -> portable_pty::ExitStatus {
-        let deadline = Instant::now() + within;
-        loop {
-            if let Some(status) = self.child.try_wait().expect("client try_wait") {
-                return status;
-            }
-            assert!(
-                Instant::now() < deadline,
+        self.exit_within(within).unwrap_or_else(|| {
+            panic!(
                 "attach client did not exit within {within:?}; painted text was:\n{}",
                 self.painted()
-            );
-            std::thread::sleep(POLL);
-        }
+            )
+        })
     }
 
     /// Wait until every phrase has been painted; panic with the transcript.
