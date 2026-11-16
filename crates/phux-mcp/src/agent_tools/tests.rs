@@ -91,10 +91,7 @@ fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
 async fn malformed_arguments_are_rejected_before_execution() {
     let adapter = CliAdapter::new("must-not-execute");
     for (name, args) in [
-        // Unknown key.
-        ("phux_agent_list", json!({ "target": "@1" })),
         // Missing required.
-        ("phux_agent_set", json!({ "target": "@1" })),
         ("phux_agent_send_keys", json!({ "target": "@1" })),
         ("phux_agent_send_keys", json!({ "keys": ["a"] })),
         // Empty key batch: all-or-nothing has nothing to deliver.
@@ -103,11 +100,6 @@ async fn malformed_arguments_are_rejected_before_execution() {
             json!({ "target": "@1", "keys": [] }),
         ),
         // Closed vocabularies.
-        ("phux_agent_set", json!({ "name": "b", "state": "busy" })),
-        (
-            "phux_agent_set",
-            json!({ "name": "b", "attention": "urgent" }),
-        ),
         ("phux_agent_wait", json!({ "until": ["unknown"] })),
         ("phux_agent_wait", json!({ "timeout_secs": 0 })),
         ("phux_agent_wait", json!({ "timeout_secs": 3601 })),
@@ -143,13 +135,81 @@ async fn malformed_arguments_are_rejected_before_execution() {
             "phux_agent_start",
             json!({ "name": "bot", "kind": "codex", "target": "@1", "force": "yes" }),
         ),
-        // The multiplexer's old shape is not silently accepted.
-        ("phux_agent_list", json!({ "action": "list" })),
     ] {
-        let result = match name {
-            "phux_agent_set" => identity::set(&args).await,
-            _ => call_with_adapter(name, &args, &adapter).await,
-        };
-        assert!(result.is_err(), "{name} accepted {args}");
+        let err = call_with_adapter(name, &args, &adapter)
+            .await
+            .expect_err(&format!("{name} accepted {args}"));
+        assert!(
+            !err.0.starts_with("not a CLI-backed tool"),
+            "{name} is not CLI-backed; test it in-process: {}",
+            err.0,
+        );
+    }
+}
+
+/// The in-process tools refuse a malformed call before dialing: with the
+/// socket at a dead path, the error names the argument, not `no_server`.
+#[tokio::test]
+async fn in_process_tools_reject_malformed_arguments_before_dialing() {
+    for (name, mut args, expected) in [
+        // Unknown key.
+        (
+            "phux_agent_list",
+            json!({ "target": "@1" }),
+            "unknown argument `target`",
+        ),
+        (
+            "phux_agent_show",
+            json!({ "until": ["idle"] }),
+            "unknown argument `until`",
+        ),
+        (
+            "phux_agent_explain",
+            json!({ "name": "bot" }),
+            "unknown argument `name`",
+        ),
+        (
+            "phux_agent_clear",
+            json!({ "name": "bot" }),
+            "unknown argument `name`",
+        ),
+        // The multiplexer's old shape is not silently accepted.
+        (
+            "phux_agent_list",
+            json!({ "action": "list" }),
+            "unknown argument `action`",
+        ),
+        (
+            "phux_agent_show",
+            json!({ "action": "show" }),
+            "unknown argument `action`",
+        ),
+        // Missing required.
+        (
+            "phux_agent_set",
+            json!({ "target": "@1" }),
+            "missing required argument `name`",
+        ),
+        // Closed vocabularies.
+        (
+            "phux_agent_set",
+            json!({ "name": "b", "state": "busy" }),
+            "state",
+        ),
+        (
+            "phux_agent_set",
+            json!({ "name": "b", "attention": "urgent" }),
+            "attention",
+        ),
+    ] {
+        args["socket"] = json!("/nonexistent/phux-mcp-agent-tools.sock");
+        let err = crate::tools::call_registered(name, &args)
+            .await
+            .expect_err(&format!("{name} accepted {args}"));
+        assert!(
+            err.0.contains(expected) && !err.0.contains("no_server"),
+            "{name} {args}: {}",
+            err.0,
+        );
     }
 }
