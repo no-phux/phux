@@ -69,8 +69,9 @@ pub(crate) fn missing_agents(host: &str) -> Option<Vec<String>> {
     let entry = remote_target::find_entry(&remote_target::parse_target(host).ok()?)?;
     let server = server_target::plan_entry(&rt, &entry, "doctor").ok()?;
     let target = ServerTarget::Remote(Box::new(server));
+    // The timer must be made inside the runtime, so the timeout is too.
     let doc = rt
-        .block_on(tokio::time::timeout(ASK_TIMEOUT, fetch(&target)))
+        .block_on(async { tokio::time::timeout(ASK_TIMEOUT, fetch(&target)).await })
         .ok()?
         .ok()?;
     agent_lines(host, &doc)
