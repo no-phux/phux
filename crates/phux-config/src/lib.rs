@@ -11,6 +11,7 @@
 pub mod check;
 pub mod connector;
 pub mod distro;
+pub mod document;
 pub mod integration;
 pub mod keybind;
 pub mod loader;
