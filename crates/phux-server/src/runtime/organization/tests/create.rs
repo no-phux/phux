@@ -7,13 +7,7 @@ fn lookup_refuses_another_sessions_creation_receipt() {
     run(async {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
-        let open = |n, name: &str| Command::SessionCreate {
-            operation: op(n),
-            name: name.to_owned(),
-            lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
-            launch: None,
-        };
+        let open = |n, name: &str| session_create(n, name, false);
         let origin = committed(handle(&state, CLIENT, open(1, "origin"), &root))
             .session
             .unwrap();

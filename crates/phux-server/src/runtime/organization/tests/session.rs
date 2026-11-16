@@ -11,13 +11,7 @@ fn session_kill_ends_every_member_and_deletes_the_session() {
         let receipt = committed(handle(
             &state,
             CLIENT,
-            Command::SessionCreate {
-                operation: op(1),
-                name: "work".to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
-            },
+            session_create(1, "work", true),
             &root,
         ));
         let session = receipt.session.expect("created session");
@@ -86,13 +80,7 @@ fn session_kill_store_failure_closes_nothing() {
         let receipt = committed(handle(
             &state,
             CLIENT,
-            Command::SessionCreate {
-                operation: op(1),
-                name: "work".to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
-            },
+            session_create(1, "work", true),
             &root,
         ));
         let session = receipt.session.expect("created session");
@@ -189,13 +177,7 @@ fn organization_events_are_journaled_with_their_actor() {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         state.with_mut(|s| s.set_client_name(CLIENT, "agent".to_owned()));
         let before = state.with(ServerState::journal_head);
-        let create = Command::SessionCreate {
-            operation: op(1),
-            name: "work".to_owned(),
-            lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
-            launch: None,
-        };
+        let create = session_create(1, "work", false);
         let _ = committed(handle(&state, CLIENT, create, &CancellationToken::new()));
         let after = state.with(ServerState::journal_head);
         assert_eq!(

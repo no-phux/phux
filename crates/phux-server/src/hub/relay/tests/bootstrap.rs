@@ -62,52 +62,79 @@ fn relay_rejects_bootstrap_profile_mismatch_before_fanout() {
     assert!(session.bootstrap_flows.is_empty());
 }
 
+/// One native bootstrap generation of Terminal 7, as satellite frames.
+#[derive(Clone, Copy)]
+struct Flow {
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+}
+
+impl Flow {
+    fn new(stream: u64, bootstrap: u64) -> Self {
+        Self {
+            stream_id: StreamId::new(stream).expect("stream"),
+            bootstrap_id: BootstrapId::new(bootstrap).expect("bootstrap"),
+        }
+    }
+
+    fn begin(self, base_seq: u64) -> FrameKind {
+        FrameKind::BootstrapBegin {
+            terminal_id: ResourceId::local(7),
+            stream_id: self.stream_id,
+            bootstrap_id: self.bootstrap_id,
+            profile: native_stream_profile(),
+            cols: 80,
+            rows: 24,
+            base_seq,
+        }
+    }
+
+    fn chunk(self, chunk_seq: u32) -> FrameKind {
+        FrameKind::BootstrapChunk {
+            terminal_id: ResourceId::local(7),
+            stream_id: self.stream_id,
+            bootstrap_id: self.bootstrap_id,
+            chunk_seq,
+            payload: bytes::Bytes::from_static(b"opaque"),
+        }
+    }
+
+    fn ready(self) -> FrameKind {
+        FrameKind::BootstrapReady {
+            terminal_id: ResourceId::local(7),
+            stream_id: self.stream_id,
+            bootstrap_id: self.bootstrap_id,
+            history_cursor: None,
+        }
+    }
+
+    fn output(self, seq: u64, bytes: &'static [u8]) -> FrameKind {
+        FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
+            stream_id: self.stream_id,
+            bootstrap_id: self.bootstrap_id,
+            seq,
+            bytes: bytes::Bytes::from_static(bytes),
+        }
+    }
+}
+
 #[test]
 fn relay_rejects_gapped_chunks_and_live_delta_before_ready() {
-    let stream_id = StreamId::new(2).expect("stream");
-    let bootstrap_id = BootstrapId::new(3).expect("bootstrap");
-
-    let mut gapped = native_session();
-    gapped.feed(&FrameKind::BootstrapBegin {
-        terminal_id: ResourceId::local(7),
-        stream_id,
-        bootstrap_id,
-        profile: native_stream_profile(),
-        cols: 80,
-        rows: 24,
-        base_seq: 10,
-    });
-    let error = gapped
-        .handle_inbound(&encode(&FrameKind::BootstrapChunk {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 1,
-            payload: bytes::Bytes::from_static(b"opaque"),
-        }))
-        .expect_err("gapped chunk must fail the link");
-    assert!(error.contains("expected 0"));
-
-    let mut early_live = native_session();
-    early_live.feed(&FrameKind::BootstrapBegin {
-        terminal_id: ResourceId::local(7),
-        stream_id,
-        bootstrap_id,
-        profile: native_stream_profile(),
-        cols: 80,
-        rows: 24,
-        base_seq: 10,
-    });
-    let error = early_live
-        .handle_inbound(&encode(&FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            seq: 11,
-            bytes: bytes::Bytes::from_static(b"x"),
-        }))
-        .expect_err("live output before READY must fail the link");
-    assert!(error.contains("before BOOTSTRAP_READY"));
+    let flow = Flow::new(2, 3);
+    for (label, frame, needle) in [
+        ("gapped chunk", flow.chunk(1), "expected 0"),
+        (
+            "live output before READY",
+            flow.output(11, b"x"),
+            "before BOOTSTRAP_READY",
+        ),
+    ] {
+        let mut session = native_session();
+        session.feed(&flow.begin(10));
+        let error = session.handle_inbound(&encode(&frame)).expect_err(label);
+        assert!(error.contains(needle), "{label}: {error}");
+    }
 }
 
 #[test]
@@ -115,38 +142,12 @@ fn relay_fans_out_complete_native_prefix_before_live_delta() {
     let mut session = native_session();
     let (out_tx, mut out_rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), out_tx);
-    let stream_id = StreamId::new(4).expect("stream");
-    let bootstrap_id = BootstrapId::new(5).expect("bootstrap");
+    let flow = Flow::new(4, 5);
     for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            profile: native_stream_profile(),
-            cols: 80,
-            rows: 24,
-            base_seq: 20,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::from_static(b"opaque"),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            seq: 21,
-            bytes: bytes::Bytes::from_static(b"live"),
-        },
+        flow.begin(20),
+        flow.chunk(0),
+        flow.ready(),
+        flow.output(21, b"live"),
     ] {
         session.feed(&frame);
     }
@@ -166,11 +167,11 @@ fn relay_fans_out_complete_native_prefix_before_live_delta() {
         out_rx.try_recv().expect("live"),
         Outbound::Frame(FrameKind::ResourceOutput { seq: 21, .. })
     ));
-    let flow = session.bootstrap_flows.get(&7).expect("active generation");
-    assert!(flow.ready);
-    assert_eq!(flow.stream_id, stream_id);
-    assert_eq!(flow.bootstrap_id, bootstrap_id);
-    assert_eq!(flow.profile, native_stream_profile());
+    let active = session.bootstrap_flows.get(&7).expect("active generation");
+    assert!(active.ready);
+    assert_eq!(active.stream_id, flow.stream_id);
+    assert_eq!(active.bootstrap_id, flow.bootstrap_id);
+    assert_eq!(active.profile, native_stream_profile());
 }
 
 #[test]
@@ -239,38 +240,18 @@ fn relay_rejects_identity_change_after_ready_without_fanout_or_mutation() {
     let mut session = native_session();
     let (out_tx, mut out_rx) = mpsc::channel(8);
     attach(&mut session, 7, ClientId(1), out_tx);
-    let stream_id = StreamId::new(4).expect("stream");
-    let bootstrap_id = BootstrapId::new(5).expect("bootstrap");
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            profile: native_stream_profile(),
-            cols: 80,
-            rows: 24,
-            base_seq: 20,
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
-        session.feed(&frame);
-    }
+    let flow = Flow::new(4, 5);
+    session.feed(&flow.begin(20));
+    session.feed(&flow.ready());
     let _ = out_rx.try_recv().expect("BEGIN");
     let _ = out_rx.try_recv().expect("READY");
     let before = session.bootstrap_flows[&7];
+    let other_generation = Flow {
+        bootstrap_id: BootstrapId::new(6).expect("different bootstrap"),
+        ..flow
+    };
     let error = session
-        .handle_inbound(&encode(&FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(7),
-            stream_id,
-            bootstrap_id: BootstrapId::new(6).expect("different bootstrap"),
-            seq: 21,
-            bytes: bytes::Bytes::from_static(b"invalid"),
-        }))
+        .handle_inbound(&encode(&other_generation.output(21, b"invalid")))
         .expect_err("identity change must terminate the link");
     assert!(error.contains("non-active bootstrap identity"));
     assert!(out_rx.try_recv().is_err(), "invalid frame reached consumer");
