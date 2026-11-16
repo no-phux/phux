@@ -432,10 +432,10 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let hold = tmp.path().join("upload-hold");
-        std::fs::create_dir(&hold).unwrap();
+        let gate = tmp.path().join("upload-hold");
+        std::fs::create_dir(&gate).unwrap();
         let upload_root = tmp.path().join("uploads");
-        unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &hold) };
+        unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &gate) };
 
         let (server, mut stream, terminal_id) = cat_server(tmp, |cfg| {
             cfg.env.upload_dir = Some(upload_root);
@@ -448,7 +448,7 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
             .await;
 
         timeout(WIRE_RECV_TIMEOUT, async {
-            while !hold.join("held").exists() {
+            while !gate.join("held").exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -462,7 +462,7 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
         .await
         .expect("HELLO+ATTACH must complete while an admitted upload worker is held");
 
-        tokio::fs::write(hold.join("release"), b"").await.unwrap();
+        tokio::fs::write(gate.join("release"), b"").await.unwrap();
         let held = await_command_result(&mut stream, 30).await;
         assert_published(&held, "held PUT_FILE");
 
