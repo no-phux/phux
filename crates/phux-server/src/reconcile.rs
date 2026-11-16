@@ -112,117 +112,42 @@ mod tests {
         }
     }
 
-    fn running(alive: bool, start: Option<u64>) -> impl FnOnce(i32) -> Observed {
+    /// The probe a case expects: `None` must never be called.
+    fn probe(expected: Option<Observed>) -> impl FnOnce(i32) -> Observed {
         move |pid| {
             assert_eq!(pid, 4242);
-            Observed {
-                alive,
-                start_raw: start,
-            }
+            expected.expect("must not probe")
         }
     }
 
-    #[test]
-    fn a_vouched_or_settled_activation_is_kept() {
-        let never = |_| -> Observed { panic!("must not probe") };
-        assert_eq!(
-            decide(
-                ExecState::Running,
-                true,
-                Some(recorded(1)),
-                Some(BOOT),
-                never
-            ),
-            Verdict::Keep
-        );
-        assert_eq!(
-            decide(
-                ExecState::Completed,
-                false,
-                Some(recorded(1)),
-                Some(BOOT),
-                never
-            ),
-            Verdict::Keep
-        );
+    const fn seen(alive: bool, start_raw: Option<u64>) -> Option<Observed> {
+        Some(Observed { alive, start_raw })
     }
 
+    /// Each recorded activation and what the restart concludes about it.
     #[test]
-    fn a_gone_pid_is_unobserved() {
-        let v = decide(
-            ExecState::Running,
-            false,
-            Some(recorded(1)),
-            Some(BOOT),
-            running(false, None),
-        );
-        assert_eq!(v, Verdict::Unobserved);
-    }
-
-    #[test]
-    fn a_reused_pid_is_unobserved() {
-        let v = decide(
-            ExecState::Running,
-            false,
-            Some(recorded(1)),
-            Some(BOOT),
-            running(true, Some(2)),
-        );
-        assert_eq!(v, Verdict::Unobserved);
-    }
-
-    #[test]
-    fn another_boot_is_unobserved_without_probing() {
-        let never = |_| -> Observed { panic!("must not probe") };
-        let v = decide(
-            ExecState::Running,
-            false,
-            Some(recorded(1)),
-            Some([8; 16]),
-            never,
-        );
-        assert_eq!(v, Verdict::Unobserved);
-    }
-
-    #[test]
-    fn a_matching_live_process_is_lost_once() {
-        let v = decide(
-            ExecState::Running,
-            false,
-            Some(recorded(1)),
-            Some(BOOT),
-            running(true, Some(1)),
-        );
-        assert_eq!(v, Verdict::Lost);
-        let again = decide(
-            ExecState::Lost,
-            false,
-            Some(recorded(1)),
-            Some(BOOT),
-            running(true, Some(1)),
-        );
-        assert_eq!(again, Verdict::Keep, "a second restart changes nothing");
-        let ended = decide(
-            ExecState::Lost,
-            false,
-            Some(recorded(1)),
-            Some(BOOT),
-            running(false, None),
-        );
-        assert_eq!(ended, Verdict::Unobserved);
-    }
-
-    #[test]
-    fn a_commit_that_never_launched_is_not_an_unobserved_exit() {
-        let never = |_| -> Observed { panic!("must not probe") };
-        assert_eq!(
-            decide(ExecState::Starting, false, None, Some(BOOT), never),
-            Verdict::NeverLaunched
-        );
-        assert_eq!(
-            decide(ExecState::Running, false, None, Some(BOOT), never),
-            Verdict::Unobserved
-        );
+    fn decide_reads_each_recorded_activation() {
+        let other_boot = Some([8; 16]);
+        #[rustfmt::skip]
+        let cases = [
+            ("vouched", ExecState::Running, true, Some(recorded(1)), Some(BOOT), None, Verdict::Keep),
+            ("settled", ExecState::Completed, false, Some(recorded(1)), Some(BOOT), None, Verdict::Keep),
+            ("gone pid", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(false, None), Verdict::Unobserved),
+            ("reused pid", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(true, Some(2)), Verdict::Unobserved),
+            ("another boot, no probe", ExecState::Running, false, Some(recorded(1)), other_boot, None, Verdict::Unobserved),
+            ("matching live process", ExecState::Running, false, Some(recorded(1)), Some(BOOT), seen(true, Some(1)), Verdict::Lost),
+            ("lost again: a second restart changes nothing", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(true, Some(1)), Verdict::Keep),
+            ("lost, then ended", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(false, None), Verdict::Unobserved),
+            ("commit that never launched", ExecState::Starting, false, None, Some(BOOT), None, Verdict::NeverLaunched),
+            ("running with no identity", ExecState::Running, false, None, Some(BOOT), None, Verdict::Unobserved),
+        ];
+        for (label, state, vouched, identity, boot, observed, want) in cases {
+            assert_eq!(
+                decide(state, vouched, identity, boot, probe(observed)),
+                want,
+                "{label}"
+            );
+        }
     }
 
     #[test]
