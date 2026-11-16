@@ -374,16 +374,7 @@ fn key_prefixes_resolve_through_the_organization_records() {
     let shell = fixture.shell(work);
     let other = fixture.shell(work);
     let snap = fixture.snapshot();
-    let inventory = crate::org::OrgInventory {
-        authority: phux_protocol::ids::AuthorityId::new([1; 16]).unwrap(),
-        inbox: None,
-        sessions: fixture.sessions().to_vec(),
-        resources: fixture.resources().to_vec(),
-        snapshot_revision: phux_protocol::ids::Revision::new(1),
-        journal_seq: 0,
-        total_intake: 0,
-        degradation: crate::state::Degradation::default(),
-    };
+    let inventory = fixture.inventory();
     let context = ResolveContext {
         organization: Some(&inventory),
         ..ResolveContext::default()
