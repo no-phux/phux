@@ -3,7 +3,9 @@
 //! [`DropProxy`] sits between a QUIC client and server on loopback and can
 //! stop delivering the server's datagrams, so no ack returns and the server's
 //! congestion window freezes, which is how a send-window test stalls a path.
-//! [`counting_target`] is the TCP service the forwarding tests reach.
+//! [`counting_target`] is the TCP service the forwarding tests reach. With
+//! `provision`, `server_tls` and `quic_server` stand up a loopback TLS or
+//! QUIC server over a fresh self-signed certificate.
 
 use std::io;
 use std::net::SocketAddr;
@@ -86,9 +88,14 @@ async fn forward(socket: UdpSocket, upstream: SocketAddr, drop_downstream: Arc<A
 
 /// A TLS 1.3 server config over a fresh self-signed pair in `dir`, offering
 /// `alpn` when given; its certificate is `dir/cert.pem`.
-#[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
-pub(crate) fn server_tls(dir: &std::path::Path, alpn: Option<&[u8]>) -> rustls::ServerConfig {
+///
+/// # Panics
+///
+/// If the pair cannot be written to or read back from `dir`.
+#[cfg(feature = "provision")]
+#[must_use]
+#[allow(clippy::expect_used, reason = "a test fixture")]
+pub fn server_tls(dir: &std::path::Path, alpn: Option<&[u8]>) -> rustls::ServerConfig {
     let cert = dir.join("cert.pem");
     let key = dir.join("key.pem");
     crate::cert::ensure_self_signed(&cert, &key).expect("provision cert");
@@ -110,9 +117,14 @@ pub(crate) fn server_tls(dir: &std::path::Path, alpn: Option<&[u8]>) -> rustls::
 }
 
 /// A loopback quinn server endpoint over [`server_tls`].
-#[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
-pub(crate) fn quic_server(dir: &std::path::Path, alpn: &[u8]) -> quinn::Endpoint {
+///
+/// # Panics
+///
+/// As [`server_tls`], or if no loopback UDP port is available.
+#[cfg(feature = "provision")]
+#[must_use]
+#[allow(clippy::expect_used, reason = "a test fixture")]
+pub fn quic_server(dir: &std::path::Path, alpn: &[u8]) -> quinn::Endpoint {
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls(dir, Some(alpn)))
         .expect("quic crypto");
     let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
