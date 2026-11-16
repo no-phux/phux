@@ -51,6 +51,7 @@ python3 clients/rune/ios/package_ota.py \
   --app '/absolute/scratch/ios-device/Phux Rune.app' \
   --profile /absolute/private/Rune.mobileprovision \
   --identity APPLE_DISTRIBUTION_CERTIFICATE_SHA1 \
+  --keychain /absolute/private/login.keychain-db \
   --device-udid REGISTERED_PHONE_UDID \
   --base-url https://private.example/rune-preview/ \
   --out /absolute/scratch/rune-ota
@@ -74,6 +75,12 @@ and never installs an app, changes provisioning or uploads to TestFlight.
 The user must approve installation on the phone. A signed IPA and reachable
 install page are **not** proof that the app installed, launched or passed
 physical-device qualification.
+
+`--keychain` is optional. It scopes profile decoding and both the framework
+and app signatures to that existing keychain, without changing shared defaults,
+trust or key access. This matters when the signing process's default is the
+system keychain even though the user's login keychain is unlocked. Query and
+unlock the selected keychain, not an unrelated default.
 
 ### Scheduled phone updates
 

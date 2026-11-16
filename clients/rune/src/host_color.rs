@@ -138,15 +138,6 @@ pub fn mark(rgb: u32, size: f32, ground: Color) -> El {
         .a11y_hidden()
 }
 
-/// The window's top edge in `name`'s colour, so each window says which
-/// machine it is on; thin enough to stay out of the titlebar's way.
-pub fn edge(name: &str, ground: Color) -> El {
-    el().pin(Some(0.0), Some(0.0), Some(0.0), None)
-        .h(2.5)
-        .fill(on(name, ground))
-        .a11y_hidden()
-}
-
 /// The machine `text` names first, as a whole word, of `names`.
 // ponytail: a word match over a notice's text; carry the host on the notice
 // if a name ever collides with ordinary words.
