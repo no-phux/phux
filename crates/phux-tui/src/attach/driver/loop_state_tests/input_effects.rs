@@ -3,31 +3,18 @@
 /// completes the chord takes it down again.
 #[tokio::test(flavor = "current_thread")]
 async fn the_prefix_press_shows_its_chip_on_the_bar_until_the_chord_completes() {
-    use phux_config::keybind::parse_chord;
-
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
 
     let a = ResourceId::local(1);
-    let (kernel, _effects, panes) =
-        crate::attach::pane_state::published_test_state(&[(&a, 80, 22, b"")]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
-    state.mirror.workspace = ArrangementDoc::single(a.clone());
-    state.mirror.focused_resource = Some(a.clone());
-    state.layout_read_complete = true;
+    show_alone(&mut state, &a, (80, 22), b"");
     drop(frames_sent(&mut client, &mut server).await);
     let sidebar = state.sidebar();
     state.repaint_view(&mut out, sidebar, RepaintLevel::Full);
 
-    let press = |spec: &str| {
-        let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
-    };
+    let press = chord_press;
     out.clear();
     state
         .dispatch_batch(&mut client, &mut out, sidebar, vec![press("C-a")])
@@ -121,12 +108,6 @@ async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
     );
 }
 
-/// A key press for `spec`, as the attach parser decodes it.
-fn chord_press(spec: &str) -> InputEvent {
-    let chord = phux_config::keybind::parse_chord(spec).expect("chord");
-    InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
-}
-
 /// A bootstrapped loop showing panes 1 and 2 side by side, focus on 1, plus
 /// any `extra` published slots outside the layout.
 async fn side_by_side_loop(
@@ -136,9 +117,7 @@ async fn side_by_side_loop(
 
     let (mut state, mut client, mut server, out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
 
     let (a, b) = (ResourceId::local(1), ResourceId::local(2));
@@ -147,9 +126,7 @@ async fn side_by_side_loop(
         (&b, 30, 20, b"right pane\r\n"),
     ];
     seeds.extend_from_slice(extra);
-    let (kernel, _effects, panes) = crate::attach::pane_state::published_test_state(&seeds);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
+    publish_panes(&mut state, &seeds);
     let tree = split_at(
         &LayoutNode::Leaf(a.clone()),
         &a,

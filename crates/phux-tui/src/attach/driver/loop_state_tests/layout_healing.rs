@@ -3,13 +3,9 @@
 #[tokio::test(flavor = "current_thread")]
 async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};
-    use phux_config::keybind::parse_chord;
-
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     let (left, right) = (ResourceId::local(1), ResourceId::local(2));
     let tree = split_at(
         &LayoutNode::Leaf(left.clone()),
@@ -32,10 +28,7 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     state.mirror.focused_resource = Some(right.clone());
     drop(frames_sent(&mut client, &mut server).await);
 
-    let press = |spec: &str| {
-        let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
-    };
+    let press = chord_press;
     // Layout actions wait for the initial shared layout read.
     state.layout_read_complete = true;
     // The loop's own sidebar, so only the resize can change the geometry.

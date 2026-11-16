@@ -86,22 +86,16 @@ fn classify_repaint_picks_the_minimal_level() {
 /// alternate screen does not flash on a terminal that ignores DEC 2026.
 #[tokio::test(flavor = "current_thread")]
 async fn selecting_a_same_shaped_window_never_clears_the_screen() {
-    use phux_config::keybind::parse_chord;
-
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
 
     let (a, b) = (ResourceId::local(1), ResourceId::local(2));
-    let (kernel, _effects, panes) = crate::attach::pane_state::published_test_state(&[
+    publish_panes(&mut state, &[
         (&a, 60, 20, b"alpha screen\r\n"),
         (&b, 60, 20, b"beta screen\r\n"),
     ]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
     let mut workspace = ArrangementDoc::single(a.clone());
     workspace.add_group("1".to_owned(), b.clone());
     workspace.select(0);
@@ -110,10 +104,7 @@ async fn selecting_a_same_shaped_window_never_clears_the_screen() {
     state.layout_read_complete = true;
     drop(frames_sent(&mut client, &mut server).await);
 
-    let press = |spec: &str| {
-        let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
-    };
+    let press = chord_press;
     let sidebar = state.sidebar();
     out.clear();
     state
@@ -146,22 +137,16 @@ async fn selecting_a_same_shaped_window_never_clears_the_screen() {
 #[tokio::test(flavor = "current_thread")]
 async fn focusing_another_pane_never_clears_the_screen() {
     use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
-    use phux_config::keybind::parse_chord;
-
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
 
     let (a, b) = (ResourceId::local(1), ResourceId::local(2));
-    let (kernel, _effects, panes) = crate::attach::pane_state::published_test_state(&[
+    publish_panes(&mut state, &[
         (&a, 30, 20, b"left pane\r\n"),
         (&b, 30, 20, b"right pane\r\n"),
     ]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
     let tree = split_at(
         &LayoutNode::Leaf(a.clone()),
         &a,
@@ -180,10 +165,7 @@ async fn focusing_another_pane_never_clears_the_screen() {
     state.layout_read_complete = true;
     drop(frames_sent(&mut client, &mut server).await);
 
-    let press = |spec: &str| {
-        let chord = parse_chord(spec).expect("chord");
-        InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
-    };
+    let press = chord_press;
     let sidebar = state.sidebar();
     out.clear();
     state
@@ -219,22 +201,14 @@ async fn a_wheel_scroll_paints_the_history_rows_without_clearing() {
 
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
-        .expect("shipped defaults parse");
-    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    use_shipped_settings(&mut state);
     state.viewport_dims = (80, 24);
 
     let a = ResourceId::local(1);
     let history: Vec<u8> = (0..60)
         .flat_map(|n| format!("history-{n:02}\r\n").into_bytes())
         .collect();
-    let (kernel, _effects, panes) =
-        crate::attach::pane_state::published_test_state(&[(&a, 80, 22, &history)]);
-    state.mirror.engine_kernel = kernel;
-    state.mirror.panes = panes;
-    state.mirror.workspace = ArrangementDoc::single(a.clone());
-    state.mirror.focused_resource = Some(a.clone());
-    state.layout_read_complete = true;
+    show_alone(&mut state, &a, (80, 22), &history);
     drop(frames_sent(&mut client, &mut server).await);
 
     // Paint the live tail once so the renderer has a front to diff against.

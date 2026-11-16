@@ -1,21 +1,6 @@
 /// The visible text of `bytes`, CSI sequences stripped.
 fn screen_text(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut out = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next();
-            for n in chars.by_ref() {
-                if ('@'..='~').contains(&n) {
-                    break;
-                }
-            }
-        } else if c != '\x1b' {
-            out.push(c);
-        }
-    }
-    out
+    crate::test_util::strip_csi(&String::from_utf8_lossy(bytes))
 }
 
 /// A document placed live is learned from its spawn event, so it is never

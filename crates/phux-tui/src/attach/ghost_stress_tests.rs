@@ -161,15 +161,12 @@ impl Rig {
             .workspace
             .render_group(self.mirror.zoomed.as_ref())
         {
-            let theme = crate::render::theme::Theme::default();
             let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-                viewport: self.viewport,
                 sidebar: self.sidebar,
-                status_bar: None,
-                sidebar_painter: None,
-                session_name: &self.mirror.session_name,
-                theme: &theme,
-                leaves: &crate::attach::surface_leaf::LeafBook::default(),
+                ..crate::attach::chrome_ctx::ChromeCtx::bare(
+                    self.viewport,
+                    &self.mirror.session_name,
+                )
             };
             paint_full_frame(
                 &mut out,

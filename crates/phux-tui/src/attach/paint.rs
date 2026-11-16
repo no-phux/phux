@@ -1219,15 +1219,11 @@ mod tests {
     ) -> StatusBarPaint {
         let (kernel, _, mut panes) = published_test_state(entries);
         let (res, strip) = sidebar.map_or((None, None), |(res, strip)| (Some(res), Some(strip)));
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport,
             sidebar: res,
             status_bar: bar,
             sidebar_painter: strip,
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare(viewport, "demo")
         };
         paint_full_frame(
             out,
@@ -1400,15 +1396,9 @@ mod tests {
         clobbered: bool,
     ) -> String {
         let mut out = Vec::new();
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
             status_bar: Some(painter),
-            sidebar_painter: None,
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "demo")
         };
         paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
@@ -1460,15 +1450,11 @@ mod tests {
         bar: Option<&mut StatusBarPainter>,
         strip: &mut SidebarPainter,
     ) {
-        let theme = Theme::default();
         let mut chrome = ChromeCtx {
-            viewport: (80, 24),
             sidebar: Some(LEFT20),
             status_bar: bar,
             sidebar_painter: Some(strip),
-            session_name: "demo",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "demo")
         };
         let (kernel, _effects, _panes) = published_test_state(&[]);
         paint_chrome_in_place(

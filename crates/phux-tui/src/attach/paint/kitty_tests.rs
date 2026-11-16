@@ -3,7 +3,6 @@
 use super::*;
 use crate::attach::pane_state::published_test_state;
 use crate::layout::LayoutNode;
-use crate::render::theme::Theme;
 
 const RED: &[u8] = b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\";
 const GREEN: &[u8] = b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;AP8A/w==\x1b\\";
@@ -22,16 +21,7 @@ fn paint_in_place(
     panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
 ) -> Vec<u8> {
-    let theme = Theme::default();
-    let mut chrome = ChromeCtx {
-        viewport: VIEWPORT,
-        sidebar: None,
-        status_bar: None,
-        sidebar_painter: None,
-        session_name: "demo",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
-    };
+    let mut chrome = ChromeCtx::bare(VIEWPORT, "demo");
     let mut out = Vec::new();
     paint_panes_in_place(
         &mut out,
@@ -141,16 +131,7 @@ fn the_empty_session_screen_deletes_every_panes_images() {
         .terminal
         .vt_write(&paint_in_place(&leaf(&a), &mut panes, &kernel));
     let id_a = outer_id(&panes, &a);
-    let theme = Theme::default();
-    let mut chrome = ChromeCtx {
-        viewport: VIEWPORT,
-        sidebar: None,
-        status_bar: None,
-        sidebar_painter: None,
-        session_name: "demo",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
-    };
+    let mut chrome = ChromeCtx::bare(VIEWPORT, "demo");
     let mut out = Vec::new();
     let _ = paint_empty_session(&mut out, &mut chrome, &["empty".to_owned()], &mut panes);
     assert!(deletes(&out, id_a), "{out:?}");

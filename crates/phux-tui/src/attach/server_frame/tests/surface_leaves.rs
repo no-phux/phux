@@ -54,7 +54,6 @@ fn spawned(id: &ResourceId, kind: ResourceKind, parent: &ResourceId) -> FrameKin
 
 /// A full-frame paint of the active window, CSI stripped.
 fn paint(h: &mut H) -> String {
-    let theme = crate::render::theme::Theme::default();
     let active = h
         .mirror
         .workspace
@@ -62,13 +61,8 @@ fn paint(h: &mut H) -> String {
         .expect("window")
         .into_owned();
     let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-        viewport: h.viewport,
-        sidebar: None,
-        status_bar: None,
-        sidebar_painter: None,
-        session_name: "",
-        theme: &theme,
         leaves: &h.mirror.leaves,
+        ..crate::attach::chrome_ctx::ChromeCtx::bare(h.viewport, "")
     };
     h.out.clear();
     crate::attach::paint::paint_full_frame(

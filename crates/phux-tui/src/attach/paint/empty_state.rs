@@ -112,16 +112,7 @@ mod tests {
         );
         assert!(empty_session_lines(None)[2].contains("command palette"));
         let mut out: Vec<u8> = Vec::new();
-        let theme = crate::render::theme::Theme::default();
-        let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
-            status_bar: None,
-            sidebar_painter: None,
-            session_name: "parked",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
-        };
+        let mut chrome = ChromeCtx::bare((80, 24), "parked");
         let _ = paint_empty_session(&mut out, &mut chrome, &lines, &mut HashMap::new());
         let text = String::from_utf8_lossy(&out);
         assert!(

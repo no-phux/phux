@@ -240,13 +240,10 @@ mod tests {
         let (kernel, _, mut panes) = published_test_state(entries);
         let (sidebar, sidebar_painter) = sidebar.unzip();
         let chrome = ChromeCtx {
-            viewport: (80, 24),
             sidebar,
             status_bar,
             sidebar_painter,
-            session_name: "alpha",
-            theme: &Theme::default(),
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "alpha")
         };
         compose_full_frame_cells(
             &chrome,

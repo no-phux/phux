@@ -70,6 +70,35 @@ impl LoopRig {
     }
 }
 
+/// The shipped default settings, as a config with no overrides reads them.
+fn use_shipped_settings(state: &mut SessionLoop) {
+    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
+        .expect("shipped defaults parse");
+    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+}
+
+/// Publish `seeds` as the mirror's kernel and pane slots.
+fn publish_panes(state: &mut SessionLoop, seeds: &[(&ResourceId, u16, u16, &[u8])]) {
+    let (kernel, _effects, panes) = crate::attach::pane_state::published_test_state(seeds);
+    state.mirror.engine_kernel = kernel;
+    state.mirror.panes = panes;
+}
+
+/// Publish one pane of `bytes` and show it alone and focused, with the
+/// layout read settled.
+fn show_alone(state: &mut SessionLoop, pane: &ResourceId, size: (u16, u16), bytes: &[u8]) {
+    publish_panes(state, &[(pane, size.0, size.1, bytes)]);
+    state.mirror.workspace = ArrangementDoc::single(pane.clone());
+    state.mirror.focused_resource = Some(pane.clone());
+    state.layout_read_complete = true;
+}
+
+/// A key press for `spec`, as the attach parser decodes it.
+fn chord_press(spec: &str) -> InputEvent {
+    let chord = phux_config::keybind::parse_chord(spec).expect("chord");
+    InputEvent::Key(crate::test_util::press_mods(chord.key, chord.modifiers))
+}
+
 // Keep the test namespace and snapshot identity while grouping by responsibility.
 include!("loop_state_tests/layout_read.rs");
 include!("loop_state_tests/bootstrap_resize.rs");

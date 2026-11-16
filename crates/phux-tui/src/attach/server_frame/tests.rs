@@ -264,6 +264,19 @@ impl H {
         h
     }
 
+    /// One published empty 80x24 pane, alone and focused.
+    fn single(pane: &ResourceId) -> Self {
+        Self::published(ArrangementDoc::single(pane.clone()), &[(pane, 80, 24, b"")])
+    }
+
+    /// Published empty panes 1 | 2, focused on 1.
+    fn side_by_side() -> Self {
+        Self::published(
+            ws1(split2(1, 2, 1)),
+            &[(&tid(1), 80, 24, b""), (&tid(2), 80, 24, b"")],
+        )
+    }
+
     fn with_viewport(mut self, viewport: (u16, u16)) -> Self {
         self.viewport = viewport;
         self.mirror.predict =
@@ -337,16 +350,10 @@ impl H {
                 .workspace
                 .render_group(self.mirror.zoomed.as_ref())
         {
-            let theme = crate::render::theme::Theme::default();
-            let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
-                viewport: self.viewport,
-                sidebar: None,
-                status_bar: None,
-                sidebar_painter: None,
-                session_name: &self.mirror.session_name,
-                theme: &theme,
-                leaves: &crate::attach::surface_leaf::LeafBook::default(),
-            };
+            let mut chrome = crate::attach::chrome_ctx::ChromeCtx::bare(
+                self.viewport,
+                &self.mirror.session_name,
+            );
             crate::attach::paint::paint_full_frame(
                 &mut self.out,
                 active.as_ref(),
@@ -544,10 +551,7 @@ fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
 #[test]
 fn terminal_output_seq_zero_is_rejected() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     let route = route_engine_frame(
         &output(&pane, 0, b"hi"),
         &mut h.mirror.engine_kernel,
@@ -1038,10 +1042,7 @@ fn output_before_snapshot_uses_current_viewport_width() {
 #[test]
 fn synchronized_output_paints_only_after_end_across_frames() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"\x1b[?2026hhalf-drawn");
     assert!(h.out.is_empty(), "begin/body must update only the mirror");
     assert!(h.mirror.panes[&pane].sync_output_since.is_some());
@@ -1056,10 +1057,7 @@ fn synchronized_output_paints_only_after_end_across_frames() {
 #[test]
 fn an_incremental_output_paint_is_one_synchronized_block() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"hello frame");
     let s = h.out_str();
     assert_eq!(s.matches("\x1b[?2026h").count(), 1, "{s:?}");
@@ -1081,10 +1079,7 @@ fn an_incremental_output_paint_is_one_synchronized_block() {
 #[test]
 fn a_deferred_output_frame_emits_nothing_but_still_applies() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.defer_paint = true;
     let outcome = h.output(&pane, b"deferred glyphs");
     assert!(h.out.is_empty(), "{:?}", h.out);
@@ -1101,10 +1096,7 @@ fn a_deferred_output_frame_emits_nothing_but_still_applies() {
 #[test]
 fn a_frame_that_changes_nothing_writes_nothing() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"steady");
     assert!(!h.out.is_empty());
     h.out.clear();
@@ -1117,10 +1109,7 @@ fn a_frame_that_changes_nothing_writes_nothing() {
 #[test]
 fn title_changes_mark_chrome_dirty() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     for (bytes, dirty) in [
         (&b"just glyphs, no title"[..], false),
         (b"\x1b]2;\xe2\x9c\xb3 claude\x07", true),
@@ -1142,10 +1131,7 @@ fn title_changes_mark_chrome_dirty() {
 #[test]
 fn snapshot_during_synchronized_output_waits_for_live_end() {
     let pane = tid(1);
-    let mut h = H::published(
-        ArrangementDoc::single(pane.clone()),
-        &[(&pane, 80, 24, b"")],
-    );
+    let mut h = H::single(&pane);
     h.output(&pane, b"\x1b[?2026hpartial");
     h.snapshot(&pane, 80, 24, b"\x1b[!p\x1b[2J\x1b[Hstable snapshot");
     assert!(
@@ -1177,12 +1163,8 @@ fn attached_seeds_pane_slots_from_snapshot_dimensions() {
 /// Cumulative frame ACKs belong to state-sync streams, not raw output.
 #[test]
 fn synthesized_raw_output_does_not_yield_frame_ack() {
-    let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
-    assert_eq!(h.send(output(&right, 1, b"hi")).ack, None);
+    let mut h = H::side_by_side();
+    assert_eq!(h.send(output(&tid(2), 1, b"hi")).ack, None);
 }
 
 /// Every withheld pane settles in ONE synchronized frame, including a pane
@@ -1190,10 +1172,7 @@ fn synthesized_raw_output_does_not_yield_frame_ack() {
 #[test]
 fn a_settle_paints_every_withheld_pane_in_one_frame() {
     let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
+    let mut h = H::side_by_side();
     h.defer_paint = true;
     h.output(&left, b"LEFTSIDE");
     h.output(&right, b"RIGHTSIDE");
@@ -1277,30 +1256,10 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
 /// `vt_apply` and `paint_trigger` child spans under `handle_server_frame`.
 #[test]
 fn output_emits_separate_apply_and_paint_spans() {
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::{Registry, fmt};
 
-    #[derive(Clone, Default)]
-    struct Buf(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("lock").extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> MakeWriter<'a> for Buf {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    let buf = Buf::default();
+    let buf = crate::test_util::LogBuf::default();
     let layer = fmt::layer()
         .with_ansi(false)
         .with_writer(buf.clone())
@@ -1308,14 +1267,10 @@ fn output_emits_separate_apply_and_paint_spans() {
     tracing::subscriber::set_global_default(Registry::default().with(layer))
         .expect("install test tracing subscriber");
     tracing_core::callsite::rebuild_interest_cache();
-    let (left, right) = (tid(1), tid(2));
-    let mut h = H::published(
-        ws1(split2(1, 2, 1)),
-        &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
-    );
-    h.output(&left, b"hi");
+    let mut h = H::side_by_side();
+    h.output(&tid(1), b"hi");
 
-    let log = String::from_utf8(buf.0.lock().expect("lock").clone()).expect("utf8");
+    let log = buf.text();
     for span in ["vt_apply", "paint_trigger", "handle_server_frame"] {
         assert!(log.contains(span), "{span} span missing; log:\n{log}");
     }
@@ -1326,31 +1281,11 @@ fn output_emits_separate_apply_and_paint_spans() {
 /// line per agent spinner frame and printed on `phux snapshot --rendered`.
 #[test]
 fn routine_kernel_statuses_do_not_log_at_warn() {
-    use std::sync::{Arc, Mutex};
     use tracing_subscriber::Layer as _;
-    use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::{Registry, filter::LevelFilter, fmt};
 
-    #[derive(Clone, Default)]
-    struct Buf(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("lock").extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> MakeWriter<'a> for Buf {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    let buf = Buf::default();
+    let buf = crate::test_util::LogBuf::default();
     let layer = fmt::layer()
         .with_ansi(false)
         .with_writer(buf.clone())
@@ -1359,14 +1294,11 @@ fn routine_kernel_statuses_do_not_log_at_warn() {
     tracing::subscriber::with_default(subscriber, || {
         tracing_core::callsite::rebuild_interest_cache();
         let pane = tid(1);
-        let mut h = H::published(
-            ArrangementDoc::single(pane.clone()),
-            &[(&pane, 80, 24, b"")],
-        );
+        let mut h = H::single(&pane);
         h.output(&pane, b"\x1b]2;working\x07\x07");
     });
 
-    let log = String::from_utf8(buf.0.lock().expect("lock").clone()).expect("utf8");
+    let log = buf.text();
     assert!(
         !log.contains("session kernel status"),
         "routine statuses logged at WARN:\n{log}"

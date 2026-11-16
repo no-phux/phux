@@ -159,15 +159,9 @@ fn returning(path: &Path) -> (onboarding::AttachClaim, StatusBarPainter) {
 }
 
 fn paint_bar(painter: &mut StatusBarPainter, cols: u16, out: &mut Vec<u8>) -> StatusBarPaint {
-    let theme = crate::render::theme::Theme::default();
     let mut chrome = ChromeCtx {
-        viewport: (cols, 24),
-        sidebar: None,
         status_bar: Some(painter),
-        sidebar_painter: None,
-        session_name: "demo",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare((cols, 24), "demo")
     };
     paint_bar_after_pane(out, &mut chrome, None, None, false)
 }
@@ -800,17 +794,13 @@ fn shipped_frame_rows(
         PaneSlot::new_with_size(cols, pane_rows).expect("slot"),
     )]);
     let kernel = published_test_kernel(&id, cols, pane_rows, PROBE_PANE_TEXT.as_bytes());
-    let theme = crate::render::theme::Theme::default();
     let mut sidebar_painter = probe_sidebar(windows);
     let mut out: Vec<u8> = Vec::new();
     let mut chrome = ChromeCtx {
-        viewport: view,
         sidebar,
         status_bar: Some(&mut status_bar),
         sidebar_painter: Some(&mut sidebar_painter),
-        session_name: "phux",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare(view, "phux")
     };
     paint_full_frame(
         &mut out,
@@ -936,7 +926,6 @@ fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
 /// painter threaded when `with_painter`, projected to strip columns and rows.
 fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<String>, String) {
     const VIEW: (u16, u16) = (80, 24);
-    let theme = crate::render::Theme::default();
     let id = ResourceId::local(1);
     let workspace = ArrangementDoc::single(id.clone());
     let sidebar = Some(SidebarReservation {
@@ -954,13 +943,9 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
     overlays.push(overlay);
     let mut out: Vec<u8> = Vec::new();
     let mut chrome = ChromeCtx {
-        viewport: VIEW,
         sidebar,
-        status_bar: None,
         sidebar_painter: with_painter.then_some(&mut sidebar_painter),
-        session_name: "probe",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare(VIEW, "probe")
     };
     paint_active_overlay(
         &mut out,
