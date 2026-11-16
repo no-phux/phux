@@ -36,8 +36,7 @@ pub(super) fn encode_close(exchange: u64, enc: &mut Encoder<'_>) {
     enc.write_u64_be(exchange);
 }
 
-/// Decode a `SERVICE_HTTP_*` command; `None` (reading nothing) for any
-/// other tag.
+/// Decode a `SERVICE_HTTP_*` command; any other tag is an unknown command.
 pub(super) fn decode_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_SERVICE_HTTP_OPEN => Command::ServiceHttpOpen {
