@@ -77,8 +77,16 @@ connection that last typed into it (a key or a paste, attached or through
 
 - `client` is the server's id for the connection, the same number
   `input_holder` and `viewers` use.
-- `client_name` is the name the client gave itself when it connected, such
-  as `phux-mobile`, `phux-cli/0.148.0`, or `null`.
+- `client_name` is the name the client gave itself when it connected, or
+  `null` when it gave none. phux's own programs send `name/version`. Split
+  on the last `/`, the same parse as the older `phux-client/<version>`:
+  `phux-tui/<version>` is the interactive client, `phux-cli/<version>` is a
+  headless verb (`send-keys`, `paste`, `run`, and the other one-shot
+  commands), and `phux-mcp/<version>` is a connection the MCP adapter opens
+  itself. A tool that runs the `phux` binary, including the adapter's
+  `phux_run`, reports `phux-cli` because that process is the CLI. Other
+  programs keep their own words (`phux-mobile`, `phux-hub`, `phux-web`).
+  An older build still reports `phux-client/<version>`.
 - `route` is the `auth_route` word [`phux whoami`](./remote.md#who-can-do-what)
   reports for that connection.
 - `remote` is `false` for the owner's Unix socket and the loopback

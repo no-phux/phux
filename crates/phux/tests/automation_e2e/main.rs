@@ -11,6 +11,7 @@ mod agent_list_e2e;
 mod agent_log_validation;
 mod agent_record_e2e;
 mod agent_session_e2e;
+mod controller_client_e2e;
 mod examples_e2e;
 mod kind_dispatch_e2e;
 mod plugin_agent_bench_e2e;

@@ -50,9 +50,21 @@ async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
         (hello, server.recv().await.expect("ATTACH"))
     };
     let ((), (hello, attach)) = tokio::join!(client_side, server_side);
-    let FrameKind::Hello { client_caps, .. } = hello else {
+    let FrameKind::Hello {
+        client_name,
+        client_caps,
+        ..
+    } = &hello
+    else {
         panic!("first frame must be HELLO");
     };
+    assert_eq!(
+        client_name,
+        &crate::attach::connection::product_client_name(
+            crate::attach::connection::TUI_CLIENT_PRODUCT
+        ),
+        "the interactive attach announces phux-tui/<version>"
+    );
     assert_eq!(client_caps.default_colors, Some(colors));
     assert!(client_caps.layers.contains(Layer::L3));
     assert!(matches!(attach, FrameKind::Attach { .. }));

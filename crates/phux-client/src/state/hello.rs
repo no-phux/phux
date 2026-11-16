@@ -72,7 +72,7 @@ pub async fn probe_hello_features_ext(
 /// Send `HELLO` on a raw connection; `Ok` only for a `HELLO_OK`.
 async fn raw_hello(conn: &mut Connection) -> Result<FrameKind, AttachError> {
     conn.send(&phux_client_runtime::handshake::hello(
-        format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
+        crate::attach::connection::default_client_name(),
         ClientCapabilities::default()
             .with_resource_kinds(phux_client_core::session::KERNEL_RESOURCE_KINDS),
     ))
