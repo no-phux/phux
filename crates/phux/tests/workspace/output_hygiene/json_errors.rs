@@ -21,10 +21,7 @@ fn assert_no_server_json_contract(args: &[&str], xdg: Option<&std::path::Path>, 
 #[test]
 fn json_error_contract_holds_across_core_verbs_with_no_server() {
     let tmp = TempDir::new().expect("tempdir");
-    let sock_file = tmp.path().join("dead.sock");
-    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
-    assert!(sock_file.exists(), "the abandoned socket file must persist");
-    let sock = sock_file.to_str().expect("utf-8 temp path");
+    let sock = &abandoned_socket(tmp.path());
 
     // `play` validates its cast before dialing; give it a real one.
     let cast = tmp.path().join("demo.cast");
@@ -74,9 +71,7 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
 #[test]
 fn every_ctx_verb_reports_a_refusal_as_one_contract_line() {
     let tmp = TempDir::new().expect("tempdir");
-    let sock_file = tmp.path().join("dead.sock");
-    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
-    let sock = sock_file.to_str().expect("utf-8 temp path");
+    let sock = &abandoned_socket(tmp.path());
     let id = "0123456789abcdef0123456789abcdef";
 
     for args in [
@@ -123,9 +118,7 @@ fn every_ctx_verb_reports_a_refusal_as_one_contract_line() {
 #[test]
 fn ctx_verbs_keep_their_prose_without_json() {
     let tmp = TempDir::new().expect("tempdir");
-    let sock_file = tmp.path().join("dead.sock");
-    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
-    let sock = sock_file.to_str().expect("utf-8 temp path");
+    let sock = &abandoned_socket(tmp.path());
 
     let (code, _stdout, stderr) = run(&["send-keys", "--socket", sock, "work", "x"]);
     assert_eq!(code, 1, "stderr={stderr}");
@@ -217,18 +210,10 @@ fn json_error_contract_holds_across_registry_verbs() {
     let tmp = TempDir::new().expect("tempdir");
 
     // An empty-but-valid config: id/name lookups miss cleanly.
-    let empty_xdg = tmp.path().join("xdg-empty");
-    std::fs::create_dir_all(empty_xdg.join("phux")).expect("create config dir");
-    std::fs::write(empty_xdg.join("phux").join("config.toml"), "").expect("write config");
+    let empty_xdg = xdg_with_config(tmp.path(), "xdg-empty", "");
 
     // A config whose TOML does not parse: registry loads fail.
-    let broken_xdg = tmp.path().join("xdg-broken");
-    std::fs::create_dir_all(broken_xdg.join("phux")).expect("create config dir");
-    std::fs::write(
-        broken_xdg.join("phux").join("config.toml"),
-        "not = [valid\n",
-    )
-    .expect("write broken config");
+    let broken_xdg = xdg_with_config(tmp.path(), "xdg-broken", "not = [valid\n");
     let broken_toml = broken_xdg.join("phux").join("config.toml");
     let broken_toml = broken_toml.to_str().expect("utf-8 temp path");
 
@@ -258,9 +243,7 @@ fn json_error_contract_holds_across_registry_verbs() {
 #[test]
 fn alias_spellings_share_the_canonical_failure_paths() {
     let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
-    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+    let xdg = xdg_with_config(tmp.path(), "xdg", "");
 
     let canonical = run_with_xdg(&["plugin", "unlink", "no.such.plugin", "--json"], &xdg);
     let alias = run_with_xdg(&["plugin", "rm", "no.such.plugin", "--json"], &xdg);
@@ -274,9 +257,7 @@ fn alias_spellings_share_the_canonical_failure_paths() {
 #[test]
 fn doctor_json_failure_exit_is_json_only() {
     let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
-    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+    let xdg = xdg_with_config(tmp.path(), "xdg", "");
 
     let long_sock = format!("/tmp/{}/phux.sock", "x".repeat(200));
     let (code, stdout, stderr) = run_with_xdg(&["doctor", "--json", "--socket", &long_sock], &xdg);
