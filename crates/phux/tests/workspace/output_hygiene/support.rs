@@ -16,25 +16,11 @@ fn phux() -> Command {
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = phux().args(args).output().expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    Out::of(phux().args(args)).into_parts()
 }
 
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = phux()
-        .env("XDG_CONFIG_HOME", xdg_config_home)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    Out::of(phux().env("XDG_CONFIG_HOME", xdg_config_home).args(args)).into_parts()
 }
 
 /// The build banner; no one-shot verb may print it.

@@ -6,15 +6,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    crate::common::phux(args).into_parts()
 }
 
 fn git(repo: &Path, args: &[&str]) {
