@@ -79,7 +79,7 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
             1
         );
         let credential = new
-            .with(|s| s.delegation(&carried.id, Utc::now()).cloned())
+            .with(|s| s.delegations().live(&carried.id, Utc::now()).cloned())
             .expect("reinstated");
         assert_eq!(credential.on_behalf_of, phux_core::PrincipalId::Owner);
         assert_eq!(
@@ -91,7 +91,10 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
             "a retry of the minting operation still answers it"
         );
         assert_eq!(
-            new.with(|s| s.delegation_socket(&carried.id).map(Path::to_path_buf)),
+            new.with(|s| s
+                .delegations()
+                .socket_path(&carried.id)
+                .map(Path::to_path_buf)),
             Some(path.clone())
         );
 
@@ -134,7 +137,7 @@ async fn a_carried_credential_whose_session_is_gone_is_revoked_and_its_socket_re
             resume_delegations(&new, std::slice::from_ref(&carried), None, &root),
             0
         );
-        assert!(new.with(|s| s.delegation(&carried.id, Utc::now()).is_none()));
+        assert!(new.with(|s| s.delegations().live(&carried.id, Utc::now()).is_none()));
         assert!(!path.exists(), "its socket file is removed");
         root.cancel();
     })

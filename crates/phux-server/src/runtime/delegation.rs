@@ -115,7 +115,7 @@ pub(super) fn handle_delegate_agent(
     let key = crate::org_wire::core_session_key(session);
     let prior = state.with(|s| {
         let credential = s.delegation_minted_by(operation.as_bytes(), Utc::now())?;
-        let path = s.delegation_socket(&credential.id)?.to_path_buf();
+        let path = s.delegations().socket_path(&credential.id)?.to_path_buf();
         let same_session = s.registry().session_key(credential.session) == Some(key);
         Some((credential.clone(), path, same_session))
     });
@@ -196,7 +196,7 @@ fn delegation_value(session: WireSessionKey, agent: &DelegatedAgent) -> CommandR
 /// Withdraw delegated credential `id`: close its socket and revoke every
 /// live connection acting as it. `false` when `id` named nothing live.
 pub fn revoke_delegated_agent(state: &SharedState, id: &str) -> bool {
-    let live = state.with(|s| s.delegation(id, Utc::now()).is_some());
+    let live = state.with(|s| s.delegations().live(id, Utc::now()).is_some());
     let clients = state.with_mut(|s| s.withdraw_delegation(id));
     for client in clients {
         super::revocation::revoke_connection(state, client, Revocation::Revoked);

@@ -191,7 +191,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
         let now = Utc::now();
         assert!(
             fx.state
-                .with(|s| s.delegation(&on_beta.credential.id, now).is_none()),
+                .with(|s| s.delegations().live(&on_beta.credential.id, now).is_none()),
             "the credential is gone with its session"
         );
         assert!(fx.state.with(|s| s.connection_revoked(agent.client)));
@@ -215,7 +215,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
 
         assert!(
             fx.state
-                .with(|s| s.delegation(&on_alpha.credential.id, now).is_some()),
+                .with(|s| s.delegations().live(&on_alpha.credential.id, now).is_some()),
             "another session's credential stands"
         );
         assert!(!fx.state.with(|s| s.connection_revoked(bystander.client)));

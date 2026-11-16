@@ -52,7 +52,7 @@ pub(in crate::runtime) fn carry_delegations(
     state: &SharedState,
     mut blob: StateBlob,
 ) -> io::Result<(StateBlob, Vec<OwnedFd>)> {
-    let carried = state.with(|s| s.carried_delegations(Utc::now()));
+    let carried = state.with(|s| s.delegations().carried(Utc::now()));
     let mut owned = Vec::with_capacity(carried.len());
     blob.delegations = Vec::with_capacity(carried.len());
     for delegation in carried {
@@ -190,7 +190,8 @@ pub(in crate::runtime) fn sweep_stale_sockets(state: &SharedState) {
     let (server_socket, live) = state.with(|s| {
         (
             s.config().server_socket_path().map(Path::to_path_buf),
-            s.carried_delegations(Utc::now())
+            s.delegations()
+                .carried(Utc::now())
                 .into_iter()
                 .map(|carried| carried.socket_path)
                 .collect::<Vec<_>>(),
