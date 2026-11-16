@@ -5,13 +5,9 @@ pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
 There is no published SDK or client library yet. A program builds on the
-[versioned `--json` CLI](./scripting.md#json-output-and-errors)
-(`phux agent list --json`; [`phux watch --json`](./scripting.md#watching-events)
-prints one JSON object per line), the [MCP server](./agents.md#mcp) (`phux mcp`
-over stdio), the [server protocol](./protocol.md), or the Rust crates
-`phux-client-runtime` and `phux-client-ffi` ([Embed phux](./embedding.md)).
-Those two crates set `publish = false` ([npm and crates.io](./releasing.md#npm-and-cratesio))
-and are not on crates.io yet.
+entry points below: the versioned `--json` CLI, the MCP server, the server
+protocol, or the Rust crates `phux-client-runtime` and `phux-client-ffi`,
+which are not on crates.io yet ([Not shipped](#not-shipped)).
 
 ## Entry points
 
@@ -138,7 +134,7 @@ the hub.
 
 ## Not shipped
 
-There is no public SDK. [Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
+[Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
 says this repository ships no Python or JavaScript package for driving
 phux. `phux-client-core` and `phux-client-runtime` set `publish = false`.
 [Embedding](./embedding.md) says none of the embed crates is on crates.io
