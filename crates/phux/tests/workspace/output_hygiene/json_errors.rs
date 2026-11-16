@@ -236,3 +236,59 @@ fn no_server_without_json_stays_prose() {
     );
     assert!(!stderr.contains(BANNER_FRAGMENT), "stderr={stderr:?}");
 }
+
+/// `resize --json` reports a refusal on the contract, not as prose: the
+/// pane resolves on the first connection and is gone from the read-back on
+/// the second, which `resize_to` refuses. Exactly one JSON stderr line.
+#[test]
+fn resize_json_reports_a_refusal_as_one_contract_line() {
+    use phux_client::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+    let snapshot = |resources: Vec<ResourceInfo>| {
+        let (session, window) = (SessionId::new(1), WindowId::new(1));
+        SessionSnapshot::new(session, window, ResourceId::local(7))
+            .with_sessions(vec![SessionInfo::new(session, "work")])
+            .with_windows(vec![WindowInfo::new(window, session, "shell")])
+            .with_resources(resources)
+    };
+    let present = snapshot(vec![ResourceInfo::new(
+        ResourceId::local(7),
+        WindowId::new(1),
+        80,
+        24,
+    )]);
+    let gone = snapshot(Vec::new());
+
+    let tmp = TempDir::new().expect("tempdir");
+    let socket = tmp.path().join("phux.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::UnixListener::from_std(listener).expect("listener");
+            ScriptedServer::accept(&listener, ScriptSpec::new().state(present)).await;
+            ScriptedServer::accept(&listener, ScriptSpec::new().state(gone)).await;
+        });
+    });
+
+    let sock = socket.to_str().expect("utf-8 temp path");
+    let doc = assert_json_error_contract(
+        &["resize", "@7", "100x30", "--json", "--socket", sock],
+        Some(tmp.path()),
+        "transport",
+        1,
+    );
+    assert!(
+        doc["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("cannot resize '@7': ")),
+        "{doc}"
+    );
+    server.join().expect("scripted server");
+}

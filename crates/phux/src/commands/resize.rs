@@ -1,5 +1,5 @@
 use std::num::NonZeroU16;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
@@ -73,22 +73,44 @@ pub(crate) fn run_resize(
             Ok(id) => id,
             Err(code) => return code,
         };
-        let outcome = match resize_to(&socket_path, &pane, geometry.cols, geometry.rows).await {
-            Ok(outcome) => outcome,
-            Err(err @ AttachError::Io(_)) => {
-                return json_err::report_no_server(json, &err, &socket_path, "resize");
-            }
-            Err(AttachError::Refused(msg)) => {
-                error!("cannot resize '{target}': {msg} (try `phux ls`)");
-                return ExitCode::FAILURE;
-            }
-            Err(err) => {
-                error!("resize failed: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        report(&pane, outcome, json)
+        match resize_to(&socket_path, &pane, geometry.cols, geometry.rows).await {
+            Ok(outcome) => report(&pane, outcome, json),
+            Err(err) => report_failure(json, &err, &socket_path, target),
+        }
     })
+}
+
+/// Report a failed resize and exit 1: the one-line error document under
+/// `json`, otherwise the prose each failure has always printed.
+fn report_failure(json: bool, err: &AttachError, socket_path: &Path, target: &str) -> ExitCode {
+    if json {
+        return json_err::emit(true, &failure_error(err, socket_path, target), 1);
+    }
+    match err {
+        AttachError::Io(_) => json_err::report_no_server(false, err, socket_path, "resize"),
+        AttachError::Refused(msg) => {
+            error!("cannot resize '{target}': {msg} (try `phux ls`)");
+            ExitCode::FAILURE
+        }
+        other => {
+            error!("resize failed: {other}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The `--json` error for a failed resize. A refusal (the pane missing from
+/// the read-back) names the target; any other failure is the shared
+/// transport classification.
+fn failure_error(err: &AttachError, socket_path: &Path, target: &str) -> json_err::CliError {
+    match err {
+        AttachError::Refused(msg) => json_err::CliError::new(
+            json_err::codes::TRANSPORT,
+            format!("cannot resize '{target}': {msg}"),
+            "check the target with `phux ls`",
+        ),
+        other => json_err::no_server_error(other, socket_path, "resize"),
+    }
 }
 
 /// Emit the outcome and pick the exit code. The report prints on both paths:
