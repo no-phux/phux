@@ -17,8 +17,8 @@ use phux_agent_rules::explain::{
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 
 use super::model::{
-    AgentIdentity, AgentKind, AgentSource, AgentState, AgentStateReport, PaneEvidence, PluginAgent,
-    StateSignal, attention_for, identity, plugin_attention, record_attention, record_state,
+    AgentIdentity, AgentKind, AgentSource, AgentStateReport, PaneEvidence, PluginAgent,
+    StateSignal, identity, plugin_attention,
 };
 
 pub(super) fn infer_agent_state(
@@ -57,7 +57,7 @@ fn report_from_record(
         other if plugins.iter().any(|plugin| plugin.id == other) => AgentKind::Plugin,
         _ => AgentKind::Declared,
     };
-    let state = record_state(record.state);
+    let state = record.state;
 
     let mut sources = vec![AgentSource::new(
         "agent_record",
@@ -87,12 +87,12 @@ fn report_from_record(
         window: evidence.window.clone(),
         agent: identity(&slug, &record.name, kind),
         state,
-        confidence: if state == AgentState::Unknown {
+        confidence: if state == AgentMetaState::Unknown {
             0.3
         } else {
             1.0
         },
-        attention: record_attention(record.effective_attention()),
+        attention: record.effective_attention(),
         title: evidence.title.clone(),
         cwd: evidence.cwd.clone(),
         sources,
@@ -110,12 +110,12 @@ fn report_from_record(
 /// own event stream (ADR-0103). `None` only when there is no session or it has
 /// not spoken. A disagreement with the record is surfaced, not withheld, but
 /// demoted so the record still sorts first.
-fn stream_source(evidence: &PaneEvidence, reported: AgentState) -> Option<AgentSource> {
+fn stream_source(evidence: &PaneEvidence, reported: AgentMetaState) -> Option<AgentSource> {
     let session = evidence.agent_session.as_ref()?;
     if session.state == AgentMetaState::Unknown {
         return None;
     }
-    let derived = record_state(session.state);
+    let derived = session.state;
     let (why, confidence) = if derived == reported {
         (
             format!(
@@ -158,7 +158,7 @@ struct DetectorTrace {
 fn detector_trace(
     slug: &str,
     evidence: &PaneEvidence,
-    reported: AgentState,
+    reported: AgentMetaState,
 ) -> Option<DetectorTrace> {
     let kind = agent_explain::resolve_kind(slug)?;
     let capture = Capture {
@@ -277,8 +277,8 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
     let stream_state = evidence
         .agent_session
         .as_ref()
-        .filter(|session| session.state != AgentMetaState::Unknown)
-        .map(|session| record_state(session.state));
+        .map(|session| session.state)
+        .filter(|state| *state != AgentMetaState::Unknown);
     let mut state = stream_state.map_or(declared, |derived| {
         if let Some(stream) = stream_source(evidence, derived) {
             sources.push(stream);
@@ -296,11 +296,11 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
             0.55,
             format!("{} reports {:?}", plugin.id, plugin.state),
         ));
-        if state.state == AgentState::Unknown {
+        if state.state == AgentMetaState::Unknown {
             state = StateSignal::from_plugin(plugin.state);
         }
     }
-    if state.state == AgentState::Unknown {
+    if state.state == AgentMetaState::Unknown {
         sources.push(AgentSource::new(
             "no_agent_record",
             "no phux.agent/v1 record published for this pane",
@@ -327,7 +327,7 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
         state: state.state,
         confidence: state.confidence,
         attention: plugin.map_or_else(
-            || attention_for(state.state),
+            || state.state.default_attention(),
             |p| plugin_attention(p.attention),
         ),
         title: evidence.title.clone(),
@@ -433,13 +433,13 @@ fn declared_state(evidence: &PaneEvidence, sources: &mut Vec<AgentSource>) -> St
             title,
         ));
         return StateSignal::new(
-            AgentState::Blocked,
+            AgentMetaState::Blocked,
             0.95,
             "waiting on a reported human-answerable ask (ADR-0035 title sentinel)",
         );
     }
     StateSignal::new(
-        AgentState::Unknown,
+        AgentMetaState::Unknown,
         0.2,
         "no phux.agent/v1 record: the server has published no agent state for this pane",
     )

@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 
-use phux_client_core::session::agent_stream::AgentSessionStatus;
 use phux_protocol::ids::ResourceId;
 
 use super::pane_state::AttachKernel;
@@ -40,7 +39,7 @@ pub(super) fn agent_session_rows(kernel: &AttachKernel) -> AgentSessionRows {
     let mut rows: AgentSessionRows = HashMap::new();
     for view in kernel.agent_sessions() {
         let Some(parent) = view.parent else { continue };
-        let Some(state) = meta_state(view.state.status) else {
+        let Some(state) = view.state.status.as_agent_state() else {
             continue;
         };
         rows.entry(parent.clone())
@@ -58,28 +57,17 @@ pub(super) fn agent_session_rows(kernel: &AttachKernel) -> AgentSessionRows {
     rows
 }
 
-/// Map a stream-derived status onto the chrome's state vocabulary. `None`
-/// means the session is retracted and must not be shown.
-pub(super) const fn meta_state(status: AgentSessionStatus) -> Option<AgentMetaState> {
-    Some(match status {
-        AgentSessionStatus::Unknown => AgentMetaState::Unknown,
-        AgentSessionStatus::Idle => AgentMetaState::Idle,
-        AgentSessionStatus::Working => AgentMetaState::Working,
-        AgentSessionStatus::Blocked => AgentMetaState::Blocked,
-        AgentSessionStatus::Done => AgentMetaState::Done,
-        AgentSessionStatus::Ended => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use phux_client_core::session::agent_stream::AgentSessionStatus;
+
     use super::*;
 
     #[test]
     fn ended_sessions_are_retracted() {
-        assert_eq!(meta_state(AgentSessionStatus::Ended), None);
+        assert_eq!(AgentSessionStatus::Ended.as_agent_state(), None);
         assert_eq!(
-            meta_state(AgentSessionStatus::Blocked),
+            AgentSessionStatus::Blocked.as_agent_state(),
             Some(AgentMetaState::Blocked)
         );
     }

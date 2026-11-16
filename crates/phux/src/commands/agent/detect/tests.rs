@@ -1,5 +1,5 @@
 use super::infer_agent_state;
-use crate::commands::agent::model::{AgentKind, AgentState, PaneEvidence, SessionEvidence};
+use crate::commands::agent::model::{AgentKind, PaneEvidence, SessionEvidence};
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 
 /// The committed golden the server detector is pinned against, so the
@@ -73,7 +73,7 @@ fn declared_record_outranks_the_title_sentinel_and_the_screen() {
 
     assert_eq!(state.agent.kind, AgentKind::Claude);
     assert_eq!(state.agent.label, "Reviewer");
-    assert_eq!(state.state, AgentState::Working);
+    assert_eq!(state.state, AgentMetaState::Working);
     assert_eq!(
         state.sources[0].kind, "agent_record",
         "the record is the top-ranked source"
@@ -129,7 +129,7 @@ fn without_a_record_the_projection_asserts_no_state() {
 
         assert_eq!(
             state.state,
-            AgentState::Unknown,
+            AgentMetaState::Unknown,
             "screen {screen:?} must not produce a state"
         );
         assert!(
@@ -152,7 +152,7 @@ fn record_backed_state_carries_the_detector_rule_id_and_region() {
 
     let state = infer_agent_state(&evidence, &[]);
 
-    assert_eq!(state.state, AgentState::Blocked);
+    assert_eq!(state.state, AgentMetaState::Blocked);
     let rule = state
         .sources
         .iter()
@@ -177,7 +177,7 @@ fn a_record_with_no_manifest_reports_the_record_and_says_why_there_is_no_rule() 
     let state = infer_agent_state(&evidence, &[]);
 
     assert_eq!(state.agent.kind, AgentKind::Declared);
-    assert_eq!(state.state, AgentState::Blocked);
+    assert_eq!(state.state, AgentMetaState::Blocked);
     assert_eq!(format!("{:?}", state.attention), "High");
     assert_eq!(state.sources.len(), 1);
     assert_eq!(state.sources[0].kind, "agent_record");
@@ -201,7 +201,7 @@ fn captured_agent_titles_are_identity_evidence_not_state_declarations() {
         let json = serde_json::to_value(&report).expect("serialize report");
         assert_eq!(json["agent"]["id"], slug, "{title}");
         assert_eq!(json["agent"]["kind"], json_kind, "{title}");
-        assert_eq!(report.state, AgentState::Unknown);
+        assert_eq!(report.state, AgentMetaState::Unknown);
     }
     for title in ["example project", "grokking Rust", "cursor-agentic"] {
         let evidence = PaneEvidence::for_test("@6", Some(title), &[]);
@@ -233,7 +233,7 @@ fn shipped_detector_kinds_have_first_class_cli_identities() {
         evidence.record = Some(record("worker", slug, AgentMetaState::Working));
         let report = infer_agent_state(&evidence, &[]);
         assert_eq!(report.agent.kind, expected, "{slug}");
-        assert_eq!(report.state, AgentState::Working);
+        assert_eq!(report.state, AgentMetaState::Working);
         let json = serde_json::to_value(&report).expect("serialize report");
         assert_eq!(json["agent"]["kind"], json_kind, "{slug}");
         assert_eq!(json["agent"]["id"], slug);
@@ -256,7 +256,7 @@ fn the_ask_sentinel_still_reports_blocked_without_a_record() {
     let state = infer_agent_state(&evidence, &[]);
 
     assert_eq!(state.agent.kind, AgentKind::Codex);
-    assert_eq!(state.state, AgentState::Blocked);
+    assert_eq!(state.state, AgentMetaState::Blocked);
     assert_eq!(state.sources[0].kind, "title_ask");
 }
 
@@ -273,6 +273,39 @@ fn json_contains_confidence_and_sources() {
     // `rule` / `region` are absent on a source that is not a rule, so a
     // consumer probes by presence rather than for a sentinel.
     assert!(value["sources"][0].get("rule").is_none());
+}
+
+/// `agent list --json` spells `state` and `attention` in the shared
+/// `phux.agent/v1` vocabulary, one lowercase word each.
+#[test]
+fn json_state_and_attention_words_are_pinned() {
+    use phux_client::agent_meta::AgentAttention;
+    for (state, word, attention) in [
+        (AgentMetaState::Unknown, "unknown", "low"),
+        (AgentMetaState::Idle, "idle", "none"),
+        (AgentMetaState::Working, "working", "normal"),
+        (AgentMetaState::Blocked, "blocked", "high"),
+        (AgentMetaState::Done, "done", "low"),
+    ] {
+        let mut evidence = PaneEvidence::for_test("@4", None, &[]);
+        evidence.record = Some(record("worker", "codex", state));
+        let value = serde_json::to_value(infer_agent_state(&evidence, &[])).expect("serialize");
+        assert_eq!(value["state"], word);
+        assert_eq!(value["attention"], attention, "{word}");
+    }
+    for (attention, word) in [
+        (AgentAttention::None, "none"),
+        (AgentAttention::Low, "low"),
+        (AgentAttention::Normal, "normal"),
+        (AgentAttention::High, "high"),
+    ] {
+        let mut evidence = PaneEvidence::for_test("@4", None, &[]);
+        let mut declared = record("worker", "codex", AgentMetaState::Working);
+        declared.attention = Some(attention);
+        evidence.record = Some(declared);
+        let value = serde_json::to_value(infer_agent_state(&evidence, &[])).expect("serialize");
+        assert_eq!(value["attention"], word);
+    }
 }
 
 /// A confidence reaches JSON as the decimal it was written as, not the
