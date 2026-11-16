@@ -1,5 +1,5 @@
 //! phux-config: the typed `config.toml` schema (`docs/config.md`),
-//! its layered loader, and the status-bar widget contract.
+//! its layered loader, and the status-bar widget specs and validators.
 //!
 //! Parse errors carry `line:col` derived from the TOML span; errors on a
 //! merged layer stack carry no position rather than a fabricated one.
@@ -70,11 +70,7 @@ pub use settings::{
     Applies, CATALOG, Edit, EditOutcome, SettingKind, SettingSection, SettingSpec, SettingsSnapshot,
 };
 pub use uplink::UplinkConfigEntry;
-pub use widget::{
-    Cell, CellStyle, SessionNameWidget, SpacerWidget, StatusBar, StatusWidget, TextWidget,
-    TimeWidget, WidgetCells, WidgetContext, WidgetError, WidgetFactory, WidgetRegistry, WindowInfo,
-    WindowsWidget, row_to_string,
-};
+pub use widget::{CellStyle, WidgetError};
 
 use std::path::Path;
 

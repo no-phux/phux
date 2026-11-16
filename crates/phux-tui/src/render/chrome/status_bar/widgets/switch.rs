@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
-};
+use phux_config::widget::kinds::switch::{SwitchOpts, parse};
+
+use super::{CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `switch` widget.
 #[derive(Debug, Clone)]
@@ -39,9 +39,9 @@ impl StatusWidget for SwitchWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::switch::SwitchOpts { label, chip } = kinds::switch::parse(opts)?;
+    let SwitchOpts { label, chip } = parse(opts)?;
     Ok(Box::new(SwitchWidget { label, chip }))
 }

@@ -26,7 +26,7 @@ use crate::attach::render::{ReplicaWalk, SelectionRect};
 use crate::layout::ArrangementDoc;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
-use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
+use crate::render::chrome::status_bar::{Notice, StatusBarPainter, widgets::WindowInfo};
 use crate::render::overlay::{OverlayState, RenderOverlay, SelectItem, SelectList};
 use crate::settings::{build_resolver_from, config_error_line, keybind_error_line};
 use phux_client::agent_meta::{
@@ -35,7 +35,6 @@ use phux_client::agent_meta::{
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
 use phux_config::KeybindingsCfg;
-use phux_config::widget::WindowInfo;
 
 use super::config_ui::*;
 use super::entry::*;
@@ -116,14 +115,13 @@ fn create_session_target_uses_the_given_directory() {
 }
 
 fn session_name_painter() -> StatusBarPainter {
-    use phux_config::widget::WidgetRegistry;
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry};
     use phux_config::{StatusCfg, Widget};
     let cfg = StatusCfg {
         left: vec![Widget::Bare("session-name".into())],
         ..StatusCfg::default()
     };
-    let bar =
-        phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
+    let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
     StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom)
 }
 

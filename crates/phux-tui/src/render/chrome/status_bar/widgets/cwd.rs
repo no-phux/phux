@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::cwd::{CwdOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `cwd` widget: home-collapse, keep the last `truncate` characters (the
 /// discriminating end of a deep path), then substitute into `format`.
@@ -54,10 +56,10 @@ impl StatusWidget for CwdWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::cwd::CwdOpts { format, truncate } = kinds::cwd::parse(opts)?;
+    let CwdOpts { format, truncate } = parse(opts)?;
     let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
     Ok(Box::new(CwdWidget::new(format, truncate, home)))
 }

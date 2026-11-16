@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
-};
+use phux_config::widget::kinds::help_hints::parse;
+
+use super::{CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 const SEP: &str = " · ";
 
@@ -61,9 +61,9 @@ impl StatusWidget for HelpHintsWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    kinds::help_hints::parse(opts)?;
+    parse(opts)?;
     Ok(Box::new(HelpHintsWidget))
 }

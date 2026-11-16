@@ -16,9 +16,11 @@ const MIN_COLS_OPT: &str = "min-cols";
 const MAX_COLS_OPT: &str = "max-cols";
 const UNIVERSAL_OPTS: [&str; 3] = [STYLE_OPT, MIN_COLS_OPT, MAX_COLS_OPT];
 
-/// Documentation spec for one built-in widget kind. The factory validates its
-/// options against the same const, so the documented surface
-/// (`docs/reference/widgets.md`) and the enforced one cannot drift.
+/// Documentation and validation spec for one built-in widget kind.
+///
+/// The TUI's factory parses its options through the same kind module, so the
+/// documented surface (`docs/reference/widgets.md`) and the enforced one
+/// cannot drift.
 #[derive(Debug, Clone, Copy)]
 pub struct WidgetKindSpec {
     /// Registered kind string (the `kind = "..."` value).

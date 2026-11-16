@@ -13,11 +13,13 @@ use super::*;
 /// blank cell is written as one space. `Err(index)` means the walk ran
 /// off the end of the row — an ORPHAN BASE, a cell the row counts as one
 /// column and the terminal advances two for.
-fn emitted_columns(cells: &[phux_config::widget::Cell]) -> Result<usize, usize> {
+fn emitted_columns(
+    cells: &[phux_tui::render::chrome::status_bar::widgets::Cell],
+) -> Result<usize, usize> {
     let mut i = 0usize;
     let mut columns = 0usize;
     while i < cells.len() {
-        let w = phux_config::widget::cell_columns(&cells[i]).max(1);
+        let w = phux_tui::render::chrome::status_bar::widgets::cell_columns(&cells[i]).max(1);
         if i + w > cells.len() {
             return Err(i);
         }
@@ -68,7 +70,7 @@ fn a_wide_tab_separator_never_overruns_the_budget() {
 
 #[test]
 fn hidden_tab_arrows_navigate_even_beside_a_long_active_label() {
-    use phux_config::widget::CellHit;
+    use phux_tui::render::chrome::status_bar::widgets::CellHit;
     let windows = [
         win("before", false),
         win("a-long-active-window", true),
@@ -96,7 +98,7 @@ fn hidden_tab_arrows_navigate_even_beside_a_long_active_label() {
 
 #[test]
 fn tab_navigation_stays_in_bounds_at_every_width_and_active_position() {
-    use phux_config::widget::CellHit;
+    use phux_tui::render::chrome::status_bar::widgets::CellHit;
     let widget = build_spec("windows", &[]).expect("windows builds");
     for active in 0..3 {
         let windows: Vec<_> = ["漢字-long-name", "short", "another-long-name"]
@@ -137,8 +139,8 @@ fn tab_navigation_stays_in_bounds_at_every_width_and_active_position() {
 /// boundaries too.
 #[test]
 fn a_composed_row_advances_exactly_its_own_width() {
-    use phux_config::widget::{StatusBar, WidgetRegistry};
     use phux_config::{StatusCfg, Widget, WidgetSpec};
+    use phux_tui::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry};
 
     let windows = vec![win("\u{65e5}\u{672c}", true), win("b", false)];
     let cfg = StatusCfg {
@@ -187,9 +189,8 @@ fn a_clip_marks_the_cut_even_through_a_wide_character() {
         );
         if budget < 4 {
             assert!(
-                out.cells
-                    .iter()
-                    .any(|c| c.text.first() == Some(&phux_config::widget::ELLIPSIS)),
+                out.cells.iter().any(|c| c.text.first()
+                    == Some(&phux_tui::render::chrome::status_bar::widgets::ELLIPSIS)),
                 "budget {budget}: a clipped strip must carry its cut marker"
             );
         }
@@ -214,8 +215,8 @@ fn a_clip_marks_the_cut_even_through_a_wide_character() {
 /// so the ADR-0087 slack path is exercised at those boundaries too.
 #[test]
 fn the_slot_clamp_never_leaves_an_orphan_base() {
-    use phux_config::widget::{StatusBar, WidgetRegistry};
     use phux_config::{StatusCfg, Widget};
+    use phux_tui::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry};
 
     /// Renders "aa日本語..." and IGNORES its budget entirely.
     #[derive(Debug)]

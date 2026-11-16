@@ -1,12 +1,14 @@
 //! `spacer` widget — elastic blank space that pushes its neighbours apart.
 //!
 //! Zero natural width; on a row that fits it is paid an even share of the
-//! slack (see [`crate::widget::StatusBar::render`]), and on a full row it
+//! slack (see [`super::StatusBar::render`]), and on a full row it
 //! renders nothing.
 
 use std::collections::BTreeMap;
 
-use crate::widget::{Cell, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::spacer::parse;
+
+use super::{Cell, StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `spacer` widget.
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,9 +32,9 @@ impl StatusWidget for SpacerWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    kinds::spacer::parse(opts)?;
+    parse(opts)?;
     Ok(Box::new(SpacerWidget))
 }

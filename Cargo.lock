@@ -3158,13 +3158,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
- "smallvec",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
  "toml_edit",
  "tracing",
- "unicode-width",
 ]
 
 [[package]]
@@ -3473,6 +3471,7 @@ version = "0.154.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "chrono",
  "insta",
  "libghostty-vt",
  "phux-client",
@@ -3492,6 +3491,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "smallvec",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3499,6 +3499,7 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [package]
 name = "phux-config"
-description = "Config (TOML) loader + status-bar widget contract for phux."
+description = "Config (TOML) loader + status-bar widget specs for phux."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -18,19 +18,6 @@ workspace = true
 phux-config-core.workspace = true
 phux-protocol.workspace = true
 serde.workspace = true
-# Used to build `Cell::text` inline; matches phux-protocol's storage type
-# for `Cell::text` (see phux-x7a).
-smallvec.workspace = true
-# `WidgetCells::cells.len()` IS the status bar's width contract — the
-# fitting pass, the narrowing order, the elastic-spacer slack (ADR-0087)
-# and the click-target map all measure in cells. A window name is
-# arbitrary text, so that count is only true if a double-width character
-# occupies two cells: counting it as one made a CJK window name render
-# about twice as wide as the bar believed, overflow the row, and wrap
-# into the pane grid. Already a workspace dependency (vendored and pinned
-# for phux-client-core's predict layer and phux-client's chrome), so this
-# adds a consumer rather than new third-party code.
-unicode-width = { workspace = true }
 toml.workspace = true
 # Comment-preserving edits to the user's config.toml for the settings
 # catalogue's writer (`settings::write_edit`, phux-u1tq.3). A settings page
@@ -49,7 +36,7 @@ serde_path_to_error.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# strftime-style formatting for the `time` status-bar widget.
+# Validates the `time` status-bar widget's strftime `format`.
 chrono.workspace = true
 
 [dev-dependencies]

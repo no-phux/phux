@@ -215,7 +215,7 @@ fn windows_widget_renders_tabs_and_markers() {
 
 #[test]
 fn help_hints_widget_stamps_each_destination_with_its_action() {
-    use phux_config::widget::CellHit;
+    use phux_tui::render::chrome::status_bar::widgets::CellHit;
 
     let widget = build_spec("help-hints", &[]).expect("help-hints builds");
     let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);

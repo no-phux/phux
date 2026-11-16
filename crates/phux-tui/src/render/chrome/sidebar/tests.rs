@@ -1,6 +1,6 @@
 use super::*;
 
-use phux_config::widget::WindowInfo;
+use crate::render::chrome::status_bar::widgets::WindowInfo;
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 

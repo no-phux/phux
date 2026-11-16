@@ -1,6 +1,6 @@
 use super::*;
-use crate::schema::WidgetSpec;
-use crate::widget::{CellHit, WidgetCells, WindowInfo};
+use crate::render::chrome::status_bar::widgets::{CellHit, WidgetCells, WindowInfo};
+use phux_config::WidgetSpec;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

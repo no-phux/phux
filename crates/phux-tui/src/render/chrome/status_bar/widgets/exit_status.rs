@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::exit_status::{ExitOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `exit` widget.
 #[derive(Debug, Clone)]
@@ -25,10 +27,10 @@ impl StatusWidget for ExitWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::exit_status::ExitOpts { format } = kinds::exit_status::parse(opts)?;
+    let ExitOpts { format } = parse(opts)?;
     Ok(Box::new(ExitWidget { format }))
 }
 

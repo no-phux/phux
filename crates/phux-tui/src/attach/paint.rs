@@ -908,8 +908,8 @@ mod tests {
     use crate::layout::{LayoutNode, SplitDir};
     use crate::render::ChromeBreakpoints;
     use crate::render::chrome::sidebar::SidebarPainter;
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry, WindowInfo};
     use crate::render::theme::Theme;
-    use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
 
     const LEFT20: SidebarReservation = SidebarReservation {
@@ -949,15 +949,14 @@ mod tests {
             left: vec![Widget::Bare("session-name".into())],
             ..Default::default()
         };
-        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
-            .expect("bar build");
+        let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar build");
         StatusBarPainter::new(bar, Position::Bottom)
     }
 
     /// A left-docked sidebar painter primed with one window.
     fn build_sidebar() -> SidebarPainter {
         let mut painter = SidebarPainter::new(Theme::default());
-        painter.set_windows(vec![phux_config::widget::WindowInfo {
+        painter.set_windows(vec![WindowInfo {
             name: "editor".to_owned(),
             active: true,
             zoomed: false,

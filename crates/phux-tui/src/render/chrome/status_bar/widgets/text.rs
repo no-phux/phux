@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::text::{TextOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `text` widget: renders [`Self::value`] verbatim.
 #[derive(Debug, Clone)]
@@ -17,9 +19,9 @@ impl StatusWidget for TextWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::text::TextOpts { value } = kinds::text::parse(opts)?;
+    let TextOpts { value } = parse(opts)?;
     Ok(Box::new(TextWidget { value }))
 }

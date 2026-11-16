@@ -2,9 +2,9 @@
 //! kind with its options and defaults.
 //!
 //! Renders from `phux_config::widget::BUILTIN_WIDGET_SPECS` — doc-spec
-//! consts colocated with the widget factories, each of which validates
-//! its options against its own spec, so the documented surface is the
-//! enforced one. A unit test in phux-config pins the spec list to
+//! consts colocated with each kind's option validator, which the TUI's
+//! widget factories build from, so the documented surface is the
+//! enforced one. A unit test in phux-tui pins the spec list to
 //! `WidgetRegistry::with_builtins()`, and the freshness test in
 //! `super::tests` forces this page's regeneration whenever either moves.
 
@@ -104,12 +104,12 @@ pub(crate) fn page() -> Page {
 
 #[cfg(test)]
 mod tests {
-    use phux_config::widget::WidgetRegistry;
+    use phux_tui::render::chrome::status_bar::widgets::WidgetRegistry;
 
     use super::page;
 
     /// The page documents exactly the kinds `with_builtins()` registers —
-    /// the page-level face of the registry-vs-spec pin in phux-config. In
+    /// the page-level face of the registry-vs-spec pin in phux-tui. In
     /// particular, the seven never-registered kinds the old hand table
     /// promised (`window`, `pane`, `host`, `mode`, `key-indicator`,
     /// `text`, `spacer`) can never reappear without being registered.

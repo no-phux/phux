@@ -1,6 +1,6 @@
 use super::*;
-use crate::schema::WidgetSpec;
-use crate::widget::WidgetRegistry;
+use crate::render::chrome::status_bar::widgets::WidgetRegistry;
+use phux_config::WidgetSpec;
 use std::time::UNIX_EPOCH;
 
 fn build(opts: &[(&str, toml::Value)]) -> Result<Box<dyn StatusWidget>, WidgetError> {
@@ -154,8 +154,8 @@ fn parse_ansi_disabled_strips_sgr_instead_of_styling() {
 
 #[test]
 fn status_bar_exec_feeds_walks_all_slots() {
-    use crate::schema::{StatusCfg, StatusPosition, Widget};
-    use crate::widget::StatusBar;
+    use crate::render::chrome::status_bar::widgets::StatusBar;
+    use phux_config::{StatusCfg, StatusPosition, Widget};
     let exec = |cmd: &str| {
         Widget::Spec(WidgetSpec {
             kind: "exec".to_owned(),

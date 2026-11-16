@@ -743,10 +743,11 @@ pub(in crate::attach::input_dispatch) fn bar_click_action(
     painter: Option<&crate::render::chrome::status_bar::StatusBarPainter>,
     x: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
+    use crate::render::chrome::status_bar::widgets::CellHit;
     match painter?.hit_at(x)? {
-        phux_config::widget::CellHit::Window(index) => select_window_action(index),
-        phux_config::widget::CellHit::Switch => Some(bare_action("agent-fleet")),
-        phux_config::widget::CellHit::Action(action) => Some(bare_action(action)),
+        CellHit::Window(index) => select_window_action(index),
+        CellHit::Switch => Some(bare_action("agent-fleet")),
+        CellHit::Action(action) => Some(bare_action(action)),
     }
 }
 

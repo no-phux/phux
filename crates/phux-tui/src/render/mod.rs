@@ -17,7 +17,7 @@ pub use theme::Theme;
 
 /// The single-cell "there is more here than fits" mark, shared with the
 /// status-bar composer so every surface cuts the same way.
-pub const ELLIPSIS: char = phux_config::widget::ELLIPSIS;
+pub use chrome::status_bar::widgets::ELLIPSIS;
 
 /// Clip `text` from the left to at most `max` display cells, led by
 /// [`ELLIPSIS`] when cut, so the tail stays: a path keeps its deepest
@@ -105,7 +105,7 @@ pub fn clip_text(s: &str, max: usize) -> String {
 
 /// Chrome measures text with the status bar's rules: one definition of what
 /// is printable and how wide it is.
-pub use phux_config::widget::{cell_width, display_width, is_bidi_control};
+pub use chrome::status_bar::widgets::{cell_width, display_width, is_bidi_control};
 
 #[cfg(test)]
 mod home_to_tilde_tests {

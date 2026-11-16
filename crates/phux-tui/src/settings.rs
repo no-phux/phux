@@ -10,9 +10,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::render::chrome::status_bar::widgets::WidgetError;
 use phux_config::keybind::{BindingDiagnostic, Resolver};
 use phux_config::plugin::PluginManifest;
-use phux_config::widget::WidgetError;
 use phux_config::{Config, ConfigError, KeybindingsCfg, SidebarPosition};
 
 use crate::attach::paint::SidebarEdge;
@@ -358,17 +358,17 @@ fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> Key
 ///
 /// # Errors
 ///
-/// The [`phux_config::widget::StatusBar::build`] error.
+/// The [`crate::render::chrome::status_bar::widgets::StatusBar::build`] error.
 pub fn compose_status_bar(
     cfg: &Config,
     manifests: &[PluginManifest],
 ) -> Result<Option<StatusBarPainter>, WidgetError> {
-    let registry = phux_config::WidgetRegistry::with_builtins();
+    let registry = crate::render::chrome::status_bar::widgets::WidgetRegistry::with_builtins();
     // Invalid plugin contributions are dropped with a warning inside the
     // merge; a broken user config still fails the build.
     let mut status = cfg.status.clone();
     phux_config::widget::merge_widget_contributions(&mut status, manifests);
-    let bar = phux_config::widget::StatusBar::build(&status, &registry)?;
+    let bar = crate::render::chrome::status_bar::widgets::StatusBar::build(&status, &registry)?;
     if bar.is_empty() {
         return Ok(None);
     }

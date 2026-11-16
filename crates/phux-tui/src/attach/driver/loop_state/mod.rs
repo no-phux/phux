@@ -52,7 +52,7 @@ pub(super) use crate::attach::session_mirror::SessionMirror;
 pub(super) use crate::attach::tty_input::TtyInput;
 pub(super) use crate::predict::{PredictionState, PredictiveConfig};
 pub(super) use crate::render::chrome::sidebar::SidebarPainter;
-pub(super) use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
+pub(super) use crate::render::chrome::status_bar::{Notice, StatusBarPainter, widgets::ExecFeed};
 pub(super) use crate::render::overlay::{OverlayState, ToastOverlay};
 pub(super) use crate::settings::TuiSettings;
 pub(super) use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
@@ -648,7 +648,7 @@ impl SessionLoop {
     }
 
     /// The `exec` widget feeds the driver spawns bounded interval runners for.
-    pub(super) fn exec_feeds(&self) -> Vec<phux_config::widget::ExecFeed> {
+    pub(super) fn exec_feeds(&self) -> Vec<ExecFeed> {
         self.settings
             .status_bar
             .as_ref()

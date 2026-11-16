@@ -1,6 +1,6 @@
 //! The row model and the hit test that reads it.
 
-use phux_config::widget::WindowInfo;
+use crate::render::chrome::status_bar::widgets::WindowInfo;
 
 use crate::layout::Rect;
 use crate::render::chrome::sidebar_sections::PluginShape;

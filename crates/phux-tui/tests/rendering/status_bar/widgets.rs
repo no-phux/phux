@@ -1,4 +1,4 @@
-//! Integration tests for `phux_config::widget`.
+//! Integration tests for the status-bar widget runtime.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use phux_config::WidgetSpec;
-use phux_config::widget::{
+use phux_tui::render::chrome::status_bar::widgets::{
     CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetRegistry,
     WindowBadge, WindowInfo,
 };

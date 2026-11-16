@@ -1,12 +1,12 @@
 //! Status-bar chrome.
 //!
-//! [`StatusBarPainter`] lays the composed [`phux_config::widget::StatusBar`]
+//! [`StatusBarPainter`] lays the composed [`widgets::StatusBar`]
 //! row into a `cols x 1` buffer and emits raw VT ending in an SGR reset; the
 //! caller restores the pane cursor (ADR-0020). Defaults to [`Position::Top`].
 
 use std::time::SystemTime;
 
-use phux_config::widget::{Cell as WidgetCell, StatusBar, WidgetContext, WindowInfo};
+use widgets::{Cell as WidgetCell, StatusBar, WidgetContext, WindowInfo};
 
 use crate::render::theme::Theme;
 
@@ -102,6 +102,7 @@ pub const fn make_context(session_name: &str, now: SystemTime) -> StatusBarConte
 mod cells;
 mod notice;
 mod paint;
+pub mod widgets;
 
 pub use notice::{NOTICE_TTL, Notice, NoticeSeverity};
 

@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::session_name::{SessionNameOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `session-name` widget: `prefix + format` with `{name}` replaced by the
 /// session name truncated to `max_len` characters.
@@ -32,14 +34,14 @@ impl StatusWidget for SessionNameWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::session_name::SessionNameOpts {
+    let SessionNameOpts {
         prefix,
         max_len,
         format,
-    } = kinds::session_name::parse(opts)?;
+    } = parse(opts)?;
     Ok(Box::new(SessionNameWidget {
         prefix,
         max_len,

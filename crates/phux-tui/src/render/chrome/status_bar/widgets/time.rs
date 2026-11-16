@@ -6,7 +6,9 @@ use std::time::Duration;
 use chrono::format::StrftimeItems;
 use chrono::{DateTime, Local};
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
+use phux_config::widget::kinds::time::{TimeOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `time` widget: [`WidgetContext::now`] in the local zone, formatted with a
 /// strftime spec validated when the options were parsed.
@@ -41,9 +43,9 @@ impl StatusWidget for TimeWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::time::TimeOpts { format } = kinds::time::parse(opts)?;
+    let TimeOpts { format } = parse(opts)?;
     Ok(Box::new(TimeWidget { format }))
 }

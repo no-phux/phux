@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
-use phux_config::widget::{
+use phux_tui::render::chrome::status_bar::widgets::{
     CellHit, StatusBar, WidgetContext, WidgetRegistry, WindowInfo, row_to_string,
 };
 
@@ -24,7 +24,7 @@ fn shipped_row(
     width: u16,
     session: &str,
     windows: &[WindowInfo],
-) -> Vec<phux_config::widget::Cell> {
+) -> Vec<phux_tui::render::chrome::status_bar::widgets::Cell> {
     let cfg = phux_config::parse_with_defaults("", Path::new("/nonexistent/config.toml"))
         .expect("shipped defaults parse");
     let bar = StatusBar::build(&cfg.status, &WidgetRegistry::with_builtins())

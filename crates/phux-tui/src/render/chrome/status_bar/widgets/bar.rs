@@ -5,8 +5,8 @@
 //! Three slots (`docs/status-bar.md#the-status-bar`) are placed left-flush,
 //! right-flush, and centered in the gap between.
 
-use crate::schema::{StatusCfg, Widget};
-use crate::widget::{Cell, ExecFeed, StatusWidget, WidgetContext, WidgetError, WidgetRegistry};
+use super::{Cell, ExecFeed, StatusWidget, WidgetContext, WidgetError, WidgetRegistry};
+use phux_config::{StatusCfg, Widget};
 
 /// One composed slot's worth of widgets.
 struct Slot {
@@ -89,7 +89,7 @@ impl MeasuredSlot<'_> {
         // A widget may under-spend but never overrun; clamp anyway, without
         // leaving half a double-width character to wrap the row.
         out.truncate(budget);
-        crate::widget::drop_orphan_base(&mut out);
+        super::drop_orphan_base(&mut out);
         out
     }
 }

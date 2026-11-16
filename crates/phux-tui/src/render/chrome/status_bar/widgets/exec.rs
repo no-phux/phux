@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::widget::{
-    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
-};
+use phux_config::widget::kinds::exec::{ExecOpts, parse};
+
+use super::{Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// The bar repaints once a second, so a faster cadence is never visible.
 const MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -101,14 +101,14 @@ impl StatusWidget for ExecWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::exec::ExecOpts {
+    let ExecOpts {
         argv,
         interval,
         parse_ansi,
-    } = kinds::exec::parse(opts)?;
+    } = parse(opts)?;
     Ok(Box::new(ExecWidget::new(argv, interval, parse_ansi)))
 }
 

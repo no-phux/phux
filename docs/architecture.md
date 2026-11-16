@@ -76,7 +76,7 @@ Cargo manifests define the actual edges.
 | `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
 | `quictun` | blind QUIC relay; knows nothing about phux |
 | `phux-work` | SQLite work store with a single-writer keeper process, and the `phux.mission/v1` mission documents over it |
-| `phux-config` | the TUI `config.toml` schema, loader, widget contract |
+| `phux-config` | the TUI `config.toml` schema, loader, widget specs and validators |
 | `phux-dial` | outbound QUIC and WebSocket dialing: TLS pinning, bearer token; with `relay`, quictun bound to phux's ALPNs and state directory |
 | `phux-client-core` | sans-IO session kernel, engine adapter, layout, multi-pane, predictive echo; no tokio, no ratatui, compiles to wasm |
 | `phux-record` | asciicast codec, VT replay, GIF/APNG export |
@@ -92,7 +92,7 @@ Cargo manifests define the actual edges.
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
 | `phux-server` | the daemon: hosts resources and serves them to clients, including the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
-| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, widget runtime, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
 | `phux-wire-fixtures` | frame builders for client-side tests; wasm-safe; dev-only |

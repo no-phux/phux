@@ -2,14 +2,14 @@
 
 use std::time::Duration;
 
-use phux_config::widget::CellStyle;
+use crate::render::chrome::status_bar::widgets::CellStyle;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
 #[allow(clippy::wildcard_imports)]
 use super::cells::*;
 use super::*;
-use phux_config::widget::WidgetRegistry;
+use crate::render::chrome::status_bar::widgets::WidgetRegistry;
 use phux_config::{StatusCfg, Widget, WidgetSpec};
 use std::time::UNIX_EPOCH;
 

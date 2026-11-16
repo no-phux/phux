@@ -4,9 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
-};
+use phux_config::widget::kinds::button::{ButtonOpts, parse};
+
+use super::{CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
 
 /// `button` widget.
 #[derive(Debug, Clone)]
@@ -41,14 +41,14 @@ impl StatusWidget for ButtonWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::button::ButtonOpts {
+    let ButtonOpts {
         action,
         label,
         style,
-    } = kinds::button::parse(opts)?;
+    } = parse(opts)?;
     Ok(Box::new(ButtonWidget {
         action,
         label,

@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
+use phux_config::widget::kinds::windows::{WindowsOpts, parse};
+
+use super::{
     Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WindowInfo,
-    display_width, kinds,
+    display_width,
 };
 
 /// `windows` (tab-bar) widget.
@@ -225,16 +227,16 @@ impl StatusWidget for WindowsWidget {
     }
 }
 
-pub(in crate::widget) fn factory(
+pub(super) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let kinds::windows::WindowsOpts {
+    let WindowsOpts {
         active,
         inactive,
         index,
         separator,
         format,
-    } = kinds::windows::parse(opts)?;
+    } = parse(opts)?;
     Ok(Box::new(WindowsWidget {
         active,
         inactive,
