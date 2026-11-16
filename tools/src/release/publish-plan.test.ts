@@ -4,6 +4,8 @@ import { Classifier } from "../routing/classify.ts";
 import { plan, type Plan as PushPlan } from "../routing/plan.ts";
 import {
   applyRuneGate,
+  ciGreenResult,
+  ciPushState,
   ciRefusal,
   decide,
   nativeReleaseProof,
@@ -70,6 +72,19 @@ describe("validationState", () => {
       conclusion: "failure",
     };
     expect(state(run, queued)).toBe("success");
+  });
+
+  test("no push run is missing, and a run still going keeps its status", () => {
+    const push = (status: string) => ({ ...run, status });
+    expect(ciPushState([], "abc", ".github/workflows/ci.yml")).toBe("missing");
+    expect(ciPushState([push("in_progress")], "abc", ".github/workflows/ci.yml")).toBe(
+      "in_progress",
+    );
+    expect(ciPushState([push("queued")], "abc", ".github/workflows/ci.yml")).toBe("queued");
+    expect(ciPushState([run], "abc", ".github/workflows/ci.yml")).toBe("success");
+    expect(ciPushState([{ ...run, event: "merge_group" }], "abc", ".github/workflows/ci.yml")).toBe(
+      "missing",
+    );
   });
 });
 
@@ -390,6 +405,39 @@ describe("merge_group ci-green", () => {
       ),
     ).toContain("no successful rune-macos child");
   });
+
+  test("push missing plus a qualifying merge_group run is accepted", () => {
+    expect(
+      ciGreenResult(sha, "missing", "pending", () => decide(queueRun, jobs())),
+    ).toBeUndefined();
+  });
+
+  test("push in_progress plus a qualifying merge_group run refuses", () => {
+    let consulted = false;
+    const refusal = ciGreenResult(sha, "in_progress", "success", () => {
+      consulted = true;
+      return undefined;
+    });
+    expect(consulted).toBe(false);
+    expect(refusal).toContain("rerun when green");
+  });
+
+  test("push queued plus a qualifying merge_group run refuses", () => {
+    let consulted = false;
+    const refusal = ciGreenResult(sha, "queued", "success", () => {
+      consulted = true;
+      return undefined;
+    });
+    expect(consulted).toBe(false);
+    expect(refusal).toContain("rerun when green");
+  });
+
+  test.each(["waiting", "pending", "requested"])(
+    "push %s plus a qualifying merge_group run refuses",
+    (push) => {
+      expect(ciGreenResult(sha, push, "success", () => undefined)).toContain("rerun when green");
+    },
+  );
 
   test("an identical-tree receipt covers a lane reuse would skip, and not one it keeps", () => {
     const skippedLint = jobs((id) => (id === "lint" ? "skipped" : "success"));

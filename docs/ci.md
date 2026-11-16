@@ -76,7 +76,10 @@ Native main pushes upload full-coverage receipts after the aggregate succeeds.
 A stable draft still needs that exact SHA's successful main push `ci` plus a
 full native receipt: same tree, workflow and both-leg coverage. `ci-green`
 (the Rune tag preflight) accepts that same push proof. It also accepts one
-`merge_group` `ci.yml` run for the exact SHA when every part of this holds.
+`merge_group` `ci.yml` run for the exact SHA, and only when no push `ci` run
+exists (`missing`). A push that is queued, in progress, waiting, pending, or
+requested keeps the push refusal: a Rune tag cannot be undone if that push
+later goes red. When the fallback does apply, every part of this holds.
 `head_sha` is that SHA, the event is `merge_group`, the conclusion is
 `success`, and `head_branch` starts with `gh-readonly-queue/`. The SHA is
 reachable from `main`: `compare` of `main...SHA` reports `behind` or
@@ -86,11 +89,14 @@ off `ci.yml`'s plan gates, not from a second list. A skipped or cancelled
 required job is missing. The only exception is an identical-tree receipt
 that proves the lane (`tools/src/routing/receipt.ts`): same tree, workflow
 and coverage, and not a lane reuse still runs (`ffi`, native setup, rust
-icount). The `rune-macos` workflow called inside that same run passed.
+icount). That lookup does not pass a push SHA, so it accepts an
+identical-tree pull-request receipt as well as a merge group, the same
+reuse routing already uses. The `rune-macos` workflow called inside that same run passed.
 The full-coverage native receipt is still required on either path. A
 skipped or cheap green, an ancestor receipt, another SHA, a pull request,
-or a dispatch cannot substitute. If that evidence is missing, fallback (C)
-is a push-equivalent `ci` run on that exact SHA. `ci.yml`'s
+or a dispatch cannot substitute. Fallback (C), only when no push run
+exists and this queue evidence is not enough, is a push-equivalent `ci`
+run on that exact SHA. `ci.yml`'s
 `workflow_dispatch` has no inputs, and nothing dispatches `ci` for an
 arbitrary SHA. Missing or expired proof blocks publication.
 
@@ -102,8 +108,8 @@ See [releasing](./releasing.md).
 
 Missing or expired receipts hold a draft; rerunning the original qualified
 push can refresh its proof. A batch merge may produce a push only for its
-final commit. An intermediate SHA can still pass `ci-green` when its own
-`merge_group` run meets the rule above. Another SHA, a pull-request green,
+final commit. An intermediate SHA with no push run can still pass `ci-green` when its own
+`merge_group` run meets the rule above. A push that is still running cannot. Another SHA, a pull-request green,
 or a dispatch is not a substitute. `release.yml` still requires the push
 `ci` conclusion for a stable draft.
 

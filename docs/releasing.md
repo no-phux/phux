@@ -102,13 +102,14 @@ By hand:
    `clients/rune/RELEASE_NOTES.md`, whose first words must be
    `**Phux Rune VERSION**`. Merge it.
 2. `ci-green` must pass for that SHA, then push `rune-vVERSION`.
-   A green push `ci` on `main` works. So does one successful `merge_group`
-   `ci.yml` run whose `head_sha` is that SHA, whose ref starts
-   `gh-readonly-queue/`, and whose `main...SHA` compare is `behind` or
-   `identical`. Every push-plan job passed. A skip or cancel misses unless
-   an identical-tree receipt proves that lane. That run's `rune-macos` call
-   passed, and the full native receipt is still required. Fallback (C): a
-   push-equivalent `ci` run on that exact SHA. Nothing dispatches it today.
+   A green push works. A `merge_group` run counts only when no push run
+   exists; a queued or in-progress push keeps the old refusal. The queue
+   run must succeed on that SHA under `gh-readonly-queue/`, with
+   `main...SHA` `behind` or `identical`. Every push-plan job passed. A
+   skip misses unless an identical-tree receipt proves the lane. With no
+   push SHA, a matching PR receipt counts, as routing reuse does. Called
+   `rune-macos` and the native receipt must pass. Fallback (C) applies
+   only with no push run: a push-equivalent `ci` on that SHA. No dispatch.
 3. `rune-client.yml` refuses a tag clients cannot read, that disagrees with
    `Cargo.toml` or the notes, or fails `ci-green`. Rerun if ci was running.
    A refused tag costs its number.
@@ -130,9 +131,7 @@ Publishing and moving the feed are one job; there is no manual promotion step.
 Both `ci` and `rune-macos` push completions on this repository's main branch
 reconcile draft publication and Rune tagging. Native completion does not run
 Release Please a second time. PR, fork, unrelated-workflow, and non-main
-completions cannot enter that path. The completion is only a wake-up.
-Publish keeps the push SHA. `ci-green` also accepts the rule above; the
-schedule retries a bump no push woke.
+completions cannot enter that path. The completion is only a wake-up. The schedule retries a bump no push woke.
 
 **Floors.** Linux archives need glibc 2.39, what the `ubuntu-24.04` build host
 links; this is a higher floor than the CLI's 2.35. macOS 14.0 is
