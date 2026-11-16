@@ -110,8 +110,8 @@ pub(crate) struct PasteArgs {
     about = "Run a command in a pane and capture its exit code",
     long_about = "Run a command in a pane and capture its exit code.\n\n\
             Reports the command's exit code, output, and duration. \
-            Brackets the command with sentinels to capture `$?`, so it \
-            assumes a POSIX shell (sh/bash/zsh) — and refuses (exit 2) when a \
+            Brackets the command with sentinels to capture the exit status, \
+            so it drives sh, bash, zsh, and fish — and refuses (exit 2) when a \
             shell is not what is reading the pane, since against `vim` or \
             `less` the same bytes are keystrokes, not a command; `--force` \
             skips that precondition. The process exit code mirrors \

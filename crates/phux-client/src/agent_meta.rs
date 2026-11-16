@@ -148,12 +148,22 @@ pub fn shell_availability(
 /// The available-shell precondition for `terminal`, from two side-effect-free
 /// reads; fails closed when neither answers.
 pub async fn pane_shell_availability(socket: &Path, terminal: &ResourceId) -> ShellAvailability {
+    pane_shell_reading(socket, terminal).await.1
+}
+
+/// [`pane_shell_availability`] plus the occupant record it read, for a
+/// caller that also needs to know which shell it will be typing into.
+pub async fn pane_shell_reading(
+    socket: &Path,
+    terminal: &ResourceId,
+) -> (Option<PaneOccupantRecord>, ShellAvailability) {
     let occupant = read_pane_occupant(socket, terminal).await;
     let screen = crate::snapshot::get_screen_scrollback(socket, terminal.clone(), None, true).await;
     let screen = screen
         .as_ref()
         .map_or(ShellCheck::Unanswerable, shell_check);
-    shell_availability(occupant.as_ref(), screen)
+    let availability = shell_availability(occupant.as_ref(), screen);
+    (occupant, availability)
 }
 
 /// Read the detector-owned occupant record, allowing its first tick to land.

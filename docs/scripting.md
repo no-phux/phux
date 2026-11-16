@@ -147,8 +147,8 @@ fi
 
 **`run` only types into a shell.** When something else is in the foreground,
 such as `vim` or `less`, it refuses with exit 2, because there the same bytes
-would be keystrokes. `--force` skips that check. It assumes a POSIX shell
-(sh, bash, zsh).
+would be keystrokes. `--force` skips that check. It drives sh, bash, zsh and
+fish; in nu, xonsh, elvish or PowerShell use `send-keys` and `wait`.
 
 `--timeout` covers the whole run, connecting included, and defaults to 600
 seconds. A run that times out exits 125. Giving up does not stop the command

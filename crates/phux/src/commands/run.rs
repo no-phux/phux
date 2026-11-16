@@ -148,6 +148,10 @@ fn report_outcome(
     }
 }
 
+/// Shells `run`'s sentinel line doesn't parse in: their foreground is
+/// refused like any program, but the refusal says why and what to use instead.
+const UNDRIVABLE_SHELLS: [&str; 5] = ["nu", "xonsh", "elvish", "pwsh", "powershell"];
+
 /// The refusal for a pane whose foreground is not a shell, naming what is:
 /// `run` types a command line, which would be keystrokes into `vim`. Same code
 /// and `--force` remedy as `phux agent start`.
@@ -166,6 +170,19 @@ fn not_available_error(
             format!("'{command}' was not sent to '{target}'"),
             remedy,
         ),
+        ShellAvailability::BusyProcess(foreground)
+            if UNDRIVABLE_SHELLS.contains(&foreground.as_str()) =>
+        {
+            json_err::CliError::new(
+                codes::AGENT_PANE_NOT_AVAILABLE,
+                format!(
+                    "'{target}' runs the '{foreground}' shell, which `phux run` cannot drive: \
+                     it captures the exit code with sh/bash/zsh/fish syntax; '{command}' was \
+                     not sent"
+                ),
+                "type the command with `phux send-keys` and observe it with `phux wait`",
+            )
+        }
         ShellAvailability::BusyProcess(foreground) => json_err::CliError::new(
             codes::AGENT_PANE_NOT_AVAILABLE,
             format!(
@@ -359,6 +376,17 @@ mod tests {
         assert!(err.message.contains("'vim'"), "{}", err.message);
         assert!(err.message.contains("was not sent"), "{}", err.message);
         assert!(err.remedy.contains("--force"), "{}", err.remedy);
+    }
+
+    /// A nu pane is refused by name with the send-keys route, not `--force`,
+    /// which would type a line nu can't parse.
+    #[test]
+    fn a_shell_run_cannot_drive_is_named_with_the_alternative() {
+        let err = not_available_error("@7", "ls", &ShellAvailability::BusyProcess("nu".to_owned()));
+        assert_eq!(err.code, codes::AGENT_PANE_NOT_AVAILABLE);
+        assert!(err.message.contains("'nu' shell"), "{}", err.message);
+        assert!(err.remedy.contains("send-keys"), "{}", err.remedy);
+        assert!(!err.remedy.contains("--force"), "{}", err.remedy);
     }
 
     /// Each refusal reason reads differently: "something else has the
