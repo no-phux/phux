@@ -160,13 +160,17 @@ fn detectable() -> RuleSet {
     set
 }
 
+/// Label, stored record, the kind the pane runs, the rules, and whether the
+/// stored kind is contradicted.
+type Contradiction<'a> = (&'a str, Option<&'a [u8]>, &'a str, &'a RuleSet, bool);
+
 /// A declared kind is contradicted only when the detector could have derived
 /// it and the pane now runs another; everything else fails open.
 #[test]
 fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
     let rules = detectable();
     let empty = RuleSet::default();
-    let cases: [(&str, Option<&[u8]>, &str, &RuleSet, bool); 9] = [
+    let cases: [Contradiction<'_>; 9] = [
         (
             "declared claude, now running codex",
             Some(br#"{"name":"claude","kind":"claude","state":"working"}"#),
