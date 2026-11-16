@@ -151,7 +151,7 @@ async fn native_capacity_failure_closes(attempts: &[bool]) {
         s.register_resource_handle(terminal, handle, CancellationToken::new())
             .unwrap();
     });
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
     let connection_token = CancellationToken::new();
     let mut output_pumps = JoinSet::new();

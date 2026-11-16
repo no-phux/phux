@@ -164,7 +164,7 @@ async fn a_terminal_stream_reset_keeps_the_viewer_tombstone() {
     let state = crate::state::SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("roles"));
     let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     state.with_mut(|s| {
         let _ = s.apply_attach_role(
             client_id,
@@ -176,7 +176,7 @@ async fn a_terminal_stream_reset_keeps_the_viewer_tombstone() {
     });
     let _ = crate::runtime::commands::handle_detach_terminal(&state, client_id, &wire).await;
     assert!(
-        state.with(|s| s.is_viewer(client_id, &wire)),
+        state.with(|s| s.clients().is_viewer(client_id, &wire)),
         "a stream reset must not shed the viewer tombstone"
     );
 }
@@ -199,7 +199,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
         let (out_tx, _out_rx) = tokio::sync::mpsc::channel::<crate::state::Outbound>(
             crate::state::DEFAULT_CLIENT_MAILBOX,
         );
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         attach(
             &state,
             client_id,
@@ -214,7 +214,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
         )
         .await;
         assert!(
-            state.with(|s| s.is_viewer(client_id, &wire)),
+            state.with(|s| s.clients().is_viewer(client_id, &wire)),
             "a deferred (QUIC multi-stream) session ATTACH must still mark its viewer"
         );
     })
@@ -252,7 +252,7 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
             (s.idspace.intern_resource(live), s.idspace.intern_resource(closed))
         });
         tokio::task::spawn_local(bundle.actor.run());
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         let (out_tx, mut out_rx) =
             tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
         let connection_token = CancellationToken::new();

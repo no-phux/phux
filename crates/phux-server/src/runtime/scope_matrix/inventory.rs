@@ -125,7 +125,7 @@ async fn the_owner_socket_keeps_todays_behaviour() {
             // owner's grant: a wrong-direction frame still closes the
             // connection, as it did before the guard existed.
             let state = SharedState::new();
-            state.with_mut(|s| s.set_peer_identity(CLIENT, owner_peer()));
+            state.with_mut(|s| s.clients_mut().set_peer_identity(CLIENT, owner_peer()));
             let outcome = exchange(
                 &state,
                 script(&[hello("scope-matrix"), FrameKind::Pong { nonce: 1 }]),

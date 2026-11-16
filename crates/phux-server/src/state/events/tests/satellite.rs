@@ -6,8 +6,8 @@ use super::*;
 fn relayed_events_reach_only_their_satellite_scope_and_are_not_retained() {
     let satellite = WireResourceId::satellite("sat", 9);
     let mut state = ServerState::new();
-    let wide = state.new_client_id();
-    let scoped = state.new_client_id();
+    let wide = state.clients_mut().new_client_id();
+    let scoped = state.clients_mut().new_client_id();
     let (wide_tx, mut wide_rx) = mpsc::channel(4);
     let (scoped_tx, mut scoped_rx) = mpsc::channel(4);
     state.subscribe_events(wide, None, wide_tx);
@@ -45,7 +45,7 @@ fn relayed_events_reach_only_their_satellite_scope_and_are_not_retained() {
 fn a_cursor_on_a_satellite_scope_is_owed_a_gap() {
     let mut state = ServerState::new();
     let _ = record(&mut state, 1, AgentEvent::Bell);
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(4);
     state.subscribe_satellite_events(
         client,
@@ -65,7 +65,7 @@ fn the_head_covers_a_satellite_cursors_gap_and_no_later_hub_event() {
     let _ = record(&mut state, 1, AgentEvent::Bell);
     let past_cursor = record(&mut state, 1, AgentEvent::Bell);
     let subscribe = |state: &mut ServerState, tx| {
-        let client = state.new_client_id();
+        let client = state.clients_mut().new_client_id();
         let satellite = WireResourceId::satellite("sat", 9);
         state.subscribe_satellite_events(client, satellite, EventFilter::all(), Some(1), tx);
         client
@@ -97,11 +97,11 @@ fn a_later_eviction_does_not_raise_the_head_past_the_gap_sent() {
         let _ = record(&mut state, 2, AgentEvent::Bell);
     }
     let closed = pane(7);
-    let sent = state.new_client_id();
+    let sent = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(4);
     state.subscribe_events_after(sent, Some(closed.clone()), 0, tx);
     assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
-    let owed = state.new_client_id();
+    let owed = state.clients_mut().new_client_id();
     let (full_tx, _full_rx) = mpsc::channel(1);
     full_tx
         .try_send(Outbound::Frame(journal_gap_frame(0, 0)))
@@ -126,10 +126,10 @@ fn a_later_eviction_does_not_raise_the_head_past_the_gap_sent() {
 #[test]
 fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
     let mut state = ServerState::new();
-    let legacy = state.new_client_id();
+    let legacy = state.clients_mut().new_client_id();
     let (tx, _rx) = mpsc::channel(8);
     state.subscribe_events(legacy, None, tx);
-    let aware = state.new_client_id();
+    let aware = state.clients_mut().new_client_id();
     let (aware_tx, _aware_rx) = mpsc::channel(8);
     state.subscribe_events_after(aware, None, u64::MAX, aware_tx);
     let seen = record(&mut state, 1, AgentEvent::Bell);
@@ -157,7 +157,7 @@ fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
 fn an_interrupted_satellite_scope_is_owed_a_gap_and_stops_receiving() {
     let satellite = WireResourceId::satellite("sat", 9);
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(4);
     state.subscribe_satellite_events(client, satellite.clone(), EventFilter::all(), None, tx);
     state.interrupt_satellite_scope(client, &satellite);
@@ -177,7 +177,7 @@ fn a_void_cursor_merged_into_a_pending_replay_never_redelivers_below_its_gap() {
     for _ in 0..10 {
         let _ = record(&mut state, 1, AgentEvent::Bell);
     }
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(2);
     state.subscribe_events_after(client, None, 0, tx.clone());
     let _first = drain_stamped(&mut rx);
@@ -207,7 +207,7 @@ fn a_void_cursor_merged_into_a_pending_replay_never_redelivers_below_its_gap() {
 fn a_refused_resubscribe_restores_the_established_satellite_scope() {
     let satellite = WireResourceId::satellite("sat", 9);
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(8);
     let _established = state.subscribe_satellite_events(
         client,
@@ -236,7 +236,7 @@ fn a_refused_resubscribe_restores_the_established_satellite_scope() {
 fn a_refused_first_subscribe_leaves_no_satellite_scope() {
     let satellite = WireResourceId::satellite("sat", 9);
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(8);
     let refused =
         state.subscribe_satellite_events(client, satellite.clone(), EventFilter::all(), None, tx);
@@ -250,7 +250,7 @@ fn a_refused_first_subscribe_leaves_no_satellite_scope() {
 #[test]
 fn a_pump_that_outlived_its_subscription_is_told_it_is_gone() {
     let mut state = ServerState::new();
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, _rx) = mpsc::channel(8);
     state.subscribe_events(client, Some(pane(1)), tx.clone());
     let old = state.claim_event_pump(client).expect("first pump");
@@ -278,7 +278,7 @@ fn a_gap_owed_during_a_replay_arrives_before_later_seqs() {
     for _ in 0..4 {
         let _ = record(&mut state, 1, AgentEvent::Bell);
     }
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(1);
     let _ = state.subscribe_satellite_events(
         client,

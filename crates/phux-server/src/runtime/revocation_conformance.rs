@@ -24,7 +24,7 @@ use crate::auth::ConnectionIdentity;
 use crate::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 use crate::policy::{PolicyEngine, ScopedPolicy};
 use crate::runtime::apps::InputLane;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ClientId, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
 mod in_flight;
@@ -121,10 +121,10 @@ impl Fixture {
 
     /// Start a connection stamped with `identity`, without its HELLO.
     fn connect(&self, identity: ConnectionIdentity, lane: Option<InputLane>) -> Connection {
-        let client = self.state.with_mut(ServerState::new_client_id);
+        let client = self.state.with_mut(|s| s.clients_mut().new_client_id());
         let transport = identity.peer.transport;
         self.state
-            .with_mut(|s| s.set_connection_identity(client, identity));
+            .with_mut(|s| s.clients_mut().set_connection_identity(client, identity));
         spawn_connection(&self.state, client, transport, &self.root, lane, false)
     }
 

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use phux_core::ids::{ResourceId, SessionId};
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::ServerState;
+use super::{ClientTable, ServerState};
 use crate::mailbox::Outbound;
 use crate::resource::ResourceHandle;
 
@@ -80,12 +80,16 @@ pub enum AttachError {
 }
 
 impl ServerState {
-    /// The authenticated event identity of a live connection.
-    pub(crate) fn client_actor_ref(
-        &self,
-        client: ClientId,
-    ) -> phux_protocol::wire::frame::ActorRef {
-        self.clients.actor_ref(client)
+    /// Everything keyed on a connected client. Attaching and detaching span
+    /// several tables, so they stay on `ServerState`.
+    #[must_use]
+    pub(crate) const fn clients(&self) -> &ClientTable {
+        &self.clients
+    }
+
+    /// Mutable [`Self::clients`].
+    pub(crate) const fn clients_mut(&mut self) -> &mut ClientTable {
+        &mut self.clients
     }
 
     /// The attached clients, read-only (writes stay in `state`).
@@ -131,28 +135,6 @@ impl ServerState {
                 Some((self.client_mailbox(*client)?, vec![gate.clone()]))
             })
             .collect()
-    }
-
-    /// Record the HELLO layer set (latest wins).
-    pub fn set_client_layers(&mut self, client_id: ClientId, layers: LayerSet) {
-        self.clients.set_layers(client_id, layers);
-    }
-
-    /// The HELLO layer set; [`LayerSet::all`] if none was seen.
-    #[must_use]
-    pub fn client_layers(&self, client_id: ClientId) -> LayerSet {
-        self.clients.layers(client_id)
-    }
-
-    /// Whether `client_id` negotiated L3 (SPEC §16.4).
-    #[must_use]
-    pub fn client_speaks_l3(&self, client_id: ClientId) -> bool {
-        self.clients.speaks_l3(client_id)
-    }
-
-    /// Allocate the next monotonic [`ClientId`].
-    pub const fn new_client_id(&mut self) -> ClientId {
-        self.clients.new_client_id()
     }
 
     /// Register the transport's cancellation root (the relay uses it to end
@@ -348,16 +330,6 @@ impl ServerState {
             .collect()
     }
 
-    /// Session-attached clients of `session` by stable id (works after the
-    /// session was reaped; per-terminal consumers excluded).
-    #[must_use]
-    pub fn attached_clients_in_session(
-        &self,
-        session: SessionId,
-    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
-        self.clients.attached_in_session(session)
-    }
-
     /// Whether `client_id` holds an agent-event subscription.
     #[cfg(test)]
     pub(crate) fn has_event_subscription(&self, client_id: ClientId) -> bool {
@@ -385,7 +357,7 @@ mod connection_cancellation_tests {
     #[test]
     fn connection_cancellation_survives_detach_and_is_removed_on_forget() {
         let mut state = ServerState::new();
-        let client = state.new_client_id();
+        let client = state.clients_mut().new_client_id();
         let token = CancellationToken::new();
         state.set_client_connection_cancellation(client, token.clone());
 

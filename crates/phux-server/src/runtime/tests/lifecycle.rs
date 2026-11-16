@@ -145,7 +145,7 @@ fn detach_fires_client_detached_hook_only_for_attached_clients() {
         let mut hooks = capture_hooks(&state);
         let _ = state.with_mut(|s| s.seed_session("leaving"));
 
-        let stranger = state.with_mut(crate::state::ServerState::new_client_id);
+        let stranger = state.with_mut(|s| s.clients_mut().new_client_id());
         detach_and_release_consumer_state(&state, stranger);
         assert!(hooks.try_recv().is_err());
 

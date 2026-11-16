@@ -9,8 +9,8 @@ fn resolve_geometry_applies_window_size_policy_across_subscribers() {
 
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let big = s.new_client_id();
-    let small = s.new_client_id();
+    let big = s.clients_mut().new_client_id();
+    let small = s.clients_mut().new_client_id();
     s.attach_default_caps(big, "default", mk_tx()).unwrap();
     s.attach_default_caps(small, "default", mk_tx()).unwrap();
     s.set_client_viewport(big, ViewportInfo::new(120, 48));
@@ -53,8 +53,8 @@ fn detach_uses_remaining_views_then_restores_usable_headless_geometry() {
     let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
     s.register_resource_handle(pid, bundle.handle.clone(), bundle.token)
         .unwrap();
-    let big = s.new_client_id();
-    let tiny = s.new_client_id();
+    let big = s.clients_mut().new_client_id();
+    let tiny = s.clients_mut().new_client_id();
     s.attach_default_caps(big, "default", mk_tx()).unwrap();
     s.attach_default_caps(tiny, "default", mk_tx()).unwrap();
     s.set_client_viewport(big, ViewportInfo::new(120, 48));
@@ -74,7 +74,7 @@ fn detach_uses_remaining_views_then_restores_usable_headless_geometry() {
 fn a_client_without_a_geometry_vote_leaves_explicit_geometry_on_detach() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let gui = s.new_client_id();
+    let gui = s.clients_mut().new_client_id();
     s.attach_default_caps(gui, "default", mk_tx()).unwrap();
     // A zero ATTACH viewport records nothing; the GUI sized the pane itself.
     s.registry_mut().terminal_mut(pid).unwrap().dims = (137, 53);
@@ -90,7 +90,7 @@ fn manual_policy_holds_explicit_geometry_after_last_detach() {
 
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let client = s.new_client_id();
+    let client = s.clients_mut().new_client_id();
     s.attach_default_caps(client, "default", mk_tx()).unwrap();
     s.set_client_viewport(client, ViewportInfo::new(1, 1));
     s.registry_mut().terminal_mut(pid).unwrap().dims = (137, 53);
@@ -110,8 +110,8 @@ fn latest_policy_uses_the_most_recent_remaining_view_after_detach() {
     let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
     s.register_resource_handle(pid, bundle.handle.clone(), bundle.token)
         .unwrap();
-    let recent = s.new_client_id();
-    let departing = s.new_client_id();
+    let recent = s.clients_mut().new_client_id();
+    let departing = s.clients_mut().new_client_id();
     s.attach_default_caps(recent, "default", mk_tx()).unwrap();
     s.attach_default_caps(departing, "default", mk_tx())
         .unwrap();
@@ -129,8 +129,8 @@ fn resolve_cell_px_prefers_most_recent_usable_pixel_report() {
 
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let retina = s.new_client_id();
-    let lodpi = s.new_client_id();
+    let retina = s.clients_mut().new_client_id();
+    let lodpi = s.clients_mut().new_client_id();
     s.attach_default_caps(retina, "default", mk_tx()).unwrap();
     s.attach_default_caps(lodpi, "default", mk_tx()).unwrap();
 
@@ -173,7 +173,7 @@ fn resolve_cell_px_prefers_most_recent_usable_pixel_report() {
 fn detach_removes_client_and_drops_empty_subscriber_lists() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     assert!(!s.resources().subscribers_for(pid).is_empty());
     s.detach(cid);

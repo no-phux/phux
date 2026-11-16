@@ -96,7 +96,8 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
     };
     state.with_mut(|s| {
         s.config_mut().policy_engine = policy;
-        s.set_connection_identity(CLIENT, workload_identity(&id, &["*@global"]));
+        s.clients_mut()
+            .set_connection_identity(CLIENT, workload_identity(&id, &["*@global"]));
     });
     Fixture {
         _dir: dir,

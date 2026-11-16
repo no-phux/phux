@@ -121,7 +121,7 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
             (Some("question-A".into()), true, Some(b"1".to_vec()))
         );
         let second = fx.state.with_mut(|s| {
-            let client = s.new_client_id();
+            let client = s.clients_mut().new_client_id();
             s.set_connection_grant(client, ConnectionGrant::owner());
             client
         });
@@ -209,7 +209,7 @@ async fn human_permission_and_parent_input_lease_gate_native_commands() {
             NativeDisposition::Refused
         );
         let other = fx.state.with_mut(|s| {
-            let client = s.new_client_id();
+            let client = s.clients_mut().new_client_id();
             s.set_connection_grant(client, ConnectionGrant::owner());
             s.set_input_lease(fx.parent, client);
             client

@@ -7,20 +7,20 @@ fn attach_l3_client(
     s: &mut ServerState,
 ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
     let _ = s.seed_session("default");
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.attach_default_caps(cid, "default", tx.clone()).unwrap();
-    s.set_client_layers(cid, LayerSet::all());
+    s.clients_mut().set_layers(cid, LayerSet::all());
     (cid, tx, rx)
 }
 
 fn attach_l1_only_client(
     s: &mut ServerState,
 ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.attach_default_caps(cid, "default", tx.clone()).unwrap();
-    s.set_client_layers(cid, LayerSet::new());
+    s.clients_mut().set_layers(cid, LayerSet::new());
     (cid, tx, rx)
 }
 
@@ -29,7 +29,7 @@ fn attach_l1_only_client(
 fn unattached_l3_client(
     s: &mut ServerState,
 ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     (cid, tx, rx)
 }
@@ -141,7 +141,7 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
     let mut s = ServerState::new();
     let (cid, _tx, _rx) = attach_l3_client(&mut s);
     let (l1_cid, _l1_tx, _l1_rx) = attach_l1_only_client(&mut s);
-    s.set_connection_identity(
+    s.clients_mut().set_connection_identity(
         cid,
         crate::auth::ConnectionIdentity {
             ssh_origin: None,
@@ -162,17 +162,19 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
         },
     );
     let unix = phux_protocol::policy::TransportType::UnixSocket;
-    s.set_peer_identity(l1_cid, crate::test_support::peer(unix));
+    s.clients_mut()
+        .set_peer_identity(l1_cid, crate::test_support::peer(unix));
 
     s.detach(cid);
     s.detach(l1_cid);
 
     assert!(
-        !s.client_speaks_l3(l1_cid),
+        !s.clients().speaks_l3(l1_cid),
         "an L1-only peer must not be promoted to L3 by detaching",
     );
-    assert_eq!(s.client_layers(cid), LayerSet::all());
+    assert_eq!(s.clients().layers(cid), LayerSet::all());
     let credential = s
+        .clients()
         .authenticated_credential(cid)
         .expect("detach retains connection credential attestation");
     assert_eq!(credential.id, "credential-id");
@@ -181,7 +183,7 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
     assert_eq!(credential.generation, 7);
     assert!(credential.expires_at.is_some());
     assert_eq!(
-        s.peer_identity(l1_cid).map(|peer| peer.transport),
+        s.clients().peer_identity(l1_cid).map(|peer| peer.transport),
         Some(phux_protocol::policy::TransportType::UnixSocket),
         "the SHUTDOWN local-transport gate keys on this",
     );
@@ -193,12 +195,13 @@ fn forget_connection_drops_negotiated_layers_and_peer_identity() {
     let mut s = ServerState::new();
     let (cid, _tx, _rx) = attach_l1_only_client_seeded(&mut s);
     let unix = phux_protocol::policy::TransportType::UnixSocket;
-    s.set_peer_identity(cid, crate::test_support::peer(unix));
+    s.clients_mut()
+        .set_peer_identity(cid, crate::test_support::peer(unix));
 
     s.forget_connection(cid);
 
-    assert!(s.peer_identity(cid).is_none());
-    assert_eq!(s.client_layers(cid), LayerSet::all());
+    assert!(s.clients().peer_identity(cid).is_none());
+    assert_eq!(s.clients().layers(cid), LayerSet::all());
     assert!(!s.attached().contains_key(&cid));
     // Idempotent, like `detach` — the accept loop runs it unconditionally.
     s.forget_connection(cid);

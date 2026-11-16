@@ -18,8 +18,14 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
         });
         let spawned: SpawnedNativeAgent =
             decode(fx.request(fx.owner, NativeRequest::Spawn { spec }).await);
-        assert!(fx.state.with(|s| s.is_viewer(fx.owner, &spawned.parent)));
-        assert!(fx.state.with(|s| s.is_viewer(fx.owner, &spawned.agent)));
+        assert!(
+            fx.state
+                .with(|s| s.clients().is_viewer(fx.owner, &spawned.parent))
+        );
+        assert!(
+            fx.state
+                .with(|s| s.clients().is_viewer(fx.owner, &spawned.agent))
+        );
         fx.state.with_mut(|s| {
             let binding = s
                 .native_agents_mut()

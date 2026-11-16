@@ -24,7 +24,7 @@ use crate::delegation::{DelegatedCredential, DelegationRequest};
 use crate::policy::ConnectionGrant;
 use crate::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
 use crate::runtime::test_support::error_code;
-use crate::state::{ClientId, ServerState, SharedState};
+use crate::state::{ClientId, SharedState};
 
 /// The automation credential the non-human, non-delegated cases use.
 const AUTOMATION: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -82,10 +82,10 @@ impl Fixture {
     }
 
     fn connect(&self, identity: ConnectionIdentity) -> Connection {
-        let client = self.state.with_mut(ServerState::new_client_id);
+        let client = self.state.with_mut(|s| s.clients_mut().new_client_id());
         let transport = identity.peer.transport;
         self.state
-            .with_mut(|s| s.set_connection_identity(client, identity));
+            .with_mut(|s| s.clients_mut().set_connection_identity(client, identity));
         spawn_connection(&self.state, client, transport, &self.root, None, false)
     }
 

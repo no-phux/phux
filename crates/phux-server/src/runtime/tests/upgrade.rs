@@ -62,7 +62,7 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
             );
             let (tx, mut rx) = tokio::sync::mpsc::channel(8);
             resumed.with_mut(|s| {
-                let client = s.new_client_id();
+                let client = s.clients_mut().new_client_id();
                 s.subscribe_resource(client, pane, Some(tx));
             });
             assert_eq!(
@@ -106,7 +106,7 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
             .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         resumed.with_mut(|state| {
-            let client = state.new_client_id();
+            let client = state.clients_mut().new_client_id();
             state.subscribe_resource(client, pane, Some(tx));
         });
         assert_eq!(

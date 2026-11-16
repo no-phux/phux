@@ -12,8 +12,8 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 #[test]
 fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
     let mut first = ServerState::new();
-    assert_eq!(first.new_client_id(), ClientId(1));
-    assert_eq!(first.new_client_id(), ClientId(2));
+    assert_eq!(first.clients_mut().new_client_id(), ClientId(1));
+    assert_eq!(first.clients_mut().new_client_id(), ClientId(2));
     let stable = first.lifecycle().server_incarnation();
     assert_eq!(first.lifecycle().server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
@@ -46,7 +46,7 @@ pub(super) fn mk_agent_handle(parent: ResourceId, token: CancellationToken) -> R
 #[test]
 fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
     let mut state = ServerState::new();
-    let client_id = state.new_client_id();
+    let client_id = state.clients_mut().new_client_id();
     let scope = Scope::Global;
     for index in 0..257 {
         let key = format!("phux.session.created/v1/{index}");
@@ -96,7 +96,7 @@ fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
 #[test]
 fn attach_subscribes_every_client_to_every_pane() {
     let mut s = ServerState::new();
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     let err = s.attach_default_caps(cid, "ghost", mk_tx()).unwrap_err();
     assert_eq!(err, AttachError::UnknownSession("ghost".to_owned()));
 
@@ -104,7 +104,7 @@ fn attach_subscribes_every_client_to_every_pane() {
     // Regression: not only the active pane, else input to the others drops.
     let pid2 = s.add_pane_to_session(sid).expect("second pane");
     assert_eq!(s.attach_default_caps(cid, "default", mk_tx()).unwrap(), sid);
-    let other = s.new_client_id();
+    let other = s.clients_mut().new_client_id();
     s.attach_default_caps(other, "default", mk_tx()).unwrap();
     assert!(s.attached().contains_key(&cid));
     assert_eq!(s.resources().subscribers_for(pid1), &[cid, other]);
@@ -118,12 +118,12 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
 
-    let attached = s.new_client_id();
+    let attached = s.clients_mut().new_client_id();
     let (attached_tx, _attached_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.attach_default_caps(attached, "default", attached_tx)
         .expect("attach the session-scoped client");
 
-    let watcher = s.new_client_id();
+    let watcher = s.clients_mut().new_client_id();
     let (watcher_tx, _watcher_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
     s.subscribe_resource(watcher, pid, Some(watcher_tx));
 
@@ -157,8 +157,8 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
 fn input_lease_blocks_non_holders_until_released_or_detached() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
+    let a = s.clients_mut().new_client_id();
+    let b = s.clients_mut().new_client_id();
     assert_eq!(s.input_lease_holder(pid), None);
     assert!(!s.input_blocked(pid, a), "an Open pane blocks no one");
 
@@ -194,7 +194,7 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
     let mut s = ServerState::new();
     let (default, original) = s.seed_session("default");
     let _ = s.seed_session("other");
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     let added = s
         .add_pane_to_session(default)
@@ -222,7 +222,10 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
 fn attach_stores_hello_caps_and_bootstrap_contract_unchanged() {
     let mut s = ServerState::new();
     let _ = s.seed_session("default");
-    let (default, advertised) = (s.new_client_id(), s.new_client_id());
+    let (default, advertised) = (
+        s.clients_mut().new_client_id(),
+        s.clients_mut().new_client_id(),
+    );
     s.attach_default_caps(default, "default", mk_tx()).unwrap();
     let profile = BootstrapProfile::SynthesizedVtStateSync;
     let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();

@@ -57,7 +57,7 @@ pub(super) fn mutate(
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         Ok::<_, Refusal>((commit.applied, detached))
     });
@@ -269,7 +269,7 @@ pub(super) fn session_kill(
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
-            .flat_map(|session| s.attached_clients_in_session(session))
+            .flat_map(|session| s.clients().attached_in_session(session))
             .collect();
         closed.extend_killed_clients(detached);
         let answer = match (answer(s, &commit.applied), members) {

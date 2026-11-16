@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
@@ -83,7 +83,7 @@ fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
 fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
     for action in [ControlAction::Expired, ControlAction::Released] {
         let journal = crate::state::SharedState::new();
-        let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+        let holder = journal.with_mut(|s| s.clients_mut().new_client_id());
         let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
         journal.with_mut(|s| {
             s.federation_mut()
@@ -119,7 +119,7 @@ fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
 #[test]
 fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
     let journal = crate::state::SharedState::new();
-    let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+    let holder = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
     journal.with_mut(|s| {
         s.federation_mut()
@@ -150,8 +150,8 @@ fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
 #[test]
 fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     let journal = crate::state::SharedState::new();
-    let a = journal.with_mut(crate::state::ServerState::new_client_id);
-    let b = journal.with_mut(crate::state::ServerState::new_client_id);
+    let a = journal.with_mut(|s| s.clients_mut().new_client_id());
+    let b = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (a_tx, _a_rx) = mpsc::channel(1);
     let (b_tx, _b_rx) = mpsc::channel(1);
 

@@ -65,8 +65,10 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             server
                 .register_resource_handle(terminal, handle, CancellationToken::new())
                 .unwrap();
-            let client_id = server.new_client_id();
-            server.set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
+            let client_id = server.clients_mut().new_client_id();
+            server
+                .clients_mut()
+                .set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
             client_id
         });
 

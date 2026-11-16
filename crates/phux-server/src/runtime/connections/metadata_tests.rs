@@ -258,8 +258,9 @@ fn controller_record_follows_the_typing_connection() {
     state.with_mut(|s| {
         let mut ssh = crate::runtime::test_support::owner_peer();
         ssh.transport = TransportType::SshTunnel;
-        s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
-        s.set_peer_identity(ClientId(2), ssh);
+        s.clients_mut()
+            .set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+        s.clients_mut().set_peer_identity(ClientId(2), ssh);
         s.set_client_name(ClientId(2), "phux-mobile".to_owned());
         s.set_client_platform(ClientId(1), None);
         s.set_client_platform(

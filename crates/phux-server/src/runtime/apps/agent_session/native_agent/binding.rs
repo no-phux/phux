@@ -323,13 +323,13 @@ impl ServerState {
             || self.idspace.resource_wire(parent).cloned().is_some_and(|wire| self.native_agents().bindings.values().any(|binding| binding.parent == wire))
     }
     pub(crate) fn native_host_identity(&self, client: ClientId) -> Option<(String, u32)> {
-        let peer = self.peer_identity(client)?;
+        let peer = self.clients().peer_identity(client)?;
         if peer.transport != phux_protocol::policy::TransportType::UnixSocket
             || peer.uid != rustix::process::geteuid().as_raw()
         {
             return None;
         }
-        let credential = self.authenticated_credential(client)?;
+        let credential = self.clients().authenticated_credential(client)?;
         crate::runtime::delegation::delegated_credential(peer, Some(credential))?;
         Some((credential.id.clone(), peer.pid?))
     }

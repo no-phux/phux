@@ -37,7 +37,7 @@ fn a_move_that_empties_an_ephemeral_source_deletes_it() {
         )
         .expect("a");
     let (sid_b, _pid_b) = s.seed_session("b");
-    let attached = s.new_client_id();
+    let attached = s.clients_mut().new_client_id();
     s.attach_default_caps(attached, "a", mk_tx()).unwrap();
 
     move_pane(&mut s, pid_a, sid_b);
@@ -52,7 +52,8 @@ fn a_move_that_empties_an_ephemeral_source_deletes_it() {
         "its clients are detached"
     );
     assert_eq!(
-        s.attached_clients_in_session(sid_a)
+        s.clients()
+            .attached_in_session(sid_a)
             .iter()
             .map(|(client, _)| *client)
             .collect::<Vec<_>>(),
@@ -154,7 +155,7 @@ fn reap_is_idempotent_on_unknown_pane() {
 fn reap_clears_pane_bookkeeping() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
-    let cid = s.new_client_id();
+    let cid = s.clients_mut().new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     let wire = s.idspace.intern_resource(pid);
     assert!(!s.resources().subscribers_for(pid).is_empty());

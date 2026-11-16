@@ -140,7 +140,7 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
             .register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();
         for client in [DESKTOP, CLIENT] {
-            s.set_peer_identity(client, owner_peer());
+            s.clients_mut().set_peer_identity(client, owner_peer());
             let (out, _rx) = tokio::sync::mpsc::channel(8);
             s.attach_default_caps(client, "active-views", out).unwrap();
         }
@@ -228,7 +228,7 @@ async fn satellite_frames_keep_scope_proxy_and_lease_gates_before_relay() {
                 let relays = HubRelays::default();
                 relays.insert(handle);
                 state.with_mut(|s| {
-                    s.set_peer_identity(CLIENT, owner_peer());
+                    s.clients_mut().set_peer_identity(CLIENT, owner_peer());
                     s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&[scope]));
                     s.federation_mut().set_relays(relays);
                     if proxy {
@@ -332,7 +332,7 @@ async fn unavailable_history_preserves_the_negotiated_codec_first_outcome() {
                 ),
             ] {
                 let state = crate::runtime::apps::terminal::test_support::terminal_state();
-                state.with_mut(|s| s.set_peer_identity(CLIENT, owner_peer()));
+                state.with_mut(|s| s.clients_mut().set_peer_identity(CLIENT, owner_peer()));
                 let mut hello = hello("history-no-app");
                 if let FrameKind::Hello { client_caps, .. } = &mut hello {
                     *client_caps = caps;
@@ -391,7 +391,7 @@ async fn clipboard_reply_case(leased: bool, authorized: bool, selection: u8, del
             .register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();
         for client in [DESKTOP, CLIENT] {
-            s.set_peer_identity(client, owner_peer());
+            s.clients_mut().set_peer_identity(client, owner_peer());
             let (out, _rx) = tokio::sync::mpsc::channel(8);
             s.attach_default_caps(client, "clipboard", out).unwrap();
         }

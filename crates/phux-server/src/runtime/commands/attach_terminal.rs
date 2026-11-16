@@ -66,7 +66,7 @@ pub(super) async fn handle_attach_terminal(
             let (released, holder) = state.with_mut(|s| {
                 s.resources_mut().unsubscribe(client_id, core);
                 if restore {
-                    s.set_viewer_mark(client_id, terminal_id, true);
+                    s.clients_mut().mark_viewer(client_id, terminal_id, true);
                 }
                 let released = s.undo_attach_takeover(client_id, core, effects);
                 (released, s.input_lease_holder(core))
@@ -171,7 +171,7 @@ pub(crate) fn subscribe_attach_terminal(
             return Err(wrong_resource_kind(error));
         }
         let was_subscribed = s.resources().subscribers_for(core).contains(&client_id);
-        let was_viewer = s.is_viewer(client_id, terminal_id);
+        let was_viewer = s.clients().is_viewer(client_id, terminal_id);
         s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         let effects = role.map_or_else(RoleEffects::default, |policy| {
             s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)

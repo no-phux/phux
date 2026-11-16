@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 /// whose satellite `down` has none.
 fn hub() -> (SharedState, ClientId, RelayMailbox) {
     let state = SharedState::new();
-    let client = state.with_mut(crate::state::ServerState::new_client_id);
+    let client = state.with_mut(|s| s.clients_mut().new_client_id());
     let relays = HubRelays::default();
     let (up, up_mailbox) = RelayHandle::new(SatelliteHost::new("up"));
     let (down, down_mailbox) = RelayHandle::new(SatelliteHost::new("down"));

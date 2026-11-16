@@ -40,8 +40,10 @@ async fn eof_cancels_the_connection_token() {
 async fn negotiated(frames: impl IntoIterator<Item = FrameKind>) -> (Vec<FrameKind>, bool) {
     let state = SharedState::new();
     let client_id = state.with_mut(|server| {
-        let client_id = server.new_client_id();
-        server.set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
+        let client_id = server.clients_mut().new_client_id();
+        server
+            .clients_mut()
+            .set_peer_identity(client_id, crate::runtime::test_support::owner_peer());
         client_id
     });
     let hello = FrameKind::Hello {

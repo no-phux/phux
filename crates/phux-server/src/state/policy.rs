@@ -1,50 +1,15 @@
 use super::{ClientId, ServerState};
 
 impl ServerState {
-    /// Store a peer identity for a client.
-    pub fn set_peer_identity(
-        &mut self,
-        client_id: ClientId,
-        identity: phux_protocol::policy::PeerIdentity,
-    ) {
-        self.clients.set_peer_identity(client_id, identity);
-    }
-
-    /// Store transport identity and structured credential attestation.
-    pub fn set_connection_identity(
-        &mut self,
-        client_id: ClientId,
-        identity: crate::auth::ConnectionIdentity,
-    ) {
-        self.clients.set_connection_identity(client_id, identity);
-    }
-
-    /// Look up a peer identity by client id.
-    #[must_use]
-    pub fn peer_identity(
-        &self,
-        client_id: ClientId,
-    ) -> Option<&phux_protocol::policy::PeerIdentity> {
-        self.clients.peer_identity(client_id)
-    }
-
-    /// Look up the structured credential captured at connection establishment.
-    #[must_use]
-    pub fn authenticated_credential(
-        &self,
-        client_id: ClientId,
-    ) -> Option<&crate::auth::AuthenticatedCredential> {
-        self.clients.authenticated_credential(client_id)
-    }
-
     /// `client` as the input log names it: its credential id, `owner` on
     /// the owner's socket, else `anonymous`.
     #[must_use]
     pub fn input_sender(&self, client: ClientId) -> String {
-        if let Some(credential) = self.authenticated_credential(client) {
+        if let Some(credential) = self.clients().authenticated_credential(client) {
             return credential.id.clone();
         }
         let owner = self
+            .clients()
             .peer_identity(client)
             .is_some_and(|peer| peer.transport == phux_protocol::policy::TransportType::UnixSocket);
         if owner { "owner" } else { "anonymous" }.to_owned()
@@ -87,7 +52,7 @@ impl ServerState {
         if !crate::audit::enabled() {
             return;
         }
-        let peer = self.peer_identity(client_id);
+        let peer = self.clients().peer_identity(client_id);
         crate::audit::emit(
             kind,
             self.audit_actor(client_id),
@@ -107,30 +72,14 @@ impl ServerState {
         );
     }
 
-    /// Record the ssh origin a same-uid bridge announced (already checked).
-    pub fn set_ssh_origin(
-        &mut self,
-        client_id: ClientId,
-        origin: phux_protocol::wire::ssh_origin::SshOrigin,
-    ) {
-        self.clients.set_ssh_origin(client_id, origin);
-    }
-
-    /// The ssh origin recorded for this connection, if any.
-    #[must_use]
-    pub fn ssh_origin(
-        &self,
-        client_id: ClientId,
-    ) -> Option<phux_protocol::wire::ssh_origin::SshOrigin> {
-        self.clients.ssh_origin(client_id)
-    }
-
     /// Whether `client_id` may feed a producer-fed stream (ADR-0103 §3):
     /// local owner-socket clients only; unstamped connections are refused.
     #[must_use]
     pub fn client_may_produce(&self, client_id: ClientId) -> bool {
         matches!(
-            self.peer_identity(client_id).map(|peer| peer.transport),
+            self.clients()
+                .peer_identity(client_id)
+                .map(|peer| peer.transport),
             Some(
                 phux_protocol::policy::TransportType::UnixSocket
                     | phux_protocol::policy::TransportType::Localhost

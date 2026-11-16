@@ -28,7 +28,10 @@ pub(super) fn handle(state: &SharedState, client_id: ClientId) -> CommandResult 
 
 fn from_local_socket(state: &ServerState, client_id: ClientId) -> bool {
     matches!(
-        state.peer_identity(client_id).map(|peer| peer.transport),
+        state
+            .clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport),
         Some(TransportType::UnixSocket)
     )
 }
@@ -225,9 +228,15 @@ mod tests {
     fn only_the_unix_socket_may_ask() {
         let mut state = ServerState::new();
         let (local, quic, ws, unknown) = (ClientId(1), ClientId(2), ClientId(3), ClientId(4));
-        state.set_peer_identity(local, peer(TransportType::UnixSocket));
-        state.set_peer_identity(quic, peer(TransportType::Quic));
-        state.set_peer_identity(ws, peer(TransportType::WebSocket));
+        state
+            .clients_mut()
+            .set_peer_identity(local, peer(TransportType::UnixSocket));
+        state
+            .clients_mut()
+            .set_peer_identity(quic, peer(TransportType::Quic));
+        state
+            .clients_mut()
+            .set_peer_identity(ws, peer(TransportType::WebSocket));
         assert!(from_local_socket(&state, local));
         for client in [quic, ws, unknown] {
             assert!(!from_local_socket(&state, client), "{client:?}");

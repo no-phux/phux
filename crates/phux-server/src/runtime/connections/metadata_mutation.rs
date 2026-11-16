@@ -410,7 +410,7 @@ pub(super) async fn handle_list_metadata(
     out_tx: &mpsc::Sender<Outbound>,
 ) {
     let (mut keys, speaks_l3) =
-        state.with(|s| (s.metadata().list(scope), s.client_speaks_l3(client_id)));
+        state.with(|s| (s.metadata().list(scope), s.clients().speaks_l3(client_id)));
     if matches!(scope, Scope::Global) {
         keys.retain(|key| {
             !key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)

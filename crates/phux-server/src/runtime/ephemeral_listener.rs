@@ -202,7 +202,11 @@ fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResul
 
 /// Whether `client_id` reached the server over its Unix socket.
 fn from_local_socket(state: &SharedState, client_id: ClientId) -> bool {
-    let transport = state.with(|s| s.peer_identity(client_id).map(|peer| peer.transport));
+    let transport = state.with(|s| {
+        s.clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport)
+    });
     matches!(transport, Some(TransportType::UnixSocket))
 }
 

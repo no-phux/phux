@@ -170,7 +170,8 @@ impl ServerState {
                 phux_protocol::ids::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX))
             });
             let viewers = self
-                .terminal_viewers(&wire)
+                .clients()
+                .viewers_of(&wire)
                 .into_iter()
                 .map(|viewer| {
                     phux_protocol::ids::ClientId::new(u32::try_from(viewer.0).unwrap_or(u32::MAX))

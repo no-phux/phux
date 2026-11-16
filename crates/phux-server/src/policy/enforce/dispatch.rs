@@ -109,7 +109,7 @@ fn refuse_viewer_input(
     let Some(terminal) = named_terminal(request) else {
         return Ok(());
     };
-    if is_input_request(request) && s.is_viewer(client, terminal) {
+    if is_input_request(request) && s.clients().is_viewer(client, terminal) {
         return Err(Denial::VIEWER);
     }
     Ok(())

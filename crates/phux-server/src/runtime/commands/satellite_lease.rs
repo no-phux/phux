@@ -167,7 +167,7 @@ pub(super) async fn relay_satellite_attach(
             target.host,
             target.terminal,
         );
-        let was_viewer = s.is_viewer(target.client_id, &wire);
+        let was_viewer = s.clients().is_viewer(target.client_id, &wire);
         let narrowed = role
             .is_viewer()
             .then(|| s.apply_attach_role(target.client_id, &wire, None, role, was_attached));
@@ -184,7 +184,7 @@ pub(super) async fn relay_satellite_attach(
     if matches!(attached, CommandResult::Error { .. }) {
         // A refused first narrowing must not leave a viewer tombstone.
         if role.is_viewer() && !was_viewer && !was_attached {
-            state.with_mut(|s| s.set_viewer_mark(target.client_id, &wire, false));
+            state.with_mut(|s| s.clients_mut().mark_viewer(target.client_id, &wire, false));
         }
         if seize {
             settle_satellite_seize(target, &attached, out_tx);

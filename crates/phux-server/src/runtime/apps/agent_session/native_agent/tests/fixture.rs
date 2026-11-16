@@ -52,7 +52,7 @@ impl Fixture {
         )
         .unwrap();
         let host = state.with_mut(|s| {
-            let host = s.new_client_id();
+            let host = s.clients_mut().new_client_id();
             let mut identity = ConnectionIdentity::from(peer);
             identity.credential = Some(AuthenticatedCredential {
                 id: delegation.credential.id.clone(),
@@ -71,7 +71,7 @@ impl Fixture {
                 subject: None,
                 managed: None,
             });
-            s.set_connection_identity(host, identity);
+            s.clients_mut().set_connection_identity(host, identity);
             s.set_connection_grant(
                 host,
                 ConnectionGrant::delegated(
@@ -118,8 +118,8 @@ impl Fixture {
     ) {
         let (owner, session, parent) = state.with_mut(|s| {
             s.config_mut().server_socket_path = Some(dir.join("isolated.sock"));
-            let owner = s.new_client_id();
-            s.set_peer_identity(owner, peer.clone());
+            let owner = s.clients_mut().new_client_id();
+            s.clients_mut().set_peer_identity(owner, peer.clone());
             s.set_connection_grant(owner, ConnectionGrant::owner());
             let launch = phux_core::TerminalLaunch {
                 env: vec![(

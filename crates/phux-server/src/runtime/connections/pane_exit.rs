@@ -281,7 +281,7 @@ fn reap_exited_pane(
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
         .into_iter()
-        .flat_map(|session| s.attached_clients_in_session(session))
+        .flat_map(|session| s.clients().attached_in_session(session))
         .collect();
     Some(ReapAndNotify {
         core_terminal_id: pane,

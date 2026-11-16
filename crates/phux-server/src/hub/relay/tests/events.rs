@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
@@ -69,7 +69,7 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
 #[test]
 fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(32);
     for terminal in [5, 9] {
         journal.with_mut(|s| {

@@ -71,8 +71,9 @@ impl Connection {
         kinds: Option<phux_protocol::caps::ResourceKindSet>,
     ) -> Self {
         let client = state.with_mut(|s| {
-            let client = s.new_client_id();
-            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
+            let client = s.clients_mut().new_client_id();
+            s.clients_mut()
+                .set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
         let (tx, input) = mpsc::channel(64);
@@ -227,7 +228,7 @@ fn tree(
 fn aggregate_generation_is_not_reused_by_document_lag_recovery() {
     let mut state = crate::state::ServerState::new();
     let (_, resource) = state.seed_session("generation");
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (_, _, seq, _) =
         state
             .resources_mut()

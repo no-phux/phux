@@ -208,6 +208,23 @@ impl Federation {
         self.relays.as_ref().and_then(|relays| relays.get(host))
     }
 
+    /// The relay for `host`, or why a request for it is refused: the host is
+    /// not in this hub's registry, or this server is not a hub.
+    pub(crate) fn relay_route(
+        &self,
+        host: &SatelliteHost,
+    ) -> Result<crate::hub::relay::RelayHandle, String> {
+        if let Some(relay) = self.relay(host) {
+            return Ok(relay);
+        }
+        if self.is_hub() {
+            return Err(format!("no satellite named {host} in this hub's registry"));
+        }
+        Err(format!(
+            "this server is not a federation hub; it has no route to satellite {host}"
+        ))
+    }
+
     /// Every satellite relay handle (detach fan-out); empty off-hub.
     #[must_use]
     pub(crate) fn relays_all(&self) -> Vec<crate::hub::relay::RelayHandle> {

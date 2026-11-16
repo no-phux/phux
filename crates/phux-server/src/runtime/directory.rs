@@ -57,7 +57,7 @@ pub(super) fn handle_list_directory(
         path,
         host,
     } = request;
-    let speaks_l3 = state.with(|s| s.client_speaks_l3(client_id));
+    let speaks_l3 = state.with(|s| s.clients().speaks_l3(client_id));
     debug!(
         ?client_id,
         request_id,
@@ -180,15 +180,10 @@ fn listing_route(state: &SharedState, host: Option<SatelliteHost>) -> ListingRou
     let Some(host) = host else {
         return ListingRoute::Local;
     };
-    state.with(|s| match s.federation().relay(&host) {
-        Some(relay) => ListingRoute::Relay(relay),
-        None if s.federation().is_hub() => {
-            ListingRoute::Refused(format!("no satellite named {host} in this hub's registry"))
-        }
-        None => ListingRoute::Refused(format!(
-            "this server is not a federation hub; it has no route to satellite {host}"
-        )),
-    })
+    match state.with(|s| s.federation().relay_route(&host)) {
+        Ok(relay) => ListingRoute::Relay(relay),
+        Err(refusal) => ListingRoute::Refused(refusal),
+    }
 }
 
 /// Produce the reply for one request along its route.

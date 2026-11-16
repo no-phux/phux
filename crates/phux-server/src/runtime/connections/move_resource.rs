@@ -87,6 +87,6 @@ fn move_local_terminal(
     // A move that emptied an ephemeral source deleted it in the same commit.
     Ok(s.take_killed_sessions()
         .into_iter()
-        .flat_map(|session| s.attached_clients_in_session(session))
+        .flat_map(|session| s.clients().attached_in_session(session))
         .collect())
 }

@@ -189,7 +189,7 @@ pub(super) async fn negotiate_hello(
     });
     state.with_mut(|s| {
         // SPEC §6.2: the L3 arms gate on the negotiated layer set.
-        s.set_client_layers(client_id, client_caps.layers);
+        s.clients_mut().set_layers(client_id, client_caps.layers);
         // ADR-0123: an actor label, not an authenticated fact.
         s.set_client_name(client_id, client_name);
         s.set_client_platform(client_id, client_caps.platform);
@@ -269,8 +269,11 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
 /// AUTHENTICATION_FAILED }` (workload-auth §7).
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
     let identity = state.with(|s| {
-        let peer = s.peer_identity(client_id).cloned()?;
-        Some((peer, s.authenticated_credential(client_id).cloned()))
+        let peer = s.clients().peer_identity(client_id).cloned()?;
+        Some((
+            peer,
+            s.clients().authenticated_credential(client_id).cloned(),
+        ))
     });
     let Some((peer, credential)) = identity else {
         warn!(

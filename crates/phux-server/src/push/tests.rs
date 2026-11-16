@@ -317,7 +317,7 @@ async fn a_held_action_is_pushed_for_approval_with_its_id() {
         &format!("{PUSH_GRANT_KEY_PREFIX}phone"),
         value(&url),
     );
-    let requester = s.new_client_id();
+    let requester = s.clients_mut().new_client_id();
     let kill = Command::KillResource {
         terminal_id: WireResourceId::local(3),
         operation_id: None,

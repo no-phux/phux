@@ -63,7 +63,7 @@ pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &Re
         .map(|request| phux_protocol::wire::frame::Command::NativeAgent { request });
         if valid
             && !s.input_blocked(core_parent, requester)
-            && !s.is_viewer(requester, &parent)
+            && !s.clients().is_viewer(requester, &parent)
             && wire_command.as_ref().is_ok_and(|wire_command| {
                 matches!(
                     crate::policy::authorize_command(s, requester, wire_command),

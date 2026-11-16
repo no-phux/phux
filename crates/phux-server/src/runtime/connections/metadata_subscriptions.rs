@@ -89,7 +89,7 @@ pub(super) fn handle_subscribe_metadata(
         return;
     }
     state.with_mut(|s| {
-        if !s.client_speaks_l3(client_id) {
+        if !s.clients().speaks_l3(client_id) {
             debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA refused (non-L3)");
             return;
         }

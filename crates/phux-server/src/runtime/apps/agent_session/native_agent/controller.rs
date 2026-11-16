@@ -278,7 +278,8 @@ fn submit_command(
     let Some(binding) = s.native_agents().bindings.get(agent) else {
         return refused_command(operation_id, "resource has no native controller");
     };
-    if s.authenticated_credential(client)
+    if s.clients()
+        .authenticated_credential(client)
         .is_some_and(|credential| credential.id == binding.credential)
     {
         return refused_command(
@@ -360,8 +361,8 @@ fn native_input_blocked(
 ) -> bool {
     s.connection_revoked(client)
         || s.input_blocked(core_parent, client)
-        || s.is_viewer(client, parent)
-        || s.is_viewer(client, agent)
+        || s.clients().is_viewer(client, parent)
+        || s.clients().is_viewer(client, agent)
         || (answer_requires_human
             && !s
                 .connection_grant(client)

@@ -49,7 +49,11 @@ pub(super) async fn handle_shutdown(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     root_token: &CancellationToken,
 ) {
-    let transport = state.with(|s| s.peer_identity(client_id).map(|peer| peer.transport));
+    let transport = state.with(|s| {
+        s.clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport)
+    });
     if !matches!(
         transport,
         Some(phux_protocol::policy::TransportType::UnixSocket)
@@ -234,8 +238,9 @@ mod tests {
                 "the refused end stays pending"
             );
             ServerState::reset_executor_persist_attempts();
-            let client = s.new_client_id();
-            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
+            let client = s.clients_mut().new_client_id();
+            s.clients_mut()
+                .set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
 

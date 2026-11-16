@@ -81,9 +81,9 @@ async fn quic_streams_bit_advertised_on_quic_only() {
         state.with_mut(|s| {
             s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
         });
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         state.with_mut(|s| {
-            s.set_connection_identity(
+            s.clients_mut().set_connection_identity(
                 client_id,
                 crate::auth::ConnectionIdentity {
                     peer: phux_protocol::policy::PeerIdentity {

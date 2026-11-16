@@ -246,8 +246,8 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         // Counted before the task exists so the idle watchdog
                         // never sees an unattended gap.
                         state.with_mut(|s| s.lifecycle_mut().note_connection_opened());
-                        let client_id = state.with_mut(ServerState::new_client_id);
-                        state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
+                        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
+                        state.with_mut(|s| s.clients_mut().set_connection_identity(client_id, connection_identity));
                         state.with(|s| s.audit_connection(client_id, crate::audit::Kind::ConnectionOpen));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();

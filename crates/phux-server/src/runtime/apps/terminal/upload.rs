@@ -77,11 +77,12 @@ impl UploadLimits {
 /// one credential, so they share one principal there.
 pub(in crate::runtime) fn upload_principal(server: &ServerState, client_id: ClientId) -> String {
     use phux_protocol::policy::TransportType;
-    let socket_peer = || match server.peer_identity(client_id) {
+    let socket_peer = || match server.clients().peer_identity(client_id) {
         Some(peer) if peer.transport == TransportType::UnixSocket => format!("uid:{}", peer.uid),
         _ => "anonymous".to_owned(),
     };
     let principal = server
+        .clients()
         .authenticated_credential(client_id)
         .map_or_else(socket_peer, |credential| {
             format!("credential:{}", credential.id)

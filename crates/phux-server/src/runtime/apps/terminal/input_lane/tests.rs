@@ -126,8 +126,8 @@ fn fixture_with_seed(seed: &[u8]) -> Fixture {
     let state = SharedState::new();
     let pane = spawn_pane(&state, "s", seed);
     let (client_a, client_b) = state.with_mut(|s| {
-        let a = s.new_client_id();
-        let b = s.new_client_id();
+        let a = s.clients_mut().new_client_id();
+        let b = s.clients_mut().new_client_id();
         s.attach_default_caps(a, "s", mpsc::channel(16).0)
             .expect("attach a");
         s.attach_default_caps(b, "s", mpsc::channel(16).0)

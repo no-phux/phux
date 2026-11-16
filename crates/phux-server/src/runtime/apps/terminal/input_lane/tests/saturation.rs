@@ -65,7 +65,7 @@ async fn a_saturated_pane_loses_no_input_and_blocks_no_other_pane() {
         let mut others = [spawn_pane(&state, "b", b""), spawn_pane(&state, "c", b"")];
         let attach = |session: &str| {
             state.with_mut(|s| {
-                let id = s.new_client_id();
+                let id = s.clients_mut().new_client_id();
                 s.attach_default_caps(id, session, mpsc::channel(16).0)
                     .expect("attach");
                 id

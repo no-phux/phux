@@ -95,6 +95,7 @@ async fn bearer_revoke_now_terminates_live_sessions() {
             });
             let credential = state.with(|server| {
                 server
+                    .clients()
                     .authenticated_credential(client_id)
                     .cloned()
                     .expect("accept loop retains credential attestation")
@@ -150,8 +151,11 @@ async fn bearer_revoke_now_terminates_live_sessions() {
                 loop {
                     let cleaned = state.with(|server| {
                         !server.attached().contains_key(&client_id)
-                            && server.peer_identity(client_id).is_none()
-                            && server.authenticated_credential(client_id).is_none()
+                            && server.clients().peer_identity(client_id).is_none()
+                            && server
+                                .clients()
+                                .authenticated_credential(client_id)
+                                .is_none()
                             && server.lifecycle().idle_since().is_some()
                     });
                     if cleaned {

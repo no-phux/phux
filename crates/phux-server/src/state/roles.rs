@@ -40,17 +40,6 @@ impl ServerState {
             .get(&client)
             .is_some_and(|attached| attached.viewer)
     }
-    /// Whether `client` subscribed `terminal` as a `VIEWER`.
-    #[must_use]
-    pub fn is_viewer(&self, client: ClientId, terminal: &WireResourceId) -> bool {
-        self.clients.is_viewer(client, terminal)
-    }
-
-    /// Every connection subscribed to `terminal` as a `VIEWER`, ascending.
-    #[must_use]
-    pub fn terminal_viewers(&self, terminal: &WireResourceId) -> Vec<ClientId> {
-        self.clients.viewers_of(terminal)
-    }
 
     /// Remember whether `client` attached its session as `VIEWER`.
     pub fn set_attached_viewer(&mut self, client: ClientId, viewer: bool) {
@@ -111,12 +100,6 @@ impl ServerState {
         true
     }
 
-    /// Set `client`'s viewer mark on `terminal` outright: a hub puts back
-    /// the mark an attach replaced when the satellite refuses that attach.
-    pub fn set_viewer_mark(&mut self, client: ClientId, terminal: &WireResourceId, viewer: bool) {
-        self.clients.mark_viewer(client, terminal, viewer);
-    }
-
     /// The lease change `policy` implies: viewers never hold it, a takeover
     /// seizes it.
     fn lease_for_role(
@@ -169,14 +152,17 @@ mod tests {
     #[test]
     fn detach_keeps_the_viewer_tombstone_and_closing_the_connection_drops_it() {
         let mut state = ServerState::new();
-        let client = state.new_client_id();
+        let client = state.clients_mut().new_client_id();
         let terminal = WireResourceId::local(7);
         let _ = state.apply_attach_role(client, &terminal, None, RolePolicy::VIEWER, false);
         state.detach(client);
-        assert!(state.is_viewer(client, &terminal), "detach must not widen");
+        assert!(
+            state.clients().is_viewer(client, &terminal),
+            "detach must not widen"
+        );
         state.forget_connection(client);
-        assert!(!state.is_viewer(client, &terminal));
-        assert!(state.terminal_viewers(&terminal).is_empty());
+        assert!(!state.clients().is_viewer(client, &terminal));
+        assert!(state.clients().viewers_of(&terminal).is_empty());
     }
 
     /// The tombstone is the prior role, so a fresh `PRIMARY` attach after a
@@ -184,12 +170,12 @@ mod tests {
     #[test]
     fn a_fresh_primary_attach_after_detach_is_a_journaled_widening() {
         let mut state = ServerState::new();
-        let client = state.new_client_id();
+        let client = state.clients_mut().new_client_id();
         let terminal = WireResourceId::local(7);
         let _ = state.apply_attach_role(client, &terminal, None, RolePolicy::VIEWER, false);
         state.detach(client);
         let effects = state.apply_attach_role(client, &terminal, None, RolePolicy::PRIMARY, false);
         assert!(effects.role_changed);
-        assert!(!state.is_viewer(client, &terminal));
+        assert!(!state.clients().is_viewer(client, &terminal));
     }
 }

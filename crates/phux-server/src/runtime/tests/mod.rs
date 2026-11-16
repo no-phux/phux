@@ -164,7 +164,7 @@ fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubR
 
 /// Attach `client_id` to `session` with default caps.
 fn attach_client(state: &SharedState, session: &str) -> ClientId {
-    let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+    let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     state
         .with_mut(|s| s.attach_default_caps(client_id, session, tx))
