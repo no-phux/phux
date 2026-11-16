@@ -304,6 +304,17 @@ pub enum Event {
         /// Whether background work is running.
         running: bool,
     },
+    /// The latest note a program posted for the terminal (`phux.note/v1`).
+    /// `live` is true for a note posted while subscribed, the only kind a
+    /// client should announce; a read after (re)subscribing is the baseline.
+    Note {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// The note, or `None` when there is none or it can't be shown.
+        note: Option<phux_client_core::note::Note>,
+        /// Posted now, not read back.
+        live: bool,
+    },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
     /// change, re-read after every gap and reconnect.

@@ -80,6 +80,20 @@ pub(crate) fn dispatch(
             commands::supervise::run_give(&target, json.json, socket)
         }
         Some(Command::Signal(args)) => panes::signal(args, socket),
+        Some(Command::Notify(commands::NotifyArgs {
+            title,
+            body,
+            level,
+            pane,
+            json,
+        })) => commands::agent::run_notify(
+            &title,
+            body.as_deref(),
+            level,
+            pane.as_deref(),
+            json.json,
+            socket,
+        ),
         Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
             commands::approvals::run_approvals(json.json, socket)
         }

@@ -56,6 +56,7 @@ pub mod layout;
 pub mod motion;
 pub mod multi_pane;
 pub mod newer_server;
+pub mod note;
 pub mod org_ops;
 pub mod organization;
 pub mod organize;

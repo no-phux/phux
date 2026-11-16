@@ -1,6 +1,8 @@
 //! The `Agents` verbs.
 
-use crate::commands::{JsonOpt, SignalArg, SpawnSplit, agent, coord, mission::MissionAction};
+use crate::commands::{
+    JsonOpt, NoteLevelArg, SignalArg, SpawnSplit, agent, coord, mission::MissionAction,
+};
 use usage::Args;
 
 /// Start an agent integration in a new pane
@@ -112,6 +114,40 @@ pub(crate) struct TakeArgs {
 pub(crate) struct GiveArgs {
     /// Target selector (resolves to one pane).
     pub(crate) target: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+}
+
+/// Post a note for a pane.
+#[derive(Debug, Args)]
+#[usage(
+    about = "Post a note for a pane, shown as a toast",
+    long_about = "Post a note for a pane.\n\n\
+            Rune and the TUI show the note as a toast. When the pane is out of \
+            sight, a `warn` or `error` note also raises a system notification. \
+            Each note replaces the pane's last one, so a progress note can be \
+            updated in place. Inside a pane the note is about that pane; \
+            elsewhere, the focused pane.\n\n\
+            Examples:\n  \
+            phux notify \"formatted 3 files\"\n  \
+            phux notify --level error \"build failed\" \"3 errors in src/lib.rs\"\n  \
+            phux notify --pane @4 \"deploy 90%\""
+)]
+pub(crate) struct NotifyArgs {
+    /// What the note says, on one line.
+    pub(crate) title: String,
+
+    /// More detail, shown under the title.
+    pub(crate) body: Option<String>,
+
+    /// How much it matters.
+    #[usage(long, value_enum, default = "info")]
+    pub(crate) level: NoteLevelArg,
+
+    /// The pane the note is about (a selector). Default: this pane.
+    #[usage(long, value_name = "TARGET")]
+    pub(crate) pane: Option<String>,
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,

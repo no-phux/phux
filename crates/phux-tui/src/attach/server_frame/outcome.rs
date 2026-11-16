@@ -146,6 +146,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// The Terminal a local agent record applied to, even when identical, for
     /// the review index.
     pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
+    /// A note a program posted for a pane, to toast.
+    pub(in crate::attach) note: Option<crate::attach::jobs::Toast>,
     /// ATTACHED's per-pane cwds, for the sidebar branch line.
     pub(in crate::attach) pane_cwds: Vec<(ResourceId, String)>,
     /// The config-reload doorbell rang.

@@ -288,6 +288,36 @@ Every verb that changes state takes `--json`: `kill`, `rm`, `rename`,
 `signal`, `take`, `give`, `detach`, `approve`, and `deny` print a versioned
 result, and fail with the JSON error below.
 
+## Notes
+
+A script can tell the person something without writing into a pane:
+
+```sh
+phux notify "formatted 3 files"
+phux notify --level warn "deploy 90%" "us-east still rolling"
+phux notify --level error "build failed" "3 errors in src/lib.rs"
+```
+
+Rune and the terminal UI show a note as a toast. When the note's pane is out
+of sight, a `warn` or `error` note also raises a system notification from
+Rune. Each note replaces the pane's last one, so a progress note can be
+updated in place. Inside a pane the note is about that pane; `--pane @N`
+names another. The note is stored in the pane's `phux.note/v1` metadata as
+`{"level", "title", "body", "at"}`.
+
+To forward Neovim's `vim.notify`:
+
+```lua
+local levels = { [vim.log.levels.WARN] = "warn", [vim.log.levels.ERROR] = "error" }
+vim.notify = function(msg, level)
+  vim.system({ "phux", "notify", "--level", levels[level] or "info", msg })
+end
+```
+
+phux still ignores OSC 9, 777 and 99 from panes
+([program protocol](./program-protocol.md#relationship-to-other-sequences)),
+so no escape sequence a pane prints can raise a notification.
+
 ## JSON output and errors
 
 `--json` output is versioned. Each document has a `schema_version` that

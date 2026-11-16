@@ -3,7 +3,7 @@
 use super::super::{
     AttachEnd, AttachError, Connection, FrameKind, FrameOutcome, FrameStep, HashMap,
     MAX_PENDING_STREAM_BINDS, Notice, RepaintAccumulator, ResourceId, SidebarReservation,
-    detached_loop_exit, fleet_projection_dirty, path_picker, send_unless_peer_gone,
+    ToastOverlay, detached_loop_exit, fleet_projection_dirty, path_picker, send_unless_peer_gone,
     should_emit_frame_ack, spawned_satellite_panes,
 };
 
@@ -301,6 +301,14 @@ impl super::super::SessionLoop {
         });
         if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
+        }
+        if let Some(note) = &outcome.note {
+            self.overlays.push(Box::new(ToastOverlay::new(
+                note.title.clone(),
+                note.lines.clone(),
+                &self.settings.theme,
+            )));
+            self.paint_overlay(out, sidebar);
         }
         // The `phux config reload` doorbell rang.
         if outcome.config_reload {
