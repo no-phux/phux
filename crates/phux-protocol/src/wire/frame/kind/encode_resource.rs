@@ -3,8 +3,8 @@
 use crate::wire::encode::Encoder;
 use crate::wire::field;
 use crate::wire::frame::{
-    SpawnResource, encode_agent_event, encode_command, encode_command_result, encode_env,
-    encode_move_result, encode_server_instance, encode_spawn_result, encode_string_list,
+    SpawnResource, encode_agent_event, encode_command, encode_env, encode_server_instance,
+    encode_spawn_result, encode_string_list,
 };
 
 use super::{FrameKind, encode_event_stamp, id_field};
@@ -82,21 +82,6 @@ impl FrameKind {
                     enc.write_field(field::terminal_spawned::REPLAYED, &[1]);
                 }
             }
-            Self::MoveResource {
-                request_id,
-                terminal,
-                owner_terminal,
-            } => {
-                enc.write_u32_field(field::move_terminal::REQUEST_ID, *request_id);
-                id_field(enc, field::move_terminal::TERMINAL, terminal);
-                id_field(enc, field::move_terminal::OWNER_TERMINAL, owner_terminal);
-            }
-            Self::ResourceMoved { request_id, result } => {
-                enc.write_u32_field(field::terminal_moved::REQUEST_ID, *request_id);
-                enc.write_field_with(field::terminal_moved::RESULT, |e| {
-                    encode_move_result(result, e);
-                });
-            }
             Self::ResourceClosed {
                 terminal_id,
                 exit_status,
@@ -135,24 +120,6 @@ impl FrameKind {
             } => {
                 enc.write_u32_field(field::command::REQUEST_ID, *request_id);
                 enc.write_field_with(field::command::COMMAND, |e| encode_command(command, e));
-            }
-            Self::CommandResult { request_id, result } => {
-                enc.write_u32_field(field::command_result::REQUEST_ID, *request_id);
-                enc.write_field_with(field::command_result::RESULT, |e| {
-                    encode_command_result(result, e);
-                });
-            }
-            // An absent terminal is the server-wide subscription.
-            Self::SubscribeEvents {
-                terminal,
-                after_seq,
-            } => {
-                if let Some(terminal) = terminal {
-                    id_field(enc, field::subscribe_events::TERMINAL, terminal);
-                }
-                if let Some(after_seq) = after_seq {
-                    enc.write_u64_field(field::subscribe_events::AFTER_SEQ, *after_seq);
-                }
             }
             Self::Event {
                 terminal,

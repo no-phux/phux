@@ -1,5 +1,5 @@
-//! Event subscriptions and journaled events. The L3 metadata frames are
-//! generated from their `field` modules.
+//! The journaled `EVENT` frame body. The L3 metadata frames and the event
+//! subscription are generated from their `field` modules.
 
 use super::{
     DecodeError, Decoder, FrameKind, ResourceId, decode_actor_ref, decode_agent_event,
@@ -7,20 +7,6 @@ use super::{
 };
 
 impl Decoder<'_> {
-    pub(super) fn decode_subscribe_events(&mut self) -> Result<FrameKind, DecodeError> {
-        use field::subscribe_events as f;
-        let mut terminal: Option<ResourceId> = None;
-        let mut after_seq: Option<u64> = None;
-        for_each_field!(self, value, {
-            f::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
-            f::AFTER_SEQ => after_seq = Some(sub!(value, Decoder::read_u64_be)),
-        });
-        Ok(FrameKind::SubscribeEvents {
-            terminal,
-            after_seq,
-        })
-    }
-
     pub(super) fn decode_event(&mut self) -> Result<FrameKind, DecodeError> {
         let mut terminal: Option<ResourceId> = None;
         let mut event: Option<crate::wire::frame::AgentEvent> = None;

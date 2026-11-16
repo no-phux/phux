@@ -57,14 +57,14 @@ impl FrameKind {
             | Self::PathResults { .. } => self.encode_metadata_payload(enc),
             Self::SpawnResource { .. }
             | Self::ResourceSpawned { .. }
-            | Self::MoveResource { .. }
-            | Self::ResourceMoved { .. }
             | Self::ResourceClosed { .. }
             | Self::ResizeTerminal { .. }
             | Self::Command { .. }
-            | Self::CommandResult { .. }
-            | Self::SubscribeEvents { .. }
             | Self::Event { .. } => self.encode_resource_payload(enc),
+            Self::MoveResource { .. } => field::move_terminal::encode(self, enc),
+            Self::ResourceMoved { .. } => field::terminal_moved::encode(self, enc),
+            Self::CommandResult { .. } => field::command_result::encode(self, enc),
+            Self::SubscribeEvents { .. } => field::subscribe_events::encode(self, enc),
         }
     }
 }

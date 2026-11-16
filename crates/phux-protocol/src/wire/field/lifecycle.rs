@@ -1,5 +1,8 @@
 //! L1 resource lifecycle, command, and event frame bodies.
 
+use crate::ids::ResourceId;
+use crate::wire::frame::{CommandResult, MoveResult};
+
 tlv_body! {
     /// `SPAWN_RESOURCE` body fields (`docs/protocol.md#commands-events-resources`).
     pub mod spawn_terminal {
@@ -67,23 +70,23 @@ tlv_body! {
 
 tlv_body! {
     /// `MOVE_RESOURCE` body fields (`docs/protocol.md#commands-events-resources`; ADR-0056).
-    pub mod move_terminal {
+    pub mod move_terminal for MoveResource => decode_move_terminal {
         /// Correlating `request_id` (`u32`).
-        pub const REQUEST_ID: u32 = 1;
+        pub const REQUEST_ID: u32 = 1 => default request_id: u32;
         /// The Terminal to re-parent (positional tagged union).
-        pub const TERMINAL: u32 = 2;
+        pub const TERMINAL: u32 = 2 => required terminal: ResourceId;
         /// Terminal whose owning window becomes the destination (positional).
-        pub const OWNER_TERMINAL: u32 = 3;
+        pub const OWNER_TERMINAL: u32 = 3 => required owner_terminal: ResourceId;
     }
 }
 
 tlv_body! {
     /// `RESOURCE_MOVED` body fields (`docs/protocol.md#commands-events-resources`; ADR-0056).
-    pub mod terminal_moved {
+    pub mod terminal_moved for ResourceMoved => decode_terminal_moved {
         /// Correlating `request_id` (`u32`).
-        pub const REQUEST_ID: u32 = 1;
+        pub const REQUEST_ID: u32 = 1 => default request_id: u32;
         /// `MoveResult` tagged union (positional).
-        pub const RESULT: u32 = 2;
+        pub const RESULT: u32 = 2 => required result: MoveResult;
     }
 }
 
@@ -131,21 +134,21 @@ tlv_body! {
 
 tlv_body! {
     /// `COMMAND_RESULT` body fields (`docs/protocol.md#commands-events-resources`).
-    pub mod command_result {
+    pub mod command_result for CommandResult => decode_command_result {
         /// Correlating `request_id` (`u32`).
-        pub const REQUEST_ID: u32 = 1;
+        pub const REQUEST_ID: u32 = 1 => default request_id: u32;
         /// `CommandResult` tagged union (positional).
-        pub const RESULT: u32 = 2;
+        pub const RESULT: u32 = 2 => required result: CommandResult;
     }
 }
 
 tlv_body! {
     /// `SUBSCRIBE_EVENTS` body fields (`docs/protocol.md#commands-events-resources`).
-    pub mod subscribe_events {
+    pub mod subscribe_events for SubscribeEvents => decode_subscribe_events {
         /// Optional `ResourceId` scope (absent field = server-scoped `None`).
-        pub const TERMINAL: u32 = 1;
+        pub const TERMINAL: u32 = 1 => optional terminal: ResourceId;
         /// Optional `u64` journal cursor to replay after (ADR-0123).
-        pub const AFTER_SEQ: u32 = 2;
+        pub const AFTER_SEQ: u32 = 2 => optional after_seq: u64;
     }
 }
 
