@@ -900,10 +900,27 @@ mod tests {
         HistoryCursor::new(&[value])
     }
 
+    /// A cache over `config(bytes, rows)` with its first fetch of cursor 1 out.
+    fn fetching(bytes: usize, rows: usize) -> HistoryCache {
+        let mut cache = HistoryCache::new(config(bytes, rows), Some(cursor(1)));
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        cache
+    }
+
+    /// With a one-anchor budget already spent, a second registration is refused.
+    fn assert_second_anchor_refused(cache: &mut HistoryCache) {
+        assert_eq!(
+            cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
+            Err(HistoryCacheError::ProjectionTooLarge {
+                required: 2,
+                budget: 1,
+            })
+        );
+    }
+
     #[test]
     fn duplicate_pages_are_idempotent_and_gaps_are_explicit() {
-        let mut cache = HistoryCache::new(config(32, 32), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(32, 32);
         let page = cache
             .accept_page(&cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest")
             .unwrap();
@@ -954,8 +971,7 @@ mod tests {
 
     #[test]
     fn same_cursor_pages_require_strict_nonzero_sequence() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(128, 8);
         let first = cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"one")
             .unwrap();
@@ -983,8 +999,7 @@ mod tests {
 
     #[test]
     fn declared_page_rows_are_bounded_by_requested_authentication_limit() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(128, 8);
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 65, b"opaque"),
             Err(HistoryCacheError::ProjectionTooLarge {
@@ -1002,19 +1017,12 @@ mod tests {
         cache
             .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
             .unwrap();
-        assert_eq!(
-            cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
-            Err(HistoryCacheError::ProjectionTooLarge {
-                required: 2,
-                budget: 1,
-            })
-        );
+        assert_second_anchor_refused(&mut cache);
     }
 
     #[test]
     fn oversized_page_is_rejected_without_advancing_cursor() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(128, 8);
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 0, &[0; 65]),
             Err(HistoryCacheError::PageTooLarge {
@@ -1030,8 +1038,7 @@ mod tests {
 
     #[test]
     fn empty_anchor_registration_survives_page_eviction() {
-        let mut cache = HistoryCache::new(config(4, 1), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(4, 1);
         cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 0, 0, b"aaaa")
             .unwrap();
@@ -1042,19 +1049,12 @@ mod tests {
         cache
             .accept_page(&cursor(1), 2, None, 0, 0, b"bbbb")
             .unwrap();
-        assert_eq!(
-            cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
-            Err(HistoryCacheError::ProjectionTooLarge {
-                required: 2,
-                budget: 1,
-            })
-        );
+        assert_second_anchor_refused(&mut cache);
     }
 
     #[test]
     fn consumed_digest_survives_raw_page_eviction() {
-        let mut cache = HistoryCache::new(config(4, 4), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(4, 4);
         let first = cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"aaaa")
             .unwrap();
@@ -1075,8 +1075,7 @@ mod tests {
 
     #[test]
     fn retry_requires_growth_within_hard_caps() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let mut cache = fetching(128, 8);
         assert_eq!(cache.retry_limits(64, 8), None);
         assert_eq!(cache.retry_limits(80, 8), Some((80, 64)));
         assert_eq!(cache.retry_limits(129, 8), None);
