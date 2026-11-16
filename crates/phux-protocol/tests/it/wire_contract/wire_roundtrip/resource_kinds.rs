@@ -78,24 +78,18 @@ fn spawn_terminal_kind_rules_are_enforced_per_kind() {
         );
     }
     // AgentSession requires parent (12) and provider (13).
-    let bytes = spawn_terminal_frame(&[(11, &[1u8]), (13, b"claude")]);
-    assert_eq!(
-        FrameKind::decode(&bytes).unwrap_err(),
-        DecodeError::InvalidSpawnForKind {
-            kind: 1,
-            field: 12,
-            required: true,
-        }
-    );
-    let bytes = spawn_terminal_frame(&[(11, &[1u8]), (12, &parent)]);
-    assert_eq!(
-        FrameKind::decode(&bytes).unwrap_err(),
-        DecodeError::InvalidSpawnForKind {
-            kind: 1,
-            field: 13,
-            required: true,
-        }
-    );
+    for (missing, present) in [(12u32, (13u32, b"claude".as_slice())), (13, (12, &parent))] {
+        let bytes = spawn_terminal_frame(&[(11, &[1u8]), present]);
+        assert_eq!(
+            FrameKind::decode(&bytes).unwrap_err(),
+            DecodeError::InvalidSpawnForKind {
+                kind: 1,
+                field: missing,
+                required: true,
+            },
+            "AgentSession kind must require field {missing}"
+        );
+    }
     // AgentSession forbids the PTY-shape fields 3..=6 and 10, and the
     // window placement field 8.
     let mut cmd = Vec::new();
@@ -250,47 +244,37 @@ fn spawn_terminal_agent_facet_strings_are_bounded() {
 
 #[test]
 fn terminal_closed_reason_is_additive_and_forgiving() {
-    // No field 3: the pre-reason body decodes as Unknown.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &local_id_bytes(42));
-    let bytes = framed_tlv(0xA1, &fields);
-    let (decoded, _) = FrameKind::decode(&bytes).unwrap();
-    assert_eq!(
-        decoded,
-        FrameKind::ResourceClosed {
-            terminal_id: ResourceId::local(42),
-            exit_status: None,
-            reason: CloseReason::Unknown,
-            signal: None,
+    let closed = |reason: Option<u8>| {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, &local_id_bytes(42));
+        if let Some(reason) = reason {
+            tlv_field(&mut fields, 3, &[reason]);
         }
-    );
-    // A stated reason decodes to its variant.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &local_id_bytes(42));
-    tlv_field(&mut fields, 3, &[2u8]);
-    let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
-    assert!(matches!(
-        decoded,
-        FrameKind::ResourceClosed {
-            reason: CloseReason::ParentClosed,
-            ..
+        framed_tlv(0xA1, &fields)
+    };
+    // No field 3 is the pre-reason body; a stated reason decodes to its
+    // variant; a reason tag from the future is Unknown, never an error.
+    for (what, reason, want) in [
+        ("absent", None, CloseReason::Unknown),
+        ("parent closed", Some(2), CloseReason::ParentClosed),
+        ("future", Some(200), CloseReason::Unknown),
+    ] {
+        let (decoded, _) = FrameKind::decode(&closed(reason)).unwrap();
+        assert_eq!(
+            decoded,
+            FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(42),
+                exit_status: None,
+                reason: want,
+                signal: None,
+            },
+            "{what}"
+        );
+        // An Unknown reason re-encodes with the field absent.
+        if want == CloseReason::Unknown {
+            assert_eq!(crate::common::encode(&decoded), closed(None), "{what}");
         }
-    ));
-    // A reason tag from the future is Unknown, never a decode error, and
-    // the frame re-encodes with the field absent.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &local_id_bytes(42));
-    tlv_field(&mut fields, 3, &[200u8]);
-    let (decoded, _) = FrameKind::decode(&framed_tlv(0xA1, &fields)).unwrap();
-    assert!(matches!(
-        decoded,
-        FrameKind::ResourceClosed {
-            reason: CloseReason::Unknown,
-            ..
-        }
-    ));
-    let buf = crate::common::encode(&decoded);
-    assert_eq!(buf.as_slice(), bytes.as_slice());
+    }
 }
 
 #[test]
