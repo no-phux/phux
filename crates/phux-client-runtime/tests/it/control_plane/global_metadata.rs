@@ -174,9 +174,7 @@ fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
     // The connection drops; its subscriptions end with it. The reconnect's
     // attach subscribes and reads again, and the old read is forgotten.
     plane.connection_lost(Some("gone".to_owned()));
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = outbound(&mut plane)
         .iter()
         .find_map(|frame| match frame {

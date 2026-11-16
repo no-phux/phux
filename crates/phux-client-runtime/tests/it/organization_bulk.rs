@@ -31,7 +31,7 @@ fn resource(n: usize) -> ResourceKey {
     ResourceKey::new(key).unwrap()
 }
 
-use crate::embedded::{answer, commands};
+use crate::embedded::{answer, commands, opened, reopen};
 use phux_wire_fixtures::HelloOk;
 
 /// A bare server, advertising `ORGANIZATION` and `SESSION_KILL` when
@@ -133,10 +133,7 @@ fn seed(plane: &mut ControlPlane, count: usize, moved: usize, revision: u64, aut
 }
 
 fn plane(count: usize) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello(true)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello(true));
     seed(&mut plane, count, 0, 2, 1);
     commands(&mut plane);
     plane.take_events();
@@ -205,9 +202,7 @@ fn outcomes(plane: &mut ControlPlane) -> Vec<(OperationId, OrgOutcome)> {
 
 fn reconnect(plane: &mut ControlPlane, supported: bool) {
     plane.connection_lost(None);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello(supported)).unwrap();
+    reopen(plane, hello(supported));
 }
 
 fn answer_page(plane: &mut ControlPlane, request: u32, page: OrganizationPage) {

@@ -64,10 +64,7 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
 
 #[test]
 fn path_query_requires_extended_capability_and_correlates_typed_results() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(plane.path_query("/home".into(), "a".into(), true, None), 0);
     assert!(

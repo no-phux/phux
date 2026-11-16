@@ -73,11 +73,10 @@ fn replayed_spawn_admission_settles_before_orphan_retirement() {
         });
         let _ = plane.take_outbound();
         assert_eq!(close_count(&mut plane), 0);
-        plane.connection_opened();
-        let _ = plane.take_outbound();
-        plane
-            .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
-            .unwrap();
+        reopen(
+            &mut plane,
+            hello_ok_with(&[ServerFeature::SpawnIdempotency]),
+        );
         let attach_id = outbound_attach_id(&mut plane);
         attach_to(&mut plane, attach_id, beta_snapshot());
         ready(&mut plane, attach_id, ResourceId::local(8));

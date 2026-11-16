@@ -6,9 +6,7 @@ use phux_client_runtime::control::{EVENT_QUEUE_CAP, Observation};
 fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
     let epoch = plane.connection_epoch();
     plane.connection_lost(Some("transport dropped".to_owned()));
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     reattach(plane, attach_id, epoch + 1);
     let _ = plane.take_outbound();
@@ -122,9 +120,7 @@ fn a_recovery_between_drain_and_status_sampling_stays_in_one_observation() {
     );
     assert_eq!(mid.connection_epoch, 1);
 
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     reattach(&mut plane, attach_id, 2);
     let done = plane.take_observation();

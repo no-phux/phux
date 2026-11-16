@@ -18,10 +18,7 @@ fn plane_with_checkout() -> ControlPlane {
 
 #[test]
 fn checkout_requires_the_capability_and_correlates_typed_answers() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(plane.checkout(terminal(), CheckoutRequest::Status), 0);
     assert!(

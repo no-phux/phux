@@ -71,12 +71,10 @@ fn unknown_frame_kinds_and_enum_values_are_skipped_on_every_feed_path() {
 }
 
 fn acknowledged_plane() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::AcknowledgedInput]),
+    );
     plane.take_outbound();
     plane
 }
@@ -148,19 +146,24 @@ fn unreadable_or_unsupported_spawn_replies_settle_the_spawn() {
             ))
         }),
         // A reply whose id has a shape this build does not know.
-        ("an_unreadable_spawn_reply_settles_the_spawn", |plane, id| {
-            plane.feed_bytes(&raw(
-                TYPE_RESOURCE_SPAWNED,
-                &[(1, &id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
-            ))
-        }),
-        ("a_spawn_answered_unsupported_settles_as_refused", |plane, id| {
-            plane.feed(unsupported(id))
-        }),
+        (
+            "an_unreadable_spawn_reply_settles_the_spawn",
+            |plane, id| {
+                plane.feed_bytes(&raw(
+                    TYPE_RESOURCE_SPAWNED,
+                    &[(1, &id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
+                ))
+            },
+        ),
+        (
+            "a_spawn_answered_unsupported_settles_as_refused",
+            |plane, id| plane.feed(unsupported(id)),
+        ),
     ];
     for (label, reply) in cases {
         let (mut plane, request_id) = pending_spawn();
-        reply(&mut plane, request_id).unwrap_or_else(|error| panic!("{label}: the reply is not fatal: {error:?}"));
+        reply(&mut plane, request_id)
+            .unwrap_or_else(|error| panic!("{label}: the reply is not fatal: {error:?}"));
         assert!(
             plane.take_events().iter().any(|event| matches!(
                 event,
@@ -206,7 +209,8 @@ fn input_replies_settle_the_delivery_by_what_they_promise() {
     for (label, reply, expected, fenced) in cases {
         let mut plane = acknowledged_plane();
         let (delivery, request) = apply_input_request(&mut plane);
-        reply(&mut plane, request).unwrap_or_else(|error| panic!("{label}: the reply settles: {error:?}"));
+        reply(&mut plane, request)
+            .unwrap_or_else(|error| panic!("{label}: the reply settles: {error:?}"));
         assert_eq!(outcome(&mut plane, delivery), expected, "{label}");
         assert_eq!(plane.delivery_fenced(&terminal()), fenced, "{label}");
     }
@@ -214,12 +218,10 @@ fn input_replies_settle_the_delivery_by_what_they_promise() {
 
 #[test]
 fn a_directory_listing_answered_unsupported_settles_as_failed() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::ListDirectory]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::ListDirectory]),
+    );
     let _ = plane.take_outbound();
     let request_id = plane.list_directory("/home".into());
     assert_ne!(request_id, 0);

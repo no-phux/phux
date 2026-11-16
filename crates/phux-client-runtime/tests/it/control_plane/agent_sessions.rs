@@ -19,9 +19,7 @@ fn subscribing_with_resume(subscribe_agent_sessions: bool, resume: bool) -> (Con
         subscribe_agent_sessions,
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(agent_hello(resume, 0xAB)).expect("HELLO_OK");
+    reopen(&mut plane, agent_hello(resume, 0xAB));
     let attach_id = plane.queued_attach_id();
     (plane, attach_id)
 }
@@ -131,9 +129,7 @@ fn reconnect_agents(
 ) -> Vec<(u32, Option<u64>)> {
     plane.connection_lost(None);
     assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(agent_hello(resume, incarnation)).unwrap();
+    reopen(plane, agent_hello(resume, incarnation));
     let attach_id = plane.queued_attach_id();
     attach_ready_to(plane, attach_id, with_agent(terminal()));
     agent_requests(plane)
@@ -518,9 +514,7 @@ fn close_count(plane: &mut ControlPlane) -> usize {
 
 fn reconnect_to_beta(plane: &mut ControlPlane) -> u32 {
     plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = outbound_attach_id(plane);
     // A caller can request inventory before ATTACHED. That read must not
     // turn an in-progress session attach into a ready browsing connection.
@@ -731,9 +725,7 @@ fn close_and_detach_do_not_replay_undrained_publications() {
 }
 
 fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(agent_hello(true, 0xAB)).unwrap();
+    reopen(plane, agent_hello(true, 0xAB));
     let attach_id = plane.queued_attach_id();
     attach_ready_to(plane, attach_id, snapshot);
 }

@@ -19,7 +19,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
-use crate::embedded::{answer, commands, negotiate, server_hello};
+use crate::embedded::{answer, commands, negotiate, opened, reopen, server_hello};
 
 mod empty_spawn;
 
@@ -125,9 +125,7 @@ fn seeded() -> ControlPlane {
 /// other commands sent after `HELLO_OK`.
 fn reconnect(plane: &mut ControlPlane) -> (u32, Vec<(u32, Command)>) {
     plane.connection_lost(Some("reset".to_owned()));
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello(true)).expect("HELLO_OK");
+    reopen(plane, hello(true));
     let after_hello = commands(plane);
     let seed = after_hello
         .iter()

@@ -31,9 +31,7 @@ fn a_server_without_the_bit_is_never_asked() {
         plane.forward_open("localhost".to_owned(), 80).unwrap_err(),
         ForwardError::NotConnected
     );
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert!(!plane.forward_supported());
     assert_eq!(

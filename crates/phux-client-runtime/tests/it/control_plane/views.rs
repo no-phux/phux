@@ -38,9 +38,7 @@ fn attached(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot)
 
 fn reattach(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {
     plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     attached(plane, attach_id, snapshot);
     plane
@@ -79,10 +77,7 @@ fn inventory(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<Event> 
 /// relaunched pane takes the recycled id. That pane must show.
 #[test]
 fn a_new_incarnation_can_list_an_id_its_predecessor_listed() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     inventory(&mut plane, with_terminals(&[terminal()]));
 
     plane.connection_lost(None);

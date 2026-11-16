@@ -155,11 +155,10 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
-        .unwrap();
+    reopen(
+        &mut plane,
+        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
+    );
     let first_attach = outbound_attach_id(&mut plane);
     attach(&mut plane, first_attach, b"home");
     let _ = plane.take_outbound();
@@ -211,11 +210,7 @@ fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
         ..ControlOptions::default()
     });
     assert!(!plane.votes_on_geometry());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok(PROTOCOL_VERSION.patch))
-        .expect("HELLO_OK");
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach = plane
         .take_outbound()
         .into_iter()

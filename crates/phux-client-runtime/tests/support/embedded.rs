@@ -143,6 +143,21 @@ impl PlaneExt for phux_client_runtime::Client {
     }
 }
 
+/// Open a fresh connection and answer its `HELLO` with `hello`, dropping
+/// the opening frames.
+pub fn reopen(plane: &mut ControlPlane, hello: FrameKind) {
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane.feed(hello).expect("HELLO_OK");
+}
+
+/// A plane with `options`, connected and answered with `hello`.
+pub fn opened(options: ControlOptions, hello: FrameKind) -> ControlPlane {
+    let mut plane = ControlPlane::new(options);
+    reopen(&mut plane, hello);
+    plane
+}
+
 /// Answer `request_id` with `result`.
 pub fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
     plane

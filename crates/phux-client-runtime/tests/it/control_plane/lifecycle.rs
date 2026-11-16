@@ -18,12 +18,10 @@ fn refusals_are_terminal_and_a_requested_detach_closes() {
     ));
 
     // An older or newer patch on the same major is the same line.
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok(PROTOCOL_VERSION.patch.wrapping_add(1)))
-        .expect("a newer patch interoperates");
+    let _interoperates = opened(
+        ControlOptions::default(),
+        hello_ok(PROTOCOL_VERSION.patch.wrapping_add(1)),
+    );
 
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();
@@ -111,12 +109,10 @@ fn frames_the_plane_does_not_consume_reach_a_binding_and_commands_correlate() {
 
 #[test]
 fn file_upload_replays_the_same_chunk_after_a_reconnect() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::FileUpload]))
-        .expect("HELLO_OK");
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::FileUpload]),
+    );
     plane.take_outbound();
 
     let transfer_id = plane.put_file(terminal(), "png".to_owned(), b"image".to_vec());
@@ -140,11 +136,7 @@ fn file_upload_replays_the_same_chunk_after_a_reconnect() {
     assert!(final_chunk);
 
     plane.connection_lost(Some("reset".to_owned()));
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::FileUpload]))
-        .expect("replacement HELLO_OK");
+    reopen(&mut plane, hello_ok_with(&[ServerFeature::FileUpload]));
     let replay = plane.take_outbound();
     let FrameKind::Command {
         request_id: replay_request,

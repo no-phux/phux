@@ -339,12 +339,10 @@ fn unknown_input_delivery(plane: &mut ControlPlane) -> u64 {
 
 #[test]
 fn conditional_projection_ack_rejects_a_newer_fence_without_reconnecting() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
-        .unwrap();
+    let mut plane = opened(
+        ControlOptions::default(),
+        hello_ok_with(&[ServerFeature::AcknowledgedInput]),
+    );
     plane.take_outbound();
     let first_delivery = unknown_input_delivery(&mut plane);
     let first = plane.projection_fence(&terminal()).unwrap();

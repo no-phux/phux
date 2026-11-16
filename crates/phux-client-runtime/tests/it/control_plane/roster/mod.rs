@@ -72,10 +72,7 @@ fn journal_gap(plane: &mut ControlPlane) {
 }
 
 fn browsing() -> (ControlPlane, u32) {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let frames = outbound(&mut plane);
     assert!(matches!(frames[0], FrameKind::SubscribeEvents { .. }));
     let request_id = state_id(&frames);

@@ -3,10 +3,7 @@ use phux_client_runtime::control::TerminalResizeOutcome as Resize;
 use phux_protocol::wire::frame::{RolePolicy, ViewportInfo};
 
 fn browse(options: ControlOptions) -> ControlPlane {
-    let mut plane = ControlPlane::new(options);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(options, hello_ok(PROTOCOL_VERSION.patch));
     plane.take_outbound();
     plane
 }
@@ -94,9 +91,7 @@ fn preserving_subscriptions_replay_without_global_resize_or_old_replica_readines
     assert_eq!(plane.attach_terminal(&terminal()), 0);
     assert!(plane.take_outbound().is_empty());
     plane.connection_lost(None);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let frames: Vec<_> = plane
         .take_outbound()
         .iter()
@@ -166,9 +161,7 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
         ..ControlOptions::default()
     });
     ready(&mut plane, &terminal());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     assert!(plane.take_outbound().is_empty());
     plane.attach_terminal(&terminal());
     assert_eq!(
@@ -179,9 +172,7 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
     plane.detach_terminal(&terminal());
     plane.take_outbound();
     // Resolve the replaced attach correlation before starting a fresh intent.
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     plane.attach_terminal(&terminal());
     assert_eq!(
         plane.take_outbound().len(),
@@ -333,9 +324,7 @@ fn stream_recovery_preserves_geometry() {
 
 fn reconnect(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane.connection_lost(None);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     plane
         .take_outbound()
         .iter()

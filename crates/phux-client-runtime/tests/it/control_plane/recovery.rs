@@ -6,11 +6,10 @@ fn idempotent_home() -> ControlPlane {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
-        .unwrap();
+    reopen(
+        &mut plane,
+        hello_ok_with(&[ServerFeature::SpawnIdempotency]),
+    );
     let attach_id = outbound_attach_id(&mut plane);
     attach(&mut plane, attach_id, b"home");
     let _ = plane.take_outbound();
@@ -78,10 +77,7 @@ fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
     use phux_protocol::wire::frame::AgentEvent;
 
     for read_in_flight in [false, true] {
-        let mut plane = ControlPlane::new(ControlOptions::default());
-        plane.connection_opened();
-        let _ = plane.take_outbound();
-        plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+        let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
         let initial = inventory_read(&mut plane);
         let mut before = snapshot();
         before
@@ -151,9 +147,7 @@ fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
 
 fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
     plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(replacement_hello(incarnation)).unwrap();
+    reopen(plane, replacement_hello(incarnation));
     plane
         .take_outbound()
         .iter()
@@ -179,9 +173,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
         subscribe_agent_sessions: false,
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let initial: Vec<_> = plane
         .take_outbound()
         .iter()
@@ -208,9 +200,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
     let _ = plane.take_outbound();
     for incarnation in [0xAB, 0xCD] {
         plane.connection_lost(None);
-        plane.connection_opened();
-        let _ = plane.take_outbound();
-        plane.feed(replacement_hello(incarnation)).unwrap();
+        reopen(&mut plane, replacement_hello(incarnation));
         let frames: Vec<_> = plane
             .take_outbound()
             .iter()

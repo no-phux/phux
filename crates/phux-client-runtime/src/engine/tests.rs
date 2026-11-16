@@ -167,10 +167,7 @@ fn a_published_replica_is_projected_and_generations_advance_on_output() {
     // Nothing applied: the generation does not move.
     assert_eq!(publication.generation(&terminal), Some(1));
 
-    apply_ok(
-        &owner,
-        output(&terminal, 1, b"\x1b[3;1Hthird"),
-    );
+    apply_ok(&owner, output(&terminal, 1, b"\x1b[3;1Hthird"));
     let second = publication.acquire(&terminal).expect("published");
     assert_eq!(second.generation, 2);
     assert_eq!(second.row_text(2), "third");
@@ -321,10 +318,7 @@ fn a_fatal_event_stops_the_batch_before_later_terminals_mutate() {
     let second_generation = publication.generation(&second).expect("second published");
 
     let outcomes = owner
-        .apply_batch(vec![
-            output(&first, 2, b"gap"),
-            output(&second, 1, b"late"),
-        ])
+        .apply_batch(vec![output(&first, 2, b"gap"), output(&second, 1, b"late")])
         .expect("owner response");
 
     assert_eq!(
@@ -444,10 +438,7 @@ fn the_headless_replica_keeps_bytes_until_taken() {
     attach(&owner, &terminal, b"ready");
     assert!(owner.has_projection(&terminal));
     assert_eq!(owner.take_output(&terminal), b"ready");
-    apply_ok(
-        &owner,
-        output(&terminal, 1, b"more"),
-    );
+    apply_ok(&owner, output(&terminal, 1, b"more"));
     assert_eq!(owner.take_output(&terminal), b"more");
     assert!(owner.take_output(&terminal).is_empty());
 }

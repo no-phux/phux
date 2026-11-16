@@ -58,9 +58,7 @@ fn an_older_server_is_never_asked() {
         plane.service_http_open(info()).unwrap_err(),
         ServiceHttpError::NotConnected
     );
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(
         plane.service_http_open(info()).unwrap_err(),

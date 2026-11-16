@@ -66,11 +66,7 @@ fn requires_native_capability_before_scheduling() {
         automatic_lifecycle: false,
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(embedded::hello_ok(PROTOCOL_VERSION.patch))
-        .unwrap();
+    embedded::reopen(&mut plane, embedded::hello_ok(PROTOCOL_VERSION.patch));
     plane.take_outbound();
     assert_eq!(
         plane.native_agent_command(&ResourceId::local(22), "activation-A", prompt()),
@@ -182,11 +178,7 @@ fn lost_receipt_is_unknown_and_never_replays_on_reconnect() {
     plane.connection_lost(Some("ack lost".into()));
     let events = plane.take_events();
     assert_eq!(events.iter().filter(|event| matches!(event, Event::NativeAgentResult { operation_id: id, disposition: NativeDisposition::Unknown, .. } if *id == operation_id)).count(), 1);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane
-        .feed(embedded::hello_ok(PROTOCOL_VERSION.patch))
-        .unwrap();
+    embedded::reopen(&mut plane, embedded::hello_ok(PROTOCOL_VERSION.patch));
     assert!(!plane.take_outbound().iter().any(|bytes| matches!(
         embedded::decode(bytes),
         FrameKind::Command {

@@ -68,12 +68,16 @@ fn a_malformed_token_is_reported_by_file_never_by_its_bytes() {
     }
 }
 
-#[test]
-fn routable_quic_without_a_pin_is_refused_after_resolution() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+fn current_thread() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("runtime");
+        .expect("runtime")
+}
+
+#[test]
+fn routable_quic_without_a_pin_is_refused_after_resolution() {
+    let runtime = current_thread();
     let mut unpinned = resolved("quic://192.0.2.1:8788", None);
     unpinned.transport = Transport::Quic("192.0.2.1:8788".to_owned());
     unpinned.token_file = None;
@@ -90,10 +94,7 @@ fn routable_quic_without_a_pin_is_refused_after_resolution() {
 
 #[test]
 fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let runtime = current_thread();
     let pin = "AB".repeat(32);
     let mut routed = resolved("quic://127.0.0.1:4433", Some(&pin));
     routed.transport = Transport::Quic("127.0.0.1:4433".to_owned());
@@ -150,35 +151,47 @@ fn revoked_quic_token_is_re_pair_not_connection_lost() {
     );
 }
 
-#[test]
-fn quic_auth_close_is_not_generic_loss() {
-    let err = quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
-        error_code: quinn::VarInt::from_u32(phux_dial::quic::AUTH_FAILED_CODE),
-        reason: b"unauthorized".as_slice().into(),
-    });
-    let msg = dial_message("stale-token", &phux_dial::quic::close_error(&err));
-    assert!(msg.contains("refused the pairing token"), "{msg}");
-    assert!(!msg.contains("connection was lost"), "{msg}");
-    assert!(!msg.contains("connection lost"), "{msg}");
+fn app_close(code: u32, reason: &'static [u8]) -> quinn::ConnectionError {
+    quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+        error_code: quinn::VarInt::from_u32(code),
+        reason: reason.into(),
+    })
 }
 
+/// How a QUIC close reads to the user: `(label, host, close, the message
+/// says, the message never says)`.
 #[test]
-fn quic_idle_timeout_is_reachability_not_auth() {
-    let msg = dial_message(
-        "mini",
-        &phux_dial::quic::close_error(&quinn::ConnectionError::TimedOut),
-    );
-    assert!(msg.contains("did not answer"), "{msg}");
-    assert!(!msg.contains("pairing token"), "{msg}");
-}
-
-#[test]
-fn graceful_quic_close_is_not_auth() {
-    let err = quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
-        error_code: quinn::VarInt::from_u32(0),
-        reason: b"bye".as_slice().into(),
-    });
-    let msg = dial_message("mini", &phux_dial::quic::close_error(&err));
-    assert!(!msg.contains("pairing token"), "{msg}");
-    assert!(!msg.contains("enroll"), "{msg}");
+fn quic_closes_are_worded_by_their_cause() {
+    let cases = [
+        (
+            "quic_auth_close_is_not_generic_loss",
+            "stale-token",
+            app_close(phux_dial::quic::AUTH_FAILED_CODE, b"unauthorized"),
+            &["refused the pairing token"][..],
+            &["connection was lost", "connection lost"][..],
+        ),
+        (
+            "quic_idle_timeout_is_reachability_not_auth",
+            "mini",
+            quinn::ConnectionError::TimedOut,
+            &["did not answer"],
+            &["pairing token"],
+        ),
+        (
+            "graceful_quic_close_is_not_auth",
+            "mini",
+            app_close(0, b"bye"),
+            &[],
+            &["pairing token", "enroll"],
+        ),
+    ];
+    for (label, host, close, says, never) in cases {
+        let msg = dial_message(host, &phux_dial::quic::close_error(&close));
+        for needle in says {
+            assert!(msg.contains(needle), "{label}: {msg}");
+        }
+        for needle in never {
+            assert!(!msg.contains(needle), "{label}: {msg}");
+        }
+    }
 }
