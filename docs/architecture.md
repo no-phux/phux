@@ -95,6 +95,7 @@ Cargo manifests define the actual edges.
 | `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
 | `phux-server-testkit` | fixtures for server wire tests; dev-only |
+| `phux-wire-fixtures` | frame builders for client-side tests; wasm-safe; dev-only |
 | `phux` | the `phux` binary: argument parsing and dispatch |
 
 `phux-core` and `phux-protocol` do not depend on each other; the server

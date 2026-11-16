@@ -75,6 +75,8 @@ phux-frozen = { path = "crates/phux-frozen" }
 phux-crash = { path = "crates/phux-crash" }
 # Dev-only scaffolding, compiled once for the server integration tests.
 phux-server-testkit = { path = "crates/phux-server-testkit" }
+# Dev-only frame builders for client-side tests; wasm-safe.
+phux-wire-fixtures = { path = "crates/phux-wire-fixtures" }
 portable-pty-adopt = { path = "crates/portable-pty-adopt" }
 
 # External.

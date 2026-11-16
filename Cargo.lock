@@ -3510,6 +3510,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-wire-fixtures"
+version = "0.154.0"
+dependencies = [
+ "bytes",
+ "phux-protocol",
+]
+
+[[package]]
 name = "phux-work"
 version = "0.154.0"
 dependencies = [
