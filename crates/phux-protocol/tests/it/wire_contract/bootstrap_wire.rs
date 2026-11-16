@@ -20,8 +20,8 @@ use phux_protocol::wire::frame::{
 };
 
 use crate::common::{
-    assert_round_trip, framed_tlv as framed, local_id_bytes as local_terminal, take_varint,
-    tlv_field,
+    assert_round_trip, decode_err, framed_tlv as framed, local_id_bytes as local_terminal,
+    take_varint, tlv_field,
 };
 
 mod frame_shapes;
@@ -36,11 +36,6 @@ const fn stream(raw: u64) -> StreamId {
 
 const fn bootstrap(raw: u64) -> BootstrapId {
     BootstrapId::new(raw).unwrap()
-}
-
-/// The decode error for `frame`'s own encoding.
-fn decode_err(frame: &FrameKind) -> DecodeError {
-    FrameKind::decode(&crate::common::encode(frame)).unwrap_err()
 }
 
 /// The ids every history builder below shares: terminal 1, stream 2,

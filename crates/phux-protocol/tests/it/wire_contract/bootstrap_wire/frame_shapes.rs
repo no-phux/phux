@@ -2,12 +2,12 @@
 
 use super::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, BootstrapProfileSet,
-    BootstrapStreamProfile, Bytes, BytesMut, ClientCapabilities, DecodeError, EngineCodec,
-    EngineFeatureSet, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ResourceId,
-    ServerCapabilities, TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason, assert_round_trip, bootstrap,
-    chunk, encode_without_field, encoded_field_ids, framed, history_page, history_rejected,
+    BootstrapStreamProfile, Bytes, ClientCapabilities, DecodeError, EngineCodec, EngineFeatureSet,
+    FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ResourceId, ServerCapabilities,
+    TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
+    TYPE_HISTORY_TOMBSTONE, TombstoneReason, assert_round_trip, bootstrap, chunk,
+    encode_without_field, encoded_field_ids, framed, history_page, history_rejected,
     history_request, history_tombstone, local_terminal, stream, tlv_field,
 };
 
@@ -227,16 +227,7 @@ fn unknown_top_level_fields_are_skipped_without_touching_opaque_bytes() {
     if let FrameKind::BootstrapChunk { chunk_seq, .. } = &mut frame {
         *chunk_seq = 4;
     }
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let mut unknown = Vec::new();
-    tlv_field(&mut unknown, 99, b"future-field");
-    encoded.extend_from_slice(&unknown);
-    let new_length = u32::from_be_bytes(encoded[..4].try_into().unwrap())
-        .checked_add(u32::try_from(unknown.len()).unwrap())
-        .unwrap();
-    encoded[..4].copy_from_slice(&new_length.to_be_bytes());
-
+    let encoded = crate::common::encode_with_unknown_field(&frame, 99, b"future-field");
     let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
     assert_eq!(decoded, frame);
     assert!(tail.is_empty());

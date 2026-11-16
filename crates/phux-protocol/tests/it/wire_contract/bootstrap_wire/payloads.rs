@@ -61,15 +61,10 @@ fn opaque_lifecycle_records_reencode_byte_identically() {
     ];
 
     for frame in frames {
-        let mut encoded = BytesMut::new();
-        frame.encode(&mut encoded);
-        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-        assert!(tail.is_empty());
+        let encoded = crate::common::encode(&frame);
+        let decoded = crate::common::decode(&encoded).unwrap();
         assert_eq!(decoded, frame);
-
-        let mut reencoded = BytesMut::new();
-        decoded.encode(&mut reencoded);
-        assert_eq!(reencoded, encoded);
+        assert_eq!(crate::common::encode(&decoded), encoded);
     }
 }
 
@@ -106,10 +101,9 @@ fn native_live_bytes_are_codec_opaque_and_round_trip_exactly() {
         seq: 1,
         bytes: raw.clone(),
     };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, _) = FrameKind::decode(&encoded).unwrap();
-    let FrameKind::ResourceOutput { bytes, .. } = decoded else {
+    let FrameKind::ResourceOutput { bytes, .. } =
+        FrameKind::decode(&crate::common::encode(&frame)).unwrap().0
+    else {
         panic!("expected terminal output");
     };
     assert_eq!(bytes, raw);

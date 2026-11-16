@@ -1,10 +1,11 @@
 //! Resource kinds: the additive spawn, close, and append shapes.
 
 use super::{
-    AgentEvent, CloseReason, Command, DecodeError, FrameKind, GroupId, MAX_APPEND_BYTES,
+    AgentEvent, CloseReason, Command, DecodeError, FrameKind, MAX_APPEND_BYTES,
     MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, ResourceId, ResourceKind,
     SpawnResource, assert_round_trip, framed_tlv, local_id_bytes, tlv_field,
 };
+use crate::common::Spawn;
 
 /// Build a `SPAWN_RESOURCE` body by hand from `(field_id, value)` pairs.
 pub(super) fn spawn_terminal_frame(fields: &[(u32, &[u8])]) -> Vec<u8> {
@@ -30,19 +31,12 @@ fn spawn_terminal_without_kind_field_decodes_as_terminal() {
     assert_eq!(resource, None);
     // Spelling the defaults out is the same spawn: it encodes to the same
     // bytes and decodes back to `None`.
-    let spelled = FrameKind::SpawnResource {
+    let spelled = Spawn {
         request_id: 1,
-        group: GroupId::new(1),
-        command: None,
-        cwd: None,
-        env: None,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
-        agent_session: None,
-        initial_size: None,
         resource: Some(Box::new(SpawnResource::default())),
-    };
+        ..Spawn::default()
+    }
+    .frame();
     let buf = crate::common::encode(&spelled);
     assert_eq!(buf.as_slice(), bytes.as_slice());
     let (decoded, _) = FrameKind::decode(&buf).unwrap();

@@ -1,5 +1,6 @@
 //! The retired layout slot and the L3 metadata and lifecycle frame properties.
 
+use crate::common::Spawn;
 use proptest::prelude::*;
 
 use super::{
@@ -203,21 +204,9 @@ proptest! {
     ) {
         prop_assume!(provider.len() <= MAX_RESOURCE_PROVIDER_BYTES);
         prop_assume!(native_id.as_ref().is_none_or(|id| id.len() <= MAX_RESOURCE_NATIVE_ID_BYTES));
-        assert_round_trip(&FrameKind::SpawnResource {
-            request_id,
-            group: GroupId::new(group),
-            command: None,
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
-            owner_terminal: None,
-            agent_session,
-            initial_size: None,
-            resource: Some(Box::new(
+        assert_round_trip(&Spawn { request_id, group: GroupId::new(group), satellite: satellite.map(phux_protocol::ids::SatelliteHost::new), agent_session, resource: Some(Box::new(
                 SpawnResource::agent_session(parent, provider).with_native_id(native_id),
-            )),
-        });
+            )), ..Spawn::default() }.frame());
     }
 
     /// A kind this build does not recognise round-trips its tag verbatim and
@@ -229,25 +218,13 @@ proptest! {
         parent in proptest::option::of(arb_terminal_id()),
         cwd in proptest::option::of(".{0,32}"),
     ) {
-        assert_round_trip(&FrameKind::SpawnResource {
-            request_id,
-            group: GroupId::new(1),
-            command: None,
-            cwd,
-            env: None,
-            term: None,
-            satellite: None,
-            owner_terminal: None,
-            agent_session: None,
-            initial_size: None,
-            resource: Some(Box::new(SpawnResource {
+        assert_round_trip(&Spawn { request_id, cwd, resource: Some(Box::new(SpawnResource {
                 kind: ResourceKind::Unknown { tag },
                 parent,
                 provider: None,
                 native_id: None,
                 bind_instance: false, idempotency_key: None, retain_secs: None, control: None,
-            })),
-        });
+            })), ..Spawn::default() }.frame());
     }
 
     /// KILL_RESOURCE_IF (ADR-0109): every instance presence and every
@@ -279,36 +256,17 @@ proptest! {
         bind in any::<bool>(),
         satellite in proptest::option::of("[a-z]{1,8}"),
     ) {
-        assert_round_trip(&FrameKind::SpawnResource {
-            request_id,
-            group: GroupId::new(1),
-            command: None,
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
-            owner_terminal: None,
-            agent_session: None,
-            initial_size: None,
-            resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
-        });
+        assert_round_trip(&Spawn { request_id, satellite: satellite.map(phux_protocol::ids::SatelliteHost::new), resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))), ..Spawn::default() }.frame());
     }
 }
 
 fn spawn_document(resource: SpawnResource) -> FrameKind {
-    FrameKind::SpawnResource {
+    Spawn {
         request_id: 9,
-        group: GroupId::new(1),
-        command: None,
-        cwd: None,
-        env: None,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
-        agent_session: None,
-        initial_size: None,
         resource: Some(Box::new(resource)),
+        ..Spawn::default()
     }
+    .frame()
 }
 
 /// A `Document` names its content type (field 13, up to 255 bytes) and an

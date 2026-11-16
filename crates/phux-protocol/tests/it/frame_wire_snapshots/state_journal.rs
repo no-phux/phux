@@ -1,9 +1,10 @@
 //! Producer, attach, state-reply, bootstrap, and event-journal fixtures.
 
+use crate::common::Spawn;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{
-    BootstrapId, ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, SatelliteHost,
-    SessionId, StreamId, WindowId,
+    BootstrapId, ClientId, IdempotencyKey, ResourceId, ResourceKind, SatelliteHost, SessionId,
+    StreamId, WindowId,
 };
 use phux_protocol::wire::frame::{
     ActorRef, AgentEvent, CloseReason, Command, CommandResult, CommandValue, ControlAction,
@@ -250,23 +251,16 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
         ),
         (
             "snap_spawn_terminal_retain_and_idempotency_key",
-            FrameKind::SpawnResource {
+            Spawn {
                 request_id: 0x0000_0017,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
                 resource: Some(Box::new(
                     SpawnResource::default()
                         .with_retain_secs(Some(600))
                         .with_idempotency_key(IdempotencyKey::new([0x5A; 16])),
                 )),
-            },
+                ..Spawn::default()
+            }
+            .frame(),
         ),
         (
             "snap_command_result_state_with_resource_state",
