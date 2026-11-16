@@ -50,9 +50,8 @@ fn positional<T>(
 /// Implement [`TlvValue`] for a big-endian integer carried as its bytes.
 /// Bytes after the integer are ignored; fewer is `UnexpectedEof`.
 macro_rules! tlv_integer {
-    ($($ty:ty => $schema:literal;)*) => {$(
+    ($($ty:ty;)*) => {$(
         impl TlvValue for $ty {
-
             fn put(&self, enc: &mut Encoder<'_>, id: u32) {
                 enc.write_field(id, &self.to_be_bytes());
             }
@@ -66,19 +65,18 @@ macro_rules! tlv_integer {
 
 // An `i32` rides as its two's-complement `u32`.
 tlv_integer! {
-    u8 => "u8";
-    u16 => "u16";
-    u32 => "u32";
-    u64 => "u64";
-    i32 => "i32";
+    u8;
+    u16;
+    u32;
+    u64;
+    i32;
 }
 
 /// Implement [`TlvValue`] for a positional sub-record written by `$encode`
 /// into a scratch builder and read by `$decode`.
 macro_rules! tlv_positional {
-    ($($ty:ty => $schema:literal, $encode:path, $decode:path;)*) => {$(
+    ($($ty:ty, $encode:path, $decode:path;)*) => {$(
         impl TlvValue for $ty {
-
             fn put(&self, enc: &mut Encoder<'_>, id: u32) {
                 enc.write_field_with(id, |e| $encode(self, e));
             }
@@ -91,17 +89,17 @@ macro_rules! tlv_positional {
 }
 
 tlv_positional! {
-    Vec<String> => "StringList", encode_string_list, decode_string_list;
-    Scope => "Scope", encode_scope, decode_scope;
-    ActorRef => "ActorRef", encode_actor_ref, decode_actor_ref;
-    AttachTarget => "AttachTarget", encode_attach_target, decode_attach_target;
-    ViewportInfo => "ViewportInfo", encode_viewport_info, decode_viewport_info;
-    SessionSnapshot => "SessionSnapshot", encode_session_snapshot, decode_session_snapshot;
-    MoveResult => "MoveResult", encode_move_result, decode_move_result;
-    CommandResult => "CommandResult", encode_command_result, decode_command_result;
-    KeyEvent => "KeyEvent", encode_key_event, decode_key_event;
-    MouseEvent => "MouseEvent", encode_mouse_event, decode_mouse_event;
-    PasteEvent => "PasteEvent", encode_paste_event, decode_paste_event;
+    Vec<String>, encode_string_list, decode_string_list;
+    Scope, encode_scope, decode_scope;
+    ActorRef, encode_actor_ref, decode_actor_ref;
+    AttachTarget, encode_attach_target, decode_attach_target;
+    ViewportInfo, encode_viewport_info, decode_viewport_info;
+    SessionSnapshot, encode_session_snapshot, decode_session_snapshot;
+    MoveResult, encode_move_result, decode_move_result;
+    CommandResult, encode_command_result, decode_command_result;
+    KeyEvent, encode_key_event, decode_key_event;
+    MouseEvent, encode_mouse_event, decode_mouse_event;
+    PasteEvent, encode_paste_event, decode_paste_event;
 }
 
 impl TlvValue for bool {
