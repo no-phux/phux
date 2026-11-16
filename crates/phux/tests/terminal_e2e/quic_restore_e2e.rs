@@ -14,8 +14,6 @@
 
 use crate::{common, listeners, paired};
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -35,73 +33,48 @@ const ATTACH_PTY: (u16, u16) = (100, 24);
 const UNBOUND_TERMINAL: &str = "requires a live QUIC binding";
 
 /// A real server on a private UDS plus a loopback QUIC listener, with every
-/// directory it or a client reads or writes inside one tempdir.
+/// directory it or a client reads or writes inside its isolated home.
 struct QuicServer {
     inner: common::ServerGuard,
-    dir: tempfile::TempDir,
     quic: std::net::SocketAddr,
     enrolled: paired::Enrolled,
 }
 
 impl QuicServer {
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("server tempdir");
-        for name in ["home", "config", "state", "runtime"] {
-            std::fs::create_dir(dir.path().join(name)).expect("create isolated server directory");
-        }
-        paired::write_paired_policy(&dir.path().join("config/phux/config.toml"));
-        let enrolled = paired::enroll_client(dir.path(), |args, stdin| {
+        let spawn = common::ServerGuard::builder("quic-restore")
+            .env("SHELL", "/bin/sh")
+            .isolated_home();
+        let home = spawn.home();
+        paired::write_paired_policy(&home.root().join("config/phux/config.toml"));
+        let enrolled = paired::enroll_client(home.root(), |args, stdin| {
             let mut command = common::phux_cmd(crate::runner::phux_bin());
-            command.envs(isolated_env(dir.path())).args(args);
+            command.envs(home.env()).args(args);
             paired::output_with_stdin(command, stdin)
         });
-        let inner = common::ServerGuard::builder("quic-restore")
-            .env("SHELL", "/bin/sh")
-            .envs(isolated_env(dir.path()))
-            .start_with(|cmd| {
-                cmd.args(["--quic", listeners::LOOPBACK_ANY_PORT]);
-            });
+        let inner = spawn.start_with(|cmd| {
+            cmd.args(["--quic", listeners::LOOPBACK_ANY_PORT]);
+        });
         let quic =
             listeners::bound_listener_addr(&inner.socket, listeners::RemoteListenerTransport::Quic);
         Self {
             inner,
-            dir,
             quic,
             enrolled,
         }
     }
 
     fn command(&self, args: &[&str]) -> std::process::Output {
-        let (verb, rest) = args.split_first().expect("verb");
-        common::phux_cmd(crate::runner::phux_bin())
-            .arg(verb)
-            .arg("--socket")
-            .arg(&self.inner.socket)
-            .args(rest)
-            .envs(isolated_env(self.dir.path()))
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command")
-    }
-
-    fn json(&self, args: &[&str]) -> serde_json::Value {
-        let output = self.command(args);
-        assert!(
-            output.status.success(),
-            "phux {args:?} failed: stderr={}",
-            String::from_utf8_lossy(&output.stderr),
-        );
-        serde_json::from_slice(&output.stdout)
-            .unwrap_or_else(|err| panic!("invalid JSON for {args:?}: {err}"))
+        self.inner.cmd(args).output().expect("run phux command")
     }
 
     fn seed_pane(&self) -> ResourceId {
-        let snapshot = self.json(&["snapshot", "--json", SESSION]);
+        let snapshot = self.inner.json(&["snapshot", "--json", SESSION]);
         local_pane(&snapshot["pane"])
     }
 
     fn spawn_pane(&self) -> ResourceId {
-        local_pane(&self.json(&["spawn", "--json"])["terminal_id"])
+        local_pane(&self.inner.json(&["spawn", "--json"])["terminal_id"])
     }
 
     /// `(cols, rows)` of the pane actor's own grid, or `None` once the pane
@@ -186,10 +159,10 @@ impl QuicServer {
     /// real config or dials the running server.
     fn attach_over_quic(&self) -> common::PtyAttach {
         let addr = self.quic.to_string();
-        let dir = self.dir.path().to_owned();
+        let home = self.inner.isolated_home().env();
         let identity = self.enrolled.env();
         common::PtyAttach::start_dialing(&["--quic", &addr, SESSION], ATTACH_PTY, |_, command| {
-            for (key, value) in isolated_env(&dir) {
+            for (key, value) in home {
                 if key != "XDG_CONFIG_HOME" {
                     command.env(key, value);
                 }
@@ -199,17 +172,6 @@ impl QuicServer {
             }
         })
     }
-}
-
-/// `HOME` and the XDG roots inside `dir`. The attach keeps the empty config
-/// dir [`common::PtyAttach`] gives it, so the embedded defaults apply.
-fn isolated_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![
-        ("HOME", dir.join("home")),
-        ("XDG_CONFIG_HOME", dir.join("config")),
-        ("XDG_STATE_HOME", dir.join("state")),
-        ("XDG_RUNTIME_DIR", dir.join("runtime")),
-    ]
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -360,7 +322,7 @@ fn quic_tui_created_tabs_survive_detach_and_reattach() {
         }
     }
     let before = server.read_layout().expect("saved tabs before detach");
-    let members = server.json(&["ls", "--json"])["terminals"].clone();
+    let members = server.inner.json(&["ls", "--json"])["terminals"].clone();
     client.send(b"\x01d");
     let deadline = Instant::now() + DEADLINE;
     while client.is_running() {
@@ -389,7 +351,7 @@ fn quic_tui_created_tabs_survive_detach_and_reattach() {
     );
     assert_eq!(
         members,
-        server.json(&["ls", "--json"])["terminals"],
+        server.inner.json(&["ls", "--json"])["terminals"],
         "reattach changed terminal records"
     );
 }

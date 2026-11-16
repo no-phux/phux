@@ -10,7 +10,6 @@
 
 use crate::common;
 
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -27,71 +26,33 @@ const POLL: Duration = Duration::from_millis(50);
 /// effect of that reconcile, not of the CLI `SET_METADATA` itself.
 const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 
-/// A [`common::ServerGuard`] whose `HOME` and XDG directories live in `dir`,
-/// which every client verb here reuses.
-struct IsolatedServer {
-    inner: common::ServerGuard,
-    dir: tempfile::TempDir,
-}
+/// A [`common::ServerGuard`] with an isolated home, which every client verb
+/// here reuses.
+struct IsolatedServer(common::ServerGuard);
 
 impl std::ops::Deref for IsolatedServer {
     type Target = common::ServerGuard;
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        &self.0
     }
 }
 
 impl IsolatedServer {
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("server tempdir");
-        for name in ["home", "config", "state", "runtime"] {
-            std::fs::create_dir(dir.path().join(name)).expect("create isolated server directory");
-        }
-        let inner = common::ServerGuard::builder("spatial")
-            // Panes run the server's `$SHELL`. Inherited, that is the CI
-            // devshell's minimal bash sourcing the runner's `~/.bashrc`, whose
-            // startup noise buries the typed markers; pin the `/bin/sh` the
-            // marker barriers assume.
-            .env("SHELL", "/bin/sh")
-            .env("HOME", dir.path().join("home"))
-            .env("XDG_CONFIG_HOME", dir.path().join("config"))
-            .env("XDG_STATE_HOME", dir.path().join("state"))
-            .env("XDG_RUNTIME_DIR", dir.path().join("runtime"))
-            .start();
-        Self { inner, dir }
+        Self(
+            common::ServerGuard::builder("spatial")
+                // Panes run the server's `$SHELL`. Inherited, that is the CI
+                // devshell's minimal bash sourcing the runner's `~/.bashrc`, whose
+                // startup noise buries the typed markers; pin the `/bin/sh` the
+                // marker barriers assume.
+                .env("SHELL", "/bin/sh")
+                .isolated_home()
+                .start(),
+        )
     }
 
     fn command(&self, args: &[&str]) -> std::process::Output {
-        let (verb, rest) = args.split_first().expect("verb");
-        common::phux_cmd(crate::runner::phux_bin())
-            .arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .env("HOME", self.dir.path().join("home"))
-            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
-            .env("XDG_STATE_HOME", self.dir.path().join("state"))
-            .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command")
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let output = self.command(args);
-        assert!(
-            output.status.success(),
-            "phux {args:?} failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    }
-
-    fn json(&self, args: &[&str]) -> serde_json::Value {
-        let stdout = self.success(args);
-        serde_json::from_str(&stdout)
-            .unwrap_or_else(|err| panic!("invalid JSON for {args:?}: {err}: {stdout}"))
+        self.cmd(args).output().expect("run phux command")
     }
 
     fn seed_pane(&self) -> ResourceId {
@@ -367,7 +328,7 @@ impl AttachedClient {
     }
 
     fn start_named_at_size(server: &IsolatedServer, session: &str, cols: u16, rows: u16) -> Self {
-        let dir = server.dir.path();
+        let dir = server.isolated_home().root();
         Self(common::PtyAttach::start(
             &server.socket,
             &[session],
