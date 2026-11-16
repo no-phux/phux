@@ -97,7 +97,7 @@ pub(super) fn attach_client_caps(
 }
 
 pub(super) fn attach_client_name() -> String {
-    format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
+    crate::attach::connection::product_client_name(crate::attach::connection::TUI_CLIENT_PRODUCT)
 }
 
 /// Send the TUI's `ATTACH` with no window-size vote (ADR-0145): the server

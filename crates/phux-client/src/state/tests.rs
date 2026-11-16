@@ -28,7 +28,13 @@ async fn get_state_skips_unrelated_command_results() {
     else {
         panic!("HELLO must be first, got {seen:?}");
     };
-    assert!(client_name.starts_with("phux-client/"));
+    assert_eq!(
+        client_name,
+        &crate::attach::connection::product_client_name(
+            crate::attach::connection::CLI_CLIENT_PRODUCT
+        ),
+        "headless connections announce phux-cli/<version>"
+    );
     assert_eq!(
         client_caps.layers,
         phux_protocol::caps::LayerSet::with(&[phux_protocol::caps::Layer::L3]),

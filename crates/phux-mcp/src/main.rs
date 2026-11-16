@@ -213,6 +213,13 @@ where
     R: AsyncBufRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    // Tools such as `phux_send_keys` connect through `phux-client`, which
+    // would otherwise announce the headless `phux-cli` token.
+    phux_client::attach::connection::install_client_name(Some(
+        phux_client::attach::connection::product_client_name(
+            phux_client::attach::connection::MCP_CLIENT_PRODUCT,
+        ),
+    ));
     let mut line = String::new();
     let mut in_flight = InFlight {
         tasks: JoinSet::new(),

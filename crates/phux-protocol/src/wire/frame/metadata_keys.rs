@@ -199,7 +199,10 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// connection changes and deleted when that connection closes. `client_name`
 /// and `platform` are the sender's own `HELLO` words and `route` the whoami
 /// `auth_route` word, so the record is a hint and never an authentication
-/// fact. Clients must not set or delete it.
+/// fact. `client_name` stays free-form. phux's own programs send
+/// `phux-tui/<version>`, `phux-cli/<version>`, or `phux-mcp/<version>`;
+/// split on the last `/`, the same parse as the older `phux-client/<version>`.
+/// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
 /// Server-owned OSC 7501 record index and active status (L3 §3.7.3).
