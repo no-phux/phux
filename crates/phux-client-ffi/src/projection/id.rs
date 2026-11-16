@@ -41,25 +41,18 @@ mod tests {
     use super::{encode, parse};
     use phux_protocol::ResourceId;
 
+    /// Local and satellite ids round-trip; a satellite host may contain a
+    /// colon (the id is the last field).
     #[test]
-    fn local_ids_round_trip() {
-        let id = ResourceId::local(7);
-        assert_eq!(encode(&id), "local:7");
-        assert_eq!(parse("local:7"), Some(id));
-    }
-
-    #[test]
-    fn satellite_ids_round_trip() {
-        let id = ResourceId::satellite("box", 3);
-        assert_eq!(encode(&id), "satellite:box:3");
-        assert_eq!(parse("satellite:box:3"), Some(id));
-    }
-
-    #[test]
-    fn a_host_may_contain_a_colon() {
-        let id = ResourceId::satellite("box:2222", 3);
-        assert_eq!(encode(&id), "satellite:box:2222:3");
-        assert_eq!(parse("satellite:box:2222:3"), Some(id));
+    fn ids_round_trip_through_their_wire_spelling() {
+        for (id, wire) in [
+            (ResourceId::local(7), "local:7"),
+            (ResourceId::satellite("box", 3), "satellite:box:3"),
+            (ResourceId::satellite("box:2222", 3), "satellite:box:2222:3"),
+        ] {
+            assert_eq!(encode(&id), wire);
+            assert_eq!(parse(wire), Some(id), "{wire}");
+        }
     }
 
     #[test]
