@@ -7,9 +7,11 @@
 //! in a transport remedy depends on the environment, so it is spelled
 //! `<server-log>` in the golden.
 //!
-//! Through the CLI these run only with `PHUX_TEST_GOLDEN_CLI` naming a built
-//! `phux` (never the installed one); `PHUX_TEST_GOLDEN_WRITE=1` rewrites the
-//! goldens from that run.
+//! A tool still on the residue runs through the CLI only with
+//! `PHUX_TEST_GOLDEN_CLI` naming a built `phux` (never the installed one);
+//! `PHUX_TEST_GOLDEN_WRITE=1` rewrites its goldens from that run. A tool that
+//! moved in-process runs on every test run, against the goldens the CLI
+//! froze.
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::testkit::{self, ScriptSpec};
@@ -227,7 +229,6 @@ enum Path<'a> {
     /// The canonical CLI at this path, through the residue adapter.
     Cli(&'a std::ffi::OsStr),
     /// The registered handler, as `tools/call` reaches it.
-    #[allow(dead_code, reason = "taken once the first tool moves in-process")]
     Dispatch,
 }
 
@@ -279,11 +280,19 @@ async fn render(case: &Case, path: &Path<'_>) -> String {
     }
 }
 
-/// Compare every case along `path` with its golden, rewriting the goldens
-/// instead when `write` is set.
-async fn check(path: &Path<'_>, write: bool) {
+/// Whether `tool` still runs the CLI.
+fn on_residue(tool: &str) -> bool {
+    matches!(
+        crate::tool_table::row(tool).map(|row| row.exec),
+        Some(crate::tool_table::Exec::Cli(_))
+    )
+}
+
+/// Compare each of `cases` along `path` with its golden, rewriting the
+/// goldens instead when `write` is set.
+async fn check(cases: impl Iterator<Item = &Case>, path: &Path<'_>, write: bool) {
     let mut mismatches = Vec::new();
-    for case in CASES {
+    for case in cases {
         let actual = render(case, path).await;
         let file = golden_path(case.golden);
         if write {
@@ -306,6 +315,19 @@ async fn check(path: &Path<'_>, write: bool) {
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
+/// A tool that left the residue still answers byte for byte what the CLI
+/// answered, and reaching it spawns nothing.
+#[tokio::test]
+async fn moved_tools_match_the_goldens_the_cli_froze() {
+    let _ = crate::cli_adapter::spawn_record::take();
+    let moved = CASES.iter().filter(|case| !on_residue(case.tool));
+    check(moved, &Path::Dispatch, false).await;
+    assert!(
+        crate::cli_adapter::spawn_record::take().is_empty(),
+        "a moved tool spawned the CLI"
+    );
+}
+
 #[tokio::test]
 async fn residue_tools_through_the_cli_match_their_goldens() {
     let Some(program) = std::env::var_os("PHUX_TEST_GOLDEN_CLI") else {
@@ -313,5 +335,6 @@ async fn residue_tools_through_the_cli_match_their_goldens() {
         return;
     };
     let write = std::env::var_os("PHUX_TEST_GOLDEN_WRITE").is_some();
-    check(&Path::Cli(&program), write).await;
+    let residue = CASES.iter().filter(|case| on_residue(case.tool));
+    check(residue, &Path::Cli(&program), write).await;
 }

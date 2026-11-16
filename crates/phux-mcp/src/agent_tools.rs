@@ -2,8 +2,9 @@
 //! freezes only its own argument shape (ADR-0071 point 7(b)); an `action`
 //! multiplexer would freeze the union of every verb's arguments.
 //!
-//! `phux_agent_set` / `phux_agent_clear` run in-process over
-//! `phux_client::agent_record`; the rest run the canonical CLI through
+//! The level reads (`phux_agent_list|show|explain`) run in-process over
+//! `phux_client::agent::reads`, and `phux_agent_set` / `phux_agent_clear`
+//! over `phux_client::agent_record`; the rest run the canonical CLI through
 //! [`crate::cli_adapter`] (reasons in `crate::tool_table`). There is
 //! deliberately no attach/observe (a live stream has no request/response
 //! shape), no blind auto-answer, no second read tool (ADR-0077), and no
@@ -67,17 +68,15 @@ fn target_schema(description: &str) -> Value {
 
 /// The agent tools, in catalog order.
 pub(crate) const SPECS: &[ToolSpec] = &[
-    ToolSpec::cli("phux_agent_list", reads::list_schema, |args, adapter| {
-        Box::pin(reads::list(args, adapter))
+    ToolSpec::in_process("phux_agent_list", reads::list_schema, |args| {
+        Box::pin(reads::list(args))
     }),
-    ToolSpec::cli("phux_agent_show", reads::show_schema, |args, adapter| {
-        Box::pin(reads::projection(args, "show", adapter))
+    ToolSpec::in_process("phux_agent_show", reads::show_schema, |args| {
+        Box::pin(reads::projection(args))
     }),
-    ToolSpec::cli(
-        "phux_agent_explain",
-        reads::explain_schema,
-        |args, adapter| Box::pin(reads::projection(args, "explain", adapter)),
-    ),
+    ToolSpec::in_process("phux_agent_explain", reads::explain_schema, |args| {
+        Box::pin(reads::projection(args))
+    }),
     ToolSpec::in_process("phux_agent_set", identity::set_schema, |args| {
         Box::pin(identity::set(args))
     }),

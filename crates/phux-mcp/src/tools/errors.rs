@@ -80,14 +80,34 @@ pub(crate) fn refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
     ToolError::with_document(document.to_string(), document)
 }
 
+/// `refusal` as a tool that left the CLI residue reports it: the text is
+/// the CLI's own stderr line ([`phux_client::contract::error_line`]), so a
+/// caller that read the CLI's error text reads the same bytes.
+pub(crate) fn cli_refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
+    ToolError::with_document(
+        phux_client::contract::error_line(refusal, exit_code),
+        error_document(refusal, exit_code),
+    )
+}
+
 /// A transport failure on the `--json` error contract, classified by the
 /// same [`transport_refusal`] as the CLI: `no_server`,
 /// `server_disconnected`, or `transport`.
 pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> ToolError {
-    let pid = phux_client::attach::is_incompatible_protocol(err)
+    render_transport_error(err, socket, verb, recovery_pid(err, socket))
+}
+
+/// The [`transport_refusal`] the CLI builds for `err`, with the server pid
+/// its old-protocol recovery names.
+pub(crate) fn transport_refusal_at(err: &AttachError, socket: &Path, verb: &str) -> Refusal {
+    transport_refusal(err, socket, verb, recovery_pid(err, socket))
+}
+
+/// The socket owner's pid, looked up only for the old-protocol recovery.
+fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
+    phux_client::attach::is_incompatible_protocol(err)
         .then(|| phux_client::explain::server_pid(socket))
-        .flatten();
-    render_transport_error(err, socket, verb, pid)
+        .flatten()
 }
 
 /// [`transport_error`] with the server pid already resolved, so tests can pin

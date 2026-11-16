@@ -15,10 +15,13 @@ fn sweep_args(tool: &str) -> Value {
             json!({"idempotency_key":"0123456789abcdef0123456789abcdef", "session":"aebagbafaydqqcikbmga2dqpca"})
         }
         "phux_operation_status" => json!({ "idempotency_key": "0123456789abcdef0123456789abcdef" }),
-        "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => {
+        "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_agent_list"
+        | "phux_approvals" => {
             json!({})
         }
         "phux_snapshot"
+        | "phux_agent_show"
+        | "phux_agent_explain"
         | "phux_resource_methods"
         | "phux_resource_show"
         | "phux_tree_snapshot"
