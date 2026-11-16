@@ -5,17 +5,18 @@
     reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
 )]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeatureExt};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{CommandResult, FrameKind};
 use phux_server::LaunchCommand as CommandBuilder;
+use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, command, recv_typed, recv_until, send_frame,
-    wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, attach_by_name, command, recv_typed, recv_until,
+    send_frame, wait_for_raw_socket,
 };
 
 /// Every layer, true color: what a full client advertises.
@@ -41,6 +42,14 @@ pub(crate) async fn connect_as(
     (stream, hello_ok)
 }
 
+/// Whether `hello_ok` (a `HELLO_OK`) advertises `feature`.
+pub(crate) fn advertises(hello_ok: &FrameKind, feature: ServerFeatureExt) -> bool {
+    let FrameKind::HelloOk { server_caps, .. } = hello_ok else {
+        panic!("expected HELLO_OK: {hello_ok:?}");
+    };
+    server_caps.features_ext.contains(feature)
+}
+
 /// Attach to `session` and return its focused pane.
 pub(crate) async fn attach_pane(stream: &mut UnixStream, session: &str) -> ResourceId {
     send_frame(stream, &attach_by_name(session)).await;
@@ -55,13 +64,19 @@ pub(crate) async fn attach_pane(stream: &mut UnixStream, session: &str) -> Resou
 /// Tests write the file only after the server has installed their
 /// subscription, so no startup latency can let the pane speak first.
 pub(crate) fn gated_seed(release: &Path, script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg(format!(
+    phux_server_testkit::sh(&format!(
         "until [ -f '{}' ]; do sleep 0.01; done; {script}",
         release.display(),
-    ));
-    cmd
+    ))
+}
+
+/// A server seeding session `demo` with [`gated_seed`] over `script`, and
+/// the release file to write once the test's subscription is installed.
+pub(crate) fn gated_server(script: &str) -> (SpawnedServer, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let release = tmp.path().join("release");
+    let seed = gated_seed(&release, script);
+    (SpawnedServer::seeded_in(tmp, "demo", seed), release)
 }
 
 /// `SUBSCRIBE_EVENTS { terminal: None }` plus a `GET_STATE` barrier: frames on

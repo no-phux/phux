@@ -13,13 +13,13 @@ use phux_protocol::checkout::{
     CheckoutAnswer, CheckoutArea, CheckoutRefusalCode, CheckoutRequest, CheckoutStatus,
 };
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{SpawnedServer, assert_command_error, command, run_local};
+use phux_server_testkit::{SpawnedServer, assert_command_error, command, run_local, sh};
 
-use crate::common::{attach_pane, connect_as, full_caps};
+use crate::common::{advertises, attach_pane, connect_as, full_caps};
 
 const SESSION: &str = "checkout";
 
@@ -89,45 +89,26 @@ fn has(status: &CheckoutStatus, area: CheckoutArea, path: &str) -> bool {
         .any(|entry| entry.area == area && entry.path == path)
 }
 
+fn read(path: &str) -> CheckoutRequest {
+    CheckoutRequest::Read {
+        path: path.to_owned(),
+        max_bytes: 0,
+    }
+}
+
 async fn assert_stage_round_trip(stream: &mut UnixStream, pane: &ResourceId) {
-    let staged = status(
-        checkout(
-            stream,
-            3,
-            pane,
-            CheckoutRequest::Stage {
-                paths: vec!["new.txt".to_owned()],
-            },
-        )
-        .await,
-    );
+    let paths = || vec!["new.txt".to_owned()];
+    let stage = CheckoutRequest::Stage { paths: paths() };
+    let staged = status(checkout(stream, 3, pane, stage).await);
     assert!(has(&staged, CheckoutArea::Staged, "new.txt"));
-    let unstaged = status(
-        checkout(
-            stream,
-            4,
-            pane,
-            CheckoutRequest::Unstage {
-                paths: vec!["new.txt".to_owned()],
-            },
-        )
-        .await,
-    );
+    let unstage = CheckoutRequest::Unstage { paths: paths() };
+    let unstaged = status(checkout(stream, 4, pane, unstage).await);
     assert!(has(&unstaged, CheckoutArea::Untracked, "new.txt"));
 }
 
 async fn assert_outside_paths_refused(stream: &mut UnixStream, pane: &ResourceId) {
     for (request_id, path) in [(7, "../outside"), (8, "/etc/passwd"), (9, ".git/config")] {
-        let refused = checkout(
-            stream,
-            request_id,
-            pane,
-            CheckoutRequest::Read {
-                path: path.to_owned(),
-                max_bytes: 0,
-            },
-        )
-        .await;
+        let refused = checkout(stream, request_id, pane, read(path)).await;
         assert!(
             matches!(&refused, CheckoutAnswer::Refused(r) if r.code == CheckoutRefusalCode::InvalidPath),
             "{path}: {refused:?}"
@@ -140,21 +121,12 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let repo = repo(tmp.path());
-        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg("sleep 30");
+        let mut cmd = sh("sleep 30");
         cmd.cwd(repo.join("src"));
         let server = SpawnedServer::seeded_in(tmp, SESSION, cmd);
 
         let (mut stream, hello) = connect_as(&server.socket, "checkout-test", full_caps()).await;
-        let FrameKind::HelloOk { server_caps, .. } = hello else {
-            panic!("expected HELLO_OK");
-        };
-        assert!(
-            server_caps
-                .features_ext
-                .contains(ServerFeatureExt::Checkout)
-        );
+        assert!(advertises(&hello, ServerFeatureExt::Checkout));
         let pane = attach_pane(&mut stream, SESSION).await;
 
         let before = status(checkout(&mut stream, 1, &pane, CheckoutRequest::Status).await);
@@ -185,16 +157,7 @@ fn checkout_methods_read_and_stage_the_terminals_checkout() {
 
         assert_stage_round_trip(&mut stream, &pane).await;
 
-        let file = checkout(
-            &mut stream,
-            5,
-            &pane,
-            CheckoutRequest::Read {
-                path: "new.txt".to_owned(),
-                max_bytes: 0,
-            },
-        )
-        .await;
+        let file = checkout(&mut stream, 5, &pane, read("new.txt")).await;
         assert!(matches!(&file, CheckoutAnswer::File(file) if file.text == "fresh\n"));
 
         let log = checkout(
@@ -235,9 +198,7 @@ fn a_terminal_outside_any_checkout_is_a_typed_refusal() {
         let tmp = TempDir::new().unwrap();
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg("sleep 30");
+        let mut cmd = sh("sleep 30");
         cmd.cwd(&plain);
         // A fresh temp directory is under no checkout.
         let server = SpawnedServer::seeded_in(tmp, SESSION, cmd);

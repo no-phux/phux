@@ -17,21 +17,16 @@ use phux_server::runtime::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
-use phux_server_testkit::{SpawnedServer, await_command_result, command, run_local, send_frame};
+use phux_server_testkit::{
+    SpawnedServer, assert_command_error, await_command_result, command, run_local, send_frame,
+};
 
-use crate::common::{connect_as, full_caps};
+use crate::common::{advertises, connect_as, full_caps};
 
 const CHUNK: u32 = 256 * 1024;
 
 const fn forward(op: ForwardOp) -> Command {
     Command::Forward { op }
-}
-
-fn code(result: &CommandResult) -> ErrorCode {
-    match result {
-        CommandResult::Error { code, .. } => *code,
-        other => panic!("expected an error, got {other:?}"),
-    }
 }
 
 async fn serve(
@@ -45,12 +40,7 @@ async fn serve(
 }
 
 fn advertised(hello_ok: &FrameKind) -> bool {
-    let FrameKind::HelloOk { server_caps, .. } = hello_ok else {
-        unreachable!()
-    };
-    server_caps
-        .features_ext
-        .contains(ServerFeatureExt::ForwardTcp)
+    advertises(hello_ok, ServerFeatureExt::ForwardTcp)
 }
 
 async fn listener() -> (TcpListener, u16) {
@@ -108,7 +98,7 @@ fn bytes_cross_the_socket_and_a_parked_read_delays_nothing() {
             // answer all go through while it waits.
             send(&mut stream, 2, read(id)).await;
             let second = command(&mut stream, 3, read(id)).await;
-            assert_eq!(code(&second), ErrorCode::ResourceExhausted);
+            assert_command_error(&second, ErrorCode::ResourceExhausted);
             let started = std::time::Instant::now();
             let write = forward(ForwardOp::Write {
                 id,
@@ -167,7 +157,7 @@ fn bytes_cross_the_socket_and_a_parked_read_delays_nothing() {
             );
             assert_eq!(command(&mut stream, 101, close).await, CommandResult::Ok);
             let gone = command(&mut stream, 102, read(id)).await;
-            assert_eq!(code(&gone), ErrorCode::NotFound);
+            assert_command_error(&gone, ErrorCode::NotFound);
         },
     ));
 }
@@ -180,9 +170,9 @@ fn tcp_false_hides_the_bit_and_refuses_the_commands() {
             assert!(!advertised(&hello_ok));
             let (_listener, port) = listener().await;
             let refused = open(&mut stream, 1, "127.0.0.1", port).await;
-            assert_eq!(code(&refused), ErrorCode::Unsupported);
+            assert_command_error(&refused, ErrorCode::Unsupported);
             let refused = command(&mut stream, 2, read(1)).await;
-            assert_eq!(code(&refused), ErrorCode::Unsupported);
+            assert_command_error(&refused, ErrorCode::Unsupported);
         },
     ));
 }
@@ -200,7 +190,7 @@ fn only_loopback_and_the_listed_target_are_dialed() {
             async |mut stream, _| {
                 for (request_id, addr) in [(1, "example.com"), (2, "127.0.0.2"), (3, "LOCALHOST")] {
                     let refused = open(&mut stream, request_id, addr, 80).await;
-                    assert_eq!(code(&refused), ErrorCode::PermissionDenied, "{addr}");
+                    assert_command_error(&refused, ErrorCode::PermissionDenied);
                 }
                 let CommandResult::Error { message, .. } =
                     open(&mut stream, 4, "example.com", 80).await
@@ -215,7 +205,7 @@ fn only_loopback_and_the_listed_target_are_dialed() {
                 );
 
                 let other_port = open(&mut stream, 5, MAPPED, unlisted_port).await;
-                assert_eq!(code(&other_port), ErrorCode::PermissionDenied);
+                assert_command_error(&other_port, ErrorCode::PermissionDenied);
                 let opened = open(&mut stream, 6, MAPPED, listed_port).await;
                 assert!(
                     matches!(
@@ -242,7 +232,7 @@ fn the_thirty_third_forward_is_refused() {
                 ids.push(open_ok(&mut stream, request_id, port).await);
             }
             let over = open(&mut stream, 33, "127.0.0.1", port).await;
-            assert_eq!(code(&over), ErrorCode::ResourceExhausted);
+            assert_command_error(&over, ErrorCode::ResourceExhausted);
             let close = forward(ForwardOp::Close { id: ids[0] });
             assert_eq!(command(&mut stream, 34, close).await, CommandResult::Ok);
             open_ok(&mut stream, 35, port).await;

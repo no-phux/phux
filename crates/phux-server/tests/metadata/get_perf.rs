@@ -11,7 +11,9 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{command, join_after_shutdown, run_local, spawn_server_with_seed_cmd};
+use phux_server_testkit::{
+    command, join_after_shutdown, run_local, sh, spawn_server_with_seed_cmd,
+};
 
 use crate::common::{attach_pane, connect_as, full_caps};
 
@@ -89,9 +91,7 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg("printf 'perf probe\\n'; sleep 30");
+        let cmd = sh("printf 'perf probe\\n'; sleep 30");
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), SESSION, cmd);
 

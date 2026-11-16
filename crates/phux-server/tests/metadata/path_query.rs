@@ -7,17 +7,17 @@
     reason = "tests"
 )]
 
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeatureExt};
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
     FrameKind, PathErrorCode, PathKind, PathQueryResult, PathStatus, TYPE_ATTACH_READY,
-    TYPE_HELLO_OK, TYPE_PATH_RESULTS,
+    TYPE_PATH_RESULTS,
 };
-use phux_server_testkit::{
-    SpawnedServer, attach_by_name, recv_typed, recv_until, run_local, send_frame,
-};
+use phux_server_testkit::{SpawnedServer, attach_by_name, recv_until, run_local, send_frame, sh};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
+
+use crate::common::{advertises, connect_as, full_caps};
 
 async fn query(
     stream: &mut UnixStream,
@@ -62,31 +62,9 @@ fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
         let tree = tmp.path().join("tree");
         std::fs::create_dir_all(tree.join("nested")).unwrap();
         std::fs::write(tree.join("nested/abc file.txt"), b"x").unwrap();
-        let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg("sleep 30");
-        let server = SpawnedServer::seeded_in(tmp, "paths", cmd);
-        let mut stream = server.connect_raw().await;
-        send_frame(
-            &mut stream,
-            &phux_server_testkit::hello(
-                "path-query-test",
-                ClientCapabilities::new()
-                    .with_color_support(ColorSupport::TrueColor)
-                    .with_layers(LayerSet::all()),
-            ),
-        )
-        .await;
-        let (kind, hello) = recv_typed(&mut stream).await;
-        assert_eq!(kind, TYPE_HELLO_OK);
-        let FrameKind::HelloOk { server_caps, .. } = hello else {
-            panic!("expected HELLO_OK")
-        };
-        assert!(
-            server_caps
-                .features_ext
-                .contains(ServerFeatureExt::PathQuery)
-        );
+        let server = SpawnedServer::seeded_in(tmp, "paths", sh("sleep 30"));
+        let (mut stream, hello) = connect_as(&server.socket, "path-query-test", full_caps()).await;
+        assert!(advertises(&hello, ServerFeatureExt::PathQuery));
         send_frame(&mut stream, &attach_by_name("paths")).await;
         recv_until(&mut stream, |kind, _| {
             (kind == TYPE_ATTACH_READY).then_some(())
