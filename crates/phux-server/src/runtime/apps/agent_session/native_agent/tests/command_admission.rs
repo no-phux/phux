@@ -88,14 +88,14 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
             client
         });
         let answer_a = answer(serde_json::json!({"confirmed":false}));
-        let (a, b) = tokio::join!(
+        let both: [NativeDisposition; 2] = tokio::join!(
             fx.disposition(fx.owner, 10, answer_a.clone()),
             fx.disposition(second, 11, answer_a)
-        );
+        )
+        .into();
         for want in [NativeDisposition::Queued, NativeDisposition::Refused] {
             assert_eq!(
-                [a, b]
-                    .iter()
+                both.iter()
                     .filter(|disposition| **disposition == want)
                     .count(),
                 1,

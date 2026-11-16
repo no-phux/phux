@@ -70,6 +70,10 @@ impl Supervised {
 }
 
 /// Run `body` on a fresh `LocalSet`; the supervisor spawns locally.
+#[allow(
+    clippy::future_not_send,
+    reason = "the scripted link is Rc-backed and runs only on a LocalSet"
+)]
 async fn on_local(body: impl std::future::Future<Output = ()>) {
     tokio::task::LocalSet::new().run_until(body).await;
 }

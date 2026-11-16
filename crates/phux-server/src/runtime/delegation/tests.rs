@@ -129,7 +129,8 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_carried_credential_no_longer_valid_is_revoked_and_its_socket_removed() {
     crate::runtime::test_support::local(async {
-        let cases: [(&str, fn(&mut DelegationBlob)); 2] = [
+        type Invalidate = fn(&mut DelegationBlob);
+        let cases: [(&str, Invalidate); 2] = [
             ("its session is gone", |carried| carried.group += 100),
             ("it expired meanwhile", |carried| {
                 carried.expires_at_ms = Utc::now().timestamp_millis() - 1;

@@ -120,6 +120,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "a probed case; `None` is a case that must not probe"
+    )]
     const fn seen(alive: bool, start_raw: Option<u64>) -> Option<Observed> {
         Some(Observed { alive, start_raw })
     }
