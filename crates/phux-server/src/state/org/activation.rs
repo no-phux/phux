@@ -79,7 +79,7 @@ impl ServerState {
                 .sessions
                 .registry
                 .resource_id(&key)
-                .is_some_and(|id| self.resource_handle(id).is_some());
+                .is_some_and(|id| self.resources().handle(id).is_some());
             let op = match decide(state, vouched, proc, boot, &observe) {
                 Verdict::Keep => continue,
                 Verdict::Lost => {

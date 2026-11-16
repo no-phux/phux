@@ -74,9 +74,9 @@ pub(super) async fn relay<A: DocumentApi>(
 ) -> CommandResult {
     let found = ctx.state.with(|s| {
         let core = s.idspace.resource_from_wire(terminal_id)?;
-        let handle = s.resource_handle(core)?.clone();
+        let handle = s.resources().handle(core)?.clone();
         let producer = s.resource_producer(core);
-        let spawner = s.resource_spawner(core);
+        let spawner = s.resources().spawner(core);
         let origin = super::audit::origin(s, ctx.client_id, relayed);
         Some((
             core,

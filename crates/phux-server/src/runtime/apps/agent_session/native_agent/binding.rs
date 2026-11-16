@@ -379,7 +379,7 @@ impl ServerState {
             .ok_or(phux_core::Refusal::NotFound)?
             .clone();
         if record.kind != phux_core::ResourceKind::Terminal
-            || self.resource_handle(guardian).is_some()
+            || self.resources().handle(guardian).is_some()
             || record.activation.as_ref().is_some_and(|activation| {
                 activation.state.is_current() || activation.state == phux_core::ExecState::Lost
             })

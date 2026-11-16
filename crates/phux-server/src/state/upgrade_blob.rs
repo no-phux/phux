@@ -111,7 +111,7 @@ impl ServerState {
                 let _ = self.idspace.intern_window(sid);
             }
         }
-        for id in self.resource_ids() {
+        for id in self.resources().resource_ids() {
             if self.sessions.registry.resource(id).is_some() {
                 let _ = self.idspace.intern_resource(id);
             }
@@ -147,7 +147,7 @@ impl ServerState {
             .filter(|tid| {
                 self.resource_wire(*tid).is_some() && self.retained().exit(*tid).is_none()
             })
-            .filter_map(|tid| Some((tid, self.resource_handle(tid)?.clone())))
+            .filter_map(|tid| Some((tid, self.resources().handle(tid)?.clone())))
             .collect()
     }
 
@@ -155,7 +155,7 @@ impl ServerState {
     /// unreachable through the tree and nothing will reap it. Name each one
     /// so a leak path shows up in the log instead of in a failed upgrade.
     fn warn_orphan_resource_handles(&self) {
-        for tid in self.resource_ids() {
+        for tid in self.resources().resource_ids() {
             if self.sessions.registry.resource(tid).is_none() {
                 tracing::warn!(
                     resource = ?tid,

@@ -187,7 +187,7 @@ impl ServerState {
         match &entry.target {
             EntryTarget::Member(key) => {
                 let id = self.registry().resource_id(key)?;
-                self.resource_handle(id)?;
+                self.resources().handle(id)?;
                 Some(self.idspace.intern_resource(id))
             }
             EntryTarget::Satellite { host, id } => {

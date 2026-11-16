@@ -101,7 +101,7 @@ fn session_kill_store_failure_closes_nothing() {
             .with(|s| s.idspace.resource_from_wire(&wire))
             .expect("live core id");
         assert!(
-            state.with(|s| s.resource_handle(core).is_some()),
+            state.with(|s| s.resources().handle(core).is_some()),
             "the launch registered an engine"
         );
         let head = state.with(ServerState::journal_head);
@@ -120,7 +120,7 @@ fn session_kill_store_failure_closes_nothing() {
             CommandResult::Refused(WireRefusal::StoreFailure { .. })
         ));
         assert!(
-            state.with(|s| s.resource_handle(core).is_some()),
+            state.with(|s| s.resources().handle(core).is_some()),
             "a refused kill does not close the engine"
         );
         assert!(state.with(|s| s.registry().record(core).is_some()));
@@ -144,7 +144,7 @@ fn session_kill_store_failure_closes_nothing() {
                 .is_empty()
         );
         assert!(
-            state.with(|s| s.resource_handle(core).is_none()),
+            state.with(|s| s.resources().handle(core).is_none()),
             "a committed kill closes the engine"
         );
     });

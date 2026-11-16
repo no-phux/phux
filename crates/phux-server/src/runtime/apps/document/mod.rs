@@ -416,7 +416,7 @@ async fn publish<A: DocumentApi>(
     }
     let Some((core, handle)) = state.with(|s| {
         let core = s.idspace.resource_from_wire(terminal_id)?;
-        Some((core, s.resource_handle(core)?.clone()))
+        Some((core, s.resources().handle(core)?.clone()))
     }) else {
         return CommandResult::error(
             ErrorCode::TerminalNotFound,
@@ -442,7 +442,7 @@ async fn publish<A: DocumentApi>(
         Ok(Ok(published)) => {
             state.with_mut(|s| {
                 if s.resource_producer(core).is_none() {
-                    s.record_spawn(core, client_id);
+                    s.resources_mut().record_spawn(core, client_id);
                     s.subscribe_resource(client_id, core, Some(ctx.out_tx.clone()));
                 }
             });

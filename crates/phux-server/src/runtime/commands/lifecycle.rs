@@ -20,15 +20,15 @@ pub(crate) async fn handle_detach_terminal(
         let core = s
             .idspace
             .resource_from_wire(terminal_id)
-            .or_else(|| s.draining_resource_from_wire(terminal_id))?;
-        s.unsubscribe_resource(client_id, core);
-        Some((core, s.resource_handle(core).cloned()))
+            .or_else(|| s.resources().draining_terminal(terminal_id))?;
+        s.resources_mut().unsubscribe(client_id, core);
+        Some((core, s.resources().handle(core).cloned()))
     });
     let Some((core, handle)) = handle else {
         return CommandResult::Ok;
     };
     pump::stop_output(state, client_id, core).await;
-    state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
+    state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
     // Fence engine-emitted output before COMMAND_RESULT is queued.
     if let Some(handle) = &handle {
         crate::runtime::apps::app_for(handle.kind)
@@ -71,7 +71,7 @@ pub(super) async fn handle_shutdown(
     // ADR-0104 §4: record the close reason before the exit watchers run.
     state.with_mut(|s| {
         s.flush_reports_before_shutdown();
-        for resource in s.resource_ids() {
+        for resource in s.resources().resource_ids() {
             s.mark_resource_closing(
                 resource,
                 phux_protocol::wire::frame::CloseReason::ServerShutdown,

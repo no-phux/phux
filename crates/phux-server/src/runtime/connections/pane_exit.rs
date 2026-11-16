@@ -157,7 +157,7 @@ fn retain_exited_pane(
         Some(wire_terminal_id.clone()),
         exited,
     ));
-    let handle = s.resource_handle(pane).cloned();
+    let handle = s.resources().handle(pane).cloned();
     let app_hook = s
         .registry()
         .resource(pane)
@@ -331,7 +331,7 @@ fn cascade_children(
             child_exit.status,
             attribution,
         );
-        s.cancel_terminal_pumps(child);
+        s.resources_mut().cancel_pumps_for_terminal(child);
         s.reap_resource(child);
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
@@ -381,7 +381,7 @@ async fn announce_close(
         .await;
     }
     broadcast_terminal_closed_after_drain(&wire_terminal_id, &targets, exit, reason, &drains).await;
-    state.with_mut(|s| s.finish_terminal_output_drain(core_terminal_id));
+    state.with_mut(|s| s.resources_mut().finish_output_drain(core_terminal_id));
     if let Some(token) = actor_token {
         token.cancel();
     }

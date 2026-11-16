@@ -85,11 +85,13 @@ async fn an_undecodable_kind_is_listed_but_never_streamed_or_attached() {
         assert_eq!(bootstrapped, std::slice::from_ref(&tree_wire));
         state.with(|s| {
             assert!(
-                !s.subscribers_for_resource(surface)
+                !s.resources()
+                    .subscribers_for(surface)
                     .contains(&connection.client)
             );
             assert!(
-                s.subscribers_for_resource(tree)
+                s.resources()
+                    .subscribers_for(tree)
                     .contains(&connection.client)
             );
         });
@@ -118,7 +120,8 @@ async fn an_undecodable_kind_is_listed_but_never_streamed_or_attached() {
             }
         ));
         assert!(!state.with(|s| {
-            s.subscribers_for_resource(surface)
+            s.resources()
+                .subscribers_for(surface)
                 .contains(&connection.client)
         }));
         connection.send(FrameKind::Ping { nonce: 3 }).await;

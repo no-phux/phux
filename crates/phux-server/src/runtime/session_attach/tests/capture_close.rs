@@ -82,7 +82,7 @@ async fn close_from(producer: &mut Connection, wire: &phux_protocol::ids::Resour
 
 async fn wait_reaped(state: &SharedState, core: phux_core::ids::ResourceId) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while state.with(|s| s.resource_handle(core).is_some()) {
+        while state.with(|s| s.resources().handle(core).is_some()) {
             tokio::task::yield_now().await;
         }
     })

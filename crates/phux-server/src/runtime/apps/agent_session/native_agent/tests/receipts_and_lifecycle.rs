@@ -39,7 +39,7 @@ async fn routed_native_relaunch_retry_replays_without_rebinding_or_reexecuting()
             }
         }
         assert_eq!(fx.state.with(|s| s.registry().record(guardian).unwrap().clone()), before);
-        assert!(fx.state.with(|s| s.resource_handle(guardian).is_none()));
+        assert!(fx.state.with(|s| s.resources().handle(guardian).is_none()));
     }).await;
 }
 

@@ -163,7 +163,7 @@ fn surface_in(s: &mut ServerState, name: &str) -> Option<u32> {
             let id = s.registry().resource_id(key)?;
             let record = s.registry().record(id)?;
             (record.kind == phux_core::ResourceKind::PixelSurface
-                && s.resource_handle(id).is_some())
+                && s.resources().handle(id).is_some())
             .then_some(id)
         })?;
     match s.idspace.intern_resource(surface) {

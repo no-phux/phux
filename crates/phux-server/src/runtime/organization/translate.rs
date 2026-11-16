@@ -457,7 +457,7 @@ fn created_target(
     if created.entry.is_some()
         && (current.id != phux_core::ActivationId::FIRST
             || !current.state.is_current()
-            || s.resource_handle(id).is_none())
+            || s.resources().handle(id).is_none())
     {
         return None;
     }

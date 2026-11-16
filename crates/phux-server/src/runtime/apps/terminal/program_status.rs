@@ -190,7 +190,7 @@ fn clear_projection(
         s.metadata_delete(scope, RESOURCE_AGENT_KEY);
     }
     if let Some(pane) = s.idspace.resource_from_wire(terminal)
-        && let Some(handle) = s.resource_handle(pane)
+        && let Some(handle) = s.resources().handle(pane)
         && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
     {
         let _ = agent_parent

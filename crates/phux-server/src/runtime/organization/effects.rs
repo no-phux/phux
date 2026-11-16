@@ -105,7 +105,7 @@ fn terminate(
 ) {
     let live = state.with_mut(|s| {
         let id = s.registry().resource_id(&resource)?;
-        s.resource_handle(id)?;
+        s.resources().handle(id)?;
         if mode == phux_core::TerminateMode::Force {
             kill_group(proc, nix::sys::signal::Signal::SIGKILL);
         }

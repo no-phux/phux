@@ -157,7 +157,8 @@ pub(in crate::runtime) async fn handle_put_file(
             .resource_from_wire(&chunk.terminal_id)
             .map(|core| {
                 server
-                    .resource_handle(core)
+                    .resources()
+                    .handle(core)
                     .is_some_and(|h| h.terminal().is_ok())
             })
     }) {

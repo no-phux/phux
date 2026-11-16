@@ -76,7 +76,7 @@ fn verify_guardian_process(
         .idspace
         .resource_from_wire(agent)
         .ok_or_else(|| closed("native agent session is gone"))?;
-    if s.resource_handle(core).is_none() {
+    if s.resources().handle(core).is_none() {
         return Err(closed("native agent session is closed"));
     }
     let parent = s
@@ -339,7 +339,7 @@ fn native_source_live(
     let source_live = s
         .idspace
         .resource_from_wire(agent)
-        .and_then(|core| s.resource_handle(core))
+        .and_then(|core| s.resources().handle(core))
         .and_then(|handle| handle.agent_session().ok())
         .is_some_and(|session| !session.ended.load(std::sync::atomic::Ordering::Relaxed));
     let guardian_live = s

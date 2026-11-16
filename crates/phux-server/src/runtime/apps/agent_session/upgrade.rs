@@ -205,11 +205,12 @@ pub(crate) fn carried_sessions(
 ) -> Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> {
     let parents: HashSet<ResourceId> = s.carried_panes().into_iter().map(|(id, _)| id).collect();
     let mut carried: Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> = s
+        .resources()
         .resource_ids()
         .into_iter()
         .filter(|id| s.registry().resource(*id).is_some())
         .filter_map(|id| {
-            let handle = s.resource_handle(id)?;
+            let handle = s.resources().handle(id)?;
             let session = handle.agent_session().ok()?;
             handle
                 .parent
@@ -315,7 +316,7 @@ impl KindRebuild for AgentSessionResume {
                 log_bytes,
                 carried_cut(carried),
             );
-            bind_to_parent(cx.state.resource_handle(parent), &bundle.handle);
+            bind_to_parent(cx.state.resources().handle(parent), &bundle.handle);
             cx.spawn(
                 core,
                 carried.wire_id,

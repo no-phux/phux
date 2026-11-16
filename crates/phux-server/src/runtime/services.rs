@@ -69,7 +69,7 @@ const ENGINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// the server holding its PTY. That includes a pane already killed, whose
 /// reply precedes the grace.
 pub(in crate::runtime) async fn drain_engines(state: &SharedState) {
-    let mut engines = state.with_mut(crate::state::ServerState::retire_engines);
+    let mut engines = state.with_mut(|s| s.resources_mut().retire_engines());
     let drained = tokio::time::timeout(ENGINE_DRAIN_TIMEOUT, async {
         while engines.join_next().await.is_some() {}
     })

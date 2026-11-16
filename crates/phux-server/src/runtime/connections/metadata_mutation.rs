@@ -23,7 +23,7 @@ fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
     let handle = state.with(|s| {
         s.idspace
             .resource_from_wire(wire)
-            .and_then(|pane| s.resource_handle(pane).cloned())
+            .and_then(|pane| s.resources().handle(pane).cloned())
     });
     if let Some(handle) = handle
         && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()

@@ -83,7 +83,7 @@ fn pane_sizing_attach_resizes_each_pane_at_most_once() {
     let target = || {
         state.with_mut(|s| crate::state::AttachSnapshotPane {
             terminal_id: pane,
-            handle: s.resource_handle(pane).unwrap().clone(),
+            handle: s.resources().handle(pane).unwrap().clone(),
             wire_terminal_id: s.idspace.intern_resource(pane),
         })
     };
@@ -173,7 +173,7 @@ fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
     let client = attach_client(&state, "home");
     state.with_mut(|s| {
         s.subscribe_resource(client, foreign, None);
-        s.unsubscribe_resource(client, unsubscribed);
+        s.resources_mut().unsubscribe(client, unsubscribed);
         s.retained_mut()
             .restore_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
     });
@@ -273,7 +273,7 @@ fn closed_resize_delivery_never_advances_registry_geometry() {
     let client = attach_client(&state, "home");
     let target = state.with_mut(|s| crate::state::AttachSnapshotPane {
         terminal_id: pane,
-        handle: s.resource_handle(pane).unwrap().clone(),
+        handle: s.resources().handle(pane).unwrap().clone(),
         wire_terminal_id: s.idspace.intern_resource(pane),
     });
     handle_viewport_resize(&state, client, &ViewportInfo::new(140, 50));

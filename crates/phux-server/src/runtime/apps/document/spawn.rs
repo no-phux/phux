@@ -79,7 +79,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
     let bundle = DocumentActor::<A>::build(core_parent, target, token.clone());
     let handle = super::with_control(bundle.handle.clone(), resource.control);
     let registered = state.with_mut(|s| {
-        let Some(parent_handle) = s.resource_handle(core_parent) else {
+        let Some(parent_handle) = s.resources().handle(core_parent) else {
             return Err(SpawnError::ParentNotFound);
         };
         // The parent supervises the producer, as an agent session's does.
@@ -113,7 +113,7 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
         .with_operation_id(resource.idempotency_key);
         let _ = s.record_and_fanout(announcement);
         crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
-        s.record_spawn(core, client_id);
+        s.resources_mut().record_spawn(core, client_id);
         s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire);
         Ok((core, wire))

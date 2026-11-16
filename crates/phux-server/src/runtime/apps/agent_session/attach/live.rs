@@ -143,7 +143,8 @@ impl LivePump {
     /// full retained ring as its replacement.
     async fn republish(&mut self, cursor: u64, cut: &AgentSessionBootstrap) -> Option<()> {
         let next = self.state.with_mut(|s| {
-            s.advance_attach_terminal_pump(self.client_id, self.core, &self.last_seq)
+            s.resources_mut()
+                .advance_pump_generation(self.client_id, self.core, &self.last_seq)
         })?;
         let tombstone = FrameKind::BootstrapTombstone {
             terminal_id: self.terminal_id.clone(),

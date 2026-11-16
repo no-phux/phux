@@ -53,7 +53,7 @@ impl ServerState {
     /// Whether a legacy client sees `resource`: its engine is live, or its
     /// activation is current.
     pub(super) fn resource_is_visible(&self, resource: ResourceId) -> bool {
-        self.resource_handle(resource).is_some()
+        self.resources().handle(resource).is_some()
             || self
                 .sessions
                 .registry

@@ -100,7 +100,7 @@ pub(in crate::runtime) fn spawn_input_lease_expiry(
             // Not `refresh_input_lease_expiry`, which would abort this task.
             s.clear_input_lease_expiry(terminal);
             s.expire_input_lease(terminal)?;
-            s.resource_handle(terminal).cloned()
+            s.resources().handle(terminal).cloned()
         });
         let Some(handle) = expired else {
             return;

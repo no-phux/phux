@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn a_spawned_pane_only_its_spawner_attached_is_killed() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         state.subscribe_resource(ClientId(1), core, None);
         let precondition = untouched(&state);
         assert_eq!(state.admit_conditional_kill(&wire, &precondition), Ok(core));
@@ -156,9 +156,9 @@ mod tests {
     #[test]
     fn another_connection_attaching_refuses_even_after_it_detaches() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         state.subscribe_resource(ClientId(2), core, None);
-        state.unsubscribe_resource(ClientId(2), core);
+        state.resources_mut().unsubscribe(ClientId(2), core);
         let precondition = untouched(&state);
         assert_refused(&state, &wire, &precondition);
     }
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn a_different_instance_refuses_before_the_id_is_resolved() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         let mut other = *state.idspace.instance().as_bytes();
         other[0] ^= 0xFF;
         let old_token = KillPrecondition::spawned_and_unattached(ServerInstance::new(other));
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn another_connection_using_the_pane_without_attaching_refuses() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         state.note_resource_use(&wire, ClientId(1));
         let precondition = untouched(&state);
         assert!(
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn the_attachment_condition_requires_an_instance() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         let no_token = KillPrecondition {
             instance: None,
             conditions: KillConditions::UNATTACHED_SINCE_SPAWN,
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn a_pane_with_a_child_resource_is_refused() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         let facet = phux_core::resource::AgentFacet {
             provider: "claude".to_owned(),
             native_id: None,
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn unknown_condition_bits_refuse_and_a_missing_id_is_not_found() {
         let (mut state, core, wire) = state_with_pane();
-        state.record_spawn(core, ClientId(1));
+        state.resources_mut().record_spawn(core, ClientId(1));
         let unknown = KillPrecondition {
             instance: None,
             conditions: KillConditions::from_bits(0x80),

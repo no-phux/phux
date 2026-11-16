@@ -410,7 +410,7 @@ pub(crate) fn app_serving(
     let kind = state.with(|s| {
         s.idspace
             .resource_from_wire(wire)
-            .and_then(|core| s.resource_handle(core))
+            .and_then(|core| s.resources().handle(core))
             .map(|handle| handle.kind)
     });
     kind.map(app_for)

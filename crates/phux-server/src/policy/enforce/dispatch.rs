@@ -350,5 +350,5 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
         return true;
     }
     s.idspace.resource_from_wire(terminal_id)
-        .is_some_and(|core| s.subscribers_for_resource(core).contains(&client))
+        .is_some_and(|core| s.resources().subscribers_for(core).contains(&client))
 }

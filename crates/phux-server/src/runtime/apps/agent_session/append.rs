@@ -90,7 +90,8 @@ async fn append_output(
     let (core, handle) = state
         .with(|s| {
             s.idspace.resource_from_wire(terminal_id).and_then(|core| {
-                s.resource_handle(core)
+                s.resources()
+                    .handle(core)
                     .cloned()
                     .map(|handle| (core, handle))
             })
@@ -253,7 +254,8 @@ fn agent_parent_of(
     parent: Option<phux_core::ids::ResourceId>,
 ) -> Option<AgentParent> {
     state
-        .resource_handle(parent?)?
+        .resources()
+        .handle(parent?)?
         .companion::<AgentParent>()
         .cloned()
 }

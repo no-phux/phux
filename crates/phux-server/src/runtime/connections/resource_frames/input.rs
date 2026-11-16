@@ -37,7 +37,8 @@ pub(super) fn admit(
         }
         if matches!(admission, FrameAdmission::Subscription) {
             return s
-                .subscribers_for_resource(resource)
+                .resources()
+                .subscribers_for(resource)
                 .contains(&ctx.client_id);
         }
         attached_input_allowed(s, ctx.client_id, resource)
@@ -70,7 +71,7 @@ pub(in crate::runtime) fn attached_input_allowed(
     if s.retained().exit(resource).is_some() {
         return false;
     }
-    if !s.subscribers_for_resource(resource).contains(&client) {
+    if !s.resources().subscribers_for(resource).contains(&client) {
         return false;
     }
     !s.input_blocked(resource, client)

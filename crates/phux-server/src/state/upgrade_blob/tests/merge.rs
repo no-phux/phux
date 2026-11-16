@@ -128,7 +128,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
                 session_names(&state),
                 vec!["already-here".to_owned(), "intake".to_owned()]
             );
-            assert!(state.resource_ids().is_empty());
+            assert!(state.resources().resource_ids().is_empty());
             let after = SqliteOrgStore::open(&path)
                 .unwrap()
                 .load()

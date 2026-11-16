@@ -84,7 +84,7 @@ pub(crate) async fn attach_agent_session(
     let Ok(session) = handle.agent_session() else {
         return CommandResult::error(ErrorCode::WrongResourceKind, "not an agent session");
     };
-    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
     else {
         return CommandResult::error(
             ErrorCode::ResourceExhausted,
@@ -109,8 +109,10 @@ pub(crate) async fn attach_agent_session(
         );
     }
 
-    let (cancel, done, last_seq, prior) =
-        state.with_mut(|s| s.replace_attach_terminal_pump(client_id, core, bootstrap_id));
+    let (cancel, done, last_seq, prior) = state.with_mut(|s| {
+        s.resources_mut()
+            .replace_pump(client_id, core, bootstrap_id)
+    });
     let pump_done = done.clone().drop_guard();
     if let Some((prior_id, prior_done, prior_seq)) = prior {
         prior_done.cancelled().await;
@@ -160,7 +162,8 @@ pub(crate) async fn attach_agent_session(
         }
     });
     state.with_mut(|s| {
-        s.track_terminal_output_pump(client_id, core, handle.abort_handle(), done, None);
+        s.resources_mut()
+            .track_output_pump(client_id, core, handle.abort_handle(), done, None);
     });
     CommandResult::Ok
 }

@@ -62,7 +62,8 @@ pub(super) async fn stage_session<A: DocumentApi>(
     ))?;
     staging.append(frames, bytes)?;
     let (cancel, done, last_seq, prior) = capture.state.with_mut(|s| {
-        s.replace_attach_terminal_pump(capture.client_id, pane.terminal_id, capture.bootstrap_id)
+        s.resources_mut()
+            .replace_pump(capture.client_id, pane.terminal_id, capture.bootstrap_id)
     });
     if let Some((_, done, _)) = prior {
         done.cancelled().await;
@@ -115,7 +116,7 @@ pub(crate) async fn attach_document<A: DocumentApi>(
     let Ok(document) = handle.document::<A>() else {
         return CommandResult::error(ErrorCode::WrongResourceKind, format!("not a {}", A::LABEL));
     };
-    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
     else {
         return CommandResult::error(
             ErrorCode::ResourceExhausted,
@@ -133,8 +134,10 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         );
     };
 
-    let (cancel, done, last_seq, prior) =
-        state.with_mut(|s| s.replace_attach_terminal_pump(client_id, core, bootstrap_id));
+    let (cancel, done, last_seq, prior) = state.with_mut(|s| {
+        s.resources_mut()
+            .replace_pump(client_id, core, bootstrap_id)
+    });
     let pump_done = done.clone().drop_guard();
     if let Some((prior_id, prior_done, prior_seq)) = prior {
         prior_done.cancelled().await;
@@ -196,7 +199,8 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         }
     });
     state.with_mut(|s| {
-        s.track_terminal_output_pump(client_id, core, task.abort_handle(), done, None);
+        s.resources_mut()
+            .track_output_pump(client_id, core, task.abort_handle(), done, None);
     });
     CommandResult::Ok
 }
@@ -335,7 +339,8 @@ impl LivePump {
             "document viewer fell behind; recut from the newest document"
         );
         let next = self.state.with_mut(|s| {
-            s.advance_attach_terminal_pump(self.client_id, self.core, &self.last_seq)
+            s.resources_mut()
+                .advance_pump_generation(self.client_id, self.core, &self.last_seq)
         })?;
         let tombstone = FrameKind::BootstrapTombstone {
             terminal_id: self.terminal_id.clone(),

@@ -32,7 +32,7 @@ fn validate_agent_parent(
             "an SDK-owned guardian reserves one native source; external hook sources cannot bind it".into(),
         ));
     }
-    let Some(handle) = state.resource_handle(parent) else {
+    let Some(handle) = state.resources().handle(parent) else {
         return Err(SpawnError::ParentNotFound);
     };
     if !crate::runtime::apps::spawn::supervises_producers(handle) {
@@ -47,7 +47,8 @@ async fn bind_agent_stream(
     handle: &crate::resource::ResourceHandle,
 ) {
     let agent_parent = state.with(|s| {
-        s.resource_handle(parent)
+        s.resources()
+            .handle(parent)
             .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
             .cloned()
     });
@@ -168,7 +169,7 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         // ADR-0126: the key binds in the step that registers the session.
         crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
         // ADR-0109: provenance before the spawner's own subscription.
-        s.record_spawn(core, client_id);
+        s.resources_mut().record_spawn(core, client_id);
         s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         // ADR-0127: a session attached as `VIEWER` watches its spawns too.
         s.mark_if_viewer_session(client_id, &wire);

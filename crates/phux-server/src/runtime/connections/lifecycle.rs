@@ -82,7 +82,7 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 /// subscribes to allocated for it. `try_send` is non-blocking and
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
-    for handle in s.subscribed_resource_handles(client_id) {
+    for handle in s.resources().subscribed_handles(client_id) {
         crate::runtime::apps::app_for(handle.kind).release_consumer(&handle, client_id);
     }
 }
@@ -97,7 +97,8 @@ fn announce_lease_releases(
 ) {
     for pane in s.leases_held_by(client_id) {
         let Some(lease) = s
-            .resource_handle(pane)
+            .resources()
+            .handle(pane)
             .and_then(|handle| handle.companion::<crate::resource::companions::Leasable>())
         else {
             continue;

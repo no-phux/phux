@@ -155,7 +155,7 @@ async fn dispatch_attach_resource(
     let kind = ctx.state.with(|s| {
         s.idspace
             .resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core))
+            .and_then(|core| s.resources().handle(core))
             .map(|handle| handle.kind)
     });
     if let Some(kind) = kind

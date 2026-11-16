@@ -115,7 +115,8 @@ impl ServerState {
         &self,
         resource: ResourceId,
     ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
-        self.subscribers_for_resource(resource)
+        self.resources()
+            .subscribers_for(resource)
             .iter()
             .filter_map(|client| {
                 let gate = self

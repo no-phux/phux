@@ -195,7 +195,7 @@ impl ServerState {
                 return;
             };
             self.mark_resource_closing(oldest, CloseReason::Exited);
-            self.detach_resource_actor(oldest);
+            self.resources_mut().detach_actor(oldest);
         }
     }
 

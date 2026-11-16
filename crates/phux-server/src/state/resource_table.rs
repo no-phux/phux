@@ -77,7 +77,7 @@ impl OutputPumpTask {
 
 /// Every resource-keyed table, plus client subscriptions and output pumps.
 #[derive(Debug, Default)]
-pub(super) struct ResourceTable {
+pub(crate) struct ResourceTable {
     /// Engine handles by core [`ResourceId`] (the engines run on the
     /// `LocalSet`, ADR-0014).
     handles: HashMap<ResourceId, ResourceHandle>,
@@ -121,19 +121,19 @@ impl ResourceTable {
 
     /// Look up the [`ResourceHandle`] for `terminal`, if registered.
     #[must_use]
-    pub(super) fn handle(&self, terminal: ResourceId) -> Option<&ResourceHandle> {
+    pub(crate) fn handle(&self, terminal: ResourceId) -> Option<&ResourceHandle> {
         self.handles.get(&terminal)
     }
 
     /// Every registered resource id (no handle clones).
     #[must_use]
-    pub(super) fn resource_ids(&self) -> Vec<ResourceId> {
+    pub(crate) fn resource_ids(&self) -> Vec<ResourceId> {
         self.handles.keys().copied().collect()
     }
 
     /// Every `(pane, handle)`, cloned for use outside the lock.
     #[must_use]
-    pub(super) fn all_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
+    pub(crate) fn all_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
         self.handles
             .iter()
             .map(|(tid, handle)| (*tid, handle.clone()))
@@ -141,7 +141,7 @@ impl ResourceTable {
     }
 
     /// Record an engine's `handle` and `token` (overwrites).
-    pub(super) fn register(
+    pub(in crate::state) fn register(
         &mut self,
         terminal: ResourceId,
         handle: ResourceHandle,
@@ -152,7 +152,7 @@ impl ResourceTable {
     }
 
     /// Spawn an engine future on the `JoinSet` (inside a `LocalSet`).
-    pub(super) fn spawn_actor<F>(&mut self, actor_future: F)
+    pub(in crate::state) fn spawn_actor<F>(&mut self, actor_future: F)
     where
         F: Future<Output = ()> + 'static,
     {
@@ -160,15 +160,16 @@ impl ResourceTable {
     }
 
     /// Cancel and forget `terminal`'s engine token. Idempotent.
-    pub(super) fn detach_actor(&mut self, terminal: ResourceId) {
+    pub(crate) fn detach_actor(&mut self, terminal: ResourceId) {
         if let Some(token) = self.tokens.remove(&terminal) {
             token.cancel();
         }
     }
 
-    /// Cancel every registered engine and take all engine futures, including
-    /// killed ones still inside their hangup grace.
-    pub(super) fn retire_engines(&mut self) -> JoinSet<()> {
+    /// Shutdown: cancel every registered engine and take all engine futures,
+    /// including killed ones still inside their hangup grace, so the caller
+    /// can let each finish its teardown before the `LocalSet` drops.
+    pub(crate) fn retire_engines(&mut self) -> JoinSet<()> {
         for token in self.tokens.values() {
             token.cancel();
         }
@@ -195,7 +196,7 @@ impl ResourceTable {
 
     /// Current subscribers of `terminal` (empty if none).
     #[must_use]
-    pub(super) fn subscribers_for(&self, terminal: ResourceId) -> &[ClientId] {
+    pub(crate) fn subscribers_for(&self, terminal: ResourceId) -> &[ClientId] {
         self.subscribers.get(&terminal).map_or(&[], Vec::as_slice)
     }
 
@@ -213,7 +214,7 @@ impl ResourceTable {
     // -- spawn provenance (ADR-0109) -----------------------------------
 
     /// Record that `spawner` created `terminal`, before any subscription.
-    pub(super) fn record_spawn(&mut self, terminal: ResourceId, spawner: ClientId) {
+    pub(crate) fn record_spawn(&mut self, terminal: ResourceId, spawner: ClientId) {
         self.spawns.insert(
             terminal,
             SpawnRecord {
@@ -235,7 +236,7 @@ impl ResourceTable {
 
     /// The connection that spawned `terminal`, when a client did.
     #[must_use]
-    pub(super) fn spawner(&self, terminal: ResourceId) -> Option<ClientId> {
+    pub(crate) fn spawner(&self, terminal: ResourceId) -> Option<ClientId> {
         self.spawns.get(&terminal).map(|record| record.spawner)
     }
 
@@ -249,7 +250,7 @@ impl ResourceTable {
     }
 
     /// Remove `client` from `terminal`'s subscribers (dropping empty lists).
-    pub(super) fn unsubscribe(&mut self, client: ClientId, terminal: ResourceId) {
+    pub(crate) fn unsubscribe(&mut self, client: ClientId, terminal: ResourceId) {
         if let Some(subs) = self.subscribers.get_mut(&terminal) {
             subs.retain(|c| *c != client);
             if subs.is_empty() {
@@ -266,9 +267,10 @@ impl ResourceTable {
         self.subscribers.retain(|_, subs| !subs.is_empty());
     }
 
-    /// Handles of every resource `client` subscribes to.
+    /// Handles of every resource `client` subscribes to, gathered under the
+    /// lock so detach requests can be sent off it.
     #[must_use]
-    pub(super) fn subscribed_handles(&self, client: ClientId) -> Vec<ResourceHandle> {
+    pub(crate) fn subscribed_handles(&self, client: ClientId) -> Vec<ResourceHandle> {
         self.subscribers
             .iter()
             .filter(|(_, subs)| subs.contains(&client))
@@ -285,7 +287,8 @@ impl ResourceTable {
 
     // -- output task lifetimes and ATTACH_RESOURCE generations --------
 
-    pub(super) fn track_output_pump(
+    /// Track a task from any of the three output subscription paths.
+    pub(crate) fn track_output_pump(
         &mut self,
         client: ClientId,
         terminal: ResourceId,
@@ -338,14 +341,18 @@ impl ResourceTable {
         self.draining_resources.insert(wire, core);
     }
 
-    pub(super) fn draining_terminal(
+    /// The core id of a closed Terminal whose output is still draining, by
+    /// its retired wire id.
+    #[must_use]
+    pub(crate) fn draining_terminal(
         &self,
         wire: &phux_protocol::ids::ResourceId,
     ) -> Option<ResourceId> {
         self.draining_resources.get(wire).copied()
     }
 
-    pub(super) fn finish_output_drain(&mut self, terminal: ResourceId) {
+    /// End `terminal`'s close drain: cancel its pumps and forget its wire id.
+    pub(crate) fn finish_output_drain(&mut self, terminal: ResourceId) {
         self.cancel_pumps_for_terminal(terminal);
         self.draining_resources.retain(|_, core| *core != terminal);
     }
@@ -379,8 +386,8 @@ impl ResourceTable {
     }
 
     /// Abort every output task for this subscription, returning their exit
-    /// fences.
-    pub(super) fn stop_output_pumps(
+    /// fences; await them off the lock before acknowledging.
+    pub(crate) fn stop_output_pumps(
         &mut self,
         client: ClientId,
         terminal: ResourceId,
@@ -396,7 +403,7 @@ impl ResourceTable {
     /// Install a new `ATTACH_RESOURCE` pump generation, displacing any live
     /// one. The caller awaits the prior `done` before tombstoning its
     /// bootstrap id.
-    pub(super) fn replace_pump(
+    pub(crate) fn replace_pump(
         &mut self,
         client: ClientId,
         terminal: ResourceId,
@@ -430,7 +437,7 @@ impl ResourceTable {
     /// Move a still-current pump onto a fresh bootstrap id before it publishes
     /// a replacement generation, so a later re-attach tombstones the right
     /// one. `None` when the pump was displaced or ids are exhausted.
-    pub(super) fn advance_pump_generation(
+    pub(crate) fn advance_pump_generation(
         &mut self,
         client: ClientId,
         terminal: ResourceId,
@@ -452,7 +459,7 @@ impl ResourceTable {
 
     /// Next per-terminal bootstrap id for `client`; `None` on overflow (the
     /// connection must reconnect).
-    pub(super) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
+    pub(crate) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
         let next = self.next_bootstrap.entry(client).or_insert(1);
         let raw = *next;
         *next = raw.checked_add(1)?;
@@ -460,16 +467,17 @@ impl ResourceTable {
     }
 
     /// Cancel and forget the pump for `(client, terminal)`. Idempotent.
-    pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: ResourceId) {
+    pub(crate) fn cancel_pump(&mut self, client: ClientId, terminal: ResourceId) {
         self.stop_output_pumps(client, terminal);
         if let Some(generation) = self.pumps.remove(&(client, terminal)) {
             generation.cancel.cancel();
         }
     }
 
-    /// Cancel every client's pumps for `terminal`, so nothing it outputs
-    /// reaches a subscriber after its close.
-    pub(super) fn cancel_pumps_for_terminal(&mut self, terminal: ResourceId) {
+    /// Cancel every client's pumps for `terminal`: a killed Terminal's
+    /// process outlives its close (the hangup grace), and nothing it prints
+    /// then may follow its `RESOURCE_CLOSED`.
+    pub(crate) fn cancel_pumps_for_terminal(&mut self, terminal: ResourceId) {
         let clients: Vec<ClientId> = self
             .pumps
             .keys()

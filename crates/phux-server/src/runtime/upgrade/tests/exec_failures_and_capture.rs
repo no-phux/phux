@@ -155,7 +155,7 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
                     .idspace
                     .resource_from_wire(&agent_wire)
                     .expect("same `@N`");
-                let handle = s.resource_handle(session).expect("engine").clone();
+                let handle = s.resources().handle(session).expect("engine").clone();
                 let parent = s.idspace.resource_from_wire(&pane_wire).expect("pane");
                 (session, handle, parent)
             });

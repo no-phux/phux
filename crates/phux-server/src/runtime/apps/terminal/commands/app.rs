@@ -512,7 +512,7 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         });
     };
 
-    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
     else {
         return Err(AttachResourceFailure {
             code: ErrorCode::ResourceExhausted,
@@ -523,7 +523,7 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
-            state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
+            state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
             return Err(AttachResourceFailure {
                 code: ErrorCode::WrongResourceKind,
                 message: error.to_string(),

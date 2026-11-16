@@ -105,7 +105,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
         attribution,
     );
     s.note_closed_before_exit(resource, wire_terminal_id.clone());
-    s.cancel_terminal_pumps(resource);
+    s.resources_mut().cancel_pumps_for_terminal(resource);
     let _ = s.reap_resource(resource);
     Some(ClosedResource {
         wire_terminal_id,

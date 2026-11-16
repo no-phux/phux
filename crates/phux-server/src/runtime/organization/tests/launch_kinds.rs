@@ -62,7 +62,7 @@ fn reconciled_projections_cannot_relaunch_as_terminals() {
                 assert_eq!(s.org().resource(&before.key), Some(&before));
                 let id = s.registry().resource_id(&before.key).unwrap();
                 assert!(
-                    s.resource_handle(id).is_none(),
+                    s.resources().handle(id).is_none(),
                     "no wrong-kind engine is installed"
                 );
                 assert!(
@@ -158,7 +158,8 @@ fn failed_effect_settles_only_its_own_activation() {
             phux_core::ExecState::Failed
         );
         assert!(state.with(|s| {
-            s.resource_handle(s.registry().resource_id(&before.key).unwrap())
+            s.resources()
+                .handle(s.registry().resource_id(&before.key).unwrap())
                 .is_none()
         }));
 
@@ -235,7 +236,8 @@ fn existing_launch_receipt_replays_even_when_the_kind_no_longer_supports_launch(
             after_failure
         );
         assert!(state.with(|s| {
-            s.resource_handle(s.registry().resource_id(&before.key).unwrap())
+            s.resources()
+                .handle(s.registry().resource_id(&before.key).unwrap())
                 .is_none()
         }));
     });

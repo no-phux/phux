@@ -224,7 +224,7 @@ pub(super) fn session_kill(
                 .members
                 .iter()
                 .filter_map(|member| s.registry().resource_id(member))
-                .filter(|id| s.resource_handle(*id).is_some())
+                .filter(|id| s.resources().handle(*id).is_some())
                 .collect();
         }
         // Engines this kill will close. Their `pane_closed` records are
@@ -313,7 +313,8 @@ fn relaunch_engine_held(s: &ServerState, op: &Op) -> Option<Refusal> {
         return None;
     };
     let id = s.registry().resource_id(resource)?;
-    s.resource_handle(id)
+    s.resources()
+        .handle(id)
         .is_some()
         .then(|| Refusal::InvalidArgument {
             field: "resource",

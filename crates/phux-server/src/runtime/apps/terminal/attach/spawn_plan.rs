@@ -231,7 +231,7 @@ pub(super) fn subscribe_spawning_client(
     state.with_mut(|s| {
         let wire_terminal_id = s.idspace.intern_resource(core_terminal_id);
         // ADR-0109: provenance before any subscription.
-        s.record_spawn(core_terminal_id, client_id);
+        s.resources_mut().record_spawn(core_terminal_id, client_id);
         let client_caps = s
             .attached()
             .get(&client_id)
@@ -239,7 +239,8 @@ pub(super) fn subscribe_spawning_client(
             .unwrap_or_default();
         s.subscribe_resource(client_id, core_terminal_id, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire_terminal_id);
-        s.resource_handle(core_terminal_id)
+        s.resources()
+            .handle(core_terminal_id)
             .cloned()
             .map(|h| (wire_terminal_id, h, client_caps))
     })

@@ -381,7 +381,7 @@ impl Fixture {
         let bootstrap = self.state.with(|s| {
             s.idspace
                 .resource_from_wire(&self.agent)
-                .and_then(|core| s.resource_handle(core))
+                .and_then(|core| s.resources().handle(core))
                 .unwrap()
                 .agent_session()
                 .unwrap()

@@ -61,7 +61,8 @@ fn refit_client_terminals(
         };
         let cell_px = s.resolve_terminal_cell_px(terminal_id);
         let Some(Ok(terminal)) = s
-            .resource_handle(terminal_id)
+            .resources()
+            .handle(terminal_id)
             .map(|handle| handle.terminal())
         else {
             continue;
@@ -236,7 +237,7 @@ fn frame_ack_subscribed(
     pane: phux_core::ids::ResourceId,
     seq: u64,
 ) -> bool {
-    if s.subscribers_for_resource(pane).contains(&client_id) {
+    if s.resources().subscribers_for(pane).contains(&client_id) {
         return true;
     }
     warn!(

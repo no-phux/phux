@@ -149,7 +149,7 @@ fn terminals(state: &SharedState, name: &str) -> Vec<phux_terminal_api::actor::T
         };
         s.session_terminals(session)
             .into_iter()
-            .filter_map(|pane| s.resource_handle(pane)?.terminal().ok().cloned())
+            .filter_map(|pane| s.resources().handle(pane)?.terminal().ok().cloned())
             .collect()
     })
 }
@@ -202,9 +202,9 @@ fn tick(
 fn live(state: &SharedState, name: &str) -> bool {
     state.with(|s| {
         s.find_session_by_name(name).is_some_and(|session| {
-            s.session_terminals(session)
-                .into_iter()
-                .any(|pane| s.resource_handle(pane).is_some() && s.retained().exit(pane).is_none())
+            s.session_terminals(session).into_iter().any(|pane| {
+                s.resources().handle(pane).is_some() && s.retained().exit(pane).is_none()
+            })
         })
     })
 }
@@ -218,7 +218,7 @@ fn stop(state: &SharedState, name: &str) {
         let panes: Vec<_> = s
             .session_terminals(session)
             .into_iter()
-            .filter(|pane| s.resource_handle(*pane).is_some())
+            .filter(|pane| s.resources().handle(*pane).is_some())
             .collect();
         for pane in &panes {
             s.mark_terminating(*pane);
@@ -272,7 +272,7 @@ fn start(
             .filter(|key| {
                 s.registry()
                     .resource_id(key)
-                    .is_none_or(|id| s.resource_handle(id).is_none())
+                    .is_none_or(|id| s.resources().handle(id).is_none())
             })
             .copied()
             .collect();

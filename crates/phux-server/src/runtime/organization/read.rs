@@ -266,7 +266,8 @@ fn resource_page(
 fn resource_record(s: &mut ServerState, id: phux_core::ids::ResourceId) -> Option<ResourceRecord> {
     let record = s.registry().record(id)?.clone();
     let live: Option<WireResourceId> = s
-        .resource_handle(id)
+        .resources()
+        .handle(id)
         .is_some()
         .then(|| s.idspace.intern_resource(id));
     let activation = record

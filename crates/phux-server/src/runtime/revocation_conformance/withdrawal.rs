@@ -274,7 +274,7 @@ async fn revocation_does_not_kill_the_workloads_terminals() {
 
         fx.state.with(|s| {
             assert!(
-                s.resource_handle(fx.alpha_core).is_some(),
+                s.resources().handle(fx.alpha_core).is_some(),
                 "the Terminal survives"
             );
             assert!(

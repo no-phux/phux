@@ -27,7 +27,7 @@ fn history_terminal(
         server
             .idspace
             .resource_from_wire(terminal_id)
-            .and_then(|pane| server.resource_handle(pane).cloned())
+            .and_then(|pane| server.resources().handle(pane).cloned())
     });
     let Some(handle) = handle else {
         warn!(?terminal_id, "HISTORY_REQUEST for an unknown terminal");

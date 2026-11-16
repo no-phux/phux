@@ -141,7 +141,7 @@ pub(in crate::runtime) fn terminal_handle(
         .idspace
         .resource_from_wire(terminal_id)
         .ok_or_else(not_found)?;
-    let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+    let handle = s.resources().handle(core).cloned().ok_or_else(not_found)?;
     handle.terminal().map_err(wrong_resource_kind)?;
     Ok((core, handle))
 }

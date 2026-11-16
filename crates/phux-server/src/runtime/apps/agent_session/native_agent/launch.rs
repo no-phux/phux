@@ -242,7 +242,7 @@ fn validate_existing_guardian(
             "guardian must be a Terminal in the exact organization session",
         ));
     }
-    if s.resource_handle(guardian).is_some()
+    if s.resources().handle(guardian).is_some()
         || record.activation.as_ref().is_some_and(|activation| {
             activation.state.is_current() || activation.state == phux_core::ExecState::Lost
         })
@@ -462,8 +462,10 @@ fn install_native_session(
         s.native_agents_mut()
             .wakes
             .insert(resources.agent_wire.clone(), Arc::new(Notify::new()));
-        s.record_spawn(resources.parent, ctx.client_id);
-        s.record_spawn(resources.agent, ctx.client_id);
+        s.resources_mut()
+            .record_spawn(resources.parent, ctx.client_id);
+        s.resources_mut()
+            .record_spawn(resources.agent, ctx.client_id);
         s.mark_if_viewer_session(ctx.client_id, &resources.parent_wire);
         s.mark_if_viewer_session(ctx.client_id, &resources.agent_wire);
         let announcement = crate::state::EventRecord::new(

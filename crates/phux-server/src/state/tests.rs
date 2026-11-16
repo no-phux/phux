@@ -107,8 +107,8 @@ fn attach_subscribes_every_client_to_every_pane() {
     let other = s.new_client_id();
     s.attach_default_caps(other, "default", mk_tx()).unwrap();
     assert!(s.attached().contains_key(&cid));
-    assert_eq!(s.subscribers_for_resource(pid1), &[cid, other]);
-    assert_eq!(s.subscribers_for_resource(pid2), &[cid, other]);
+    assert_eq!(s.resources().subscribers_for(pid1), &[cid, other]);
+    assert_eq!(s.resources().subscribers_for(pid2), &[cid, other]);
 }
 
 #[test]
@@ -205,12 +205,12 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
         "same-connection recovery reuses the live session identity"
     );
     assert_eq!(
-        s.subscribers_for_resource(original),
+        s.resources().subscribers_for(original),
         &[cid],
         "reattach must not duplicate an existing subscription",
     );
     assert_eq!(
-        s.subscribers_for_resource(added),
+        s.resources().subscribers_for(added),
         &[cid],
         "reattach must subscribe panes created after the first attach",
     );
@@ -290,7 +290,7 @@ fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
 fn shared_state_with_and_with_mut_round_trip() {
     let shared = SharedState::new();
     let (_sid, pid) = shared.with_mut(|s| s.seed_session("default"));
-    let count = shared.with(|s| s.subscribers_for_resource(pid).len());
+    let count = shared.with(|s| s.resources().subscribers_for(pid).len());
     assert_eq!(count, 0);
 }
 

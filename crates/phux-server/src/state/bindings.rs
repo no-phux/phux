@@ -91,7 +91,8 @@ impl ServerState {
             .children(parent)
             .into_iter()
             .any(|child| {
-                self.resource_handle(child)
+                self.resources()
+                    .handle(child)
                     .and_then(|handle| {
                         handle.companion::<crate::resource::companions::LiveStream>()
                     })
@@ -177,7 +178,7 @@ impl ServerState {
                     .entry(resource)
                     .or_insert(attribution);
             }
-            self.detach_resource_actor(resource);
+            self.resources_mut().detach_actor(resource);
             closed.push(resource);
         }
         closed
@@ -319,12 +320,12 @@ mod tests {
 
         for resource in [grandparent, child, grandchild] {
             assert!(
-                state.resource_handle(resource).is_none(),
+                state.resources().handle(resource).is_none(),
                 "{resource:?} must leave the resource table with its registry entry"
             );
             assert!(state.registry().record(resource).is_none());
         }
-        assert!(state.resource_ids().is_empty());
+        assert!(state.resources().resource_ids().is_empty());
         assert!(
             tokens.iter().all(CancellationToken::is_cancelled),
             "no descendant engine may keep running unreachable"

@@ -30,7 +30,11 @@ impl ServerState {
         };
         self.session_terminals(attached.session)
             .into_iter()
-            .filter(|terminal| self.subscribers_for_resource(*terminal).contains(&client))
+            .filter(|terminal| {
+                self.resources()
+                    .subscribers_for(*terminal)
+                    .contains(&client)
+            })
             .collect()
     }
 
@@ -104,7 +108,8 @@ impl ServerState {
         &self,
         terminal: ResourceId,
     ) -> impl Iterator<Item = &super::AttachedClient> {
-        self.subscribers_for_resource(terminal)
+        self.resources()
+            .subscribers_for(terminal)
             .iter()
             .filter_map(|client| self.clients.attached.get(client))
             .filter(move |client| self.registry().session_of(terminal) == Some(client.session))
@@ -171,7 +176,8 @@ impl ServerState {
                 continue;
             }
             let resized = self
-                .resource_handle(terminal)
+                .resources()
+                .handle(terminal)
                 .and_then(|handle| handle.companion::<crate::resource::companions::Resizable>())
                 .is_some_and(|engine| engine.resize((cols, rows), cell_px));
             if resized && let Some(pane) = self.registry_mut().terminal_mut(terminal) {
@@ -184,7 +190,7 @@ impl ServerState {
     /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis.
     fn is_stranded_below_usable(&self, terminal: ResourceId) -> bool {
         let (min_cols, min_rows) = MIN_USABLE_TERMINAL_DIMS;
-        self.subscribers_for_resource(terminal).is_empty()
+        self.resources().subscribers_for(terminal).is_empty()
             && self
                 .registry()
                 .terminal(terminal)

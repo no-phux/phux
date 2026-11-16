@@ -123,7 +123,7 @@ fn refuses_agent_cursor(
 ) -> bool {
     s.idspace
         .resource_from_wire(terminal_id)
-        .and_then(|core| s.resource_handle(core))
+        .and_then(|core| s.resources().handle(core))
         .is_some_and(|handle| !crate::runtime::apps::app_for(handle.kind).resumes_from_cursor())
 }
 

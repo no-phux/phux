@@ -123,7 +123,7 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
                 record.activation.as_ref().unwrap().state,
                 phux_core::ExecState::Completed
             );
-            assert!(state.resource_handle(pane).is_none());
+            assert!(state.resources().handle(pane).is_none());
         });
         root.cancel();
         for token in tokens {

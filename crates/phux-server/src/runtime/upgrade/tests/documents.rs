@@ -112,7 +112,7 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
                 .expect("rebuild");
             let (doc, snapshot) = resumed.with(|s| {
                 let doc = s.idspace.resource_from_wire(&doc_wire).expect("same `@N`");
-                let handle = s.resource_handle(doc).expect("engine");
+                let handle = s.resources().handle(doc).expect("engine");
                 let snapshot = handle.document::<TypedDocument>().unwrap().snapshot.clone();
                 assert_eq!(handle.parent, s.idspace.resource_from_wire(&pane_wire));
                 assert_eq!(s.resource_control(doc), Some(ControlClass::Window));

@@ -68,7 +68,7 @@ impl AttachResourceSession<'_> {
         use phux_terminal_api::actor::ConsumerDetachRequest;
 
         self.state.with_mut(|s| {
-            s.cancel_attach_terminal_pump(self.client_id, self.core);
+            s.resources_mut().cancel_pump(self.client_id, self.core);
         });
         let _ =
             self.terminal
@@ -147,9 +147,10 @@ impl AttachResourceSession<'_> {
         // until this generation reaches READY.
         let output_rx = self.handle.output.subscribe();
         pump::stop_output(self.state, self.client_id, self.core).await;
-        let (token, pump_done, generation_last_seq, prior) = self
-            .state
-            .with_mut(|s| s.replace_attach_terminal_pump(self.client_id, self.core, bootstrap_id));
+        let (token, pump_done, generation_last_seq, prior) = self.state.with_mut(|s| {
+            s.resources_mut()
+                .replace_pump(self.client_id, self.core, bootstrap_id)
+        });
         let mut pump_done_guard = Some(pump_done.drop_guard());
         if let Some((_, prior_done, _)) = &prior {
             prior_done.cancelled().await;

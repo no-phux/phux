@@ -229,10 +229,13 @@ fn aggregate_generation_is_not_reused_by_document_lag_recovery() {
     let (_, resource) = state.seed_session("generation");
     let client = state.new_client_id();
     let (_, _, seq, _) =
-        state.replace_attach_terminal_pump(client, resource, initial_bootstrap_id());
+        state
+            .resources_mut()
+            .replace_pump(client, resource, initial_bootstrap_id());
     assert_eq!(
         state
-            .advance_attach_terminal_pump(client, resource, &seq)
+            .resources_mut()
+            .advance_pump_generation(client, resource, &seq)
             .unwrap()
             .get(),
         2
@@ -458,7 +461,8 @@ async fn mixed_without_terminal_profile_refuses_before_subscription_or_geometry(
         state.with(|s| {
             assert!(!s.attached().contains_key(&connection.client));
             assert!(
-                !s.subscribers_for_resource(tree)
+                !s.resources()
+                    .subscribers_for(tree)
                     .contains(&connection.client)
             );
             assert_eq!(s.registry().terminal(parent).unwrap().dims, before);

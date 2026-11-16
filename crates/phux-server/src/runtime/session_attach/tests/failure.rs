@@ -28,7 +28,8 @@ async fn oversized_document_rolls_back_every_kind_before_attached() {
             assert!(!s.attached().contains_key(&connection.client));
             for core in [parent, agent, tree] {
                 assert!(
-                    !s.subscribers_for_resource(core)
+                    !s.resources()
+                        .subscribers_for(core)
                         .contains(&connection.client)
                 );
                 assert!(s.input_lease_holder(core).is_none());

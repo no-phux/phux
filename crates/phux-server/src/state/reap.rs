@@ -99,7 +99,7 @@ impl ServerState {
         }
         // A removed producer hands its parent back to the remaining sources.
         if let Some(agent_parent) = parent
-            .and_then(|parent| self.resource_handle(parent))
+            .and_then(|parent| self.resources().handle(parent))
             .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
         {
             let _ = agent_parent

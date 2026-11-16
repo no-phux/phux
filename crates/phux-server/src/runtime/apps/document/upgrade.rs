@@ -83,11 +83,12 @@ impl<A: DocumentApi> UpgradeCut for DocumentCut<A> {
 fn snapshot_senders<A: DocumentApi>(
     s: &ServerState,
 ) -> Vec<(ResourceId, mpsc::Sender<SnapshotRequest>)> {
-    s.resource_ids()
+    s.resources()
+        .resource_ids()
         .into_iter()
         .filter(|&id| s.resource_wire(id).is_some() && s.registry().resource(id).is_some())
         .filter_map(|id| {
-            let document = s.resource_handle(id)?.document::<A>().ok()?;
+            let document = s.resources().handle(id)?.document::<A>().ok()?;
             Some((id, document.snapshot.clone()))
         })
         .collect()

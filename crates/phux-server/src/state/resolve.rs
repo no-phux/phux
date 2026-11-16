@@ -105,7 +105,7 @@ impl ServerState {
         let Some(id) = self.idspace.resource_from_wire(wire) else {
             return Resolved::Unknown;
         };
-        let Some(handle) = self.resource_handle(id) else {
+        let Some(handle) = self.resources().handle(id) else {
             return Resolved::Unknown;
         };
         Resolved::Local(LocalResource { id, handle })
