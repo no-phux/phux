@@ -139,10 +139,7 @@ fn read_error(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        call_with_adapter,
-        tests::{assert_argv, fake_cli},
-    };
+    use super::super::tests::{assert_argv, fake_cli};
     use super::*;
 
     /// `phux_agent_send_keys` executes the exact canonical argv, with the
@@ -194,6 +191,5 @@ mod tests {
             let err = list(&args).await.expect_err("an invalid filter");
             assert!(!err.0.contains("no_server"), "{args}: {}", err.0);
         }
-        let _ = call_with_adapter;
     }
 }
