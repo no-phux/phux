@@ -1,8 +1,5 @@
 //! A credential store that re-reads its file when the generation changes.
 
-use std::fs::{self};
-use std::io::{self};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -10,46 +7,13 @@ use chrono::Utc;
 
 use super::{
     AuthError, AuthenticatedCredential, STABLE_READ_ATTEMPTS, Standing, TokenStore,
-    record_credential_seen, validate_store_metadata,
+    record_credential_seen,
 };
+use crate::secure_file::{self, FileRole, Stamp};
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-struct Stamp {
-    mtime: Option<std::time::SystemTime>,
-    len: u64,
-    dev: u64,
-    ino: u64,
-    uid: u32,
-    mode: u32,
-    ctime: i64,
-    ctime_nsec: i64,
-}
-
-impl Stamp {
-    fn probe(path: &Path) -> Result<Option<Self>, AuthError> {
-        let meta = match fs::symlink_metadata(path) {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if meta.file_type().is_symlink() {
-            return Err(AuthError::InsecureStore(format!(
-                "{} is a symbolic link",
-                path.display()
-            )));
-        }
-        validate_store_metadata(path, &meta)?;
-        Ok(Some(Self {
-            mtime: meta.modified().ok(),
-            len: meta.len(),
-            dev: meta.dev(),
-            ino: meta.ino(),
-            uid: meta.uid(),
-            mode: meta.mode(),
-            ctime: meta.ctime(),
-            ctime_nsec: meta.ctime_nsec(),
-        }))
-    }
+/// The store file's current generation; `None` when it is absent.
+fn probe(path: &Path) -> Result<Option<Stamp>, AuthError> {
+    Ok(secure_file::probe(path, FileRole::BearerStore)?)
 }
 
 struct Cached {
@@ -232,7 +196,7 @@ impl ReloadingTokenStore {
         cached: &mut Cached,
         after_load: impl FnMut(usize),
     ) -> Result<(), RefreshFailure> {
-        let stamp = match Stamp::probe(&self.path) {
+        let stamp = match probe(&self.path) {
             Ok(stamp) => stamp,
             Err(error) => {
                 return Err(fail_closed(
@@ -342,10 +306,10 @@ fn stable_load_observed(
     mut after_load: impl FnMut(usize),
 ) -> Result<(Option<Stamp>, TokenStore), AuthError> {
     for attempt in 0..STABLE_READ_ATTEMPTS {
-        let before = Stamp::probe(path)?;
+        let before = probe(path)?;
         let loaded = TokenStore::load(path);
         after_load(attempt);
-        let after = Stamp::probe(path)?;
+        let after = probe(path)?;
         if before == after {
             return loaded.map(|store| (after, store));
         }

@@ -89,6 +89,7 @@ fn a_write_removes_stale_workload_temporaries_and_nothing_else() {
     let stale = [
         ".workload-ca.key.0123456789abcdef.tmp",
         ".workload-keys.fedcba9876543210.tmp",
+        ".remote-tokens.00112233445566ff.tmp",
     ];
     let kept = [
         ".phux-tokens.json.0123456789abcdef.tmp",
@@ -125,4 +126,102 @@ fn a_write_sweeps_only_the_directory_whose_lock_it_holds() {
     .unwrap();
     assert!(foreign.exists(), "a temp outside the held lock was swept");
     assert!(!stale.exists(), "the held directory was not swept");
+}
+
+/// The bearer store is owner-only: group or world bits, an owner who
+/// cannot read it, or another owner are each refused.
+#[test]
+fn the_bearer_store_is_owner_only_and_owner_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("remote-tokens");
+    owner_only(&path, b"{}");
+    assert!(read_stable(&path, FileRole::BearerStore).is_ok());
+    for mode in [0o640, 0o604, 0o200] {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            matches!(
+                read_stable(&path, FileRole::BearerStore),
+                Err(SecureFileError::Insecure { .. })
+            ),
+            "mode {mode:o}"
+        );
+    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let meta = std::fs::symlink_metadata(&path).unwrap();
+    assert!(validate_owner_file(&meta, FileRole::BearerStore).is_ok());
+    assert!(matches!(
+        validate_owner_file_as(
+            &meta,
+            FileRole::BearerStore,
+            effective_uid().wrapping_add(1)
+        ),
+        Err(SecureFileError::Insecure { .. })
+    ));
+}
+
+/// Each store keeps its own error split: integrity failures stay insecure,
+/// I/O and unstable reads stay unreadable (`StoreCondition::of`).
+#[test]
+fn errors_map_into_each_store_by_kind() {
+    use crate::auth::AuthError;
+    use crate::workload::WorkloadError;
+
+    let insecure = || insecure("credential store", "is a symbolic link");
+    assert!(matches!(
+        AuthError::from(insecure()),
+        AuthError::InsecureStore(reason) if reason == "credential store is a symbolic link"
+    ));
+    assert!(matches!(
+        AuthError::from(SecureFileError::ProductionState("no".to_owned())),
+        AuthError::ProductionStore(_)
+    ));
+    assert!(matches!(
+        AuthError::from(SecureFileError::Unstable),
+        AuthError::UnstableStore
+    ));
+    assert!(matches!(
+        AuthError::from(SecureFileError::Io(std::io::Error::other("x"))),
+        AuthError::Io(_)
+    ));
+    assert!(matches!(
+        WorkloadError::from(insecure()),
+        WorkloadError::Insecure {
+            file: "credential store",
+            reason: "is a symbolic link"
+        }
+    ));
+    assert!(matches!(
+        WorkloadError::from(SecureFileError::ProductionState("no".to_owned())),
+        WorkloadError::ProductionState(_)
+    ));
+    assert!(matches!(
+        WorkloadError::from(SecureFileError::Unstable),
+        WorkloadError::Unstable
+    ));
+}
+
+/// An interrupted replacement leaves the old file and no temporary; one
+/// interrupted after the rename is visible and reported as not durable.
+#[test]
+fn an_interrupted_replacement_is_old_or_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("remote-tokens");
+    owner_only(&path, b"old");
+    for stage in [
+        WriteFault::BeforeTempSync,
+        WriteFault::AfterTempSyncBeforeRename,
+    ] {
+        let _armed = fault::inject(stage);
+        assert!(with_lock(&path, |held| atomic_replace(&path, b"new", held)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old", "{stage:?}");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "{stage:?}"
+        );
+    }
+    let _armed = fault::inject(WriteFault::AfterRenameBeforeDirectorySync);
+    let outcome = with_lock(&path, |held| atomic_replace(&path, b"new", held)).unwrap();
+    assert!(!outcome.is_durable());
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
 }

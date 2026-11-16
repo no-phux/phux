@@ -265,7 +265,8 @@ mod frozen {
         let file: super::CredentialFile = serde_json::from_slice(golden).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("remote-tokens");
-        crate::auth::with_store_lock(&path, || crate::auth::atomic_write(&path, &file)).unwrap();
+        crate::secure_file::with_lock(&path, |held| crate::auth::commit(&path, &file, held))
+            .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), golden);
     }
 }

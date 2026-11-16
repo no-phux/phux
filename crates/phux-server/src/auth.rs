@@ -14,22 +14,19 @@ use subtle::ConstantTimeEq;
 
 mod credential;
 mod lifecycle;
-mod persist;
 mod reloading;
 mod store;
 mod tailnet_owner;
 
 pub use self::credential::*;
 pub use self::lifecycle::*;
-#[cfg(test)]
-use self::persist::credential_lock_path;
-use self::persist::{AtomicWriteFault, atomic_write, atomic_write_with_fault, with_store_lock};
 pub use self::reloading::*;
 pub use self::store::*;
 pub(crate) use self::tailnet_owner::admit as admit_tailnet_owner;
 #[cfg(test)]
 pub(crate) use self::tailnet_owner::test_credential as tailnet_owner_test_credential;
 pub use self::tailnet_owner::{TAILNET_OWNER_PRINCIPAL, is_tailnet_owner};
+pub use crate::secure_file::CommitOutcome;
 
 #[cfg(test)]
 mod tests;
@@ -176,5 +173,5 @@ pub(crate) fn write_test_credential(path: &Path, secret: &[u8; TOKEN_LEN]) {
             first_use_by: None,
         }],
     };
-    atomic_write(path, &file).unwrap();
+    crate::secure_file::with_lock(path, |held| commit(path, &file, held)).unwrap();
 }

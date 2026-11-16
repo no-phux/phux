@@ -9,6 +9,10 @@
 //! locked directory. Ancestors must also be owner (or root) controlled.
 //! File buffers are sized from metadata and scrubbed when not returned
 //! (best effort). Diagnostics name a file's role, never its path.
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-private substrate: the auth and workload stores reach these through this module"
+)]
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -39,6 +43,8 @@ pub(crate) enum FileRole {
     /// `<state-dir>/workload-org-roots/<org>.pem` (public, still owner-only:
     /// whoever can change it decides who connects).
     OrgRoots,
+    /// `<state-dir>/remote-tokens` (bearer verifiers, owner-only).
+    BearerStore,
 }
 
 impl FileRole {
@@ -49,6 +55,7 @@ impl FileRole {
             Self::CaPrivateKey => "CA private key",
             Self::Tickets => "enrollment tickets",
             Self::OrgRoots => "organization roots",
+            Self::BearerStore => "credential store",
         }
     }
 
@@ -57,7 +64,11 @@ impl FileRole {
     const fn forbidden_mode_bits(self) -> u32 {
         match self {
             Self::CaCertificate => 0o022,
-            Self::Registry | Self::CaPrivateKey | Self::Tickets | Self::OrgRoots => 0o077,
+            Self::Registry
+            | Self::CaPrivateKey
+            | Self::Tickets
+            | Self::OrgRoots
+            | Self::BearerStore => 0o077,
         }
     }
 }

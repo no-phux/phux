@@ -221,11 +221,6 @@ fn insecure_store_types_permissions_and_ownership_are_rejected() {
     ));
     assert!(!live.verify(&bearer), "owner-unreadable stores fail closed");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    let metadata = fs::symlink_metadata(&path).unwrap();
-    assert!(matches!(
-        validate_store_metadata_for_uid(&path, &metadata, metadata.uid().saturating_add(1)),
-        Err(AuthError::InsecureStore(_))
-    ));
 
     let target = dir.path().join("target");
     fs::rename(&path, &target).unwrap();

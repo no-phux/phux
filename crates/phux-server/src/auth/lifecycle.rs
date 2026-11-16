@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use super::{
-    AtomicWriteFault, AuthError, CredentialFile, CredentialRecord, CredentialSummary,
-    MintedCredential, PruneOutcome, TERMINAL_CONTROL_SCOPE, TOKEN_LEN, TokenStore, atomic_write,
-    atomic_write_with_fault, decode_verifier, verifier, with_store_lock,
+    AuthError, CommitOutcome, CredentialFile, CredentialRecord, CredentialSummary,
+    MintedCredential, PruneOutcome, TERMINAL_CONTROL_SCOPE, TOKEN_LEN, TokenStore, decode_verifier,
+    verifier,
 };
+use crate::secure_file::{self, HeldLock, with_lock};
 
 /// Mint a generation-one credential with terminal-only authority.
 pub fn mint_token(path: &Path) -> Result<MintedCredential, AuthError> {
@@ -25,8 +26,8 @@ pub fn mint_credential(
     scopes: &[String],
     expires_at: Option<DateTime<Utc>>,
 ) -> Result<MintedCredential, AuthError> {
-    with_store_lock(path, || {
-        mint_credential_unlocked(path, principal, scopes, expires_at)
+    with_lock(path, |held| {
+        mint_credential_unlocked(path, principal, scopes, expires_at, held)
     })
 }
 
@@ -35,6 +36,7 @@ pub(super) fn mint_credential_unlocked(
     principal: Option<&str>,
     scopes: &[String],
     expires_at: Option<DateTime<Utc>>,
+    held: &HeldLock<'_>,
 ) -> Result<MintedCredential, AuthError> {
     let mut file = load_file_for_update(path)?;
     let (id, secret) = random_identity_and_secret()?;
@@ -51,12 +53,12 @@ pub(super) fn mint_credential_unlocked(
         last_seen: None,
         first_use_by: None,
     });
-    let commit = atomic_write(path, &file)?;
+    let outcome = commit(path, &file, held)?;
     Ok(MintedCredential {
         id,
         generation: 1,
         secret: hex::encode(secret),
-        durable: commit.is_durable(),
+        durable: outcome.is_durable(),
     })
 }
 
@@ -66,8 +68,8 @@ pub fn rotate_credential(
     id: &str,
     overlap: Duration,
 ) -> Result<MintedCredential, AuthError> {
-    with_store_lock(path, || {
-        rotate_credential_at(path, id, overlap, Utc::now(), AtomicWriteFault::None)
+    with_lock(path, |held| {
+        rotate_credential_at(path, id, overlap, Utc::now(), held)
     })
 }
 
@@ -76,7 +78,7 @@ pub(super) fn rotate_credential_at(
     id: &str,
     overlap: Duration,
     now: DateTime<Utc>,
-    fault: AtomicWriteFault,
+    held: &HeldLock<'_>,
 ) -> Result<MintedCredential, AuthError> {
     let mut file = load_file_for_update(path)?;
     let latest = file
@@ -118,12 +120,12 @@ pub(super) fn rotate_credential_at(
         last_seen: None,
         first_use_by: latest.first_use_by,
     });
-    let commit = atomic_write_with_fault(path, &file, fault)?;
+    let outcome = commit(path, &file, held)?;
     Ok(MintedCredential {
         id: id.to_owned(),
         generation,
         secret: hex::encode(secret),
-        durable: commit.is_durable(),
+        durable: outcome.is_durable(),
     })
 }
 
@@ -140,7 +142,7 @@ pub fn mint_terminal_credential(
     expires_at: Option<DateTime<Utc>>,
     first_use_by: Option<DateTime<Utc>>,
 ) -> Result<MintedCredential, AuthError> {
-    with_store_lock(path, || {
+    with_lock(path, |held| {
         let previous = replacing.map(decode_secret).transpose()?;
         let mut file = load_file_for_update(path)?;
         let now = Utc::now();
@@ -166,12 +168,12 @@ pub fn mint_terminal_credential(
             last_seen: None,
             first_use_by,
         });
-        let commit = atomic_write(path, &file)?;
+        let outcome = commit(path, &file, held)?;
         Ok(MintedCredential {
             id,
             generation: 1,
             secret: hex::encode(secret),
-            durable: commit.is_durable(),
+            durable: outcome.is_durable(),
         })
     })
 }
@@ -185,7 +187,7 @@ pub fn list_credentials(path: &Path) -> Result<Vec<CredentialSummary>, AuthError
 /// Revoke every live credential unused for `unused_for` (`last_seen`, else
 /// `issued_at`).
 pub fn prune_unused(path: &Path, unused_for: Duration) -> Result<PruneOutcome, AuthError> {
-    with_store_lock(path, || {
+    with_lock(path, |held| {
         let mut file = load_file_for_update(path)?;
         let now = Utc::now();
         let cutoff = now - unused_for.max(Duration::zero());
@@ -215,10 +217,10 @@ pub fn prune_unused(path: &Path, unused_for: Duration) -> Result<PruneOutcome, A
                 durable: true,
             });
         }
-        let commit = atomic_write(path, &file)?;
+        let outcome = commit(path, &file, held)?;
         Ok(PruneOutcome {
             revoked_ids,
-            durable: commit.is_durable(),
+            durable: outcome.is_durable(),
         })
     })
 }
@@ -274,8 +276,8 @@ fn credential_id_for_secret(file: &CredentialFile, secret: &[u8; TOKEN_LEN]) -> 
 /// Record a successful authentication for `id`: best effort, at most once
 /// a minute per credential.
 pub fn record_credential_seen(path: &Path, id: &str) {
-    let _ = with_store_lock(path, || {
-        record_credential_seen_unlocked(path, id, Utc::now())
+    let _ = with_lock(path, |held| {
+        record_credential_seen_unlocked(path, id, Utc::now(), held)
     });
 }
 
@@ -283,6 +285,7 @@ fn record_credential_seen_unlocked(
     path: &Path,
     id: &str,
     now: DateTime<Utc>,
+    held: &HeldLock<'_>,
 ) -> Result<(), AuthError> {
     let mut file = load_file_for_update(path)?;
     let Some(latest) = file
@@ -315,13 +318,13 @@ fn record_credential_seen_unlocked(
         return Ok(());
     }
     record.last_seen = Some(now);
-    let _ = atomic_write(path, &file)?;
+    let _ = commit(path, &file, held)?;
     Ok(())
 }
 
 /// Revoke every generation of a credential for future connection attempts.
 pub fn revoke_credential(path: &Path, id: &str) -> Result<CommitOutcome, AuthError> {
-    with_store_lock(path, || {
+    with_lock(path, |held| {
         let mut file = load_file_for_update(path)?;
         let now = Utc::now();
         let mut found = false;
@@ -332,8 +335,21 @@ pub fn revoke_credential(path: &Path, id: &str) -> Result<CommitOutcome, AuthErr
         if !found {
             return Err(AuthError::CredentialNotFound(id.to_owned()));
         }
-        atomic_write(path, &file)
+        commit(path, &file, held)
     })
+}
+
+/// Write `file` (pretty JSON and one trailing newline) over the store at
+/// `path`, under the caller's lock on its directory.
+pub(super) fn commit(
+    path: &Path,
+    file: &CredentialFile,
+    held: &HeldLock<'_>,
+) -> Result<CommitOutcome, AuthError> {
+    let mut bytes =
+        serde_json::to_vec_pretty(file).map_err(|error| AuthError::Malformed(error.to_string()))?;
+    bytes.push(b'\n');
+    Ok(secure_file::atomic_replace(path, &bytes, held)?)
 }
 
 fn load_file_for_update(path: &Path) -> Result<CredentialFile, AuthError> {
@@ -353,19 +369,4 @@ fn decode_secret(encoded: &str) -> Result<[u8; TOKEN_LEN], AuthError> {
         hex::decode(encoded).map_err(|_| AuthError::Malformed("token is not hex".to_owned()))?;
     <[u8; TOKEN_LEN]>::try_from(bytes.as_slice())
         .map_err(|_| AuthError::Malformed("token has wrong length".to_owned()))
-}
-
-/// Outcome of an atomic store replacement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommitOutcome {
-    pub(super) durable: bool,
-}
-
-impl CommitOutcome {
-    /// Whether both file contents and the containing directory entry reached
-    /// stable storage. A false result is already visible and must not be retried.
-    #[must_use]
-    pub const fn is_durable(self) -> bool {
-        self.durable
-    }
 }

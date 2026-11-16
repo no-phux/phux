@@ -9,13 +9,14 @@ use super::{
     SecureFileError, Stamp, is_owned_regular_file, parent_of, refuse_production, validate_owner_dir,
 };
 
-/// Default workload file names; a write sweeps stale temporaries only for
-/// these and the file it wrote.
-const MANAGED_NAMES: [&str; 4] = [
+/// Default workload and credential file names; a write sweeps stale
+/// temporaries only for these and the file it wrote.
+const MANAGED_NAMES: [&str; 5] = [
     "workload-keys",
     "workload-ca.key",
     "workload-ca.pem",
     "enrollment-tickets",
+    "remote-tokens",
 ];
 
 /// Create (mode 0700) or open the directory that holds `path`, and check
@@ -175,6 +176,39 @@ pub(crate) fn atomic_replace(
     Ok(CommitOutcome { durable })
 }
 
+/// Best effort: remove a crashed writer's temporaries beside `path` (only
+/// the effective user's regular files, never following links).
+fn remove_stale_temps(path: &Path) {
+    let own = path.file_name().and_then(|name| name.to_str());
+    let Ok(entries) = fs::read_dir(parent_of(path)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let stale = name.to_str().is_some_and(|name| is_stale_temp(name, own));
+        if stale && is_owned_regular_file(&entry.path()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn is_stale_temp(name: &str, own: Option<&str>) -> bool {
+    let Some(stem) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((base, suffix)) = stem.rsplit_once('.') else {
+        return false;
+    };
+    let random = suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    random && (own == Some(base) || MANAGED_NAMES.contains(&base))
+}
+
 /// A stage at which a test interrupts the next atomic replacement on its
 /// thread.
 #[cfg(test)]
@@ -224,37 +258,4 @@ pub(crate) mod fault {
                 .into(),
         )
     }
-}
-
-/// Best effort: remove a crashed writer's temporaries beside `path` (only
-/// the effective user's regular files, never following links).
-fn remove_stale_temps(path: &Path) {
-    let own = path.file_name().and_then(|name| name.to_str());
-    let Ok(entries) = fs::read_dir(parent_of(path)) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let stale = name.to_str().is_some_and(|name| is_stale_temp(name, own));
-        if stale && is_owned_regular_file(&entry.path()) {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-}
-
-fn is_stale_temp(name: &str, own: Option<&str>) -> bool {
-    let Some(stem) = name
-        .strip_prefix('.')
-        .and_then(|name| name.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
-    let Some((base, suffix)) = stem.rsplit_once('.') else {
-        return false;
-    };
-    let random = suffix.len() == 16
-        && suffix
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    random && (own == Some(base) || MANAGED_NAMES.contains(&base))
 }
