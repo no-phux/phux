@@ -200,32 +200,7 @@ fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
     let old_deadline = owner.sync_output_deadline().unwrap();
     owner.expire_sync_output(old_deadline);
-    for event in [
-        EngineEvent::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-        EngineEvent::BootstrapChunk {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            chunk_seq: 0,
-            payload: b"\x1b[?2026hnew".to_vec().into(),
-        },
-        EngineEvent::BootstrapReady {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            history_cursor: None,
-        },
-    ] {
-        apply_ok(&owner, event);
-    }
+    rebootstrap(&owner, &terminal, 2, b"\x1b[?2026hnew");
     assert!(owner.sync_output_deadline().is_some());
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "committed");
     assert_eq!(publication.acquire_view(view).unwrap().text(), "committed");

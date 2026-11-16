@@ -8,16 +8,7 @@ mod presentation;
 mod sync_output;
 
 fn output(owner: &EngineHandle, terminal: &ResourceId, seq: u64, bytes: &[u8]) {
-    apply_ok(
-        owner,
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq,
-            bytes: bytes.to_vec().into(),
-        },
-    );
+    apply_ok(owner, super::output(terminal, seq, bytes));
 }
 
 fn point(column: u16, row: u32) -> EngineDocumentPoint {
