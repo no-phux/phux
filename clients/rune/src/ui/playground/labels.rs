@@ -4,7 +4,7 @@ use rune::{El, el, row, text};
 
 use super::super::CAPTION;
 use super::pen::rgba;
-use crate::playground::Pt;
+use crate::playground::{AMBER, Pt};
 
 /// A pill over the scene, at a world point.
 pub(crate) struct Label {
@@ -17,7 +17,6 @@ pub(crate) struct Label {
     pub host: Option<String>,
 }
 
-const AMBER: [f32; 3] = [255.0, 181.0, 71.0];
 const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 
 /// A label pill centred on `at`, kept inside the view.
