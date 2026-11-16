@@ -1,5 +1,7 @@
 //! The published introductions must work against the same CLI CI built.
 
+#![allow(clippy::expect_used, reason = "tests")]
+
 use crate::common;
 
 /// Run the repository script `script` under `program` against the CLI CI
