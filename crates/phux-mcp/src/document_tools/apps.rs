@@ -12,56 +12,54 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::bounded_string;
 use crate::cli_tools::{optional_bool, schema, string_schema};
-use crate::tools::{ToolError, socket_arg, strict_object, transport_error};
+use crate::tools::{ToolError, ToolSpec, socket_arg, strict_object, transport_error};
 
 /// How long `phux_app_open` waits for the app's documents.
 const DOCUMENTS_WAIT: Duration = Duration::from_secs(20);
 
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![
-        schema(
-            "phux_app_open",
-            "Launch an application as resources: a new pane runs `phux agent app run`, which launches the app, mirrors it into documents under the pane (a browser page with control `page`; else a window surface with control `window` and the app's accessibility tree), and quits the app when the pane is killed. `name` is a macOS app name, a Linux command or `.desktop` id, or with `browser` the browser (`chrome`, `chromium`, or a path), opened on `url` (default about:blank) with a fresh profile; `headless` keeps the browser off screen. Returns the pane and the documents opened within 20 s; read them with phux_tree_snapshot or phux_surface_snapshot, and close with phux_app_close. Input to the documents needs the owner socket or an `input@CLASS` grant. On macOS a non-browser app is refused, because a pane holds no Screen Recording or Accessibility grant: ask the person to run `phux agent app run NAME --pane @N` in a terminal that has both grants.",
-            json!({
-                "name": string_schema(),
-                "browser": { "type": "boolean" },
-                "url": string_schema(),
-                "headless": { "type": "boolean" },
-                "target": string_schema(),
-                "socket": string_schema(),
-            }),
-            &["name"],
-        ),
-        schema(
-            "phux_app_close",
-            "Close an application phux_app_open launched: kill its pane, which quits the app (only the instance its helper launched) and closes its documents. Requires confirm=true.",
-            json!({
-                "pane": string_schema(),
-                "confirm": { "type": "boolean", "const": true, "description": "Required explicit destructive-operation confirmation." },
-                "socket": string_schema(),
-            }),
-            &["pane", "confirm"],
-        ),
-    ]
+/// The application tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_app_open", open_schema, |args| Box::pin(open(args))),
+    ToolSpec::in_process("phux_app_close", close_schema, |args| Box::pin(close(args))),
+];
+
+fn open_schema() -> Value {
+    schema(
+        "phux_app_open",
+        "Launch an application as resources: a new pane runs `phux agent app run`, which launches the app, mirrors it into documents under the pane (a browser page with control `page`; else a window surface with control `window` and the app's accessibility tree), and quits the app when the pane is killed. `name` is a macOS app name, a Linux command or `.desktop` id, or with `browser` the browser (`chrome`, `chromium`, or a path), opened on `url` (default about:blank) with a fresh profile; `headless` keeps the browser off screen. Returns the pane and the documents opened within 20 s; read them with phux_tree_snapshot or phux_surface_snapshot, and close with phux_app_close. Input to the documents needs the owner socket or an `input@CLASS` grant. On macOS a non-browser app is refused, because a pane holds no Screen Recording or Accessibility grant: ask the person to run `phux agent app run NAME --pane @N` in a terminal that has both grants.",
+        json!({
+            "name": string_schema(),
+            "browser": { "type": "boolean" },
+            "url": string_schema(),
+            "headless": { "type": "boolean" },
+            "target": string_schema(),
+            "socket": string_schema(),
+        }),
+        &["name"],
+    )
 }
 
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_app_open" | "phux_app_close")
+fn close_schema() -> Value {
+    schema(
+        "phux_app_close",
+        "Close an application phux_app_open launched: kill its pane, which quits the app (only the instance its helper launched) and closes its documents. Requires confirm=true.",
+        json!({
+            "pane": string_schema(),
+            "confirm": { "type": "boolean", "const": true, "description": "Required explicit destructive-operation confirmation." },
+            "socket": string_schema(),
+        }),
+        &["pane", "confirm"],
+    )
 }
 
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_app_open" => open(args).await,
-        "phux_app_close" => {
-            strict_object(args, &["pane", "confirm", "socket"], &["pane", "confirm"])?;
-            let mut kill = json!({ "target": args["pane"], "confirm": true });
-            if let Some(socket) = args.get("socket") {
-                kill["socket"] = socket.clone();
-            }
-            crate::tools::phux_kill(&kill).await
-        }
-        other => Err(ToolError::new(format!("unknown app tool: {other}"))),
+/// Kill the app's pane, as a confirmed `phux_kill` of it.
+async fn close(args: &Value) -> Result<Value, ToolError> {
+    strict_object(args, &["pane", "confirm", "socket"], &["pane", "confirm"])?;
+    let mut kill = json!({ "target": args["pane"], "confirm": true });
+    if let Some(socket) = args.get("socket") {
+        kill["socket"] = socket.clone();
     }
+    crate::tools::phux_kill(&kill).await
 }
 
 async fn open(args: &Value) -> Result<Value, ToolError> {

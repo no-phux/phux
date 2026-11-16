@@ -41,6 +41,7 @@ include!("tools/kinds.rs");
 pub(crate) mod signals;
 include!("tools/tests.rs");
 include!("tools/upload_tests.rs");
+include!("tools/registry_tests.rs");
 
 /// Longest `timeout_secs` any bounded tool accepts. A tool call that never
 /// returns wedges its host, so no bounded tool has an unbounded mode.

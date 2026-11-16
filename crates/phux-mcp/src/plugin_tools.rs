@@ -8,14 +8,24 @@ use phux_config::loader as config_loader;
 use phux_config::plugin;
 use serde_json::{Value, json};
 
-use crate::tools::{ToolError, num_arg, required_str, str_arg};
+use crate::tools::{ToolError, ToolSpec, num_arg, required_str, str_arg};
+
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_plugin_action", action_schema, |args| {
+        Box::pin(action(args))
+    }),
+    // A local config read with nothing to await.
+    ToolSpec::in_process("phux_plugin_profile", profile_schema, |args| {
+        Box::pin(std::future::ready(profile(args)))
+    }),
+];
 
 /// The `config` argument, else the normal phux config path.
 fn config_path(args: &Value) -> PathBuf {
     str_arg(args, "config").map_or_else(config_loader::config_path, PathBuf::from)
 }
 
-pub(crate) async fn action(args: &Value) -> Result<Value, ToolError> {
+async fn action(args: &Value) -> Result<Value, ToolError> {
     let request = phux_plugin::PluginActionRequest {
         plugin_id: required_str(args, "plugin_id")?.to_owned(),
         action_id: required_str(args, "action_id")?.to_owned(),
@@ -29,7 +39,7 @@ pub(crate) async fn action(args: &Value) -> Result<Value, ToolError> {
         .map_err(|err| ToolError::new(format!("failed to serialize plugin action: {err}")))
 }
 
-pub(crate) fn action_schema() -> Value {
+fn action_schema() -> Value {
     json!({
         "name": "phux_plugin_action",
         "description": "Execute one action declared by a configured phux plugin manifest. Runs argv directly from the plugin root; no hidden shell expansion.",
@@ -47,7 +57,7 @@ pub(crate) fn action_schema() -> Value {
     })
 }
 
-pub(crate) fn profile(args: &Value) -> Result<Value, ToolError> {
+fn profile(args: &Value) -> Result<Value, ToolError> {
     let plugin_filter = str_arg(args, "plugin_id");
     let profile_filter = str_arg(args, "profile_id");
     let config_path = config_path(args);
@@ -82,7 +92,7 @@ pub(crate) fn profile(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({ "profiles": profiles, "count": profiles.len() }))
 }
 
-pub(crate) fn profile_schema() -> Value {
+fn profile_schema() -> Value {
     json!({
         "name": "phux_plugin_profile",
         "description": "List configured plugin profiles: the manifest-level agents, actions, events, and pane roles that compose an agent bench.",

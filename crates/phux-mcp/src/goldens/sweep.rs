@@ -61,7 +61,13 @@ fn sweep_args(tool: &str) -> Value {
         }
         // Coordination tools never take `socket`, so the sweep's dead socket
         // is refused before the work store is touched.
-        coord if crate::coord_tools::owns(coord) => json!({}),
+        coord
+            if crate::coord_tools::SPECS
+                .iter()
+                .any(|spec| spec.name == coord) =>
+        {
+            json!({})
+        }
         other => panic!("{other} is in-process but has no sweep arguments"),
     };
     args["socket"] = json!(dead);

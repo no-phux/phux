@@ -95,7 +95,7 @@ async fn successful_resource_inspection_allows_refused_metadata_reads() {
         .state(state)
         .refuse_metadata(ErrorCode::PermissionDenied, "permission denied");
     let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-    let document = crate::resource_tools::call(
+    let document = crate::tools::call_registered(
         "phux_resource_show",
         &json!({"target":"@7","socket":socket}),
     )

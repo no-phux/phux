@@ -17,66 +17,76 @@ use crate::tools::{ToolError, required_str, strict_object};
 const LOOP: &str = "Loop: phux_documents to find the surface and its `control`, phux_surface_snapshot to see it, act, then snapshot again to confirm.";
 const AUTHORITY: &str = "Needs a document whose `control` (from phux_documents) is page, window or display, and the owner socket or an `input@<control>` grant. Not read-only, and destructive: input can do anything the page or desktop allows.";
 
-pub(super) fn schemas() -> Vec<Value> {
-    let target = || json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource (its surface or tree), by the `@N` id phux_documents lists." });
-    let text = |what: &str| json!({ "type": "string", "minLength": 1, "maxLength": MAX_DOCUMENT_INPUT_TEXT, "description": what });
-    let pixel = |what: &str| json!({ "type": "integer", "minimum": 0, "maximum": u32::MAX, "description": what });
-    let delta = |what: &str| json!({ "type": "integer", "minimum": i32::MIN, "maximum": i32::MAX, "description": what });
-    let keys: Vec<&str> = DocumentKey::ALL.iter().map(|key| key.name()).collect();
-    let entry = |name: &str, what: &str, mut props: Value, required: &[&str]| {
-        props["target"] = target();
-        props["socket"] = string_schema();
-        let mut all = vec!["target"];
-        all.extend(required);
-        schema(
-            name,
-            &format!("{what} {LOOP} {AUTHORITY} Returns `sent` with the document id."),
-            props,
-            &all,
-        )
-    };
-    vec![
-        entry(
-            "phux_document_navigate",
-            "Load a URL in a mirrored browser page (`control` page), as `phux agent page navigate`.",
-            json!({ "url": text("The URL to load.") }),
-            &["url"],
-        ),
-        entry(
-            "phux_document_click",
-            "Click a document at a point of its surface image, in that image's pixels: read `x` and `y` off the PNG phux_surface_snapshot returns. As `phux agent page click`.",
-            json!({ "x": pixel("Pixels from the image's left edge."), "y": pixel("Pixels from the image's top edge.") }),
-            &["x", "y"],
-        ),
-        entry(
-            "phux_document_type",
-            "Insert text at the document's focus (click a field first), as `phux agent page type`.",
-            json!({ "text": text("The text to insert.") }),
-            &["text"],
-        ),
-        entry(
-            "phux_document_key",
-            "Press and release one named key in the document, as `phux agent page key`.",
-            json!({ "key": { "type": "string", "enum": keys } }),
-            &["key"],
-        ),
-        entry(
-            "phux_document_scroll",
-            "Scroll the document by a delta in surface image pixels, as `phux agent page scroll`.",
-            json!({ "dx": delta("Horizontal pixels; positive scrolls right."), "dy": delta("Vertical pixels; positive scrolls down.") }),
-            &["dx", "dy"],
-        ),
-    ]
+/// One input tool's entry: `props` plus the `target` and `socket` every
+/// intent takes, and the shared loop and authority guidance.
+fn entry(name: &str, what: &str, mut props: Value, required: &[&str]) -> Value {
+    props["target"] = json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": "The document resource (its surface or tree), by the `@N` id phux_documents lists." });
+    props["socket"] = string_schema();
+    let mut all = vec!["target"];
+    all.extend(required);
+    schema(
+        name,
+        &format!("{what} {LOOP} {AUTHORITY} Returns `sent` with the document id."),
+        props,
+        &all,
+    )
 }
 
-pub(super) fn owns(name: &str) -> bool {
-    matches!(
-        name,
-        "phux_document_navigate"
-            | "phux_document_click"
-            | "phux_document_type"
-            | "phux_document_key"
-            | "phux_document_scroll"
+fn text(what: &str) -> Value {
+    json!({ "type": "string", "minLength": 1, "maxLength": MAX_DOCUMENT_INPUT_TEXT, "description": what })
+}
+
+fn pixel(what: &str) -> Value {
+    json!({ "type": "integer", "minimum": 0, "maximum": u32::MAX, "description": what })
+}
+
+fn delta(what: &str) -> Value {
+    json!({ "type": "integer", "minimum": i32::MIN, "maximum": i32::MAX, "description": what })
+}
+
+pub(super) fn navigate_schema() -> Value {
+    entry(
+        "phux_document_navigate",
+        "Load a URL in a mirrored browser page (`control` page), as `phux agent page navigate`.",
+        json!({ "url": text("The URL to load.") }),
+        &["url"],
+    )
+}
+
+pub(super) fn click_schema() -> Value {
+    entry(
+        "phux_document_click",
+        "Click a document at a point of its surface image, in that image's pixels: read `x` and `y` off the PNG phux_surface_snapshot returns. As `phux agent page click`.",
+        json!({ "x": pixel("Pixels from the image's left edge."), "y": pixel("Pixels from the image's top edge.") }),
+        &["x", "y"],
+    )
+}
+
+pub(super) fn type_schema() -> Value {
+    entry(
+        "phux_document_type",
+        "Insert text at the document's focus (click a field first), as `phux agent page type`.",
+        json!({ "text": text("The text to insert.") }),
+        &["text"],
+    )
+}
+
+pub(super) fn key_schema() -> Value {
+    let keys: Vec<&str> = DocumentKey::ALL.iter().map(|key| key.name()).collect();
+    entry(
+        "phux_document_key",
+        "Press and release one named key in the document, as `phux agent page key`.",
+        json!({ "key": { "type": "string", "enum": keys } }),
+        &["key"],
+    )
+}
+
+pub(super) fn scroll_schema() -> Value {
+    entry(
+        "phux_document_scroll",
+        "Scroll the document by a delta in surface image pixels, as `phux agent page scroll`.",
+        json!({ "dx": delta("Horizontal pixels; positive scrolls right."), "dy": delta("Vertical pixels; positive scrolls down.") }),
+        &["dx", "dy"],
     )
 }
 

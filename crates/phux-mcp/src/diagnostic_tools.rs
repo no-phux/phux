@@ -19,7 +19,9 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::{CliAdapter, DEFAULT_CALL_TIMEOUT, push_socket};
 use crate::cli_tools::schema;
-use crate::tools::{ToolError, strict_object};
+#[cfg(test)]
+use crate::tools::call_with_adapter;
+use crate::tools::{ToolError, ToolSpec, strict_object};
 
 /// The exit `status` and `doctor` spend on a result (see the module docs).
 const EXIT_ANSWERED: i32 = 1;
@@ -28,40 +30,18 @@ const EXIT_ANSWERED: i32 = 1;
 const SOCKET_DESC: &str = "Override the UDS path of the server to diagnose. \
     Defaults to PHUX_SOCKET or the daemon default.";
 
-/// Every schema in this family, in catalog order.
-#[must_use]
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![status_schema(), doctor_schema(), whoami_schema()]
-}
-
-/// Whether `name` belongs to this family (used by `tools/call` dispatch).
-#[must_use]
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_status" | "phux_doctor" | "phux_whoami")
-}
-
-/// Dispatch one diagnostic call.
-///
-/// # Errors
-///
-/// Returns [`ToolError`] for an unknown name, a malformed argument, or a
-/// canonical-CLI failure that produced no document.
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    call_with_adapter(name, args, &CliAdapter::for_residue(name)?).await
-}
-
-async fn call_with_adapter(
-    name: &str,
-    args: &Value,
-    adapter: &CliAdapter,
-) -> Result<Value, ToolError> {
-    match name {
-        "phux_status" => run_diagnostic("status", args, adapter).await,
-        "phux_doctor" => run_diagnostic("doctor", args, adapter).await,
-        "phux_whoami" => run_whoami(args, adapter).await,
-        other => Err(ToolError::new(format!("unknown diagnostic tool: {other}"))),
-    }
-}
+/// The diagnostic tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::cli("phux_status", status_schema, |args, adapter| {
+        Box::pin(run_diagnostic("status", args, adapter))
+    }),
+    ToolSpec::cli("phux_doctor", doctor_schema, |args, adapter| {
+        Box::pin(run_diagnostic("doctor", args, adapter))
+    }),
+    ToolSpec::cli("phux_whoami", whoami_schema, |args, adapter| {
+        Box::pin(run_whoami(args, adapter))
+    }),
+];
 
 fn status_schema() -> Value {
     schema(

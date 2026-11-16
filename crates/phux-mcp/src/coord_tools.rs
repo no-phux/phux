@@ -17,27 +17,31 @@ use phux_work::{
 };
 use serde_json::{Value, json};
 
-use crate::tools::{ToolError, strict_object};
+use crate::tools::{ToolError, ToolFuture, ToolSpec, strict_object};
 
 mod schemas;
-pub(crate) use schemas::schemas;
 
 /// Schema of every coordination document.
 const SCHEMA: &str = "phux.coord/v1";
 
-/// Whether `name` belongs to this family.
-#[must_use]
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(
-        name,
-        "phux_mail_send"
-            | "phux_mail_read"
-            | "phux_mail_ack"
-            | "phux_claim_take"
-            | "phux_claim_renew"
-            | "phux_claim_release"
-            | "phux_claim_list"
-    )
+/// The coordination tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::by_name("phux_mail_send", schemas::mail_send_schema, boxed_call),
+    ToolSpec::by_name("phux_mail_read", schemas::mail_read_schema, boxed_call),
+    ToolSpec::by_name("phux_mail_ack", schemas::mail_ack_schema, boxed_call),
+    ToolSpec::by_name("phux_claim_take", schemas::claim_take_schema, boxed_call),
+    ToolSpec::by_name("phux_claim_renew", schemas::claim_renew_schema, boxed_call),
+    ToolSpec::by_name(
+        "phux_claim_release",
+        schemas::claim_release_schema,
+        boxed_call,
+    ),
+    ToolSpec::by_name("phux_claim_list", schemas::claim_list_schema, boxed_call),
+];
+
+/// [`call`], boxed for the registry.
+fn boxed_call<'a>(name: &'static str, args: &'a Value) -> ToolFuture<'a> {
+    Box::pin(call(name, args))
 }
 
 /// Dispatch one coordination call.
@@ -46,7 +50,7 @@ pub(crate) fn owns(name: &str) -> bool {
 ///
 /// An unknown name, a malformed argument, or the store's refusal, carrying
 /// the CLI's `phux.coord/v1` error document.
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
+async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     let operation = Operation::parse(name, args)?;
     let client = store()?;
     tokio::task::spawn_blocking(move || operation.run(&client))
@@ -503,10 +507,10 @@ mod tests {
     }
 
     #[test]
-    fn every_schema_is_owned_and_dispatched() {
-        for schema in schemas() {
-            let name = schema["name"].as_str().unwrap();
-            assert!(owns(name), "{name}");
+    fn every_spec_is_parsed() {
+        for spec in SPECS {
+            let name = spec.name;
+            assert_eq!((spec.schema)()["name"], name);
             assert!(
                 !matches!(parse(name, &json!({})), Err(err) if err.to_string().contains("unknown coordination tool")),
                 "{name}"

@@ -26,7 +26,9 @@ mod tests;
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{CliAdapter, bounded_string, bounded_strings};
-use crate::tools::ToolError;
+#[cfg(test)]
+use crate::tools::call_with_adapter;
+use crate::tools::{ToolError, ToolSpec};
 
 /// Lifecycle states a `phux.agent/v1` record can declare (L3 §3.7).
 const DECLARED_STATES: &[&str] = &["unknown", "idle", "working", "blocked", "done"];
@@ -63,84 +65,71 @@ fn target_schema(description: &str) -> Value {
     json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": description })
 }
 
-/// Every schema in this family, in catalog order.
-#[must_use]
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![
-        reads::list_schema(),
-        reads::show_schema(),
-        reads::explain_schema(),
-        identity::set_schema(),
-        identity::clear_schema(),
-        turn_driving::wait_schema(),
-        turn_driving::send_keys_schema(),
-        turn_driving::prompt_schema(),
-        turn_driving::answer_schema(),
-        turn_driving::start_schema(),
-        resource_sessions::session_open_schema(),
-        resource_sessions::session_close_schema(),
-        resource_sessions::emit_schema(),
-        resource_sessions::log_schema(),
-    ]
-}
-
-/// Whether `name` belongs to this family (used by `tools/call` dispatch).
-#[must_use]
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(
-        name,
-        "phux_agent_list"
-            | "phux_agent_show"
-            | "phux_agent_explain"
-            | "phux_agent_set"
-            | "phux_agent_clear"
-            | "phux_agent_wait"
-            | "phux_agent_send_keys"
-            | "phux_agent_prompt"
-            | "phux_agent_answer"
-            | "phux_agent_start"
-            | "phux_agent_session_open"
-            | "phux_agent_session_close"
-            | "phux_agent_emit"
-            | "phux_agent_log"
-    )
-}
-
-/// Dispatch one `phux_agent_*` call.
-///
-/// # Errors
-///
-/// Returns [`ToolError`] for an unknown name, a malformed argument, or a
-/// canonical-CLI failure.
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_agent_set" => identity::set(args).await,
-        "phux_agent_clear" => identity::clear(args).await,
-        residue => call_with_adapter(residue, args, &CliAdapter::for_residue(residue)?).await,
-    }
-}
-
-async fn call_with_adapter(
-    name: &str,
-    args: &Value,
-    adapter: &CliAdapter,
-) -> Result<Value, ToolError> {
-    match name {
-        "phux_agent_list" => reads::list(args, adapter).await,
-        "phux_agent_show" => reads::projection(args, "show", adapter).await,
-        "phux_agent_explain" => reads::projection(args, "explain", adapter).await,
-        "phux_agent_wait" => turn_driving::wait(args, adapter).await,
-        "phux_agent_send_keys" => turn_driving::send_keys(args, adapter).await,
-        "phux_agent_prompt" => turn_driving::prompt(args, adapter).await,
-        "phux_agent_answer" => turn_driving::answer(args, adapter).await,
-        "phux_agent_start" => turn_driving::start(args, adapter).await,
-        "phux_agent_session_open" => resource_sessions::session_open(args, adapter).await,
-        "phux_agent_session_close" => resource_sessions::session_close(args, adapter).await,
-        "phux_agent_emit" => resource_sessions::emit(args, adapter).await,
-        "phux_agent_log" => resource_sessions::log(args, adapter).await,
-        other => Err(ToolError::new(format!("unknown agent tool: {other}"))),
-    }
-}
+/// The agent tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::cli("phux_agent_list", reads::list_schema, |args, adapter| {
+        Box::pin(reads::list(args, adapter))
+    }),
+    ToolSpec::cli("phux_agent_show", reads::show_schema, |args, adapter| {
+        Box::pin(reads::projection(args, "show", adapter))
+    }),
+    ToolSpec::cli(
+        "phux_agent_explain",
+        reads::explain_schema,
+        |args, adapter| Box::pin(reads::projection(args, "explain", adapter)),
+    ),
+    ToolSpec::in_process("phux_agent_set", identity::set_schema, |args| {
+        Box::pin(identity::set(args))
+    }),
+    ToolSpec::in_process("phux_agent_clear", identity::clear_schema, |args| {
+        Box::pin(identity::clear(args))
+    }),
+    ToolSpec::cli(
+        "phux_agent_wait",
+        turn_driving::wait_schema,
+        |args, adapter| Box::pin(turn_driving::wait(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_send_keys",
+        turn_driving::send_keys_schema,
+        |args, adapter| Box::pin(turn_driving::send_keys(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_prompt",
+        turn_driving::prompt_schema,
+        |args, adapter| Box::pin(turn_driving::prompt(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_answer",
+        turn_driving::answer_schema,
+        |args, adapter| Box::pin(turn_driving::answer(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_start",
+        turn_driving::start_schema,
+        |args, adapter| Box::pin(turn_driving::start(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_session_open",
+        resource_sessions::session_open_schema,
+        |args, adapter| Box::pin(resource_sessions::session_open(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_session_close",
+        resource_sessions::session_close_schema,
+        |args, adapter| Box::pin(resource_sessions::session_close(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_emit",
+        resource_sessions::emit_schema,
+        |args, adapter| Box::pin(resource_sessions::emit(args, adapter)),
+    ),
+    ToolSpec::cli(
+        "phux_agent_log",
+        resource_sessions::log_schema,
+        |args, adapter| Box::pin(resource_sessions::log(args, adapter)),
+    ),
+];
 
 // -----------------------------------------------------------------------------
 // Shared helpers.

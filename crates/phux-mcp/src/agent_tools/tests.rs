@@ -49,7 +49,7 @@ pub(super) async fn assert_argv(
 /// discriminant, and the read and write shapes never merge.
 #[test]
 fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
-    let schemas = schemas();
+    let schemas: Vec<Value> = SPECS.iter().map(|spec| (spec.schema)()).collect();
     let names: Vec<&str> = schemas
         .iter()
         .filter_map(|schema| schema["name"].as_str())
@@ -60,7 +60,6 @@ fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
             "{} still multiplexes on `action`",
             schema["name"],
         );
-        assert!(owns(schema["name"].as_str().unwrap()));
     }
     let props = |name: &str| schemas[names.iter().position(|n| *n == name).unwrap()].clone();
     for read in ["phux_agent_list", "phux_agent_show", "phux_agent_explain"] {
