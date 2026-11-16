@@ -381,13 +381,11 @@ fn runtime_failures_and_unknown_areas_are_shown_without_an_invalid_diff_request(
     open(&mut rt);
     let id = request(&client, CheckoutRequest::Status);
     client
-        .feed(FrameKind::CommandResult {
-            request_id: id,
-            result: CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "denied".into(),
-            },
-        })
+        .feed(phux_wire_fixtures::command_err(
+            id,
+            ErrorCode::PermissionDenied,
+            "denied",
+        ))
         .expect("failed checkout");
     poll(&mut rt);
     assert!(

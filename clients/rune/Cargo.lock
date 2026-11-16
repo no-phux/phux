@@ -2716,6 +2716,7 @@ dependencies = [
  "phux-config-core",
  "phux-perf",
  "phux-protocol",
+ "phux-wire-fixtures",
  "png 0.17.16",
  "pollster",
  "qrcode",
@@ -2739,6 +2740,14 @@ version = "0.1.0"
 dependencies = [
  "phux-rune",
  "serde_json",
+]
+
+[[package]]
+name = "phux-wire-fixtures"
+version = "0.154.0"
+dependencies = [
+ "bytes",
+ "phux-protocol",
 ]
 
 [[package]]
