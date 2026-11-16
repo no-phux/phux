@@ -69,6 +69,18 @@ async fn local_pair() -> (TcpStream, TcpStream) {
     (app, listener.accept().await.unwrap().0)
 }
 
+/// A local connection relayed over forward `id`: the application's end and
+/// the relay task.
+async fn relayed(
+    client: &Arc<Client>,
+    id: u64,
+) -> (TcpStream, tokio::task::JoinHandle<Result<(), ForwardError>>) {
+    let (app, local) = local_pair().await;
+    let client = Arc::clone(client);
+    let relay = tokio::spawn(async move { forward::relay(&client, id, local).await });
+    (app, relay)
+}
+
 #[test]
 fn a_local_connection_is_carried_both_ways_and_ends_when_both_sides_have() {
     run_local(async {
@@ -88,11 +100,7 @@ fn a_local_connection_is_carried_both_ways_and_ends_when_both_sides_have() {
         let id = forward::open(&client, "localhost", echo().await)
             .await
             .unwrap();
-        let (mut app, local) = local_pair().await;
-        let relay = {
-            let client = Arc::clone(&client);
-            tokio::spawn(async move { forward::relay(&client, id, local).await })
-        };
+        let (mut app, relay) = relayed(&client, id).await;
         // Several chunks each way, written while the echo comes back. The
         // echo ends only after it reads our end, and the relay only after
         // both, so reading to the end proves each half-close crossed.
@@ -138,11 +146,7 @@ fn a_dropped_connection_ends_the_local_side_and_a_reconnect_serves_new_ones() {
         let port = echo().await;
 
         let id = forward::open(&client, "127.0.0.1", port).await.unwrap();
-        let (mut app, local) = local_pair().await;
-        let relay = {
-            let client = Arc::clone(&client);
-            tokio::spawn(async move { forward::relay(&client, id, local).await })
-        };
+        let (mut app, relay) = relayed(&client, id).await;
         app.write_all(b"ping").await.unwrap();
         let mut pong = [0; 4];
         app.read_exact(&mut pong).await.unwrap();
@@ -168,11 +172,7 @@ fn a_dropped_connection_ends_the_local_side_and_a_reconnect_serves_new_ones() {
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         wait_for_status(&client, Status::Attached).await;
         let id = forward::open(&client, "127.0.0.1", port).await.unwrap();
-        let (mut app, local) = local_pair().await;
-        let relay = {
-            let client = Arc::clone(&client);
-            tokio::spawn(async move { forward::relay(&client, id, local).await })
-        };
+        let (mut app, relay) = relayed(&client, id).await;
         app.write_all(b"back").await.unwrap();
         app.shutdown().await.unwrap();
         let mut back = Vec::new();

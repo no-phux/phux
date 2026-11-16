@@ -32,11 +32,8 @@ async fn drive(client: &Client, run: &mut Sequencer, first: Option<Report>) -> R
 #[test]
 fn a_plan_applies_and_undoes_through_the_runtime_lane() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let client = Runtime::connect(Target::uds(&socket), options()).unwrap();
-        wait_for_status(&client, Status::Attached).await;
+        let live = Live::start();
+        let client = live.attached(options()).await;
         wait_until("the organization seed", || {
             let replica = client.organization();
             replica.authority().is_some() && !replica.resources().is_empty()
@@ -100,7 +97,6 @@ fn a_plan_applies_and_undoes_through_the_runtime_lane() {
         })
         .await;
         client.close();
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }

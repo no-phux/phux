@@ -15,11 +15,8 @@ async fn declaration(client: &Client, terminal: &ResourceId, value: Option<&[u8]
 #[test]
 fn browsing_discovers_agent_metadata_recovers_on_reconnect_and_hears_retraction() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let writer = Runtime::connect(Target::uds(&socket), options()).unwrap();
-        wait_for_status(&writer, Status::Attached).await;
+        let live = Live::start();
+        let writer = live.attached(options()).await;
         let terminal = writer.topology().unwrap().panes[0].terminal_id.clone();
         declaration(&writer, &terminal, None).await;
         let record = br#"{"name":"roster-test","state":"working"}"#;
@@ -33,7 +30,7 @@ fn browsing_discovers_agent_metadata_recovers_on_reconnect_and_hears_retraction(
 
         let mut browsing = options();
         browsing.control.attach = None;
-        let reader = Runtime::connect(Target::uds(&socket), browsing).unwrap();
+        let reader = Runtime::connect(Target::uds(&live.socket), browsing).unwrap();
         declaration(&reader, &terminal, Some(record)).await;
         reader.resync();
         declaration(&reader, &terminal, Some(record)).await;
@@ -45,8 +42,7 @@ fn browsing_discovers_agent_metadata_recovers_on_reconnect_and_hears_retraction(
         declaration(&reader, &terminal, None).await;
         reader.close();
         writer.close();
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }
 
@@ -65,11 +61,8 @@ async fn asked_level(client: &Client, terminal: &ResourceId, level: bool) {
 #[test]
 fn a_question_missed_before_connecting_is_recovered_from_the_asked_flag() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let writer = Runtime::connect(Target::uds(&socket), options()).unwrap();
-        wait_for_status(&writer, Status::Attached).await;
+        let live = Live::start();
+        let writer = live.attached(options()).await;
         let terminal = writer.topology().unwrap().panes[0].terminal_id.clone();
         asked_level(&writer, &terminal, false).await;
         let _ = writer.send_command(phux_protocol::wire::frame::Command::ReportAsked {
@@ -85,13 +78,12 @@ fn a_question_missed_before_connecting_is_recovered_from_the_asked_flag() {
         // and says so again after a reconnect.
         let mut browsing = options();
         browsing.control.attach = None;
-        let reader = Runtime::connect(Target::uds(&socket), browsing).unwrap();
+        let reader = Runtime::connect(Target::uds(&live.socket), browsing).unwrap();
         asked_level(&reader, &terminal, true).await;
         reader.resync();
         asked_level(&reader, &terminal, true).await;
         reader.close();
         writer.close();
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }

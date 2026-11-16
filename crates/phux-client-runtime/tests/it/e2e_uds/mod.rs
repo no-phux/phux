@@ -28,6 +28,8 @@ use tokio::net::{UnixListener, UnixStream};
 const DEADLINE: Duration = Duration::from_secs(20);
 
 mod approvals_live;
+mod fixtures;
+use fixtures::*;
 #[cfg(feature = "engine")]
 mod geometry_live;
 #[cfg(feature = "engine")]
@@ -234,24 +236,6 @@ async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
     }
 }
 
-/// Spawn `/bin/cat` in group 1 from a raw `controller` connection, as
-/// `request_id`; returns the new pane.
-async fn controller_spawn_cat(controller: &mut UnixStream, request_id: u32) -> ResourceId {
-    let spawn = Spawn {
-        initial_size: Some((40, 8)),
-        ..Spawn::command(&["/bin/cat"])
-    };
-    send_frame(controller, &spawn.frame(request_id)).await;
-    recv_until(controller, |_, frame| match frame {
-        FrameKind::ResourceSpawned {
-            request_id: id,
-            result: SpawnResult::Ok(terminal),
-        } if id == request_id => Some(terminal),
-        _ => None,
-    })
-    .await
-}
-
 /// Counts wakes; the runtime must never call it while holding a lock, so
 /// the callback may call back into the client.
 struct Wakes {
@@ -267,10 +251,8 @@ impl Listener for Wakes {
 #[test]
 fn attaches_spawns_types_and_observes_the_published_frame() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        let live = Live::start();
+        let client = Runtime::connect(Target::uds(&live.socket), options()).expect("connect");
         let wakes = Arc::new(Wakes {
             count: AtomicUsize::new(0),
         });
@@ -311,8 +293,7 @@ fn attaches_spawns_types_and_observes_the_published_frame() {
 
         client.close();
         wait_for_status(&client, Status::Closed).await;
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }
 
@@ -515,57 +496,6 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
     });
 }
 
-/// A Unix-socket relay to `server` that can turn every connection it has
-/// already accepted into a black hole: still open, never answering, the
-/// half-open link a dead NAT mapping or a stale USB forward leaves behind.
-/// Connections accepted after the freeze relay normally.
-fn freezable_relay(server: std::path::PathBuf, listen: &std::path::Path) -> Arc<AtomicUsize> {
-    // Connections with an index below this value are black-holed.
-    let frozen_below = Arc::new(AtomicUsize::new(0));
-    let listener = UnixListener::bind(listen).unwrap();
-    let freeze = Arc::clone(&frozen_below);
-    tokio::task::spawn_local(async move {
-        let mut index = 0usize;
-        while let Ok((client, _)) = listener.accept().await {
-            let Ok(upstream) = UnixStream::connect(&server).await else {
-                continue;
-            };
-            let this = index;
-            index += 1;
-            let (client_read, client_write) = client.into_split();
-            let (upstream_read, upstream_write) = upstream.into_split();
-            for (mut from, mut to) in [
-                (
-                    Box::new(client_read) as Box<dyn tokio::io::AsyncRead + Unpin>,
-                    Box::new(upstream_write) as Box<dyn tokio::io::AsyncWrite + Unpin>,
-                ),
-                (Box::new(upstream_read) as _, Box::new(client_write) as _),
-            ] {
-                let freeze = Arc::clone(&freeze);
-                tokio::task::spawn_local(async move {
-                    let mut buf = vec![0u8; 16 * 1024];
-                    loop {
-                        let Ok(n) = from.read(&mut buf).await else {
-                            return;
-                        };
-                        if n == 0 {
-                            return;
-                        }
-                        // Frozen: swallow the bytes and keep the socket open.
-                        if this < freeze.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        if to.write_all(&buf[..n]).await.is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-        }
-    });
-    frozen_below
-}
-
 /// An acknowledged line submitted into a half-open connection resolves
 /// promptly (phux-8u7ii): submitting it probes the link, the silent link is
 /// dropped within the probe timeout instead of the 30-second idle timeout,
@@ -681,38 +611,6 @@ fn a_reused_terminal_id_publishes_the_new_incarnation_after_restart() {
         drop(shutdown);
         server.await.unwrap().unwrap();
     });
-}
-
-/// A listener that answers every WebSocket upgrade with 401: the pairing
-/// gate refusing a token, which no retry can change. Returns the port and
-/// the count of connections it accepted.
-async fn refuse_with_401() -> (u16, Arc<AtomicUsize>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&accepted);
-    tokio::task::spawn_local(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            counter.fetch_add(1, Ordering::SeqCst);
-            // Read the whole upgrade request before answering, so the
-            // client never sees a reset instead of the status line.
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                match stream.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => request.extend_from_slice(&buf[..read]),
-                }
-            }
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await;
-            drop(stream);
-        }
-    });
-    (port, accepted)
 }
 
 #[test]
