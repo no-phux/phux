@@ -130,13 +130,26 @@ session (or `--session NAME`). It never creates a session on its own.
   what it is doing: a declared agent's name and state (working pulses,
   blocked or asking needs you, done waits until you look), a running
   command, a long command that finished or failed while you were elsewhere,
-  and a bell. Session headers count what needs you; ⌘J jumps to the next.
-  ⌘B folds the sidebar.
+  and a bell. Every session has a separate header with its resource count,
+  disclosure arrow and visible **×** close button, including empty sessions.
+  Closing asks before ending the named session and its running work; it does
+  not first switch away from the session you are using. Click a header to
+  open it, double-click its name to rename it, or drag its name to reorder.
+  Drag a terminal or document row onto another session's header or resource
+  rows to move it there; an empty or collapsed session accepts drops too.
+  Dragging a tab onto a session moves its members together. Moves stay on the
+  same machine and take effect after the server accepts them; dropping outside
+  the session list or cancelling leaves them alone. Disclosure is independent
+  of selection, so navigating does not unfold sessions you have tucked away.
+  The machine picker and Inbox share the traffic-light row; machine identity
+  stays in its labelled dot rather than a window-wide colour strip.
+  Session badges count what needs you; ⌘J jumps to the next. ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
   action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
   worth learning first, each row runnable, with every chord one row further;
   the first time a window connects, a tip offers it. Hovering **+ Terminal**
-  or **+ Session** at the foot of the sidebar shows the keys that do the same.
+  or **+ Session** at the foot of the sidebar shows their keys in a tooltip,
+  without shifting either button.
 - **Changes.** **Show Changes** in the palette opens what Git says changed
   in the focused terminal's checkout: the branch, each staged, unstaged and
   untracked file, and the picked file's diff. ↑ and ↓ pick a file, `r` or
