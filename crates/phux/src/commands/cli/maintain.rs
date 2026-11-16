@@ -1,6 +1,6 @@
 //! The `Maintain` verbs that inspect and update this install.
 
-use crate::commands::{JsonOpt, audit::AuditAction, report::ReportAction, update};
+use crate::commands::{JsonOpt, RemoteOpt, audit::AuditAction, report::ReportAction, update};
 use usage::Args;
 
 /// Report the running server: pid, uptime, clients
@@ -118,11 +118,17 @@ pub(crate) struct UpgradeArgs {
 /// It ends with "What works here": agent status, notifications, remote
 /// reach, file transfer, restore after restart and the agent skill, each
 /// with the reason and the fix. `--json` carries it as `checklist`.
+/// `--remote HOST` asks that machine's server for its list instead.
 #[derive(Debug, Args)]
 pub(crate) struct DoctorArgs {
     /// Emit a stable JSON document instead of human text.
     #[usage(long)]
     pub(crate) json: bool,
+
+    /// Show another machine's "What works here" instead, as its server
+    /// reports it, with each fix as a command to run from here.
+    #[usage(flatten)]
+    pub(crate) remote: RemoteOpt,
 }
 
 /// Show where the logs live, or tail one

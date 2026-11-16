@@ -5,6 +5,7 @@
 //! forced onto the secure path with `PHUX_WS_SECURE=1`, so the `--remote`
 //! dial presents an enrolled certificate and a bearer token minted by `phux
 //! pair`, and the server reports the certificate's credential back.
+//! `phux doctor --remote` rides the same paired dial.
 //!
 //! Hermetic, like `remote_session_verbs_e2e`: private config, state, and
 //! runtime dirs; no ssh and no overlay detection.
@@ -229,4 +230,46 @@ fn a_paired_remote_client_survives_an_upgrade() {
     let after = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(after["credential_id"], before["credential_id"], "{after}");
     assert_eq!(after["auth_route"], "bearer-quic", "{after}");
+}
+
+/// `phux doctor --remote` reads the same list over a real paired QUIC dial,
+/// and shows every fix as a command run from here.
+#[test]
+#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
+fn doctor_remote_shows_the_hosts_checklist() {
+    let dir = TempDir::new().expect("tempdir");
+    let (_server, enrolled, socket, _quic) = serve_paired_remote(dir.path());
+    // Exits 1 when a local check fails; the document is whole either way.
+    let local = json_doc(&phux(
+        dir.path(),
+        &["--socket", &socket, "doctor", "--json"],
+    ));
+    let doc = json_doc(&await_success(
+        dir.path(),
+        &["doctor", "--remote", REMOTE, "--json"],
+        &enrolled.env(),
+    ));
+    assert_eq!(doc["host"], REMOTE, "{doc}");
+    let ids = |doc: &serde_json::Value| {
+        doc["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&doc["checklist"]), ids(&local["checklist"]), "{doc}");
+
+    let prose = await_success(dir.path(), &["doctor", "--remote", REMOTE], &enrolled.env());
+    let text = String::from_utf8_lossy(&prose.stdout);
+    assert!(text.contains(&format!("What works on {REMOTE}")), "{text}");
+    for fix in text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("fix: "))
+    {
+        assert!(
+            fix.starts_with(&format!("phux new --remote '{REMOTE}' -- sh -lc ")),
+            "{text}"
+        );
+    }
 }

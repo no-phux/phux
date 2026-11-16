@@ -2818,16 +2818,31 @@ server is a normal state and not a broken install.
 
 It ends with "What works here": agent status, notifications, remote reach, file
 transfer, restore after restart and the agent skill, each with the reason and
-the fix. `--json` carries it as `checklist`.
+the fix. `--json` carries it as `checklist`. `--remote HOST` asks that machine's
+server for its list instead.
 
-Usage: phux doctor [--json]
+Usage: phux doctor [--json] [--remote <[USER@]HOST[:PORT]>]
 
 Flags:
-      --json           Emit a stable JSON document instead of human text.
-  -h, --help           Print help
+      --json                      Emit a stable JSON document instead of human
+                                  text.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux download`
