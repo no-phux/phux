@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use phux_relay::{BoundRelay, RelayConfig, RelayRuntime};
+use phux_dial::relay::{BoundRelay, RelayConfig, RelayRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -16,7 +16,7 @@ pub struct RelayHarness {
     /// Resolved relay listen address (including an OS-assigned port).
     pub addr: SocketAddr,
     stop: oneshot::Sender<()>,
-    task: JoinHandle<Result<(), phux_relay::RelayError>>,
+    task: JoinHandle<Result<(), phux_dial::relay::RelayError>>,
 }
 
 impl RelayHarness {

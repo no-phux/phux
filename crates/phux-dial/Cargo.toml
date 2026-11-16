@@ -37,6 +37,9 @@ quictun.workspace = true
 # The `cert` and `secret_file` modules, for the crates that terminate TLS
 # (server, relay).
 provision = ["quictun/provision"]
+# The `relay` module: phux's reference relay (`phux relay`). Off by default:
+# the client and mobile FFI builds link the dialer without quictun's relay.
+relay = ["provision", "quictun/relay"]
 # Test-only `testing::DropProxy` UDP impairment; off in shipped builds.
 testing = ["quictun/testing"]
 
@@ -45,5 +48,12 @@ testing = ["quictun/testing"]
 tempfile.workspace = true
 # The CA-pinning tests issue their own chains.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
-# Self dev-dependency so crate-scoped test runs build the `cert` module.
-phux-dial = { path = ".", features = ["provision", "testing"] }
+# Self dev-dependency so crate-scoped test runs build the `cert` and `relay`
+# modules.
+phux-dial = { path = ".", features = ["provision", "relay", "testing"] }
+
+# The relay's admission, routing and tunnel lifecycle contracts, over the
+# production relay runtime and this crate's dialers.
+[[test]]
+name = "relay_contract"
+required-features = ["relay", "testing"]

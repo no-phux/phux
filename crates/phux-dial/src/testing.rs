@@ -2,7 +2,7 @@
 //!
 //! [`DropProxy`] is `quictun`'s: it sits between a QUIC client and server on
 //! loopback and can stop delivering the server's datagrams, which is how the
-//! send-window tests in `phux-relay` and `phux-server` stall a path.
+//! send-window tests in the relay contract and `phux-server` stall a path.
 
 #[cfg(test)]
 use std::sync::Arc;

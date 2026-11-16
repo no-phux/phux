@@ -51,7 +51,7 @@ uniffi = "0.32"
 # The live QUIC and relay tests run the real server and relay.
 phux-server.workspace = true
 phux-server-testkit.workspace = true
-phux-relay.workspace = true
+phux-dial = { workspace = true, features = ["relay"] }
 phux-config.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

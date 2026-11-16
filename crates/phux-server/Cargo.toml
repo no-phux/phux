@@ -113,7 +113,7 @@ x509-parser = "0.18"
 # feature is omitted because it would enable `tracing/log` workspace-wide.
 quinn.workspace = true
 # Shared dial/TLS stack for hub links; `provision` shares the self-signed
-# certificate generator with phux-relay.
+# certificate generator with the relay.
 phux-dial = { workspace = true, features = ["provision"] }
 # WebTransport CONNECT parsing on a phux-owned accept path (duplicate
 # `Authorization` fields are refused before QPACK collapses them). Already in
@@ -150,13 +150,12 @@ iai-callgrind.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # Tests drive the native engine the client kernel uses.
 phux-client-core = { workspace = true, features = ["native-engine"] }
-# The relay e2e test runs the production relay. Dev-only: phux-relay must
-# never depend on phux-server (ADR-0051).
-phux-relay.workspace = true
 # Shared integration-test scaffolding, built once as an rlib.
 phux-server-testkit.workspace = true
-# `testing` adds `DropProxy` for the send-window tests.
-phux-dial = { workspace = true, features = ["provision", "testing"] }
+# `testing` adds `DropProxy` for the send-window tests. `relay`: the relay
+# e2e test runs the production relay. Dev-only: the relay must never depend
+# on phux-server (ADR-0051).
+phux-dial = { workspace = true, features = ["provision", "relay", "testing"] }
 # WebTransport test client; `dangerous-configuration` trusts the throwaway
 # self-signed leaf.
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "dangerous-configuration"] }

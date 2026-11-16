@@ -9,7 +9,7 @@
 
 use crate::common;
 
-use phux_relay::{
+use phux_dial::relay::{
     AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, RECLAIMED_CODE,
 };
 use tokio::time::timeout;

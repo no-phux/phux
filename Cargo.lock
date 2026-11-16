@@ -2964,7 +2964,6 @@ dependencies = [
  "phux-plugin",
  "phux-protocol",
  "phux-record",
- "phux-relay",
  "phux-resource",
  "phux-server",
  "phux-terminal",
@@ -3100,8 +3099,8 @@ dependencies = [
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
+ "phux-dial",
  "phux-protocol",
- "phux-relay",
  "phux-server",
  "phux-server-testkit",
  "serde",
@@ -3315,18 +3314,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phux-relay"
-version = "0.154.0"
-dependencies = [
- "phux-dial",
- "phux-protocol",
- "quictun",
- "quinn",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "phux-resource"
 version = "0.154.0"
 dependencies = [
@@ -3373,7 +3360,6 @@ dependencies = [
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
- "phux-relay",
  "phux-resource",
  "phux-server-testkit",
  "phux-terminal",
@@ -3412,8 +3398,8 @@ version = "0.154.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
+ "phux-dial",
  "phux-protocol",
- "phux-relay",
  "phux-server",
  "phux-terminal",
  "tempfile",

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use phux_dial::relay::DEFAULT_MAX_CONNS;
 use phux_dial::testing::DropProxy;
-use phux_relay::DEFAULT_MAX_CONNS;
 use tokio::time::{sleep, timeout};
 
 use crate::common::{

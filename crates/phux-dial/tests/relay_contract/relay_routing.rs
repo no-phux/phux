@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use phux_relay::{DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
+use phux_dial::relay::{DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
 use tokio::time::sleep;
 
 use crate::common::{

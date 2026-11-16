@@ -33,7 +33,7 @@ pub(crate) enum RelayAction {
         #[usage(
             long,
             value_name = "N",
-            default = "64", default_value_t = phux_relay::DEFAULT_MAX_CONNS,
+            default = "64", default_value_t = phux_dial::relay::DEFAULT_MAX_CONNS,
             validate = "int(value) >= 1", validate_error = "must be at least 1"
         )]
         max_conns: usize,
@@ -64,13 +64,13 @@ pub(crate) enum RelayAction {
 
 /// Dispatch a `phux relay` action.
 pub(crate) fn run_relay(action: RelayAction) -> ExitCode {
-    // The relay's state is not profile-scoped (`phux_relay` cannot see the
-    // profile), so a dev build's relay would otherwise run on, and mint
+    // The relay's state is not profile-scoped (`phux_dial::relay` cannot see
+    // the profile), so a dev build's relay would otherwise run on, and mint
     // into, the production relay's certificate and route tokens.
     for path in [
-        phux_relay::default_relay_cert_path(),
-        phux_relay::default_relay_key_path(),
-        phux_relay::default_relay_tokens_path(),
+        phux_dial::relay::default_relay_cert_path(),
+        phux_dial::relay::default_relay_key_path(),
+        phux_dial::relay::default_relay_tokens_path(),
     ] {
         if let Err(refusal) = phux_config::production::refuse_dev_on_production_state(&path) {
             error!("relay: {refusal}");
@@ -103,23 +103,23 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
 
     crate::print_banner();
 
-    let mut config = phux_relay::config(listen);
+    let mut config = phux_dial::relay::config(listen);
     config.max_conns = max_conns;
 
     // Pre-flight the banner's ingredients so a bad token store, certificate,
     // or state dir fails before "listening" is printed.
-    let routes = match phux_relay::RouteTokenStore::load(&config.tokens_path) {
+    let routes = match phux_dial::relay::RouteTokenStore::load(&config.tokens_path) {
         Ok(store) => store.len(),
         Err(err) => {
             error!("relay: {err}");
             return ExitCode::FAILURE;
         }
     };
-    if let Err(err) = phux_relay::ensure_self_signed(&config.cert_path, &config.key_path) {
+    if let Err(err) = phux_dial::relay::ensure_self_signed(&config.cert_path, &config.key_path) {
         error!("relay: could not provision certificate: {err}");
         return ExitCode::FAILURE;
     }
-    let fingerprint = match phux_relay::cert_fingerprint(&config.cert_path) {
+    let fingerprint = match phux_dial::relay::cert_fingerprint(&config.cert_path) {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
             error!("relay: could not read certificate fingerprint: {err}");
@@ -140,7 +140,7 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
         }
     };
     let result = rt.block_on(async {
-        let bound = phux_relay::RelayRuntime::new(config).bind()?;
+        let bound = phux_dial::relay::RelayRuntime::new(config).bind()?;
         // Listener banner is the foreground runtime contract.
         eprintln!("{}", banner_line(bound.local_addr(), routes, &fingerprint));
         bound
@@ -167,7 +167,7 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
 /// the credentials once — the relay-side sibling of `phux pair`.
 fn run_relay_pair(route: &str) -> ExitCode {
     // Reject — never normalize — before any file is touched.
-    if let Err(err) = phux_relay::validate_route_name(route) {
+    if let Err(err) = phux_dial::relay::validate_route_name(route) {
         error!("relay pair: {err}");
         return ExitCode::FAILURE;
     }
@@ -176,14 +176,14 @@ fn run_relay_pair(route: &str) -> ExitCode {
     // not there yet, so the fingerprint below is the one the relay will
     // actually present. Best-effort, like `phux pair`: a provisioning
     // problem costs the fingerprint section, not the token.
-    let cert = phux_relay::default_relay_cert_path();
-    let key = phux_relay::default_relay_key_path();
-    if let Err(err) = phux_relay::ensure_self_signed(&cert, &key) {
+    let cert = phux_dial::relay::default_relay_cert_path();
+    let key = phux_dial::relay::default_relay_key_path();
+    if let Err(err) = phux_dial::relay::ensure_self_signed(&cert, &key) {
         warn!("relay pair: could not provision certificate: {err}");
     }
 
-    let tokens = phux_relay::default_relay_tokens_path();
-    let token = match phux_relay::mint_route_token(&tokens, route) {
+    let tokens = phux_dial::relay::default_relay_tokens_path();
+    let token = match phux_dial::relay::mint_route_token(&tokens, route) {
         Ok(token) => token,
         Err(err) => {
             error!("relay pair: failed to mint route token: {err}");
@@ -195,7 +195,7 @@ fn run_relay_pair(route: &str) -> ExitCode {
     outln!("  {token}");
     outln!();
 
-    match phux_relay::cert_fingerprint(&cert) {
+    match phux_dial::relay::cert_fingerprint(&cert) {
         Ok(fingerprint) => {
             outln!("Relay certificate SHA-256 (pin it on the dialing side to defeat MITM):");
             outln!("  {fingerprint}");

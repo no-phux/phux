@@ -1,4 +1,4 @@
-//! Shared harness for the phux-relay integration tests.
+//! Shared harness for the relay integration tests.
 //!
 //! Everything under test is PRODUCTION code: the real relay runtime and the
 //! production dialers for both legs. The only test-local logic is the stub
@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use phux_dial::relay::{AUTH_FAILED_CODE, RelayConfig, RelayError, RelayRuntime};
 use phux_dial::{CertTrust, DialError, QuicDial};
 use phux_protocol::policy::QUIC_RELAY_ALPN;
-use phux_relay::{AUTH_FAILED_CODE, RelayConfig, RelayError, RelayRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -75,12 +75,13 @@ pub async fn spawn_relay_tuned(
 ) -> RelayHandle {
     let config = RelayConfig {
         max_conns,
-        ..phux_relay::config_in("127.0.0.1:0".parse().expect("loopback listen addr"), dir)
+        ..phux_dial::relay::config_in("127.0.0.1:0".parse().expect("loopback listen addr"), dir)
     };
     let tokens_path = config.tokens_path.clone();
-    phux_relay::ensure_self_signed(&config.cert_path, &config.key_path)
+    phux_dial::relay::ensure_self_signed(&config.cert_path, &config.key_path)
         .expect("provision relay cert");
-    let fingerprint = phux_relay::cert_fingerprint(&config.cert_path).expect("relay fingerprint");
+    let fingerprint =
+        phux_dial::relay::cert_fingerprint(&config.cert_path).expect("relay fingerprint");
     let runtime = tune(RelayRuntime::new(config));
     let bound = runtime.bind().expect("relay binds on port 0");
     let addr = bound.local_addr();
@@ -105,7 +106,7 @@ pub async fn spawn_relay(dir: &Path, max_conns: usize) -> RelayHandle {
 /// Mint an enrollment token for `route` through the production library fn
 /// and return the raw bytes a tunnel preamble carries.
 pub fn mint(tokens_path: &Path, route: &str) -> Vec<u8> {
-    let encoded = phux_relay::mint_route_token(tokens_path, route).expect("mint route token");
+    let encoded = phux_dial::relay::mint_route_token(tokens_path, route).expect("mint route token");
     phux_dial::quic::parse_token_hex(&encoded).expect("minted token is hex")
 }
 

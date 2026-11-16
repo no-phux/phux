@@ -1,5 +1,5 @@
 //! phux's reference relay (ADR-0051, ADR-0052, ADR-0057): `quictun`'s relay
-//! bound to phux's protocol and state directory.
+//! bound to phux's protocol and state directory (the `relay` feature).
 //!
 //! A phux server behind NAT dials OUT under the `phux-relay/1` ALPN and
 //! registers a tunnel for a named route; consumers dial IN under
@@ -8,13 +8,9 @@
 //! consumer runs TLS end to end with the server inside it (ADR-0180).
 //!
 //! The relay itself is [`quictun`], which depends on no phux crate
-//! (ADR-0181). This crate supplies only what makes it phux's: [`protocol`]
+//! (ADR-0181). This module supplies only what makes it phux's: [`protocol`]
 //! (the two ALPNs and the `phxT` connection-ID tag) and the files under
 //! phux's state directory. The `phux relay` verb fronts it.
-
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-#![deny(rustdoc::private_intra_doc_links)]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -31,10 +27,10 @@ pub use quictun::tunnel::{
 
 /// phux's relay protocol: connectors offer [`QUIC_RELAY_ALPN`], consumers
 /// [`QUIC_ALPN`], and tunnels tag their connection ID with
-/// [`phux_dial::quic::TUNNEL_CID_TAG`].
+/// [`crate::quic::TUNNEL_CID_TAG`].
 #[must_use]
 pub fn protocol() -> quictun::Protocol {
-    quictun::Protocol::new(QUIC_RELAY_ALPN, QUIC_ALPN, phux_dial::quic::TUNNEL_CID_TAG)
+    quictun::Protocol::new(QUIC_RELAY_ALPN, QUIC_ALPN, crate::quic::TUNNEL_CID_TAG)
 }
 
 /// A phux relay config listening on `listen` with its files in `dir` and

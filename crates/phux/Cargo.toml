@@ -83,11 +83,9 @@ phux-usage.workspace = true
 # dial stack a real client uses is the whole point: a bespoke probe could
 # pass while the path clients take is blocked. Workspace crate, already in
 # the tree under phux-client; no new third-party dependency enters.
-phux-dial.workspace = true
-# `phux relay` fronts the reference relay: `run` drives its runtime in the
-# foreground and `pair` mints route-bound tunnel tokens (workspace crate;
-# no new third-party dependency enters).
-phux-relay.workspace = true
+# `relay`: `phux relay` fronts the reference relay. `run` drives its runtime
+# in the foreground and `pair` mints route-bound tunnel tokens.
+phux-dial = { workspace = true, features = ["relay"] }
 # `phux rec` and `phux --rec` export half: the asciicast codec, the offline
 # VT replayer, and the in-process GIF/APNG encoders. Taken with its default
 # `render` feature ON — the binary is the one consumer that must be able to
@@ -116,7 +114,7 @@ shell-words = "1.1"
 # computed in-process rather than by shelling out to `shasum`/`sha256sum` and
 # parsing their output — one fewer external program whose absence, version, or
 # output format could turn "verify" into "skip". `sha2` is already a direct
-# dependency of phux-server, phux-relay, phux-dial, and phux-client-core (cert
+# dependency of phux-server, phux-dial, and phux-client-core (cert
 # fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
 # RustCrypto reference implementation, pure-safe Rust, no C deps.
 sha2 = "0.11"

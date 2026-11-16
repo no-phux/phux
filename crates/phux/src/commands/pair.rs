@@ -17,16 +17,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_client_runtime::pairing::{
-    CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
-};
+use phux_client_runtime::pairing::{CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX};
 pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
+mod connector;
 #[cfg(test)]
 mod endpoint_tests;
 mod link_name;
 #[cfg(test)]
 mod link_tests;
+use connector::relay_connector;
 use link_name::{link_name, percent_encode};
 mod manage;
 mod rebind;
@@ -1187,69 +1187,6 @@ fn mint_relay_link(
     finish_human_mint(&secret, tokens)
 }
 
-/// The validated route and the `[[connector]]` entry its link dials.
-fn relay_connector(relay: &RelayRoute) -> Result<phux_config::ConnectorConfigEntry, String> {
-    phux_relay::validate_route_name(&relay.route).map_err(|err| format!("--relay-route: {err}"))?;
-    let config = phux_config::loader::load().map_err(|err| {
-        format!(
-            "could not read the phux config {}: {err}",
-            phux_config::loader::config_path().display()
-        )
-    })?;
-    let connector = select_relay_connector(config.connector, relay.relay.as_deref())?;
-    // The link must parse on the device: refuse a relay address it could not
-    // dial before anything is minted.
-    validate_quic_endpoint(&format!("quic://{}", connector.relay)).map_err(|err| {
-        format!(
-            "the [[connector]] relay {:?} cannot go in a link ({err}); none was minted",
-            connector.relay
-        )
-    })?;
-    Ok(connector)
-}
-
-/// Pick the `[[connector]]` entry a relay link dials: the one `--relay`
-/// names, else the only one. Nothing configured, or an ambiguous choice, is
-/// a refusal: a link must name the relay this server actually tunnels to.
-fn select_relay_connector(
-    configured: Vec<phux_config::ConnectorConfigEntry>,
-    relay: Option<&str>,
-) -> Result<phux_config::ConnectorConfigEntry, String> {
-    let names = || {
-        configured
-            .iter()
-            .map(|entry| entry.relay.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    if let Some(relay) = relay {
-        let listed = names();
-        return configured
-            .into_iter()
-            .find(|entry| entry.relay == relay)
-            .ok_or_else(|| {
-                format!(
-                    "no [[connector]] entry dials relay {relay:?} (configured: {}), so none was minted",
-                    if listed.is_empty() { "none" } else { &listed }
-                )
-            });
-    }
-    if configured.len() > 1 {
-        return Err(format!(
-            "several [[connector]] relays are configured ({}); pass --relay HOST:PORT naming \
-             the one this route is enrolled on",
-            names()
-        ));
-    }
-    configured.into_iter().next().ok_or_else(|| {
-        "this server has no [[connector]] relay configured, so a relay link would route to \
-         nothing and none was minted.\n  \
-         enroll the route with `phux relay pair --route ROUTE` on the relay host, add a \
-         [[connector]] entry naming that relay, and restart the server"
-            .to_owned()
-    })
-}
-
 /// Ask the server on `socket` for its state, only to learn that it answers:
 /// a relay link minted for a server that is not running reaches nothing.
 fn server_answers(socket: &Path) -> Result<(), String> {
@@ -1926,6 +1863,7 @@ fn pair_document(
 
 #[cfg(test)]
 mod tests {
+    use super::connector::select_relay_connector;
     use super::{
         LinkOutput, ListenerQueryError, ListenerSetup, LiveListeners, MagicDns, ModePrompt,
         NO_BOUND_LISTENER, PAIRED_MODE_PROMPT, PairAddresses, ServerPins, accept_paired_mode,
@@ -1933,7 +1871,7 @@ mod tests {
         ensure_remote_listener, is_affirmative, legacy_connect_link, link_refusal, live_listeners,
         mode_unset_refusal, other_unbound_refusal, pair_document, parse_connect_link,
         percent_encode, phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
-        select_relay_connector, shows_default_qr,
+        shows_default_qr,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,

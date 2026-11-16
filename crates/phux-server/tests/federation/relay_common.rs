@@ -11,10 +11,10 @@ use std::path::Path;
 
 use phux_config::ConnectorConfigEntry;
 use phux_dial::quic::{DialedStream, InnerTls};
+use phux_dial::relay::{RelayConfig, cert_fingerprint};
 use phux_dial::{CertTrust, DialError, QuicDial, TlsClientIdentity};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::FrameKind;
-use phux_relay::{RelayConfig, cert_fingerprint};
 use phux_server::ServerConfig;
 use phux_server::workload::WorkloadPaths;
 use phux_server_testkit::{WIRE_RECV_TIMEOUT, encode_frame};
@@ -43,7 +43,7 @@ pub(crate) fn relay_config(
     .expect("relay route");
     RelayConfig {
         max_conns: 16,
-        ..phux_relay::config_in(listen, dir)
+        ..phux_dial::relay::config_in(listen, dir)
     }
 }
 

@@ -11,7 +11,7 @@ use crate::common;
 
 use std::time::Duration;
 
-use phux_relay::{AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
+use phux_dial::relay::{AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
 use tokio::time::timeout;
 
 use crate::common::{
