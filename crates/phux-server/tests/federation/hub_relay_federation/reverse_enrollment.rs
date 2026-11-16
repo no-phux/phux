@@ -88,7 +88,6 @@ impl PairedHub {
             work_store,
             ..ServerConfig::with_default_socket()
         };
-        let (shutdown, rx) = oneshot::channel::<()>();
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         // A stopped hub's QUIC endpoint drains its closed connections before
         // it releases the port.
@@ -97,15 +96,11 @@ impl PairedHub {
             assert!(Instant::now() < deadline, "port {port} never freed");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let task = tokio::task::spawn_local(async move {
-            phux_server_testkit::terminal_server(cfg)
+        let (shutdown, task) = run_runtime(
+            terminal_server(cfg)
                 .listen_quic(addr)
-                .hub(vec![inbound_entry("sat")])
-                .run_async(async move {
-                    let _ = rx.await;
-                })
-                .await
-        });
+                .hub(vec![inbound_entry("sat")]),
+        );
         let quic = bound_listener_addr(&socket, RemoteListenerTransport::Quic).await;
         Self {
             shutdown,
@@ -124,21 +119,12 @@ fn spawn_uplinked_satellite(
     socket_path: PathBuf,
     uplink: phux_config::UplinkConfigEntry,
 ) -> (oneshot::Sender<()>, ServerTask) {
-    let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
         socket_path,
         pre_seeded_session: Some("sat-session".to_owned()),
         ..ServerConfig::with_default_socket()
     };
-    let handle = tokio::task::spawn_local(async move {
-        phux_server_testkit::terminal_server(cfg)
-            .uplinks(vec![uplink])
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+    run_runtime(terminal_server(cfg).uplinks(vec![uplink]))
 }
 
 pub(super) fn mint(dir: &std::path::Path, ticket_seconds: i64) -> tickets::MintedTicket {

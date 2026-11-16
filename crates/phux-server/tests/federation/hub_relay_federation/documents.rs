@@ -4,88 +4,6 @@
 use super::*;
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapProfileSet, BootstrapStreamProfile};
 
-#[test]
-fn a_satellite_tree_streams_through_the_hub() {
-    phux_server_testkit::run_local(async {
-        let fed = Fed::boot().await;
-        let mut sat = wait_for_socket(&fed.tmp.path().join("sat.sock"), STEP_DEADLINE).await;
-        let spawn = Spawn {
-            resource: Some(Box::new(SpawnResource::accessibility_tree(
-                ResourceId::local(fed.seed),
-                "Smoke",
-            ))),
-            ..Spawn::default()
-        };
-        let SpawnResult::Ok(ResourceId::Local { id: tree }) =
-            spawn_resource(&mut sat, 1, spawn).await
-        else {
-            panic!("spawn tree on the satellite failed");
-        };
-        let document = br#"{"role":"window","title":"Smoke"}"#.to_vec();
-        let published = phux_server_testkit::command(
-            &mut sat,
-            2,
-            Command::PublishResourceState {
-                terminal_id: ResourceId::local(tree),
-                bytes: document.clone(),
-            },
-        )
-        .await;
-        assert!(
-            matches!(published, CommandResult::OkWith(_)),
-            "publish on the satellite: {published:?}"
-        );
-
-        let mut hub = fed.linked_hub().await;
-        let sat_tree = ResourceId::satellite("sat", tree);
-        let frames = attach_terminal_until_ok(&mut hub, &sat_tree).await;
-        let mut frames = frames.into_iter();
-        let profile = frames.by_ref().find_map(|frame| match frame {
-            FrameKind::BootstrapBegin {
-                terminal_id,
-                profile,
-                ..
-            } if terminal_id == sat_tree => Some(profile),
-            _ => None,
-        });
-        assert_eq!(
-            profile,
-            Some(BootstrapStreamProfile::AccessibilityTreeJsonV1),
-            "the tree's own profile reached the hub's client"
-        );
-        let mut received = Vec::new();
-        for frame in frames {
-            if let FrameKind::BootstrapChunk {
-                terminal_id,
-                payload,
-                ..
-            } = frame
-                && terminal_id == sat_tree
-            {
-                received.extend_from_slice(&payload);
-            }
-        }
-        if received.is_empty() {
-            let deadline = Instant::now() + STEP_DEADLINE;
-            while received.is_empty() && Instant::now() < deadline {
-                if let FrameKind::BootstrapChunk {
-                    terminal_id,
-                    payload,
-                    ..
-                } = recv_typed(&mut hub).await.1
-                    && terminal_id == sat_tree
-                {
-                    received.extend_from_slice(&payload);
-                }
-            }
-        }
-        assert_eq!(received, document, "the newest document crossed both hops");
-
-        drop(hub);
-        fed.shutdown().await;
-    });
-}
-
 /// `SEND_DOCUMENT_INPUT` to a satellite document relays through the hub to
 /// the satellite producer, and the classes a sender stamps cross the link:
 /// the satellite, which knows the document's class, refuses one outside
@@ -97,7 +15,7 @@ fn input_to_a_satellite_document_reaches_its_producer_through_the_hub() {
     use phux_protocol::wire::frame::{ControlClass, ControlClasses, DocumentInput};
     phux_server_testkit::run_local(async {
         let fed = Fed::boot().await;
-        let mut sat = wait_for_socket(&fed.tmp.path().join("sat.sock"), STEP_DEADLINE).await;
+        let mut sat = fed.satellite().await;
         let surface = SpawnResource::pixel_surface(ResourceId::local(fed.seed), "Smoke")
             .with_control(Some(ControlClass::Window));
         let spawn = Spawn {
@@ -230,8 +148,12 @@ async fn spawn_sat_documents(fed: &Fed, sat: &mut UnixStream) -> Vec<SatDocument
     documents
 }
 
-/// A hub client whose HELLO offered `profiles`, once the link answers.
-async fn kind_client(fed: &Fed, profiles: BootstrapProfileSet) -> UnixStream {
+/// A hub client whose HELLO offered `profiles` (`None`: what real clients
+/// offer), once the link answers.
+async fn kind_client(fed: &Fed, profiles: Option<BootstrapProfileSet>) -> UnixStream {
+    let Some(profiles) = profiles else {
+        return fed.linked_hub().await;
+    };
     let mut hub =
         phux_server_testkit::wait_for_socket_with(&fed.hub_path(), STEP_DEADLINE, |caps| {
             caps.with_bootstrap(BootstrapCapabilities::new().with_profiles(profiles))
@@ -307,9 +229,11 @@ async fn attach_and_follow(
     (profile, document, live)
 }
 
-/// A hub client with no Terminal profile, or another one than the link
-/// negotiated, still attaches a satellite tree, surface and document: only
-/// a Terminal stream needs the connection's Terminal profile.
+/// A hub client with the link's own Terminal profile, no Terminal profile,
+/// or another one than the link negotiated, attaches a satellite tree,
+/// surface and document, each streaming its own profile and its newest
+/// document across both hops: only a Terminal stream needs the
+/// connection's Terminal profile.
 #[test]
 fn satellite_documents_relay_whatever_terminal_profile_the_client_chose() {
     use phux_protocol::caps::BootstrapProfileKind;
@@ -318,11 +242,14 @@ fn satellite_documents_relay_whatever_terminal_profile_the_client_chose() {
         let mut sat = fed.satellite().await;
         let mut documents = spawn_sat_documents(&fed, &mut sat).await;
         let clients = [
-            BootstrapProfileSet::new(),
+            None,
+            Some(BootstrapProfileSet::new()),
             // The link selects NativeState or SynthesizedVtRaw first.
-            BootstrapProfileSet::with(&[BootstrapProfileKind::SynthesizedVtStateSync]),
+            Some(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtStateSync,
+            ])),
         ];
-        for (profiles, base) in clients.into_iter().zip([1000, 2000]) {
+        for (profiles, base) in clients.into_iter().zip([3000, 1000, 2000]) {
             let mut hub = kind_client(&fed, profiles).await;
             for (doc, request_id) in documents.iter_mut().zip((base..).step_by(10)) {
                 let (profile, document, live) =
@@ -337,13 +264,11 @@ fn satellite_documents_relay_whatever_terminal_profile_the_client_chose() {
                 std::mem::swap(&mut doc.first, &mut doc.next);
             }
             // The satellite Terminal itself still needs the link's profile.
-            let (refused, _) = command_via_hub(
-                &mut hub,
-                base + 500,
-                Command::attach_terminal(fed.sat_id(), None),
-            )
-            .await;
-            assert_command_error(&refused, ErrorCode::CodecUnavailable);
+            if profiles.is_some() {
+                let attach = Command::attach_terminal(fed.sat_id(), None);
+                let (refused, _) = command_via_hub(&mut hub, base + 500, attach).await;
+                assert_command_error(&refused, ErrorCode::CodecUnavailable);
+            }
             drop(hub);
         }
 
@@ -361,10 +286,7 @@ fn a_satellite_sessions_members_include_its_documents() {
         let mut sat = fed.satellite().await;
         let documents = spawn_sat_documents(&fed, &mut sat).await;
         let mut hub = fed.linked_hub().await;
-        let (result, _) = get_state_via_hub(&mut hub, 4000).await;
-        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-            panic!("aggregated GET_STATE must succeed, got {result:?}");
-        };
+        let (snapshot, _) = state_via_hub(&mut hub, 4000).await;
         let [sat_row] = snapshot.hosts() else {
             panic!("{:?}", snapshot.hosts());
         };

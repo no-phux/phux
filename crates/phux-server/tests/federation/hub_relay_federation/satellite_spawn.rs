@@ -20,11 +20,8 @@ async fn spawn_split(
 }
 
 async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let (result, errors) = get_state_via_hub(stream, request_id).await;
+    let (snapshot, errors) = state_via_hub(stream, request_id).await;
     assert!(errors.is_empty(), "unexpected state errors: {errors:?}");
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("expected state, got {result:?}");
-    };
     snapshot
 }
 

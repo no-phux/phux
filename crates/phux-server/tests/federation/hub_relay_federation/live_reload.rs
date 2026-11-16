@@ -17,7 +17,6 @@ fn spawn_reloading_hub(
     socket_path: PathBuf,
     registry: &Registry,
 ) -> (oneshot::Sender<()>, ServerTask) {
-    let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
         socket_path,
         pre_seeded_session: Some("hub-session".to_owned()),
@@ -27,16 +26,7 @@ fn spawn_reloading_hub(
     };
     let source_registry = Arc::clone(registry);
     let source = SatelliteSource::new(move || Ok(source_registry.lock().unwrap().clone()));
-    let handle = tokio::task::spawn_local(async move {
-        phux_server_testkit::terminal_server(cfg)
-            .hub(Vec::new())
-            .hub_reload(source)
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+    run_runtime(terminal_server(cfg).hub(Vec::new()).hub_reload(source))
 }
 
 /// Ring the doorbell, then read the key back: the hub handles one
@@ -74,11 +64,9 @@ async fn ring_reload(hub: &mut UnixStream, request_id: u32, nonce: &str) {
 
 /// The hub's own seeded pane, which every reload must leave alone.
 async fn local_pane(hub: &mut UnixStream, request_id: u32) -> u32 {
-    let (result, _) = get_state_via_hub(hub, request_id).await;
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("hub GET_STATE must succeed, got {result:?}");
-    };
-    snapshot
+    state_via_hub(hub, request_id)
+        .await
+        .0
         .focused_resource
         .local_id()
         .expect("the hub's seeded pane is local")
