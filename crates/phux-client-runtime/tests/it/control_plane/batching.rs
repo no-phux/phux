@@ -33,6 +33,17 @@ const BATCH_FEEDS: [(&str, BatchFeed); 2] = [
     }),
 ];
 
+/// `bytes` of the terminal at `seq` on stream `stream` of bootstrap 1, encoded.
+#[cfg(feature = "engine")]
+fn wire_output(stream: u64, seq: u64, bytes: &[u8]) -> Vec<u8> {
+    encode(&phux_wire_fixtures::output_on(
+        &terminal(),
+        [stream, 1],
+        seq,
+        bytes,
+    ))
+}
+
 #[test]
 #[expect(
     clippy::cognitive_complexity,
@@ -149,15 +160,7 @@ fn a_transport_batch_publishes_once_and_preserves_ordered_changes() {
             .generation;
         let event_count = 32_u64;
         let frames = (1..=event_count)
-            .map(|seq| {
-                encode(&FrameKind::ResourceOutput {
-                    terminal_id: terminal(),
-                    stream_id: StreamId::new(1).expect("stream"),
-                    bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                    seq,
-                    bytes: b"x".to_vec().into(),
-                })
-            })
+            .map(|seq| wire_output(1, seq, b"x"))
             .collect::<Vec<_>>();
 
         feed(&mut plane, &frames).expect("ordered transport batch");
@@ -194,19 +197,10 @@ fn a_control_frame_splits_engine_batches_without_reordering() {
             .acquire(&terminal())
             .expect("bootstrap published")
             .generation;
-        let output = |seq, bytes: &'static [u8]| {
-            encode(&FrameKind::ResourceOutput {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(1).expect("stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq,
-                bytes: bytes.to_vec().into(),
-            })
-        };
         let frames = vec![
-            output(1, b"one"),
+            wire_output(1, 1, b"one"),
             encode(&FrameKind::Ping { nonce: 17 }),
-            output(2, b"two"),
+            wire_output(1, 2, b"two"),
         ];
 
         feed(&mut plane, &frames).expect("ordered batch");
@@ -231,16 +225,7 @@ fn a_valid_batch_prefix_is_applied_before_a_later_decode_error() {
             .publication()
             .generation(&terminal())
             .expect("bootstrap published");
-        let frames = vec![
-            encode(&FrameKind::ResourceOutput {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(1).expect("stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq: 1,
-                bytes: b"valid".to_vec().into(),
-            }),
-            vec![0, 0, 0, 0],
-        ];
+        let frames = vec![wire_output(1, 1, b"valid"), vec![0, 0, 0, 0]];
 
         let error = feed(&mut plane, &frames).expect_err("malformed second frame");
 
@@ -258,13 +243,7 @@ fn a_control_ending_outranks_an_earlier_stale_engine_frame() {
         let (mut plane, attach_id) = negotiated();
         attach(&mut plane, attach_id, b"ready");
         let frames = vec![
-            encode(&FrameKind::ResourceOutput {
-                terminal_id: terminal(),
-                stream_id: StreamId::new(2).expect("stale stream"),
-                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                seq: 1,
-                bytes: b"stale".to_vec().into(),
-            }),
+            wire_output(2, 1, b"stale"),
             encode(&FrameKind::Detached {
                 reason: Some(DetachReason::ProtocolError),
                 message: "fatal ending".to_owned(),

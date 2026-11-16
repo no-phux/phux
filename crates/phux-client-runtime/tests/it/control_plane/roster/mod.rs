@@ -17,15 +17,6 @@ fn metadata_id(frames: &[FrameKind]) -> u32 {
         .expect("metadata read")
 }
 
-fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id,
-            value: value.map(<[u8]>::to_vec),
-        })
-        .unwrap();
-}
-
 fn event(plane: &mut ControlPlane, terminal: Option<ResourceId>, event: AgentEvent) {
     plane
         .feed(FrameKind::Event {

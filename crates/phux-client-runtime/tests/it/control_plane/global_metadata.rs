@@ -59,12 +59,7 @@ fn a_watch_reads_the_value_and_follows_its_changes() {
         "nothing before the reply"
     );
 
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id,
-            value: Some(b"{\"a\":1}".to_vec()),
-        })
-        .unwrap();
+    answer_metadata(&mut plane, request_id, Some(b"{\"a\":1}"));
     assert_eq!(
         plane.take_global_metadata(),
         [value(KEY, Some(b"{\"a\":1}"))]
@@ -77,22 +72,8 @@ fn a_watch_reads_the_value_and_follows_its_changes() {
         "the watch's own read reply is consumed"
     );
 
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Global,
-            key: KEY.to_owned(),
-            value: None,
-            actor: None,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Global,
-            key: "phux.other/v1".to_owned(),
-            value: Some(b"x".to_vec()),
-            actor: None,
-        })
-        .unwrap();
+    global_changed(&mut plane, KEY, None);
+    global_changed(&mut plane, "phux.other/v1", Some(b"x"));
     assert_eq!(
         plane.take_global_metadata(),
         [value(KEY, None)],
@@ -112,26 +93,9 @@ fn changes_coalesce_to_the_newest_value_per_key() {
     let usage = plane.watch_global_metadata(KEY.to_owned());
     let other = plane.watch_global_metadata("phux.other/v1".to_owned());
     let _ = plane.take_outbound();
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id: usage,
-            value: Some(b"1".to_vec()),
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id: other,
-            value: None,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Global,
-            key: KEY.to_owned(),
-            value: Some(b"2".to_vec()),
-            actor: None,
-        })
-        .unwrap();
+    answer_metadata(&mut plane, usage, Some(b"1"));
+    answer_metadata(&mut plane, other, None);
+    global_changed(&mut plane, KEY, Some(b"2"));
     assert_eq!(
         plane.take_global_metadata(),
         [value("phux.other/v1", None), value(KEY, Some(b"2"))]
@@ -153,13 +117,7 @@ fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
     assert_eq!(plane.watch_global_metadata(String::new()), 0);
     plane.connection_opened();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = outbound(&mut plane)
-        .iter()
-        .find_map(|frame| match frame {
-            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
-            _ => None,
-        })
-        .expect("ATTACH");
+    let attach_id = plane.queued_attach_id();
     plane.attached(attach_id, two_session_snapshot(false));
     let first = watch_read(&outbound(&mut plane), KEY);
 
@@ -167,32 +125,16 @@ fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
     // attach subscribes and reads again, and the old read is forgotten.
     plane.connection_lost(Some("gone".to_owned()));
     reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
-    let attach_id = outbound(&mut plane)
-        .iter()
-        .find_map(|frame| match frame {
-            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
-            _ => None,
-        })
-        .expect("second ATTACH");
+    let attach_id = plane.queued_attach_id();
     plane.attached(attach_id, two_session_snapshot(false));
     let second = watch_read(&outbound(&mut plane), KEY);
     assert_ne!(first, second);
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id: first,
-            value: Some(b"old".to_vec()),
-        })
-        .unwrap();
+    answer_metadata(&mut plane, first, Some(b"old"));
     assert!(
         plane.take_global_metadata().is_empty(),
         "a forgotten read is not this watch's"
     );
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id: second,
-            value: Some(b"new".to_vec()),
-        })
-        .unwrap();
+    answer_metadata(&mut plane, second, Some(b"new"));
     assert_eq!(plane.take_global_metadata(), [value(KEY, Some(b"new"))]);
 }
 

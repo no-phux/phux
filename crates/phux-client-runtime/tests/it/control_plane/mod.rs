@@ -144,6 +144,28 @@ fn answer_state(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnap
     );
 }
 
+/// Answer metadata read `request_id` with `value`.
+fn answer_metadata(plane: &mut ControlPlane, request_id: u32, value: Option<&[u8]>) {
+    plane
+        .feed(FrameKind::MetadataValue {
+            request_id,
+            value: value.map(<[u8]>::to_vec),
+        })
+        .unwrap();
+}
+
+/// A live `METADATA_CHANGED` of `Global` `key`.
+fn global_changed(plane: &mut ControlPlane, key: &str, value: Option<&[u8]>) {
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: phux_protocol::wire::frame::Scope::Global,
+            key: key.to_owned(),
+            value: value.map(<[u8]>::to_vec),
+            actor: None,
+        })
+        .unwrap();
+}
+
 /// Every queued outbound frame, decoded.
 fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane
@@ -236,12 +258,11 @@ fn attach_reads_the_session_project_tag_into_an_event() {
             _ => None,
         })
         .expect("attach GETs the project tag");
-    plane
-        .feed(FrameKind::MetadataValue {
-            request_id,
-            value: Some(encode_session_project("beta", "phux")),
-        })
-        .unwrap();
+    answer_metadata(
+        &mut plane,
+        request_id,
+        Some(&encode_session_project("beta", "phux")),
+    );
     assert!(
         plane.take_events().iter().any(|event| matches!(
             event,
@@ -250,14 +271,7 @@ fn attach_reads_the_session_project_tag_into_an_event() {
         )),
         "the GET value must surface as a session project event"
     );
-    plane
-        .feed(FrameKind::MetadataChanged {
-            scope: Scope::Global,
-            key: SESSION_PROJECT_KEY.to_owned(),
-            value: None,
-            actor: None,
-        })
-        .unwrap();
+    global_changed(&mut plane, SESSION_PROJECT_KEY, None);
     assert!(
         plane.take_events().iter().any(|event| matches!(
             event,
@@ -338,13 +352,7 @@ fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
 
 fn output(plane: &mut ControlPlane, seq: u64, bytes: &[u8]) {
     plane
-        .feed(FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq,
-            bytes: bytes.to_vec().into(),
-        })
+        .feed(phux_wire_fixtures::output(&terminal(), seq, bytes))
         .expect("RESOURCE_OUTPUT");
 }
 
