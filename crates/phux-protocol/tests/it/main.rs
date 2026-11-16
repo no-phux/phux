@@ -15,6 +15,7 @@ mod scope_encoding;
 mod service_http_snapshots;
 mod wire_alloc_dos;
 mod wire_contract;
+mod wire_snapshots;
 mod wire_tag_registry;
 
 /// The binary's global allocator. It forwards every call to `System` and

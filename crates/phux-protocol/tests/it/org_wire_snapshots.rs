@@ -1,7 +1,7 @@
 //! Snapshot tests for the organization commands, results, and events
 //! (`docs/organization.md`): one golden hex dump per shape, so a byte change
-//! to any of them surfaces in review. The frames outside §5.7 keep their
-//! goldens in `frame_wire_snapshots.rs`.
+//! to any of them surfaces in review; `wire_snapshots.rs` checks them. The
+//! frames outside §5.7 keep their goldens in `frame_wire_snapshots.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -126,14 +126,14 @@ mod commands;
 mod events;
 mod results;
 
-/// Every organization fixture round-trips and matches its golden.
-#[test]
-fn org_wire_snapshots_match_goldens() {
-    for (name, frame) in command_fixtures()
-        .into_iter()
-        .chain(result_fixtures())
-        .chain(event_fixtures())
-    {
-        insta::assert_snapshot!(name, dump_frame(&frame));
-    }
+/// Every organization fixture: commands, then results, then events.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "`pub` alone trips `unreachable_pub`; `wire_snapshots.rs` checks these"
+)]
+pub(crate) fn fixtures() -> Vec<(&'static str, FrameKind)> {
+    let mut fixtures = command_fixtures();
+    fixtures.extend(result_fixtures());
+    fixtures.extend(event_fixtures());
+    fixtures
 }

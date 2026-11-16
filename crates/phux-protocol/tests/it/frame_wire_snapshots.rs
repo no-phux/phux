@@ -3,13 +3,12 @@
 //! round-trip/malformed tests because their negotiated fields are better
 //! defended as values than as duplicated hex fixtures.
 //!
-//! One table-driven test encodes each stable fixture and compares its hex dump
-//! with the named golden under `tests/snapshots/`. Fixture names are
+//! `wire_snapshots.rs` encodes each stable fixture and compares its hex dump
+//! with the named golden under `tests/it/snapshots/`. Fixture names are
 //! load-bearing: renaming one or changing its bytes must surface in review.
 
 #![allow(clippy::unwrap_used)]
 
-use crate::common::dump_frame;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 mod input_metadata;
@@ -18,7 +17,11 @@ mod state_journal;
 
 /// Stable frame fixtures in protocol order. Profile-bound output, attach
 /// bootstrap, and handshake frames are covered by semantic wire tests.
-fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "`pub` alone trips `unreachable_pub`; `wire_snapshots.rs` checks these"
+)]
+pub(crate) fn fixtures() -> Vec<(&'static str, FrameKind)> {
     let mut fixtures = input_metadata::fixtures();
     fixtures.extend(lifecycle::fixtures());
     fixtures.extend(state_journal::fixtures());
@@ -59,12 +62,4 @@ fn resize_terminal_cell_px_is_an_appended_optional_pair() {
             cell_px: None,
         }
     );
-}
-
-/// Every fixture's hex dump matches its committed golden byte-for-byte.
-#[test]
-fn frame_wire_snapshots_match_goldens() {
-    for (name, frame) in frame_fixtures() {
-        insta::assert_snapshot!(name, dump_frame(&frame));
-    }
 }
