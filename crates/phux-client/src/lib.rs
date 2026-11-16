@@ -107,6 +107,8 @@ pub mod testkit;
 pub mod vcs;
 pub mod wait;
 pub mod watch;
+// `phux whoami` (ADR-0106): the connection's identity, as the server sees it.
+pub mod whoami;
 
 pub use phux_client_core::{layout, multi_pane, org_ops, predict, rename};
 // The `phux.transcript/v1` entry inside `provider_raw` records (ADR-0156).

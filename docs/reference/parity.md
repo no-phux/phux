@@ -66,7 +66,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_claim_list` | `phux claim list` | in-process | yes | no |
 | `phux_status` | `phux status` | CLI | yes | no |
 | `phux_doctor` | `phux doctor` | CLI | yes | no |
-| `phux_whoami` | `phux whoami` | CLI | yes | no |
+| `phux_whoami` | `phux whoami` | in-process | yes | no |
 | `phux_perf` | `phux perf` | CLI | yes | no |
 | `phux_perf_trace` | `phux perf trace` | CLI | no | no |
 | `phux_resource_show` | `phux resource show` | in-process | yes | no |
@@ -107,7 +107,6 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_agent_log`: the Terminal-to-AgentSession resolution and the result documents are assembled in the CLI command (`commands/agent/resource_session.rs`).
 - `phux_status`: the status document (peer-credential pid, service state, log paths) is assembled by the CLI command.
 - `phux_doctor`: the health checks are the CLI's; a second copy could disagree with `phux doctor`.
-- `phux_whoami`: the `whoami` feature check and the refusal document are the CLI command's.
 - `phux_perf`: the report document is the CLI command's.
 - `phux_perf_trace`: the capture window and the trace file are the CLI command's.
 

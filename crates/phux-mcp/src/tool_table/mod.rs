@@ -435,12 +435,7 @@ pub(crate) const TOOLS: &[Row] = &[
         "the health checks are the CLI's; a second copy could disagree with `phux doctor`",
         Touches::Wire(&[RESOLVE]),
     ),
-    residue(
-        "phux_whoami",
-        "whoami",
-        "the `whoami` feature check and the refusal document are the CLI command's",
-        Touches::Wire(&[WHOAMI_KEY]),
-    ),
+    cli("phux_whoami", "whoami", Touches::Wire(&[WHOAMI_KEY])),
     residue(
         "phux_perf",
         "perf",

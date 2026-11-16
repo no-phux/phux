@@ -16,7 +16,7 @@ fn sweep_args(tool: &str) -> Value {
         }
         "phux_operation_status" => json!({ "idempotency_key": "0123456789abcdef0123456789abcdef" }),
         "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_agent_list"
-        | "phux_approvals" => {
+        | "phux_whoami" | "phux_approvals" => {
             json!({})
         }
         "phux_snapshot"
