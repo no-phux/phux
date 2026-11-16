@@ -115,11 +115,7 @@ async fn send(stream: &mut InnerStream, frame: &FrameKind) {
     write_frame(stream, frame).await.expect("send");
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
-}
+use phux_server_testkit::contains;
 
 /// A relayed attach types into a real PTY and reads the echo, end to end,
 /// while every byte the relay forwarded is ciphertext: no keystroke, no

@@ -50,10 +50,7 @@ fn image_burst_command(release: &std::path::Path) -> CommandBuilder {
     cmd
 }
 
-/// Substring search over accumulated wire bytes.
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
+use phux_server_testkit::contains;
 
 /// HELLO with `caps`, then ATTACH and drain through `BOOTSTRAP_READY`.
 async fn attach_with_caps(

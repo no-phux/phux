@@ -12,7 +12,6 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::wire::info::SessionSnapshot;
-use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, recv_typed, recv_until,
@@ -20,12 +19,7 @@ use phux_server_testkit::{
 };
 use tokio::net::UnixStream;
 
-/// `/bin/sh -c script`.
-pub(crate) fn sh(script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
+pub(crate) use phux_server_testkit::sh;
 
 /// `ATTACH` with attach id 1 and no scrollback.
 pub(crate) const fn attach(target: AttachTarget, cols: u16, rows: u16) -> FrameKind {
@@ -156,9 +150,7 @@ pub(crate) async fn output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<
     acc
 }
 
-pub(crate) fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|window| window == needle)
-}
+pub(crate) use phux_server_testkit::contains;
 
 /// The pane's reported cwd, canonicalized (macOS /var -> /private/var).
 pub(crate) fn canonical_cwd(snapshot: &SessionSnapshot, pane: usize) -> PathBuf {

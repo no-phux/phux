@@ -12,15 +12,9 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, StateScope};
 use tokio::net::UnixStream;
 
-use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::command;
 
-/// `/bin/sh -c script`.
-pub(crate) fn sh(script: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
+pub(crate) use phux_server_testkit::sh;
 
 /// An unmodified press of a text-less key (Enter, Escape, arrows, ...).
 pub(crate) const fn named_key(key: PhysicalKey) -> KeyEvent {

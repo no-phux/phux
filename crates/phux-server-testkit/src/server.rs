@@ -169,6 +169,18 @@ pub fn spawn_server_seed_pty_no_cmd(
         .spawn_at(socket_path)
 }
 
+/// `/bin/sh -c script`, as a seed or launch command.
+pub fn sh(script: &str) -> LaunchCommand {
+    let mut cmd = LaunchCommand::new("/bin/sh");
+    cmd.args(["-c", script]);
+    cmd
+}
+
+/// Whether `hay` holds `needle` anywhere, as accumulated wire bytes.
+pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|window| window == needle)
+}
+
 /// A `/bin/sh -c` body that ignores `SIGHUP`, so only a pane kill's
 /// `SIGKILL` backstop ends it. It also exits within a second of this test
 /// process ending, so a run that panics, times out, or drops its server
