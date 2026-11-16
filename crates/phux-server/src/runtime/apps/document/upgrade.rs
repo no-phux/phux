@@ -13,13 +13,13 @@ use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_core::ids::ResourceId;
 use phux_protocol::wire::frame::ControlClass;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{DocumentApi, with_control};
+use crate::runtime::apps::producer_stream::collect_within;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -101,22 +101,12 @@ pub(crate) async fn collect_document_cuts(
     documents: Vec<(ResourceId, mpsc::Sender<SnapshotRequest>)>,
     deadline: Duration,
 ) -> HashMap<ResourceId, Option<Bytes>> {
-    let mut pending = documents
-        .into_iter()
-        .map(|(id, snapshot)| async move {
-            let (reply, rx) = oneshot::channel();
-            snapshot.send(SnapshotRequest { reply }).await.ok()?;
-            Some((id, rx.await.ok()?.document))
-        })
-        .collect::<FuturesUnordered<_>>();
-    let mut cuts = HashMap::new();
-    let _ = tokio::time::timeout(deadline, async {
-        while let Some(cut) = pending.next().await {
-            cuts.extend(cut);
-        }
+    collect_within(documents, deadline, |(id, snapshot)| async move {
+        let (reply, rx) = oneshot::channel();
+        snapshot.send(SnapshotRequest { reply }).await.ok()?;
+        Some((id, rx.await.ok()?.document))
     })
-    .await;
-    cuts
+    .await
 }
 
 /// One [`DocumentBlob`] per cut whose document is still registered under a

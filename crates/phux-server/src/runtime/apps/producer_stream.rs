@@ -8,11 +8,16 @@
 //! client-visible refusals; everything here is what those kinds would
 //! otherwise each write out the same way.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
+use futures_util::StreamExt as _;
+use futures_util::stream::FuturesUnordered;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile, ResourceKindSet};
 use phux_protocol::ids::{
     BootstrapId, IdempotencyKey, ResourceId as WireResourceId, ResourceKind as WireKind, StreamId,
@@ -476,4 +481,27 @@ pub(super) async fn finish_spawn(
     if decodes.contains(kind) {
         let _ = attach().await;
     }
+}
+
+/// Ask every item through `ask` concurrently and keep the answers that
+/// arrive within `deadline`; an item that misses it, or answers `None`, is
+/// dropped.
+pub(super) async fn collect_within<T, K, V, Fut>(
+    items: Vec<T>,
+    deadline: Duration,
+    ask: impl Fn(T) -> Fut,
+) -> HashMap<K, V>
+where
+    K: Eq + Hash,
+    Fut: Future<Output = Option<(K, V)>>,
+{
+    let mut pending = items.into_iter().map(ask).collect::<FuturesUnordered<_>>();
+    let mut answers = HashMap::new();
+    let _ = tokio::time::timeout(deadline, async {
+        while let Some(answer) = pending.next().await {
+            answers.extend(answer);
+        }
+    })
+    .await;
+    answers
 }

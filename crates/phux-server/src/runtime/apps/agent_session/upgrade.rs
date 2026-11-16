@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
+use crate::runtime::apps::producer_stream::collect_within;
 use crate::runtime::apps::{KindResume, UpgradeCut};
 use crate::runtime::connections::pane_events::PaneEvents;
 use crate::runtime::upgrade::UpgradeError;
@@ -452,21 +453,10 @@ pub(crate) async fn collect_agent_session_cuts(
             .map(|(_, bootstrap)| bootstrap.clone())
             .collect(),
     };
-    let mut pending = sessions
-        .into_iter()
-        .map(|(session, bootstrap)| async move {
-            request_agent_session_cut(&bootstrap, true)
-                .await
-                .map(|cut| (session, stream_cut(cut)))
-        })
-        .collect::<FuturesUnordered<_>>();
-    let mut cuts = HashMap::with_capacity(wanted);
-    let _ = tokio::time::timeout(deadline, async {
-        while let Some(answer) = pending.next().await {
-            if let Some((session, cut)) = answer {
-                cuts.insert(session, cut);
-            }
-        }
+    let cuts = collect_within(sessions, deadline, |(session, bootstrap)| async move {
+        request_agent_session_cut(&bootstrap, true)
+            .await
+            .map(|cut| (session, stream_cut(cut)))
     })
     .await;
     if cuts.len() < wanted {
