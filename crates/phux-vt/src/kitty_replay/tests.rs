@@ -239,29 +239,36 @@ fn viewport_replay_omits_unplaced_and_fully_clipped_payloads() {
     assert_eq!(items[0].5, Some((0, 0)));
 }
 
+/// A placement partly off the viewport replays cropped to its visible
+/// source rectangle, never dropped and never rescaled.
 #[test]
-fn replay_crops_partially_scrolled_images_instead_of_dropping_them() {
-    let mut source = terminal();
-    transmit(&mut source, 7, 16, 64);
-    source.vt_write(b"\x1b_Ga=p,i=7,p=1,c=2,r=4,C=1,q=2;\x1b\\\x1b[5;1H\n\n");
-    let mut target = terminal();
-    replay(&source, &mut target, (0, 0));
-    let items = placements(&target);
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].5, Some((0, 0)));
-    assert_eq!(items[0].3, [2, 2, 0, 32, 0, 32, 0, 0]);
-}
-
-#[test]
-fn replay_clips_bottom_right_without_rescaling_the_full_source() {
-    let mut source = terminal();
-    transmit(&mut source, 7, 32, 48);
-    source.vt_write(b"\x1b[4;9H\x1b_Ga=p,i=7,p=1,c=4,r=3,C=1,q=2;\x1b\\");
-    let mut target = terminal();
-    replay(&source, &mut target, (0, 0));
-    let items = placements(&target);
-    assert_eq!(items[0].5, Some((8, 3)));
-    assert_eq!(items[0].3, [2, 2, 0, 0, 16, 32, 0, 0]);
+fn replay_crops_partially_visible_placements_to_their_visible_source() {
+    for (label, (width, height), writes, origin, source_rect) in [
+        (
+            "scrolled off the top",
+            (16, 64),
+            b"\x1b_Ga=p,i=7,p=1,c=2,r=4,C=1,q=2;\x1b\\\x1b[5;1H\n\n".as_slice(),
+            (0, 0),
+            [2, 2, 0, 32, 0, 32, 0, 0],
+        ),
+        (
+            "clipped bottom-right",
+            (32, 48),
+            b"\x1b[4;9H\x1b_Ga=p,i=7,p=1,c=4,r=3,C=1,q=2;\x1b\\",
+            (8, 3),
+            [2, 2, 0, 0, 16, 32, 0, 0],
+        ),
+    ] {
+        let mut source = terminal();
+        transmit(&mut source, 7, width, height);
+        source.vt_write(writes);
+        let mut target = terminal();
+        replay(&source, &mut target, (0, 0));
+        let items = placements(&target);
+        assert_eq!(items.len(), 1, "{label}");
+        assert_eq!(items[0].5, Some(origin), "{label}");
+        assert_eq!(items[0].3, source_rect, "{label}");
+    }
 }
 
 #[test]
