@@ -119,17 +119,15 @@ async fn delayed_duplicate_ack_and_old_generation_do_not_roll_back_projection() 
             &receipt,
             &update,
         ));
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                3,
-                NativeUpdate::State {
-                    state: NativeState::Working,
-                    turn_id: Some("newer".into()),
-                },
-            )
-            .await,
-        );
+        fx.published(
+            generation,
+            3,
+            NativeUpdate::State {
+                state: NativeState::Working,
+                turn_id: Some("newer".into()),
+            },
+        )
+        .await;
         decode::<NativePublicationReceipt>(acknowledge_publication(
             &fx.state, &fx.agent, older, generation, &receipt, &update,
         ));
@@ -176,9 +174,7 @@ async fn sealed_closure_is_fenced_retryable_and_committed_once() {
                 assert!(!binding.view.connected);
             });
             assert_eq!(
-                fx.command(fx.owner, 99, prompt("never restart"))
-                    .await
-                    .disposition,
+                fx.disposition(fx.owner, 99, prompt("never restart")).await,
                 NativeDisposition::Refused
             );
             seal(&fx, false).await;

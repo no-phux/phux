@@ -42,28 +42,17 @@ async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
                 .clone()),
             Some("working".into())
         );
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                3,
-                NativeUpdate::QuestionOpened {
-                    question: question("input"),
-                },
-            )
-            .await,
-        );
+        fx.ask(generation, 3, "input").await;
         assert!(fx.state.with(|s| s.agent_is_asked(fx.parent)));
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                4,
-                NativeUpdate::QuestionClosed {
-                    id: "question-A".into(),
-                    reason: "provider cancelled".into(),
-                },
-            )
-            .await,
-        );
+        fx.published(
+            generation,
+            4,
+            NativeUpdate::QuestionClosed {
+                id: "question-A".into(),
+                reason: "provider cancelled".into(),
+            },
+        )
+        .await;
         assert!(!fx.state.with(|s| s.agent_is_asked(fx.parent)));
         let forged = crate::runtime::apps::agent_session::append::handle_append_resource_output(
             &fx.state,
@@ -131,9 +120,8 @@ async fn dispatched_upgrade_operation_is_unknown_and_never_automatically_replaye
         let fx = Fixture::new();
         let generation = fx.ready().await;
         assert_eq!(
-            fx.command(fx.owner, 31, prompt("may already have reached SDK"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 31, prompt("may already have reached SDK"))
+                .await,
             NativeDisposition::Queued
         );
         assert_eq!(fx.receive(generation).await.operation_id, 31);

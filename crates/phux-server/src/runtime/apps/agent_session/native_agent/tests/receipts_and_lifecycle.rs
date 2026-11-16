@@ -49,16 +49,12 @@ async fn queued_is_not_admission_and_eventual_receipts_are_truthful() {
         let fx = Fixture::new();
         let generation = fx.ready().await;
         assert_eq!(
-            fx.command(fx.owner, 40, prompt("reserved input"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 40, prompt("reserved input")).await,
             NativeDisposition::Queued
         );
         fx.receive(generation).await;
         assert_eq!(
-            fx.command(fx.owner, 40, prompt("reserved input"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 40, prompt("reserved input")).await,
             NativeDisposition::Unknown
         );
         for (disposition, detail) in [
@@ -120,9 +116,7 @@ async fn revoked_queued_caller_is_refused_before_host_delivery_and_closed_source
         let fx = Fixture::new();
         fx.ready().await;
         assert_eq!(
-            fx.command(fx.owner, 50, prompt("reserved input"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 50, prompt("reserved input")).await,
             NativeDisposition::Queued
         );
         fx.state.with_mut(|s| {
@@ -225,9 +219,8 @@ async fn sealed_cut_refuses_new_input_and_preserves_same_publication_retry() {
         let before = fx.cut().await.base_seq;
         fx.state.with_mut(|s| s.native_agents_mut().sealed = true);
         assert_eq!(
-            fx.command(fx.owner, 77, prompt("must not dispatch after cut"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 77, prompt("must not dispatch after cut"))
+                .await,
             NativeDisposition::Refused
         );
         let update = NativeUpdate::Notice {
@@ -259,9 +252,8 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
         let fx = Fixture::new();
         fx.ready().await;
         assert_eq!(
-            fx.command(fx.host, 90, prompt("tool must not control its own model"))
-                .await
-                .disposition,
+            fx.disposition(fx.host, 90, prompt("tool must not control its own model"))
+                .await,
             NativeDisposition::Refused
         );
         // The durable, explicit recipe guards ownership even without the

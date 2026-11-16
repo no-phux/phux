@@ -1,18 +1,7 @@
 #[test]
 fn append_resource_output_is_admitted_through_the_parent_alone() {
     let mut world = world();
-    let child = world
-        .state
-        .new_agent_session(
-            world.alpha_core,
-            &phux_core::resource::AgentFacet {
-                provider: "claude".to_owned(),
-                native_id: None,
-                state: None,
-            },
-        )
-        .unwrap();
-    let child_wire = world.state.idspace.intern_resource(child);
+    let child_wire = agent_child(&mut world);
     let append = Command::AppendResourceOutput {
         terminal_id: child_wire.clone(),
         bytes: b"{}\n".to_vec(),

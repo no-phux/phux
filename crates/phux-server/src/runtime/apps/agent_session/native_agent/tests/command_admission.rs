@@ -6,76 +6,49 @@ async fn exact_resource_activation_and_operation_identity_are_required() {
     crate::runtime::test_support::local(async {
         let fx = Fixture::new();
         fx.ready().await;
-        let wrong_resource = fx
-            .request(
-                fx.owner,
-                NativeRequest::Command {
-                    agent_session_id: fx.parent_wire.clone(),
-                    command: NativeCommand {
-                        operation_id: 1,
-                        activation: "activation-A".into(),
-                        intent: prompt("do not execute"),
+        for (label, agent_session_id, operation_id, activation) in [
+            ("wrong resource", fx.parent_wire.clone(), 1, "activation-A"),
+            ("stale activation", fx.agent.clone(), 99, "other-activation"),
+        ] {
+            let refused = fx
+                .request(
+                    fx.owner,
+                    NativeRequest::Command {
+                        agent_session_id,
+                        command: NativeCommand {
+                            operation_id,
+                            activation: activation.into(),
+                            intent: prompt("do not execute"),
+                        },
                     },
-                },
-            )
-            .await;
-        assert_eq!(
-            decode::<NativeCommandResult>(wrong_resource).disposition,
-            NativeDisposition::Refused
-        );
-        let stale = fx
-            .request(
-                fx.owner,
-                NativeRequest::Command {
-                    agent_session_id: fx.agent.clone(),
-                    command: NativeCommand {
-                        operation_id: 99,
-                        activation: "other-activation".into(),
-                        intent: prompt("do not execute"),
-                    },
-                },
-            )
-            .await;
-        assert_eq!(
-            decode::<NativeCommandResult>(stale).disposition,
-            NativeDisposition::Refused
-        );
-        assert_eq!(
-            fx.command(fx.owner, 99, prompt("changed activation and payload"))
-                .await
-                .disposition,
-            NativeDisposition::Refused
-        );
-        assert_eq!(
-            fx.command(fx.owner, 1, prompt("reserved input"))
-                .await
-                .disposition,
-            NativeDisposition::Queued
-        );
-        assert_eq!(
-            fx.command(fx.owner, 1, prompt("different input"))
-                .await
-                .disposition,
-            NativeDisposition::Refused
-        );
-        assert_eq!(
-            fx.command(fx.owner, 1, prompt("reserved input"))
-                .await
-                .disposition,
-            NativeDisposition::Queued
-        );
-        assert_eq!(
-            fx.command(
-                fx.owner,
+                )
+                .await;
+            assert_eq!(
+                decode::<NativeCommandResult>(refused).disposition,
+                NativeDisposition::Refused,
+                "{label}"
+            );
+        }
+        for (id, intent, want) in [
+            (
+                99,
+                prompt("changed activation and payload"),
+                NativeDisposition::Refused,
+            ),
+            (1, prompt("reserved input"), NativeDisposition::Queued),
+            (1, prompt("different input"), NativeDisposition::Refused),
+            (1, prompt("reserved input"), NativeDisposition::Queued),
+            (
                 2,
                 NativeIntent::Interrupt {
-                    turn_id: "stale-turn".into()
-                }
-            )
-            .await
-            .disposition,
-            NativeDisposition::Refused
-        );
+                    turn_id: "stale-turn".into(),
+                },
+                NativeDisposition::Refused,
+            ),
+        ] {
+            let label = format!("operation {id}: {intent:?}");
+            assert_eq!(fx.disposition(fx.owner, id, intent).await, want, "{label}");
+        }
         assert_eq!(
             fx.state
                 .with(|s| s.native_agents().bindings[&fx.agent].pending.len()),
@@ -89,33 +62,22 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
     crate::runtime::test_support::local(Box::pin(async {
         let fx = Fixture::new();
         let generation = fx.ready().await;
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                2,
-                NativeUpdate::QuestionOpened {
-                    question: question("confirm"),
-                },
-            )
-            .await,
-        );
+        fx.ask(generation, 2, "confirm").await;
         assert_eq!(
             fx.asked_inventory(),
             (Some("question-A".into()), true, Some(b"1".to_vec()))
         );
         // Codex nonblocking questions can outlive a completed model turn.
         // Only the provider's explicit question closure withdraws the request.
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                3,
-                NativeUpdate::State {
-                    state: NativeState::Done,
-                    turn_id: None,
-                },
-            )
-            .await,
-        );
+        fx.published(
+            generation,
+            3,
+            NativeUpdate::State {
+                state: NativeState::Done,
+                turn_id: None,
+            },
+        )
+        .await;
         assert_eq!(
             fx.asked_inventory(),
             (Some("question-A".into()), true, Some(b"1".to_vec()))
@@ -125,51 +87,34 @@ async fn concurrent_viewers_get_exactly_one_question_responder() {
             s.set_connection_grant(client, ConnectionGrant::owner());
             client
         });
-        let answer = NativeIntent::Answer {
-            question_id: "question-A".into(),
-            response: serde_json::json!({"confirmed":false}),
-        };
+        let answer_a = answer(serde_json::json!({"confirmed":false}));
         let (a, b) = tokio::join!(
-            fx.command(fx.owner, 10, answer.clone()),
-            fx.command(second, 11, answer)
+            fx.disposition(fx.owner, 10, answer_a.clone()),
+            fx.disposition(second, 11, answer_a)
         );
-        assert_eq!(
-            [a.disposition, b.disposition]
-                .iter()
-                .filter(|disposition| **disposition == NativeDisposition::Queued)
-                .count(),
-            1
-        );
-        assert_eq!(
-            [a.disposition, b.disposition]
-                .iter()
-                .filter(|disposition| **disposition == NativeDisposition::Refused)
-                .count(),
-            1
-        );
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                4,
-                NativeUpdate::QuestionClosed {
-                    id: "question-A".into(),
-                    reason: "provider withdrew question".into(),
-                },
-            )
-            .await,
-        );
+        for want in [NativeDisposition::Queued, NativeDisposition::Refused] {
+            assert_eq!(
+                [a, b]
+                    .iter()
+                    .filter(|disposition| **disposition == want)
+                    .count(),
+                1,
+                "{want:?}"
+            );
+        }
+        fx.published(
+            generation,
+            4,
+            NativeUpdate::QuestionClosed {
+                id: "question-A".into(),
+                reason: "provider withdrew question".into(),
+            },
+        )
+        .await;
         assert_eq!(fx.asked_inventory(), (None, false, None));
         assert_eq!(
-            fx.command(
-                second,
-                12,
-                NativeIntent::Answer {
-                    question_id: "question-A".into(),
-                    response: serde_json::json!({"confirmed":true})
-                }
-            )
-            .await
-            .disposition,
+            fx.disposition(second, 12, answer(serde_json::json!({"confirmed":true})))
+                .await,
             NativeDisposition::Refused
         );
         fx.state.with_mut(|s| refuse_undeliverable(s, &fx.agent));
@@ -185,27 +130,14 @@ async fn human_permission_and_parent_input_lease_gate_native_commands() {
     crate::runtime::test_support::local(async {
         let fx = Fixture::new();
         let generation = fx.ready().await;
-        decode::<NativePublicationReceipt>(
-            fx.publish(
-                generation,
-                2,
-                NativeUpdate::QuestionOpened {
-                    question: question("permission"),
-                },
-            )
-            .await,
-        );
+        fx.ask(generation, 2, "permission").await;
         assert_eq!(
-            fx.command(
+            fx.disposition(
                 fx.host,
                 20,
-                NativeIntent::Answer {
-                    question_id: "question-A".into(),
-                    response: serde_json::json!({"option_id":"deny-once"})
-                }
+                answer(serde_json::json!({"option_id":"deny-once"}))
             )
-            .await
-            .disposition,
+            .await,
             NativeDisposition::Refused
         );
         let other = fx.state.with_mut(|s| {
@@ -215,25 +147,15 @@ async fn human_permission_and_parent_input_lease_gate_native_commands() {
             client
         });
         assert_eq!(
-            fx.command(fx.owner, 21, prompt("lease-blocked"))
-                .await
-                .disposition,
+            fx.disposition(fx.owner, 21, prompt("lease-blocked")).await,
             NativeDisposition::Refused
         );
         fx.state.with_mut(|s| {
             s.release_input_lease(fx.parent, other);
         });
         assert_eq!(
-            fx.command(
-                fx.owner,
-                22,
-                NativeIntent::Answer {
-                    question_id: "question-A".into(),
-                    response: serde_json::json!({"cancelled":true})
-                }
-            )
-            .await
-            .disposition,
+            fx.disposition(fx.owner, 22, answer(serde_json::json!({"cancelled":true})))
+                .await,
             NativeDisposition::Queued
         );
         let raw = crate::runtime::apps::terminal::commands::handle_route_input(

@@ -336,10 +336,8 @@ impl Fixture {
     }
     pub(super) async fn ready(&self) -> u64 {
         let generation = self.register().await;
-        decode::<NativePublicationReceipt>(
-            self.publish(generation, 1, NativeUpdate::View { view: Self::view() })
-                .await,
-        );
+        self.published(generation, 1, NativeUpdate::View { view: Self::view() })
+            .await;
         generation
     }
     pub(super) async fn command(
@@ -362,6 +360,35 @@ impl Fixture {
             )
             .await,
         )
+    }
+    /// [`Self::command`]'s disposition alone.
+    pub(super) async fn disposition(
+        &self,
+        client: ClientId,
+        id: u64,
+        intent: NativeIntent,
+    ) -> NativeDisposition {
+        self.command(client, id, intent).await.disposition
+    }
+    /// [`Self::publish`], which must be accepted.
+    pub(super) async fn published(
+        &self,
+        generation: u64,
+        id: u64,
+        update: NativeUpdate,
+    ) -> NativePublicationReceipt {
+        decode(self.publish(generation, id, update).await)
+    }
+    /// Publish `question-A` of `kind` as publication `id`.
+    pub(super) async fn ask(&self, generation: u64, id: u64, kind: &str) {
+        self.published(
+            generation,
+            id,
+            NativeUpdate::QuestionOpened {
+                question: question(kind),
+            },
+        )
+        .await;
     }
     pub(super) async fn receive(&self, generation: u64) -> NativeCommand {
         decode(
@@ -423,4 +450,11 @@ pub(super) fn question(kind: &str) -> NativeQuestion {
 }
 pub(super) fn prompt(text: &str) -> NativeIntent {
     NativeIntent::Prompt { text: text.into() }
+}
+/// An answer to `question-A`.
+pub(super) fn answer(response: serde_json::Value) -> NativeIntent {
+    NativeIntent::Answer {
+        question_id: "question-A".into(),
+        response,
+    }
 }
