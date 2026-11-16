@@ -51,7 +51,11 @@ pub(super) enum Query {
     #[cfg(feature = "engine")]
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
-    BracketedPaste(ResourceId, Sender<Result<bool, EngineError>>),
+    Mode(
+        ResourceId,
+        libghostty_vt::mode::Mode,
+        Sender<Result<bool, EngineError>>,
+    ),
     #[cfg(feature = "engine")]
     Prompt(ResourceId, Sender<ReplicaPrompt>),
     #[cfg(feature = "engine")]

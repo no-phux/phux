@@ -21,6 +21,9 @@ pub struct RuneCfg {
     pub option_as_meta: Option<bool>,
     /// Copy a selection to the clipboard as soon as it is made.
     pub copy_on_select: Option<bool>,
+    /// The wheel over a full-screen program that doesn't use the mouse sends
+    /// arrow keys, unless the program resets DEC 1007. On when unset.
+    pub wheel_arrows: Option<bool>,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: Option<bool>,
     /// List the session used last first, instead of in the arranged order.

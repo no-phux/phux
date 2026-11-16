@@ -15,6 +15,7 @@ pub(super) enum Entry {
     CopySelect,
     ConfirmClose,
     OptionMeta,
+    WheelArrows,
     QuickTerminal,
     QuickChord,
     Notifications,
@@ -26,7 +27,7 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Theme,
         Self::HoverToolbar,
         Self::TextSize,
@@ -34,6 +35,7 @@ impl Entry {
         Self::CopySelect,
         Self::ConfirmClose,
         Self::OptionMeta,
+        Self::WheelArrows,
         Self::QuickTerminal,
         Self::QuickChord,
         Self::Notifications,
@@ -52,6 +54,7 @@ impl Entry {
             | Self::CopySelect
             | Self::ConfirmClose
             | Self::OptionMeta
+            | Self::WheelArrows
             | Self::QuickTerminal
             | Self::QuickChord => Category::Terminal,
             Self::Notifications => Category::Notifications,
@@ -70,6 +73,7 @@ impl Entry {
             Self::CopySelect => "Copy on select",
             Self::ConfirmClose => "Confirm before closing",
             Self::OptionMeta => "Option as Meta",
+            Self::WheelArrows => "Scroll full-screen programs with arrows",
             Self::QuickTerminal => "Quick terminal",
             Self::QuickChord => "Quick terminal shortcut",
             Self::Notifications => "Notifications",
@@ -98,6 +102,11 @@ impl Entry {
                  choose, only a terminal an agent runs in asks."
             }
             Self::OptionMeta => "Option sends Esc-prefixed keys instead of typing å and ∑.",
+            Self::WheelArrows => {
+                "Scrolling over a full-screen program that doesn't use the mouse sends Up and \
+                 Down, unless the program turned that off. Off, scrolling there does nothing, so \
+                 it can't recall old prompts in an agent's input."
+            }
             Self::QuickTerminal => {
                 "A shortcut drops a terminal over any app, holding the quick session on this \
                  computer. It works in every app, so it's off until you turn it on."
@@ -134,6 +143,7 @@ impl Entry {
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
+            Self::WheelArrows => on(desk.settings.wheel_arrows),
             Self::QuickTerminal => on(desk.quick_chord.on),
             Self::QuickChord => desk.quick_chord.recorder.keycaps().concat(),
             Self::Notifications => on(desk.settings.notifications),
@@ -177,6 +187,7 @@ impl Entry {
             Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
             Self::OptionMeta => "alt keyboard escape",
+            Self::WheelArrows => "mouse wheel trackpad alternate scroll arrow keys history tui",
             Self::QuickTerminal | Self::QuickChord => {
                 "global hotkey shortcut drop down dropdown panel quake visor"
             }
@@ -271,6 +282,12 @@ impl Entry {
                 desk.settings.option_as_meta,
                 Desk::toggle_option_as_meta,
                 file.option_as_meta.is_some(),
+            ),
+            Self::WheelArrows => (
+                "set-wheel-arrows",
+                desk.settings.wheel_arrows,
+                Desk::toggle_wheel_arrows,
+                file.wheel_arrows.is_some(),
             ),
             Self::QuickTerminal => (
                 "set-quick-terminal",

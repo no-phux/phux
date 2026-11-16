@@ -262,6 +262,15 @@ impl Desk {
             return;
         }
         if client.is_alt_screen(terminal) {
+            // No history to scroll: arrows only when the program keeps DEC
+            // 1007 on and the person hasn't turned them off.
+            let arrows = self.settings.wheel_arrows
+                && client
+                    .engine()
+                    .is_some_and(|engine| engine.alt_scroll(terminal).unwrap_or(true));
+            if !arrows {
+                return;
+            }
             let key = if steps > 0 {
                 PhysicalKey::ArrowUp
             } else {

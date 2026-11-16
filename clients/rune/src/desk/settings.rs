@@ -72,6 +72,8 @@ pub struct Settings {
     pub notifications: bool,
     pub option_as_meta: bool,
     pub copy_on_select: bool,
+    /// The wheel over a full-screen program sends arrows (DEC 1007 permitting).
+    pub wheel_arrows: bool,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
@@ -92,6 +94,7 @@ impl Settings {
             notifications: prefs.get("notifications").unwrap_or(true),
             option_as_meta: prefs.get("option_as_meta").unwrap_or(false),
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
+            wheel_arrows: prefs.get("wheel_arrows").unwrap_or(true),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
             hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
@@ -108,6 +111,7 @@ impl Settings {
             notifications: file.notifications.unwrap_or(self.notifications),
             option_as_meta: file.option_as_meta.unwrap_or(self.option_as_meta),
             copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
+            wheel_arrows: file.wheel_arrows.unwrap_or(self.wheel_arrows),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
             hover_toolbar: self.hover_toolbar,
@@ -162,6 +166,7 @@ impl Desk {
                 notifications: Some(settings.notifications),
                 option_as_meta: Some(settings.option_as_meta),
                 copy_on_select: Some(settings.copy_on_select),
+                wheel_arrows: Some(settings.wheel_arrows),
                 confirm_close: Some(settings.confirm_close),
                 ..RuneCfg::default()
             }
@@ -454,6 +459,14 @@ impl Desk {
         let _ = self
             .prefs
             .set("copy_on_select", &self.settings.copy_on_select);
+    }
+
+    pub fn toggle_wheel_arrows(&mut self) {
+        if self.file_managed(self.file.wheel_arrows.is_some()) {
+            return;
+        }
+        self.settings.wheel_arrows = !self.settings.wheel_arrows;
+        let _ = self.prefs.set("wheel_arrows", &self.settings.wheel_arrows);
     }
 
     pub fn toggle_confirm_close(&mut self) {

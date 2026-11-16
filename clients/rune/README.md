@@ -184,7 +184,8 @@ session (or `--session NAME`). It never creates a session on its own.
   underlines, box and block glyphs, wide characters, cursor (with blink) and
   selection, on device-pixel cells. Each pane follows its own size. Programs
   that track the mouse get it; the wheel scrolls history, or sends arrows in
-  full-screen programs. Input methods compose at the cursor.
+  full-screen programs that keep DEC 1007 on (a setting turns that off).
+  Input methods compose at the cursor.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
@@ -213,7 +214,7 @@ session (or `--session NAME`). It never creates a session on its own.
   the system monospace, the bundled JetBrains Mono and two the platform ships;
   `font_family` in Rune's prefs can name any installed family, and one that
   isn't installed shows the system's. Font, text size, notifications,
-  Option as Meta (macOS), copy on select, and close confirmation are remembered
+  Option as Meta (macOS), copy on select, wheel arrows, and close confirmation are remembered
   immediately. A `[rune]` table in `config.toml` overrides any of them
   ([config](../../docs/config.md#rune)). Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
