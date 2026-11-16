@@ -111,6 +111,66 @@ test("a delete-only tree passes and a new page fails, through git", async () => 
   expect(fail.lines[0]).toBe("uncatalogued documentation: docs/zz-uncatalogued-probe.md");
 });
 
+function catalogThatLoads(): string {
+  const path = join(scratch, "discover-ok.ts");
+  writeFileSync(path, "export async function discover() {}\n");
+  return path;
+}
+
+test("a bad head SHA fails closed", async () => {
+  const repo = join(scratch, "bad-head");
+  mkdirSync(repo, { recursive: true });
+  git(["init", "--quiet"], repo);
+  git(["config", "user.email", "catalog@example.invalid"], repo);
+  git(["config", "user.name", "Catalog"], repo);
+  git(["config", "commit.gpgsign", "false"], repo);
+  git(["config", "core.hooksPath", "/dev/null"], repo);
+  const base = commit(repo, { "docs/kept.md": "# kept\n" });
+  const proc = Bun.spawnSync(["bun", repoPath("scripts/ci/docs-catalog-new-misses.ts")], {
+    cwd: repoPath("."),
+    env: {
+      ...process.env,
+      DOCS_CATALOG_REPO: repo,
+      CATALOG: catalogThatLoads(),
+      BASE_SHA: base,
+      HEAD_SHA: "deadbeef",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const text = `${proc.stdout.toString()}${proc.stderr.toString()}`;
+  expect(proc.exitCode).not.toBe(0);
+  expect(text).not.toContain("no new uncatalogued page");
+  expect(text).toContain("could not read the head commit deadbeef");
+});
+
+test("a bad base SHA fails closed", async () => {
+  const repo = join(scratch, "bad-base");
+  mkdirSync(repo, { recursive: true });
+  git(["init", "--quiet"], repo);
+  git(["config", "user.email", "catalog@example.invalid"], repo);
+  git(["config", "user.name", "Catalog"], repo);
+  git(["config", "commit.gpgsign", "false"], repo);
+  git(["config", "core.hooksPath", "/dev/null"], repo);
+  const head = commit(repo, { "docs/kept.md": "# kept\n" });
+  const proc = Bun.spawnSync(["bun", repoPath("scripts/ci/docs-catalog-new-misses.ts")], {
+    cwd: repoPath("."),
+    env: {
+      ...process.env,
+      DOCS_CATALOG_REPO: repo,
+      CATALOG: catalogThatLoads(),
+      BASE_SHA: "deadbeef",
+      HEAD_SHA: head,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const text = `${proc.stdout.toString()}${proc.stderr.toString()}`;
+  expect(proc.exitCode).not.toBe(0);
+  expect(text).not.toContain("no new uncatalogued page");
+  expect(text).toContain("could not read the base commit deadbeef");
+});
+
 test("a missing catalog module fails to load", async () => {
   let failed = false;
   try {

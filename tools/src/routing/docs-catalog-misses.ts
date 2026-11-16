@@ -22,6 +22,11 @@ export const BASE_MESSAGE =
   "website docs catalog could not resolve the planner base; failing the job";
 export const CHECK_PREFIX = "website docs catalog check failed:";
 
+/** A required gate cannot pass a commit it could not read. */
+export function unreadableCommitMessage(side: "head" | "base", sha: string): string {
+  return `website docs catalog could not read the ${side} commit ${sha}; failing the job`;
+}
+
 const UNCATALOGUED = /^uncatalogued documentation: (docs\/[^/\s;]+\.md)\b/;
 const MAX_MISSES = 1000;
 
@@ -107,24 +112,44 @@ export async function loadDiscover(catalogPath: string): Promise<Discover> {
   }
 }
 
-function extractDocs(sha: string, cwd: string): string {
+function gitOk(args: string[], cwd: string): boolean {
+  return Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+}
+
+/** The commit object is readable. A missing or malformed SHA is not. */
+function assertCommit(sha: string, side: "head" | "base", cwd: string): void {
+  if (!gitOk(["cat-file", "-e", `${sha}^{commit}`], cwd)) {
+    throw new Error(unreadableCommitMessage(side, sha));
+  }
+}
+
+function extractDocs(sha: string, side: "head" | "base", cwd: string): string {
   const dest = mkdtempSync(join(tmpdir(), "phux-docs-tree-"));
-  const archive = Bun.spawnSync(["git", "archive", sha, "docs"], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (archive.exitCode !== 0) {
-    mkdirSync(join(dest, "docs"), { recursive: true });
-    return join(dest, "docs");
-  }
-  const extracted = Bun.spawnSync(["tar", "-x", "-C", dest], { stdin: archive.stdout });
-  if (extracted.exitCode !== 0) {
-    throw new Error(`${CHECK_PREFIX} could not extract docs at ${sha}`);
-  }
   const docs = join(dest, "docs");
-  if (!existsSync(docs)) mkdirSync(docs, { recursive: true });
-  return docs;
+  try {
+    // Empty tree only when this commit exists and has no docs path.
+    // Any other archive failure fails closed.
+    if (!gitOk(["cat-file", "-e", `${sha}:docs`], cwd)) {
+      mkdirSync(docs, { recursive: true });
+      return docs;
+    }
+    const archive = Bun.spawnSync(["git", "archive", sha, "docs"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (archive.exitCode !== 0) {
+      throw new Error(`${CHECK_PREFIX} could not archive docs at the ${side} commit ${sha}`);
+    }
+    const extracted = Bun.spawnSync(["tar", "-x", "-C", dest], { stdin: archive.stdout });
+    if (extracted.exitCode !== 0 || !existsSync(docs)) {
+      throw new Error(`${CHECK_PREFIX} could not archive docs at the ${side} commit ${sha}`);
+    }
+    return docs;
+  } catch (error) {
+    rmSync(dest, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function compareDocs(options: {
@@ -133,15 +158,18 @@ export async function compareDocs(options: {
   head: string;
   discover: Discover;
 }): Promise<{ code: number; lines: string[] }> {
-  const baseDir = extractDocs(options.base, options.repo);
-  const headDir = extractDocs(options.head, options.repo);
+  assertCommit(options.base, "base", options.repo);
+  assertCommit(options.head, "head", options.repo);
+  const baseDir = extractDocs(options.base, "base", options.repo);
+  let headDir: string | undefined;
   try {
+    headDir = extractDocs(options.head, "head", options.repo);
     const basePages = await collectUncatalogued(baseDir, options.discover);
     const headPages = await collectUncatalogued(headDir, options.discover);
     return formatReport(basePages, headPages);
   } finally {
     rmSync(dirname(baseDir), { recursive: true, force: true });
-    rmSync(dirname(headDir), { recursive: true, force: true });
+    if (headDir !== undefined) rmSync(dirname(headDir), { recursive: true, force: true });
   }
 }
 
