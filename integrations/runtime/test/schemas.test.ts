@@ -33,7 +33,7 @@ function inventory(row: unknown) {
 }
 
 test("inventory accepts every canonical Rust producer kind and rejects unknown vocabulary", () => {
-  const model = readFileSync(new URL("../../../../crates/phux/src/commands/agent/model.rs", import.meta.url), "utf8");
+  const model = readFileSync(new URL("../../../../crates/phux-client/src/agent/detect/model.rs", import.meta.url), "utf8");
   const enumBody = /enum AgentKind \{([\s\S]*?)\n\}/.exec(model)?.[1];
   assert.ok(enumBody, "producer enum must remain discoverable");
   const kinds = [...enumBody.matchAll(/^    ([A-Z][A-Za-z]+),$/gm)]
