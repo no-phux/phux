@@ -21,6 +21,9 @@ testkit = ["phux-client-runtime/testing", "dep:phux-wire-fixtures"]
 [dependencies]
 phux-protocol.workspace = true
 phux-core.workspace = true
+# The detection manifests `agent::detect` replays to name the rule behind a
+# reported state (ADR-0046). ratatui-free.
+phux-agent-rules.workspace = true
 # Only the asciicast codec: `default-features = false` drops `render`. By
 # path because cargo will not let a member disable a workspace dependency's
 # default features, and the `phux` binary wants `render` on.

@@ -1,4 +1,5 @@
-//! The client-side projection behind `phux agent list` / `show` / `explain`.
+//! The client-side projection behind `phux agent list` / `show` / `explain`
+//! and their MCP tools.
 //!
 //! Agent state has one authority: the server's detector, published as the
 //! pane's `phux.agent/v1` record (ADR-0046, ADR-0040), which `agent wait`
@@ -11,20 +12,27 @@
 //! This is a LEVEL read (`docs/program-sequences.md#the-agent-record`): nothing here is evidence
 //! that a turn finished. The completion gate is `phux agent wait`.
 
+use crate::agent_meta::{AgentMetaState, AgentRecord};
 use phux_agent_rules::explain::{
     self as agent_explain, Capture, EvaluatedRule, Explanation, PredicateEvidence,
 };
-use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 
-use super::model::{
-    AgentIdentity, AgentKind, AgentSource, AgentStateReport, PaneEvidence, PluginAgent,
-    StateSignal, identity, plugin_attention,
+mod config;
+mod model;
+mod snapshot;
+
+pub use self::config::configured_agents;
+pub use self::model::{
+    AgentIdentity, AgentKind, AgentSessionJson, AgentSource, AgentStateReport, PaneEvidence,
+    PluginAgent, SessionEvidence,
 };
+use self::model::{StateSignal, identity, plugin_attention};
+pub use self::snapshot::{agents_document, classify_snapshot, pane_evidence};
 
-pub(super) fn infer_agent_state(
-    evidence: &PaneEvidence,
-    plugins: &[PluginAgent],
-) -> AgentStateReport {
+/// Project one pane: its `phux.agent/v1` record when it has one, else the
+/// declarations and evidence that stand in for it.
+#[must_use]
+pub fn infer_agent_state(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> AgentStateReport {
     if let Some(record) = &evidence.record {
         return report_from_record(evidence, plugins, record);
     }
@@ -100,7 +108,7 @@ fn report_from_record(
         agent_session: evidence
             .agent_session
             .as_ref()
-            .map(super::model::SessionEvidence::to_json),
+            .map(SessionEvidence::to_json),
         address: None,
         address_refusal: None,
     }
@@ -253,7 +261,9 @@ fn collect_matched(node: &PredicateEvidence, out: &mut Vec<String>) {
     }
 }
 
-pub(super) fn positive_flags(explained: &Explanation) -> Vec<&'static str> {
+/// The manifest flags that held on this screen, as `explain` names them.
+#[must_use]
+pub fn positive_flags(explained: &Explanation) -> Vec<&'static str> {
     let mut flags = Vec::new();
     if explained.visible_idle {
         flags.push("visible-idle");
@@ -337,7 +347,7 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
         agent_session: evidence
             .agent_session
             .as_ref()
-            .map(super::model::SessionEvidence::to_json),
+            .map(SessionEvidence::to_json),
         address: None,
         address_refusal: None,
     }

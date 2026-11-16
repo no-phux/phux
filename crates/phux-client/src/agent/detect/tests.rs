@@ -1,11 +1,11 @@
 use super::infer_agent_state;
-use crate::commands::agent::model::{AgentKind, PaneEvidence, SessionEvidence};
-use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+use super::{AgentKind, PaneEvidence, SessionEvidence};
+use crate::agent_meta::{AgentMetaState, AgentRecord};
 
 /// The committed golden the server detector is pinned against, so the
 /// provenance test exercises the shipped manifest.
 const CLAUDE_BLOCKED: &str =
-    include_str!("../../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
+    include_str!("../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
 
 fn record(name: &str, kind: &str, state: AgentMetaState) -> AgentRecord {
     AgentRecord {
@@ -279,7 +279,7 @@ fn json_contains_confidence_and_sources() {
 /// `phux.agent/v1` vocabulary, one lowercase word each.
 #[test]
 fn json_state_and_attention_words_are_pinned() {
-    use phux_client::agent_meta::AgentAttention;
+    use crate::agent_meta::AgentAttention;
     for (state, word, attention) in [
         (AgentMetaState::Unknown, "unknown", "low"),
         (AgentMetaState::Idle, "idle", "none"),
@@ -327,7 +327,7 @@ fn json_confidence_is_the_shortest_decimal() {
 /// screen heuristic.
 #[test]
 fn a_shell_foreground_outranks_agent_words_on_the_screen() {
-    use phux_client::agent_meta::PaneOccupantRecord;
+    use crate::agent_meta::PaneOccupantRecord;
     let screen = ["host:claude-501 me$ cat notes", "codex and claude"];
     let mut evidence = PaneEvidence::for_test("@2", Some("claude-501"), &screen);
     evidence.occupant = Some(PaneOccupantRecord {

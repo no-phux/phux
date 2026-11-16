@@ -1,8 +1,14 @@
 use phux_config::plugin::PluginManifestAgent;
 
-use super::model::PluginAgent;
+use super::PluginAgent;
 
-pub(super) fn configured_agents() -> Vec<PluginAgent> {
+/// The agents every enabled `[[plugins]]` manifest declares.
+///
+/// Read from the config file on each call: a long-lived caller (the MCP
+/// server) must see an edit without restarting. An unreadable config or
+/// manifest declares nothing.
+#[must_use]
+pub fn configured_agents() -> Vec<PluginAgent> {
     let path = phux_config::loader::config_path();
     let Ok(cfg) = phux_config::loader::load_from(&path) else {
         return Vec::new();

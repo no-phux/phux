@@ -1,38 +1,51 @@
-use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+use crate::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use phux_config::plugin::{PluginAgentAttention, PluginAgentState};
 use serde::Serialize;
 
+/// One pane's projected agent state: an element of `agents[]` in
+/// `phux agent list|show|explain --json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(super) struct AgentStateReport {
-    pub(super) terminal: String,
-    pub(super) session: String,
-    pub(super) window: String,
-    pub(super) agent: AgentIdentity,
-    pub(super) state: AgentMetaState,
+pub struct AgentStateReport {
+    /// The pane's canonical selector (`@N`).
+    pub terminal: String,
+    /// The phux session the pane is in, or `unknown`.
+    pub session: String,
+    /// The legacy window label (`window-0`), kept for output stability.
+    pub window: String,
+    /// Which agent runs there, as far as the evidence says.
+    pub agent: AgentIdentity,
+    /// The reported lifecycle state.
+    pub state: AgentMetaState,
+    /// How much the evidence supports `state`, 0 to 1.
     #[serde(serialize_with = "confidence_json")]
-    pub(super) confidence: f32,
-    pub(super) attention: AgentAttention,
-    pub(super) title: Option<String>,
-    pub(super) cwd: Option<String>,
-    pub(super) sources: Vec<AgentSource>,
-    pub(super) explanation: String,
+    pub confidence: f32,
+    /// How urgently the pane wants a human.
+    pub attention: AgentAttention,
+    /// The pane's live OSC title.
+    pub title: Option<String>,
+    /// The pane's working directory, when the server knows it.
+    pub cwd: Option<String>,
+    /// The evidence behind `state`, strongest first.
+    pub sources: Vec<AgentSource>,
+    /// Why `state` is what it is, in a sentence.
+    pub explanation: String,
     /// The pane's live `AgentSession` child (ADR-0103), or `null` when it
     /// has none. Additive; `schema_version` stays 1. Named `agent_session`
     /// because `session` in this document is already the phux session name.
-    pub(super) agent_session: Option<AgentSessionJson>,
+    pub agent_session: Option<AgentSessionJson>,
     /// `%name` when that selector resolves to this pane, else `null`
     /// (ADR-0075 point 4). Additive; `schema_version` stays 1.
-    pub(super) address: Option<String>,
+    pub address: Option<String>,
     /// Why this pane's record name is listed but not `%`-addressable: the
     /// `--json` code `%name` would refuse with (`invalid_agent_name`,
     /// `selector_not_single`, `partial_view`). `null` when addressable or
     /// when the pane has no record.
-    pub(super) address_refusal: Option<&'static str>,
+    pub address_refusal: Option<&'static str>,
 }
 
 impl AgentStateReport {
     /// Search only inventory fields, never screen contents or detector evidence.
-    pub(super) fn matches_query(&self, query: &str) -> bool {
+    pub fn matches_query(&self, query: &str) -> bool {
         if query.trim().is_empty() {
             return true;
         }
@@ -52,8 +65,8 @@ impl AgentStateReport {
         })
     }
 
-    /// Record what `%name` makes of this pane ([`phux_client::selector::agent_address`]).
-    pub(super) fn set_address(&mut self, address: Option<Result<String, &'static str>>) {
+    /// Record what `%name` makes of this pane ([`crate::selector::agent_address`]).
+    pub fn set_address(&mut self, address: Option<Result<String, &'static str>>) {
         (self.address, self.address_refusal) = match address {
             None => (None, None),
             Some(Ok(address)) => (Some(address), None),
@@ -64,8 +77,9 @@ impl AgentStateReport {
     /// The human view's address column: `%name`, `-` with no record, or why
     /// the record's name is not `%`-addressable. A name `%` cannot spell, or
     /// one several panes share, prints the command that names the pane.
-    pub(super) fn address_column(&self) -> String {
-        use crate::commands::json_err::codes::{INVALID_AGENT_NAME, SELECTOR_NOT_SINGLE};
+    #[must_use]
+    pub fn address_column(&self) -> String {
+        use crate::contract::codes::{INVALID_AGENT_NAME, SELECTOR_NOT_SINGLE};
         match (&self.address, self.address_refusal) {
             (Some(address), _) => address.clone(),
             (None, Some(code)) if code == INVALID_AGENT_NAME || code == SELECTOR_NOT_SINGLE => {
@@ -96,40 +110,58 @@ fn confidence_json<S: serde::Serializer>(
 
 /// The `agent_session` object of `AgentStateJson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct AgentSessionJson {
+pub struct AgentSessionJson {
     /// The session's canonical selector (`@N`).
-    pub(super) resource: String,
+    pub resource: String,
     /// The harness slug the session was opened with.
-    pub(super) provider: String,
+    pub provider: String,
     /// The provider's own session id, when it has one.
-    pub(super) native_id: Option<String>,
+    pub native_id: Option<String>,
 }
 
+/// Which agent a pane runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct AgentIdentity {
-    pub(super) id: String,
-    pub(super) label: String,
-    pub(super) kind: AgentKind,
+pub struct AgentIdentity {
+    /// The agent's slug (`codex`, a plugin id, `unknown`).
+    pub id: String,
+    /// The name to show: the record's name, else the agent's label.
+    pub label: String,
+    /// The agent family.
+    pub kind: AgentKind,
 }
 
+/// The agent family a report names, as `agent.kind` spells it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum AgentKind {
+pub enum AgentKind {
+    /// `OpenAI` Codex.
     Codex,
+    /// Claude Code.
     Claude,
+    /// `OpenCode`.
     OpenCode,
+    /// Pi.
     Pi,
+    /// Oh My Pi.
     Omp,
+    /// Grok.
     Grok,
+    /// Amp.
     Amp,
+    /// Cursor Agent.
     CursorAgent,
+    /// Gemini CLI.
     Gemini,
+    /// Goose.
     Goose,
+    /// Aider.
     Aider,
+    /// A `[[plugins]]` agent declaration.
     Plugin,
     /// ADR-0040: identity declared via a `phux.agent/v1` record whose kind
     /// slug is neither a first-party agent nor a configured plugin.
     Declared,
+    /// No evidence names an agent.
     Unknown,
 }
 
@@ -137,22 +169,28 @@ pub(super) enum AgentKind {
 /// `agent list --json`. `rule` / `region` are present only on sources that are
 /// a detection-manifest rule.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(super) struct AgentSource {
-    pub(super) kind: &'static str,
-    pub(super) signal: String,
+pub struct AgentSource {
+    /// The source family (`agent_record`, `detector_rule`, `identity`, ...).
+    pub kind: &'static str,
+    /// What the source says, in a sentence.
+    pub signal: String,
+    /// How much this source alone supports the state, 0 to 1.
     #[serde(serialize_with = "confidence_json")]
-    pub(super) confidence: f32,
-    pub(super) observed: String,
+    pub confidence: f32,
+    /// What the source saw.
+    pub observed: String,
     /// The ADR-0046 manifest rule id, when this source is one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) rule: Option<String>,
+    pub rule: Option<String>,
     /// The manifest region that rule read, in the spelling a manifest uses.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) region: Option<String>,
+    pub region: Option<String>,
 }
 
 impl AgentSource {
-    pub(super) fn new(
+    /// A source that is not a manifest rule.
+    #[must_use]
+    pub fn new(
         kind: &'static str,
         signal: impl Into<String>,
         confidence: f32,
@@ -169,46 +207,60 @@ impl AgentSource {
     }
 
     /// Attach the detection-manifest rule this source came from.
-    pub(super) fn with_rule(mut self, rule: impl Into<String>, region: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn with_rule(mut self, rule: impl Into<String>, region: impl Into<String>) -> Self {
         self.rule = Some(rule.into());
         self.region = Some(region.into());
         self
     }
 }
 
+/// What the projection knows about one pane before it decides anything.
 #[derive(Debug, Clone)]
-pub(super) struct PaneEvidence {
-    pub(super) terminal: String,
-    pub(super) session: String,
-    pub(super) window: String,
-    pub(super) title: Option<String>,
-    pub(super) cwd: Option<String>,
+pub struct PaneEvidence {
+    /// The pane's canonical selector (`@N`).
+    pub terminal: String,
+    /// The phux session the pane is in, or `unknown`.
+    pub session: String,
+    /// The legacy window label.
+    pub window: String,
+    /// The pane's live OSC title.
+    pub title: Option<String>,
+    /// The pane's working directory.
+    pub cwd: Option<String>,
     /// ADR-0040: the pane's decoded `phux.agent/v1` record, when declared.
     /// Outranks every heuristic source below.
-    pub(super) record: Option<AgentRecord>,
+    pub record: Option<AgentRecord>,
     /// ADR-0103: the pane's live `AgentSession` child and the state its
     /// stream derived, when the server serves one.
-    pub(super) agent_session: Option<SessionEvidence>,
-    pub(super) lines: Vec<String>,
-    pub(super) semantic_input: bool,
+    pub agent_session: Option<SessionEvidence>,
+    /// The visible screen, one string per row.
+    pub lines: Vec<String>,
+    /// Whether any visible cell is OSC-133 input.
+    pub semantic_input: bool,
     /// The server-observed foreground process, when the detector has
     /// published one. A pane whose foreground is its own shell runs no
     /// agent, whatever its screen says.
-    pub(super) occupant: Option<phux_client::agent_meta::PaneOccupantRecord>,
+    pub occupant: Option<crate::agent_meta::PaneOccupantRecord>,
 }
 
 /// The `AgentSession` facet a snapshot carries for a pane's child.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SessionEvidence {
-    pub(super) resource: String,
-    pub(super) provider: String,
-    pub(super) native_id: Option<String>,
+pub struct SessionEvidence {
+    /// The session's canonical selector (`@N`).
+    pub resource: String,
+    /// The harness slug the session was opened with.
+    pub provider: String,
+    /// The provider's own session id, when it has one.
+    pub native_id: Option<String>,
     /// The stream-derived state word (open vocabulary on the wire).
-    pub(super) state: AgentMetaState,
+    pub state: AgentMetaState,
 }
 
 impl SessionEvidence {
-    pub(super) fn to_json(&self) -> AgentSessionJson {
+    /// The report's `agent_session` object.
+    #[must_use]
+    pub fn to_json(&self) -> AgentSessionJson {
         AgentSessionJson {
             resource: self.resource.clone(),
             provider: self.provider.clone(),
@@ -218,8 +270,10 @@ impl SessionEvidence {
 }
 
 impl PaneEvidence {
-    #[cfg(test)]
-    pub(super) fn for_test(terminal: &str, title: Option<&str>, lines: &[&str]) -> Self {
+    /// A pane with only these fields set, for tests of the projection.
+    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    pub fn for_test(terminal: &str, title: Option<&str>, lines: &[&str]) -> Self {
         Self {
             terminal: terminal.to_owned(),
             session: "test".to_owned(),
@@ -235,12 +289,17 @@ impl PaneEvidence {
     }
 }
 
+/// An agent a `[[plugins]]` manifest declares.
 #[derive(Debug, Clone)]
-pub(super) struct PluginAgent {
-    pub(super) id: String,
-    pub(super) label: String,
-    pub(super) state: PluginAgentState,
-    pub(super) attention: PluginAgentAttention,
+pub struct PluginAgent {
+    /// The agent's slug.
+    pub id: String,
+    /// The name to show.
+    pub label: String,
+    /// The state the plugin reports for it.
+    pub state: PluginAgentState,
+    /// The attention the plugin reports for it.
+    pub attention: PluginAgentAttention,
 }
 
 #[derive(Debug, Clone)]

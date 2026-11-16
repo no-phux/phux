@@ -16,6 +16,9 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+// The agent projection behind `phux agent list|show|explain` and the MCP
+// agent reads: the detector replay and the level-read documents.
+pub mod agent;
 pub mod agent_meta;
 // `phux.agent/v1` wire round trips (ADR-0040); the record type is `agent_meta`.
 pub mod agent_record;

@@ -3044,6 +3044,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "libghostty-vt",
+ "phux-agent-rules",
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",

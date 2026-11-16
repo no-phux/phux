@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use phux_client::state::Degradation;
 
-use crate::commands::json_err::{Refusal, codes};
+use crate::commands::json_err::Refusal;
 
 /// Exit status 3: no answer, because the fleet view was incomplete. Retrying
 /// once the satellite is back is right for 3 and wrong for 1.
@@ -77,45 +77,20 @@ pub(crate) fn target_miss(
     degradation: &Degradation,
     degraded_status: u8,
 ) -> Refusal {
+    let err = phux_client::contract::target_miss(target, degradation);
     if degradation.is_complete() {
-        let message = target.map_or_else(
-            || "no such target".to_owned(),
-            |target| format!("no such target: {target}"),
-        );
-        return Refusal::new(
-            codes::NO_SUCH_TARGET,
-            message,
-            "run `phux ls` to see live sessions and panes",
-            crate::exit_codes::EXIT_FAILURE,
-        );
+        return Refusal::from_error(err, crate::exit_codes::EXIT_FAILURE);
     }
-    let message = target.map_or_else(
-        || {
-            "could not resolve the target: this server's view of the fleet is \
-             incomplete, so a miss here does not mean the target is gone"
-                .to_owned()
-        },
-        |target| {
-            format!(
-                "could not resolve '{target}': this server's view of the fleet is \
-                 incomplete, so a miss here does not mean the target is gone"
-            )
-        },
-    );
-    let unreachable: Vec<String> = degradation
-        .notices()
-        .iter()
-        .map(|notice| format!("unreachable — {notice}"))
-        .collect();
-    let remedy = format!(
-        "retry once the satellite link is back; {}",
-        unreachable.join("; ")
-    );
     // A human reads one hint per unreachable satellite instead.
-    let human = std::iter::once(message.clone())
-        .chain(unreachable)
+    let human = std::iter::once(err.message.clone())
+        .chain(
+            degradation
+                .notices()
+                .iter()
+                .map(|notice| format!("unreachable — {notice}")),
+        )
         .collect();
-    Refusal::new(codes::PARTIAL_VIEW, message, remedy, degraded_status).with_human(human)
+    Refusal::from_error(err, degraded_status).with_human(human)
 }
 
 #[cfg(test)]

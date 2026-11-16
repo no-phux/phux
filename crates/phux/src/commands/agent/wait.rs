@@ -20,7 +20,9 @@ use phux_protocol::ids::ResourceId;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
-use super::model::AgentStateReport;
+use phux_client::agent::detect::{
+    AgentStateReport, configured_agents, infer_agent_state, pane_evidence,
+};
 
 /// Version of the `agent wait` result document.
 const RESULT_SCHEMA_VERSION: u8 = 1;
@@ -392,12 +394,9 @@ async fn provenance(
         .resources
         .iter()
         .find(|pane| pane.id == *terminal)?;
-    let mut evidence = super::pane_evidence(socket_path, &snapshot, pane).await;
+    let mut evidence = pane_evidence(socket_path, &snapshot, pane).await;
     evidence.record = record;
-    Some(super::detect::infer_agent_state(
-        &evidence,
-        &super::config::configured_agents(),
-    ))
+    Some(infer_agent_state(&evidence, &configured_agents()))
 }
 
 #[cfg(test)]

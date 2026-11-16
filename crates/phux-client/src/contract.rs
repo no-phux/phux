@@ -166,6 +166,43 @@ pub fn transport_refusal(
     }
 }
 
+/// The refusal for a selector that matched nothing; `target` is `None` for
+/// the focused-pane default.
+///
+/// A whole-fleet miss is `no_such_target`, worded as scripts already grep
+/// for. A miss against a partial view never says "no such target", since
+/// the pane may be on a satellite this server could not reach: it is
+/// `partial_view`, and its remedy names each unreachable satellite.
+#[must_use]
+pub fn target_miss(target: Option<&str>, degradation: &crate::state::Degradation) -> Refusal {
+    if degradation.is_complete() {
+        let message = target.map_or_else(
+            || "no such target".to_owned(),
+            |target| format!("no such target: {target}"),
+        );
+        return Refusal::new(
+            codes::NO_SUCH_TARGET,
+            message,
+            "run `phux ls` to see live sessions and panes",
+        );
+    }
+    let subject = target.map_or_else(|| "the target".to_owned(), |target| format!("'{target}'"));
+    let message = format!(
+        "could not resolve {subject}: this server's view of the fleet is incomplete, so a miss \
+         here does not mean the target is gone"
+    );
+    let unreachable: Vec<String> = degradation
+        .notices()
+        .iter()
+        .map(|notice| format!("unreachable — {notice}"))
+        .collect();
+    let remedy = format!(
+        "retry once the satellite link is back; {}",
+        unreachable.join("; ")
+    );
+    Refusal::new(codes::PARTIAL_VIEW, message, remedy)
+}
+
 /// The sentence for a socket that exists but cannot be dialed.
 ///
 /// Permission denied, not a socket, a path too long for `sockaddr_un`: it
