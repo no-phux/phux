@@ -23,8 +23,10 @@ use std::sync::Mutex;
 
 use phux_client::attach::AttachError;
 
+#[cfg(test)]
+pub(crate) use phux_client::contract::error_document;
 pub(crate) use phux_client::contract::{
-    ERROR_SCHEMA_VERSION, codes, error_document, transport_refusal, unreachable_socket_message,
+    ERROR_SCHEMA_VERSION, codes, error_line, transport_refusal, unreachable_socket_message,
 };
 
 /// One CLI failure: the shared [`phux_client::contract::Refusal`], under the
@@ -128,15 +130,8 @@ fn auto_start_failure(socket_path: &Path) -> Option<String> {
 /// remedy otherwise) and return the exit code. stdout is never touched.
 pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
     if json {
-        match serde_json::to_string(&error_document(err, exit_code)) {
-            // One unstyled JSON document is the stderr protocol.
-            Ok(line) => eprintln!("{line}"),
-            // A Value of strings and numbers cannot fail to serialize; the
-            // fallback keeps the failure visible rather than silent.
-            Err(_) => eprintln!(
-                "{{\"schema_version\":1,\"error\":{{\"code\":\"json_serialize\",\"message\":\"could not render JSON error\"}},\"remedy\":\"run phux doctor and report this bug\",\"exit_code\":{exit_code}}}"
-            ),
-        }
+        // One unstyled JSON document is the stderr protocol.
+        eprintln!("{}", error_line(err, exit_code));
     } else {
         error!("{}", err.message);
         if !err.remedy.is_empty() {

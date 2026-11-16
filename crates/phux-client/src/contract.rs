@@ -103,6 +103,51 @@ pub fn error_document(err: &Refusal, exit_code: u8) -> serde_json::Value {
     })
 }
 
+/// [`error_document`] as the one line the CLI prints on stderr, keys in the
+/// documented order (`schema_version`, `error`, `remedy`, `exit_code`)
+/// whatever `serde_json` features the build unified.
+#[must_use]
+pub fn error_line(err: &Refusal, exit_code: u8) -> String {
+    let context = err.context.as_deref();
+    let line = ErrorLine {
+        schema_version: ERROR_SCHEMA_VERSION,
+        error: ErrorBody {
+            code: err.code,
+            message: &err.message,
+            auto_start_error: err.auto_start_error.as_deref(),
+            recovery: context.and_then(|context| context.recovery.as_ref()),
+            cause_code: context.and_then(|context| context.cause_code),
+        },
+        remedy: &err.remedy,
+        exit_code,
+    };
+    // Strings, numbers, and a derived struct cannot fail to serialize; the
+    // unordered document keeps the failure visible rather than silent.
+    serde_json::to_string(&line).unwrap_or_else(|_| error_document(err, exit_code).to_string())
+}
+
+/// The top level of [`error_line`], in document order.
+#[derive(serde::Serialize)]
+struct ErrorLine<'a> {
+    schema_version: u8,
+    error: ErrorBody<'a>,
+    remedy: &'a str,
+    exit_code: u8,
+}
+
+/// The `error` object of [`error_line`], in document order.
+#[derive(serde::Serialize)]
+struct ErrorBody<'a> {
+    code: &'a str,
+    message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_start_error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<&'a Recovery>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause_code: Option<&'a str>,
+}
+
 /// How to start a server when none is listening, on every surface.
 /// `phux server --ensure` returns once the server is up; bare `phux server`
 /// would hold the caller in the foreground.
@@ -266,6 +311,40 @@ mod tests {
         // The emitted form is one line.
         let line = serde_json::to_string(&doc).unwrap_or_default();
         assert!(!line.contains('\n'), "error line must be single-line");
+    }
+
+    /// The printed line keeps the documented key order and carries exactly
+    /// the document's content.
+    #[test]
+    fn the_error_line_is_the_document_in_documented_order() {
+        use crate::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let plain = Refusal::new(codes::NO_SUCH_TARGET, "no such target: @9", "run `phux ls`");
+        assert_eq!(
+            super::error_line(&plain, 1),
+            r#"{"schema_version":1,"error":{"code":"no_such_target","message":"no such target: @9"},"remedy":"run `phux ls`","exit_code":1}"#
+        );
+        let mut full = plain
+            .with_cause_code("outcome_unknown")
+            .with_recovery(Recovery::new(
+                ScopeKind::OrganizationAuthority,
+                Some("op".into()),
+                EffectCertainty::Unknown,
+                NextAction::Reconcile,
+            ));
+        full.auto_start_error = Some("bind failed".to_owned());
+        let line = super::error_line(&full, 3);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        assert_eq!(parsed, error_document(&full, 3));
+        let order = [
+            "\"code\"",
+            "\"message\"",
+            "\"auto_start_error\"",
+            "\"recovery\"",
+            "\"cause_code\"",
+        ];
+        let positions: Vec<usize> = order.iter().filter_map(|key| line.find(key)).collect();
+        assert_eq!(positions.len(), order.len(), "{line}");
+        assert!(positions.is_sorted(), "{line}");
     }
 
     /// Every attach-error arm maps onto the closed vocabulary, each with a
