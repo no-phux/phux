@@ -22,11 +22,13 @@ use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
-    command, join_after_shutdown, recv_typed, recv_until, run_local, seed_pty, send_frame,
-    spawn_resource, spawn_server_with, wait_for_socket,
+    command, eventually, eventually_async, join_after_shutdown, recv_typed, recv_until, run_local,
+    seed_pty, send_frame, spawn_resource, spawn_server_with, wait_for_socket,
 };
 
 const SESSION: &str = "command-isolation";
+/// How often the marker-file and process waits look again.
+const POLL: Duration = Duration::from_millis(10);
 static BULK_TEST_LOCK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 fn paste(bytes: &[u8]) -> InputEvent {
@@ -101,19 +103,13 @@ async fn upload(
 }
 
 async fn wait_for_lines(path: &Path, count: usize) -> Vec<String> {
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            if let Ok(value) = tokio::fs::read_to_string(path).await {
-                let lines: Vec<_> = value.lines().map(str::to_owned).collect();
-                if lines.len() >= count {
-                    return lines;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let what = format!("marker {} to reach {count} lines", path.display());
+    eventually_async(&what, WIRE_RECV_TIMEOUT, POLL, || async {
+        let value = tokio::fs::read_to_string(path).await.ok()?;
+        let lines: Vec<_> = value.lines().map(str::to_owned).collect();
+        (lines.len() >= count).then_some(lines)
     })
     .await
-    .unwrap_or_else(|_| panic!("marker {} never reached {count} lines", path.display()))
 }
 
 fn put_file(upload_id: FileUploadId, terminal_id: ResourceId, bytes: &[u8]) -> Command {
@@ -537,13 +533,11 @@ fn process_exists(pid: u32) -> bool {
 }
 
 async fn wait_for_process_exit(pid: u32) {
-    timeout(WIRE_RECV_TIMEOUT, async {
-        while process_exists(pid) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let what = format!("transcriber process {pid} to exit with its connection");
+    eventually(&what, WIRE_RECV_TIMEOUT, POLL, || {
+        (!process_exists(pid)).then_some(())
     })
-    .await
-    .unwrap_or_else(|_| panic!("transcriber process {pid} survived connection teardown"));
+    .await;
 }
 
 /// Drop leftover saturation clients and wait for their transcribers to die,

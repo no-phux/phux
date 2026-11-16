@@ -55,11 +55,8 @@ fn options() -> ClientOptions {
 /// Wall-clock poll for a predicate that has no delivery signal of its own
 /// (topology, input eligibility). [`DEADLINE`] is still the failure bound.
 async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !ready() {
-        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let poll = Duration::from_millis(10);
+    phux_server_testkit::eventually(what, DEADLINE, poll, || ready().then_some(())).await;
 }
 
 /// [`DEADLINE`] is idle time since the status last moved. The attach wait

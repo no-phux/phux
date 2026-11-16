@@ -22,6 +22,8 @@ pub mod embedder;
 mod frames;
 mod framing;
 pub use frames::*;
+mod poll;
+pub use poll::{eventually, eventually_async};
 pub mod relay;
 pub mod screen;
 mod server;

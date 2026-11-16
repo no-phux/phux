@@ -7,7 +7,7 @@
 #![allow(clippy::panic, reason = "test assertions")]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client_runtime::control::forward::{self, ForwardError};
 use phux_client_runtime::control::{ControlOptions, Status};
@@ -36,14 +36,13 @@ fn browsing() -> ClientOptions {
 }
 
 async fn wait_for_status(client: &Client, status: Status) {
-    let start = Instant::now();
-    while client.status() != status {
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "timed out waiting for status {status:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    phux_server_testkit::eventually(
+        &format!("status {status:?}"),
+        Duration::from_secs(20),
+        Duration::from_millis(10),
+        || (client.status() == status).then_some(()),
+    )
+    .await;
 }
 
 /// A target that echoes each connection until its peer finishes.
