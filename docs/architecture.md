@@ -85,7 +85,7 @@ Cargo manifests define the actual edges.
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
 | `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |
 | `phux-relay` | quictun bound to phux's ALPNs and state directory |
-| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
+| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |

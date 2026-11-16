@@ -3,45 +3,6 @@ use std::path::PathBuf;
 use super::*;
 use crate::target::Transport;
 
-#[test]
-fn frames_are_cut_at_their_declared_length() {
-    let mut pending = BytesMut::from(&b"\x00\x00\x00\x02hi\x00\x00\x00\x03ab"[..]);
-    let first = take_frame(&mut pending).expect("valid").expect("complete");
-    assert_eq!(&first[..], b"\x00\x00\x00\x02hi");
-    // The second frame is short one byte: nothing is taken, nothing lost.
-    assert!(take_frame(&mut pending).expect("valid").is_none());
-    assert_eq!(&pending[..], b"\x00\x00\x00\x03ab");
-    pending.extend_from_slice(b"c");
-    assert_eq!(
-        &take_frame(&mut pending).expect("valid").expect("complete")[..],
-        b"\x00\x00\x00\x03abc"
-    );
-    assert!(pending.is_empty());
-}
-
-#[test]
-fn zero_and_oversized_lengths_are_refused() {
-    assert!(take_frame(&mut BytesMut::from(&b"\x00\x00\x00\x00"[..])).is_err());
-    let oversized = u32::try_from(MAX_FRAME_BODY + 1)
-        .expect("fits")
-        .to_be_bytes();
-    assert!(take_frame(&mut BytesMut::from(&oversized[..])).is_err());
-}
-
-#[test]
-fn an_inbound_message_must_be_exactly_one_frame() {
-    assert!(check_inbound("mini", b"\x00\x00\x00\x02hi").is_ok());
-    for malformed in [
-        &b"\x00\x00\x00"[..],
-        &b"\x00\x00\x00\x03hi"[..],
-        &b"\x00\x00\x00\x01hi"[..],
-        &b"\x00\x00\x00\x01h\x00\x00\x00\x01i"[..],
-    ] {
-        let err = check_inbound("mini", malformed).expect_err("malformed");
-        assert!(err.starts_with("mini sent a malformed frame"), "{err}");
-    }
-}
-
 fn resolved(url: &str, pin: Option<&str>) -> Resolved {
     Resolved {
         name: "mini".to_owned(),
@@ -117,11 +78,11 @@ fn routable_quic_without_a_pin_is_refused_after_resolution() {
     unpinned.transport = Transport::Quic("192.0.2.1:8788".to_owned());
     unpinned.token_file = None;
     let err = runtime
-        .block_on(plan_quic(&unpinned, "192.0.2.1:8788"))
+        .block_on(plan_quic_with_token(&unpinned, "192.0.2.1:8788", None))
         .expect_err("unpinned");
     assert!(err.contains("certificate pin"), "{err}");
     let loopback = runtime
-        .block_on(plan_quic(&unpinned, "127.0.0.1:8788"))
+        .block_on(plan_quic_with_token(&unpinned, "127.0.0.1:8788", None))
         .expect("loopback");
     assert_eq!(loopback.trust, CertTrust::SkipVerify);
     assert_eq!(loopback.server_name, "localhost");
@@ -142,7 +103,7 @@ fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
     // ADR-0180: no server CA for the route, no dial; the relay would
     // read the stream.
     let refused = runtime
-        .block_on(plan_quic(&routed, "127.0.0.1:4433"))
+        .block_on(plan_quic_with_token(&routed, "127.0.0.1:4433", None))
         .expect_err("a relay route without the server's CA");
     assert!(
         refused.contains("mini-route")
@@ -154,7 +115,7 @@ fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
     let ca = format!("sha256:{}", "c".repeat(64));
     routed.authority.ca = Some(ca.clone());
     let quic = runtime
-        .block_on(plan_quic(&routed, "127.0.0.1:4433"))
+        .block_on(plan_quic_with_token(&routed, "127.0.0.1:4433", None))
         .expect("routed quic plan");
     assert_eq!(quic.server_name, "mini-route");
     // The outer leg pins the relay and presents nothing; the server's CA
@@ -195,7 +156,7 @@ fn quic_auth_close_is_not_generic_loss() {
         error_code: quinn::VarInt::from_u32(phux_dial::quic::AUTH_FAILED_CODE),
         reason: b"unauthorized".as_slice().into(),
     });
-    let msg = quic_closed_message("stale-token", &err);
+    let msg = dial_message("stale-token", &phux_dial::quic::close_error(&err));
     assert!(msg.contains("refused the pairing token"), "{msg}");
     assert!(!msg.contains("connection was lost"), "{msg}");
     assert!(!msg.contains("connection lost"), "{msg}");
@@ -203,7 +164,10 @@ fn quic_auth_close_is_not_generic_loss() {
 
 #[test]
 fn quic_idle_timeout_is_reachability_not_auth() {
-    let msg = quic_closed_message("mini", &quinn::ConnectionError::TimedOut);
+    let msg = dial_message(
+        "mini",
+        &phux_dial::quic::close_error(&quinn::ConnectionError::TimedOut),
+    );
     assert!(msg.contains("did not answer"), "{msg}");
     assert!(!msg.contains("pairing token"), "{msg}");
 }
@@ -214,7 +178,7 @@ fn graceful_quic_close_is_not_auth() {
         error_code: quinn::VarInt::from_u32(0),
         reason: b"bye".as_slice().into(),
     });
-    let msg = quic_closed_message("mini", &err);
+    let msg = dial_message("mini", &phux_dial::quic::close_error(&err));
     assert!(!msg.contains("pairing token"), "{msg}");
     assert!(!msg.contains("enroll"), "{msg}");
 }

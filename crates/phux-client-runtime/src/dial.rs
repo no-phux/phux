@@ -2,9 +2,8 @@
 //!
 //! The CLI's trust rules apply (a routable host needs a pin; a routable
 //! WebSocket also needs `wss://` and a token), with operator-facing wording
-//! for every failure and the SPEC §5 frame cutting the WebSocket lane needs.
-//! The token is read just before the dial and dropped after it. The client
-//! TLS identity is the one the registry entry enrolled
+//! for every failure. The token is read just before the dial and dropped
+//! after it. The client TLS identity is the one the registry entry enrolled
 //! ([`crate::target::Resolved::client_identity`]), else
 //! [`phux_dial::TlsClientIdentity::None`]; it is never read from the
 //! environment, so an embedder never inherits a launcher shell's workload
@@ -14,11 +13,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bytes::BytesMut;
 use phux_dial::quic::{QuicDial, parse_token_hex};
-use phux_dial::ws::{WS_LIVENESS_TIMEOUT, WsDial, WsTarget};
+use phux_dial::ws::{WsDial, WsTarget};
 use phux_dial::{CertTrust, DialError};
-use phux_protocol::wire::framing;
 
 use crate::target::{Resolved, read_token};
 
@@ -68,18 +65,6 @@ impl Dial {
 /// Bound on name resolution plus transport establishment, so "connecting"
 /// never sits through a 75-second OS connect timeout.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Largest frame body a consumer may hand the WebSocket lane: the SPEC §5
-/// hard bound, the same ceiling Cockpit's socket worker enforces inbound
-/// (`transport.max_frame_bytes` less its 4-byte prefix).
-pub(crate) const MAX_FRAME_BODY: usize = phux_protocol::wire::frame::MAX_FRAME_LEN as usize;
-
-/// Plan the QUIC dial for `authority` (`HOST:PORT`): resolve the name, apply
-/// the pin rule, and parse the bearer token. The returned plan owns the
-/// token; drop it as soon as the dial has sent its preamble.
-pub(crate) async fn plan_quic(resolved: &Resolved, authority: &str) -> Result<QuicDial, String> {
-    plan_quic_with_token(resolved, authority, None).await
-}
 
 /// Plan a QUIC dial with an optional in-memory token overriding the registry
 /// file. Native embedders use this for Keychain-backed credentials.
@@ -313,34 +298,6 @@ fn bad_token(resolved: &Resolved) -> String {
     )
 }
 
-/// Split one complete `len:u32 BE` + body frame off the front of `pending`,
-/// leaving a partial tail for the next read.
-pub(crate) fn take_frame(pending: &mut BytesMut) -> Result<Option<BytesMut>, &'static str> {
-    let Some(header) = pending.get(..4) else {
-        return Ok(None);
-    };
-    let declared = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if declared == 0 || declared > MAX_FRAME_BODY {
-        return Err("the embedder sent a frame with an invalid length");
-    }
-    if pending.len() < 4 + declared {
-        return Ok(None);
-    }
-    Ok(Some(pending.split_to(4 + declared)))
-}
-
-/// Check that one binary message is exactly one SPEC §5 frame.
-///
-/// This is the check the server applies to its own inbound messages. A
-/// message that disagrees with its declared length would desynchronize the
-/// consumer's framed stream, so it fails the connection with a reason
-/// instead.
-pub(crate) fn check_inbound(name: &str, frame: &[u8]) -> Result<(), String> {
-    framing::check_frame(frame)
-        .map(|_| ())
-        .map_err(|err| format!("{name} sent a malformed frame: {err}"))
-}
-
 /// The remedy for a routable host with no pin in the registry.
 #[must_use]
 pub fn unpinned(name: &str) -> String {
@@ -353,15 +310,6 @@ pub fn timed_out(name: &str) -> String {
     format!(
         "{name} did not answer within {}s; check that it is up and its network is connected",
         DIAL_TIMEOUT.as_secs()
-    )
-}
-
-/// A WebSocket lane that went silent past the liveness timeout.
-#[must_use]
-pub fn stalled(name: &str) -> String {
-    format!(
-        "{name} stopped answering (no WebSocket traffic for {}s and no pong for our keepalive ping)",
-        WS_LIVENESS_TIMEOUT.as_secs()
     )
 }
 
@@ -391,27 +339,6 @@ pub(crate) fn authority_changed_message(name: &str, change: &phux_dial::Authorit
         "{name}: {change}. Refusing to connect: a rotated authority and an impostor look \
          the same from here. If the host's operator rotated it (`phux workload authority \
          --rotate`), re-pair: `phux host add {name}`"
-    )
-}
-
-/// Preserve the QUIC application-close code: quinn's stream I/O displays
-/// `connection lost` even when the peer sent `AUTH_FAILED`.
-#[must_use]
-pub(crate) fn quic_closed_message(name: &str, err: &quinn::ConnectionError) -> String {
-    dial_message(name, &phux_dial::quic::close_error(err))
-}
-
-/// A QUIC stream that ended: the connection's close reason when it has
-/// one, the stream error otherwise.
-#[must_use]
-pub(crate) fn quic_stream_lost(
-    name: &str,
-    connection: &quinn::Connection,
-    err: impl std::fmt::Display,
-) -> String {
-    connection.close_reason().map_or_else(
-        || format!("{name}: the connection was lost: {err}"),
-        |close| quic_closed_message(name, &close),
     )
 }
 

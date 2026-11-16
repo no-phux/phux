@@ -8,7 +8,6 @@
 //! - [`pairing`]: parse the canonical connect link without dialing or learning trust.
 //! - [`dial`]: dial a resolved entry under the CLI's trust rules.
 //! - [`reconnect`]: backoff ladders and fatal-refusal rules.
-//! - `tunnel` (Unix): the byte relay for a socket-owning embedder.
 //! - [`control`]: the sans-IO control plane over `SessionKernel`.
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
 //! - [`perf`]: owner-thread apply and publication telemetry.
@@ -62,8 +61,6 @@ pub mod runtime;
 pub mod session;
 pub mod session_order;
 pub mod target;
-#[cfg(unix)]
-pub mod tunnel;
 
 pub use runtime::{
     Client, ClientOptions, ConnectOptions, ControlGuard, Lane, Listener, PumpError, Runtime,
