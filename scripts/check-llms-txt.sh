@@ -334,6 +334,27 @@ EOF
         cat "$scratch/err" >&2
         exit 1
     fi
+
+    # A same-page #anchor that is not a heading fails. A resolving one is
+    # [Not shipped](#not-shipped) in the fixture above, which must pass.
+    VIOLATIONS=0
+    printf '# Same\n\n## Present\n\n[gone](#not-a-heading)\n' >"$repo/docs/same-page.md"
+    ROOT="$repo" check_links "$repo/docs/same-page.md" >"$scratch/out" 2>"$scratch/err"
+    if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'has no heading #not-a-heading' "$scratch/err"; then
+        printf 'self-test: a missing same-page anchor should fail\n' >&2
+        cat "$scratch/err" >&2
+        exit 1
+    fi
+
+    # A bare "#" has no path and no anchor. That stays an empty link.
+    VIOLATIONS=0
+    printf '[blank](#)\n' >"$repo/docs/empty-link.md"
+    ROOT="$repo" check_links "$repo/docs/empty-link.md" >"$scratch/out" 2>"$scratch/err"
+    if [[ "$VIOLATIONS" -ne 1 ]] || ! grep -Fq 'empty link' "$scratch/err"; then
+        printf 'self-test: an empty link should still fail\n' >&2
+        cat "$scratch/err" >&2
+        exit 1
+    fi
     VIOLATIONS=0
 
     awk '
