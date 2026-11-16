@@ -66,7 +66,8 @@ Cargo manifests define the actual edges.
 
 | Crate | Role |
 | --- | --- |
-| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty by default |
+| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty |
+| `phux-vt` | libghostty glue for native crates |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
