@@ -14,7 +14,7 @@ fn followed_own_spawn() -> ControlPlane {
         .resources
         .push(ResourceInfo::new(owner.clone(), WindowId::new(1), 20, 4));
     attach_to(&mut plane, attach_id, before_spawn);
-    ready(&mut plane, attach_id, ResourceId::local(8));
+    ready(&mut plane, attach_id, &ResourceId::local(8));
     let request_id = plane.spawn_terminal(SpawnRequest {
         session_id: Some(1),
         ..SpawnRequest::default()
@@ -52,7 +52,7 @@ fn reconnect_does_not_treat_old_own_spawn_as_a_current_parent_admission() {
     let mut plane = followed_own_spawn();
     let attach_id = reconnect_to_beta(&mut plane);
     assert_eq!(close_count(&mut plane), 0);
-    ready(&mut plane, attach_id, ResourceId::local(8));
+    ready(&mut plane, attach_id, &ResourceId::local(8));
     assert_eq!(close_count(&mut plane), 1);
     assert!(!plane.terminal_is_admitted(&terminal()));
     assert!(!plane.engine().unwrap().is_closed(&ResourceId::local(AGENT)));
@@ -76,7 +76,7 @@ fn replayed_spawn_admission_settles_before_orphan_retirement() {
         );
         let attach_id = outbound_attach_id(&mut plane);
         attach_to(&mut plane, attach_id, beta_snapshot());
-        ready(&mut plane, attach_id, ResourceId::local(8));
+        ready(&mut plane, attach_id, &ResourceId::local(8));
         assert_eq!(close_count(&mut plane), 0, "spawn replay remains pending");
         assert!(plane.take_outbound().iter().any(|bytes| matches!(decode(bytes), FrameKind::SpawnResource { request_id: id, .. } if id == request_id)));
         plane

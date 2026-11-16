@@ -126,9 +126,9 @@ fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
 
 /// The session a reconnect asks for: `same` from the same server
 /// incarnation, `other` from a different one.
-fn assert_reconnect_targets(plane: &mut ControlPlane, same: AttachTarget, other: AttachTarget) {
-    assert_eq!(reconnect_target(plane, 0xAB), same, "same incarnation");
-    assert_eq!(reconnect_target(plane, 0xCD), other, "new incarnation");
+fn assert_reconnect_targets(plane: &mut ControlPlane, same: &AttachTarget, other: &AttachTarget) {
+    assert_eq!(&reconnect_target(plane, 0xAB), same, "same incarnation");
+    assert_eq!(&reconnect_target(plane, 0xCD), other, "new incarnation");
 }
 
 #[test]
@@ -193,8 +193,8 @@ fn named_attach_reconnect_follows_a_rename_not_the_reused_name() {
     refresh_to(&mut plane, snapshot);
     assert_reconnect_targets(
         &mut plane,
-        AttachTarget::ById(SessionId::new(1)),
-        AttachTarget::ByName("renamed".to_owned()),
+        &AttachTarget::ById(SessionId::new(1)),
+        &AttachTarget::ByName("renamed".to_owned()),
     );
 }
 
@@ -210,8 +210,8 @@ fn a_live_named_switch_reconnects_to_its_renamed_identity() {
     refresh_to(&mut plane, snapshot);
     assert_reconnect_targets(
         &mut plane,
-        AttachTarget::ById(SessionId::new(2)),
-        AttachTarget::ByName("renamed-beta".to_owned()),
+        &AttachTarget::ById(SessionId::new(2)),
+        &AttachTarget::ByName("renamed-beta".to_owned()),
     );
 }
 
@@ -225,8 +225,8 @@ fn selected_session_numbers_are_scoped_to_the_server_incarnation() {
     // changes. A different server may have reused that number for other work.
     assert_reconnect_targets(
         &mut plane,
-        AttachTarget::ById(SessionId::new(1)),
-        AttachTarget::ByName("main".to_owned()),
+        &AttachTarget::ById(SessionId::new(1)),
+        &AttachTarget::ByName("main".to_owned()),
     );
 }
 

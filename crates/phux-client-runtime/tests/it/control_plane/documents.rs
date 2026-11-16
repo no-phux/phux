@@ -13,7 +13,7 @@ const fn tree() -> ResourceId {
     ResourceId::local(8)
 }
 
-fn bootstrap(client: &Client, id: ResourceId, profile: BootstrapStreamProfile, payload: &[u8]) {
+fn bootstrap(client: &Client, id: &ResourceId, profile: BootstrapStreamProfile, payload: &[u8]) {
     let stream = u64::from(id.local_id().unwrap());
     let size = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
         [20, 4]
@@ -24,7 +24,7 @@ fn bootstrap(client: &Client, id: ResourceId, profile: BootstrapStreamProfile, p
         profile,
         ..BootstrapOptions::default()
     };
-    for frame in bootstrap_frames_with(&id, [stream, 1], size, payload, options) {
+    for frame in bootstrap_frames_with(id, [stream, 1], size, payload, options) {
         client.feed(frame).unwrap();
     }
 }
@@ -60,13 +60,13 @@ fn attached_with_tree() -> Client {
     client.attached(attach_id, snapshot);
     bootstrap(
         &client,
-        terminal(),
+        &terminal(),
         BootstrapStreamProfile::SynthesizedVtRaw,
         b"ready",
     );
     bootstrap(
         &client,
-        tree(),
+        &tree(),
         BootstrapStreamProfile::AccessibilityTreeJsonV1,
         b"{\"cut\":0}",
     );

@@ -7,6 +7,8 @@ use phux_protocol::AgentFacet;
 const AGENT: u32 = 31;
 
 mod own_spawn;
+mod stream;
+use stream::*;
 
 fn subscribing(subscribe_agent_sessions: bool) -> (ControlPlane, u32) {
     subscribing_with_resume(subscribe_agent_sessions, false)
@@ -43,7 +45,7 @@ fn attach_to(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot
 fn attach_ready_to(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot) {
     let focused = snapshot.focused_resource.clone();
     attach_to(plane, attach_id, snapshot);
-    ready(plane, attach_id, focused);
+    ready(plane, attach_id, &focused);
 }
 
 fn attach_resources(plane: &mut ControlPlane) -> Vec<(u32, ResourceId)> {
@@ -83,224 +85,6 @@ fn without_the_option_the_runtime_subscribes_no_agent_session() {
     let (mut plane, attach_id) = subscribing(false);
     attach_to(&mut plane, attach_id, with_agent(terminal()));
     assert!(attach_resources(&mut plane).is_empty());
-}
-
-fn agent_hello(resume: bool, incarnation: u8) -> FrameKind {
-    let mut hello = hello_ok_with(&[ServerFeature::SpawnIdempotency]);
-    if let FrameKind::HelloOk {
-        server_caps,
-        server_id,
-        ..
-    } = &mut hello
-    {
-        *server_id = vec![incarnation; 16];
-        *server_caps = server_caps.with_features_ext(ServerFeatureExtSet::with(if resume {
-            &[ServerFeatureExt::AgentStreamResume]
-        } else {
-            &[]
-        }));
-    }
-    hello
-}
-
-fn agent_requests(plane: &mut ControlPlane) -> Vec<(u32, Option<u64>)> {
-    plane
-        .take_outbound()
-        .iter()
-        .filter_map(|bytes| match decode(bytes) {
-            FrameKind::Command {
-                request_id,
-                command:
-                    Command::AttachResource {
-                        terminal_id,
-                        agent_after_seq,
-                        ..
-                    },
-            } if terminal_id == ResourceId::local(AGENT) => Some((request_id, agent_after_seq)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn reconnect_agents(
-    plane: &mut ControlPlane,
-    resume: bool,
-    incarnation: u8,
-) -> Vec<(u32, Option<u64>)> {
-    plane.connection_lost(None);
-    assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
-    reopen(plane, agent_hello(resume, incarnation));
-    let attach_id = plane.queued_attach_id();
-    attach_ready_to(plane, attach_id, with_agent(terminal()));
-    agent_requests(plane)
-}
-
-const fn agent_ids(generation: u64) -> (StreamId, BootstrapId) {
-    (
-        StreamId::new(100 + generation).unwrap(),
-        BootstrapId::new(200 + generation).unwrap(),
-    )
-}
-
-fn agent_begin(plane: &mut ControlPlane, generation: u64, after_seq: Option<u64>, base_seq: u64) {
-    let (stream_id, bootstrap_id) = agent_ids(generation);
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: ResourceId::local(AGENT),
-            stream_id,
-            bootstrap_id,
-            profile: after_seq.map_or(BootstrapStreamProfile::AgentEventsJsonlV1, |after_seq| {
-                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq }
-            }),
-            cols: 0,
-            rows: 0,
-            base_seq,
-        })
-        .unwrap();
-}
-
-fn agent_payload(records: &[(u64, &str)]) -> String {
-    use std::fmt::Write;
-    let mut payload = String::new();
-    for (seq, kind) in records {
-        writeln!(
-            payload,
-            "{{\"seq\":{seq},\"ts_ms\":1,\"type\":\"{kind}\",\"data\":{{}}}}"
-        )
-        .unwrap();
-    }
-    payload
-}
-
-fn agent_chunk(
-    plane: &mut ControlPlane,
-    generation: u64,
-    chunk_seq: u32,
-    payload: String,
-) -> Result<(), ControlError> {
-    let (stream_id, bootstrap_id) = agent_ids(generation);
-    plane.feed(FrameKind::BootstrapChunk {
-        terminal_id: ResourceId::local(AGENT),
-        stream_id,
-        bootstrap_id,
-        chunk_seq,
-        payload: payload.into(),
-    })
-}
-
-fn agent_ready(plane: &mut ControlPlane, generation: u64) -> Result<(), ControlError> {
-    let (stream_id, bootstrap_id) = agent_ids(generation);
-    plane.feed(FrameKind::BootstrapReady {
-        terminal_id: ResourceId::local(AGENT),
-        stream_id,
-        bootstrap_id,
-        history_cursor: None,
-    })
-}
-
-fn agent_live(
-    plane: &mut ControlPlane,
-    generation: u64,
-    records: &[(u64, &str)],
-) -> Result<(), ControlError> {
-    let (stream_id, bootstrap_id) = agent_ids(generation);
-    plane.feed(FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(AGENT),
-        stream_id,
-        bootstrap_id,
-        seq: records.last().unwrap().0,
-        bytes: agent_payload(records).into(),
-    })
-}
-
-fn take_agent_records(plane: &mut ControlPlane) -> Vec<(Vec<u64>, bool)> {
-    publications_of(plane.take_events())
-}
-
-fn publications_of(events: Vec<Event>) -> Vec<(Vec<u64>, bool)> {
-    events
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::AgentPublication { publication, .. } => {
-                assert_eq!(publication.resource_id, ResourceId::local(AGENT));
-                Some((
-                    publication
-                        .records
-                        .iter()
-                        .map(|record| record.seq)
-                        .collect(),
-                    publication.mode == phux_client_runtime::control::AgentRecordMode::Replace,
-                ))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-fn commit_initial_agent(plane: &mut ControlPlane, request_id: u32) {
-    // Reference-server ordering: the bootstrap can precede COMMAND_RESULT.
-    publish_agent(plane);
-    plane.reply(request_id, CommandResult::Ok);
-    assert_eq!(take_agent_records(plane), [(vec![1, 2], true)]);
-}
-
-/// A resume-capable plane attached and ready with the agent committed at
-/// seq 2 (generation 1).
-fn resumed_with_initial_agent() -> ControlPlane {
-    let (mut plane, attach_id) = subscribing_with_resume(true, true);
-    attach_ready_to(&mut plane, attach_id, with_agent(terminal()));
-    let requests = agent_requests(&mut plane);
-    commit_initial_agent(&mut plane, requests[0].0);
-    plane
-}
-
-fn agent_info(plane: &ControlPlane) -> Option<phux_client_runtime::engine::AgentStreamInfo> {
-    plane
-        .engine()
-        .unwrap()
-        .agent_stream_info(&ResourceId::local(AGENT))
-}
-
-fn agent_cursor(plane: &ControlPlane) -> Option<u64> {
-    plane.agent_after_seq(&ResourceId::local(AGENT))
-}
-
-/// The agent's full delta bootstrap of generation `generation`: begin, one
-/// chunk of `records`, ready.
-fn agent_bootstrap(
-    plane: &mut ControlPlane,
-    generation: u64,
-    after_seq: Option<u64>,
-    records: &[(u64, &str)],
-) {
-    agent_begin(plane, generation, after_seq, records.last().unwrap().0);
-    agent_chunk(plane, generation, 0, agent_payload(records)).unwrap();
-    agent_ready(plane, generation).unwrap();
-}
-
-/// Close the agent resource (`close`) or detach its parent; either retires
-/// the agent once, reporting the cursor it stood at.
-fn retire_agent(plane: &mut ControlPlane, close: bool) -> Vec<Option<u64>> {
-    if close {
-        plane
-            .feed(phux_wire_fixtures::closed(&ResourceId::local(AGENT), None))
-            .unwrap();
-    } else {
-        let request_id = plane.detach_terminal(&terminal());
-        plane.reply(request_id, CommandResult::Ok);
-    }
-    plane
-        .take_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::AgentSessionClosed {
-                terminal_id,
-                stream,
-                ..
-            } if terminal_id == ResourceId::local(AGENT) => Some(stream.map(|s| s.last_seq)),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]
@@ -466,9 +250,9 @@ fn resource_close_and_parent_detach_clear_the_committed_agent_cursor() {
     }
 }
 
-fn ready(plane: &mut ControlPlane, attach_id: u32, parent: ResourceId) {
+fn ready(plane: &mut ControlPlane, attach_id: u32, parent: &ResourceId) {
     let generation = u64::from(attach_id);
-    empty_bootstrap(plane, &parent, [generation, generation]);
+    empty_bootstrap(plane, parent, [generation, generation]);
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
 }
 
@@ -494,7 +278,7 @@ fn refused_or_ok(refused: bool, message: &str) -> CommandResult {
     }
 }
 
-fn state(snapshot: SessionSnapshot) -> CommandResult {
+const fn state(snapshot: SessionSnapshot) -> CommandResult {
     CommandResult::OkWith(CommandValue::State(snapshot))
 }
 
@@ -540,7 +324,7 @@ fn followed_home() -> ControlPlane {
     let subscriptions = attach_resources(&mut plane);
     assert_eq!(subscriptions.len(), 1);
     plane.reply(subscriptions[0].0, CommandResult::Ok);
-    ready(&mut plane, attach_id, terminal());
+    ready(&mut plane, attach_id, &terminal());
     let _ = plane.take_outbound();
     assert_eq!(close_count(&mut plane), 0);
     assert!(!plane.attach_session(AttachTarget::ByName("beta".into())));
@@ -557,7 +341,7 @@ fn reconnect_after_switch_retires_home_subscription_once_and_can_follow_it_again
     let mut plane = followed_home();
     let attach_id = reconnect_to_beta(&mut plane);
     assert_eq!(close_count(&mut plane), 0, "wait for ATTACH_READY");
-    ready(&mut plane, attach_id, ResourceId::local(8));
+    ready(&mut plane, attach_id, &ResourceId::local(8));
     assert_eq!(close_count(&mut plane), 1);
     assert!(!plane.engine().unwrap().is_closed(&ResourceId::local(AGENT)));
 
@@ -579,7 +363,7 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
     for refused in [false, true] {
         let (mut plane, attach_id) = subscribing(true);
         attach_to(&mut plane, attach_id, beta_snapshot());
-        ready(&mut plane, attach_id, ResourceId::local(8));
+        ready(&mut plane, attach_id, &ResourceId::local(8));
         // Explicit geometry-preserving admission outside the attached session
         // survives reconnect, unlike an ordinary old home/spawn pump.
         let request_id = plane.attach_terminal_preserving_geometry(&terminal());
@@ -590,7 +374,7 @@ fn reconnect_waits_for_preserving_parent_admission_and_retires_only_if_refused()
         let _ = plane.take_outbound();
         let _ = plane.take_events();
         let attach_id = reconnect_to_beta(&mut plane);
-        ready(&mut plane, attach_id, ResourceId::local(8));
+        ready(&mut plane, attach_id, &ResourceId::local(8));
         assert_eq!(close_count(&mut plane), 0, "replayed attach still pending");
         let requests = attach_resources(&mut plane);
         let request_id = requests.iter().find(|(_, id)| *id == terminal()).unwrap().0;
@@ -614,7 +398,7 @@ fn refused_parent_detach_preserves_agent_subscription_and_success_releases_once(
     for refused in [false, true] {
         let (mut plane, attach_id) = subscribing(true);
         attach_to(&mut plane, attach_id, with_agent(ResourceId::local(8)));
-        ready(&mut plane, attach_id, terminal());
+        ready(&mut plane, attach_id, &terminal());
         let request_id = plane.attach_terminal(&ResourceId::local(8));
         plane.reply(request_id, CommandResult::Ok);
         confirm_agent_subscription(&mut plane);
@@ -663,7 +447,7 @@ fn parent_close_during_detach_cannot_be_undone_by_a_late_refusal() {
     let parent = ResourceId::local(8);
     let (mut plane, attach_id) = subscribing(true);
     attach_to(&mut plane, attach_id, with_agent(parent.clone()));
-    ready(&mut plane, attach_id, terminal());
+    ready(&mut plane, attach_id, &terminal());
     let request_id = plane.attach_terminal(&parent);
     plane.reply(request_id, CommandResult::Ok);
     confirm_agent_subscription(&mut plane);

@@ -30,7 +30,9 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use crate::embedded::*;
-use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames, bootstrap_frames_with, command_err};
+#[cfg(feature = "engine")]
+use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames_with};
+use phux_wire_fixtures::{bootstrap_frames, command_err};
 
 mod agent_sessions;
 mod approvals;
