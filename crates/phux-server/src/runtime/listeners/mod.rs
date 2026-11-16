@@ -166,7 +166,7 @@ fn bind_quic(
     // offers their ALPN only when it verifies workload certificates.
     listener.map(|listener| {
         listener
-            .with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+            .with_satellites(state.with(|s| s.federation().adopter()))
             .with_tailnet_owner(state.with(|s| s.config().tailnet_owner))
     })
 }

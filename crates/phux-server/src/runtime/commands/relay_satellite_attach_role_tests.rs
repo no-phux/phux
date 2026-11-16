@@ -22,7 +22,7 @@ impl Fixture {
         let client_id = ClientId(1);
         let token = CancellationToken::new();
         state.with_mut(|s| {
-            s.set_hub_relays(relays);
+            s.federation_mut().set_relays(relays);
             s.set_client_connection_cancellation(client_id, token);
         });
         let (out_tx, _out_rx) = tokio::sync::mpsc::channel(8);
@@ -112,7 +112,11 @@ async fn a_refused_satellite_viewer_attach_keeps_a_prior_mark_or_proxy() {
 
     let attached = fixture.wire(9);
     fixture.state.with_mut(|s| {
-        s.register_satellite_proxy_attach(fixture.client_id, fixture.host.clone(), 9);
+        s.federation_mut().register_satellite_proxy_attach(
+            fixture.client_id,
+            fixture.host.clone(),
+            9,
+        );
     });
     let _ = fixture.refuse_attach(9, RolePolicy::VIEWER).await;
     assert!(
@@ -136,9 +140,13 @@ async fn a_successful_satellite_viewer_attach_keeps_the_mark() {
             .state
             .with(|s| s.is_viewer(fixture.client_id, &wire))
     );
-    assert!(fixture.state.with(|s| s.has_satellite_proxy_attach(
-        fixture.client_id,
-        &fixture.host,
-        7
-    )));
+    assert!(
+        fixture
+            .state
+            .with(|s| s.federation().has_satellite_proxy_attach(
+                fixture.client_id,
+                &fixture.host,
+                7
+            ))
+    );
 }

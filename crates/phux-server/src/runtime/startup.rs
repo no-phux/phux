@@ -29,7 +29,7 @@ pub(in crate::runtime) fn install_hub_table(
         for (host, entry) in table.iter() {
             info!(satellite = %host, target = %entry.target, "hub satellite registered");
         }
-        state.with_mut(|s| s.set_hub_table(table.clone()));
+        state.with_mut(|s| s.federation_mut().set_table(table.clone()));
     }
     Ok(table)
 }

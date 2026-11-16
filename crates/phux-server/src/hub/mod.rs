@@ -326,7 +326,7 @@ impl core::fmt::Debug for SatelliteSource {
 /// for a restart. A registry that fails to read or validate keeps the
 /// running table.
 pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
-    let Some(source) = state.with(crate::state::ServerState::hub_satellite_source) else {
+    let Some(source) = state.with(|s| s.federation().source()) else {
         return;
     };
     let next = match source
@@ -342,18 +342,18 @@ pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
             return;
         }
     };
-    if !state.with(crate::state::ServerState::hub_has_links) {
+    if !state.with(|s| s.federation().has_links()) {
         if next.is_empty() {
             return;
         }
         let ssh = state.with(|s| s.config().server_env.clone().ssh_program());
         let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
-        if !state.with_mut(|s| s.hub_ensure_links(ssh, bootstrap)) {
+        if !state.with_mut(|s| s.federation_mut().ensure_links(ssh, bootstrap)) {
             tracing::warn!("hub: satellites are configured but this server cannot start links");
             return;
         }
     }
-    let diff = state.with_mut(|s| s.hub_replace_table(next, state));
+    let diff = state.with_mut(|s| s.federation_mut().replace_table(next, state));
     log_reload(&diff);
 }
 

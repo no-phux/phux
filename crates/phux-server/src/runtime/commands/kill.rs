@@ -272,7 +272,7 @@ fn kill_local_batch(
 fn relay_close_tab_partitions(state: &SharedState, ids: &[phux_protocol::ids::ResourceId]) {
     for (host, wire_ids) in satellite_partitions(ids) {
         let local_ids = satellite_local_ids(&wire_ids);
-        match state.with(|s| s.hub_relay(&host)) {
+        match state.with(|s| s.federation().relay(&host)) {
             Some(relay) => {
                 debug!(
                     satellite = %host,
@@ -312,7 +312,7 @@ async fn relay_kill_partition(
         ids: satellite_local_ids(&ids),
         operation_id,
     };
-    let result = match state.with(|s| s.hub_relay(&host)) {
+    let result = match state.with(|s| s.federation().relay(&host)) {
         Some(relay) => relay.command_from(command, client_id).await,
         None => CommandResult::Error {
             code: ErrorCode::UnsupportedSatelliteRoute,

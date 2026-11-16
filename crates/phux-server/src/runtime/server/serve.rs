@@ -20,7 +20,7 @@ use crate::runtime::startup::{
     read_resume_blob, resume_session_tree, seed_initial_session,
 };
 use crate::runtime::{delegation, revocation};
-use crate::state::{ServerState, SharedState, StateConfig};
+use crate::state::{SharedState, StateConfig};
 use phux_protocol::wire::RemoteListenerTransport;
 use std::future::Future;
 use tokio::task::LocalSet;
@@ -95,7 +95,7 @@ impl ServerRuntime {
         ));
         state.set_terminal_engine(self.terminal_engine.clone());
         state
-            .with(ServerState::satellite_adopter)
+            .with(|s| s.federation().adopter())
             .set_work_store(self.cfg.work_store.as_deref().cloned());
 
         let hub_table = install_hub_table(&state, self.hub, &self.satellites)?;
@@ -177,7 +177,8 @@ impl ServerRuntime {
                 crate::runtime::services::spawn_activation_report_retry(&state, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
                 state.with_mut(|s| {
-                    s.arm_hub_reload(satellite_source.clone(), root_token.clone());
+                    s.federation_mut()
+                        .arm_reload(satellite_source.clone(), root_token.clone());
                 });
                 spawn_hub_links(&state, hub_table.as_ref(), satellite_source, &root_token);
                 // Satellite uplinks (ADR-0182): hub streams splice to the

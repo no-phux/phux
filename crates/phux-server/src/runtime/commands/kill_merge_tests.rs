@@ -18,7 +18,7 @@ fn hub() -> (SharedState, ClientId, RelayMailbox) {
     drop(down_mailbox);
     relays.insert(up);
     relays.insert(down);
-    state.with_mut(|s| s.set_hub_relays(relays));
+    state.with_mut(|s| s.federation_mut().set_relays(relays));
     (state, client, up_mailbox)
 }
 

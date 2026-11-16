@@ -36,8 +36,10 @@ impl<'a> SatelliteLeaseTarget<'a> {
 
     /// The hub consumer currently holding this terminal's input lease.
     pub(super) fn holder(&self) -> Option<ClientId> {
-        self.state
-            .with(|s| s.satellite_lease_holder(self.host, self.terminal))
+        self.state.with(|s| {
+            s.federation()
+                .satellite_lease_holder(self.host, self.terminal)
+        })
     }
 }
 
@@ -63,9 +65,10 @@ pub(super) async fn relay_satellite_acquire_input(
     // ordered on the link, so a stale Released/Expired from an earlier lease
     // could otherwise clear the entry this acquire installs. The lease mirror
     // clears the mark on the next event for this terminal.
-    target
-        .state
-        .with_mut(|s| s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal));
+    target.state.with_mut(|s| {
+        s.federation_mut()
+            .mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
+    });
     let result = relay.command(command.clone()).await;
     settle_satellite_seize(target, &result, out_tx);
     result
@@ -81,15 +84,16 @@ fn settle_satellite_seize(
 ) {
     if matches!(result, CommandResult::Error { .. }) {
         // A failed acquire installs nothing, so stop ignoring lease events.
-        target
-            .state
-            .with_mut(|s| s.clear_satellite_lease_acquire_pending(target.host, target.terminal));
+        target.state.with_mut(|s| {
+            s.federation_mut()
+                .clear_satellite_lease_acquire_pending(target.host, target.terminal);
+        });
         return;
     }
     // On success the pending mark stays; the lease mirror clears it. A seize
     // that evicts another hub consumer tells it that it lost the wheel.
     let evicted = target.state.with_mut(|s| {
-        s.set_satellite_lease(
+        s.federation_mut().set_satellite_lease(
             target.host.clone(),
             target.terminal,
             target.client_id,
@@ -158,8 +162,11 @@ pub(super) async fn relay_satellite_attach(
     // Narrow before the relay so no input slips through; widen only once the
     // satellite accepted the attach.
     let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
-        let was_attached =
-            s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
+        let was_attached = s.federation().has_satellite_proxy_attach(
+            target.client_id,
+            target.host,
+            target.terminal,
+        );
         let was_viewer = s.is_viewer(target.client_id, &wire);
         let narrowed = role
             .is_viewer()
@@ -169,7 +176,8 @@ pub(super) async fn relay_satellite_attach(
     let seize = role.takes_over();
     if seize {
         state.with_mut(|s| {
-            s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
+            s.federation_mut()
+                .mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
         });
     }
     let attached = relay_stream_establishing(ctx, relay, command, &local, kind).await;
@@ -185,7 +193,11 @@ pub(super) async fn relay_satellite_attach(
     }
     // The attach stands even if a degraded seize after it is refused.
     state.with_mut(|s| {
-        s.register_satellite_proxy_attach(target.client_id, target.host.clone(), target.terminal);
+        s.federation_mut().register_satellite_proxy_attach(
+            target.client_id,
+            target.host.clone(),
+            target.terminal,
+        );
     });
     let effects = narrowed.unwrap_or_else(|| {
         state.with_mut(|s| s.apply_attach_role(target.client_id, &wire, None, role, was_attached))
@@ -244,7 +256,8 @@ async fn release_satellite_lease_for_viewer(
 /// takeover with the attach.
 fn satellite_seizes_on_attach(target: &SatelliteLeaseTarget<'_>) -> bool {
     target.state.with(|s| {
-        s.satellite_advertises(target.host, phux_protocol::caps::ServerFeature::AttachRoles)
+        s.federation()
+            .satellite_advertises(target.host, phux_protocol::caps::ServerFeature::AttachRoles)
     })
 }
 
@@ -260,6 +273,7 @@ fn journal_satellite_role_change(
             lifecycle: ResourceLifecycle::Running,
             exit_status: None,
             input_holder: s
+                .federation()
                 .satellite_lease_holder(target.host, target.terminal)
                 .map(super::super::wire_client),
             action: ControlAction::RoleChanged,
@@ -287,7 +301,11 @@ pub(super) async fn relay_satellite_release_input(
     let result = relay.command(command.clone()).await;
     if !matches!(result, CommandResult::Error { .. }) {
         target.state.with_mut(|s| {
-            s.release_satellite_lease(target.host, target.terminal, target.client_id)
+            s.federation_mut().release_satellite_lease(
+                target.host,
+                target.terminal,
+                target.client_id,
+            )
         });
     }
     result

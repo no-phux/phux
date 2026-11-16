@@ -389,7 +389,7 @@ fn satellite(
     state: &SharedState,
     host: &SatelliteHost,
 ) -> Result<crate::hub::relay::RelayHandle, Refusal> {
-    state.with(|s| s.hub_relay(host)).ok_or_else(|| {
+    state.with(|s| s.federation().relay(host)).ok_or_else(|| {
         Refusal::new(
             ErrorCode::UnsupportedSatelliteRoute,
             format!("no satellite route to {host}: this server is not a federation hub for it"),

@@ -229,13 +229,15 @@ async fn satellite_frames_keep_scope_proxy_and_lease_gates_before_relay() {
                 state.with_mut(|s| {
                     s.set_peer_identity(CLIENT, owner_peer());
                     s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&[scope]));
-                    s.set_hub_relays(relays);
+                    s.federation_mut().set_relays(relays);
                     if proxy {
-                        s.register_satellite_proxy_attach(CLIENT, host.clone(), 7);
+                        s.federation_mut()
+                            .register_satellite_proxy_attach(CLIENT, host.clone(), 7);
                     }
                     if let Some(holder) = lease_holder {
                         let (out, _rx) = tokio::sync::mpsc::channel(8);
-                        s.set_satellite_lease(host.clone(), 7, holder, out);
+                        s.federation_mut()
+                            .set_satellite_lease(host.clone(), 7, holder, out);
                     }
                 });
                 let output = exchange(

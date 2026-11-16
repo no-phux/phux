@@ -271,7 +271,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                 .map(|(listener_fd, path, flags)| UpgradeContext {
                     listener_fd,
                     socket_path: path.to_path_buf(),
-                    flags: served_flags(flags, s.hub_has_links()),
+                    flags: served_flags(flags, s.federation().has_links()),
                     tree_identity: s.assemble_upgrade_blob(listener_fd),
                 })
         })
@@ -299,7 +299,7 @@ fn refuse_invalid_hub_registry(
     if !flags.hub {
         return Ok(());
     }
-    let Some(source) = state.with(crate::state::ServerState::hub_satellite_source) else {
+    let Some(source) = state.with(|s| s.federation().source()) else {
         return Ok(());
     };
     source.validate().map_err(UpgradeError::HubRegistry)

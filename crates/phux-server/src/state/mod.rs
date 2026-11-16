@@ -33,9 +33,8 @@ pub(crate) mod credentials;
 mod cwd;
 mod delegations;
 mod events;
+mod federation;
 mod hook_dispatch;
-mod hub;
-mod hub_state;
 mod id_space;
 mod journal;
 mod layout_translation;
@@ -65,7 +64,6 @@ mod resolve;
 mod resource_table;
 mod retained;
 mod roles;
-mod satellite_spawns;
 mod session_table;
 mod sessions;
 mod snapshot;
@@ -84,7 +82,7 @@ pub use events::{
     EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
     journal_gap_frame,
 };
-use hub_state::HubState;
+pub(crate) use federation::{Federation, SatelliteLease};
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
@@ -95,7 +93,6 @@ pub use roles::RoleEffects;
 // share them without depending on each other.
 pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound};
 use lease_table::LeaseTable;
-pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
 pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
@@ -172,15 +169,12 @@ pub struct ServerState {
     /// Everything keyed on a live pane (handles, tokens, actor `JoinSet`,
     /// subscriptions, output pumps); see [`resource_table`].
     resources: ResourceTable,
-    /// Local and satellite input-lease ledgers (ADR-0033, L1 §9.1),
-    /// released together on detach; see [`lease_table`].
+    /// The local input-lease ledger (ADR-0033), released together with the
+    /// satellite ledger in [`Federation`] on detach; see [`lease_table`].
     leases: LeaseTable,
     /// Live delegated agent credentials (ADR-0163 §5); see
     /// [`crate::delegation`].
     delegations: crate::delegation::DelegationTable,
-    /// On a hub, who spawned each satellite resource and whether another
-    /// consumer attached it since (ADR-0109).
-    satellite_spawns: satellite_spawns::SatelliteSpawnLedger,
     /// Every core-id ↔ wire-id mapping and the wire-id allocators (see
     /// [`IdSpace`]).
     pub idspace: IdSpace,
@@ -189,9 +183,10 @@ pub struct ServerState {
     /// Boot-time configuration, built before the state and never changed;
     /// see [`config`].
     config: StateConfig,
-    /// Hub handles (ADR-0007); all `None` on a non-hub server. See
-    /// [`hub_state`].
-    hub: HubState,
+    /// Hub-only state (ADR-0007): satellite table, relays, links, spawn
+    /// ledger, and satellite leases; empty on a non-hub server. See
+    /// [`federation`].
+    federation: Federation,
     /// Satellite uplinks this server keeps to hubs (ADR-0182).
     uplinks: crate::uplink::Uplinks,
     /// The ssh-agent broker (`docs/forwarding.md#ssh-agent`).
@@ -277,6 +272,28 @@ impl ServerState {
     #[cfg(test)]
     pub(crate) const fn config_mut(&mut self) -> &mut StateConfig {
         &mut self.config
+    }
+
+    /// Hub-only state; empty on a non-hub server.
+    #[must_use]
+    pub(crate) const fn federation(&self) -> &Federation {
+        &self.federation
+    }
+
+    /// Mutable [`Self::federation`].
+    pub(crate) const fn federation_mut(&mut self) -> &mut Federation {
+        &mut self.federation
+    }
+
+    /// The uplinks this server keeps to hubs as a satellite (ADR-0182).
+    #[must_use]
+    pub(crate) const fn uplinks(&self) -> &crate::uplink::Uplinks {
+        &self.uplinks
+    }
+
+    /// Mutable [`Self::uplinks`], to arm, start, and stop them.
+    pub(crate) const fn uplinks_mut(&mut self) -> &mut crate::uplink::Uplinks {
+        &mut self.uplinks
     }
 
     /// The ssh-agent broker.

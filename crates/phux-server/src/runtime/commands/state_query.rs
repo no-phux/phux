@@ -91,7 +91,8 @@ pub(crate) async fn handle_get_state_federated(
     // workload-auth §6: only the satellites the viewer may inventory are
     // asked, so another host's name and health never reach it.
     let relays: Vec<_> = state.with(|s| {
-        s.hub_relays_all()
+        s.federation()
+            .relays_all()
             .into_iter()
             .filter(|relay| {
                 crate::policy::filter::admits_satellite(
@@ -153,7 +154,7 @@ fn mirror_federated_agent_metadata(
         let phux_protocol::ids::ResourceId::Satellite { host, id } = &resource.id else {
             continue;
         };
-        if let Some(relay) = state.with(|s| s.hub_relay(host)) {
+        if let Some(relay) = state.with(|s| s.federation().relay(host)) {
             relay.mirror_terminal(*id);
         }
     }
@@ -178,7 +179,8 @@ async fn fold_satellite_state(
                     .iter()
                     .filter_map(|pane| pane.id.local_id())
                     .filter_map(|id| {
-                        s.satellite_lease_holder(&host, id)
+                        s.federation()
+                            .satellite_lease_holder(&host, id)
                             .map(|holder| (id, holder))
                     })
                     .collect::<std::collections::HashMap<_, _>>()

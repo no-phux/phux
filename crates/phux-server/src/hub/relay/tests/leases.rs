@@ -86,10 +86,11 @@ fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
         let holder = journal.with_mut(crate::state::ServerState::new_client_id);
         let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
         journal.with_mut(|s| {
-            s.set_satellite_lease(host(), 9, holder, mailbox_tx.clone());
+            s.federation_mut()
+                .set_satellite_lease(host(), 9, holder, mailbox_tx.clone());
         });
         assert_eq!(
-            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
             Some(holder),
             "{action:?}: precondition"
         );
@@ -107,7 +108,7 @@ fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
             stamp: None,
         });
         assert_eq!(
-            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
             None,
             "{action:?}: the hub ledger must follow the satellite"
         );
@@ -121,7 +122,8 @@ fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
     let holder = journal.with_mut(crate::state::ServerState::new_client_id);
     let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, holder, mailbox_tx);
+        s.federation_mut()
+            .set_satellite_lease(host(), 9, holder, mailbox_tx);
     });
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     session.set_journal(Some(journal.clone()));
@@ -137,7 +139,7 @@ fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
         stamp: None,
     });
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
         Some(holder),
         "a SEIZED mirror must not evict the hub ledger"
     );
@@ -155,17 +157,20 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
 
     // A held the lease.
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, a, a_tx);
+        s.federation_mut().set_satellite_lease(host(), 9, a, a_tx);
     });
 
     // B's acquire relay marks pending...
-    journal.with_mut(|s| s.mark_satellite_lease_acquire_pending(host(), 9));
+    journal.with_mut(|s| {
+        s.federation_mut()
+            .mark_satellite_lease_acquire_pending(host(), 9);
+    });
     // ...and its reply lands first; only the event mirror clears the mark.
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, b, b_tx);
+        s.federation_mut().set_satellite_lease(host(), 9, b, b_tx);
     });
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
         Some(b),
         "precondition: the reply already installed B"
     );
@@ -186,7 +191,7 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     });
 
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
         Some(b),
         "a stale Released arriving after a newer reply must not evict the holder it installed"
     );
@@ -204,7 +209,7 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
         stamp: None,
     });
     assert_eq!(
-        journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+        journal.with(|s| s.federation().satellite_lease_holder(&host(), 9)),
         None,
         "a later, non-racing Released is honored normally"
     );

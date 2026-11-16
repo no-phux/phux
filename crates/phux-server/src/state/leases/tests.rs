@@ -168,3 +168,21 @@ fn every_lease_change_opens_an_epoch_and_journals_its_holder() {
         "an expiry is the server's change"
     );
 }
+
+/// A detach clears the holder's local and satellite leases in one call; a
+/// stranded entry in either ledger leaves a pane nobody can type into.
+#[test]
+fn detach_releases_local_and_satellite_leases_together() {
+    let (mut state, pane) = world();
+    let host = phux_protocol::ids::SatelliteHost::from("sat");
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    state.set_input_lease(pane, AGENT);
+    state
+        .federation_mut()
+        .set_satellite_lease(host.clone(), 9, AGENT, tx);
+
+    state.detach(AGENT);
+
+    assert_eq!(state.input_lease_holder(pane), None);
+    assert_eq!(state.federation().satellite_lease_holder(&host, 9), None);
+}

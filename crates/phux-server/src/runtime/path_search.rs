@@ -56,9 +56,9 @@ fn path_route(state: &SharedState, host: Option<SatelliteHost>) -> PathRoute {
     let Some(host) = host else {
         return PathRoute::Local;
     };
-    state.with(|server| match server.hub_relay(&host) {
+    state.with(|s| match s.federation().relay(&host) {
         Some(relay) => PathRoute::Relay(relay),
-        None if server.hub_table().is_some() => {
+        None if s.federation().is_hub() => {
             PathRoute::Refused(format!("no satellite named {host} in this hub's registry"))
         }
         None => PathRoute::Refused(format!(

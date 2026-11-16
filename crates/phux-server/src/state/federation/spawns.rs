@@ -13,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 
 use phux_protocol::ids::{SatelliteHost, ServerInstance};
 
-use super::ClientId;
+use crate::state::ClientId;
 
 /// Most satellite spawns the ledger remembers.
 pub(super) const MAX_SATELLITE_SPAWNS: usize = 1024;

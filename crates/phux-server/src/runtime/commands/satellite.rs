@@ -29,7 +29,7 @@ pub(super) async fn handle_satellite_command(
     } = ctx;
     let client_id = *client_id;
     note_satellite_use(state, host, client_id, &command);
-    let relay = state.with(|s| s.hub_relay(host));
+    let relay = state.with(|s| s.federation().relay(host));
     if let Some(relay) = &relay
         && let Some(refusal) = refuse_satellite_watch(state, client_id, host, relay, &command).await
     {
@@ -205,7 +205,7 @@ fn note_satellite_use(
     let Some(id) = used_resource(command).and_then(phux_protocol::ids::ResourceId::local_id) else {
         return;
     };
-    state.with_mut(|s| s.hub_note_satellite_use(host, id, client_id));
+    state.with_mut(|s| s.federation_mut().note_satellite_use(host, id, client_id));
 }
 
 /// Relay a `KILL_RESOURCE_IF` once the hub has checked the half of
@@ -260,7 +260,7 @@ fn hub_vouches_for_kill(
     let (Some(id), Some(instance)) = (terminal_id.local_id(), precondition.instance) else {
         return false;
     };
-    state.with(|s| s.hub_vouches_unattached(host, id, instance))
+    state.with(|s| s.federation().vouches_unattached(host, id, instance))
 }
 
 /// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
@@ -278,7 +278,8 @@ pub(super) async fn reply_satellite_command(
         && let Some(id) = terminal_id.local_id()
     {
         ctx.state.with_mut(|s| {
-            s.register_satellite_proxy_attach(client_id, host.clone(), id);
+            s.federation_mut()
+                .register_satellite_proxy_attach(client_id, host.clone(), id);
         });
     }
     debug!(
@@ -353,7 +354,8 @@ pub(super) async fn resolve_hub_detach_terminal(
     let result = relay.unsubscribe_resource(client_id, id).await;
     if result == CommandResult::Ok {
         state.with_mut(|s| {
-            s.unregister_satellite_proxy_attach(client_id, host, id);
+            s.federation_mut()
+                .unregister_satellite_proxy_attach(client_id, host, id);
             let scope = phux_protocol::ids::ResourceId::Satellite {
                 host: host.clone(),
                 id,

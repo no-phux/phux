@@ -144,7 +144,8 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     // the hub's lease ledger names the holder.
     let (lease_tx, _lease_rx) = mpsc::channel(1);
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, consumer, lease_tx);
+        s.federation_mut()
+            .set_satellite_lease(host(), 9, consumer, lease_tx);
     });
     let stamp = phux_protocol::wire::frame::EventStamp::new(2, 1).with_operation_id(key);
     let got = relay(9, control(1), Some(Box::new(stamp)));

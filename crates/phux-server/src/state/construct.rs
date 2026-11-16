@@ -1,5 +1,5 @@
 use super::{
-    ClientTable, HubState, IdSpace, LeaseTable, Lifecycle, MetadataStore, ResourceTable,
+    ClientTable, Federation, IdSpace, LeaseTable, Lifecycle, MetadataStore, ResourceTable,
     ServerState, SessionTable, StateConfig,
 };
 
@@ -29,10 +29,9 @@ impl ServerState {
             resources: ResourceTable::default(),
             leases: LeaseTable::default(),
             delegations: crate::delegation::DelegationTable::default(),
-            satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
             idspace,
             metadata: MetadataStore::default(),
-            hub: HubState::default(),
+            federation: Federation::default(),
             uplinks: crate::uplink::Uplinks::default(),
             forward_agent: crate::runtime::forward::agent::Broker::default(),
             hook_dispatcher: None,

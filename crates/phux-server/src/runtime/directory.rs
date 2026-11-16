@@ -180,9 +180,9 @@ fn listing_route(state: &SharedState, host: Option<SatelliteHost>) -> ListingRou
     let Some(host) = host else {
         return ListingRoute::Local;
     };
-    state.with(|s| match s.hub_relay(&host) {
+    state.with(|s| match s.federation().relay(&host) {
         Some(relay) => ListingRoute::Relay(relay),
-        None if s.hub_table().is_some() => {
+        None if s.federation().is_hub() => {
             ListingRoute::Refused(format!("no satellite named {host} in this hub's registry"))
         }
         None => ListingRoute::Refused(format!(

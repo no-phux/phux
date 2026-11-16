@@ -115,12 +115,12 @@ fn announce_lease_releases(
 fn release_relay_state(s: &ServerState, client_id: ClientId) {
     // Rides an unbounded channel, so a saturated relay cannot keep a stale
     // subscriber alive.
-    for relay in s.hub_relays_all() {
+    for relay in s.federation().relays_all() {
         relay.unsubscribe_client(client_id);
     }
     // Relay a RELEASE_INPUT per satellite lease this client held.
-    for (host, terminal) in s.satellite_leases_held_by(client_id) {
-        if let Some(relay) = s.hub_relay(&host) {
+    for (host, terminal) in s.federation().satellite_leases_held_by(client_id) {
+        if let Some(relay) = s.federation().relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
                 terminal_id: WireResourceId::local(terminal),
             });

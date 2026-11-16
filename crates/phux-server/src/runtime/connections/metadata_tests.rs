@@ -102,7 +102,7 @@ fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
     let (handle, mut mailbox) = RelayHandle::new(SatelliteHost::new("gpubox"));
     let relays = HubRelays::default();
     relays.insert(handle);
-    state.with_mut(|s| s.set_hub_relays(relays));
+    state.with_mut(|s| s.federation_mut().set_relays(relays));
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
     let client = ClientId(3);
     let scope = satellite_scope();
