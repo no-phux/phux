@@ -54,7 +54,7 @@ async fn refused_split_and_attach_leave_the_original_usable() {
     let request_id = requested_spawn(&mut session, "vertical");
     let spawned = ResourceId::local(202);
     let request_id = announce_split(&mut session, request_id, spawned.clone());
-    let refused = session.on_frame(error_reply(
+    let refused = session.on_frame(command_err(
         request_id,
         ErrorCode::InvalidCommand,
         "attach refused",
@@ -147,7 +147,7 @@ async fn panes_stop_at_four_and_survive_a_refused_kill() {
         FrameKind::Command { request_id, .. } => request_id,
         other => panic!("{other:?}"),
     };
-    session.on_frame(error_reply(
+    session.on_frame(command_err(
         request_id,
         ErrorCode::InvalidCommand,
         "not permitted",

@@ -8,8 +8,8 @@ use phux_protocol::caps::{
     EngineFeatureSet, ImageProtocolSet, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
 };
 use phux_protocol::ids::{
-    ActivationId, AuthorityId, BootstrapId, ClientId, ResourceId, ResourceKey, Revision,
-    SatelliteHost, ServerInstance, SessionId, SessionKey, StreamId, WindowId,
+    ActivationId, AuthorityId, BootstrapId, ResourceId, ResourceKey, Revision, SatelliteHost,
+    ServerInstance, SessionId, SessionKey, StreamId, WindowId,
 };
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
@@ -20,6 +20,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_vt_web::Vt;
 use phux_web::{AttachPreference, Connection};
+use phux_wire_fixtures::{HelloOk, attached as attached_frame, command_err, decode_one};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[path = "session/agents.rs"]
@@ -160,25 +161,16 @@ fn key() -> KeyEvent {
     }
 }
 
+/// `HELLO_OK` from an anonymous server selecting `profile` with `limits`.
 fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
-    FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        server_caps: ServerCapabilities::new(),
-        server_id: Vec::new(),
-        selected_profile: Some(profile),
-        bootstrap_limits: limits,
-    }
+    HelloOk::new(Vec::new(), ServerCapabilities::new())
+        .profile_limits(profile, limits)
+        .build()
 }
 
 /// `HELLO_OK` selecting raw synthesized VT with `caps`.
 fn hello_with(caps: ServerCapabilities) -> FrameKind {
-    let mut frame = synth_hello();
-    if let FrameKind::HelloOk { server_caps, .. } = &mut frame {
-        *server_caps = caps;
-    }
-    frame
+    HelloOk::new(Vec::new(), caps).build()
 }
 
 fn synth_hello() -> FrameKind {
@@ -209,11 +201,7 @@ fn attached(terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
 }
 
 fn attached_snapshot(snapshot: SessionSnapshot) -> FrameKind {
-    FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(1),
-    }
+    attached_frame(1, snapshot, 1)
 }
 
 const ATTACH_READY: FrameKind = FrameKind::AttachReady { attach_id: 1 };
@@ -231,27 +219,11 @@ fn reply(request_id: u32, result: CommandResult) -> FrameKind {
     FrameKind::CommandResult { request_id, result }
 }
 
-fn error_reply(request_id: u32, code: ErrorCode, message: &str) -> FrameKind {
-    reply(
-        request_id,
-        CommandResult::Error {
-            code,
-            message: message.to_owned(),
-        },
-    )
-}
-
 fn native_profile() -> BootstrapProfile {
     BootstrapProfile::NativeState {
         codec: EngineCodec::LibghosttySnapshotV1,
         features: EngineFeatureSet::required_native(),
     }
-}
-
-fn decode_one(frame: &[u8]) -> FrameKind {
-    let (decoded, rest) = FrameKind::decode(frame).expect("decodable client frame");
-    assert!(rest.is_empty());
-    decoded
 }
 
 /// The characters of a terminal's grid, row-major.

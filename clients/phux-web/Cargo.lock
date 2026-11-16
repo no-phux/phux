@@ -400,11 +400,20 @@ dependencies = [
  "phux-client-core",
  "phux-protocol",
  "phux-vt-web",
+ "phux-wire-fixtures",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "phux-wire-fixtures"
+version = "0.154.0"
+dependencies = [
+ "bytes",
+ "phux-protocol",
 ]
 
 [[package]]

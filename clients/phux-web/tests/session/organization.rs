@@ -69,7 +69,7 @@ async fn an_unreadable_state_attaches_the_last_session_without_creating() {
     let mut session = Connection::new(&vt, 80, 24);
     let hello = session.on_frame(hello_with(ServerCapabilities::new()));
     let request_id = state_request(&hello.send[1]);
-    let reply = session.on_frame(error_reply(
+    let reply = session.on_frame(command_err(
         request_id,
         ErrorCode::InvalidCommand,
         "no inventory",
@@ -297,7 +297,7 @@ async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
         }
         other => panic!("expected the legacy kill, got {other:?}"),
     };
-    session.on_frame(error_reply(
+    session.on_frame(command_err(
         request_id,
         ErrorCode::InvalidCommand,
         "not permitted",

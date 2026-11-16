@@ -13,13 +13,13 @@ use super::{
 };
 use futures_channel::oneshot;
 use gloo_timers::future::TimeoutFuture;
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use phux_vt_web::Vt;
+use phux_wire_fixtures::{HelloOk, attached, bootstrap_frames, output};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::{JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
@@ -192,13 +192,7 @@ async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
         assert!(session.is_failed());
         assert!(session.key_frame(key).is_none());
 
-        let after_exit = session.on_frame(FrameKind::ResourceOutput {
-            terminal_id: ResourceId::new(1),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq: 1,
-            bytes: bytes::Bytes::from_static(b"ignored"),
-        });
+        let after_exit = session.on_frame(output(&ResourceId::new(1), 1, b"ignored"));
         assert!(after_exit.send.is_empty());
         assert!(!after_exit.render);
     }
@@ -321,50 +315,19 @@ pub(super) fn attached_frames(count: u32, payload: &'static [u8]) -> Vec<FrameKi
         .clone()
         .map(|id| ResourceInfo::new(id, WindowId::new(1), 80, 24))
         .collect();
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+        .with_resources(resources);
     let mut frames = vec![
-        FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: Vec::new(),
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        },
-        FrameKind::Attached {
-            attach_id: 1,
-            snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-                .with_resources(resources),
-            initial_client_id: ClientId::new(1),
-        },
+        HelloOk::new(Vec::new(), ServerCapabilities::new()).build(),
+        attached(1, snapshot, 1),
     ];
     for (serial, terminal_id) in (1..).zip(ids) {
-        let stream_id = StreamId::new(serial).unwrap();
-        let bootstrap_id = BootstrapId::new(serial).unwrap();
-        frames.extend([
-            FrameKind::BootstrapBegin {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 80,
-                rows: 24,
-                base_seq: 0,
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: bytes::Bytes::from_static(payload),
-            },
-            FrameKind::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-        ]);
+        frames.extend(bootstrap_frames(
+            &terminal_id,
+            [serial, serial],
+            [80, 24],
+            payload,
+        ));
     }
     frames.push(FrameKind::AttachReady { attach_id: 1 });
     frames
