@@ -30,7 +30,7 @@ use libghostty_vt::{
     },
     screen::{CellSemanticContent, CellWide},
     selection::Selection,
-    style::{Style, StyleColor},
+    style::Style,
 };
 
 use super::reference::{ConsumerReference, ReferenceCursorMode};

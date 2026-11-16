@@ -1,10 +1,9 @@
 use super::{
     CellColor, CellInfo, CellIteration, CellIterator, CellSemanticContent, CellStyle, CellWide,
     CursorState, GRAPHEME_INLINE, GhosttyTerminal, GridRef, Point, PointCoordinate, RenderWalk,
-    RgbColor, RowIteration, SCHEMA_VERSION, SCROLLBACK_ALL, ScreenState, ScrollbackWindow,
-    SemanticContent, SnapshotSynthesizer, SoftWrap, StyleColor, SynthesisError,
-    TRUNCATED_ROW_WINDOW, ViewportProjection, grid_dims, viewport_row_is_wrapped,
-    walk_viewport_rows,
+    RowIteration, SCHEMA_VERSION, SCROLLBACK_ALL, ScreenState, ScrollbackWindow, SemanticContent,
+    SnapshotSynthesizer, SoftWrap, SynthesisError, TRUNCATED_ROW_WINDOW, ViewportProjection,
+    grid_dims, viewport_row_is_wrapped, walk_viewport_rows,
 };
 
 impl<'alloc> SnapshotSynthesizer<'alloc> {
@@ -285,8 +284,9 @@ fn append_history_grapheme(buf: &mut String, grid_ref: &GridRef<'_>) -> Result<(
 /// (no non-default style, no OSC-133 mark), keeping [`ScreenState::cells`]
 /// sparse. Wide-cell tails are skipped by the caller.
 ///
-/// Two sibling projections live in the TUI render path and `phux-record`;
-/// `cell_projection_conformance.rs` keeps the three in agreement.
+/// The style mapping is the shared [`phux_vt::cell_style`]; the TUI render
+/// path and `phux-record` keep their own dense walks, and
+/// `cell_projection_conformance.rs` keeps the three walks in agreement.
 fn collect_cell(
     cell: &CellIteration<'_, '_>,
     row: u16,
@@ -301,24 +301,7 @@ fn collect_cell(
         CellSemanticContent::Prompt => Some(SemanticContent::Prompt),
     };
 
-    // Resolved colors first; fall back to the raw color so a palette index
-    // survives as a palette index.
-    let fg = cell_color(cell.fg_color()?, style.fg_color);
-    let bg = cell_color(cell.bg_color()?, style.bg_color);
-
-    let cell_style = CellStyle {
-        bold: style.bold,
-        faint: style.faint,
-        italic: style.italic,
-        underline: !matches!(style.underline, libghostty_vt::style::Underline::None),
-        blink: style.blink,
-        inverse: style.inverse,
-        invisible: style.invisible,
-        strikethrough: style.strikethrough,
-        overline: style.overline,
-        fg,
-        bg,
-    };
+    let cell_style = phux_vt::cell_style(&style, cell.fg_color()?, cell.bg_color()?);
 
     // Sparse: drop cells that carry nothing an agent could act on.
     if semantic.is_none() && cell_style == DEFAULT_CELL_STYLE {
@@ -348,21 +331,3 @@ const DEFAULT_CELL_STYLE: CellStyle = CellStyle {
     fg: CellColor::Default,
     bg: CellColor::Default,
 };
-
-/// Prefer the cell's explicit color (palette indices keep their identity),
-/// then a resolved RGB, else [`CellColor::Default`].
-fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
-    match raw {
-        StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
-        StyleColor::Rgb(rgb) => CellColor::Rgb {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        },
-        StyleColor::None => resolved.map_or(CellColor::Default, |rgb| CellColor::Rgb {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        }),
-    }
-}

@@ -8,7 +8,8 @@
 //! # Crate features
 //!
 //! - The default build exposes [`input`] conversions between wire atoms and
-//!   libghostty's.
+//!   libghostty's, and [`cell_style`] / [`cell_color`], the one projection of
+//!   a libghostty cell style into a [`phux_core::screen::CellStyle`].
 //! - **`render-pool`**: `render_pool`, the pooled libghostty render trio,
 //!   with no kitty graphics and no png.
 //! - **`kitty`**: enables `render-pool`, then adds `sgr`, `kitty_replay`, and
@@ -18,6 +19,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+mod cell;
 pub mod input;
 
 #[cfg(feature = "kitty")]
@@ -28,3 +30,5 @@ pub mod render_pool;
 pub mod sgr;
 #[cfg(feature = "kitty")]
 pub mod snapshot;
+
+pub use cell::{cell_color, cell_style};
