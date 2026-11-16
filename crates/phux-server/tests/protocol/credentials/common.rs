@@ -17,7 +17,6 @@ use phux_server_testkit::{
     recv_typed, recv_until, send_frame, wait_for_raw_socket,
 };
 use serde_json::Value;
-
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 
