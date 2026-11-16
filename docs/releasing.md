@@ -59,8 +59,7 @@ released; its source is the `desktop-v0.62.0` tag.
 Because the harness comes from `main`, a release-infrastructure fix applies
 to an older tag on the next `release` run.
 Metadata releases qualify their own tree, not ancestors.
-[Native qualification](./ci.md#native-apple-qualification) covers missing or
-expired proof and the unresolved batch-intermediate eligibility policy.
+[Native qualification](./ci.md#native-apple-qualification) is the `ci-green` rule.
 
 Each CLI release also carries a CycloneDX 1.5 SBOM for `phux` and one for
 `phux-mcp`, generated from the tagged workspace for every target
@@ -86,8 +85,8 @@ Each product rebuilds only when its inputs changed since the commit
 Rune releases never go through Release Please. `rune-auto-release.yml` cuts
 them on its own: every two hours it opens and auto-merges the next patch bump
 when feat/fix/perf commits touched `clients/rune` since the last tag, with notes
-generated from those subjects, and tags the merged bump after its exact push
-CI and full native proof are green (`clients/rune/scripts/release.py`). Set the repository variable
+generated from those subjects, and tags the merged bump after `ci-green`
+and a full native receipt are green (`clients/rune/scripts/release.py`). Set the repository variable
 `RUNE_AUTO_RELEASE=false` to stop it. To ship hand-written notes, merge your
 own bump first: the train then only tags it. Versions ran `0.1.0-alpha.N` to
 alpha.23, then `0.1.0`; the train now bumps the patch (`0.1.1`, `0.1.2`, ...).
@@ -102,26 +101,27 @@ By hand:
    (every Rune build is `--locked`), and rewrite
    `clients/rune/RELEASE_NOTES.md`, whose first words must be
    `**Phux Rune VERSION**`. Merge it.
-2. Wait for `ci` and qualified `rune-macos` on that exact main commit.
-   Its successful native push must carry a full-coverage receipt for the
-   release tree. Ancestors do not stand in for it. Then push `rune-vVERSION`.
-3. `rune-client.yml` refuses the tag unless clients can read it, it matches
-   `Cargo.toml` and the notes, and that commit has a green push `ci` on
-   `main` plus full native qualification of that same SHA/tree. If either
-   was still running, rerun the failed job. Tags can't be deleted or moved,
-   so a tag refused for its version or notes costs that number: fix the tree
-   and take the next one.
+2. `ci-green` must pass for that SHA, then push `rune-vVERSION`.
+   A green push `ci` on `main` works. So does one successful `merge_group`
+   `ci.yml` run whose `head_sha` is that SHA, whose ref starts
+   `gh-readonly-queue/`, and whose `main...SHA` compare is `behind` or
+   `identical`. Every push-plan job passed. A skip or cancel misses unless
+   an identical-tree receipt proves that lane. That run's `rune-macos` call
+   passed, and the full native receipt is still required. Fallback (C): a
+   push-equivalent `ci` run on that exact SHA. Nothing dispatches it today.
+3. `rune-client.yml` refuses a tag clients cannot read, that disagrees with
+   `Cargo.toml` or the notes, or fails `ci-green`. Rerun if ci was running.
+   A refused tag costs its number.
 4. `rune-build.yml` tests, packages, signs and notarizes, then launches the
    final archive against a same-source server on a temp socket
    (`clients/rune/scripts/qualify.sh`). That checks the licenses in the
    archive, what the binary links, its version, and that a frame shows the
    session; on Linux it also opens a window under Xvfb and lavapipe. Pull
    requests run `check.sh` and cargo-deny on `linux-x86_64` as the `rune`
-   lane of `ci`. Packaging, the packaged launch, and `linux-aarch64` run on
-   the merge queue, on main, and again in this tag build. macOS and the
-   iOS simulator run in `rune-macos.yml`, required by `ci` on the merge queue
-   and independently on main,
-   unsigned until this tag.
+   lane of `ci`. Packaging and `linux-aarch64` run on the queue, on main,
+   and again in this tag build. macOS and the iOS simulator run in
+   `rune-macos.yml`, called by queue `ci` and again on main, unsigned until
+   this tag.
 5. The release goes up with `--latest=false`, a prerelease only if the version
    is one, and the feed moves last. Rerunning an older tag leaves the feed alone.
 
@@ -130,9 +130,9 @@ Publishing and moving the feed are one job; there is no manual promotion step.
 Both `ci` and `rune-macos` push completions on this repository's main branch
 reconcile draft publication and Rune tagging. Native completion does not run
 Release Please a second time. PR, fork, unrelated-workflow, and non-main
-completions cannot enter that path. The completion is only a wake-up: the
-publish and tag gates still look up the exact required push SHA's results.
-Schedules remain a recovery backstop.
+completions cannot enter that path. The completion is only a wake-up.
+Publish keeps the push SHA. `ci-green` also accepts the rule above; the
+schedule retries a bump no push woke.
 
 **Floors.** Linux archives need glibc 2.39, what the `ubuntu-24.04` build host
 links; this is a higher floor than the CLI's 2.35. macOS 14.0 is

@@ -10,6 +10,7 @@ import { git } from "../lib/git.ts";
 import { api, gh, ghLines } from "../lib/github.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
 import { findValidation, type Receipt } from "../routing/receipt.ts";
+import { mergeGroupGate } from "./queue-ci.ts";
 
 export type Version = readonly [number, number, number];
 
@@ -303,7 +304,16 @@ export function ciGreen(sha: string): number {
   const repository = process.env["GITHUB_REPOSITORY"];
   if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
   const rune = runeMacosOn(repository, sha);
-  const refusal = releaseRefusal(ciConclusion(repository, sha), sha, rune.state);
+  const push = ciConclusion(repository, sha);
+  const pushRefusal = releaseRefusal(push, sha, rune.state);
+  if (pushRefusal === undefined) return 0;
+  // A finished push run is the push path, unchanged. Only a missing push run
+  // can fall through to a qualifying merge_group of this exact SHA.
+  if (!PENDING.has(push)) {
+    console.error(`::error::${pushRefusal}`);
+    return 1;
+  }
+  const refusal = mergeGroupGate(repository, sha, nativeReleaseProof);
   if (refusal === undefined) return 0;
   console.error(`::error::${refusal}`);
   return 1;
