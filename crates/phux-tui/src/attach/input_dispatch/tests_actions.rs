@@ -304,16 +304,13 @@ fn three_pane_window() -> ArrangementDoc {
     )
     .unwrap();
     let tree = split_at(&tree, &tid(2), &tid(3), SplitDir::Vertical, 0.5).unwrap();
-    ArrangementDoc {
-        groups: vec![Group::new(
-            "1".to_owned(),
-            LayoutState {
-                tree: Some(tree),
-                focus: Some(tid(1)),
-            },
-        )],
-        active: 0,
-    }
+    ArrangementDoc::from_groups(vec![Group::new(
+        "1".to_owned(),
+        LayoutState {
+            tree: Some(tree),
+            focus: Some(tid(1)),
+        },
+    )])
 }
 
 /// close-view folds the focused leaf out of the arrangement and broadcasts;
@@ -1907,26 +1904,23 @@ fn detach_action_requests_detach_effect() {
 #[test]
 fn move_pane_picker_offers_only_exact_cached_local_destinations() {
     let source = tid(1);
-    let mut current = ArrangementDoc {
-        groups: vec![Group::new(
-            "editor".to_owned(),
-            LayoutState {
-                tree: Some(LayoutNode::Split {
-                    dir: SplitDir::Horizontal,
+    let mut current = ArrangementDoc::from_groups(vec![Group::new(
+        "editor".to_owned(),
+        LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(source.clone())),
+                right: Box::new(LayoutNode::Split {
+                    dir: SplitDir::Vertical,
                     ratio: 0.5,
-                    left: Box::new(LayoutNode::Leaf(source.clone())),
-                    right: Box::new(LayoutNode::Split {
-                        dir: SplitDir::Vertical,
-                        ratio: 0.5,
-                        left: Box::new(LayoutNode::Leaf(tid(2))),
-                        right: Box::new(LayoutNode::Leaf(satellite_id("edge", 9))),
-                    }),
+                    left: Box::new(LayoutNode::Leaf(tid(2))),
+                    right: Box::new(LayoutNode::Leaf(satellite_id("edge", 9))),
                 }),
-                focus: Some(source.clone()),
-            },
-        )],
-        active: 0,
-    };
+            }),
+            focus: Some(source.clone()),
+        },
+    )]);
     let mut cached = ArrangementDoc::single(tid(3));
     cached.groups[0].name = "tests".to_owned();
     let sessions = [

@@ -73,8 +73,10 @@ fn cross_move_plan(
 impl SpatialOp {
     pub(super) const fn ratio(&self) -> Option<f32> {
         match self {
-            Self::Insert { ratio, .. } | Self::Move { ratio, .. } => Some(*ratio),
-            Self::Swap { .. } => None,
+            Self::Insert { ratio, .. } | Self::Move { ratio, .. } | Self::SlotOut { ratio, .. } => {
+                Some(*ratio)
+            }
+            Self::Swap { .. } | Self::SlotAdd { .. } | Self::SlotStep { .. } => None,
         }
     }
 
@@ -103,6 +105,8 @@ impl SpatialOp {
                 vec![("source", source), ("target", target)]
             }
             Self::Swap { first, second, .. } => vec![("first", first), ("second", second)],
+            Self::SlotAdd { pane, to } => vec![("pane", pane), ("to", to)],
+            Self::SlotOut { pane, .. } | Self::SlotStep { pane, .. } => vec![("pane", pane)],
         }
     }
 }
@@ -165,6 +169,9 @@ pub(super) async fn build_plan(
     }
 
     let session = same_session(snapshot, &terminals)?;
+    if operation.is_slot() {
+        return super::slot::plan(operation, session, &terminals).map(PlanKind::Local);
+    }
     let [first, second] = terminals.as_slice() else {
         return Err(internal_error("spatial operation argument mismatch"));
     };
@@ -242,6 +249,9 @@ pub(super) async fn build_plan(
             }),
             format!("swapped @{} and @{}", local_id(first), local_id(second)),
         ),
+        SpatialOp::SlotAdd { .. } | SpatialOp::SlotOut { .. } | SpatialOp::SlotStep { .. } => {
+            return Err(internal_error("a slot edit reached the pane path"));
+        }
     };
     Ok(PlanKind::Local(Plan {
         session,
@@ -384,6 +394,6 @@ fn session_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<Sess
     crate::resource::session_of(snapshot, terminal)
 }
 
-fn local_id(terminal: &ResourceId) -> u32 {
+pub(super) fn local_id(terminal: &ResourceId) -> u32 {
     terminal.local_id().unwrap_or(0)
 }

@@ -174,7 +174,11 @@ impl ServerState {
                 ))
             })
             .collect();
-        let doc = ArrangementDoc { groups, active: 0 };
+        let doc = ArrangementDoc {
+            groups,
+            active: 0,
+            slots: Vec::new(),
+        };
         let Ok(bytes) = doc.encode_topology_cbor() else {
             return;
         };
@@ -267,6 +271,7 @@ mod tests {
                 },
             )],
             active: 0,
+            slots: Vec::new(),
         };
         state
             .translate_layout_write(session, &doc.encode_cbor().unwrap(), &Actor::owner())

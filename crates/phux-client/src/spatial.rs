@@ -19,6 +19,7 @@ use crate::pane_move;
 
 mod plan;
 mod refusal;
+mod slot;
 
 use plan::{build_plan, read_snapshot, validate_ratio};
 use refusal::{layout_error, move_error};
@@ -70,6 +71,10 @@ pub mod codes {
     pub const INTERNAL_ERROR: &str = "internal_error";
     /// A transport failure after the edit began.
     pub const TRANSPORT: &str = "transport";
+    /// A slot tab edit named a pane that is no tab.
+    pub const NOT_A_TAB: &str = "not_a_tab";
+    /// The server does not keep slot tabs (`features_ext.SLOT_TABS`).
+    pub const SLOT_TABS_UNSUPPORTED: &str = "slot_tabs_unsupported";
 }
 
 /// The user-facing divider direction of a split.
@@ -141,6 +146,30 @@ pub enum SpatialOp {
         second: String,
         /// Named projection keys (ADR-0129); at most one.
         projection: Vec<String>,
+    },
+    /// Make `pane` a tab of the slot showing `to`
+    /// (`docs/organization.md#slot-tabs`).
+    SlotAdd {
+        /// The pane to make a tab.
+        pane: String,
+        /// Any tab of the slot it joins.
+        to: String,
+    },
+    /// Give the tab `pane` a leaf of its own beside its slot.
+    SlotOut {
+        /// The tab.
+        pane: String,
+        /// Divider direction.
+        direction: Direction,
+        /// Split ratio left to the slot, strictly inside `(0, 1)`.
+        ratio: f32,
+    },
+    /// Move the stored default of `pane`'s slot `delta` places.
+    SlotStep {
+        /// Any tab of the slot.
+        pane: String,
+        /// `1` for next, `-1` for previous.
+        delta: isize,
     },
 }
 
@@ -244,6 +273,13 @@ pub async fn run(
     let mut conn = Connection::connect(socket)
         .await
         .map_err(SpatialError::Transport)?;
+    if operation.is_slot()
+        && !conn
+            .server_features_ext()
+            .contains(phux_protocol::caps::ServerFeatureExt::SlotTabs)
+    {
+        return Err(SpatialError::Refused(slot::unsupported()));
+    }
     let snapshot = read_snapshot(&mut conn, 0, notices)
         .await
         .map_err(SpatialError::Transport)?;

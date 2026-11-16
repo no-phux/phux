@@ -68,6 +68,7 @@ pub(crate) fn dispatch(
         })) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
         Some(Command::Organize(args)) => sessions::organize(args, socket),
         Some(Command::SwapPane(args)) => panes::swap_pane(args, socket),
+        Some(Command::Slot(args)) => panes::slot(args, socket),
         Some(Command::Resize(commands::ResizeArgs {
             target,
             geometry,

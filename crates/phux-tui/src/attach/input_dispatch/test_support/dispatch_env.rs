@@ -140,7 +140,7 @@ pub(super) fn two_pane_workspace_at(ratio: f32) -> ArrangementDoc {
                 focus: Some(tid(1)),
             },
         )],
-        active: 0,
+        active: 0, slots: Vec::new(), 
     }
 }
 

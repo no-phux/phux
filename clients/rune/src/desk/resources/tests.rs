@@ -156,6 +156,7 @@ fn doc(tree: LayoutNode) -> ArrangementDoc {
             },
         )],
         active: 0,
+        slots: Vec::new(),
     }
 }
 
