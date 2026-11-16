@@ -10,44 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::widget::{
-    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
-    WidgetOptSpec, reject_unknown_opts,
+    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
 };
 
-const KIND: &str = "exec";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "The first output line of a user-supplied command, run by the \
-              client on an interval as a bounded child process (10s hard \
-              cap, `kill_on_drop`) — render never blocks on it; the bar \
-              shows the last completed run, and a failed or timed-out run \
-              keeps the last good output.",
-    options: &[
-        WidgetOptSpec {
-            name: "command",
-            aliases: &[],
-            doc: "string or non-empty string array, required — a string \
-                  runs via `/bin/sh -c` (so `~` and `$VAR` expand); an \
-                  array is an argv run directly.",
-        },
-        WidgetOptSpec {
-            name: "interval",
-            aliases: &[],
-            doc: "duration string (`\"500ms\"`, `\"30s\"`, `\"2m\"`, \
-                  `\"1h\"`) or positive integer seconds, default `\"5s\"` \
-                  — run cadence, floored to 1s.",
-        },
-        WidgetOptSpec {
-            name: "parse-ansi",
-            aliases: &["parse_ansi"],
-            doc: "bool, default `true` — interpret SGR escape sequences in \
-                  the output into per-cell styles; when `false` (and for \
-                  every non-SGR escape either way) escapes are stripped.",
-        },
-    ],
-};
-const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 /// The bar repaints once a second, so a faster cadence is never visible.
 const MIN_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -139,88 +104,12 @@ impl StatusWidget for ExecWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let argv = match opts.get("command") {
-        Some(toml::Value::String(s)) if !s.trim().is_empty() => {
-            vec!["/bin/sh".to_owned(), "-c".to_owned(), s.clone()]
-        }
-        Some(toml::Value::Array(items)) if !items.is_empty() => {
-            let mut argv = Vec::with_capacity(items.len());
-            for item in items {
-                match item {
-                    toml::Value::String(s) if !s.is_empty() => argv.push(s.clone()),
-                    other => {
-                        return Err(invalid(format!(
-                            "`command` array entries must be non-empty strings, got {}",
-                            other.type_str()
-                        )));
-                    }
-                }
-            }
-            argv
-        }
-        Some(toml::Value::String(_) | toml::Value::Array(_)) => {
-            return Err(invalid("`command` must not be empty".to_owned()));
-        }
-        Some(other) => {
-            return Err(invalid(format!(
-                "`command` must be a string or an array of strings, got {}",
-                other.type_str()
-            )));
-        }
-        None => return Err(invalid("`command` is required".to_owned())),
-    };
-    let interval = match opts.get("interval") {
-        None => DEFAULT_INTERVAL,
-        Some(toml::Value::String(s)) => parse_duration(s)?,
-        Some(toml::Value::Integer(n)) if *n > 0 => {
-            Duration::from_secs(u64::try_from(*n).unwrap_or(u64::MAX))
-        }
-        Some(other) => {
-            return Err(invalid(format!(
-                "`interval` must be a duration string (e.g. \"30s\") or a positive \
-                 integer second count, got {}",
-                other.type_str()
-            )));
-        }
-    };
-    let parse_ansi = match opts.get("parse-ansi").or_else(|| opts.get("parse_ansi")) {
-        None => true,
-        Some(toml::Value::Boolean(b)) => *b,
-        Some(other) => {
-            return Err(invalid(format!(
-                "`parse-ansi` must be a boolean, got {}",
-                other.type_str()
-            )));
-        }
-    };
+    let kinds::exec::ExecOpts {
+        argv,
+        interval,
+        parse_ansi,
+    } = kinds::exec::parse(opts)?;
     Ok(Box::new(ExecWidget::new(argv, interval, parse_ansi)))
-}
-
-fn invalid(message: String) -> WidgetError {
-    crate::widget::invalid(KIND, message)
-}
-
-/// Parse a positive integer followed by `ms`, `s`, `m`, or `h` (bare means
-/// seconds).
-fn parse_duration(s: &str) -> Result<Duration, WidgetError> {
-    let s = s.trim();
-    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-    let (digits, unit) = s.split_at(split);
-    let value: u64 = digits
-        .parse()
-        .map_err(|_| invalid(format!("invalid `interval` duration: {s:?}")))?;
-    if value == 0 {
-        return Err(invalid("`interval` must be > 0".to_owned()));
-    }
-    let duration = match unit {
-        "ms" => Duration::from_millis(value),
-        "" | "s" => Duration::from_secs(value),
-        "m" => Duration::from_secs(value.saturating_mul(60)),
-        "h" => Duration::from_secs(value.saturating_mul(3600)),
-        _ => return Err(invalid(format!("invalid `interval` unit in {s:?}"))),
-    };
-    Ok(duration)
 }
 
 // ---------------------------------------------------------------------------

@@ -549,7 +549,6 @@ format = "{index}:{window} exit {exit}"
 #[test]
 fn merge_widget_contributions_appends_after_user_widgets_and_drops_invalid()
 -> Result<(), Box<dyn std::error::Error>> {
-    use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
 
     let dir = TempDir::new()?;
@@ -581,11 +580,7 @@ interval = "30s"
         left: vec![Widget::Bare("session-name".to_owned())],
         ..StatusCfg::default()
     };
-    phux_config::widget::merge_widget_contributions(
-        &mut status,
-        std::slice::from_ref(&loaded),
-        &WidgetRegistry::with_builtins(),
-    );
+    phux_config::widget::merge_widget_contributions(&mut status, std::slice::from_ref(&loaded));
 
     // The valid contribution appended AFTER the user's widget; the unknown
     // kind and the command-less exec were both dropped.

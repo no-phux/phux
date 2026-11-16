@@ -5,8 +5,7 @@
 //! Three slots (`docs/status-bar.md#the-status-bar`) are placed left-flush,
 //! right-flush, and centered in the gap between.
 
-use crate::plugin::{PluginManifest, PluginWidgetSlot};
-use crate::schema::{StatusCfg, Widget, WidgetSpec};
+use crate::schema::{StatusCfg, Widget};
 use crate::widget::{Cell, ExecFeed, StatusWidget, WidgetContext, WidgetError, WidgetRegistry};
 
 /// One composed slot's worth of widgets.
@@ -296,40 +295,6 @@ pub fn row_to_string(row: &[Cell]) -> String {
     row.iter()
         .map(|cell| cell.text.first().copied().unwrap_or(' '))
         .collect()
-}
-
-/// Append enabled plugins' `[[widgets]]` contributions to their slots.
-///
-/// A contribution that does not build is dropped with a warning, so one
-/// broken plugin cannot break the whole bar.
-pub fn merge_widget_contributions(
-    status: &mut StatusCfg,
-    manifests: &[PluginManifest],
-    registry: &WidgetRegistry,
-) {
-    for manifest in manifests {
-        for widget in &manifest.widgets {
-            let spec = WidgetSpec {
-                kind: widget.kind.clone(),
-                opts: widget.opts.clone(),
-            };
-            if let Err(err) = registry.build(&spec) {
-                tracing::warn!(
-                    plugin = %manifest.id,
-                    widget = %widget.id,
-                    error = %err,
-                    "dropping plugin status-widget contribution that failed validation",
-                );
-                continue;
-            }
-            let slot = match widget.slot {
-                PluginWidgetSlot::Left => &mut status.left,
-                PluginWidgetSlot::Center => &mut status.center,
-                PluginWidgetSlot::Right => &mut status.right,
-            };
-            slot.push(Widget::Spec(spec));
-        }
-    }
 }
 
 #[cfg(test)]

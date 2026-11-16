@@ -6,22 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    Cell, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
-    reject_unknown_opts,
-};
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: "spacer",
-    summary: "Elastic blank space. Takes no width of its own and then \
-              absorbs an even share of whatever columns the row has left \
-              over, so the widgets on either side of it are pushed apart. \
-              Renders nothing on a row with no room to spare, which makes \
-              it the first thing to yield on a narrow terminal rather than \
-              something that has to be configured away. Style it (`style = \
-              { bg = ... }`) to paint the gap rather than leave it blank.",
-    options: &[],
-};
+use crate::widget::{Cell, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
 
 /// `spacer` widget.
 #[derive(Debug, Clone, Copy, Default)]
@@ -48,6 +33,6 @@ impl StatusWidget for SpacerWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
+    kinds::spacer::parse(opts)?;
     Ok(Box::new(SpacerWidget))
 }

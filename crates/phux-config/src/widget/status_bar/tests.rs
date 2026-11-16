@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema::WidgetSpec;
 use crate::widget::{CellHit, WidgetCells, WindowInfo};
 use std::sync::{
     Arc,

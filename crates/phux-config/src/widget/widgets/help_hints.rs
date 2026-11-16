@@ -3,18 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::widget::{
-    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
-    reject_unknown_opts,
-};
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: "help-hints",
-    summary: "Clickable, prefix-aware navigation (`<prefix>  s Sessions · \
-              Space Commands · S Settings · ? Help · [ Copy`), rendered \
-              with the configured prefix chord. Drops complete destinations \
-              from the right as the bar narrows, and disappears entirely \
-              rather than showing a fragment.",
-    options: &[],
+    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
 };
 
 const SEP: &str = " · ";
@@ -75,6 +64,6 @@ impl StatusWidget for HelpHintsWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
+    kinds::help_hints::parse(opts)?;
     Ok(Box::new(HelpHintsWidget))
 }

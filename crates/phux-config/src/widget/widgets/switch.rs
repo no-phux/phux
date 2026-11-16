@@ -4,34 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::widget::{
-    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
-    WidgetOptSpec, reject_unknown_opts, string_opt, style_opt,
-};
-
-const KIND: &str = "switch";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "A clickable chip that opens the agent-fleet switcher (the \
-              same overlay `prefix A` opens). Every cell of the chip, \
-              padding included, is a click target. Pair it with \
-              `max-cols` to surface it only on terminals too narrow for \
-              the sidebar and the full tab strip.",
-    options: &[
-        WidgetOptSpec {
-            name: "label",
-            aliases: &[],
-            doc: "string, default `\"agents\"` — the chip's text. Rendered \
-                  with one space of padding on each side.",
-        },
-        WidgetOptSpec {
-            name: "chip",
-            aliases: &[],
-            doc: "style table, default bold reverse-video — the chip's \
-                  style. Reverse video by default so the affordance reads \
-                  as a button on any palette.",
-        },
-    ],
+    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds,
 };
 
 /// `switch` widget.
@@ -41,19 +14,6 @@ pub struct SwitchWidget {
     pub label: String,
     /// Style of every chip cell.
     pub chip: CellStyle,
-}
-
-impl Default for SwitchWidget {
-    fn default() -> Self {
-        Self {
-            label: "agents".to_owned(),
-            chip: CellStyle {
-                bold: true,
-                reverse: true,
-                ..CellStyle::default()
-            },
-        }
-    }
 }
 
 impl StatusWidget for SwitchWidget {
@@ -82,10 +42,6 @@ impl StatusWidget for SwitchWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let defaults = SwitchWidget::default();
-    Ok(Box::new(SwitchWidget {
-        label: string_opt(KIND, opts, "label")?.unwrap_or(defaults.label),
-        chip: style_opt(KIND, opts, "chip")?.unwrap_or(defaults.chip),
-    }))
+    let kinds::switch::SwitchOpts { label, chip } = kinds::switch::parse(opts)?;
+    Ok(Box::new(SwitchWidget { label, chip }))
 }

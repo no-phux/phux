@@ -3,61 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::widget::{
-    Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError,
-    WidgetKindSpec, WidgetOptSpec, WindowInfo, display_width, reject_unknown_opts, string_opt,
-    style_opt,
-};
-
-const KIND: &str = "windows";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "The tmux-style tab bar: one segment per window, the active \
-              one in the `active` style and the rest in `inactive`, joined \
-              by `separator`. A window whose focused pane runs an agent \
-              shows that agent's badge glyph before its name. A zoomed \
-              active window gets a ` Z` marker, a \
-              window waiting on a human answer a ` !` marker, a window \
-              holding a retained (exited) pane a dim ` x` / ` xN` marker, \
-              and every tab is a click target committing `select-window` \
-              for its index — in any slot, top or bottom bar. Overflow \
-              arrows select the nearest hidden window; long active labels \
-              keep these arrows when space permits.",
-    options: &[
-        WidgetOptSpec {
-            name: "active",
-            aliases: &[],
-            doc: "style table, default bold reverse-video — style of the \
-                  active window's segment.",
-        },
-        WidgetOptSpec {
-            name: "inactive",
-            aliases: &[],
-            doc: "style table, default dim — style of inactive windows' \
-                  segments.",
-        },
-        WidgetOptSpec {
-            name: "index",
-            aliases: &[],
-            doc: "style table, default none — ink layered over the \
-                  segment's style for the `{index}` part only, so the \
-                  selector can recede behind the name while keeping the \
-                  tab's background.",
-        },
-        WidgetOptSpec {
-            name: "separator",
-            aliases: &[],
-            doc: "string, default `\" \"` — literal text between segments.",
-        },
-        WidgetOptSpec {
-            name: "format",
-            aliases: &[],
-            doc: "string, default `\"{index}:{name}\"` — per-segment \
-                  template; `{index}` (0-based position, the \
-                  `select-window` selector) and `{name}` (the editable \
-                  label) are substituted.",
-        },
-    ],
+    Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WindowInfo,
+    display_width, kinds,
 };
 
 /// `windows` (tab-bar) widget.
@@ -73,25 +20,6 @@ pub struct WindowsWidget {
     pub separator: String,
     /// Per-segment template; `{index}` and `{name}` are substituted.
     pub format: String,
-}
-
-impl Default for WindowsWidget {
-    fn default() -> Self {
-        Self {
-            active: CellStyle {
-                bold: true,
-                reverse: true,
-                ..CellStyle::default()
-            },
-            inactive: CellStyle {
-                dim: true,
-                ..CellStyle::default()
-            },
-            index: CellStyle::default(),
-            separator: " ".to_owned(),
-            format: "{index}:{name}".to_owned(),
-        }
-    }
 }
 
 impl WindowsWidget {
@@ -300,13 +228,13 @@ impl StatusWidget for WindowsWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let defaults = WindowsWidget::default();
-    let active = style_opt(KIND, opts, "active")?.unwrap_or(defaults.active);
-    let inactive = style_opt(KIND, opts, "inactive")?.unwrap_or(defaults.inactive);
-    let index = style_opt(KIND, opts, "index")?.unwrap_or(defaults.index);
-    let separator = string_opt(KIND, opts, "separator")?.unwrap_or(defaults.separator);
-    let format = string_opt(KIND, opts, "format")?.unwrap_or(defaults.format);
+    let kinds::windows::WindowsOpts {
+        active,
+        inactive,
+        index,
+        separator,
+        format,
+    } = kinds::windows::parse(opts)?;
     Ok(Box::new(WindowsWidget {
         active,
         inactive,

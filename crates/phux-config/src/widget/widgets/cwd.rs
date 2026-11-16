@@ -3,36 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
-    positive_opt, reject_unknown_opts, string_opt,
-};
-
-const KIND: &str = "cwd";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "The focused pane's live working directory, fed by the \
-              server's `cwd_changed` agent events (kernel-queried PTY-child \
-              cwd). A `$HOME` prefix collapses to `~`; renders nothing \
-              until the cwd is known.",
-    options: &[
-        WidgetOptSpec {
-            name: "format",
-            aliases: &[],
-            doc: "string, default `\"{cwd}\"` — render template; every \
-                  `{cwd}` occurrence is replaced with the (home-collapsed, \
-                  truncated) directory.",
-        },
-        WidgetOptSpec {
-            name: "truncate",
-            aliases: &[],
-            doc: "integer `> 0`, optional — maximum displayed characters \
-                  of the directory itself (format literals not counted); \
-                  truncation keeps the path's trailing end.",
-        },
-    ],
-};
+use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
 
 /// `cwd` widget: home-collapse, keep the last `truncate` characters (the
 /// discriminating end of a deep path), then substitute into `format`.
@@ -86,9 +57,7 @@ impl StatusWidget for CwdWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let format = string_opt(KIND, opts, "format")?.unwrap_or_else(|| "{cwd}".to_owned());
-    let truncate = positive_opt(KIND, opts, "truncate", None)?;
+    let kinds::cwd::CwdOpts { format, truncate } = kinds::cwd::parse(opts)?;
     let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
     Ok(Box::new(CwdWidget::new(format, truncate, home)))
 }

@@ -3,26 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
-    reject_unknown_opts, string_opt,
-};
-
-const KIND: &str = "exit";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "The focused pane's last command exit code, fed by the OSC-133 \
-              `D`-mark (`command_finished.exit_code`), so it requires shell \
-              integration. Renders nothing until a command finishes with a \
-              reported code.",
-    options: &[WidgetOptSpec {
-        name: "format",
-        aliases: &[],
-        doc: "string, default `\"{code}\"` — render template; every \
-              `{code}` occurrence is replaced with the decimal exit code.",
-    }],
-};
+use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
 
 /// `exit` widget.
 #[derive(Debug, Clone)]
@@ -47,8 +28,7 @@ impl StatusWidget for ExitWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let format = string_opt(KIND, opts, "format")?.unwrap_or_else(|| "{code}".to_owned());
+    let kinds::exit_status::ExitOpts { format } = kinds::exit_status::parse(opts)?;
     Ok(Box::new(ExitWidget { format }))
 }
 

@@ -367,7 +367,7 @@ pub fn compose_status_bar(
     // Invalid plugin contributions are dropped with a warning inside the
     // merge; a broken user config still fails the build.
     let mut status = cfg.status.clone();
-    phux_config::widget::merge_widget_contributions(&mut status, manifests, &registry);
+    phux_config::widget::merge_widget_contributions(&mut status, manifests);
     let bar = phux_config::widget::StatusBar::build(&status, &registry)?;
     if bar.is_empty() {
         return Ok(None);

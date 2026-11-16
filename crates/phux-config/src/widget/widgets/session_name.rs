@@ -3,40 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{
-    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
-    positive_opt, reject_unknown_opts, string_opt,
-};
-
-const KIND: &str = "session-name";
-
-pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
-    kind: KIND,
-    summary: "The current session's name, optionally truncated, templated \
-              via `format`, and prefixed.",
-    options: &[
-        WidgetOptSpec {
-            name: "format",
-            aliases: &[],
-            doc: "string, default `\"{name}\"` — render template; every \
-                  `{name}` occurrence is replaced with the (truncated) \
-                  session name.",
-        },
-        WidgetOptSpec {
-            name: "prefix",
-            aliases: &[],
-            doc: "string, optional — literal text prepended verbatim to \
-                  the formatted output.",
-        },
-        WidgetOptSpec {
-            name: "max-len",
-            aliases: &["max_len"],
-            doc: "integer `> 0`, optional — truncate the session name \
-                  itself to this many characters (prefix and format \
-                  literals not counted); no ellipsis.",
-        },
-    ],
-};
+use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, kinds};
 
 /// `session-name` widget: `prefix + format` with `{name}` replaced by the
 /// session name truncated to `max_len` characters.
@@ -48,18 +15,6 @@ pub struct SessionNameWidget {
     pub max_len: Option<usize>,
     /// Render template (`{name}`).
     pub format: String,
-}
-
-impl SessionNameWidget {
-    /// Construct a `SessionNameWidget` with the default `{name}` format.
-    #[must_use]
-    pub fn new(prefix: Option<String>, max_len: Option<usize>) -> Self {
-        Self {
-            prefix,
-            max_len,
-            format: "{name}".to_owned(),
-        }
-    }
 }
 
 impl StatusWidget for SessionNameWidget {
@@ -80,13 +35,14 @@ impl StatusWidget for SessionNameWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(&SPEC, opts)?;
-    let mut widget = SessionNameWidget::new(
-        string_opt(KIND, opts, "prefix")?,
-        positive_opt(KIND, opts, "max-len", Some("max_len"))?,
-    );
-    if let Some(format) = string_opt(KIND, opts, "format")? {
-        widget.format = format;
-    }
-    Ok(Box::new(widget))
+    let kinds::session_name::SessionNameOpts {
+        prefix,
+        max_len,
+        format,
+    } = kinds::session_name::parse(opts)?;
+    Ok(Box::new(SessionNameWidget {
+        prefix,
+        max_len,
+        format,
+    }))
 }

@@ -11,12 +11,21 @@ use std::time::{Duration, SystemTime};
 use smallvec::SmallVec;
 
 use crate::schema::WidgetSpec;
-use crate::vocab;
 
+mod contributions;
+pub mod kinds;
+mod spec;
 mod status_bar;
 mod widgets;
 
-pub use status_bar::{StatusBar, merge_widget_contributions, row_to_string};
+pub use contributions::merge_widget_contributions;
+pub use spec::{
+    BUILTIN_WIDGET_SPECS, OptsValidator, UniversalOpts, WidgetKindSpec, WidgetOptSpec,
+    builtin_spec, split_universal, validate,
+};
+use spec::{invalid, positive_opt, reject_unknown_opts, string_opt, style_opt};
+
+pub use status_bar::{StatusBar, row_to_string};
 pub use widgets::button::ButtonWidget;
 pub use widgets::cwd::CwdWidget;
 pub use widgets::exec::{ExecFeed, ExecWidget};
@@ -380,154 +389,6 @@ pub trait StatusWidget: Send + Sync + fmt::Debug + 'static {
 pub type WidgetFactory =
     fn(&BTreeMap<String, toml::Value>) -> Result<Box<dyn StatusWidget>, WidgetError>;
 
-/// Universal widget-level [`CellStyle`] table.
-const STYLE_OPT: &str = "style";
-/// Universal bounds on the terminal width: outside them the widget
-/// renders nothing, so one lineup can adapt to the terminal.
-const MIN_COLS_OPT: &str = "min-cols";
-const MAX_COLS_OPT: &str = "max-cols";
-const UNIVERSAL_OPTS: [&str; 3] = [STYLE_OPT, MIN_COLS_OPT, MAX_COLS_OPT];
-
-/// Documentation spec for one built-in widget kind. The factory validates its
-/// options against the same const, so the documented surface
-/// (`docs/reference/widgets.md`) and the enforced one cannot drift.
-#[derive(Debug, Clone, Copy)]
-pub struct WidgetKindSpec {
-    /// Registered kind string (the `kind = "..."` value).
-    pub kind: &'static str,
-    /// One-paragraph human description of what the widget renders.
-    pub summary: &'static str,
-    /// The kind-specific options the factory accepts.
-    pub options: &'static [WidgetOptSpec],
-}
-
-/// One accepted option of a widget kind.
-#[derive(Debug, Clone, Copy)]
-pub struct WidgetOptSpec {
-    /// Canonical option key (kebab-case).
-    pub name: &'static str,
-    /// Alternative accepted spellings (e.g. `max_len` for `max-len`).
-    pub aliases: &'static [&'static str],
-    /// Type, default, and behavior in one line, rendered verbatim.
-    pub doc: &'static str,
-}
-
-impl WidgetKindSpec {
-    fn accepts(&self, key: &str) -> bool {
-        self.options
-            .iter()
-            .any(|opt| opt.name == key || opt.aliases.contains(&key))
-    }
-
-    /// Did-you-mean candidates: every option spelling plus the universals.
-    fn candidate_keys(&self) -> Vec<&'static str> {
-        let mut keys: Vec<&'static str> = self
-            .options
-            .iter()
-            .flat_map(|opt| std::iter::once(opt.name).chain(opt.aliases.iter().copied()))
-            .collect();
-        keys.extend_from_slice(&UNIVERSAL_OPTS);
-        keys
-    }
-}
-
-/// Doc specs of every built-in widget kind, in ASCII order of kind.
-pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
-    &widgets::button::SPEC,
-    &widgets::cwd::SPEC,
-    &widgets::exec::SPEC,
-    &widgets::exit_status::SPEC,
-    &widgets::help_hints::SPEC,
-    &widgets::session_name::SPEC,
-    &widgets::spacer::SPEC,
-    &widgets::switch::SPEC,
-    &widgets::text::SPEC,
-    &widgets::time::SPEC,
-    &widgets::windows::SPEC,
-];
-
-pub(crate) fn invalid(kind: &str, message: String) -> WidgetError {
-    WidgetError::InvalidOption {
-        kind: kind.to_owned(),
-        message,
-    }
-}
-
-/// Parse an optional [`CellStyle`] from an inline-table option.
-pub(crate) fn style_opt(
-    kind: &str,
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-) -> Result<Option<CellStyle>, WidgetError> {
-    opts.get(key).map_or(Ok(None), |value| {
-        value
-            .clone()
-            .try_into::<CellStyle>()
-            .map(Some)
-            .map_err(|e| invalid(kind, format!("`{key}` must be a style table: {e}")))
-    })
-}
-
-/// Parse an optional string option.
-pub(crate) fn string_opt(
-    kind: &str,
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-) -> Result<Option<String>, WidgetError> {
-    match opts.get(key) {
-        None => Ok(None),
-        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
-        Some(other) => Err(invalid(
-            kind,
-            format!("`{key}` must be a string, got {}", other.type_str()),
-        )),
-    }
-}
-
-/// Parse an optional integer option that must be `> 0`, spelled `key` or
-/// `alias`.
-pub(crate) fn positive_opt(
-    kind: &str,
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-    alias: Option<&str>,
-) -> Result<Option<usize>, WidgetError> {
-    match opts.get(key).or_else(|| alias.and_then(|a| opts.get(a))) {
-        None => Ok(None),
-        Some(toml::Value::Integer(n)) if *n > 0 => usize::try_from(*n)
-            .map(Some)
-            .map_err(|_| invalid(kind, format!("`{key}` does not fit in usize: {n}"))),
-        Some(toml::Value::Integer(n)) => {
-            Err(invalid(kind, format!("`{key}` must be > 0, got {n}")))
-        }
-        Some(other) => Err(invalid(
-            kind,
-            format!("`{key}` must be an integer, got {}", other.type_str()),
-        )),
-    }
-}
-
-/// Reject any option key outside the kind's [`WidgetKindSpec`], suggesting
-/// the nearest valid one. Every factory calls this first.
-pub(crate) fn reject_unknown_opts(
-    spec: &WidgetKindSpec,
-    opts: &BTreeMap<String, toml::Value>,
-) -> Result<(), WidgetError> {
-    for key in opts.keys() {
-        if UNIVERSAL_OPTS.contains(&key.as_str()) || spec.accepts(key) {
-            continue;
-        }
-        let suggestion = vocab::did_you_mean(key, &spec.candidate_keys())
-            .map(|hit| format!(" (did you mean `{hit}`?)"))
-            .unwrap_or_default();
-        return Err(invalid(
-            spec.kind,
-            format!("unknown option `{key}`{suggestion}"),
-        ));
-    }
-    Ok(())
-}
-
 /// Decorator applying a widget-level [`CellStyle`] to the wrapped widget's
 /// *unstyled* cells; a cell the widget styled itself keeps its style.
 #[derive(Debug)]
@@ -614,27 +475,6 @@ impl StatusWidget for ColRange {
     }
 }
 
-/// Parse an optional `u16` column-count option.
-fn cols_opt(
-    kind: &str,
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-) -> Result<Option<u16>, WidgetError> {
-    match opts.get(key) {
-        None => Ok(None),
-        Some(toml::Value::Integer(n)) => u16::try_from(*n).map(Some).map_err(|_| {
-            invalid(
-                kind,
-                format!("`{key}` must be a column count in 0..=65535, got {n}"),
-            )
-        }),
-        Some(other) => Err(invalid(
-            kind,
-            format!("`{key}` must be an integer, got {}", other.type_str()),
-        )),
-    }
-}
-
 /// Registry of widget kinds to factories.
 pub struct WidgetRegistry {
     factories: BTreeMap<&'static str, WidgetFactory>,
@@ -692,27 +532,14 @@ impl WidgetRegistry {
             .factories
             .get(spec.kind.as_str())
             .ok_or_else(|| WidgetError::UnknownKind(spec.kind.clone()))?;
-        let style = style_opt(&spec.kind, &spec.opts, STYLE_OPT)?;
-        let min = cols_opt(&spec.kind, &spec.opts, MIN_COLS_OPT)?;
-        let max = cols_opt(&spec.kind, &spec.opts, MAX_COLS_OPT)?;
-        if let (Some(min), Some(max)) = (min, max)
-            && min > max
-        {
-            return Err(invalid(
-                &spec.kind,
-                format!(
-                    "`{MIN_COLS_OPT}` ({min}) is above `{MAX_COLS_OPT}` ({max}), so this widget \
-                     could never render"
-                ),
-            ));
-        }
-
-        let mut opts = spec.opts.clone();
-        for key in UNIVERSAL_OPTS {
-            opts.remove(key);
-        }
+        let (universal, opts) = split_universal(spec)?;
         let widget = factory(&opts)?;
 
+        let UniversalOpts {
+            style,
+            min_cols: min,
+            max_cols: max,
+        } = universal;
         let widget = match style.filter(|s| !s.is_plain()) {
             Some(style) => Box::new(Styled {
                 inner: widget,
