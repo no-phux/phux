@@ -14,19 +14,17 @@ use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_OUTPUT,
 };
 use phux_server::LaunchCommand as CommandBuilder;
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, join_after_shutdown,
-    recv_typed, recv_typed_before, run_local, send_frame, spawn_server_with_seed_cmd,
-    wait_for_socket,
+    SpawnedServer, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, recv_typed, recv_typed_before,
+    run_local, send_frame,
 };
 
 /// Attach to `default`, drain `ATTACHED` + snapshot, return the pane.
-async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, ResourceId) {
-    let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
+async fn attach_default(server: &SpawnedServer) -> (UnixStream, ResourceId) {
+    let mut stream = server.connect().await;
     send_frame(&mut stream, &attach_by_name("default")).await;
 
     let (type_byte, attached) = recv_typed(&mut stream).await;
@@ -66,15 +64,9 @@ async fn drain_until_row0(stream: &mut UnixStream, screen: &mut Screen, needle: 
 #[test]
 fn byc_6_5_keystroke_merge_arrival_order_preserved() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-
-        let cmd = CommandBuilder::new("/bin/cat");
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "default", cmd);
-
-        let (mut client_a, terminal_id) = attach_default(&socket_path).await;
-        let (mut client_b, terminal_id_b) = attach_default(&socket_path).await;
+        let server = SpawnedServer::seeded("default", CommandBuilder::new("/bin/cat"));
+        let (mut client_a, terminal_id) = attach_default(&server).await;
+        let (mut client_b, terminal_id_b) = attach_default(&server).await;
         assert_eq!(
             terminal_id, terminal_id_b,
             "both clients must share the same pane",
@@ -106,6 +98,6 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
 
         drop(client_a);
         drop(client_b);
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        server.stop().await;
     });
 }

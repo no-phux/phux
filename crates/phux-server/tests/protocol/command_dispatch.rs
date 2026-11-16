@@ -17,15 +17,14 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, assert_command_error,
-    attach_by_name, command, join_after_shutdown, recv_typed, recv_until, recv_until_deadline,
-    recv_until_detached, run_local, send_frame, spawn_resource, spawn_server_connected,
-    spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_server_screen_text, wait_for_socket,
+    Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, assert_command_error, attach_by_name, command,
+    recv_typed, recv_until, recv_until_deadline, recv_until_detached, run_local, send_frame,
+    server_state as snapshot, spawn_resource, spawn_server_connected, try_recv_typed,
+    wait_for_server_screen_text,
 };
 
 async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
@@ -35,14 +34,6 @@ async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
         _ => None,
     })
     .await
-}
-
-async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get_state = phux_server_testkit::get_state();
-    match command(stream, request_id, get_state).await {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("expected State, got {other:?}"),
-    }
 }
 
 fn session_names(snapshot: &SessionSnapshot) -> Vec<&str> {
@@ -280,13 +271,12 @@ fn hello_ok_advertises_the_command_features() {
 #[test]
 fn apply_input_acks_after_real_pty_write_and_flush() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args([
             "-c",
             "IFS= read -r line; printf 'APPLIED:%s\\n' \"$line\"; sleep 1",
         ]);
-        let server = SpawnedServer::seeded_in(tmp, "work", cmd);
+        let server = SpawnedServer::seeded("work", cmd);
         let mut stream = server.connect().await;
         let terminal_id = attach(&mut stream, "work").await.resources[0].id.clone();
 
@@ -333,7 +323,6 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
 #[test]
 fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
         // 40 lines push the first into scrollback; the sentinel is not a
         // substring of any later line.
         let mut cmd = CommandBuilder::new("/bin/sh");
@@ -343,7 +332,7 @@ fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
              i=2; while [ $i -le 40 ]; do echo \"scrollback-line-$i\"; i=$((i+1)); done; \
              printf '\\033[1;31mroundtrip-vt-check\\033[0m'; sleep 5",
         ]);
-        let server = SpawnedServer::seeded_in(tmp, "work", cmd);
+        let server = SpawnedServer::seeded("work", cmd);
         let mut stream = server.connect().await;
         let pane = attach(&mut stream, "work").await.resources[0].clone();
         wait_for_server_screen_text(
@@ -415,10 +404,8 @@ fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
 #[test]
 fn kill_resource_and_kill_resources_ack_and_close() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::builder().session("work").pty().start();
+        let mut stream = server.connect().await;
         let pane_a = attach(&mut stream, "work").await.resources[0].id.clone();
         let SpawnResult::Ok(pane_b) = spawn_resource(&mut stream, 41, Spawn::default()).await
         else {
