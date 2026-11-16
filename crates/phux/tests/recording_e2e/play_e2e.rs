@@ -86,10 +86,9 @@ impl ServerGuard {
         if let Some(target) = target {
             args.push(target);
         }
-        let stdout = self.success(&args);
-        let doc: serde_json::Value =
-            serde_json::from_str(&stdout).expect("play --json must be JSON");
-        let id = doc["terminal_id"].as_u64().expect("terminal_id");
+        let id = self.json(&args)["terminal_id"]
+            .as_u64()
+            .expect("terminal_id");
         format!("@{id}")
     }
 
