@@ -5,7 +5,7 @@ use std::time::Duration;
 use phux_client::attach::AttachError;
 use phux_client::resource::cursor::{Cursor, ResumeState};
 use phux_client::watch::{WatchItem, WatchOutcome};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 

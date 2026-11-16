@@ -14,8 +14,8 @@ use phux_client::resource::cursor::Cursor;
 use phux_client::resource::methods::ResourceMethods;
 use phux_client::resource::show::ResourceDetails;
 use phux_client::resource::wait::{ResourceWait, ResourceWaitError, WaitFailure, WaitOutcome};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::{ResourceAction, cli_runtime, parse_selector, resolve_target};

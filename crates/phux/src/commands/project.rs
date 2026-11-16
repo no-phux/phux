@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::archive::{ImportKind, RestoreError, import_archive, relaunch_imported};
 use crate::commands::json_err::{self, CliError, codes};

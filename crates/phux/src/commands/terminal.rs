@@ -4,7 +4,7 @@ use phux_protocol::api::TerminalCreate;
 use std::{path::PathBuf, process::ExitCode};
 
 pub(crate) fn run(action: &TerminalAction, socket: Option<PathBuf>) -> ExitCode {
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let runtime = match cli_runtime() {
         Ok(runtime) => runtime,
         Err(code) => return code,

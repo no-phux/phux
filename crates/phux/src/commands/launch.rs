@@ -3,10 +3,10 @@ use std::process::ExitCode;
 
 use phux_config::integration::LaunchWorkingDirectory;
 use phux_config::loader as config_loader;
+use phux_config::socket::default_socket_path;
 use phux_plugin::{LaunchError, LaunchMode, ResolvedLaunch};
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
 use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};

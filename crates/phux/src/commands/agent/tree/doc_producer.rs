@@ -10,9 +10,9 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::tree::{self, DocumentInput, TreeError};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_server::runtime::default_socket_path;
 use serde_json::{Value, json};
 
 use super::{SCHEMA_VERSION, dial, mirror_pane, redial, report};

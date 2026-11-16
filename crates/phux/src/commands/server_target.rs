@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{AttachError, Dial};
 use phux_client::state::StateView;
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use super::attach::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, codes};

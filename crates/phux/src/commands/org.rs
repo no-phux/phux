@@ -411,7 +411,7 @@ pub(crate) fn classify_dest(dest: &str, socket: Option<&std::path::Path>) -> Mov
     if !matches!(parsed, Selector::Session(_) | Selector::Key(_)) {
         return MoveDest::Pane;
     }
-    let socket_path = socket.map_or_else(phux_server::runtime::default_socket_path, PathBuf::from);
+    let socket_path = socket.map_or_else(phux_config::socket::default_socket_path, PathBuf::from);
     let Ok(rt) = crate::commands::cli_runtime() else {
         return MoveDest::Pane;
     };

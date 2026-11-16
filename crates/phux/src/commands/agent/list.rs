@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use super::action_flags::ListFlags;
 use super::model::AgentStateReport;

@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 use phux_record::cast::{CastEvent, CastHeader, EventCode, read_cast};
 use phux_record::playback::{Speed, due_at, pass_duration};
 use phux_record::timeline::clamp_idle;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{SpawnSplit, cli_runtime, resize::parse_geometry};
 

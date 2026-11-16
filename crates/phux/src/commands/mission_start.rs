@@ -9,9 +9,9 @@ use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::OrgFilter;
-use phux_server::runtime::default_socket_path;
 use phux_work::mission::{
     DEFAULT_MAX_AGENTS, DEFAULT_RULES, StartDocument, TaskPaths, brief_argv, brief_markdown,
     build_env, default_target_dir, parse_agent, tab_title, task_paths,

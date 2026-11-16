@@ -471,7 +471,7 @@ fn edit_theme_file(config: &Path, edit: Edit) -> Result<(), String> {
 /// Repaint attached clients and reload Hyprland's binds. Neither is an
 /// error when absent: the files are in place for the next start.
 fn finish(socket: Option<PathBuf>, hyprland: bool) {
-    let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket_path = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     if let Ok(rt) = crate::commands::cli_runtime()
         && rt
             .block_on(super::config::ring_config_reload(&socket_path))

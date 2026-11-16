@@ -5,8 +5,8 @@
 use std::process::ExitCode;
 
 use phux_client::selector;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::{TagAction, cli_runtime, partial};

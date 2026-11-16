@@ -7,8 +7,8 @@ use base64::Engine as _;
 use phux_client::attach::AttachError;
 use phux_client::read::{Route, Verb};
 use phux_client::snapshot::{RenderedFrame, ScreenState};
+use phux_config::socket::default_socket_path;
 use phux_protocol::wire::frame::AttachTarget;
-use phux_server::runtime::default_socket_path;
 use phux_tui::attach::run_headless_rendered;
 
 use crate::commands::{

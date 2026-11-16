@@ -258,7 +258,7 @@ pub(crate) fn valid_manifest_count() -> Result<usize, String> {
 /// `[[startup]]` sidecars. A missing server is quiet: enable and disable
 /// still succeed, and the next server start reads the file.
 fn signal_startup_reload(json: bool) {
-    let socket_path = phux_server::runtime::default_socket_path();
+    let socket_path = phux_config::socket::default_socket_path();
     let Ok(rt) = crate::commands::cli_runtime() else {
         return;
     };

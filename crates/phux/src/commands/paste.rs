@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_protocol::input::paste::PasteTrust;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::send_keys::{report_input_failure, report_receipt};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};

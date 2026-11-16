@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 pub(super) mod ensure;
 mod permissions;
@@ -83,7 +83,7 @@ fn ensure_document(socket_path: &Path, disposition: EnsureDisposition) -> serde_
         "socket": socket_path.display().to_string(),
         "disposition": disposition.as_str(),
         "cli_version": env!("CARGO_PKG_VERSION"),
-        "server_log": phux_server::telemetry::server_log_path(),
+        "server_log": phux_config::instance::server_log_path(),
     })
 }
 
@@ -98,7 +98,7 @@ fn report_ensure_failure(json: bool, socket_path: &Path, err: &std::io::Error) -
         std::io::ErrorKind::Interrupted => super::json_err::codes::SERVER_START_CANCELLED,
         _ => super::json_err::codes::SERVER_START_FAILED,
     };
-    let log_path = phux_server::telemetry::server_log_path();
+    let log_path = phux_config::instance::server_log_path();
     let error = super::json_err::CliError::new(
         code,
         format!(

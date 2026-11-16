@@ -5,8 +5,8 @@ use phux_client::ask::AskedPayload;
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
 use phux_client::selector::format_terminal_id;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_terminal_target};
 

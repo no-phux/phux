@@ -11,7 +11,7 @@ use super::{
 /// because an armed unit and a deliberately stopped one look identical on
 /// disk and to the init system.
 pub(super) fn adoption_marker_path() -> PathBuf {
-    phux_server::telemetry::state_dir().join("service-adopt-pending")
+    phux_config::instance::state_dir().join("service-adopt-pending")
 }
 
 /// Record that `unit_path` is armed and waiting for the incumbent to exit.
@@ -103,7 +103,7 @@ pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
 
 /// Does `body` describe a unit whose server would bind `socket_path`?
 pub(super) fn unit_supervises(manager: Manager, body: &str, socket_path: &Path) -> bool {
-    unit_socket_override(manager, body).unwrap_or_else(phux_server::runtime::default_socket_path)
+    unit_socket_override(manager, body).unwrap_or_else(phux_config::socket::default_socket_path)
         == socket_path
 }
 

@@ -42,10 +42,10 @@ use phux_client::agent_wait::{AgentWaitError, AgentWaitResult, wait_for_agent_st
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input, sh_quote};

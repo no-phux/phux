@@ -264,7 +264,7 @@ mod tests {
             .into_owned();
 
         ends_with(
-            &phux_server::telemetry::server_log_path(),
+            &phux_config::instance::server_log_path(),
             &format!("{state_leaf}/server.log"),
         );
         ends_with(

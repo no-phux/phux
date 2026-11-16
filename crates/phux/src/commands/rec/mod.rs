@@ -18,11 +18,11 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_record::cast::{CastEvent, CastHeader, CastVersion, CastWriter, EventCode, read_cast};
 use phux_record::error::RecordError;
 use phux_record::render::{OutputFormat, RenderOptions, render_cast};
 use phux_record::timeline::clamp_idle;
-use phux_server::runtime::default_socket_path;
 use usage::Subcommands;
 
 use crate::commands::{

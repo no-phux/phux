@@ -4,8 +4,8 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
 use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 

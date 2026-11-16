@@ -176,7 +176,7 @@ pub(super) fn finish_enroll(
     ssh: Option<&str>,
 ) -> Result<HostRow, CliError> {
     finish_enroll_in(
-        &phux_server::telemetry::state_dir(),
+        &phux_config::instance::state_dir(),
         role,
         name,
         route,

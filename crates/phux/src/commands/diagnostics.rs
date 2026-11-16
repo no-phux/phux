@@ -75,7 +75,7 @@ pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str
             err,
             socket_path,
             verb,
-            &phux_server::telemetry::server_log_path(),
+            &phux_config::instance::server_log_path(),
             recovery_pid(err, socket_path),
         )
         .iter()
@@ -188,7 +188,7 @@ pub(super) fn attach_error_lines(
             "the server closed the connection unexpectedly".to_owned(),
             format!(
                 "server log: {}",
-                phux_server::telemetry::server_log_path().display()
+                phux_config::instance::server_log_path().display()
             ),
             "run `phux doctor` for a health check".to_owned(),
         ],

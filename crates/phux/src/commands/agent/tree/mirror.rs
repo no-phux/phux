@@ -97,7 +97,7 @@ use macos::App;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     use phux_client::tree;
-    use phux_server::runtime::default_socket_path;
+    use phux_config::socket::default_socket_path;
     use std::time::Duration;
 
     use crate::commands::agent::tree::{dial, mirror_pane, report};

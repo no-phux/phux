@@ -152,7 +152,7 @@ async fn watch(socket_path: PathBuf, seed: bool) -> io::Result<super::EnsureDisp
         () = tokio::time::sleep(deadline) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!("coordinator startup did not complete within {deadline:?}; see {}",
-                phux_server::telemetry::server_log_path().display()),
+                phux_config::instance::server_log_path().display()),
         )),
         _ = terminate.recv() => Err(cancelled()),
         _ = interrupt.recv() => Err(cancelled()),

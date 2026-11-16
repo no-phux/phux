@@ -18,12 +18,12 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir};
 use phux_client::layout_ops::LayoutOps;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind, SessionKey};
 use phux_protocol::wire::frame::{
     ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef, EntryTarget,
     LaunchMode, LaunchSpec, OrgFilter, SpawnResult, SplitDirection,
 };
-use phux_server::runtime::default_socket_path;
 
 use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 

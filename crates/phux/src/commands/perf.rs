@@ -18,10 +18,10 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
+use phux_config::socket::default_socket_path;
 use phux_perf::PerfReport;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::PerfOp;
-use phux_server::runtime::default_socket_path;
 use usage::{Subcommands, ValueEnum};
 
 use crate::commands::json_err::Refusal;

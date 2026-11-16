@@ -175,7 +175,7 @@ fn set(
     outln!("theme = {label}");
 
     // Repaint attached clients; no server is not a failure of `set`.
-    let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket_path = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let rt = crate::commands::cli_runtime().map_err(|_| "no tokio runtime".to_owned())?;
     match rt.block_on(super::config::ring_config_reload(&socket_path)) {
         Ok(()) => outln!("reload signalled to attached clients"),

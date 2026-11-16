@@ -145,7 +145,7 @@ pub(super) fn reconnect_failure_lines(
             ),
             format!(
                 "server log: {}",
-                phux_server::telemetry::server_log_path().display()
+                phux_config::instance::server_log_path().display()
             ),
             "run `phux doctor` for a health check".to_owned(),
         ],

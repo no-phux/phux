@@ -447,7 +447,7 @@ pub(crate) fn session_start(socket: Option<PathBuf>) -> ExitCode {
 
 /// The pane's session name, if its server answers within two seconds.
 fn session_name(socket: Option<PathBuf>, id: u32) -> Option<String> {
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let rt = crate::commands::cli_runtime().ok()?;
     let state = rt
         .block_on(async {

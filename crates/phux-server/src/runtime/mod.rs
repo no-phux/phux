@@ -90,7 +90,6 @@ use listeners::DISABLE_AUTO_LISTEN_ENV;
 use listeners::remote::build_quic_listener_for;
 use listeners::remote::remote_certificate;
 pub use listeners::{DEFAULT_QUIC_PORT, DEFAULT_WS_PORT};
-pub use phux_config::socket::default_socket_path;
 #[cfg(test)]
 use phux_protocol::wire::ListenerDisabledReason;
 pub use server::ServerRuntime;

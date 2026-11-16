@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, plugin::valid_manifest_count};
 
@@ -340,8 +340,8 @@ fn check_plugins() -> Check {
 /// state dir warns; the probe is read-only.
 fn check_logs() -> Check {
     check_logs_at(
-        &phux_server::telemetry::state_dir(),
-        &phux_server::telemetry::server_log_path(),
+        &phux_config::instance::state_dir(),
+        &phux_config::instance::server_log_path(),
     )
 }
 

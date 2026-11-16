@@ -61,7 +61,7 @@ pub(crate) fn maybe_auto_spawn_server(
     // On macOS the installed `phux Server.app` runs instead when it holds this
     // build, so privacy grants stay on one stable program.
     let current_exe = phux_config::server_bundle::server_executable(std::env::current_exe()?);
-    let log_path = phux_server::telemetry::server_log_path();
+    let log_path = phux_config::instance::server_log_path();
 
     // The banner names the log; suppressed under `--json`.
     if !quiet {
@@ -281,7 +281,7 @@ fn ensure_server_with(
         let result = wait_until_accepting(
             socket_path,
             "the supervised server",
-            &phux_server::telemetry::server_log_path(),
+            &phux_config::instance::server_log_path(),
             // The init system owns this process; there is no child to watch.
             || None,
         );

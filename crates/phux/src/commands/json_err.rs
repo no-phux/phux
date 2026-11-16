@@ -211,7 +211,7 @@ pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str)
 
 /// [`no_server_error`] before any auto-start context is added.
 fn connect_error(err: &AttachError, socket_path: &Path, verb: &str, pid: Option<i32>) -> CliError {
-    let server_log = phux_server::telemetry::server_log_path();
+    let server_log = phux_config::instance::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",
         server_log.display()

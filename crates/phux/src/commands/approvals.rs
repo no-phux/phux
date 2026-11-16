@@ -14,8 +14,8 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use phux_client::approvals::{Approval, ApprovalError, Decision};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ApprovalId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::confirm;
 use crate::commands::json_err::{self, CliError, codes};

@@ -18,7 +18,7 @@ pub(super) fn endpoint(explicit: Option<&str>) -> Result<String, CliError> {
     if let Some(hub) = explicit {
         return Ok(hub.to_owned());
     }
-    let socket = phux_server::runtime::default_socket_path();
+    let socket = phux_config::socket::default_socket_path();
     let bind = live_quic_bind(&socket)
         .map_err(no_listener)?
         .ok_or_else(|| no_listener("this server has no QUIC listener".to_owned()))?;

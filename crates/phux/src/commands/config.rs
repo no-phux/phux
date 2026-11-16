@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use phux_config::loader as config_loader;
 use phux_config::plugin::{self, PluginManifest};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use super::config_action::ConfigAction;
 use config_json::{print_agents_json, print_plugins_json};
@@ -277,7 +277,7 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
     }
 
     // 2. Ring the doorbell.
-    let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket_path = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let rt = match super::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,

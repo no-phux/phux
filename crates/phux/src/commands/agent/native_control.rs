@@ -65,7 +65,7 @@ pub(super) fn run(
             EXIT_USAGE,
         );
     }
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let runtime = match crate::commands::cli_runtime() {
         Ok(runtime) => runtime,
         Err(code) => return code,

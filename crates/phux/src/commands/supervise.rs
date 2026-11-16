@@ -11,9 +11,9 @@ use std::process::ExitCode;
 
 use phux_client::read::Verb;
 use phux_client::signal::LeaseOutcome;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::TerminalSignal;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError};
 use crate::commands::{SignalArg, parse_selector, request_command, resolve_target_for_input};

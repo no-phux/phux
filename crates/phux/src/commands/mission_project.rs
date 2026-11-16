@@ -100,7 +100,7 @@ fn drive(socket: PathBuf) {
 
 fn default_server_socket() -> PathBuf {
     std::env::var_os("PHUX_SOCKET")
-        .map_or_else(phux_server::runtime::default_socket_path, PathBuf::from)
+        .map_or_else(phux_config::socket::default_socket_path, PathBuf::from)
 }
 
 struct ProjectionWatch {

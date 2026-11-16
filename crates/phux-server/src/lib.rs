@@ -56,7 +56,7 @@ pub use org_store::OrgStoreLocation;
 pub use resource::{
     ResourceCore, ResourceFacet, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };
-pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime, default_socket_path};
+pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime};
 pub use state::{
     AttachError, AttachedClient, ClientId, DEFAULT_GROUP_ID, Outbound, ServerState, SharedState,
 };

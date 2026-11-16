@@ -225,7 +225,7 @@ pub(crate) fn modernize_wrapper(body: &str) -> Option<String> {
 /// export spelling; says so unless `quiet`. Never fatal: a wrapper it cannot
 /// patch keeps running its server, only its save step fails.
 fn reconcile_wrapper(quiet: bool) {
-    let wrapper = phux_server::telemetry::state_dir().join("service-wrapper.sh");
+    let wrapper = phux_config::instance::state_dir().join("service-wrapper.sh");
     let Ok(body) = std::fs::read_to_string(&wrapper) else {
         return;
     };
@@ -581,7 +581,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
             outln!();
             let live = socket::probe(
                 &unit_socket_override(manager, &body)
-                    .unwrap_or_else(phux_server::runtime::default_socket_path),
+                    .unwrap_or_else(phux_config::socket::default_socket_path),
             ) == SocketState::Live;
             report_policy_reach(manager, &unit_path, live, true);
             ExitCode::SUCCESS
@@ -719,7 +719,7 @@ pub(crate) fn reconcile_after_update(print: bool) {
     let live = print
         && socket::probe(
             &unit_socket_override(manager, &original)
-                .unwrap_or_else(phux_server::runtime::default_socket_path),
+                .unwrap_or_else(phux_config::socket::default_socket_path),
         ) == SocketState::Live;
     report_policy_reach(manager, &unit_path, live, print);
 }
@@ -851,10 +851,10 @@ fn resolve_plan(
 ) -> Result<ServicePlan, String> {
     let binary = phux_config::server_bundle::server_exe()
         .map_err(|err| format!("could not resolve the running phux binary: {err}"))?;
-    let state = phux_server::telemetry::state_dir();
+    let state = phux_config::instance::state_dir();
     let socket_path = socket
         .clone()
-        .unwrap_or_else(phux_server::runtime::default_socket_path);
+        .unwrap_or_else(phux_config::socket::default_socket_path);
     let (cert, key) = phux_server::transport::tls::operator_tls_paths(|var| std::env::var_os(var));
 
     Ok(ServicePlan {
@@ -870,7 +870,7 @@ fn resolve_plan(
         socket_path,
         profile: profile_suffix(),
         // The one canonical server log, shared with `phux service logs`.
-        log: phux_server::telemetry::server_log_path(),
+        log: phux_config::instance::server_log_path(),
         restore: restore.then(|| state.join("workspace.json")),
         wrapper: state.join("service-wrapper.sh"),
     })
@@ -1139,7 +1139,7 @@ pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
     )
     .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
     // A paired server refuses to start on a state directory others can write.
-    let state = phux_server::telemetry::state_dir();
+    let state = phux_config::instance::state_dir();
     phux_server::owner_dir::tighten(&state)
         .map_err(|err| format!("could not make {} owner-only: {err}", state.display()))
 }
@@ -1511,7 +1511,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
         }
     }
 
-    let wrapper = phux_server::telemetry::state_dir().join("service-wrapper.sh");
+    let wrapper = phux_config::instance::state_dir().join("service-wrapper.sh");
     if wrapper.exists() && std::fs::remove_file(&wrapper).is_ok() {
         outln!("Removed {}", wrapper.display());
     }
@@ -1639,7 +1639,7 @@ fn status_report(
 /// unit and the auto-spawn path write), via the same code as
 /// `phux logs --server`.
 pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
-    let log = phux_server::telemetry::server_log_path();
+    let log = phux_config::instance::server_log_path();
     let missing = format!(
         "phux service: no log at {} yet.\n\
          A server writes it when it next starts; `phux logs` lists every log path.",
@@ -1651,7 +1651,7 @@ pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
 /// `phux service prune-logs` — delete the per-pid client logs. Explicit, never
 /// a side effect of install.
 pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
-    let dir = phux_server::telemetry::state_dir();
+    let dir = phux_config::instance::state_dir();
     let entries = match super::logs::client_log_paths(&dir) {
         Ok(entries) => entries,
         Err(err) => {
@@ -1693,7 +1693,7 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
 
 /// How many client logs are in the state dir (advisory, for the install report).
 fn count_client_logs() -> std::io::Result<usize> {
-    super::logs::client_log_paths(&phux_server::telemetry::state_dir()).map(|paths| paths.len())
+    super::logs::client_log_paths(&phux_config::instance::state_dir()).map(|paths| paths.len())
 }
 
 /// A path as a string, lossily.

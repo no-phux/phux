@@ -160,7 +160,7 @@ fn attach_error_lines_name_their_cause_and_remedy() {
     ] {
         assert_eq!(lines(&err), [line]);
     }
-    let server_log = phux_server::telemetry::server_log_path();
+    let server_log = phux_config::instance::server_log_path();
     assert_eq!(
         lines(&AttachError::Disconnected),
         [
