@@ -4,9 +4,7 @@ use super::*;
 
 #[wasm_bindgen_test]
 async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let outcome = session.on_frame(synth_hello());
+    let (session, outcome) = greeted(synth_hello()).await;
     assert!(outcome.fatal.is_none());
     assert_eq!(outcome.send.len(), 2, "HELLO_OK subscribes before attach");
     assert!(matches!(
@@ -155,10 +153,8 @@ fn hello_ok_version(major: u16, minor: u16, patch: u16) -> FrameKind {
 
 #[wasm_bindgen_test]
 async fn hello_ok_on_another_minor_is_accepted_and_recorded() {
-    let vt = Vt::load().await.expect("load engine");
     let v = PROTOCOL_VERSION;
-    let mut session = Connection::new(&vt, 80, 24);
-    let outcome = session.on_frame(hello_ok_version(v.major, v.minor + 1, v.patch + 2));
+    let (session, outcome) = greeted(hello_ok_version(v.major, v.minor + 1, v.patch + 2)).await;
     assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
     let recorded = session.server_protocol().expect("recorded");
     assert_eq!(

@@ -188,6 +188,14 @@ async fn hello_session(cols: u16, rows: u16) -> Connection {
     session
 }
 
+/// A fresh 80x24 connection fed `hello`, and that frame's outcome.
+async fn greeted(hello: FrameKind) -> (Connection, phux_web::Outcome) {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let outcome = session.on_frame(hello);
+    (session, outcome)
+}
+
 fn attached(terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
     attached_snapshot(
         SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal_id.clone())

@@ -31,12 +31,24 @@ fn empty_page() -> OrganizationPage {
     )
 }
 
+/// A connection to a legacy server and the `GET_STATE` it sent.
+async fn legacy() -> (Connection, u32) {
+    let (session, hello) = greeted(hello_with(ServerCapabilities::new())).await;
+    let request_id = state_request(&hello.send[1]);
+    (session, request_id)
+}
+
+/// The request id of the command `frame` encodes.
+fn command_id(frame: &[u8]) -> u32 {
+    let FrameKind::Command { request_id, .. } = decode_one(frame) else {
+        panic!("expected a command");
+    };
+    request_id
+}
+
 #[wasm_bindgen_test]
 async fn a_legacy_server_attaches_its_most_recent_session_and_creates_nothing() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
-    let request_id = state_request(&hello.send[1]);
+    let (mut session, request_id) = legacy().await;
     let reply = session.on_frame(state_reply(
         request_id,
         vec![
@@ -52,10 +64,7 @@ async fn a_legacy_server_attaches_its_most_recent_session_and_creates_nothing() 
 
 #[wasm_bindgen_test]
 async fn only_an_empty_legacy_server_gets_a_default_session() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
-    let request_id = state_request(&hello.send[1]);
+    let (mut session, request_id) = legacy().await;
     let reply = session.on_frame(state_reply(request_id, Vec::new()));
     assert!(matches!(
         attach_target(&reply.send[0]),
@@ -65,10 +74,7 @@ async fn only_an_empty_legacy_server_gets_a_default_session() {
 
 #[wasm_bindgen_test]
 async fn an_unreadable_state_attaches_the_last_session_without_creating() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
-    let request_id = state_request(&hello.send[1]);
+    let (mut session, request_id) = legacy().await;
     let reply = session.on_frame(command_err(
         request_id,
         ErrorCode::InvalidCommand,
@@ -86,9 +92,7 @@ fn intake_attach_preference_is_default_and_keeps_the_legacy_alias() {
 
 #[wasm_bindgen_test]
 async fn an_organization_server_opens_intake() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(organization_caps()));
+    let (mut session, hello) = greeted(hello_with(organization_caps())).await;
     assert!(session.organization_supported());
     let request_id = match decode_one(&hello.send[1]) {
         FrameKind::Command {
@@ -119,12 +123,8 @@ async fn an_organization_server_opens_intake() {
 
 #[wasm_bindgen_test]
 async fn empty_intake_falls_back_to_the_most_recent_session() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(organization_caps()));
-    let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
-        panic!("expected a command");
-    };
+    let (mut session, hello) = greeted(hello_with(organization_caps())).await;
+    let request_id = command_id(&hello.send[1]);
     let inbox = session_key(3);
     let page = empty_page().with_intake(Some(inbox)).with_sessions(vec![
         SessionRecord::new(inbox, "intake", Revision::new(1)).with_live(Some(SessionId::new(6))),
@@ -143,12 +143,8 @@ async fn empty_intake_falls_back_to_the_most_recent_session() {
 
 #[wasm_bindgen_test]
 async fn a_refused_organization_read_falls_back_to_the_session_list() {
-    let vt = Vt::load().await.expect("load engine");
-    let mut session = Connection::new(&vt, 80, 24);
-    let hello = session.on_frame(hello_with(organization_caps()));
-    let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
-        panic!("expected a command");
-    };
+    let (mut session, hello) = greeted(hello_with(organization_caps())).await;
+    let request_id = command_id(&hello.send[1]);
     let reply = session.on_frame(reply(request_id, CommandResult::Refused(Refusal::NotFound)));
     let request_id = state_request(&reply.send[0]);
     let reply = session.on_frame(state_reply(
@@ -223,9 +219,9 @@ fn running(
         )))
 }
 
-#[wasm_bindgen_test]
-async fn killing_on_an_organization_server_terminates_the_current_activation() {
-    let key = session_key(4);
+/// An [`organization_session`] focused on its second pane after asking to
+/// kill it: the pane, and the session-page request the kill sent.
+async fn killing_second(key: SessionKey) -> (Connection, ResourceId, u32) {
     let mut session = organization_session(key).await;
     let target = ResourceId::local(102);
     session.focus_pane(&target).expect("focus second");
@@ -243,6 +239,13 @@ async fn killing_on_an_organization_server_terminates_the_current_activation() {
         }
         other => panic!("expected the session page, got {other:?}"),
     };
+    (session, target, request_id)
+}
+
+#[wasm_bindgen_test]
+async fn killing_on_an_organization_server_terminates_the_current_activation() {
+    let key = session_key(4);
+    let (mut session, target, request_id) = killing_second(key).await;
     assert!(session.pane_pending());
     let page = empty_page().with_resources(vec![
         running(
@@ -278,13 +281,7 @@ async fn killing_on_an_organization_server_terminates_the_current_activation() {
 #[wasm_bindgen_test]
 async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
     let key = session_key(4);
-    let mut session = organization_session(key).await;
-    let target = ResourceId::local(102);
-    session.focus_pane(&target).expect("focus second");
-    let FrameKind::Command { request_id, .. } = decode_one(&session.kill_pane_frame().unwrap())
-    else {
-        panic!("expected a command");
-    };
+    let (mut session, target, request_id) = killing_second(key).await;
     // A page set that does not list the target falls back to KILL_RESOURCE.
     let fallback = session.on_frame(organization_page(request_id, empty_page()));
     let request_id = match decode_one(&fallback.send[0]) {
@@ -310,13 +307,7 @@ async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
 #[wasm_bindgen_test]
 async fn a_refused_terminate_keeps_the_pane_and_says_why() {
     let key = session_key(4);
-    let mut session = organization_session(key).await;
-    let target = ResourceId::local(102);
-    session.focus_pane(&target).expect("focus second");
-    let FrameKind::Command { request_id, .. } = decode_one(&session.kill_pane_frame().unwrap())
-    else {
-        panic!("expected a command");
-    };
+    let (mut session, target, request_id) = killing_second(key).await;
     let page = empty_page().with_resources(vec![running(
         ResourceKey::new([2; 16]).unwrap(),
         key,
@@ -324,9 +315,7 @@ async fn a_refused_terminate_keeps_the_pane_and_says_why() {
         3,
     )]);
     let terminate = session.on_frame(organization_page(request_id, page));
-    let FrameKind::Command { request_id, .. } = decode_one(&terminate.send[0]) else {
-        panic!("expected a command");
-    };
+    let request_id = command_id(&terminate.send[0]);
     let capability = "terminate".to_owned();
     session.on_frame(reply(
         request_id,
