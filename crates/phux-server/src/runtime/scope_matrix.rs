@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::test_support::{Feed, Wire, encode, workload_identity};
+use super::test_support::{Feed, Wire, command, encode, workload_identity};
 use crate::policy::testing::FnPolicy;
 use crate::policy::{PolicyEngine, ScopedPolicy};
 use crate::runtime::apps::InputLane;
@@ -109,13 +109,6 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
 
 fn script(frames: &[FrameKind]) -> Vec<BytesMut> {
     frames.iter().map(encode).collect()
-}
-
-fn command(request_id: u32, command: Command) -> FrameKind {
-    FrameKind::Command {
-        request_id,
-        command,
-    }
 }
 
 fn get_screen(request_id: u32, terminal_id: WireResourceId) -> FrameKind {

@@ -16,7 +16,8 @@ use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 use super::test_support::{
-    Connection as Peer, PATIENCE, error_code, owner_peer, spawn_connection, workload_identity,
+    Connection as Peer, PATIENCE, command, error_code, owner_peer, spawn_connection,
+    workload_identity,
 };
 use crate::policy::testing::{FnPolicy, scoped_grant};
 use crate::policy::{ConnectionGrant, PolicyError, ScopedPolicy};
@@ -170,13 +171,6 @@ const fn is_approval_event(event: &AgentEvent) -> bool {
         event,
         AgentEvent::ApprovalRequested { .. } | AgentEvent::ApprovalDecided { .. }
     )
-}
-
-fn command(request_id: u32, command: Command) -> FrameKind {
-    FrameKind::Command {
-        request_id,
-        command,
-    }
 }
 
 fn detach_all(request_id: u32) -> FrameKind {

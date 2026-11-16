@@ -28,8 +28,7 @@ async fn client(
 async fn eof_cancels_the_connection_token() {
     crate::runtime::test_support::local(async {
         let token = CancellationToken::new();
-        let mut eof = Script::new([]);
-        eof.eof = true;
+        let eof = Feed::scripted_then_eof(Vec::new());
         client(eof, token.clone(), CancellationToken::new()).await;
         assert!(token.is_cancelled());
     })
@@ -52,12 +51,11 @@ async fn negotiated(frames: impl IntoIterator<Item = FrameKind>) -> (Vec<FrameKi
         protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
         client_caps: phux_protocol::caps::ClientCapabilities::new(),
     };
-    let mut script = Script::new(std::iter::once(hello).chain(frames));
-    script.eof = true;
+    let feed = Feed::scripted_then_eof(script(std::iter::once(hello).chain(frames)));
     let recorder = Recorder::default();
     LocalSet::new()
         .run_until(Box::pin(handle_client(
-            script,
+            feed,
             recorder.clone(),
             state,
             client_id,
@@ -230,7 +228,7 @@ async fn root_cancellation_flushes_server_shutdown_before_transport_close() {
     crate::runtime::test_support::local(async {
         let root_token = CancellationToken::new();
         let task = tokio::task::spawn_local(client(
-            Script::new([]),
+            Feed::scripted(Vec::new()),
             root_token.child_token(),
             root_token.clone(),
         ));
