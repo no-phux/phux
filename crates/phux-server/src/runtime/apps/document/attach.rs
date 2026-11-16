@@ -6,11 +6,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::engine::{DocumentResource as _, SnapshotRequest, TreeSnapshot};
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind, TombstoneReason};
-use phux_tree::{DocumentResource as _, SnapshotRequest, TreeSnapshot};
 
 use super::DocumentApi;
 use tokio::sync::broadcast::error::RecvError;

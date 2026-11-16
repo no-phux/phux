@@ -4,15 +4,16 @@ use bytes::{Bytes, BytesMut};
 use phux_core::{Actor, LaunchSpec, SessionLifetime};
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapStreamProfile};
 use phux_protocol::policy::TransportType;
-use phux_tree::{
-    DocumentActor, DocumentKind, DocumentResource as _, SurfaceDocument, TreeDocument,
-};
 use std::io;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::LocalSet;
 
 use super::*;
 use crate::resource::{ResourceHandle, ResourceOutput};
+use crate::runtime::apps::document::engine::{
+    DocumentActor, DocumentKind, DocumentResource as _, PublishRequest, SurfaceDocument,
+    TreeDocument,
+};
 use crate::transport::{FrameReader, FrameWriter};
 
 mod agents;
@@ -244,7 +245,7 @@ async fn publish<K: DocumentKind>(handle: &ResourceHandle, bytes: Bytes) {
         .document::<K>()
         .unwrap()
         .publish
-        .send(phux_tree::PublishRequest { bytes, reply })
+        .send(PublishRequest { bytes, reply })
         .await
         .unwrap();
     rx.await.unwrap().unwrap();

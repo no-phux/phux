@@ -4,6 +4,8 @@
 
 /// A pixel surface under `alpha` whose producer declared `control`.
 fn document(world: &mut World, control: Option<phux_protocol::wire::frame::ControlClass>) -> WireResourceId {
+    use crate::runtime::apps::document::engine::{DocumentActor, SurfaceDocument};
+
     let core = world
         .state
         .create_document(
@@ -16,7 +18,7 @@ fn document(world: &mut World, control: Option<phux_protocol::wire::frame::Contr
         .unwrap();
     let token = tokio_util::sync::CancellationToken::new();
     let bundle =
-        phux_tree::DocumentActor::<phux_tree::SurfaceDocument>::build(world.alpha_core, "smoke", token.clone());
+        DocumentActor::<SurfaceDocument>::build(world.alpha_core, "smoke", token.clone());
     let handle = match control {
         Some(class) => bundle.handle.with_companion(class),
         None => bundle.handle,

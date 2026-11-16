@@ -1,7 +1,7 @@
 //! Spawning a document resource under the resource its producer runs in.
 
+use super::engine::DocumentActor;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError};
-use phux_tree::DocumentActor;
 use tracing::debug;
 
 use super::{DocumentApi, attach_document};

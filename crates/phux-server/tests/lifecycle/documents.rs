@@ -3,6 +3,7 @@
 //! Terminal, publish whole documents, bootstrap a late viewer onto the
 //! newest, publish their labels as names, and report producer liveness.
 
+use phux_core::image::{ImageFormat, image_size};
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::typed_document::split_bootstrap;
@@ -119,10 +120,7 @@ fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
         let (_, profile, base_seq, image) = bootstrap(&mut viewer, &surface).await;
         assert_eq!(profile, BootstrapStreamProfile::PixelSurfacePngV1);
         assert_eq!((base_seq, image.clone()), (2, png(640, 480, 2)));
-        assert_eq!(
-            phux_tree::image_size(&image).map(|s| (s.1, s.2)),
-            Ok((640, 480))
-        );
+        assert_eq!(image_size(&image).map(|s| (s.1, s.2)), Ok((640, 480)));
 
         // A JPEG frame header for 800 x 600: the surface's newer image.
         let jpeg = vec![
@@ -132,10 +130,7 @@ fn a_surface_takes_only_images_and_a_late_viewer_sees_the_newest() {
         assert!(matches!(taken, CommandResult::OkWith(_)), "{taken:?}");
         let (seq, bytes) = next_output(&mut viewer, &surface).await;
         assert_eq!(seq, 3);
-        assert_eq!(
-            phux_tree::image_size(&bytes),
-            Ok((phux_tree::ImageFormat::Jpeg, 800, 600))
-        );
+        assert_eq!(image_size(&bytes), Ok((ImageFormat::Jpeg, 800, 600)));
 
         drop((owner, viewer));
         server.stop().await;

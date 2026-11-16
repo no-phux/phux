@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use std::os::fd::RawFd;
 use std::time::Duration;
 
+use super::engine::{DocumentActor, DocumentResource as _, SnapshotRequest};
 use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -15,7 +16,6 @@ use futures_util::future::LocalBoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_core::ids::ResourceId;
 use phux_protocol::wire::frame::ControlClass;
-use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 

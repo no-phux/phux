@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use super::engine::DocumentResource as _;
 use phux_protocol::wire::frame::{
     AgentEvent, CommandResult, CommandValue, ControlClasses, DocumentInput, ErrorCode, FrameKind,
     OnBehalfOf,
 };
-use phux_tree::DocumentResource as _;
 use tokio::sync::oneshot;
 
 use super::DocumentApi;

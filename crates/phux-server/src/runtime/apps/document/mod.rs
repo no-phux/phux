@@ -4,15 +4,15 @@
 //! the `PixelSurface` (PNG or JPEG) and the `Document` (any content type).
 
 use bytes::Bytes;
+use engine::{
+    DocumentKind, DocumentResource as _, PublishRejection, PublishRequest, SurfaceDocument,
+    TreeDocument, TypedDocument,
+};
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
-use phux_tree::{
-    DocumentKind, DocumentResource as _, PublishRejection, PublishRequest, SurfaceDocument,
-    TreeDocument, TypedDocument,
-};
 use tokio::sync::oneshot;
 
 use super::{
@@ -26,6 +26,7 @@ use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
 pub(crate) mod audit;
+pub(crate) mod engine;
 mod input;
 mod kinds;
 mod mirror;

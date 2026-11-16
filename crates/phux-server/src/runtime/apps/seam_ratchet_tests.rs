@@ -76,7 +76,7 @@ fn tokens_outside(source: &str, tokens: &[&str]) -> usize {
 /// The document engine's API, outside the document app.
 fn document_engine(path: &str, source: &str) -> usize {
     const TOKENS: [&str; 4] = [
-        "phux_tree",
+        "document::engine",
         "DocumentActor",
         ".document::<",
         "apps::document",
@@ -347,9 +347,9 @@ fn the_scans_skip_inline_tests_and_their_own_app() {
     let gated_import = "#[cfg(test)]\nuse b;\nResourceKind::Z\n";
     assert_eq!(host_kind_branches("state/x.rs", gated_import), 1);
     assert_eq!(host_kind_branches("runtime/apps/document/x.rs", source), 0);
-    assert_eq!(document_engine("state/x.rs", "use phux_tree::X;"), 1);
+    assert_eq!(document_engine("state/x.rs", "use document::engine::X;"), 1);
     assert_eq!(
-        document_engine("runtime/apps/document/x.rs", "use phux_tree::X;"),
+        document_engine("runtime/apps/document/x.rs", "use document::engine::X;"),
         0
     );
     assert_eq!(

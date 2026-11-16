@@ -88,10 +88,9 @@ Cargo manifests define the actual edges.
 | `phux-client-ffi` | the one binding crate: the UniFFI Swift and Kotlin surface the phone apps link |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
-| `phux-tree` | the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`: one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-terminal-api` | engine-independent Terminal contracts: launch intent, factory, input and presentation ports, opaque captures and report types; no VT or PTY implementation |
-| `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
+| `phux-server` | the daemon: hosts resources and serves them to clients, including the replicated-document engine behind `AccessibilityTree`, `PixelSurface` and `Document`; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
 | `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; also the native VT driver sharing terminal restoration; the only crate that links ratatui |
 | `phux-mcp` | the `phux-mcp` binary: MCP over stdio |

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use phux_core::ids::ResourceId;
-pub use phux_core::image::{ImageFormat, image_size};
+use phux_core::image::{ImageFormat, image_size};
 use phux_core::resource::ResourceKind;
 use phux_protocol::wire::frame::typed_document::is_textual;
 use phux_resource::{
@@ -25,11 +25,11 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Depth of the engine's mailboxes.
-pub const TREE_MAILBOX: usize = 64;
+const TREE_MAILBOX: usize = 64;
 
 /// What one engine replicates: the kind it serves and the documents it
 /// accepts.
-pub trait DocumentKind: std::fmt::Debug + Send + Sync + 'static {
+pub(crate) trait DocumentKind: std::fmt::Debug + Send + Sync + 'static {
     /// The resource kind an engine of this document serves.
     const KIND: ResourceKind;
     /// Whether `bytes` is one complete document of a resource opened on
@@ -39,7 +39,7 @@ pub trait DocumentKind: std::fmt::Debug + Send + Sync + 'static {
 
 /// An accessibility tree: one JSON value.
 #[derive(Debug)]
-pub struct TreeDocument;
+pub(crate) struct TreeDocument;
 
 impl DocumentKind for TreeDocument {
     const KIND: ResourceKind = ResourceKind::AccessibilityTree;
@@ -52,7 +52,7 @@ impl DocumentKind for TreeDocument {
 /// A pixel surface: one PNG or JPEG image, told apart by its signature,
 /// whose size is the surface's geometry.
 #[derive(Debug)]
-pub struct SurfaceDocument;
+pub(crate) struct SurfaceDocument;
 
 impl DocumentKind for SurfaceDocument {
     const KIND: ResourceKind = ResourceKind::PixelSurface;
@@ -63,13 +63,13 @@ impl DocumentKind for SurfaceDocument {
 }
 
 /// The largest typed document, the `PUBLISH_RESOURCE_STATE` payload bound.
-pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 /// A document of the content type its resource was opened with. The engine
 /// checks only what is cheap: a PNG has its header, JSON parses, text is
 /// UTF-8; any other type is opaque bytes.
 #[derive(Debug)]
-pub struct TypedDocument;
+pub(crate) struct TypedDocument;
 
 impl DocumentKind for TypedDocument {
     const KIND: ResourceKind = ResourceKind::Document;
@@ -112,25 +112,25 @@ fn json(bytes: &[u8]) -> Result<(), String> {
 
 /// A producer's whole-document publish (`PUBLISH_RESOURCE_STATE`).
 #[derive(Debug)]
-pub struct PublishRequest {
+pub(crate) struct PublishRequest {
     /// One complete JSON document.
-    pub bytes: Bytes,
+    pub(crate) bytes: Bytes,
     /// Where the verdict goes.
-    pub reply: oneshot::Sender<Result<Published, PublishRejection>>,
+    pub(crate) reply: oneshot::Sender<Result<Published, PublishRejection>>,
 }
 
 /// A publish the engine took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Published {
+pub(crate) struct Published {
     /// The sequence this document carries.
-    pub seq: u64,
+    pub(crate) seq: u64,
     /// When the engine took it, Unix milliseconds.
-    pub ts_ms: u64,
+    pub(crate) ts_ms: u64,
 }
 
 /// Why a publish was refused; nothing changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublishRejection {
+pub(crate) enum PublishRejection {
     /// The bytes are not one JSON document.
     Invalid(String),
     /// The sequence space is exhausted.
@@ -139,36 +139,31 @@ pub enum PublishRejection {
 
 /// A viewer's request for the newest document.
 #[derive(Debug)]
-pub struct SnapshotRequest {
+pub(crate) struct SnapshotRequest {
     /// Where the snapshot goes.
-    pub reply: oneshot::Sender<TreeSnapshot>,
+    pub(crate) reply: oneshot::Sender<TreeSnapshot>,
 }
 
 /// The newest document at one instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TreeSnapshot {
+pub(crate) struct TreeSnapshot {
     /// The sequence of `document`; `0` before the first publish.
-    pub base_seq: u64,
+    pub(crate) base_seq: u64,
     /// The newest document, or `None` before the first publish.
-    pub document: Option<Bytes>,
+    pub(crate) document: Option<Bytes>,
 }
 
 /// The facet of a document resource's [`ResourceHandle`].
 #[derive(Debug)]
-pub struct DocumentHandle<K: DocumentKind> {
+pub(crate) struct DocumentHandle<K: DocumentKind> {
     /// What the producer observes, as it named it.
-    pub target: Arc<str>,
+    pub(crate) target: Arc<str>,
     /// Producer publishes.
-    pub publish: mpsc::Sender<PublishRequest>,
+    pub(crate) publish: mpsc::Sender<PublishRequest>,
     /// Viewer snapshot cuts.
-    pub snapshot: mpsc::Sender<SnapshotRequest>,
+    pub(crate) snapshot: mpsc::Sender<SnapshotRequest>,
     kind: PhantomData<K>,
 }
-
-/// The `AccessibilityTree` facet.
-pub type TreeHandle = DocumentHandle<TreeDocument>;
-/// The `PixelSurface` facet.
-pub type SurfaceHandle = DocumentHandle<SurfaceDocument>;
 
 impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
     const KIND: ResourceKind = K::KIND;
@@ -183,35 +178,14 @@ impl<K: DocumentKind> ResourceOps for DocumentHandle<K> {
 }
 
 /// Reach a document facet of a handle.
-pub trait DocumentResource {
+pub(crate) trait DocumentResource {
     /// The facet of document kind `K`.
     ///
     /// # Errors
     ///
     /// [`WrongResourceKind`] when this resource is not of `K::KIND`.
     fn document<K: DocumentKind>(&self) -> Result<&DocumentHandle<K>, WrongResourceKind>;
-
-    /// The `AccessibilityTree` facet.
-    ///
-    /// # Errors
-    ///
-    /// [`WrongResourceKind`] when this resource is not an accessibility tree.
-    fn tree(&self) -> Result<&TreeHandle, WrongResourceKind> {
-        self.document::<TreeDocument>()
-    }
-
-    /// The `PixelSurface` facet.
-    ///
-    /// # Errors
-    ///
-    /// [`WrongResourceKind`] when this resource is not a pixel surface.
-    fn surface(&self) -> Result<&SurfaceHandle, WrongResourceKind> {
-        self.document::<SurfaceDocument>()
-    }
 }
-
-/// The tree facet, by its old name.
-pub use DocumentResource as TreeResource;
 
 impl DocumentResource for ResourceHandle {
     fn document<K: DocumentKind>(&self) -> Result<&DocumentHandle<K>, WrongResourceKind> {
@@ -221,18 +195,18 @@ impl DocumentResource for ResourceHandle {
 
 /// A [`DocumentActor`] and everything the runtime needs to publish it.
 #[derive(Debug)]
-pub struct DocumentBundle<K: DocumentKind> {
+pub(crate) struct DocumentBundle<K: DocumentKind> {
     /// The engine future's owner; run it on the `LocalSet`.
-    pub actor: DocumentActor<K>,
+    pub(crate) actor: DocumentActor<K>,
     /// Cross-task handle registered in the resource table.
-    pub handle: ResourceHandle,
+    pub(crate) handle: ResourceHandle,
     /// Fires when the engine's run loop ends.
-    pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
+    pub(crate) exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
 /// The producer-fed replicated-document engine.
 #[derive(Debug)]
-pub struct DocumentActor<K: DocumentKind> {
+pub(crate) struct DocumentActor<K: DocumentKind> {
     core: ResourceCore,
     target: Arc<str>,
     latest: Option<Bytes>,
@@ -241,14 +215,15 @@ pub struct DocumentActor<K: DocumentKind> {
     kind: PhantomData<K>,
 }
 
-/// The accessibility-tree engine.
-pub type TreeActor = DocumentActor<TreeDocument>;
-
 impl<K: DocumentKind> DocumentActor<K> {
     /// Build a document of `target` bound to `parent`, whose run loop
     /// watches `token`.
     #[must_use]
-    pub fn build(parent: ResourceId, target: &str, token: CancellationToken) -> DocumentBundle<K> {
+    pub(crate) fn build(
+        parent: ResourceId,
+        target: &str,
+        token: CancellationToken,
+    ) -> DocumentBundle<K> {
         let (core, channels) = ResourceCore::new(
             K::KIND,
             Some(parent),
@@ -286,7 +261,7 @@ impl<K: DocumentKind> DocumentActor<K> {
     /// Start from `document` at sequence 1, as a document carried across a
     /// server upgrade does; `None` starts empty.
     #[must_use]
-    pub fn seeded(mut self, document: Option<Bytes>) -> Self {
+    pub(crate) fn seeded(mut self, document: Option<Bytes>) -> Self {
         if document.is_some() && self.core.next_seq().is_some() {
             self.latest = document;
         }
@@ -294,7 +269,7 @@ impl<K: DocumentKind> DocumentActor<K> {
     }
 
     /// Serve publishes and snapshots until cancelled or every handle is gone.
-    pub async fn run(mut self) {
+    pub(crate) async fn run(mut self) {
         let token = self.core.token.clone();
         loop {
             tokio::select! {
@@ -352,7 +327,7 @@ mod tests {
     async fn publish(handle: &ResourceHandle, bytes: &[u8]) -> Result<Published, PublishRejection> {
         let (reply, rx) = oneshot::channel();
         handle
-            .tree()
+            .document::<TreeDocument>()
             .unwrap()
             .publish
             .send(PublishRequest {
@@ -367,7 +342,7 @@ mod tests {
     async fn snapshot(handle: &ResourceHandle) -> TreeSnapshot {
         let (reply, rx) = oneshot::channel();
         handle
-            .tree()
+            .document::<TreeDocument>()
             .unwrap()
             .snapshot
             .send(SnapshotRequest { reply })
@@ -385,7 +360,11 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async {
             let token = CancellationToken::new();
-            let bundle = TreeActor::build(ResourceId::default(), "Safari", token.clone());
+            let bundle = DocumentActor::<TreeDocument>::build(
+                ResourceId::default(),
+                "Safari",
+                token.clone(),
+            );
             let handle = bundle.handle;
             let mut live = handle.output.subscribe();
             tokio::task::spawn_local(bundle.actor.run());

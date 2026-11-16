@@ -8,6 +8,7 @@
 use super::*;
 
 use super::validation::*;
+use crate::runtime::apps::document::engine::{DocumentActor, TreeDocument};
 
 #[test]
 fn layout_leaf_must_name_a_pane_in_the_blob() {
@@ -98,7 +99,7 @@ async fn wrong_kind_rebuild_rolls_back_prior_panes_without_running_the_rejected_
                     let mut rebuilt =
                         crate::runtime::apps::terminal::upgrade::unwired(core, pane, scrollback)?;
                     if pane.wire_id == 4 {
-                        rebuilt.handle = phux_tree::TreeActor::build(
+                        rebuilt.handle = DocumentActor::<TreeDocument>::build(
                             core,
                             "test-app",
                             tokio_util::sync::CancellationToken::new(),

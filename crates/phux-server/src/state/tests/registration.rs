@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::apps::document::engine::{DocumentActor, TreeDocument};
 
 #[test]
 fn mismatched_registration_preserves_the_existing_engine_and_wire_identity() {
@@ -14,7 +15,7 @@ fn mismatched_registration_preserves_the_existing_engine_and_wire_identity() {
         )
         .unwrap();
     let token = CancellationToken::new();
-    let bundle = phux_tree::TreeActor::build(parent, "test-app", token.clone());
+    let bundle = DocumentActor::<TreeDocument>::build(parent, "test-app", token.clone());
     let wire = state
         .register_resource_handle(core, bundle.handle.clone(), token.clone())
         .unwrap();
