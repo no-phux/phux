@@ -57,3 +57,5 @@ tempfile.workspace = true
 tokio.workspace = true
 # Test-only signers and publication seams.
 phux-client-runtime = { workspace = true, features = ["testing"] }
+# Frame builders for the fed-frame tests.
+phux-wire-fixtures.workspace = true

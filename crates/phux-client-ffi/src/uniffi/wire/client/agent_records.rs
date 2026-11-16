@@ -473,13 +473,11 @@ fn a_refused_subscription_is_retried_by_the_next_catalog_read() {
     let request_id = agent_subscription(&queued);
     let client = remote.runtime_client().expect("connected");
     client
-        .feed(FrameKind::CommandResult {
+        .feed(phux_wire_fixtures::command_err(
             request_id,
-            result: CommandResult::Error {
-                code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                message: "busy".into(),
-            },
-        })
+            phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+            "busy",
+        ))
         .expect("refusal");
     assert!(agent_events(remote.take_events()).is_empty());
     agent_subscription(&refresh(&remote, snapshot(true)));
@@ -491,13 +489,11 @@ fn a_session_removed_while_refused_still_closes_once() {
     let request_id = agent_subscription(&queued);
     let client = remote.runtime_client().expect("connected");
     client
-        .feed(FrameKind::CommandResult {
+        .feed(phux_wire_fixtures::command_err(
             request_id,
-            result: CommandResult::Error {
-                code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                message: "busy".into(),
-            },
-        })
+            phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+            "busy",
+        ))
         .expect("refusal");
     assert!(refresh(&remote, snapshot(false)).is_empty());
     let events = agent_events(remote.take_events());

@@ -2,12 +2,7 @@
 #![allow(clippy::panic, reason = "test assertions")]
 
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
-    ServerFeatureSet,
-};
-use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{SessionId, WindowId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
@@ -24,36 +19,9 @@ mod support;
 use support::remote_with;
 
 fn bootstrap(client: &Client, terminal_id: ResourceId, bytes: &[u8]) {
-    let stream_id = StreamId::new(1).expect("nonzero");
-    let bootstrap_id = BootstrapId::new(1).expect("nonzero");
-    client
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: COLS,
-            rows: ROWS,
-            base_seq: 0,
-        })
-        .expect("BOOTSTRAP_BEGIN");
-    client
-        .feed(FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        })
-        .expect("BOOTSTRAP_CHUNK");
-    client
-        .feed(FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .expect("BOOTSTRAP_READY");
+    for frame in phux_wire_fixtures::bootstrap_frames(&terminal_id, [1, 1], [COLS, ROWS], bytes) {
+        client.feed(frame).expect("bootstrap frame");
+    }
 }
 
 fn top_row(remote: &RemoteClient, terminal: u32) -> String {
