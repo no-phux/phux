@@ -124,7 +124,9 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   const aggregate = job(CI, "ci");
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
-  const script = run(steps(aggregate)[0] ?? {});
+  const script = run(
+    steps(aggregate).find((step) => run(step).includes("scripts/ci/ci-aggregate.sh")) ?? {},
+  );
   const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
   baseline["plan"] = { result: "success" };
   for (const [id, result, code] of [
@@ -149,7 +151,13 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
 });
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
-  for (const step of steps(job(CI, "ci")).slice(1)) {
+  const ciSteps = steps(job(CI, "ci"));
+  const gateAt = ciSteps.findIndex((step) => run(step).includes("scripts/ci/ci-aggregate.sh"));
+  expect(gateAt).toBeGreaterThan(0);
+  expect(ciSteps.slice(0, gateAt).some((step) => uses(step).startsWith("actions/checkout@"))).toBe(
+    true,
+  );
+  for (const step of ciSteps.slice(gateAt + 1)) {
     expect(str(step["if"])).toBe(
       "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
     );

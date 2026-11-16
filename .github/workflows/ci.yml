@@ -88,7 +88,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/check-website-docs-catalog.sh
-      # Fixture: fails this job if the warning check stops exiting 0.
       - name: website docs catalog fixture
         run: bash scripts/check-website-docs-catalog_test.sh
       # The pre-commit size ratchet again, for commits whose hooks never ran.
@@ -412,7 +411,6 @@ jobs:
     if: github.event_name == 'merge_group'
     uses: ./.github/workflows/rune-macos.yml
 
-  # Flat docs/*.md add, rename, or delete. A skip passes; five-minute cap.
   docs-catalog:
     name: docs catalog
     needs: plan
@@ -448,6 +446,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Main and queue require native/icount success.
       - name: plan succeeded; every lane passed or was not needed
         env:
