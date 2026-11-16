@@ -51,8 +51,6 @@ pub struct Machines {
     pub picking: Option<String>,
     /// The other machines whose sessions the sidebar shows; `None` is this computer.
     pub expanded: HashSet<Option<String>>,
-    /// The sidebar hides this window's own sessions under its machine.
-    pub folded: bool,
     /// What each expanded machine last listed.
     pub glances: HashMap<Option<String>, Result<Vec<Glance>, String>>,
     /// When each machine's listing last started, on the app clock, and the
@@ -98,7 +96,6 @@ impl Machines {
             removing: None,
             picking: None,
             expanded: HashSet::new(),
-            folded: false,
             glances: HashMap::new(),
             glanced: HashMap::new(),
             peeking: HashSet::new(),
@@ -258,12 +255,9 @@ impl Machines {
 }
 
 impl Desk {
-    /// Open or close a machine in the sidebar. This window's own machine
-    /// folds its sessions away; another lists its sessions to glance at.
+    /// Open or close another machine's session preview in the navigator.
     pub fn toggle_host(&mut self, host: Option<String>) {
-        if host == self.machines.current {
-            self.machines.folded = !self.machines.folded;
-        } else if !self.machines.expanded.remove(&host) {
+        if !self.machines.expanded.remove(&host) {
             self.machines.expanded.insert(host.clone());
             self.machines.peek(host, self.clock);
         }

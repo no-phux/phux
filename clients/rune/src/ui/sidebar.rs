@@ -10,16 +10,19 @@ use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, col, el, memo, row, text};
 
-use super::{CAPTION, Ink, LABEL, NAME, SIDEBAR_W, icons, keycap, lifted, pressable};
+use super::{CAPTION, Ink, LABEL_STRONG, NAME, SIDEBAR_W, icons, lifted, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab};
 use crate::host_color;
-use crate::keys::{self, Shortcut};
+use crate::keys::Shortcut;
 use crate::palette::pane_label;
 
+mod actions;
+mod chrome;
+use chrome::{foot, inbox_button, search};
 mod drag;
 mod hosts;
-use hosts::{host_header, other_machines};
+use hosts::other_machines;
 mod projects;
 use projects::branch_mark;
 
@@ -63,68 +66,6 @@ fn dot(mark: Mark, color: Color, session: Option<u32>, ink: &Ink) -> El {
     el().w(14.0).h(14.0).center().child(dot)
 }
 
-fn search(ink: &Ink) -> El {
-    // ⌘K is the chord this field has always taught; ⌘P reaches it too.
-    let chord: &[&str] = if cfg!(target_os = "macos") {
-        &["⌘", "K"]
-    } else {
-        &["Ctrl", "Shift", "K"]
-    };
-    pressable("sidebar-search", ink)
-        .w_full()
-        .h(28.0)
-        .px(8.0)
-        .gap(7.0)
-        .radius(7.0)
-        .items_center()
-        .fill(ink.text.alpha(0.05))
-        .border_gradient(1.0, ink.text.alpha(0.09), ink.text.alpha(0.04))
-        .on_press(|d: &mut Desk| d.toggle_palette())
-        .child(
-            rune::icon(&icons::SEARCH, 14.0)
-                .color(ink.dim)
-                .a11y_hidden(),
-        )
-        .child(text("Jump to…").font(LABEL).color(ink.dim))
-        .child(el().grow(1.0))
-        .child(
-            row()
-                .gap(2.0)
-                .children(chord.iter().map(|key| keycap(*key, ink))),
-        )
-}
-
-/// The way into the inbox, loud only when something waits.
-fn inbox_button(waiting: usize, ink: &Ink) -> El {
-    if waiting == 0 {
-        return super::icon_press(
-            &icons::INBOX,
-            "Inbox",
-            "inbox-button",
-            ink,
-            |d: &mut Desk| {
-                d.toggle_inbox();
-            },
-        );
-    }
-    let tint = mark_color(Mark::Blocked, ink);
-    pressable("inbox-button", ink)
-        .h(22.0)
-        .px(8.0)
-        .gap(5.0)
-        .radius(11.0)
-        .items_center()
-        .fill(tint.alpha(0.18))
-        .label(format!("Inbox, {waiting} waiting"))
-        .on_press(|d: &mut Desk| d.toggle_inbox())
-        .child(
-            text(format!("{waiting} waiting"))
-                .font(CAPTION)
-                .color(tint)
-                .a11y_hidden(),
-        )
-}
-
 /// What a session header draws. Everything its handlers capture is here, so
 /// a memoized header is never stale.
 #[derive(Hash)]
@@ -134,6 +75,8 @@ struct Header<'a> {
     key: Option<SessionKey>,
     current: bool,
     waiting: usize,
+    count: usize,
+    collapsed: bool,
     /// A satellite session's machine, and its colour so a recolour redraws.
     host: Option<(&'a str, u32)>,
     /// The session's `[[sessions]]` colour.
@@ -159,54 +102,100 @@ fn waiting_badge(waiting: usize, ink: &Ink) -> El {
 fn session_header(session: &Header, ink: &Ink) -> El {
     let key = session.key;
     let label = session.name.to_owned();
-    let header = row()
-        .key(format!("session-{}", session.id))
-        .w_full()
-        .pt(10.0)
-        .pb(3.0)
-        .px(8.0)
+    let name = label.clone();
+    let heading = row()
+        .key(format!("select-session-{}", session.id))
+        .grow(1.0)
+        .min_w(0.0)
+        .h(28.0)
         .gap(6.0)
         .items_center()
-        .on_double_press(move |d: &mut Desk| {
-            if let Some(key) = key {
-                d.rename_session(key, &label);
-            }
-        })
         .children((session.host).map(|(host, _)| host_color::dot(host, 6.0, ink.sidebar)))
         .children((session.color).map(|rgb| host_color::mark(rgb, 6.0, ink.sidebar)))
         .children(session.branch.then(|| branch_mark(ink)))
         .child(
             text(session.name.to_owned())
-                .font(CAPTION)
+                .font(LABEL_STRONG)
                 .color(if session.current { ink.text } else { ink.dim })
                 .truncate(),
-        )
-        .child(el().grow(1.0));
-    let header = drag::reorderable(header, key, session.target, ink);
-    header.children((session.waiting > 0).then(|| waiting_badge(session.waiting, ink)))
+        );
+    let heading = match key {
+        Some(key) => heading
+            .hover(ink.hover)
+            .press(ink.hover)
+            .cursor(rune::Cursor::Grab)
+            .label(format!("Open session {label}"))
+            .help("Drag to reorder session")
+            .on_press(move |d: &mut Desk| d.show_session(&name))
+            .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(Grab::Session(key), drag))
+            .on_double_press(move |d: &mut Desk| d.rename_session(key, &label)),
+        None => heading.label(session.name.to_owned()),
+    };
+    let header = row()
+        .key(format!("session-{}", session.id))
+        .w_full()
+        .h(28.0)
+        .px(6.0)
+        .gap(4.0)
+        .radius(6.0)
+        .items_center()
+        .children(key.map(|key| {
+            let collapsed = session.collapsed;
+            pressable(format!("disclose-session-{}", session.id), ink)
+                .size(18.0, 24.0)
+                .center()
+                .radius(4.0)
+                .expanded(!collapsed)
+                .label(format!(
+                    "{} session {}",
+                    if collapsed { "Expand" } else { "Collapse" },
+                    session.name
+                ))
+                .help(if collapsed {
+                    "Show resources"
+                } else {
+                    "Hide resources"
+                })
+                .on_press(move |d: &mut Desk| {
+                    if !d.sidebar_collapsed.remove(&key) {
+                        d.sidebar_collapsed.insert(key);
+                    }
+                })
+                .child(
+                    rune::icon(
+                        if collapsed {
+                            &icons::CHEVRON_RIGHT
+                        } else {
+                            &icons::CHEVRON
+                        },
+                        12.0,
+                    )
+                    .color(ink.dim)
+                    .a11y_hidden(),
+                )
+        }))
+        .child(heading)
+        .child(text(session.count.to_string()).font(CAPTION).color(ink.dim))
+        .children((session.waiting > 0).then(|| waiting_badge(session.waiting, ink)))
+        .child(actions::session_controls(key, session.name, ink));
+    drag::reorderable(header, key, session.target, ink)
 }
 
-/// What a terminal's row draws, likewise. A session of one terminal is one
-/// row: `name` is the session, `place` the terminal, and `rename` the
-/// double-press its missing header would have held.
+/// A resource row, always below its session's separately actionable header.
 #[derive(Hash)]
 struct Row<'a> {
     id: &'a ResourceId,
     session: &'a str,
     name: String,
     place: Option<String>,
-    rename: Option<SessionKey>,
+    key: Option<SessionKey>,
     agent: Option<&'a str>,
     mark: Mark,
     selected: bool,
     /// The terminal's machine and its colour, so a recolour redraws.
     host: (&'a str, u32),
-    /// A one-terminal session's `[[sessions]]` colour, for its quiet mark.
+    /// The session's colour, for its quiet mark.
     color: Option<u32>,
-    /// A one-terminal session that is a linked worktree.
-    branch: bool,
-    /// A dragged session would land on this lone row's.
-    target: bool,
 }
 
 impl Row<'_> {
@@ -230,7 +219,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
         .color
         .map_or(host, |rgb| host_color::eased(rgb, ink.sidebar));
     let accent = row_color(mark, ink, tone);
-    let (key, label) = (pane.rename, pane.name.clone());
+    let key = pane.key;
     let detail = pane.detail().map(|(words, tinted)| {
         text(words)
             .font(CAPTION)
@@ -241,9 +230,10 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
     let base = if selected { lifted(base, ink) } else { base };
     let row = base
         .w_full()
-        .min_h(30.0)
-        .px(6.0)
-        .py(5.0)
+        .min_h(28.0)
+        .pl(18.0)
+        .pr(6.0)
+        .py(3.0)
         .gap(6.0)
         .radius(7.0)
         .continuous_corners()
@@ -252,12 +242,7 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
         .press(ink.hover)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.show(id.clone(), &session))
-        .on_double_press(move |d: &mut Desk| {
-            if let Some(key) = key {
-                d.rename_session(key, &label);
-            }
-        })
-        .children(pane.branch.then(|| branch_mark(ink)))
+        .label(format!("{} in session {}", pane.name, pane.session))
         .child(dot(mark, accent, pane.color, ink))
         .child(
             col()
@@ -277,8 +262,10 @@ fn pane_row(pane: &Row, ink: &Ink) -> El {
                 .children(detail),
         )
         .children(selected.then(|| host_color::stripe(host)));
-    // A lone row stands for its session, so it drags the session.
-    drag::reorderable(row, key, pane.target, ink)
+    match key {
+        Some(key) => drag::resource(row, pane.id, key, ink),
+        None => row,
+    }
 }
 
 /// Marks that need you, by session: one pass, for every header and the button.
@@ -309,50 +296,46 @@ fn session_list(desk: &Desk, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
         let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
         let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
-        let alone = rows.len() == 1;
         let color = crate::session_color::of(&session.name);
-        if !alone {
-            let header = Header {
-                id: session.id,
-                name: &session.name,
-                key: session.key,
-                current: current.as_deref() == Some(session.name.as_str()),
-                waiting: waiting_in(session.id),
-                host: None,
-                color,
-                branch,
-                target,
-            };
-            out.push(memo(
-                format!("session-{}", session.id),
-                (&header, theme),
-                || session_header(&header, ink),
-            ));
+        let header = Header {
+            id: session.id,
+            name: &session.name,
+            key: session.key,
+            current: current.as_deref() == Some(session.name.as_str()),
+            waiting: waiting_in(session.id),
+            count: rows.len(),
+            collapsed: session
+                .key
+                .is_some_and(|key| desk.sidebar_collapsed.contains(&key)),
+            host: None,
+            color,
+            branch,
+            target,
+        };
+        out.push(memo(
+            format!("session-{}", session.id),
+            (&header, theme),
+            || session_header(&header, ink),
+        ));
+        if header.collapsed {
+            return out;
         }
         for resource in &rows {
             let (id, label) = (&resource.id, &resource.label);
-            let (name, place) = if alone {
-                let place = (*label != session.name).then(|| label.clone());
-                (session.name.clone(), place)
-            } else {
-                // Twins are told apart by what the CLI calls them.
-                let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
-                let mirror = (!resource.kind.is_terminal()).then(|| resource.mirror.to_owned());
-                (label.clone(), twin.then(|| id.to_string()).or(mirror))
-            };
+            let twin = rows.iter().filter(|other| other.label == *label).count() > 1;
+            let mirror = (!resource.kind.is_terminal()).then(|| resource.mirror.to_owned());
+            let (name, place) = (label.clone(), twin.then(|| id.to_string()).or(mirror));
             let row = Row {
                 id,
                 session: &resource.session,
                 name,
                 place,
-                rename: session.key.filter(|_| alone),
+                key: session.key,
                 agent: desk.activities.agent_name(id),
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
-                color: color.filter(|_| alone),
-                branch: branch && alone,
-                target: target && alone,
+                color,
             };
             out.push(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -393,6 +376,8 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
             key: None,
             current: session.members.iter().any(|id| shown == Some(id)),
             waiting: 0,
+            count: session.members.len(),
+            collapsed: false,
             host: Some(host),
             color: crate::session_color::of(&session.name),
             branch: false,
@@ -431,14 +416,12 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
                 session: "",
                 name: label,
                 place,
-                rename: None,
+                key: None,
                 agent: desk.activities.agent_name(id),
                 mark: desk.activities.mark(id),
                 selected: shown == Some(id),
                 host,
                 color: None,
-                branch: false,
-                target: false,
             };
             list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
                 pane_row(&row, ink)
@@ -448,59 +431,15 @@ fn satellite_list(desk: &Desk, topology: &Topology, ink: &Ink) -> El {
     list
 }
 
-/// A word to press at the foot of the sidebar. Under the pointer it shows
-/// the chord that does the same, so the keys get learned where the mouse
-/// already is.
-fn foot(
-    desk: &Desk,
-    label: &'static str,
-    key: &'static str,
-    action: Shortcut,
-    ink: &Ink,
-    press: fn(&mut Desk),
-) -> El {
-    let hovered = desk.foot_hover == Some(key);
-    let chord = keys::command(action).map(keys::Command::hint);
-    pressable(key, ink)
-        .h(26.0)
-        .px(6.0)
-        .gap(5.0)
-        .radius(6.0)
-        .items_center()
-        .on_press(press)
-        .on_hover_change(move |d: &mut Desk, inside, _| {
-            if inside {
-                d.foot_hover = Some(key);
-            } else if d.foot_hover == Some(key) {
-                d.foot_hover = None;
-            }
-        })
-        .child(rune::icon(&icons::PLUS, 12.0).color(ink.host))
-        .child(text(label).font(LABEL).color(ink.dim))
-        .child(match chord.filter(|_| hovered) {
-            Some(chord) => text(chord).font(CAPTION).color(ink.dim),
-            None => text(""),
-        })
-}
-
-pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
+pub fn view(desk: &Desk, ink: &Ink, inset: f32, leading: f32) -> El {
     let topology = desk.connection.topology.as_ref();
     let counts = topology.map_or_else(HashMap::new, |t| waiting_by_session(desk, t));
-    let folded = desk.machines.folded;
-    let list = topology.filter(|_| !folded).map_or_else(col, |t| {
+    let list = topology.map_or_else(col, |t| {
         col()
             .w_full()
             .child(session_list(desk, &counts, ink))
             .child(satellite_list(desk, t, ink))
     });
-    let here = desk.machines.current.clone();
-    let this_machine = host_header(
-        desk.machines.label(),
-        !folded,
-        topology.map(|t| t.sessions.len().to_string()),
-        ink,
-        move |d: &mut Desk| d.toggle_host(here.clone()),
-    );
     let waiting = desk.inbox.approvals.len() + counts.values().sum::<usize>();
     col()
         .w(SIDEBAR_W)
@@ -511,30 +450,30 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
         } else {
             ink.sidebar
         })
-        .child(el().w_full().h(inset).window_drag())
         .child(
             row()
+                .key("sidebar-titlebar")
                 .w_full()
-                .px(8.0)
-                .pb(6.0)
+                .h(inset)
+                .pl(leading + 8.0)
+                .pr(8.0)
                 .gap(4.0)
                 .items_center()
-                .justify_between()
-                .child(super::machines::switch(desk, ink))
+                .window_drag()
+                .child(super::machines::switch(desk, ink).grow(1.0))
                 .child(inbox_button(waiting, ink)),
         )
-        .child(el().w_full().px(8.0).pb(6.0).child(search(ink)))
+        .child(el().w_full().px(8.0).pb(8.0).child(search(ink)))
         .child(
-            col()
+            drag::region(col()
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(el().w_full().px(8.0).child(this_machine))
                 .child(list)
-                .child(other_machines(desk, ink)),
+                .child(other_machines(desk, ink))),
         )
         .child(
             row()
@@ -543,7 +482,6 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                 .py(6.0)
                 .gap(2.0)
                 .child(foot(
-                    desk,
                     "Terminal",
                     "new-terminal",
                     Shortcut::NewTerminal,
@@ -551,7 +489,6 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                     Desk::new_terminal,
                 ))
                 .child(foot(
-                    desk,
                     "Session",
                     "new-session",
                     Shortcut::NewSession,

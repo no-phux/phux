@@ -228,28 +228,42 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         "upgrade should ack: {}",
         String::from_utf8_lossy(&upgrade.stderr)
     );
+    // The pid on the second line can already be gone: a non-zero exit
+    // restarts, and the sidecar that stays up is the latest live pid.
+    let mut second = 0;
     assert!(
         poll_until(Duration::from_secs(30), || {
-            let text = std::fs::read_to_string(&pids).unwrap_or_default();
-            text.ends_with('\n')
-                && text.lines().filter(|line| !line.is_empty()).count() >= 2
-                && !alive(first)
+            let Ok(text) = std::fs::read_to_string(&pids) else {
+                return false;
+            };
+            if !text.ends_with('\n') || alive(first) {
+                return false;
+            }
+            let Some(pid) = text
+                .lines()
+                .rev()
+                .find(|line| !line.is_empty())
+                .and_then(|line| line.trim().parse::<i32>().ok())
+            else {
+                return false;
+            };
+            if pid == first || !alive(pid) {
+                return false;
+            }
+            second = pid;
+            true
         }),
         "upgrade should replace the sidecar; pids={:?} first alive={}",
         std::fs::read_to_string(&pids),
         alive(first)
     );
-    let second: i32 = std::fs::read_to_string(&pids)
-        .unwrap()
-        .lines()
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
     reap.0 = second;
-    assert!(alive(second));
     assert_ne!(first, second);
+    assert!(
+        alive(second),
+        "replacement {second} died; pids={}",
+        std::fs::read_to_string(&pids).unwrap_or_default()
+    );
     wait_for_sidecar_files(root.path(), second);
     let env = std::fs::read_to_string(root.path().join(format!("env.{second}"))).unwrap();
     assert!(

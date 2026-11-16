@@ -113,6 +113,8 @@ class OtaTests(unittest.TestCase):
                 site = ota.package(app, embedded, IDENTITY, "https://host/private/", out, ["owned-device"])
             self.assertEqual({p.name for p in site.iterdir()}, {"PhuxRune.ipa", "manifest.plist", "index.html"})
             self.assertIn("--generate-entitlement-der", run.call_args_list[2].args)
+            self.assertNotIn("-k", run.call_args_list[0].args)
+            self.assertNotIn("--keychain", run.call_args_list[2].args)
             with zipfile.ZipFile(site / "PhuxRune.ipa") as archive:
                 self.assertEqual(archive.read("Payload/Phux Rune.app/PhuxRune"), b"actual-device-binary-fixture")
                 self.assertEqual(archive.read("Payload/Phux Rune.app/embedded.mobileprovision"), embedded.read_bytes())
@@ -191,6 +193,47 @@ class OtaTests(unittest.TestCase):
             with patch.object(ota, "run", return_value=b"platform IOS\n"), \
                     self.assertRaisesRegex(ValueError, "symlinked"):
                 ota.device_bundle_info(app)
+
+
+    def test_explicit_keychain_scopes_decode_and_all_signatures_without_changing_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app, embedded, out = self.bundle(root)
+            self.framework(app)
+            keychain = root / "login keychain-db"
+            keychain.write_bytes(b"existing-keychain-fixture")
+            value = profile()
+            outputs = [plistlib.dumps(value), b"platform IOS\n", b"platform IOS\n",
+                       b"", b"", b"", b"", plistlib.dumps(value["Entitlements"])]
+            with patch.object(ota, "run", side_effect=outputs) as run:
+                ota.package(app, embedded, IDENTITY, "https://host/private/", out,
+                            ["owned-device"], keychain)
+            self.assertEqual(run.call_args_list[0].args,
+                             ("/usr/bin/security", "cms", "-D", "-k", keychain.resolve(), "-i", embedded))
+            signs = [c.args for c in run.call_args_list if "--sign" in c.args]
+            self.assertEqual(len(signs), 2)
+            for sign in signs:
+                self.assertEqual(sign[sign.index("--keychain") + 1], keychain.resolve())
+            self.assertNotIn("--entitlements", signs[0])
+            self.assertIn("--generate-entitlement-der", signs[1])
+            self.assertTrue(any("--verify" in c.args and "--deep" in c.args
+                                for c in run.call_args_list))
+            self.assertFalse(any("default-keychain" in c.args or "list-keychains" in c.args
+                                 for c in run.call_args_list))
+
+    def test_missing_or_directory_keychain_never_falls_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app, embedded, out = self.bundle(root)
+            with patch.object(ota, "run") as run:
+                with self.assertRaises(FileNotFoundError):
+                    ota.package(app, embedded, IDENTITY, "https://host/private/", out,
+                                ["owned-device"], root / "missing")
+                with self.assertRaisesRegex(ValueError, "existing file"):
+                    ota.package(app, embedded, IDENTITY, "https://host/private/", out,
+                                ["owned-device"], root)
+            run.assert_not_called()
+            self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

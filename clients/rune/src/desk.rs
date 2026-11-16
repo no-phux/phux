@@ -5,6 +5,7 @@
 //! namespace; replacing it leaves window preferences and platform services alone.
 
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use phux_client_core::layout::SplitDir;
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::ProjectionFence;
 use phux_client_runtime::publication::GridFrame;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
@@ -122,9 +123,6 @@ pub struct Desk {
     pub window_w: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
-    /// The sidebar's foot button under the pointer, by key, so it can show
-    /// its chord.
-    pub foot_hover: Option<&'static str>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -155,6 +153,8 @@ pub struct Desk {
     pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
+    /// Session disclosure belongs to this window, independent of selection.
+    pub sidebar_collapsed: HashSet<SessionKey>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -248,7 +248,6 @@ impl Desk {
             sidebar_open,
             window_w: 0.0,
             sidebar_peek: false,
-            foot_hover: None,
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
@@ -264,6 +263,7 @@ impl Desk {
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
+            sidebar_collapsed: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
