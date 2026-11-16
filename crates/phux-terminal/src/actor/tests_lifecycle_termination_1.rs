@@ -9,6 +9,10 @@ struct ArmedForegroundPane {
 
 /// Build and run a pane on `cmd`, wait for its foreground job to write
 /// `armed` (after its HUP trap), and assert the job-control topology.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+)]
 async fn arm_foreground_pane(
     (cols, rows): (u16, u16),
     cmd: portable_pty::CommandBuilder,
