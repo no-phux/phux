@@ -85,7 +85,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Environment variables](./reference/environment.md): what phux reads and sets.
 - [Exit codes](./reference/exit-codes.md): what each exit status means, for scripts.
 - [File locations](./reference/files.md): the socket, config, state, and logs.
-- [Resource kinds](./reference/kinds.md), [MCP tools and the commands they mirror](./reference/parity.md), and [deprecations](./reference/deprecations.md).
+- [Resource kinds](./reference/kinds.md) and [MCP tools and the commands they mirror](./reference/parity.md).
 
 ## Work on phux
 
