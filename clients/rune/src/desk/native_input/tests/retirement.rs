@@ -2,7 +2,6 @@
 use super::*;
 use crate::desk::{phone::Soft, questions::Draft};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
 use phux_protocol::wire::frame::FrameKind;
 
 #[test]
@@ -15,18 +14,10 @@ fn retained_field_text_does_not_reauthorize_a_native_edit_from_the_old_runtime()
         desk.connection.client = Some(client.clone());
     });
     rt.frame(0.0);
-    let accepted = bridge
-        .apply(
-            &mut rt,
-            Operation {
-                token: old.token,
-                revision: old.revision,
-                action: Action::Text {
-                    text: "stale".into(),
-                },
-            },
-        )
-        .unwrap();
+    let stale = Action::Text {
+        text: "stale".into(),
+    };
+    let accepted = submit(&mut bridge, &mut rt, &old, stale).unwrap();
     assert!(!accepted);
     assert_eq!(rt.state.palette_query.text, "keep this draft");
 }
@@ -38,34 +29,14 @@ fn unmounted_acp_focus_does_not_capture_later_terminal_accessory_input() {
     rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.connection.topology = client.with_control(|control| control.topology().cloned());
     let id = "acp-question:retained";
-    let question = NativeQuestion {
-        id: id.into(),
-        kind: "editor".into(),
-        title: "Editor".into(),
-        message: "Draft".into(),
-        options: vec![],
-        questions: vec![],
-        fields: serde_json::Value::Null,
-    };
+    let question = acp_question(id, "Editor", "Draft");
     let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
-    rt.state.inbox.questions.views.insert(
-        terminal,
-        (
-            ResourceId::local(55),
-            NativeView {
-                activation: "active".into(),
-                backend: "acp".into(),
-                connected: true,
-                capabilities: NativeCapabilities {
-                    questions: true.into(),
-                    ..Default::default()
-                },
-                turn_id: None,
-                provider_session_id: None,
-                questions: vec![question.clone()],
-            },
-        ),
-    );
+    let view = acp_view("active", &question);
+    rt.state
+        .inbox
+        .questions
+        .views
+        .insert(terminal, (ResourceId::local(55), view));
     let mut draft = Draft::new(&question);
     draft
         .texts

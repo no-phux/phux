@@ -1,4 +1,5 @@
 use super::*;
+use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
 use rune::accesskit::Action as Accessibility;
 
 mod retirement;
@@ -87,18 +88,7 @@ fn system_keyboard_consumes_the_drawn_accessory_latches_once() {
         assert!(rt.state.phone.as_ref().unwrap().latched(latch));
         let _ = client.take_outbound();
         let snapshot = bridge.snapshot(&rt);
-        assert!(
-            bridge
-                .apply(
-                    &mut rt,
-                    Operation {
-                        token: snapshot.token,
-                        revision: snapshot.revision,
-                        action
-                    }
-                )
-                .unwrap()
-        );
+        assert!(submit(&mut bridge, &mut rt, &snapshot, action).unwrap());
         assert!(!rt.state.phone.as_ref().unwrap().latched(latch));
         let sent: Vec<_> = client
             .take_outbound()
@@ -246,31 +236,11 @@ fn a_confirm_bar_has_priority_over_a_still_focused_find_field() {
 #[test]
 fn identical_acp_questions_in_new_activations_retire_the_owner() {
     use phux_protocol::ids::ResourceId;
-    use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
     let (client, mut rt) = crate::test_support::input_fixture();
     native(&mut rt.state);
-    let question = NativeQuestion {
-        id: "q".into(),
-        kind: "editor".into(),
-        title: "Title".into(),
-        message: "Message".into(),
-        options: vec![],
-        questions: vec![],
-        fields: serde_json::Value::Null,
-    };
+    let question = acp_question("q", "Title", "Message");
     let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
-    let view = NativeView {
-        activation: "first".into(),
-        backend: "acp".into(),
-        connected: true,
-        capabilities: NativeCapabilities {
-            questions: true.into(),
-            ..Default::default()
-        },
-        turn_id: None,
-        provider_session_id: None,
-        questions: vec![question.clone()],
-    };
+    let view = acp_view("first", &question);
     rt.state
         .inbox
         .questions
@@ -315,6 +285,34 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
     rt.update(|d, tx| d.soft(super::super::phone::Soft::Key(Key::Backspace), tx));
     assert_eq!(field.edit(&rt.state).unwrap().text, "\n\n");
     assert!(client.take_outbound().is_empty());
+}
+
+fn acp_question(id: &str, title: &str, message: &str) -> NativeQuestion {
+    NativeQuestion {
+        id: id.into(),
+        kind: "editor".into(),
+        title: title.into(),
+        message: message.into(),
+        options: vec![],
+        questions: vec![],
+        fields: serde_json::Value::Null,
+    }
+}
+
+/// A connected ACP view at `activation` asking `question`.
+fn acp_view(activation: &str, question: &NativeQuestion) -> NativeView {
+    NativeView {
+        activation: activation.into(),
+        backend: "acp".into(),
+        connected: true,
+        capabilities: NativeCapabilities {
+            questions: true.into(),
+            ..Default::default()
+        },
+        turn_id: None,
+        provider_session_id: None,
+        questions: vec![question.clone()],
+    }
 }
 
 fn field(
@@ -365,17 +363,29 @@ fn replace(
     focus: usize,
 ) -> Result<bool, String> {
     let snap = bridge.snapshot(rt);
+    let action = Action::Replace {
+        expected: snap.text.clone(),
+        text: text.into(),
+        anchor,
+        focus,
+    };
+    submit(bridge, rt, &snap, action)
+}
+
+/// Apply `action` against `snap`'s token and revision.
+fn submit(
+    bridge: &mut Bridge,
+    rt: &mut Runtime<Desk>,
+    snap: &Snapshot,
+    action: Action,
+) -> Result<bool, String> {
+    let (token, revision) = (snap.token, snap.revision);
     bridge.apply(
         rt,
         Operation {
-            token: snap.token,
-            revision: snap.revision,
-            action: Action::Replace {
-                expected: snap.text,
-                text: text.into(),
-                anchor,
-                focus,
-            },
+            token,
+            revision,
+            action,
         },
     )
 }
@@ -440,22 +450,12 @@ fn native_session_filter_returns_to_the_first_result_after_scrolling() {
 fn composition_is_staged_and_committed_once_with_native_selection() {
     let (_, mut rt, mut bridge) = field("settings-query");
     let snap = bridge.snapshot(&rt);
-    assert!(
-        bridge
-            .apply(
-                &mut rt,
-                Operation {
-                    token: snap.token,
-                    revision: snap.revision,
-                    action: Action::Preedit {
-                        text: "日本🦀".into(),
-                        anchor: 2,
-                        focus: 4
-                    }
-                }
-            )
-            .unwrap()
-    );
+    let preedit = Action::Preedit {
+        text: "日本🦀".into(),
+        anchor: 2,
+        focus: 4,
+    };
+    assert!(submit(&mut bridge, &mut rt, &snap, preedit).unwrap());
     assert!(rt.state.settings_ui.query.text.is_empty());
     assert_eq!(
         rt.state.settings_ui.query.preedit().unwrap().1,
@@ -485,41 +485,21 @@ fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
         .rename_field
         .ime(&rune::Ime::Preedit("held".into(), None, Vec::new()));
     rt.state.connection.tabs.renaming = Some(super::super::Renaming::Tab([2; 16]));
-    assert!(
-        !bridge
-            .apply(
-                &mut rt,
-                Operation {
-                    token: snap.token,
-                    revision: snap.revision,
-                    action: Action::Replace {
-                        expected: snap.text,
-                        text: "wrong tab".into(),
-                        anchor: 9,
-                        focus: 9
-                    }
-                }
-            )
-            .unwrap()
-    );
+    let wrong_tab = Action::Replace {
+        expected: snap.text.clone(),
+        text: "wrong tab".into(),
+        anchor: 9,
+        focus: 9,
+    };
+    assert!(!submit(&mut bridge, &mut rt, &snap, wrong_tab).unwrap());
     assert!(rt.state.connection.tabs.rename_field.text.is_empty());
     assert!(!rt.state.connection.tabs.rename_field.is_composing());
     let snap = bridge.snapshot(&rt);
     rt.state.cancel_rename();
-    assert!(
-        !bridge
-            .apply(
-                &mut rt,
-                Operation {
-                    token: snap.token,
-                    revision: snap.revision,
-                    action: Action::Text {
-                        text: "must not enter terminal".into()
-                    }
-                }
-            )
-            .unwrap()
-    );
+    let text = Action::Text {
+        text: "must not enter terminal".into(),
+    };
+    assert!(!submit(&mut bridge, &mut rt, &snap, text).unwrap());
     assert!(client.take_outbound().is_empty());
 }
 
@@ -528,32 +508,17 @@ fn changed_text_or_revision_and_invalid_selection_are_atomic_rejections() {
     let (_, mut rt, mut bridge) = field("settings-query");
     assert!(replace(&mut bridge, &mut rt, "initial", 7, 7).unwrap());
     let snap = bridge.snapshot(&rt);
-    let bad = Operation {
-        token: snap.token,
-        revision: snap.revision,
-        action: Action::Replace {
-            expected: "stale".into(),
-            text: "bad".into(),
-            anchor: 3,
-            focus: 3,
-        },
+    let bad = Action::Replace {
+        expected: "stale".into(),
+        text: "bad".into(),
+        anchor: 3,
+        focus: 3,
     };
-    assert!(bridge.apply(&mut rt, bad).is_err());
+    assert!(submit(&mut bridge, &mut rt, &snap, bad).is_err());
     assert!(replace(&mut bridge, &mut rt, "bad", usize::MAX, 0).is_err());
     assert_eq!(rt.state.settings_ui.query.text, "initial");
     bridge.retire();
-    assert!(
-        !bridge
-            .apply(
-                &mut rt,
-                Operation {
-                    token: snap.token,
-                    revision: snap.revision,
-                    action: Action::Cancel
-                }
-            )
-            .unwrap()
-    );
+    assert!(!submit(&mut bridge, &mut rt, &snap, Action::Cancel).unwrap());
 }
 
 #[test]

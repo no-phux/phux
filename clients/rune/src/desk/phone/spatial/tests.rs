@@ -43,45 +43,14 @@ fn tree() -> LayoutNode {
 #[test]
 fn unequal_nested_splits_share_exact_geometry_and_four_directions() {
     let tree = tree();
+    let rect = |x, y, w, h| Rect { x, y, w, h };
     assert_eq!(
         rects(&tree),
         vec![
-            (
-                id(1),
-                Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 0.25,
-                    h: 0.5
-                }
-            ),
-            (
-                id(2),
-                Rect {
-                    x: 0.0,
-                    y: 0.5,
-                    w: 0.25,
-                    h: 0.5
-                }
-            ),
-            (
-                id(3),
-                Rect {
-                    x: 0.25,
-                    y: 0.0,
-                    w: 0.75,
-                    h: 0.75
-                }
-            ),
-            (
-                id(4),
-                Rect {
-                    x: 0.25,
-                    y: 0.75,
-                    w: 0.75,
-                    h: 0.25
-                }
-            ),
+            (id(1), rect(0.0, 0.0, 0.25, 0.5)),
+            (id(2), rect(0.0, 0.5, 0.25, 0.5)),
+            (id(3), rect(0.25, 0.0, 0.75, 0.75)),
+            (id(4), rect(0.25, 0.75, 0.75, 0.25)),
         ]
     );
     assert_eq!(toward(&tree, &id(1), Direction::Right), Some(id(3)));
@@ -359,9 +328,20 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
     no_input(&client);
 }
 
+/// The terminals the outbound queue resized, in order.
+fn resized(client: &phux_client_runtime::Client) -> Vec<ResourceId> {
+    use phux_protocol::wire::frame::FrameKind;
+    outbound(client)
+        .into_iter()
+        .filter_map(|f| match f {
+            FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
-    use phux_protocol::wire::frame::FrameKind;
     let (client, mut rt) = fixture(true);
     // Unlike the geometry-only fixture, resize settling runs on the app clock.
     rt.poll = Some(Desk::poll);
@@ -371,13 +351,7 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     assert!(!rt.state.phone.as_ref().unwrap().keyboard);
     assert!(rt.state.connection.fitted[&id(1)].0.1 > before.0.1);
     assert_eq!(rt.state.connection.fitted.len(), 1);
-    let sizes: Vec<_> = outbound(&client)
-        .into_iter()
-        .filter_map(|f| match f {
-            FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
-            _ => None,
-        })
-        .collect();
+    let sizes = resized(&client);
     assert_eq!(
         sizes,
         [id(1)],
@@ -390,13 +364,7 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     }
     touch(&mut rt, Ended, x - 80.0, y);
     settle(&mut rt);
-    let sizes: Vec<_> = outbound(&client)
-        .into_iter()
-        .filter_map(|f| match f {
-            FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
-            _ => None,
-        })
-        .collect();
+    let sizes = resized(&client);
     assert_eq!(sizes, [id(3)], "new focus gets one destination size");
     assert_eq!(
         rt.state.connection.areas.len(),

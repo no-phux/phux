@@ -54,6 +54,15 @@ fn record(n: u8, kind: ResourceKind) -> ResourceRecord {
         .with_live(Some(id(u32::from(n))))
 }
 
+/// Records `1..=N`, each of its kind in `kinds`.
+fn mirrors<const N: usize>(kinds: [ResourceKind; N]) -> [ResourceRecord; N] {
+    let mut n = 0;
+    kinds.map(|kind| {
+        n += 1;
+        record(n, kind)
+    })
+}
+
 fn hello(server: u8) -> FrameKind {
     crate::wire_fixture::hello(server, true)
 }
@@ -136,6 +145,19 @@ fn fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Ru
     rt.on_key = Some(Desk::key);
     step(&mut rt);
     (client, rt)
+}
+
+/// A [`fixture`] showing one accessibility-tree document, `@1`.
+fn one_document() -> (Arc<Client>, Runtime<Desk>) {
+    fixture(
+        &[record(1, ResourceKind::AccessibilityTree)],
+        &doc(LayoutNode::Leaf(id(1))),
+    )
+}
+
+/// [`publish`] `json` as document `@1`'s accessibility tree.
+fn publish_tree(client: &Client, json: &[u8]) {
+    publish(client, 1, ResourceKind::AccessibilityTree, json);
 }
 
 fn step(rt: &mut Runtime<Desk>) {
@@ -261,18 +283,13 @@ fn document_only_startup_adopts_org_identity_secondary_leaves_and_tabs() {
 
 #[test]
 fn real_wire_json_updates_replace_plain_native_inspector_and_empty_errors() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     assert!(matches!(
         rt.state.connection.resources.entries[&id(1)].body,
         Body::Pending
     ));
-    publish(
+    publish_tree(
         &client,
-        1,
-        ResourceKind::AccessibilityTree,
         br#"{"title":"<script>not HTML</script>","children":[]}"#,
     );
     step(&mut rt);
@@ -310,10 +327,7 @@ fn real_wire_json_updates_replace_plain_native_inspector_and_empty_errors() {
 
 #[test]
 fn document_focus_cannot_send_terminal_input_upload_history_resize_or_paint_ack() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     outbound(&client);
     rt.key(crate::keys::plain(Key::Text("x".into())));
     rt.update(|d, tx| {
@@ -352,14 +366,7 @@ fn organization_removal_prunes_documents_and_hands_focus_to_live_neighbour() {
         [id(2)]
     );
     assert!(rt.state.connection.others.is_empty());
-    assert!(
-        rt.state
-            .notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("Mirror unavailable")
-    );
+    assert!(crate::test_support::notice(&rt.state).contains("Mirror unavailable"));
 }
 
 #[test]
@@ -376,10 +383,7 @@ fn closing_a_mirror_view_preserves_unrelated_tabs_and_never_ends_its_producer() 
         leaves(arrangement_doc.groups[1].state.tree.as_ref().unwrap()),
         [id(3)]
     );
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     outbound(&client);
     rt.update(|d, _| d.close_terminal());
     assert!(rt.state.connection.shown.is_none());
@@ -404,10 +408,7 @@ fn closing_a_mirror_view_preserves_unrelated_tabs_and_never_ends_its_producer() 
 
 #[test]
 fn mirror_startup_requires_confirmation_and_uses_dedicated_argv_not_shell_input() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     rt.state.launch.phux = Some("/dev/phux".into());
     rt.state.launch.socket = Ok("/dev/socket".into());
     outbound(&client);
@@ -449,14 +450,7 @@ fn mirror_startup_requires_confirmation_and_uses_dedicated_argv_not_shell_input(
         .producers
         .insert(id(7), Source::Page);
     assert!(rt.state.producer_ended(&id(7), Some(1)));
-    assert!(
-        rt.state
-            .notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("localhost:9222")
-    );
+    assert!(crate::test_support::notice(&rt.state).contains("localhost:9222"));
     assert!(
         !rt.state.producer_ended(&id(7), Some(1)),
         "one failure notice per producer"

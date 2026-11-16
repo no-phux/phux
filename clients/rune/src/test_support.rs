@@ -50,3 +50,8 @@ pub fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
     rt.on_key = Some(Desk::key);
     (replica.client, rt)
 }
+
+/// The text of the notice `desk` shows; panics when it shows none.
+pub fn notice(desk: &Desk) -> &str {
+    &desk.notice.as_ref().expect("a notice is showing").text
+}

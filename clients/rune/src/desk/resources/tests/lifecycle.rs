@@ -1,5 +1,6 @@
 //! Phone focus retirement uses live identity, not the pre-batch mirrors.
 use super::*;
+use ResourceKind::{AccessibilityTree, PixelSurface, Terminal};
 
 fn phone_fixture(records: &[ResourceRecord], doc: &ArrangementDoc) -> (Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = fixture(records, doc);
@@ -85,11 +86,7 @@ fn accept_hide(
 
 #[test]
 fn closing_a_phone_document_group_never_reopens_a_document_from_the_hide_batch() {
-    let records = [
-        record(1, ResourceKind::AccessibilityTree),
-        record(2, ResourceKind::PixelSurface),
-        record(3, ResourceKind::AccessibilityTree),
-    ];
+    let records = mirrors([AccessibilityTree, PixelSurface, AccessibilityTree]);
     let mut arrangement_doc = doc(split(1, 2));
     arrangement_doc.add_group("survivor".into(), id(3));
     arrangement_doc.active = 0;
@@ -121,11 +118,7 @@ fn closing_a_phone_document_group_never_reopens_a_document_from_the_hide_batch()
 
 #[test]
 fn phone_hide_skips_excluded_predecessors_and_chooses_a_surviving_group_leaf() {
-    let records = [
-        record(1, ResourceKind::AccessibilityTree),
-        record(2, ResourceKind::PixelSurface),
-        record(3, ResourceKind::Terminal),
-    ];
+    let records = mirrors([AccessibilityTree, PixelSurface, Terminal]);
     let arrangement_doc = doc(three());
     let (client, mut rt) = phone_fixture(&records, &arrangement_doc);
     let before = stored(&client);
@@ -154,11 +147,7 @@ fn phone_hide_skips_excluded_predecessors_and_chooses_a_surviving_group_leaf() {
 #[test]
 fn phone_document_replacement_restores_the_same_key_ahead_of_a_temporary_fallback() {
     for handle in [2, 9] {
-        let records = [
-            record(1, ResourceKind::Terminal),
-            record(2, ResourceKind::AccessibilityTree),
-            record(3, ResourceKind::Terminal),
-        ];
+        let records = mirrors([Terminal, AccessibilityTree, Terminal]);
         let (client, mut rt) = phone_fixture(&records, &doc(three()));
         rt.update(|d, _| d.focus_pane(&id(2)));
         publish(
@@ -218,11 +207,7 @@ fn close(client: &Client, n: u32) {
 fn phone_batched_terminal_closures_skip_dead_siblings_in_either_event_order() {
     for remove_identity in [false, true] {
         for order in [[2, 3], [3, 2]] {
-            let records = [
-                record(1, ResourceKind::Terminal),
-                record(2, ResourceKind::Terminal),
-                record(3, ResourceKind::Terminal),
-            ];
+            let records = mirrors([Terminal, Terminal, Terminal]);
             let (client, mut rt) = phone_fixture(&records, &doc(three()));
             rt.update(|d, _| d.focus_pane(&id(3)));
             let before = stored(&client);
@@ -260,11 +245,7 @@ fn phone_batched_terminal_closures_skip_dead_siblings_in_either_event_order() {
 #[test]
 fn phone_fallback_uses_the_latest_organization_even_while_topology_is_stale() {
     use phux_client_runtime::control::Event;
-    let records = [
-        record(1, ResourceKind::Terminal),
-        record(2, ResourceKind::Terminal),
-        record(3, ResourceKind::Terminal),
-    ];
+    let records = mirrors([Terminal, Terminal, Terminal]);
     let (client, mut rt) = phone_fixture(&records, &doc(three()));
     rt.update(|d, _| d.focus_pane(&id(3)));
     remove(&client, 2, ResourceKind::Terminal);
@@ -295,11 +276,7 @@ fn phone_fallback_rejects_a_leaf_that_is_no_longer_a_supported_document() {
         ResourceKind::AgentSession,
         ResourceKind::Unknown { tag: 99 },
     ] {
-        let records = [
-            record(1, ResourceKind::Terminal),
-            record(2, ResourceKind::AccessibilityTree),
-            record(3, ResourceKind::Terminal),
-        ];
+        let records = mirrors([Terminal, AccessibilityTree, Terminal]);
         let (client, mut rt) = phone_fixture(&records, &doc(three()));
         rt.update(|d, _| d.focus_pane(&id(3)));
         let mut replacement = records.to_vec();
@@ -325,11 +302,7 @@ fn supported_document_kinds_are_viewless_phone_fallbacks_and_stay_closed() {
         ResourceKind::PixelSurface,
         ResourceKind::Document,
     ] {
-        let records = [
-            record(1, ResourceKind::Terminal),
-            record(2, kind),
-            record(3, ResourceKind::Terminal),
-        ];
+        let records = mirrors([Terminal, kind, Terminal]);
         let (client, mut rt) = phone_fixture(&records, &doc(three()));
         let before = stored(&client);
         rt.update(|d, _| d.focus_pane(&id(3)));
