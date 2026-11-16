@@ -104,6 +104,30 @@ fn native_adapter() -> GhosttyAdapter {
     GhosttyAdapter::new(BootstrapLimits::default())
 }
 
+type Replica = (GhosttyAdapter, GhosttyReplica, EngineEffectBuffer);
+
+/// A fresh `profile` replica on a default adapter, nothing fed yet.
+fn started(profile: BootstrapStreamProfile) -> Replica {
+    let mut adapter = native_adapter();
+    let replica = adapter
+        .start_replica(profile, geometry())
+        .expect("start replica");
+    (adapter, replica, EngineEffectBuffer::new())
+}
+
+/// A `profile` replica fed `bootstrap` and published at protocol READY,
+/// with the bootstrap's effects still in the buffer.
+fn published(profile: BootstrapStreamProfile, bootstrap: &[u8]) -> Replica {
+    let (mut adapter, mut replica, mut effects) = started(profile);
+    adapter
+        .apply_bootstrap_chunk(&mut replica, bootstrap, &mut effects)
+        .expect("bootstrap bytes");
+    adapter
+        .finish_bootstrap(&mut replica, &mut effects)
+        .expect("protocol READY");
+    (adapter, replica, effects)
+}
+
 /// Upstream 1.0 restores image metadata at READY and pixels in later units.
 #[test]
 fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {

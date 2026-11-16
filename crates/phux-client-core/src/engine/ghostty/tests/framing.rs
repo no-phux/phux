@@ -15,17 +15,8 @@ fn image_source() -> GhosttyTerminal<'static, 'static> {
 }
 
 fn publish(capture: &EncodedSnapshot) -> (GhosttyAdapter, GhosttyReplica, EngineEffectBuffer) {
-    let mut adapter = native_adapter();
-    let mut replica = adapter.start_replica(native_profile(), geometry()).unwrap();
-    let mut effects = EngineEffectBuffer::new();
     let prefix_end = capture.prefix_records.last().unwrap().end;
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &capture.bytes[..prefix_end], &mut effects)
-        .unwrap();
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .unwrap();
-    (adapter, replica, effects)
+    published(native_profile(), &capture.bytes[..prefix_end])
 }
 
 fn placement_offset(unit: &[u8]) -> usize {
