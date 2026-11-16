@@ -3,7 +3,8 @@
 use super::{
     BootstrapId, DecodeError, Decoder, DetachReason, ErrorCode, FrameKind,
     MAX_INPUT_TERMINAL_REPLY_BYTES, ResourceId, StreamId, decode_attach_target,
-    decode_bootstrap_id, decode_client_id, decode_session_snapshot, decode_stream_id,
+    decode_bootstrap_id, decode_client_id, decode_focus_event, decode_key_event,
+    decode_mouse_event, decode_paste_event, decode_session_snapshot, decode_stream_id,
     decode_terminal_id, decode_viewport_info, field, req, utf8_value,
 };
 
@@ -45,6 +46,26 @@ impl Decoder<'_> {
     pub(super) fn decode_detach(&mut self) -> Result<FrameKind, DecodeError> {
         while self.read_field()?.is_some() {}
         Ok(FrameKind::Detach)
+    }
+
+    pub(super) fn decode_input_key(&mut self) -> Result<FrameKind, DecodeError> {
+        let (terminal_id, event) = self.decode_input_event(decode_key_event)?;
+        Ok(FrameKind::InputKey { terminal_id, event })
+    }
+
+    pub(super) fn decode_input_mouse(&mut self) -> Result<FrameKind, DecodeError> {
+        let (terminal_id, event) = self.decode_input_event(decode_mouse_event)?;
+        Ok(FrameKind::InputMouse { terminal_id, event })
+    }
+
+    pub(super) fn decode_input_focus(&mut self) -> Result<FrameKind, DecodeError> {
+        let (terminal_id, event) = self.decode_input_event(|d| decode_focus_event(d.read_u8()?))?;
+        Ok(FrameKind::InputFocus { terminal_id, event })
+    }
+
+    pub(super) fn decode_input_paste(&mut self) -> Result<FrameKind, DecodeError> {
+        let (terminal_id, event) = self.decode_input_event(decode_paste_event)?;
+        Ok(FrameKind::InputPaste { terminal_id, event })
     }
 
     /// Decode the shared `INPUT_KEY` / `_MOUSE` / `_FOCUS` / `_PASTE` body:

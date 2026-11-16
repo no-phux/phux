@@ -27,19 +27,8 @@ use super::path::PathQueryResult;
 use super::{
     ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason,
     ErrorCode, EventStamp, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
-    MoveResult, Scope, SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED,
-    TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
-    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_CLIPBOARD_REPLY, TYPE_COMMAND, TYPE_COMMAND_RESULT,
-    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_DIRECTORY_LISTING, TYPE_ERROR,
-    TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
-    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
-    TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
-    TombstoneReason, ViewportInfo, encode_actor_ref, encode_terminal_id,
+    MoveResult, Scope, SpawnResource, SpawnResult, TYPE_FRAME_COMPRESSED, TombstoneReason,
+    ViewportInfo, encode_actor_ref, encode_terminal_id,
 };
 
 mod encode_handshake;
@@ -82,64 +71,64 @@ impl InputEvent {
     }
 }
 
-impl FrameKind {
-    /// Type discriminant from `docs/protocol.md`.
-    #[must_use]
-    pub const fn type_byte(&self) -> u8 {
-        match self {
-            Self::Hello { .. } => TYPE_HELLO,
-            Self::HelloOk { .. } => TYPE_HELLO_OK,
-            Self::Ping { .. } => TYPE_PING,
-            Self::Pong { .. } => TYPE_PONG,
-            Self::ResourceOutput { .. } => TYPE_RESOURCE_OUTPUT,
-            Self::Attach { .. } => TYPE_ATTACH,
-            Self::Detach => TYPE_DETACH,
-            Self::InputKey { .. } => TYPE_INPUT_KEY,
-            Self::InputMouse { .. } => TYPE_INPUT_MOUSE,
-            Self::InputFocus { .. } => TYPE_INPUT_FOCUS,
-            Self::InputPaste { .. } => TYPE_INPUT_PASTE,
-            Self::InputTerminalReply { .. } => TYPE_INPUT_TERMINAL_REPLY,
-            Self::ClipboardReply { .. } => TYPE_CLIPBOARD_REPLY,
-            Self::FrameAck { .. } => TYPE_FRAME_ACK,
-            Self::ViewportResize { .. } => TYPE_VIEWPORT_RESIZE,
-            Self::Attached { .. } => TYPE_ATTACHED,
-            Self::AttachReady { .. } => TYPE_ATTACH_READY,
-            Self::Detached { .. } => TYPE_DETACHED,
-            Self::HistoryRequest { .. } => TYPE_HISTORY_REQUEST,
-            Self::BootstrapBegin { .. } => TYPE_BOOTSTRAP_BEGIN,
-            Self::BootstrapChunk { .. } => TYPE_BOOTSTRAP_CHUNK,
-            Self::BootstrapReady { .. } => TYPE_BOOTSTRAP_READY,
-            Self::HistoryPage { .. } => TYPE_HISTORY_PAGE,
-            Self::BootstrapTombstone { .. } => TYPE_BOOTSTRAP_TOMBSTONE,
-            Self::HistoryTombstone { .. } => TYPE_HISTORY_TOMBSTONE,
-            Self::HistoryRejected { .. } => TYPE_HISTORY_REJECTED,
-            Self::Bell { .. } => TYPE_BELL,
-            Self::Error { .. } => TYPE_ERROR,
-            Self::GetMetadata { .. } => TYPE_GET_METADATA,
-            Self::SetMetadata { .. } => TYPE_SET_METADATA,
-            Self::DeleteMetadata { .. } => TYPE_DELETE_METADATA,
-            Self::ListMetadata { .. } => TYPE_LIST_METADATA,
-            Self::SubscribeMetadata { .. } => TYPE_SUBSCRIBE_METADATA,
-            Self::MetadataChanged { .. } => TYPE_METADATA_CHANGED,
-            Self::MetadataValue { .. } => TYPE_METADATA_VALUE,
-            Self::MetadataKeys { .. } => TYPE_METADATA_KEYS,
-            Self::ListDirectory { .. } => TYPE_LIST_DIRECTORY,
-            Self::DirectoryListing { .. } => TYPE_DIRECTORY_LISTING,
-            Self::PathQuery { .. } => TYPE_PATH_QUERY,
-            Self::PathResults { .. } => TYPE_PATH_RESULTS,
-            Self::SpawnResource { .. } => TYPE_SPAWN_RESOURCE,
-            Self::MoveResource { .. } => TYPE_MOVE_RESOURCE,
-            Self::ResourceMoved { .. } => TYPE_RESOURCE_MOVED,
-            Self::ResourceSpawned { .. } => TYPE_RESOURCE_SPAWNED,
-            Self::ResourceClosed { .. } => TYPE_RESOURCE_CLOSED,
-            Self::ResizeTerminal { .. } => TYPE_RESIZE_TERMINAL,
-            Self::Command { .. } => TYPE_COMMAND,
-            Self::CommandResult { .. } => TYPE_COMMAND_RESULT,
-            Self::SubscribeEvents { .. } => TYPE_SUBSCRIBE_EVENTS,
-            Self::Event { .. } => TYPE_EVENT,
+/// Generate the per-variant tables of [`FrameKind`] from the frame catalog.
+macro_rules! frame_kind_tables {
+    ($(
+        $(#[$attr:meta])*
+        $variant:ident = $name:ident $tag:literal, $spec:literal, $module:literal, $decode:ident;
+    )*) => {
+        /// Each variant's row in the frame catalog, numbered `0..` in row
+        /// order: the order `docs/spec/wire-schema.json` lists frames in.
+        #[cfg(test)]
+        #[derive(Clone, Copy)]
+        enum CatalogRow {
+            $($variant,)*
         }
-    }
 
+        impl FrameKind {
+            /// Number of [`FrameKind`] variants: one per frame catalog row.
+            #[cfg(test)]
+            pub(crate) const VARIANTS: usize = [$(CatalogRow::$variant),*].len();
+
+            /// Type discriminant from `docs/protocol.md`.
+            #[must_use]
+            pub const fn type_byte(&self) -> u8 {
+                match self {
+                    $(Self::$variant { .. } => crate::wire::frame::$name,)*
+                }
+            }
+
+            /// This variant's frame catalog row, below [`Self::VARIANTS`].
+            #[cfg(test)]
+            pub(crate) const fn catalog_row(&self) -> usize {
+                match self {
+                    $(Self::$variant { .. } => CatalogRow::$variant as usize,)*
+                }
+            }
+
+            /// The frame's name in `docs/protocol.md`, such as `HELLO_OK`.
+            #[cfg(test)]
+            pub(crate) const fn spec_name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => $spec,)*
+                }
+            }
+
+            /// The `wire/field.rs` module naming this frame's fields; empty
+            /// for a frame without fields.
+            #[cfg(test)]
+            pub(crate) const fn field_module(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => $module,)*
+                }
+            }
+        }
+    };
+}
+
+frame_catalog!(frame_kind_tables);
+
+impl FrameKind {
     /// Encode `self`, wrapped in `FRAME_COMPRESSED` when `compression` was
     /// negotiated and deflate actually shrinks it; otherwise a plain
     /// [`Self::encode`]. `scratch` is a reusable buffer for the plain image.

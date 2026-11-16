@@ -193,9 +193,23 @@ fn every_client_frame_variant_lands_on_its_row() {
     }
 }
 
+/// Assert that server-to-client `frame` has no client index, classifies as
+/// unclassified, and is carried by no catalog method. The wire-schema
+/// samples run it over every server-to-client variant.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the wire schema's tests, outside `kinds`, call it"
+)]
+pub(crate) fn assert_wrong_direction_denied(frame: &FrameKind) {
+    let unclassified: &Rule = &F_UNCLASSIFIED;
+    assert_ne!(frame.type_byte() & 0x80, 0, "{frame:?} is client to server");
+    assert_eq!(client_frame_variant(frame), None, "{frame:?}");
+    assert!(std::ptr::eq(frame_rule(frame), unclassified), "{frame:?}");
+    assert!(frame_method(frame.type_byte()).is_none(), "{frame:?}");
+}
+
 #[test]
 fn wrong_direction_frames_are_denied() {
-    let unclassified: &Rule = &F_UNCLASSIFIED;
     for frame in [
         FrameKind::Pong { nonce: 1 },
         FrameKind::AttachReady { attach_id: 1 },
@@ -203,9 +217,7 @@ fn wrong_direction_frames_are_denied() {
             terminal_id: terminal(),
         },
     ] {
-        assert_eq!(client_frame_variant(&frame), None);
-        assert!(std::ptr::eq(frame_rule(&frame), unclassified), "{frame:?}");
-        assert!(frame_method(frame.type_byte()).is_none(), "{frame:?}");
+        assert_wrong_direction_denied(&frame);
     }
 }
 

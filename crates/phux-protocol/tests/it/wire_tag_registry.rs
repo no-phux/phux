@@ -1,7 +1,8 @@
 //! Compile-time uniqueness of wire discriminants (phux-ke0c).
 //!
-//! `src/wire/frame/mod.rs` and its `tags.rs` / `command_tags.rs` modules
-//! declare every discriminant through `wire_tags!`,
+//! `src/wire/frame/mod.rs`, its frame catalog (`catalog.rs`), and its
+//! `tags.rs` / `command_tags.rs` modules declare every discriminant through
+//! `wire_tags!`,
 //! which reserves each byte as a trait impl in its namespace. These tests
 //! compile the production declarations in isolation with `rustc`, so the
 //! reservation is proven without relying on decoder match arms or on a second
@@ -46,6 +47,10 @@ fn compile_declarations(extra: &str) -> Option<Output> {
     let temp = tempfile::tempdir().expect("create probe directory");
     // The declarations name their tag modules; place them beside the probe.
     for (module, text) in [
+        (
+            "catalog.rs",
+            include_str!("../../src/wire/frame/catalog.rs"),
+        ),
         ("tags.rs", include_str!("../../src/wire/frame/tags.rs")),
         (
             "command_tags.rs",

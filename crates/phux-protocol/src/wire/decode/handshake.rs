@@ -2,126 +2,39 @@
 
 use super::{
     BootstrapId, BootstrapLimits, DecodeError, Decoder, FrameKind, MAX_FRAME_LEN, ResourceId,
-    StreamId, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
-    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_CLIPBOARD_REPLY,
-    TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED,
-    TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED,
-    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
-    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
-    TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE,
-    TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG,
-    TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT,
-    TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
-    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_client_capabilities, decode_directory_listing, decode_focus_event, decode_key_event,
-    decode_list_directory, decode_mouse_event, decode_paste_event, decode_query, decode_results,
-    decode_server_capabilities, decode_stream_id, decode_terminal_id, field,
+    StreamId, TYPE_FRAME_COMPRESSED, decode_bootstrap_id, decode_bootstrap_profile,
+    decode_client_capabilities, decode_directory_listing, decode_list_directory, decode_query,
+    decode_results, decode_server_capabilities, decode_stream_id, decode_terminal_id, field,
     negotiated_bootstrap_limits, req, utf8_value,
 };
 
-impl Decoder<'_> {
-    /// Decode one frame body by its SPEC §7 type byte. Each decoder collects
-    /// fields by id, defaults absent optional ones, and reports a missing
-    /// required one as `UnexpectedEof`.
-    pub(super) fn decode_body(&mut self, type_byte: u8) -> Result<FrameKind, DecodeError> {
-        match type_byte {
-            TYPE_HELLO => self.decode_hello(),
-            TYPE_HELLO_OK => self.decode_hello_ok(),
-            TYPE_PING => Ok(FrameKind::Ping {
-                nonce: self.decode_nonce()?,
-            }),
-            TYPE_PONG => Ok(FrameKind::Pong {
-                nonce: self.decode_nonce()?,
-            }),
-            TYPE_RESOURCE_OUTPUT => self.decode_terminal_output(),
-            TYPE_ATTACH => self.decode_attach(),
-            TYPE_DETACH => self.decode_detach(),
-            TYPE_INPUT_KEY => {
-                let (terminal_id, event) = self.decode_input_event(decode_key_event)?;
-                Ok(FrameKind::InputKey { terminal_id, event })
+/// Generate [`Decoder::decode_body`] from the frame catalog: one arm per
+/// row, plus the `FRAME_COMPRESSED` envelope, which is no `FrameKind`.
+macro_rules! decode_body_dispatch {
+    ($(
+        $(#[$attr:meta])*
+        $variant:ident = $name:ident $tag:literal, $spec:literal, $module:literal, $decode:ident;
+    )*) => {
+        impl Decoder<'_> {
+            /// Decode one frame body by its SPEC §7 type byte. Each decoder
+            /// collects fields by id, defaults absent optional ones, and
+            /// reports a missing required one as `UnexpectedEof`.
+            pub(super) fn decode_body(&mut self, type_byte: u8) -> Result<FrameKind, DecodeError> {
+                match type_byte {
+                    $(crate::wire::frame::$name => self.$decode(),)*
+                    TYPE_FRAME_COMPRESSED => self.decode_frame_compressed(),
+                    other => Err(DecodeError::UnknownFrameKind {
+                        tag: u16::from(other),
+                    }),
+                }
             }
-            TYPE_INPUT_MOUSE => {
-                let (terminal_id, event) = self.decode_input_event(decode_mouse_event)?;
-                Ok(FrameKind::InputMouse { terminal_id, event })
-            }
-            TYPE_INPUT_FOCUS => {
-                let (terminal_id, event) =
-                    self.decode_input_event(|d| decode_focus_event(d.read_u8()?))?;
-                Ok(FrameKind::InputFocus { terminal_id, event })
-            }
-            TYPE_INPUT_PASTE => {
-                let (terminal_id, event) = self.decode_input_event(decode_paste_event)?;
-                Ok(FrameKind::InputPaste { terminal_id, event })
-            }
-            TYPE_INPUT_TERMINAL_REPLY => self.decode_input_terminal_reply(),
-            TYPE_CLIPBOARD_REPLY => self.decode_clipboard_reply(),
-            TYPE_FRAME_ACK => self.decode_frame_ack(),
-            TYPE_VIEWPORT_RESIZE => self.decode_viewport_resize(),
-            TYPE_ATTACHED => self.decode_attached(),
-            TYPE_ATTACH_READY => self.decode_attach_ready(),
-            TYPE_BOOTSTRAP_BEGIN => self.decode_bootstrap_begin(),
-            TYPE_BOOTSTRAP_CHUNK => self.decode_bootstrap_chunk(),
-            TYPE_BOOTSTRAP_READY => self.decode_bootstrap_ready(),
-            TYPE_HISTORY_REQUEST => self.decode_history_request(),
-            TYPE_HISTORY_PAGE => self.decode_history_page(),
-            TYPE_BOOTSTRAP_TOMBSTONE => self.decode_bootstrap_tombstone(),
-            TYPE_HISTORY_TOMBSTONE => self.decode_history_tombstone(),
-            TYPE_HISTORY_REJECTED => self.decode_history_rejected(),
-            TYPE_FRAME_COMPRESSED => self.decode_frame_compressed(),
-            TYPE_DETACHED => self.decode_detached(),
-            TYPE_BELL => self.decode_bell(),
-            TYPE_ERROR => self.decode_error(),
-            TYPE_GET_METADATA => self.decode_get_metadata(),
-            TYPE_SET_METADATA => self.decode_set_metadata(),
-            TYPE_DELETE_METADATA => self.decode_delete_metadata(),
-            TYPE_LIST_METADATA => self.decode_list_metadata(),
-            TYPE_SUBSCRIBE_METADATA => self.decode_subscribe_metadata(),
-            TYPE_METADATA_CHANGED => self.decode_metadata_changed(),
-            TYPE_METADATA_VALUE => self.decode_metadata_value(),
-            TYPE_METADATA_KEYS => self.decode_metadata_keys(),
-            TYPE_LIST_DIRECTORY => {
-                let (request_id, path, host) = decode_list_directory(self)?;
-                Ok(FrameKind::ListDirectory {
-                    request_id,
-                    path,
-                    host,
-                })
-            }
-            TYPE_DIRECTORY_LISTING => {
-                let (request_id, result) = decode_directory_listing(self)?;
-                Ok(FrameKind::DirectoryListing { request_id, result })
-            }
-            TYPE_PATH_QUERY => {
-                let (request_id, root, query, recursive, host) = decode_query(self)?;
-                Ok(FrameKind::PathQuery {
-                    request_id,
-                    root,
-                    query,
-                    recursive,
-                    host,
-                })
-            }
-            TYPE_PATH_RESULTS => {
-                let (request_id, result) = decode_results(self)?;
-                Ok(FrameKind::PathResults { request_id, result })
-            }
-            TYPE_SPAWN_RESOURCE => self.decode_spawn_terminal(),
-            TYPE_RESOURCE_SPAWNED => self.decode_terminal_spawned(),
-            TYPE_MOVE_RESOURCE => self.decode_move_terminal(),
-            TYPE_RESOURCE_MOVED => self.decode_terminal_moved(),
-            TYPE_RESOURCE_CLOSED => self.decode_terminal_closed(),
-            TYPE_RESIZE_TERMINAL => self.decode_terminal_resize(),
-            TYPE_COMMAND => self.decode_command(),
-            TYPE_COMMAND_RESULT => self.decode_command_result(),
-            TYPE_SUBSCRIBE_EVENTS => self.decode_subscribe_events(),
-            TYPE_EVENT => self.decode_event(),
-            other => Err(DecodeError::UnknownFrameKind {
-                tag: u16::from(other),
-            }),
         }
-    }
+    };
+}
 
+crate::wire::frame::frame_catalog!(decode_body_dispatch);
+
+impl Decoder<'_> {
     pub(super) fn decode_hello(&mut self) -> Result<FrameKind, DecodeError> {
         use field::hello as f;
         let mut client_name: Option<String> = None;
@@ -291,6 +204,18 @@ impl Decoder<'_> {
         inner.decode_body(type_byte)
     }
 
+    pub(super) fn decode_ping(&mut self) -> Result<FrameKind, DecodeError> {
+        Ok(FrameKind::Ping {
+            nonce: self.decode_nonce()?,
+        })
+    }
+
+    pub(super) fn decode_pong(&mut self) -> Result<FrameKind, DecodeError> {
+        Ok(FrameKind::Pong {
+            nonce: self.decode_nonce()?,
+        })
+    }
+
     /// Decode the shared `PING` / `PONG` body: its required nonce.
     pub(super) fn decode_nonce(&mut self) -> Result<u64, DecodeError> {
         let mut nonce: Option<u64> = None;
@@ -321,5 +246,35 @@ impl Decoder<'_> {
             seq: req(seq)?,
             bytes: req(bytes)?,
         })
+    }
+
+    pub(super) fn decode_list_directory_frame(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, path, host) = decode_list_directory(self)?;
+        Ok(FrameKind::ListDirectory {
+            request_id,
+            path,
+            host,
+        })
+    }
+
+    pub(super) fn decode_directory_listing_frame(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, result) = decode_directory_listing(self)?;
+        Ok(FrameKind::DirectoryListing { request_id, result })
+    }
+
+    pub(super) fn decode_path_query(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, root, query, recursive, host) = decode_query(self)?;
+        Ok(FrameKind::PathQuery {
+            request_id,
+            root,
+            query,
+            recursive,
+            host,
+        })
+    }
+
+    pub(super) fn decode_path_results(&mut self) -> Result<FrameKind, DecodeError> {
+        let (request_id, result) = decode_results(self)?;
+        Ok(FrameKind::PathResults { request_id, result })
     }
 }

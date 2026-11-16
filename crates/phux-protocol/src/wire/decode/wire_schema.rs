@@ -3,7 +3,7 @@
 //! `docs/spec/wire-schema.json` lists every frame's type byte and, for each
 //! top-level TLV field, its id, name, value type, and presence. Everything
 //! except the value type is derived here from the codec itself: frame names
-//! from an exhaustive match over [`FrameKind`], field names and ids from
+//! from the frame catalog (`wire/frame/catalog.rs`), field names and ids from
 //! `wire/field.rs`, presence from encoding samples of every variant and
 //! decoding each with one field stripped, and retired ids from the gaps in a
 //! frame's id range. The rendered result must equal the committed file byte
@@ -11,8 +11,8 @@
 //! same change. Each declared value type is then checked against every
 //! sampled value of its field.
 //!
-//! A new `FrameKind` variant fails to compile in [`frame_entry`] until it has
-//! a name and an index, then fails [`every_variant_has_a_sample`] until it
+//! A new `FrameKind` variant fails to compile until it has a frame catalog
+//! row, which gives it a name and an index, then fails [`every_variant_has_a_sample`] until it
 //! has a sample. After an intended codec change, regenerate with
 //! `PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_matches`,
 //! set the `type` of any new field (written as `?`), and review the diff.
@@ -184,6 +184,26 @@ fn every_variant_has_a_sample() {
         (0..FRAME_VARIANTS).collect(),
         "every FrameKind variant needs a sample: client frames in kinds/samples, server frames in wire_schema/"
     );
+}
+
+#[test]
+fn spec_names_are_unique() {
+    let mut rows: BTreeMap<&str, usize> = BTreeMap::new();
+    for frame in frame_samples() {
+        let (row, name, _) = frame_entry(&frame);
+        let first = *rows.entry(name).or_insert(row);
+        assert_eq!(first, row, "{name} names catalog rows {first} and {row}");
+    }
+    assert!(!rows.contains_key(FRAME_COMPRESSED.0));
+}
+
+#[test]
+fn every_server_frame_is_denied_as_wrong_direction() {
+    for frame in frame_samples() {
+        if frame.type_byte() & 0x80 != 0 {
+            crate::kinds::samples::assert_wrong_direction_denied(&frame);
+        }
+    }
 }
 
 #[test]
