@@ -68,32 +68,9 @@ impl ScriptSpec {
         rows: u16,
         replay: &[u8],
     ) -> Self {
-        let stream_id = FIXTURE_STREAM_ID;
-        let bootstrap_id = FIXTURE_BOOTSTRAP_ID;
-        self.priming = vec![
-            FrameKind::BootstrapBegin {
-                terminal_id: terminal.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                cols,
-                rows,
-                base_seq: 0,
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id: terminal.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: Bytes::copy_from_slice(replay),
-            },
-            FrameKind::BootstrapReady {
-                terminal_id: terminal.clone(),
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-        ];
+        let ids = [FIXTURE_STREAM_ID.get(), FIXTURE_BOOTSTRAP_ID.get()];
+        self.priming =
+            phux_wire_fixtures::bootstrap_frames(terminal, ids, [cols, rows], replay).to_vec();
         self
     }
 
@@ -159,12 +136,7 @@ impl ScriptSpec {
             payload: Bytes::copy_from_slice(bytes),
         });
         if closed {
-            self.priming.push(FrameKind::ResourceClosed {
-                terminal_id: session.clone(),
-                exit_status: None,
-                reason: phux_protocol::wire::frame::CloseReason::Unknown,
-                signal: None,
-            });
+            self.priming.push(phux_wire_fixtures::closed(session, None));
         } else {
             self.priming.extend(ready);
         }
@@ -250,10 +222,8 @@ impl ScriptSpec {
     /// survive this one's wait.
     #[must_use]
     pub fn foreign_ack(mut self, request_id: u32) -> Self {
-        self.pre_ack.push(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        });
+        self.pre_ack
+            .push(phux_wire_fixtures::command_ok(request_id));
         self
     }
 

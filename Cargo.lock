@@ -3054,6 +3054,7 @@ dependencies = [
  "phux-record",
  "phux-server",
  "phux-terminal",
+ "phux-wire-fixtures",
  "phux-work",
  "quinn",
  "regex",

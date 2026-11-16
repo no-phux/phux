@@ -16,7 +16,7 @@ workspace = true
 # Exposes `phux_client::testkit`, the scripted server client-side tests
 # speak to. Test scaffolding: downstream crates enable it from
 # dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
-testkit = ["phux-client-runtime/testing"]
+testkit = ["phux-client-runtime/testing", "dep:phux-wire-fixtures"]
 
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
@@ -55,8 +55,12 @@ regex = "1"
 uuid = { workspace = true }
 # `download`: verify the whole-file digest `GET_FILE` returns.
 sha2 = "0.11"
+# The scripted server's frames; test scaffolding behind `testkit` only.
+phux-wire-fixtures = { workspace = true, optional = true }
 
 [dev-dependencies]
+# `testkit` also compiles under `cfg(test)`, without the feature.
+phux-wire-fixtures.workspace = true
 phux-server.workspace = true
 phux-terminal.workspace = true
 tempfile.workspace = true
