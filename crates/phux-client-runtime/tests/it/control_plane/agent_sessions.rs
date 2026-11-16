@@ -509,27 +509,8 @@ fn resource_close_and_parent_detach_clear_the_committed_agent_cursor() {
 }
 
 fn ready(plane: &mut ControlPlane, attach_id: u32, parent: ResourceId) {
-    let stream_id = StreamId::new(u64::from(attach_id)).unwrap();
-    let bootstrap_id = BootstrapId::new(u64::from(attach_id)).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: parent.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: parent,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    let generation = u64::from(attach_id);
+    empty_bootstrap(plane, &parent, [generation, generation]);
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
 }
 

@@ -14,8 +14,10 @@ use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
 use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
-use phux_protocol::{GroupId, ResourceId};
-use phux_server_testkit::{recv_until, run_local, send_frame, spawn_server, wait_for_socket};
+use phux_protocol::ResourceId;
+use phux_server_testkit::{
+    Spawn, recv_until, run_local, send_frame, spawn_server, wait_for_socket,
+};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -232,6 +234,24 @@ async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
     }
 }
 
+/// Spawn `/bin/cat` in group 1 from a raw `controller` connection, as
+/// `request_id`; returns the new pane.
+async fn controller_spawn_cat(controller: &mut UnixStream, request_id: u32) -> ResourceId {
+    let spawn = Spawn {
+        initial_size: Some((40, 8)),
+        ..Spawn::command(&["/bin/cat"])
+    };
+    send_frame(controller, &spawn.frame(request_id)).await;
+    recv_until(controller, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
+            request_id: id,
+            result: SpawnResult::Ok(terminal),
+        } if id == request_id => Some(terminal),
+        _ => None,
+    })
+    .await
+}
+
 /// Counts wakes; the runtime must never call it while holding a lock, so
 /// the callback may call back into the client.
 struct Wakes {
@@ -336,31 +356,7 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
             matches!(frame, FrameKind::AttachReady { attach_id: 77 }).then_some(())
         })
         .await;
-        send_frame(
-            &mut controller,
-            &FrameKind::SpawnResource {
-                request_id: 87,
-                group: GroupId::new(1),
-                command: Some(vec!["/bin/cat".to_owned()]),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                resource: None,
-                initial_size: Some((40, 8)),
-            },
-        )
-        .await;
-        let beta_live = recv_until(&mut controller, |_, frame| match frame {
-            FrameKind::ResourceSpawned {
-                request_id: 87,
-                result: SpawnResult::Ok(id),
-            } => Some(id),
-            _ => None,
-        })
-        .await;
+        let beta_live = controller_spawn_cat(&mut controller, 87).await;
 
         let dials = Arc::new(AtomicUsize::new(0));
         let proxy_listener = UnixListener::bind(&proxy_socket).unwrap();
@@ -403,31 +399,7 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
         })
         .await;
 
-        send_frame(
-            &mut controller,
-            &FrameKind::SpawnResource {
-                request_id: 88,
-                group: GroupId::new(1),
-                command: Some(vec!["/bin/cat".to_owned()]),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                resource: None,
-                initial_size: Some((40, 8)),
-            },
-        )
-        .await;
-        let foreign = recv_until(&mut controller, |_, frame| match frame {
-            FrameKind::ResourceSpawned {
-                request_id: 88,
-                result: SpawnResult::Ok(id),
-            } => Some(id),
-            _ => None,
-        })
-        .await;
+        let foreign = controller_spawn_cat(&mut controller, 88).await;
         wait_until("foreign pane pickup", || client.input_ready(&foreign)).await;
         assert!(client.send_text(&foreign, "FOREIGN-PANE\n"));
         wait_for_text(&client, &foreign, "FOREIGN-PANE").await;

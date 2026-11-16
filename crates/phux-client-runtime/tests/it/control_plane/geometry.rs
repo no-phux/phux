@@ -16,27 +16,7 @@ fn confirm(plane: &mut ControlPlane, request_id: u32) {
 }
 
 fn bootstrap(plane: &mut ControlPlane, id: &ResourceId, generation: u64) {
-    let stream_id = StreamId::new(generation).unwrap();
-    let bootstrap_id = BootstrapId::new(generation).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    empty_bootstrap(plane, id, [generation, generation]);
 }
 
 fn ready(plane: &mut ControlPlane, id: &ResourceId) {

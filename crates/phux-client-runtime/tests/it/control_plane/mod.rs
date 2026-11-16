@@ -30,7 +30,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use crate::embedded::*;
-use phux_wire_fixtures::command_err;
+use phux_wire_fixtures::{BootstrapOptions, bootstrap_frames, bootstrap_frames_with, command_err};
 
 mod agent_sessions;
 mod approvals;
@@ -391,30 +391,18 @@ fn finish_reconnected_attach(plane: &mut ControlPlane) {
             initial_client_id: ClientId::new(2),
         })
         .unwrap();
-    let stream_id = StreamId::new(2).unwrap();
-    let bootstrap_id = BootstrapId::new(2).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    empty_bootstrap(plane, &terminal(), [2, 2]);
     plane
         .feed(FrameKind::AttachReady {
             attach_id: next_attach,
         })
         .unwrap();
+}
+
+/// A 20x4 raw synthesized bootstrap of `id` on `[stream, bootstrap]` that
+/// carries no chunk: begin, then ready.
+fn empty_bootstrap(plane: &mut ControlPlane, id: &ResourceId, ids: [u64; 2]) {
+    let [begin, _, ready] = bootstrap_frames(id, ids, [20, 4], b"");
+    plane.feed(begin).expect("BOOTSTRAP_BEGIN");
+    plane.feed(ready).expect("BOOTSTRAP_READY");
 }

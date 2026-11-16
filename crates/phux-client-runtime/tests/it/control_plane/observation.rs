@@ -17,35 +17,10 @@ fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
 /// `attach`, with the fresh bootstrap generation a new connection carries.
 fn reattach(plane: &mut ControlPlane, attach_id: u32, generation: u64) {
     plane.attached(attach_id, snapshot());
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(generation).unwrap();
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: b"again".to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id },
-    ] {
+    for frame in bootstrap_frames(&terminal(), [1, generation], [20, 4], b"again") {
         plane.feed(frame).unwrap();
     }
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
 }
 
 fn attached() -> ControlPlane {
