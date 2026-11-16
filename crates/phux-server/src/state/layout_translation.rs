@@ -11,7 +11,7 @@
 //! stay opaque metadata. Isolated here so it can be deleted with the
 //! translation layer.
 
-use phux_client_core::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir};
+use phux_client_core::layout::{ArrangementDoc, Group, LayoutNode, LayoutState};
 use phux_core::ids::SessionId;
 use phux_core::{Actor, ArrangementOwner, EntryRef, EntryTarget, Op};
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -95,7 +95,8 @@ impl ServerState {
     }
 
     /// A client layout tree as entry leaves; leaves naming no member are
-    /// dropped (the tree collapses around them).
+    /// dropped (the tree collapses around them) and ratios are moved into
+    /// the open interval the arrangement holds.
     fn core_tree(
         &self,
         node: &LayoutNode,
@@ -103,47 +104,36 @@ impl ServerState {
         fresh: &mut super::OsKeys,
     ) -> Option<phux_core::LayoutNode<EntryRef>> {
         use phux_core::FreshKeys as _;
-        Some(match node {
-            LayoutNode::Leaf(id) => {
-                let target = match id {
-                    WireResourceId::Local { .. } => {
-                        let core = self.resource_from_wire(id)?;
-                        let key = self.registry().resource_key(core)?;
-                        members.contains(&key).then_some(EntryTarget::Member(key))?
-                    }
-                    WireResourceId::Satellite { host, id } => EntryTarget::Satellite {
-                        host: host.as_str().to_owned(),
-                        id: *id,
-                    },
-                };
-                phux_core::LayoutNode::Leaf(EntryRef {
-                    entry: fresh.fresh(),
-                    target,
-                })
+        let entries = node.map(&mut |id| {
+            let target = self.entry_target(id, members)?;
+            Some(EntryRef {
+                entry: fresh.fresh(),
+                target,
+            })
+        });
+        let mut tree = present_leaves(entries)?;
+        tree.for_each_ratio_mut(&mut |ratio| *ratio = arrangement_ratio(*ratio));
+        Some(tree)
+    }
+
+    /// What a client leaf shows in the arrangement: a member by resource
+    /// key, or a satellite as itself. `None` for a non-member.
+    fn entry_target(
+        &self,
+        id: &WireResourceId,
+        members: &[phux_core::ResourceKey],
+    ) -> Option<EntryTarget> {
+        match id {
+            WireResourceId::Local { .. } => {
+                let core = self.resource_from_wire(id)?;
+                let key = self.registry().resource_key(core)?;
+                members.contains(&key).then_some(EntryTarget::Member(key))
             }
-            LayoutNode::Split {
-                dir,
-                ratio,
-                left,
-                right,
-            } => {
-                let left = self.core_tree(left, members, fresh);
-                let right = self.core_tree(right, members, fresh);
-                match (left, right) {
-                    (Some(left), Some(right)) => phux_core::LayoutNode::Split {
-                        dir: match dir {
-                            SplitDir::Horizontal => phux_core::SplitDir::Horizontal,
-                            SplitDir::Vertical => phux_core::SplitDir::Vertical,
-                        },
-                        ratio: arrangement_ratio(*ratio),
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    (Some(only), None) | (None, Some(only)) => only,
-                    (None, None) => return None,
-                }
-            }
-        })
+            WireResourceId::Satellite { host, id } => Some(EntryTarget::Satellite {
+                host: host.as_str().to_owned(),
+                id: *id,
+            }),
+        }
     }
 
     /// Publish `session`'s arrangement under its TUI layout key, so older
@@ -186,49 +176,41 @@ impl ServerState {
         let _ = self.metadata_set_by(&scope, &key, bytes, None);
     }
 
-    /// An entry tree as a client layout tree over live wire ids.
+    /// An entry tree as a client layout tree over live wire ids; member
+    /// entries without a live handle are dropped.
     fn client_tree(&mut self, node: &phux_core::LayoutNode<EntryRef>) -> Option<LayoutNode> {
-        Some(match node {
-            phux_core::LayoutNode::Leaf(entry) => LayoutNode::Leaf(match &entry.target {
-                EntryTarget::Member(key) => {
-                    let id = self.registry().resource_id(key)?;
-                    self.resource_handle(id)?;
-                    self.intern_resource_wire(id)
-                }
-                EntryTarget::Satellite { host, id } => {
-                    WireResourceId::satellite(host.as_str(), *id)
-                }
-            }),
-            phux_core::LayoutNode::Split {
-                dir,
-                ratio,
-                left,
-                right,
-            } => {
-                let left = self.client_tree(left);
-                let right = self.client_tree(right);
-                match (left, right) {
-                    (Some(left), Some(right)) => LayoutNode::Split {
-                        dir: match dir {
-                            phux_core::SplitDir::Horizontal => SplitDir::Horizontal,
-                            phux_core::SplitDir::Vertical => SplitDir::Vertical,
-                        },
-                        ratio: *ratio,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    (Some(only), None) | (None, Some(only)) => only,
-                    (None, None) => return None,
-                }
-            }
-        })
+        present_leaves(node.map(&mut |entry| self.client_leaf(entry)))
     }
+
+    /// The live wire id an entry shows, if its resource has a handle.
+    fn client_leaf(&mut self, entry: &EntryRef) -> Option<WireResourceId> {
+        match &entry.target {
+            EntryTarget::Member(key) => {
+                let id = self.registry().resource_id(key)?;
+                self.resource_handle(id)?;
+                Some(self.intern_resource_wire(id))
+            }
+            EntryTarget::Satellite { host, id } => {
+                Some(WireResourceId::satellite(host.as_str(), *id))
+            }
+        }
+    }
+}
+
+/// `tree` without its `None` leaves, splits collapsing around them; `None`
+/// when no leaf is left.
+fn present_leaves<L: Clone>(
+    tree: phux_core::LayoutNode<Option<L>>,
+) -> Option<phux_core::LayoutNode<L>> {
+    let kept = phux_core::arrangement::collapse(tree, &Option::is_none)?;
+    kept.try_map(&mut |leaf| leaf.clone().ok_or(())).ok()
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+    use phux_client_core::layout::SplitDir;
 
     fn handle_for(state: &mut ServerState, pane: phux_core::ids::ResourceId) {
         state

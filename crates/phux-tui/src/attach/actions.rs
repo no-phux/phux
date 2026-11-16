@@ -176,10 +176,10 @@ impl AxisResize<'_> {
             (extent, extent)
         };
         // A deeper split on the axis is the pane's own border; try it first.
-        let (new_left, new_right, applied) = if tree_contains(left, self.focused) {
+        let (new_left, new_right, applied) = if left.contains(self.focused) {
             let (new_left, applied) = self.apply(left, left_extent);
             (Box::new(new_left), right.clone(), applied)
-        } else if tree_contains(right, self.focused) {
+        } else if right.contains(self.focused) {
             let (new_right, applied) = self.apply(right, right_extent);
             (left.clone(), Box::new(new_right), applied)
         } else {
@@ -207,15 +207,6 @@ impl AxisResize<'_> {
         match self.dir {
             Direction::Right | Direction::Down => delta,
             Direction::Left | Direction::Up => -delta,
-        }
-    }
-}
-
-fn tree_contains(node: &LayoutNode, target: &ResourceId) -> bool {
-    match node {
-        LayoutNode::Leaf(p) => p == target,
-        LayoutNode::Split { left, right, .. } => {
-            tree_contains(left, target) || tree_contains(right, target)
         }
     }
 }
