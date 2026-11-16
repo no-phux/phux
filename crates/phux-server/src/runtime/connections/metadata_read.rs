@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
 // L3 metadata dispatch (SPEC §7.4 / §11.L3). Replies are gated on
-// `client_speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
+// `ClientTable::speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
 
 pub(super) async fn handle_get_metadata(
     state: &SharedState,
