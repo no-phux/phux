@@ -116,13 +116,7 @@ fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
     );
 
     // The re-attached stream is intact.
-    session.feed(&FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(9),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-        seq: 7,
-        bytes: bytes::Bytes::from_static(b"live"),
-    });
+    session.feed(&output_frame(9, 7, b"live"));
     let frame = next_frame(&mut out_rx, "re-attached stream torn down");
     assert!(matches!(
         frame,

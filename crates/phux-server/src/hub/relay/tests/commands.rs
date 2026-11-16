@@ -36,13 +36,7 @@ fn satellite_error_rolls_back_the_commands_subscription() {
         CommandResult::Error { .. }
     ));
     // The rolled-back registration must not fan anything out.
-    session.feed(&FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(9),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-        seq: 1,
-        bytes: bytes::Bytes::from_static(b"leak"),
-    });
+    session.feed(&output_frame(9, 1, b"leak"));
     assert!(out_rx.try_recv().is_err(), "rolled-back subscriber leaked");
 }
 
@@ -143,13 +137,7 @@ fn satellite_error_never_rolls_back_a_preexisting_subscription() {
         code: ErrorCode::InternalError,
         message: "transient".to_owned(),
     });
-    session.feed(&FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(9),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-        seq: 1,
-        bytes: bytes::Bytes::from_static(b"still here"),
-    });
+    session.feed(&output_frame(9, 1, b"still here"));
     assert!(
         out_rx.try_recv().is_ok(),
         "pre-existing subscription must survive the errored re-subscribe"

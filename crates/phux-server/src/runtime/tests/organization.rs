@@ -84,33 +84,59 @@ fn paused<T>(body: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Ou
     runtime.block_on(local.run_until(body()))
 }
 
+/// A server on a store in `dir` holding one retained Terminal, `kept`,
+/// whose store now refuses every activation report: `(state, session,
+/// terminal, db)`.
+fn kept_terminal_refusing_reports(
+    dir: &tempfile::TempDir,
+) -> (
+    SharedState,
+    phux_core::ids::SessionId,
+    phux_core::ids::ResourceId,
+    rusqlite::Connection,
+) {
+    let path = dir.path().join("org.sqlite3");
+    let state = SharedState::new();
+    let (session, id) = state.with_mut(|server| {
+        server.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
+        server.persist_first_start().unwrap();
+        server
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "kept",
+                    lifetime: SessionLifetime::Persistent,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Retain,
+                &Actor::owner(),
+            )
+            .unwrap()
+    });
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(REJECT_REPORT).unwrap();
+    (state, session, id, db)
+}
+
+/// The executor state of `id`'s current activation.
+fn activation_state(state: &SharedState, id: phux_core::ids::ResourceId) -> ExecState {
+    state.with(|server| {
+        server
+            .registry()
+            .record(id)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap()
+            .state
+    })
+}
+
 #[test]
 fn a_refused_end_report_backs_off_instead_of_livelocking() {
     paused(|| {
         Box::pin(async {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("org.sqlite3");
-            let state = SharedState::new();
-            let id = state.with_mut(|server| {
-                server.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
-                server.persist_first_start().unwrap();
-                server
-                    .create_terminal(
-                        TerminalTarget::NewSession {
-                            name: "kept",
-                            lifetime: SessionLifetime::Persistent,
-                        },
-                        TerminalLaunch::default(),
-                        ExitPolicy::Retain,
-                        &Actor::owner(),
-                    )
-                    .unwrap()
-                    .1
-            });
-            rusqlite::Connection::open(&path)
-                .unwrap()
-                .execute_batch(REJECT_REPORT)
-                .unwrap();
+            let (state, _, id, _db) = kept_terminal_refusing_reports(&dir);
             crate::state::ServerState::reset_executor_persist_attempts();
             state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
             let token = CancellationToken::new();
@@ -140,37 +166,9 @@ fn a_commit_wakes_a_backing_off_report_retry() {
     paused(|| {
         Box::pin(async {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("org.sqlite3");
-            let state = SharedState::new();
-            let (session, id) = state.with_mut(|server| {
-                server.set_org_store(Box::new(SqliteOrgStore::open(&path).unwrap()));
-                server.persist_first_start().unwrap();
-                server
-                    .create_terminal(
-                        TerminalTarget::NewSession {
-                            name: "kept",
-                            lifetime: SessionLifetime::Persistent,
-                        },
-                        TerminalLaunch::default(),
-                        ExitPolicy::Retain,
-                        &Actor::owner(),
-                    )
-                    .unwrap()
-            });
-            let db = rusqlite::Connection::open(&path).unwrap();
-            db.execute_batch(REJECT_REPORT).unwrap();
+            let (state, session, id, db) = kept_terminal_refusing_reports(&dir);
             state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
-            assert_eq!(
-                state.with(|server| server
-                    .registry()
-                    .record(id)
-                    .unwrap()
-                    .activation
-                    .clone()
-                    .unwrap()
-                    .state),
-                ExecState::Starting
-            );
+            assert_eq!(activation_state(&state, id), ExecState::Starting);
             let token = CancellationToken::new();
             super::super::services::spawn_activation_report_retry(&state, &token);
             tokio::task::yield_now().await;
@@ -189,16 +187,7 @@ fn a_commit_wakes_a_backing_off_report_retry() {
                     .unwrap();
             });
             tokio::task::yield_now().await;
-            let state_now = state.with(|server| {
-                server
-                    .registry()
-                    .record(id)
-                    .unwrap()
-                    .activation
-                    .clone()
-                    .unwrap()
-                    .state
-            });
+            let state_now = activation_state(&state, id);
             token.cancel();
             tokio::task::yield_now().await;
             assert_eq!(state_now, ExecState::Failed);

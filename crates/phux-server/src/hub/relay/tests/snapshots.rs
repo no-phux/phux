@@ -33,6 +33,16 @@ pub(super) fn output_frame(id: u32, seq: u64, bytes: &'static [u8]) -> FrameKind
     }
 }
 
+/// Terminal `id` closed upstream with status 0 and no stated reason.
+pub(super) fn closed_frame(id: u32) -> FrameKind {
+    FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(id),
+        exit_status: Some(0),
+        reason: phux_protocol::wire::frame::CloseReason::Unknown,
+        signal: None,
+    }
+}
+
 #[tokio::test]
 async fn full_mailbox_retains_the_snapshot_so_a_delta_never_overtakes_it() {
     // A snapshot refused by a full mailbox is retained, so a later delta
