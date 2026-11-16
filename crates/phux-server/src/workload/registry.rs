@@ -7,12 +7,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-use super::store::{self, FileRole};
 use super::{
     EnrolledFor, STORE_VERSION, WorkloadCredential, WorkloadError, credential_id, decode_lower_hex,
     subject_public_key_info, validate_org_name, validate_satellite_name, validate_scopes,
     validate_subject,
 };
+use crate::secure_file::{self, FileRole};
 
 mod grants;
 mod managed;
@@ -111,7 +111,7 @@ impl WorkloadRegistry {
     ///
     /// Any [`WorkloadError`] reading or validating the file.
     pub fn load(path: &Path) -> Result<Self, WorkloadError> {
-        match store::read_stable(path, FileRole::Registry)? {
+        match secure_file::read_stable(path, FileRole::Registry)? {
             None => Ok(Self::empty()),
             Some((_, raw)) => Self::from_bytes(&raw),
         }

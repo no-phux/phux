@@ -7,7 +7,8 @@ use chrono::Utc;
 use phux_protocol::scope::ScopeGrant;
 
 use super::WorkloadRegistry;
-use crate::workload::{WorkloadError, is_canonical_credential_id, parse_ceiling, store};
+use crate::secure_file;
+use crate::workload::{WorkloadError, is_canonical_credential_id, parse_ceiling};
 
 /// Result of a scope grant or ungrant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,7 @@ impl WorkloadRegistry {
         }
         let grant = ScopeGrant::parse(scope)
             .map_err(|reason| WorkloadError::InvalidScope { index: 1, reason })?;
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             let credential = registry
                 .credentials

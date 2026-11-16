@@ -5,7 +5,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use super::{RegisteredCredential, RegistryFile, RegistryRecord, Revocation, WorkloadRegistry};
-use crate::workload::store;
+use crate::secure_file;
 use crate::workload::{
     EnrolledFor, STORE_VERSION, WorkloadCredential, WorkloadError, credential_id,
     is_canonical_credential_id, validate_expiry, validate_satellite_name, validate_scopes,
@@ -64,7 +64,7 @@ impl WorkloadRegistry {
         }
         let scopes = super::paired::enrolled_scopes(scopes, enrolled_for);
         let id = credential_id(public_key);
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             if registry
                 .credentials
@@ -125,7 +125,7 @@ impl WorkloadRegistry {
             ));
         }
         let id = credential_id(public_key);
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             if registry
                 .credentials
@@ -163,7 +163,7 @@ impl WorkloadRegistry {
     ///
     /// Any failure to read or atomically replace the registry.
     pub fn revoke_satellite(path: &Path, name: &str) -> Result<usize, WorkloadError> {
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             let revoked = registry.revoke_satellite_records(name, Utc::now().timestamp());
             if revoked > 0 {
@@ -196,7 +196,7 @@ impl WorkloadRegistry {
         if !is_canonical_credential_id(id) {
             return Err(WorkloadError::InvalidCredentialId);
         }
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             let now = Utc::now().timestamp();
             let credential = registry
@@ -226,7 +226,7 @@ impl WorkloadRegistry {
     pub(super) fn commit(
         &mut self,
         path: &Path,
-        held: &store::HeldLock<'_>,
+        held: &secure_file::HeldLock<'_>,
     ) -> Result<(), WorkloadError> {
         if self.instance.is_none() {
             self.instance = Some(Self::fresh_instance_id()?);
@@ -255,6 +255,7 @@ impl WorkloadRegistry {
         })
         .map_err(|error| WorkloadError::Malformed(error.to_string()))?;
         bytes.push(b'\n');
-        store::atomic_replace(path, &bytes, held)
+        secure_file::atomic_replace(path, &bytes, held)?;
+        Ok(())
     }
 }

@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use super::store::{self, FileRole};
 use super::{WorkloadError, validate_scopes};
+use crate::secure_file::{self, FileRole};
 
 /// File name beside the workload registry.
 pub const TICKETS_FILE: &str = "enrollment-tickets";
@@ -179,7 +179,7 @@ fn mint(
         expires_at: record.expires_at,
     };
     super::scrub(&mut secret);
-    store::with_lock(path, |held| {
+    secure_file::with_lock(path, |held| {
         let mut file = load(path)?;
         file.tickets.retain(|ticket| {
             let spent = ticket
@@ -207,7 +207,7 @@ fn mint(
 pub fn redeem_ticket(path: &Path, secret: &[u8]) -> Result<Redeemed, WorkloadError> {
     let digest = hex::encode(Sha256::digest(secret));
     let now = Utc::now().timestamp();
-    store::with_lock(path, |held| {
+    secure_file::with_lock(path, |held| {
         let mut file = load(path)?;
         let mut found = None;
         for (index, ticket) in file.tickets.iter().enumerate() {
@@ -256,7 +256,7 @@ pub fn is_ticket_id(id: &str) -> bool {
 /// [`WorkloadError::NotFound`] for an unknown handle, or a store failure.
 pub fn revoke_ticket(path: &Path, id: &str) -> Result<bool, WorkloadError> {
     let now = Utc::now().timestamp();
-    store::with_lock(path, |held| {
+    secure_file::with_lock(path, |held| {
         let mut file = load(path)?;
         let ticket = file
             .tickets
@@ -338,7 +338,7 @@ pub fn enroll_with_ticket(
 }
 
 fn load(path: &Path) -> Result<TicketFile, WorkloadError> {
-    let Some((_, raw)) = store::read_stable(path, FileRole::Tickets)? else {
+    let Some((_, raw)) = secure_file::read_stable(path, FileRole::Tickets)? else {
         return Ok(TicketFile {
             version: STORE_VERSION,
             tickets: Vec::new(),
@@ -354,11 +354,16 @@ fn load(path: &Path) -> Result<TicketFile, WorkloadError> {
     Ok(file)
 }
 
-fn commit(path: &Path, file: &TicketFile, held: &store::HeldLock<'_>) -> Result<(), WorkloadError> {
+fn commit(
+    path: &Path,
+    file: &TicketFile,
+    held: &secure_file::HeldLock<'_>,
+) -> Result<(), WorkloadError> {
     let mut bytes = serde_json::to_vec_pretty(file)
         .map_err(|error| WorkloadError::Malformed(error.to_string()))?;
     bytes.push(b'\n');
-    store::atomic_replace(path, &bytes, held)
+    secure_file::atomic_replace(path, &bytes, held)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -415,7 +420,7 @@ mod tests {
         // Expire it in place.
         let mut file = load(&path).unwrap();
         file.tickets[0].expires_at = Utc::now().timestamp() - 1;
-        store::with_lock(&path, |held| commit(&path, &file, held)).unwrap();
+        secure_file::with_lock(&path, |held| commit(&path, &file, held)).unwrap();
         let secret = hex::decode(&minted.secret_hex).unwrap();
         assert!(matches!(
             redeem_ticket(&path, &secret),
@@ -510,7 +515,7 @@ mod frozen {
         let file: super::TicketFile = serde_json::from_slice(golden).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(super::TICKETS_FILE);
-        super::store::with_lock(&path, |held| super::commit(&path, &file, held)).unwrap();
+        super::secure_file::with_lock(&path, |held| super::commit(&path, &file, held)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), golden);
     }
 }

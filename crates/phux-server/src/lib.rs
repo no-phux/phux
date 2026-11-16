@@ -37,6 +37,7 @@ pub mod policy;
 pub(crate) mod push;
 pub mod reconcile;
 pub mod runtime;
+pub(crate) mod secure_file;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;

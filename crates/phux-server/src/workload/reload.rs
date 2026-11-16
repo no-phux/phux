@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use super::store::{self, FileRole, Stamp};
 use super::{WorkloadError, WorkloadRegistry};
+use crate::secure_file::{self, FileRole, Stamp};
 
 /// What the last probe of the registry path saw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +155,8 @@ impl ReloadingWorkloadRegistry {
     #[must_use]
     pub fn observe(&self) -> RegistryObservation {
         let probe = self.probes.fetch_add(1, Ordering::SeqCst) + 1;
-        let probed = store::probe(&self.path, FileRole::Registry);
+        let probed =
+            secure_file::probe(&self.path, FileRole::Registry).map_err(WorkloadError::from);
         if let Some(observation) = self.cached_for(Observed::of(&probed)) {
             return observation;
         }
@@ -274,7 +275,7 @@ fn load_changed(
 }
 
 pub(super) fn read_snapshot(path: &Path) -> Result<(Observed, WorkloadRegistry), WorkloadError> {
-    match store::read_stable(path, FileRole::Registry)? {
+    match secure_file::read_stable(path, FileRole::Registry)? {
         None => Ok((Observed::Missing, WorkloadRegistry::empty())),
         Some((stamp, raw)) => Ok((Observed::File(stamp), WorkloadRegistry::from_bytes(&raw)?)),
     }
