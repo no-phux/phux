@@ -10,38 +10,18 @@
 use std::sync::Arc;
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
-use phux_protocol::policy::PeerIdentity;
 use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind, Scope, WHOAMI_KEY};
 use phux_server::ServerError;
-use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{GrantFuture, PolicyEngine, PolicyError, PostureError, ScopedPolicy};
+use phux_server::policy::{PolicyEngine, PostureError, ScopedPolicy};
 use phux_server::runtime::ServerConfig;
 use phux_server::workload::ReloadingWorkloadRegistry;
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame, wait_for_raw_socket,
+    FnPolicy, SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame,
+    wait_for_raw_socket,
 };
-
-/// A policy engine that refuses every HELLO. Stands in for a workload that
-/// presents no valid paired credential.
-#[derive(Debug)]
-struct DenyAllPolicy;
-
-impl PolicyEngine for DenyAllPolicy {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        Box::pin(async move {
-            Err(PolicyError::Unauthorized(
-                "no paired workload credential".to_owned(),
-            ))
-        })
-    }
-}
 
 fn hello() -> FrameKind {
     phux_server_testkit::hello(
@@ -91,7 +71,10 @@ fn a_denying_engine_refuses_hello_with_permission_denied() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let cfg = cfg(socket_path, Some(Arc::new(DenyAllPolicy)));
+        let cfg = cfg(
+            socket_path,
+            Some(Arc::new(FnPolicy::deny("no paired workload credential"))),
+        );
         with_server(cfg, |socket_path| async move {
             let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
             send_frame(&mut stream, &hello()).await;

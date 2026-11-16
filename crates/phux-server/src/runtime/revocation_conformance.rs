@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use chrono::Utc;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::policy::PeerIdentity;
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind, InputMode, Scope};
 use tokio_util::sync::CancellationToken;
@@ -21,8 +20,9 @@ use super::test_support::{
     Connection, PATIENCE, alpha_world, hello, local, owner_peer, spawn_connection, wait_until,
     workload_identity,
 };
-use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use crate::auth::ConnectionIdentity;
+use crate::policy::testing::{FnPolicy, parse_scopes, scoped_grant};
+use crate::policy::{PolicyEngine, ScopedPolicy};
 use crate::runtime::apps::InputLane;
 use crate::state::{ClientId, ServerState, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
@@ -39,26 +39,12 @@ const TEST_GRACE: Duration = Duration::from_millis(300);
 const KEY: &[u8] = b"revocation-conformance-key";
 
 /// Mints a scoped grant over `set` that expires `ttl` after its HELLO.
-#[derive(Debug)]
-struct Expiring {
-    set: TerminalScopeSet,
-    ttl: chrono::Duration,
-}
-
-impl PolicyEngine for Expiring {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = ConnectionGrant::scoped(self.set.clone(), credential.map(|c| c.id.clone()))
-            .map(|mut grant| {
-                grant.expires_at = Some(Utc::now() + self.ttl);
-                grant
-            })
-            .map_err(|err| PolicyError::Internal(err.to_string()));
-        Box::pin(async move { grant })
-    }
+fn expiring(set: TerminalScopeSet, ttl: chrono::Duration) -> FnPolicy {
+    FnPolicy::new(move |_, credential| {
+        let mut grant = scoped_grant(&set, credential)?;
+        grant.expires_at = Some(Utc::now() + ttl);
+        Ok(grant)
+    })
 }
 
 /// A `paired` server with one session, `alpha`, whose pane has a live
@@ -98,10 +84,7 @@ impl Fixture {
 
     /// An engine whose grants over `*@global` lapse `ttl` after HELLO.
     fn expiring(ttl: chrono::Duration) -> Self {
-        let engine = Arc::new(Expiring {
-            set: TerminalScopeSet::parse_all(&["*@global"]).unwrap(),
-            ttl,
-        });
+        let engine = Arc::new(expiring(parse_scopes(&["*@global"]), ttl));
         let credential_id = format!("sha256:{}", "e".repeat(64));
         Self::with_engine(
             tempfile::tempdir().unwrap(),

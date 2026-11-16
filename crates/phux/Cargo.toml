@@ -141,6 +141,8 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 
 [dev-dependencies]
 phux-frozen.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine for the live-server tests.
+phux-server = { path = "../phux-server", default-features = false, features = ["testing"] }
 # The one scripted server (`phux_client::testkit`), where the reference
 # server's frame ORDER is written down once with a handler citation per
 # entry. The verb tests for partial-fleet reporting need a server that pushes

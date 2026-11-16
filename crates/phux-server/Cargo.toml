@@ -25,6 +25,9 @@ tokio-console = ["dep:console-subscriber"]
 stress = []
 # Builds the `#[ignore]`d `perf` wall-clock gates, which only `just e2e` runs.
 measure = []
+# `policy::testing::FnPolicy`, a scripted HELLO engine for other crates'
+# live-server tests. Never enabled by a runtime dependency.
+testing = []
 
 
 [dependencies]

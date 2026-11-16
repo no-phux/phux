@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{
     APPROVAL_APPROVE, APPROVAL_DENY, AgentEvent, ApprovalOutcome, CONFIG_RELOAD_KEY, Command,
@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 use super::test_support::{
     Connection as Peer, PATIENCE, error_code, owner_peer, spawn_connection, workload_identity,
 };
-use crate::auth::AuthenticatedCredential;
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use crate::policy::testing::{FnPolicy, scoped_grant};
+use crate::policy::{ConnectionGrant, PolicyError, ScopedPolicy};
 use crate::state::{ClientId, SharedState};
 
 const REQUESTER: ClientId = ClientId(31);
@@ -33,33 +33,17 @@ const HELD: u32 = 7;
 
 /// Mints each credential's grant; a connection with no credential gets the
 /// owner's grant.
-#[derive(Debug)]
-struct Grants(Vec<(String, TerminalScopeSet)>);
-
-impl PolicyEngine for Grants {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = credential.map_or_else(
-            || Ok(ConnectionGrant::owner()),
-            |credential| self.scoped(&credential.id),
-        );
-        Box::pin(async move { grant })
-    }
-}
-
-impl Grants {
-    fn scoped(&self, id: &str) -> Result<ConnectionGrant, PolicyError> {
-        let (_, set) = self
-            .0
+fn credential_grants(known: Vec<(String, TerminalScopeSet)>) -> FnPolicy {
+    FnPolicy::new(move |_, credential| {
+        let Some(credential) = credential else {
+            return Ok(ConnectionGrant::owner());
+        };
+        let (_, set) = known
             .iter()
-            .find(|(known, _)| known == id)
+            .find(|(id, _)| *id == credential.id)
             .ok_or_else(|| PolicyError::Unauthorized("unknown credential".to_owned()))?;
-        ConnectionGrant::scoped(set.clone(), Some(id.to_owned()))
-            .map_err(|err| PolicyError::Internal(err.to_string()))
-    }
+        scoped_grant(set, Some(credential))
+    })
 }
 
 struct World {
@@ -86,7 +70,7 @@ fn world(grants: impl FnOnce(u32, u32) -> Vec<(ClientId, Vec<String>)>) -> World
         unreachable!("seeded panes are local");
     };
     let grants = grants(*a, *b);
-    let engine = Grants(
+    let engine = credential_grants(
         grants
             .iter()
             .map(|(client, scopes)| {

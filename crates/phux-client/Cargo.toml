@@ -61,7 +61,8 @@ phux-wire-fixtures = { workspace = true, optional = true }
 [dev-dependencies]
 # `testkit` also compiles under `cfg(test)`, without the feature.
 phux-wire-fixtures.workspace = true
-phux-server.workspace = true
+# `testing`: the scripted `FnPolicy` HELLO engine.
+phux-server = { workspace = true, features = ["testing"] }
 phux-terminal.workspace = true
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.

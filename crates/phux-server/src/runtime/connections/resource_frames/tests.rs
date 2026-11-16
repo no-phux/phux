@@ -12,35 +12,19 @@ use std::time::Duration;
 
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::scope::TerminalScopeSet;
+use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::auth::AuthenticatedCredential;
 use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest};
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use crate::policy::testing::FnPolicy;
 use crate::runtime::connections::dispatch::handle_client;
 use crate::runtime::test_support::{Feed, Wire, encode, hello, owner_peer};
 use crate::state::{ClientId, SharedState};
 
 const CLIENT: ClientId = ClientId(21);
 const DESKTOP: ClientId = ClientId(20);
-
-#[derive(Debug)]
-struct FixedGrant(TerminalScopeSet);
-
-impl PolicyEngine for FixedGrant {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = ConnectionGrant::scoped(self.0.clone(), None).unwrap();
-        Box::pin(async move { Ok(grant) })
-    }
-}
 
 fn frames(id: ResourceId) -> Vec<FrameKind> {
     vec![
@@ -220,9 +204,7 @@ fn configure_focus_admission(
         s.restore_retained_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
     }
     if !authorized {
-        s.set_policy_engine(Arc::new(FixedGrant(
-            TerminalScopeSet::parse_all(&["observe@global".to_owned()]).unwrap(),
-        )));
+        s.set_policy_engine(Arc::new(FnPolicy::scoped(&["observe@global"])));
     }
 }
 
@@ -246,9 +228,7 @@ async fn satellite_frames_keep_scope_proxy_and_lease_gates_before_relay() {
                 relays.insert(handle);
                 state.with_mut(|s| {
                     s.set_peer_identity(CLIENT, owner_peer());
-                    s.set_policy_engine(Arc::new(FixedGrant(
-                        TerminalScopeSet::parse_all(&[scope.to_owned()]).unwrap(),
-                    )));
+                    s.set_policy_engine(Arc::new(FnPolicy::scoped(&[scope])));
                     s.set_hub_relays(relays);
                     if proxy {
                         s.register_satellite_proxy_attach(CLIENT, host.clone(), 7);
