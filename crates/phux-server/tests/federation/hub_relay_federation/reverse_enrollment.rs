@@ -24,15 +24,7 @@ pub(super) struct PairedHub {
     pub(super) quic: SocketAddr,
 }
 
-pub(super) fn private_dir() -> TempDir {
-    let dir = TempDir::new().unwrap();
-    std::fs::set_permissions(
-        dir.path(),
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-    )
-    .unwrap();
-    dir
-}
+pub(super) use crate::relay_common::private_dir;
 
 pub(super) fn hub_paths(dir: &std::path::Path) -> WorkloadPaths {
     WorkloadPaths::with_overrides(
@@ -44,14 +36,8 @@ pub(super) fn hub_paths(dir: &std::path::Path) -> WorkloadPaths {
 
 fn inbound_entry(name: &str) -> SatelliteConfigEntry {
     SatelliteConfigEntry {
-        name: name.to_owned(),
         endpoint: "inbound://".to_owned(),
-        enabled: true,
-        token_file: None,
-        cert_fingerprint: None,
-        client_cert: None,
-        client_key: None,
-        color: None,
+        ..satellite_entry(name, 0)
     }
 }
 
@@ -167,6 +153,19 @@ async fn until_unreachable(hub: &mut UnixStream, first_request_id: u32) {
     }
 }
 
+/// A direct dial of the hub's QUIC listener, pinning `ca` and presenting
+/// `identity`.
+fn hub_dial(quic: SocketAddr, ca: &str, identity: TlsClientIdentity) -> QuicDial {
+    QuicDial {
+        addr: quic,
+        server_name: "127.0.0.1".to_owned(),
+        token: None,
+        trust: CertTrust::Authority { ca: ca.to_owned() },
+        identity: Some(identity),
+        inner: None,
+    }
+}
+
 /// HELLO over the hub's terminal ALPN presenting `identity`: what came back,
 /// or why the connection ended.
 async fn terminal_hello(
@@ -174,14 +173,7 @@ async fn terminal_hello(
     ca: &str,
     identity: TlsClientIdentity,
 ) -> Result<FrameKind, DialError> {
-    let dial = QuicDial {
-        addr: quic,
-        server_name: "127.0.0.1".to_owned(),
-        token: None,
-        trust: CertTrust::Authority { ca: ca.to_owned() },
-        identity: Some(identity),
-        inner: None,
-    };
+    let dial = hub_dial(quic, ca, identity);
     crate::relay_common::quic_hello(&dial, "reverse-enrollment").await
 }
 
@@ -314,19 +306,11 @@ fn one_live_credential_per_name_and_unknown_names_are_refused() {
         let mut stray_code = code(&hub, d, &stray);
         stray_code.name = "elsewhere".to_owned();
         let stray = join(&stray_code, &d.join("stray")).await.expect("enrolls");
-        let plan = QuicDial {
-            addr: hub.quic,
-            server_name: "127.0.0.1".to_owned(),
-            token: None,
-            trust: CertTrust::Authority {
-                ca: stray_code.ca.clone(),
-            },
-            identity: Some(TlsClientIdentity::PemFiles {
-                certificate: stray.entry.client_cert.clone(),
-                private_key: stray.entry.client_key.clone(),
-            }),
-            inner: None,
+        let identity = TlsClientIdentity::PemFiles {
+            certificate: stray.entry.client_cert.clone(),
+            private_key: stray.entry.client_key.clone(),
         };
+        let plan = hub_dial(hub.quic, &stray_code.ca, identity);
         let (_endpoint, conn) =
             phux_dial::quic::connect_with_alpn(&plan, phux_protocol::policy::SATELLITE_ALPN)
                 .await

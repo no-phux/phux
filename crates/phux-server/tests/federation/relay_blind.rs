@@ -19,12 +19,13 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::relay::RelayHarness;
-use phux_server_testkit::{WIRE_RECV_TIMEOUT, attach_by_name, seed_pty};
+use phux_server_testkit::{WIRE_RECV_TIMEOUT, attach_by_name};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
 use crate::relay_common::{
-    RelayedServer, hello, inner, loopback, plan, read_frame, relay_config, relay_pin, write_frame,
+    RelayedServer, embedder_seeded, hello, inner, loopback, plan, read_frame, relay_config,
+    relay_pin, write_frame,
 };
 
 const ROUTE: &str = "blind-route";
@@ -43,13 +44,7 @@ fn server(dir: &Path, relay: &Relay, seed: bool) -> RelayedServer {
         relay.harness.addr,
         &relay.pin,
         &TUNNEL_TOKEN,
-        |cfg, _| {
-            if seed {
-                cfg.pre_seeded_session = Some("default".to_owned());
-                seed_pty(cfg, CommandBuilder::new("/bin/cat"));
-            }
-            phux_server_testkit::embedder::embed_owner_engine(cfg);
-        },
+        |cfg, _| embedder_seeded(cfg, seed.then(|| CommandBuilder::new("/bin/cat"))),
     )
 }
 
