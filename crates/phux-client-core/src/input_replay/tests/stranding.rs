@@ -37,24 +37,35 @@ fn a_never_sent_op_survives_an_incarnation_change() {
     let _ = op;
 }
 
-/// A reconnected server without `ACKNOWLEDGED_INPUT` (or with a malformed
-/// incarnation id) can honor nothing: everything strands, by the
-/// attempted/never-sent rule.
-#[test]
-fn a_server_without_the_feature_strands_everything() {
+/// An armed journal with one attempted paste on terminal 1 and one
+/// never-sent paste on `second`.
+fn attempted_then_queued(second: ResourceId) -> InputReplayJournal {
     let mut journal = armed_journal();
     submit(&mut journal, tid(1), paste("attempted")).expect("queue");
     let mut next = 1_u32;
     let _ = send_one(&mut journal, &mut next);
-    submit(&mut journal, tid(1), paste("never sent")).expect("queue");
+    submit(&mut journal, second, paste("never sent")).expect("queue");
+    journal
+}
 
-    journal.connection_lost();
-    let reports = journal.begin_connection(Some(&SERVER_A), false);
+/// The attempted/never-sent rule: the attempt is unknown, the rest refused.
+fn assert_attempted_unknown_queued_refused(reports: &[ReplayReport]) {
     let dispositions: Vec<_> = reports.iter().map(|r| r.disposition).collect();
     assert_eq!(
         dispositions,
         vec![ReplayDisposition::Unknown, ReplayDisposition::Refused]
     );
+}
+
+/// A reconnected server without `ACKNOWLEDGED_INPUT` (or with a malformed
+/// incarnation id) can honor nothing: everything strands, by the
+/// attempted/never-sent rule.
+#[test]
+fn a_server_without_the_feature_strands_everything() {
+    let mut journal = attempted_then_queued(tid(1));
+    journal.connection_lost();
+    let reports = journal.begin_connection(Some(&SERVER_A), false);
+    assert_attempted_unknown_queued_refused(&reports);
     assert!(!journal.active());
 }
 
@@ -303,17 +314,9 @@ fn foreign_request_ids_are_not_consumed() {
 /// rule so the user hears about every journaled paste exactly once.
 #[test]
 fn drain_unresolved_reports_every_op_once() {
-    let mut journal = armed_journal();
-    submit(&mut journal, tid(1), paste("attempted")).expect("queue");
-    let mut next = 1_u32;
-    let _ = send_one(&mut journal, &mut next);
-    submit(&mut journal, tid(2), paste("never sent")).expect("queue");
+    let mut journal = attempted_then_queued(tid(2));
     let reports = journal.drain_unresolved("the reconnect window closed");
-    let dispositions: Vec<_> = reports.iter().map(|r| r.disposition).collect();
-    assert_eq!(
-        dispositions,
-        vec![ReplayDisposition::Unknown, ReplayDisposition::Refused]
-    );
+    assert_attempted_unknown_queued_refused(&reports);
     assert!(journal.drain_unresolved("again").is_empty());
 }
 

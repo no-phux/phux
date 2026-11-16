@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn declared_page_rows_are_bounded_by_requested_authentication_limit() {
-        let mut cache = fetching(128, 8);
+        let cache = fetching(128, 8);
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 65, b"opaque"),
             Err(HistoryCacheError::ProjectionTooLarge {
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn oversized_page_is_rejected_without_advancing_cursor() {
-        let mut cache = fetching(128, 8);
+        let cache = fetching(128, 8);
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 0, &[0; 65]),
             Err(HistoryCacheError::PageTooLarge {
@@ -1075,7 +1075,7 @@ mod tests {
 
     #[test]
     fn retry_requires_growth_within_hard_caps() {
-        let mut cache = fetching(128, 8);
+        let cache = fetching(128, 8);
         assert_eq!(cache.retry_limits(64, 8), None);
         assert_eq!(cache.retry_limits(80, 8), Some((80, 64)));
         assert_eq!(cache.retry_limits(129, 8), None);
