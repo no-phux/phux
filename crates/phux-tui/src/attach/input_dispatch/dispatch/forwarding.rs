@@ -94,12 +94,17 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// Forward key/focus/paste input to the focused pane (ADR-0019). Input
+    /// Forward key/paste input to the focused pane (ADR-0019). Input
     /// before ATTACHED, or to an exited or unreachable pane, is dropped.
+    /// The outer window's focus reports aren't forwarded: the driver's
+    /// `report_focus` tells the panes, as it does for every focus move.
     pub(super) async fn forward_to_focused_pane(
         &mut self,
         ev: InputEvent,
     ) -> Result<bool, AttachError> {
+        if matches!(ev, InputEvent::Focus(_)) {
+            return Ok(false);
+        }
         let Some(pane) = self.input_target() else {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);

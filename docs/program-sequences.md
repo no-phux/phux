@@ -175,6 +175,14 @@ and the MCP tools, one per chunk of output. It does not ring the user's
 terminal, and does not mark the pane as needing attention. A BEL that ends
 an OSC is a terminator, not a bell.
 
+## Focus reports (DEC 1004)
+
+A pane that sets `CSI ? 1004 h` gets `CSI I` when it becomes the pane the
+user types into and `CSI O` when it stops being that pane. Both the terminal
+UI and Rune report every move: a pane, tab or session switch, a floating
+pane opening or closing, a detach, and the user's terminal window gaining or
+losing focus. A pane that isn't on screen never gets `CSI I`.
+
 ## Replies phux sends
 
 phux answers these queries itself, without asking the user's terminal:
