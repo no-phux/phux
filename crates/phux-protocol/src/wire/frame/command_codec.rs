@@ -5,7 +5,7 @@ use bytes::BytesMut;
 
 use crate::ids::{ClientId, FileUploadId, GroupId, IdempotencyKey, InputOperationId, ResourceKind};
 use crate::input::InputEvent;
-use crate::wire::decode::{Decoder, utf8_value};
+use crate::wire::decode::{Decoder, u8_value, u64_value, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;

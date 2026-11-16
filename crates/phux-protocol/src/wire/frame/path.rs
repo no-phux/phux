@@ -1,7 +1,12 @@
 //! Host-side browse and fuzzy-search request/reply payloads (L3 §5).
 
 use crate::ids::SatelliteHost;
-use crate::wire::{decode::Decoder, encode::Encoder, error::DecodeError, field};
+use crate::wire::{
+    decode::{Decoder, utf8_value},
+    encode::Encoder,
+    error::DecodeError,
+    field,
+};
 
 /// Maximum rows in a single `PATH_RESULTS` reply.
 pub const MAX_PATH_RESULTS: usize = 1024;
@@ -139,12 +144,6 @@ pub(super) fn encode_results(enc: &mut Encoder<'_>, request_id: u32, result: &Pa
     }
 }
 
-fn utf8(value: &[u8]) -> Result<String, DecodeError> {
-    core::str::from_utf8(value)
-        .map(str::to_owned)
-        .map_err(|_| DecodeError::InvalidUtf8)
-}
-
 fn u32_field(value: &[u8]) -> Result<u32, DecodeError> {
     let mut d = Decoder::new(value);
     let result = d.read_u32_be()?;
@@ -181,10 +180,12 @@ impl QueryFields {
     fn absorb(&mut self, id: u32, value: &[u8]) -> Result<(), DecodeError> {
         match id {
             field::path_query::REQUEST_ID => set_once(&mut self.request_id, u32_field(value)?),
-            field::path_query::ROOT => set_once(&mut self.root, utf8(value)?),
-            field::path_query::QUERY => set_once(&mut self.query, utf8(value)?),
+            field::path_query::ROOT => set_once(&mut self.root, utf8_value(value)?),
+            field::path_query::QUERY => set_once(&mut self.query, utf8_value(value)?),
             field::path_query::RECURSIVE => set_once(&mut self.recursive, u8_field(value)?),
-            field::path_query::HOST => set_once(&mut self.host, SatelliteHost::new(utf8(value)?)),
+            field::path_query::HOST => {
+                set_once(&mut self.host, SatelliteHost::new(utf8_value(value)?))
+            }
             _ => Ok(()),
         }
     }
@@ -262,8 +263,8 @@ impl ResultFields {
     fn absorb(&mut self, id: u32, value: &[u8]) -> Result<(), DecodeError> {
         match id {
             field::path_results::REQUEST_ID => set_once(&mut self.request_id, u32_field(value)?),
-            field::path_results::ROOT => set_once(&mut self.root, utf8(value)?),
-            field::path_results::PARENT => set_once(&mut self.parent, utf8(value)?),
+            field::path_results::ROOT => set_once(&mut self.root, utf8_value(value)?),
+            field::path_results::PARENT => set_once(&mut self.parent, utf8_value(value)?),
             field::path_results::ROWS => {
                 let (rows, dropped) = decode_rows(value)?;
                 self.rows_dropped = dropped;
@@ -275,7 +276,7 @@ impl ResultFields {
             field::path_results::ERROR => {
                 set_once(&mut self.error, PathErrorCode::from_wire(u8_field(value)?))
             }
-            field::path_results::MESSAGE => set_once(&mut self.message, utf8(value)?),
+            field::path_results::MESSAGE => set_once(&mut self.message, utf8_value(value)?),
             _ => Ok(()),
         }
     }

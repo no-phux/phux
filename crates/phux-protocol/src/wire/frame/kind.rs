@@ -162,16 +162,8 @@ impl FrameKind {
         let body_start = out.len();
         let mut enc = Encoder::new(out);
         enc.write_u8(TYPE_FRAME_COMPRESSED);
-        u8_field(
-            &mut enc,
-            field::frame_compressed::ALGORITHM,
-            compression.as_u8(),
-        );
-        u32_field(
-            &mut enc,
-            field::frame_compressed::UNCOMPRESSED_LEN,
-            uncompressed_len,
-        );
+        enc.write_u8_field(field::frame_compressed::ALGORITHM, compression.as_u8());
+        enc.write_u32_field(field::frame_compressed::UNCOMPRESSED_LEN, uncompressed_len);
         enc.write_field(field::frame_compressed::PAYLOAD, &deflated);
         let body_len = out.len() - body_start;
         let len_u32 = u32::try_from(body_len).unwrap_or(u32::MAX);
@@ -266,44 +258,15 @@ fn generation_fields(
     bootstrap_id: BootstrapId,
 ) {
     id_field(enc, field::bootstrap_begin::TERMINAL_ID, terminal_id);
-    u64_field(enc, field::bootstrap_begin::STREAM_ID, stream_id.get());
-    u64_field(
-        enc,
-        field::bootstrap_begin::BOOTSTRAP_ID,
-        bootstrap_id.get(),
-    );
-}
-
-/// Write one fixed-width `u8` field.
-fn u8_field(enc: &mut Encoder<'_>, field_id: u32, value: u8) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-/// Write one fixed-width `u16` field.
-fn u16_field(enc: &mut Encoder<'_>, field_id: u32, value: u16) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-/// Write one fixed-width `u32` field.
-fn u32_field(enc: &mut Encoder<'_>, field_id: u32, value: u32) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-/// Write one fixed-width `u64` field.
-fn u64_field(enc: &mut Encoder<'_>, field_id: u32, value: u64) {
-    enc.write_field(field_id, &value.to_be_bytes());
-}
-
-/// Write one field whose value is an `i32` as its two's-complement `u32`.
-fn write_i32_field(enc: &mut Encoder<'_>, field_id: u32, value: i32) {
-    u32_field(enc, field_id, u32::from_be_bytes(value.to_be_bytes()));
+    enc.write_u64_field(field::bootstrap_begin::STREAM_ID, stream_id.get());
+    enc.write_u64_field(field::bootstrap_begin::BOOTSTRAP_ID, bootstrap_id.get());
 }
 
 /// Write an `EVENT` journal stamp (fields 3-6, ADR-0123). `seq` and `ts_ms`
 /// always travel together; `actor` and `operation_id` only when set.
 fn encode_event_stamp(enc: &mut Encoder<'_>, stamp: &EventStamp) {
-    u64_field(enc, field::event::SEQ, stamp.seq);
-    u64_field(enc, field::event::TS_MS, stamp.ts_ms);
+    enc.write_u64_field(field::event::SEQ, stamp.seq);
+    enc.write_u64_field(field::event::TS_MS, stamp.ts_ms);
     if let Some(actor) = &stamp.actor {
         enc.write_field_with(field::event::ACTOR, |e| encode_actor_ref(actor, e));
     }

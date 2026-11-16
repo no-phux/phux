@@ -158,6 +158,32 @@ impl<'a> Encoder<'a> {
         self.buf.extend_from_slice(value);
     }
 
+    /// Write one TLV field whose value is a single `u8`.
+    pub(crate) fn write_u8_field(&mut self, field_id: u32, value: u8) {
+        self.write_field(field_id, &[value]);
+    }
+
+    /// Write one TLV field whose value is a big-endian `u16`.
+    pub(crate) fn write_u16_field(&mut self, field_id: u32, value: u16) {
+        self.write_field(field_id, &value.to_be_bytes());
+    }
+
+    /// Write one TLV field whose value is a big-endian `u32`.
+    pub(crate) fn write_u32_field(&mut self, field_id: u32, value: u32) {
+        self.write_field(field_id, &value.to_be_bytes());
+    }
+
+    /// Write one TLV field whose value is a big-endian `u64`.
+    pub(crate) fn write_u64_field(&mut self, field_id: u32, value: u64) {
+        self.write_field(field_id, &value.to_be_bytes());
+    }
+
+    /// Write one TLV field whose value is a big-endian two's-complement
+    /// `i32`.
+    pub(crate) fn write_i32_field(&mut self, field_id: u32, value: i32) {
+        self.write_field(field_id, &value.to_be_bytes());
+    }
+
     /// Write one TLV field whose value `build` writes positionally into an
     /// empty scratch [`Encoder`].
     pub fn write_field_with<F>(&mut self, field_id: u32, build: F)

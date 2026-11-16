@@ -68,6 +68,21 @@ pub(crate) fn utf8_value(value: &[u8]) -> Result<String, DecodeError> {
         .map_err(|_| DecodeError::InvalidUtf8)
 }
 
+/// A field value's leading `u8`; bytes after it are ignored.
+pub(crate) fn u8_value(value: &[u8]) -> Result<u8, DecodeError> {
+    Decoder::new(value).read_u8()
+}
+
+/// A field value's leading big-endian `u32`; bytes after it are ignored.
+pub(crate) fn u32_value(value: &[u8]) -> Result<u32, DecodeError> {
+    Decoder::new(value).read_u32_be()
+}
+
+/// A field value's leading big-endian `u64`; bytes after it are ignored.
+pub(crate) fn u64_value(value: &[u8]) -> Result<u64, DecodeError> {
+    Decoder::new(value).read_u64_be()
+}
+
 /// Cursor-style decoder over a borrowed byte slice; `read_*` methods advance
 /// and return [`DecodeError`] instead of panicking.
 #[derive(Debug)]

@@ -7,9 +7,7 @@ use crate::wire::frame::{
     encode_move_result, encode_server_instance, encode_spawn_result, encode_string_list,
 };
 
-use super::{
-    FrameKind, encode_event_stamp, id_field, u16_field, u32_field, u64_field, write_i32_field,
-};
+use super::{FrameKind, encode_event_stamp, id_field};
 
 impl FrameKind {
     /// Write a resource, command, or event frame's payload.
@@ -35,8 +33,8 @@ impl FrameKind {
                 resource,
             } => {
                 use field::spawn_terminal as f;
-                u32_field(enc, f::REQUEST_ID, *request_id);
-                u32_field(enc, f::GROUP, group.get());
+                enc.write_u32_field(f::REQUEST_ID, *request_id);
+                enc.write_u32_field(f::GROUP, group.get());
                 if let Some(command) = command {
                     enc.write_field_with(f::COMMAND, |e| encode_string_list(command, e));
                 }
@@ -71,7 +69,7 @@ impl FrameKind {
             // A bound result adds field 3 and a replayed one field 4, so a
             // plain reply keeps the bytes it always had.
             Self::ResourceSpawned { request_id, result } => {
-                u32_field(enc, field::terminal_spawned::REQUEST_ID, *request_id);
+                enc.write_u32_field(field::terminal_spawned::REQUEST_ID, *request_id);
                 enc.write_field_with(field::terminal_spawned::RESULT, |e| {
                     encode_spawn_result(result, e);
                 });
@@ -89,12 +87,12 @@ impl FrameKind {
                 terminal,
                 owner_terminal,
             } => {
-                u32_field(enc, field::move_terminal::REQUEST_ID, *request_id);
+                enc.write_u32_field(field::move_terminal::REQUEST_ID, *request_id);
                 id_field(enc, field::move_terminal::TERMINAL, terminal);
                 id_field(enc, field::move_terminal::OWNER_TERMINAL, owner_terminal);
             }
             Self::ResourceMoved { request_id, result } => {
-                u32_field(enc, field::terminal_moved::REQUEST_ID, *request_id);
+                enc.write_u32_field(field::terminal_moved::REQUEST_ID, *request_id);
                 enc.write_field_with(field::terminal_moved::RESULT, |e| {
                     encode_move_result(result, e);
                 });
@@ -107,14 +105,14 @@ impl FrameKind {
             } => {
                 id_field(enc, field::terminal_closed::TERMINAL_ID, terminal_id);
                 if let Some(status) = exit_status {
-                    write_i32_field(enc, field::terminal_closed::EXIT_STATUS, *status);
+                    enc.write_i32_field(field::terminal_closed::EXIT_STATUS, *status);
                 }
                 // An unstated reason is an absent field: a pre-reason body.
                 if !reason.is_unknown() {
                     enc.write_field(field::terminal_closed::REASON, &[reason.as_wire()]);
                 }
                 if let Some(signal) = signal {
-                    write_i32_field(enc, field::terminal_closed::SIGNAL, *signal);
+                    enc.write_i32_field(field::terminal_closed::SIGNAL, *signal);
                 }
             }
             Self::ResizeTerminal {
@@ -124,22 +122,22 @@ impl FrameKind {
                 cell_px,
             } => {
                 id_field(enc, field::terminal_resize::TERMINAL_ID, terminal_id);
-                u16_field(enc, field::terminal_resize::COLS, *cols);
-                u16_field(enc, field::terminal_resize::ROWS, *rows);
+                enc.write_u16_field(field::terminal_resize::COLS, *cols);
+                enc.write_u16_field(field::terminal_resize::ROWS, *rows);
                 if let Some((width, height)) = cell_px {
-                    u16_field(enc, field::terminal_resize::CELL_WIDTH_PX, *width);
-                    u16_field(enc, field::terminal_resize::CELL_HEIGHT_PX, *height);
+                    enc.write_u16_field(field::terminal_resize::CELL_WIDTH_PX, *width);
+                    enc.write_u16_field(field::terminal_resize::CELL_HEIGHT_PX, *height);
                 }
             }
             Self::Command {
                 request_id,
                 command,
             } => {
-                u32_field(enc, field::command::REQUEST_ID, *request_id);
+                enc.write_u32_field(field::command::REQUEST_ID, *request_id);
                 enc.write_field_with(field::command::COMMAND, |e| encode_command(command, e));
             }
             Self::CommandResult { request_id, result } => {
-                u32_field(enc, field::command_result::REQUEST_ID, *request_id);
+                enc.write_u32_field(field::command_result::REQUEST_ID, *request_id);
                 enc.write_field_with(field::command_result::RESULT, |e| {
                     encode_command_result(result, e);
                 });
@@ -153,7 +151,7 @@ impl FrameKind {
                     id_field(enc, field::subscribe_events::TERMINAL, terminal);
                 }
                 if let Some(after_seq) = after_seq {
-                    u64_field(enc, field::subscribe_events::AFTER_SEQ, *after_seq);
+                    enc.write_u64_field(field::subscribe_events::AFTER_SEQ, *after_seq);
                 }
             }
             Self::Event {
@@ -195,7 +193,7 @@ fn encode_spawn_resource(enc: &mut Encoder<'_>, resource: &SpawnResource) {
         enc.write_field(f::BIND_INSTANCE, &[1]);
     }
     if let Some(secs) = resource.retain_secs {
-        u32_field(enc, f::RETAIN_SECS, secs);
+        enc.write_u32_field(f::RETAIN_SECS, secs);
     }
     if let Some(key) = &resource.idempotency_key {
         enc.write_field(f::IDEMPOTENCY_KEY, key.as_bytes());

@@ -5,7 +5,7 @@ use crate::ids::{
     BootstrapId, GroupId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE, ResourceId,
     SatelliteHost, SessionId, StreamId,
 };
-use crate::wire::decode::{Decoder, utf8_value};
+use crate::wire::decode::{Decoder, u32_value, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
@@ -282,7 +282,7 @@ pub(in crate::wire) fn decode_metadata_scope_key(
     let mut scope: Option<Scope> = None;
     let mut key: Option<String> = None;
     for_each_field!(dec, value, {
-        field::get_metadata::REQUEST_ID => request_id = Decoder::new(value).read_u32_be()?,
+        field::get_metadata::REQUEST_ID => request_id = u32_value(value)?,
         field::get_metadata::SCOPE => scope = Some(decode_scope(&mut Decoder::new(value))?),
         field::get_metadata::KEY => key = Some(utf8_value(value)?),
     });

@@ -9,7 +9,7 @@ use super::{
     SessionKey, SessionLifetime, WorkspaceKey, bounded_str, decode_actor_ref,
     decode_arrangement_doc, decode_filter, decode_launch, decode_live_target, decode_move_item,
     decode_outcome, decode_pair, decode_pin, decode_terminal_id, encode_actor_ref, enum_byte,
-    field, key_bytes, push_bounded, read_key, read_operation, read_u8, read_u32, read_u64, req,
+    field, key_bytes, push_bounded, read_key, read_operation, req, u8_value, u32_value, u64_value,
     write_key,
 };
 
@@ -92,7 +92,7 @@ impl Fields {
             field::org::OPERATION => out.operation = Some(read_operation(value)?),
             field::org::SESSION => out.session = Some(read_key(value, SessionKey::new)?),
             field::org::RESOURCE => out.resource = Some(read_key(value, ResourceKey::new)?),
-            field::org::EXPECTED => out.expected = Some(Revision::new(read_u64(value)?)),
+            field::org::EXPECTED => out.expected = Some(Revision::new(u64_value(value)?)),
             field::org::NAME => out.name = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?),
             field::org::AUTHORITY => {
                 out.authority = Some(read_key(value, super::AuthorityId::new)?);
@@ -105,28 +105,28 @@ impl Fields {
             field::org::LOCKED => out.locked = Some(Decoder::new(value).read_bool("locked")?),
             field::org::REPLAYED => out.replayed = Decoder::new(value).read_bool("replayed")?,
             field::org::PROJECT => out.project = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?),
-            field::org::LIFETIME => out.lifetime = Some(read_u8(value)?),
+            field::org::LIFETIME => out.lifetime = Some(u8_value(value)?),
             field::org::ATTR => {
                 let pair = decode_pair(value, MAX_ORG_NAME_BYTES)?;
                 push_bounded(&mut out.attrs, pair, MAX_ORG_ATTRS)?;
             }
             field::org::LAUNCH => out.launch = Some(Box::new(decode_launch(value)?)),
-            field::org::KIND => out.kind = Some(ResourceKind::from_wire(read_u8(value)?)),
-            field::org::ON_EXIT => out.on_exit = Some(read_u8(value)?),
-            field::org::LAUNCH_MODE => out.launch_mode = Some(read_u8(value)?),
+            field::org::KIND => out.kind = Some(ResourceKind::from_wire(u8_value(value)?)),
+            field::org::ON_EXIT => out.on_exit = Some(u8_value(value)?),
+            field::org::LAUNCH_MODE => out.launch_mode = Some(u8_value(value)?),
             field::org::FROM => out.from = Some(read_key(value, SessionKey::new)?),
-            field::org::FROM_REVISION => out.from_revision = Some(Revision::new(read_u64(value)?)),
+            field::org::FROM_REVISION => out.from_revision = Some(Revision::new(u64_value(value)?)),
             field::org::TO => out.to = Some(read_key(value, SessionKey::new)?),
-            field::org::TO_REVISION => out.to_revision = Some(Revision::new(read_u64(value)?)),
+            field::org::TO_REVISION => out.to_revision = Some(Revision::new(u64_value(value)?)),
             field::org::TARGET => out.target = Some(decode_live_target(value)?),
-            field::org::MODE => out.mode = Some(read_u8(value)?),
-            field::org::ACTIVATION => out.activation = Some(ActivationId::new(read_u64(value)?)),
+            field::org::MODE => out.mode = Some(u8_value(value)?),
+            field::org::ACTIVATION => out.activation = Some(ActivationId::new(u64_value(value)?)),
             field::org::ARRANGEMENT => {
                 out.arrangement = Some(read_key(value, ArrangementKey::new)?);
             }
             field::org::DOCUMENT => out.document = Some(decode_arrangement_doc(value)?),
             field::org::FILTER => out.filter = Some(decode_filter(value)?),
-            field::org::PAGE_SIZE => out.page_size = Some(read_u32(value)?),
+            field::org::PAGE_SIZE => out.page_size = Some(u32_value(value)?),
             field::org::CURSOR => {
                 if value.len() > MAX_ORG_CURSOR_BYTES {
                     return Err(DecodeError::OrganizationLimitExceeded);
@@ -138,32 +138,32 @@ impl Fields {
                 push_bounded(&mut out.move_items, decode_move_item(value)?, MAX_ORG_BATCH)?;
             }
             field::org::PIN => push_bounded(&mut out.pins, decode_pin(value)?, MAX_ORG_BATCH)?,
-            field::org::REVISION => out.revision = Some(Revision::new(read_u64(value)?)),
-            field::org::LIVE_SESSION => out.live_session = Some(SessionId::new(read_u32(value)?)),
+            field::org::REVISION => out.revision = Some(Revision::new(u64_value(value)?)),
+            field::org::LIVE_SESSION => out.live_session = Some(SessionId::new(u32_value(value)?)),
             field::org::LIVE_RESOURCE => {
                 out.live_resource = Some(decode_terminal_id(&mut Decoder::new(value))?);
             }
-            field::org::STATE => out.state = Some(read_u8(value)?),
+            field::org::STATE => out.state = Some(u8_value(value)?),
             field::org::OUTCOME => out.outcome = Some(decode_outcome(value)?),
             field::org::LAUNCH_DIAGNOSTIC => out.diagnostic = Some(decode_diagnostic(value)?),
             field::org::PERSISTENCE_PENDING => {
                 out.persistence_pending =
                     Decoder::new(value).read_bool("persistence_pending")?;
             }
-            field::org::EPOCH => out.epoch = Some(LeaseEpoch::new(read_u64(value)?)),
+            field::org::EPOCH => out.epoch = Some(LeaseEpoch::new(u64_value(value)?)),
             field::org::HOLDER => out.holder = Some(decode_actor_ref(&mut Decoder::new(value))?),
             field::org::AWAITING => out.awaiting = Some(Decoder::new(value).read_bool("awaiting")?),
             field::org::INSTANCE => out.instance = Some(ServerInstance::new(key_bytes(value)?)),
-            field::org::MEMBERS => out.members = Some(read_u32(value)?),
+            field::org::MEMBERS => out.members = Some(u32_value(value)?),
             field::org::WORKSPACE => out.workspace = Some(read_key(value, WorkspaceKey::new)?),
-            field::org::TTL_SECS => out.ttl_secs = Some(read_u32(value)?),
+            field::org::TTL_SECS => out.ttl_secs = Some(u32_value(value)?),
             field::org::CREDENTIAL => {
                 out.credential = Some(bounded_str(value, MAX_CREDENTIAL_ID_BYTES)?);
             }
             field::org::SOCKET_PATH => {
                 out.socket_path = Some(bounded_str(value, MAX_SOCKET_PATH_BYTES)?);
             }
-            field::org::EXPIRES_AT => out.expires_at = Some(read_u64(value)?),
+            field::org::EXPIRES_AT => out.expires_at = Some(u64_value(value)?),
         });
         Ok(out)
     }

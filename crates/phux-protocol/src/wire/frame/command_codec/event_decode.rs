@@ -7,7 +7,8 @@ use super::{
     EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
     EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
     EVENT_TAG_TITLE_CHANGED, ResourceKind, ResourceLifecycle, decode_approval_event,
-    decode_optional_client_id, decode_optional_i32, decode_terminal_id, field, utf8_value,
+    decode_optional_client_id, decode_optional_i32, decode_terminal_id, field, u8_value, u64_value,
+    utf8_value,
 };
 
 pub(super) fn decode_native_result_event(body: &[u8]) -> Result<AgentEvent, DecodeError> {
@@ -135,19 +136,14 @@ pub(super) fn decode_terminal_control_event(
     }))
 }
 
-/// Read a field-tagged `u64` value.
-pub(super) fn read_u64_value(value: &[u8]) -> Result<u64, DecodeError> {
-    Decoder::new(value).read_u64_be()
-}
-
 /// Decode an [`AgentEvent::JournalGap`] body; an absent bound reads as `0`.
 pub(super) fn decode_journal_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
     let mut first_missing = 0;
     let mut last_missing = 0;
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
-            field::event_journal_gap::FIRST_MISSING => first_missing = read_u64_value(value)?,
-            field::event_journal_gap::LAST_MISSING => last_missing = read_u64_value(value)?,
+            field::event_journal_gap::FIRST_MISSING => first_missing = u64_value(value)?,
+            field::event_journal_gap::LAST_MISSING => last_missing = u64_value(value)?,
             _ => {}
         }
     }
@@ -162,7 +158,7 @@ pub(super) fn decode_source_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEven
     let mut dropped = 0;
     while let Some((field_id, value)) = dec.read_field()? {
         if field_id == field::event_source_gap::DROPPED {
-            dropped = read_u64_value(value)?;
+            dropped = u64_value(value)?;
         }
     }
     Ok(AgentEvent::SourceGap { dropped })
@@ -175,7 +171,7 @@ pub(super) fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEv
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
             field::event_pane_spawned::KIND => {
-                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?);
+                kind = ResourceKind::from_wire(u8_value(value)?);
             }
             field::event_pane_spawned::PARENT => {
                 parent = Some(decode_terminal_id(&mut Decoder::new(value))?);
@@ -200,7 +196,7 @@ pub(super) fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, De
                 suggestions.push(utf8_value(value)?);
             }
             field::event_asked::ELAPSED_SECONDS => {
-                elapsed_seconds = Some(Decoder::new(value).read_u64_be()?);
+                elapsed_seconds = Some(u64_value(value)?);
             }
 
             _ => {}

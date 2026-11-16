@@ -9,7 +9,7 @@ use crate::wire::frame::{
 };
 use crate::wire::info::{encode_client_id, encode_session_snapshot};
 
-use super::{FrameKind, id_field, u8_field, u16_field, u32_field, u64_field};
+use super::{FrameKind, id_field};
 
 impl FrameKind {
     /// Write a connection frame's payload: handshake, attach, input, ack.
@@ -29,9 +29,9 @@ impl FrameKind {
                 // Strings ride as raw UTF-8: the TLV header already
                 // delimits them.
                 enc.write_field(field::hello::CLIENT_NAME, client_name.as_bytes());
-                u16_field(enc, field::hello::PROTOCOL_MAJOR, *protocol_major);
-                u16_field(enc, field::hello::PROTOCOL_MINOR, *protocol_minor);
-                u16_field(enc, field::hello::PROTOCOL_PATCH, *protocol_patch);
+                enc.write_u16_field(field::hello::PROTOCOL_MAJOR, *protocol_major);
+                enc.write_u16_field(field::hello::PROTOCOL_MINOR, *protocol_minor);
+                enc.write_u16_field(field::hello::PROTOCOL_PATCH, *protocol_patch);
                 encode_hello_caps(enc, client_caps);
             }
             Self::HelloOk {
@@ -43,9 +43,9 @@ impl FrameKind {
                 selected_profile,
                 bootstrap_limits,
             } => {
-                u16_field(enc, field::hello_ok::PROTOCOL_MAJOR, *protocol_major);
-                u16_field(enc, field::hello_ok::PROTOCOL_MINOR, *protocol_minor);
-                u16_field(enc, field::hello_ok::PROTOCOL_PATCH, *protocol_patch);
+                enc.write_u16_field(field::hello_ok::PROTOCOL_MAJOR, *protocol_major);
+                enc.write_u16_field(field::hello_ok::PROTOCOL_MINOR, *protocol_minor);
+                enc.write_u16_field(field::hello_ok::PROTOCOL_PATCH, *protocol_patch);
                 encode_server_caps(enc, *server_caps);
                 enc.write_field(field::hello_ok::SERVER_ID, server_id);
                 // Absent when the client offered no Terminal profile.
@@ -58,17 +58,17 @@ impl FrameKind {
                     bootstrap_limits.max_chunk_bytes(),
                     bootstrap_limits.max_history_page_bytes(),
                 );
-                u32_field(enc, field::hello_ok::MAX_CHUNK_BYTES, chunk);
-                u32_field(enc, field::hello_ok::MAX_HISTORY_PAGE_BYTES, page);
+                enc.write_u32_field(field::hello_ok::MAX_CHUNK_BYTES, chunk);
+                enc.write_u32_field(field::hello_ok::MAX_HISTORY_PAGE_BYTES, page);
                 // Omitted when nothing was selected, so an uncompressed
                 // connection's HELLO_OK is unchanged.
                 if server_caps.compression != Compression::None {
                     let compression = server_caps.compression.as_u8();
-                    u8_field(enc, field::hello_ok::COMPRESSION, compression);
+                    enc.write_u8_field(field::hello_ok::COMPRESSION, compression);
                 }
             }
             Self::Ping { nonce } | Self::Pong { nonce } => {
-                u64_field(enc, field::ping::NONCE, *nonce);
+                enc.write_u64_field(field::ping::NONCE, *nonce);
             }
             Self::ResourceOutput {
                 terminal_id,
@@ -78,14 +78,10 @@ impl FrameKind {
                 bytes,
             } => {
                 id_field(enc, field::terminal_output::TERMINAL_ID, terminal_id);
-                u64_field(enc, field::terminal_output::SEQ, *seq);
+                enc.write_u64_field(field::terminal_output::SEQ, *seq);
                 enc.write_field(field::terminal_output::BYTES, bytes);
-                u64_field(enc, field::terminal_output::STREAM_ID, stream_id.get());
-                u64_field(
-                    enc,
-                    field::terminal_output::BOOTSTRAP_ID,
-                    bootstrap_id.get(),
-                );
+                enc.write_u64_field(field::terminal_output::STREAM_ID, stream_id.get());
+                enc.write_u64_field(field::terminal_output::BOOTSTRAP_ID, bootstrap_id.get());
             }
             Self::Attach {
                 attach_id,
@@ -100,12 +96,12 @@ impl FrameKind {
                     encode_viewport_info(viewport, e);
                 });
                 let scrollback = u8::from(*request_scrollback);
-                u8_field(enc, field::attach::REQUEST_SCROLLBACK, scrollback);
+                enc.write_u8_field(field::attach::REQUEST_SCROLLBACK, scrollback);
                 let limit = *scrollback_limit_lines;
-                u32_field(enc, field::attach::SCROLLBACK_LIMIT_LINES, limit);
-                u32_field(enc, field::attach::ATTACH_ID, *attach_id);
+                enc.write_u32_field(field::attach::SCROLLBACK_LIMIT_LINES, limit);
+                enc.write_u32_field(field::attach::ATTACH_ID, *attach_id);
                 if let Some(policy) = role_policy {
-                    u8_field(enc, field::attach::ROLE_POLICY, policy.to_u8());
+                    enc.write_u8_field(field::attach::ROLE_POLICY, policy.to_u8());
                 }
             }
             // A unit variant: the type byte only.
@@ -114,7 +110,7 @@ impl FrameKind {
             // a clean detach keeps the bytes every 0.7.0 peer emits.
             Self::Detached { reason, message } => {
                 if let Some(reason) = reason {
-                    u8_field(enc, field::detached::REASON, reason.as_wire());
+                    enc.write_u8_field(field::detached::REASON, reason.as_wire());
                 }
                 if !message.is_empty() {
                     enc.write_field(field::detached::MESSAGE, message.as_bytes());
@@ -130,7 +126,7 @@ impl FrameKind {
             }
             Self::InputFocus { terminal_id, event } => {
                 id_field(enc, field::input_focus::TERMINAL_ID, terminal_id);
-                u8_field(enc, field::input_focus::EVENT, encode_focus_event(*event));
+                enc.write_u8_field(field::input_focus::EVENT, encode_focus_event(*event));
             }
             Self::InputPaste { terminal_id, event } => {
                 id_field(enc, field::input_paste::TERMINAL_ID, terminal_id);
@@ -146,7 +142,7 @@ impl FrameKind {
                 text,
             } => {
                 id_field(enc, field::clipboard_reply::TERMINAL_ID, terminal_id);
-                u8_field(enc, field::clipboard_reply::SELECTION, *selection);
+                enc.write_u8_field(field::clipboard_reply::SELECTION, *selection);
                 enc.write_field(field::clipboard_reply::TEXT, text.0.as_bytes());
             }
             Self::FrameAck {
@@ -156,9 +152,9 @@ impl FrameKind {
                 seq,
             } => {
                 id_field(enc, field::frame_ack::TERMINAL_ID, terminal_id);
-                u64_field(enc, field::frame_ack::SEQ, *seq);
-                u64_field(enc, field::frame_ack::STREAM_ID, stream_id.get());
-                u64_field(enc, field::frame_ack::BOOTSTRAP_ID, bootstrap_id.get());
+                enc.write_u64_field(field::frame_ack::SEQ, *seq);
+                enc.write_u64_field(field::frame_ack::STREAM_ID, stream_id.get());
+                enc.write_u64_field(field::frame_ack::BOOTSTRAP_ID, bootstrap_id.get());
             }
             Self::ViewportResize { viewport } => {
                 enc.write_field_with(field::viewport_resize::VIEWPORT, |e| {
@@ -176,10 +172,10 @@ impl FrameKind {
                 enc.write_field_with(field::attached::INITIAL_CLIENT_ID, |e| {
                     encode_client_id(*initial_client_id, e);
                 });
-                u32_field(enc, field::attached::ATTACH_ID, *attach_id);
+                enc.write_u32_field(field::attached::ATTACH_ID, *attach_id);
             }
             Self::AttachReady { attach_id } => {
-                u32_field(enc, field::attach_ready::ATTACH_ID, *attach_id);
+                enc.write_u32_field(field::attach_ready::ATTACH_ID, *attach_id);
             }
             _ => unreachable!("encode_payload routes only connection frames here"),
         }
@@ -211,7 +207,7 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
     // Omitted when the client accepts nothing compressed, as every local
     // consumer does, so a UDS HELLO keeps its protocol 0.8 bytes.
     if !caps.compression.is_empty() {
-        u8_field(enc, field::hello::COMPRESSION, caps.compression.bits());
+        enc.write_u8_field(field::hello::COMPRESSION, caps.compression.bits());
     }
     // Stamped by `phux stdio-bridge` on the HELLO it relays.
     if let Some(origin) = caps.ssh_origin {
@@ -220,7 +216,7 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
         });
     }
     if caps.quic_streams {
-        u8_field(enc, field::hello::QUIC_STREAMS, 1);
+        enc.write_u8_field(field::hello::QUIC_STREAMS, 1);
     }
     // Always explicit, so a server never guesses kinds from the default.
     enc.write_field_with(field::hello::RESOURCE_KINDS, |e| {
@@ -230,7 +226,7 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
         enc.write_field(field::hello::PLATFORM, platform.as_str().as_bytes());
     }
     if caps.credential_approvals {
-        u8_field(enc, field::hello::CREDENTIAL_APPROVALS, 1);
+        enc.write_u8_field(field::hello::CREDENTIAL_APPROVALS, 1);
     }
 }
 
