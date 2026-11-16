@@ -125,13 +125,7 @@ fn reload_dials_added_satellites_and_drops_removed_ones_without_restart() {
         )
         .await;
         ring_reload(&mut hub, 30, "noop-2").await;
-        let ask = Command::ReportAsked {
-            terminal_id: sat_id.clone(),
-            id: "after-reload".to_owned(),
-            question: "still linked?".to_owned(),
-            suggestions: Vec::new(),
-            elapsed_seconds: None,
-        };
+        let ask = report_asked(&sat_id, "after-reload", "still linked?");
         let (result, mut frames) = command_via_hub(&mut hub, 40, ask).await;
         assert_eq!(result, CommandResult::Ok, "the link survived the reload");
         assert!(

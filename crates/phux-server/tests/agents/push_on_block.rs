@@ -17,7 +17,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_until, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, attach_focused, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
@@ -76,12 +76,7 @@ fn a_screen_detected_block_pushes_an_absent_phone() {
         // The phone: attach, write its grant, read it back as the barrier,
         // and leave.
         let mut phone = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut phone, &attach_by_name("demo")).await;
-        let terminal: ResourceId = recv_until(&mut phone, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut phone, "demo").await;
         let key = "phux.push/v1/phone";
         let grant = format!(r#"{{"gateway":"{url}","grant":"0123456789abcdef","host":"fr"}}"#);
         send_frame(

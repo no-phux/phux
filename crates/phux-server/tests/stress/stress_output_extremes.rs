@@ -4,8 +4,6 @@
 
 use std::time::Duration;
 
-use phux_server::LaunchCommand as CommandBuilder;
-
 use phux_server_testkit::builder::E2eBuilder;
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
@@ -15,10 +13,8 @@ use phux_server_testkit::tracing_capture::TracingCapture;
 fn survives(label: &str, script: &str, marker: &'static str, budget: Duration) {
     run_local(async {
         let cap = TracingCapture::install(label);
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args(["-c", script]);
         E2eBuilder::new()
-            .seed_cmd(cmd)
+            .seed_cmd(phux_server_testkit::sh(script))
             .run(|mut clients| async move {
                 let client = &mut clients[0];
                 let res = client

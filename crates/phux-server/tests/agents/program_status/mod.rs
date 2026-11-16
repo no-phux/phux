@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::state::RetainPolicy;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, attach_by_name, command,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, attach_focused, command,
     join_after_shutdown, recv_until, run_local, seed_pty, send_frame, spawn_server_with,
     wait_for_socket,
 };
@@ -122,12 +122,7 @@ impl Pane {
             };
         });
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let terminal = recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut stream, "demo").await;
         Self {
             server,
             tmp,

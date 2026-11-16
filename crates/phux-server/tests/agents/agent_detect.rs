@@ -19,8 +19,8 @@ use tokio::time::timeout;
 
 use crate::fake_agent::{depart, write_departing_agent, write_fake_agent, write_fake_codex};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, attach_by_name, recv_typed, recv_until, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, attach_focused, recv_typed, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Startup grace and identity recheck via the detector's env seams
@@ -68,12 +68,7 @@ impl Pane {
         let socket_path = tmp.path().join("phux.sock");
         let server = spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let terminal = recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-            _ => None,
-        })
-        .await;
+        let terminal = attach_focused(&mut stream, "demo").await;
         let mut pane = Self {
             _server: server,
             socket_path,

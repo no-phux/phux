@@ -15,8 +15,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, SpawnedServer, attach_by_name, command, recv_typed, recv_until,
-    send_frame, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, SpawnedServer, command, recv_typed, send_frame, wait_for_raw_socket,
 };
 
 /// Every layer, true color: what a full client advertises.
@@ -52,12 +51,7 @@ pub(crate) fn advertises(hello_ok: &FrameKind, feature: ServerFeatureExt) -> boo
 
 /// Attach to `session` and return its focused pane.
 pub(crate) async fn attach_pane(stream: &mut UnixStream, session: &str) -> ResourceId {
-    send_frame(stream, &attach_by_name(session)).await;
-    recv_until(stream, |_, frame| match frame {
-        FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
-        _ => None,
-    })
-    .await
+    phux_server_testkit::attach_focused(stream, session).await
 }
 
 /// `/bin/sh -c` that emits nothing until `release` exists, then runs `script`.

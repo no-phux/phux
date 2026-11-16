@@ -35,6 +35,8 @@ use tokio_tungstenite::tungstenite::Message;
 mod checkout;
 mod clients;
 use clients::hub_client;
+mod commands;
+use commands::{focus_gained, on_satellite, report_asked};
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
@@ -418,17 +420,6 @@ async fn state_until(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     unreachable!()
-}
-
-fn on_satellite(host: &str, spawn: Spawn) -> Spawn {
-    Spawn {
-        satellite: Some(SatelliteHost::new(host)),
-        ..spawn
-    }
-}
-
-const fn focus_gained(terminal_id: ResourceId) -> Command {
-    phux_server_testkit::route_input(terminal_id, InputEvent::Focus(FocusEvent::Gained))
 }
 
 /// Wait for the next `EVENT` accepted by `pred`.

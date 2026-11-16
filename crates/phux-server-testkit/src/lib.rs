@@ -490,6 +490,16 @@ pub fn attach_by_name(name: &str) -> FrameKind {
     attach_by_name_with_id(name, 1)
 }
 
+/// Send [`attach_by_name`] and return the attached session's focused resource.
+pub async fn attach_focused(stream: &mut UnixStream, name: &str) -> ResourceId {
+    send_frame(stream, &attach_by_name(name)).await;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
+        _ => None,
+    })
+    .await
+}
+
 /// Build an `ATTACH` with an explicit connection-unique correlation id.
 #[must_use]
 pub fn attach_by_name_with_id(name: &str, attach_id: u32) -> FrameKind {
