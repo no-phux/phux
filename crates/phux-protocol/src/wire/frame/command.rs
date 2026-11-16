@@ -244,3 +244,14 @@ pub enum CommandResult {
         operation: OperationId,
     },
 }
+
+impl CommandResult {
+    /// A failed result carrying `code` and the diagnostic `message`.
+    #[must_use]
+    pub fn error(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::Error {
+            code,
+            message: message.into(),
+        }
+    }
+}

@@ -35,40 +35,31 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
             "snap_command_result_error_wrong_resource_kind",
             FrameKind::CommandResult {
                 request_id: 0x0000_0010,
-                result: CommandResult::Error {
-                    code: ErrorCode::WrongResourceKind,
-                    message: "terminals are fed by their pty".to_owned(),
-                },
+                result: CommandResult::error(
+                    ErrorCode::WrongResourceKind,
+                    "terminals are fed by their pty",
+                ),
             },
         ),
         (
             "snap_command_result_error_not_producer",
             FrameKind::CommandResult {
                 request_id: 0x0000_0011,
-                result: CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    message: String::new(),
-                },
+                result: CommandResult::error(ErrorCode::NotProducer, String::new()),
             },
         ),
         (
             "snap_command_result_error_record_invalid",
             FrameKind::CommandResult {
                 request_id: 0x0000_0012,
-                result: CommandResult::Error {
-                    code: ErrorCode::RecordInvalid,
-                    message: "unknown record type".to_owned(),
-                },
+                result: CommandResult::error(ErrorCode::RecordInvalid, "unknown record type"),
             },
         ),
         (
             "snap_command_result_error_overflow",
             FrameKind::CommandResult {
                 request_id: 0x0000_0013,
-                result: CommandResult::Error {
-                    code: ErrorCode::Overflow,
-                    message: String::new(),
-                },
+                result: CommandResult::error(ErrorCode::Overflow, String::new()),
             },
         ),
         // ATTACHED carrying the trailing resource-facet list: one Terminal

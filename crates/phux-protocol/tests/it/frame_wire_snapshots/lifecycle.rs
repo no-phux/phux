@@ -199,10 +199,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
             "snap_command_result_error_precondition_failed",
             FrameKind::CommandResult {
                 request_id: 0x0000_0011,
-                result: CommandResult::Error {
-                    code: ErrorCode::PreconditionFailed,
-                    message: "attached".to_owned(),
-                },
+                result: CommandResult::error(ErrorCode::PreconditionFailed, "attached"),
             },
         ),
         (

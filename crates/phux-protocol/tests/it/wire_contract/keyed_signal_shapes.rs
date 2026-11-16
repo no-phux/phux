@@ -170,10 +170,7 @@ fn a_zero_or_truncated_key_is_malformed() {
 fn incarnation_changed_is_request_scoped_code_213() {
     let frame = FrameKind::CommandResult {
         request_id: 9,
-        result: CommandResult::Error {
-            code: ErrorCode::IncarnationChanged,
-            message: String::new(),
-        },
+        result: CommandResult::error(ErrorCode::IncarnationChanged, String::new()),
     };
     let mut result = vec![0x02]; // COMMAND_RESULT_TAG_ERROR
     result.extend_from_slice(&213u16.to_be_bytes());
