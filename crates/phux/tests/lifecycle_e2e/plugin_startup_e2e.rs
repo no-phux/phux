@@ -141,6 +141,35 @@ fn find_file(dir: &Path, name: &str) -> bool {
     })
 }
 
+fn append_startup_evidence(dir: &Path, out: &mut String) {
+    use std::fmt::Write as _;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            append_startup_evidence(&path, out);
+            continue;
+        }
+        let name = path.file_name().and_then(|name| name.to_str());
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        let keep = name == Some("plugin-runs.jsonl")
+            || extension.is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("log") || ext.eq_ignore_ascii_case("pid")
+            });
+        if !keep {
+            continue;
+        }
+        let _ = write!(
+            out,
+            "\n== {} ==\n{}\n",
+            path.display(),
+            std::fs::read_to_string(&path).unwrap_or_default()
+        );
+    }
+}
+
 fn sidecar_death_dump(root: &Path, state: &Path, pids: &Path, second: i32, server: u32) -> String {
     let mut out = format!(
         "server={server}\npids:\n{}\nlife:\n{}\nstat:{:?}\n",
@@ -148,30 +177,7 @@ fn sidecar_death_dump(root: &Path, state: &Path, pids: &Path, second: i32, serve
         std::fs::read_to_string(root.join("life")).unwrap_or_default(),
         std::fs::read_to_string(format!("/proc/{second}/stat")).ok(),
     );
-    fn walk(dir: &Path, out: &mut String) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name == "plugin-runs.jsonl" || name.ends_with(".log") || name.ends_with(".pid")
-                })
-            {
-                out.push_str(&format!(
-                    "\n== {} ==\n{}\n",
-                    path.display(),
-                    std::fs::read_to_string(&path).unwrap_or_default()
-                ));
-            }
-        }
-    }
-    walk(state, &mut out);
+    append_startup_evidence(state, &mut out);
     out
 }
 
@@ -289,12 +295,11 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         .parse()
         .unwrap();
     reap.0 = second;
-    if !alive(second) {
-        panic!(
-            "second sidecar {second} is dead\n{}",
-            sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
-        );
-    }
+    assert!(
+        alive(second),
+        "second sidecar {second} is dead\n{}",
+        sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
+    );
     assert_ne!(first, second);
     wait_for_sidecar_files(root.path(), second);
     let env = std::fs::read_to_string(root.path().join(format!("env.{second}"))).unwrap();
