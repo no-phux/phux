@@ -15,9 +15,8 @@ use phux_dial::relay::{
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, await_route_live, dial_consumer,
-    dial_tunnel_raw, echo_when_ready, expect_echo, expect_post_handshake_close, mint,
-    spawn_connector, spawn_relay, spawn_relay_tuned,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, dial_consumer, dial_tunnel_raw,
+    expect_echo, expect_post_handshake_close, mint, spawn_relay, spawn_relay_tuned,
 };
 
 /// A second connector claiming a live route wins; the incumbent is closed
@@ -28,22 +27,13 @@ async fn redial_while_old_alive_new_wins_old_sees_reclaimed() {
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
 
-    let conn1 = spawn_connector(
-        relay.addr,
-        &relay.fingerprint,
-        "alpha",
-        token.clone(),
-        b"ONE:",
-    )
-    .await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    let mut consumer1 = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("first consumer dials");
+    let conn1 = relay.connector("alpha", token.clone(), b"ONE:").await;
+    relay.await_route_live("alpha").await;
+    let mut consumer1 = relay.consumer("alpha").await.expect("first consumer dials");
     expect_echo(&mut consumer1, b"ONE:", b"via-one").await;
 
     // Redial while the incumbent is alive: last-writer-wins.
-    let conn2 = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"TWO:").await;
+    let conn2 = relay.connector("alpha", token, b"TWO:").await;
     let err = conn1.closed().await;
     assert_app_closed(&err, RECLAIMED_CODE, "incumbent tunnel reclaimed");
     if let quinn::ConnectionError::ApplicationClosed(app) = &err {
@@ -52,7 +42,8 @@ async fn redial_while_old_alive_new_wins_old_sees_reclaimed() {
 
     // The claim already swapped the registry entry, so new consumers land
     // on connector 2 — the tag proves which tunnel served.
-    let mut consumer2 = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let mut consumer2 = relay
+        .consumer("alpha")
         .await
         .expect("consumer dials after the reclaim");
     expect_echo(&mut consumer2, b"TWO:", b"via-two").await;
@@ -69,18 +60,9 @@ async fn consumer_mid_bridge_bounded_error_on_tunnel_loss_then_redial_recovers()
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
 
-    let conn1 = spawn_connector(
-        relay.addr,
-        &relay.fingerprint,
-        "alpha",
-        token.clone(),
-        b"ONE:",
-    )
-    .await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("consumer dials");
+    let conn1 = relay.connector("alpha", token.clone(), b"ONE:").await;
+    relay.await_route_live("alpha").await;
+    let mut consumer = relay.consumer("alpha").await.expect("consumer dials");
     expect_echo(&mut consumer, b"ONE:", b"alive").await;
 
     // Kill the tunnel under the live bridge.
@@ -96,9 +78,8 @@ async fn consumer_mid_bridge_bounded_error_on_tunnel_loss_then_redial_recovers()
 
     // Redial with the same token; a new consumer is served. The retry
     // helper absorbs the registry-settling window after the dead claim.
-    let conn2 = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"TWO:").await;
-    let mut recovered =
-        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"TWO:", b"back").await;
+    let conn2 = relay.connector("alpha", token, b"TWO:").await;
+    let mut recovered = relay.echo_when_ready("alpha", b"TWO:", b"back").await;
     expect_echo(&mut recovered, b"", b"still-here").await;
     assert_eq!(conn2.bridged(), 1);
 }
@@ -110,8 +91,8 @@ async fn concurrent_consumers_one_route() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"E:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("alpha", token, b"E:").await;
+    relay.await_route_live("alpha").await;
 
     let mut tasks = Vec::new();
     for i in 0..8 {
@@ -162,12 +143,10 @@ async fn extra_consumer_stream_never_crosses_the_tunnel_identity_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"E:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("alpha", token, b"E:").await;
+    relay.await_route_live("alpha").await;
 
-    let mut first = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("first consumer");
+    let mut first = relay.consumer("alpha").await.expect("first consumer");
     expect_echo(&mut first, b"E:", b"first-control").await;
 
     let (mut extra_send, mut extra_recv) = first.conn.open_bi().await.expect("extra stream opens");
@@ -184,9 +163,7 @@ async fn extra_consumer_stream_never_crosses_the_tunnel_identity_boundary() {
     );
 
     expect_echo(&mut first, b"", b"first-still-progresses").await;
-    let mut second = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("second consumer");
+    let mut second = relay.consumer("alpha").await.expect("second consumer");
     expect_echo(&mut second, b"E:", b"second-distinct").await;
     assert_eq!(connector.bridged(), 2);
 }
@@ -199,20 +176,14 @@ async fn remint_replaces_token_and_invalidates_old_at_next_handshake() {
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token1 = mint(&relay.tokens_path, "alpha");
 
-    let conn1 = spawn_connector(
-        relay.addr,
-        &relay.fingerprint,
-        "alpha",
-        token1.clone(),
-        b"ONE:",
-    )
-    .await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let conn1 = relay.connector("alpha", token1.clone(), b"ONE:").await;
+    relay.await_route_live("alpha").await;
 
     assert_ne!(token1, mint(&relay.tokens_path, "alpha"));
 
     // The established tunnel is untouched by the rotation: it still serves.
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let mut consumer = relay
+        .consumer("alpha")
         .await
         .expect("consumer dials the still-live tunnel");
     expect_echo(&mut consumer, b"ONE:", b"pre-rotation-tunnel").await;
@@ -253,9 +224,8 @@ async fn stalled_handshakes_do_not_hold_connection_slots() {
         .collect();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let _connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    let mut consumer =
-        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"served").await;
+    let _connector = relay.connector("alpha", token, b"A:").await;
+    let mut consumer = relay.echo_when_ready("alpha", b"A:", b"served").await;
     expect_echo(&mut consumer, b"", b"still-served").await;
     for dial in stalled {
         dial.abort();
@@ -295,9 +265,8 @@ async fn one_source_cannot_hold_more_than_its_admission_share() {
     );
 
     tokio::time::sleep(preamble + std::time::Duration::from_millis(300)).await;
-    let _connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    let mut consumer =
-        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"served").await;
+    let _connector = relay.connector("alpha", token, b"A:").await;
+    let mut consumer = relay.echo_when_ready("alpha", b"A:", b"served").await;
     expect_echo(&mut consumer, b"", b"after-the-share-returned").await;
     drop(silent);
 }
@@ -312,13 +281,12 @@ async fn over_cap_connection_refused_existing_unaffected() {
     let token = mint(&relay.tokens_path, "alpha");
 
     // Slot 1: the tunnel (no idle probe: it would hold a slot).
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
+    let connector = relay.connector("alpha", token, b"A:").await;
     // Slot 2: a consumer holding a live bridge.
-    let mut consumer1 =
-        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"first").await;
+    let mut consumer1 = relay.echo_when_ready("alpha", b"A:", b"first").await;
 
     // Cap reached: the next connection is refused post-handshake.
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "alpha").await;
+    let refused = relay.consumer("alpha").await;
     expect_post_handshake_close(refused, OVER_CAP_CODE, "relay at connection capacity").await;
 
     // Existing connections are untouched: the bridge still echoes and the
@@ -333,14 +301,9 @@ async fn over_cap_connection_refused_existing_unaffected() {
 
     // Releasing the consumer's slot restores admission.
     consumer1.conn.close(0u32.into(), b"done");
-    let mut consumer2 = echo_when_ready(
-        relay.addr,
-        &relay.fingerprint,
-        "alpha",
-        b"A:",
-        b"after-release",
-    )
-    .await;
+    let mut consumer2 = relay
+        .echo_when_ready("alpha", b"A:", b"after-release")
+        .await;
     expect_echo(&mut consumer2, b"", b"capacity-back").await;
     assert_eq!(connector.bridged(), 2);
 }
@@ -359,7 +322,7 @@ async fn byte_on_stream0_after_preamble_closes_with_protocol_violation() {
         dial_tunnel_raw(relay.addr, &relay.fingerprint, "alpha", Some(token))
             .await
             .expect("tunnel establishes");
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    relay.await_route_live("alpha").await;
 
     // One extra byte on the reserved stream trips the watchdog.
     send0
@@ -389,15 +352,8 @@ async fn deleting_store_revokes_at_next_handshake() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(
-        relay.addr,
-        &relay.fingerprint,
-        "alpha",
-        token.clone(),
-        b"A:",
-    )
-    .await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("alpha", token.clone(), b"A:").await;
+    relay.await_route_live("alpha").await;
 
     std::fs::remove_file(&relay.tokens_path).unwrap();
 
@@ -413,7 +369,7 @@ async fn deleting_store_revokes_at_next_handshake() {
 
     // ...and the route is no longer enrolled for consumers (TLS refusal,
     // not ROUTE_OFFLINE — the enrolled set is re-read per handshake too).
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "alpha").await;
+    let refused = relay.consumer("alpha").await;
     assert!(
         refused.is_err(),
         "an unenrolled route must be refused at the TLS layer"

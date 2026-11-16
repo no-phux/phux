@@ -44,6 +44,31 @@ pub struct RelayHandle {
 }
 
 impl RelayHandle {
+    /// [`spawn_connector`] against this relay.
+    pub async fn connector(
+        &self,
+        server_name: &str,
+        tunnel_token: Vec<u8>,
+        tag: &'static [u8],
+    ) -> ConnectorHandle {
+        spawn_connector(self.addr, &self.fingerprint, server_name, tunnel_token, tag).await
+    }
+
+    /// [`dial_consumer`] against this relay.
+    pub async fn consumer(&self, route: &str) -> Result<Consumer, DialError> {
+        dial_consumer(self.addr, &self.fingerprint, route).await
+    }
+
+    /// [`await_route_live`] against this relay.
+    pub async fn await_route_live(&self, route: &str) {
+        await_route_live(self.addr, &self.fingerprint, route).await;
+    }
+
+    /// [`echo_when_ready`] against this relay.
+    pub async fn echo_when_ready(&self, route: &str, tag: &[u8], payload: &[u8]) -> Consumer {
+        echo_when_ready(self.addr, &self.fingerprint, route, tag, payload).await
+    }
+
     /// Resolve the shutdown future and wait for the drain to finish.
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());

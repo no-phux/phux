@@ -13,8 +13,7 @@ use phux_dial::relay::{DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
 use tokio::time::sleep;
 
 use crate::common::{
-    await_route_live, contains_subslice, dial_consumer, expect_echo, expect_post_handshake_close,
-    mint, spawn_connector, spawn_relay,
+    contains_subslice, expect_echo, expect_post_handshake_close, mint, spawn_relay,
 };
 
 const PAYLOAD_A: &[u8] = b"payload-for-route-alpha";
@@ -29,17 +28,13 @@ async fn two_routes_no_crosstalk() {
     let alpha_token = mint(&relay.tokens_path, "alpha");
     let beta_token = mint(&relay.tokens_path, "beta");
 
-    let conn_a = spawn_connector(relay.addr, &relay.fingerprint, "alpha", alpha_token, b"A:").await;
-    let conn_b = spawn_connector(relay.addr, &relay.fingerprint, "beta", beta_token, b"B:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    await_route_live(relay.addr, &relay.fingerprint, "beta").await;
+    let conn_a = relay.connector("alpha", alpha_token, b"A:").await;
+    let conn_b = relay.connector("beta", beta_token, b"B:").await;
+    relay.await_route_live("alpha").await;
+    relay.await_route_live("beta").await;
 
-    let mut consumer_a = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("consumer dials alpha");
-    let mut consumer_b = dial_consumer(relay.addr, &relay.fingerprint, "beta")
-        .await
-        .expect("consumer dials beta");
+    let mut consumer_a = relay.consumer("alpha").await.expect("consumer dials alpha");
+    let mut consumer_b = relay.consumer("beta").await.expect("consumer dials beta");
     expect_echo(&mut consumer_a, b"A:", PAYLOAD_A).await;
     expect_echo(&mut consumer_b, b"B:", PAYLOAD_B).await;
 
@@ -71,11 +66,11 @@ async fn unknown_or_absent_sni_refused_no_bytes_reach_any_tunnel() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("alpha", token, b"A:").await;
+    relay.await_route_live("alpha").await;
 
     for sni in ["nosuch", "127.0.0.1"] {
-        let refused = dial_consumer(relay.addr, &relay.fingerprint, sni).await;
+        let refused = relay.consumer(sni).await;
         assert!(refused.is_err(), "SNI {sni:?} must fail the handshake");
     }
 
@@ -96,13 +91,14 @@ async fn consumer_before_tunnel_gets_route_offline_then_recovers() {
     let token = mint(&relay.tokens_path, "alpha");
 
     // Enrolled route, no connector yet: bounded post-handshake refusal.
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "alpha").await;
+    let refused = relay.consumer("alpha").await;
     expect_post_handshake_close(refused, ROUTE_OFFLINE_CODE, "route offline").await;
 
     // The connector arrives; the retry succeeds through it.
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let connector = relay.connector("alpha", token, b"A:").await;
+    relay.await_route_live("alpha").await;
+    let mut consumer = relay
+        .consumer("alpha")
         .await
         .expect("retry dials once the tunnel is live");
     expect_echo(&mut consumer, b"A:", b"recovered").await;

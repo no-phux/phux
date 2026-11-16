@@ -15,8 +15,8 @@ use phux_dial::testing::DropProxy;
 use tokio::time::{sleep, timeout};
 
 use crate::common::{
-    CONSUMER_TOKEN, WIRE_RECV_TIMEOUT, await_route_live, dial_consumer, dial_tunnel_raw, mint,
-    read_preamble, spawn_relay,
+    CONSUMER_TOKEN, WIRE_RECV_TIMEOUT, dial_consumer, dial_tunnel_raw, mint, read_preamble,
+    spawn_relay,
 };
 
 const ROUTE: &str = "backpressure";
@@ -41,7 +41,7 @@ async fn a_stalled_consumer_blocks_the_server_after_a_bounded_backlog() {
         dial_tunnel_raw(relay.addr, &relay.fingerprint, ROUTE, Some(token))
             .await
             .expect("tunnel leg establishes");
-    await_route_live(relay.addr, &relay.fingerprint, ROUTE).await;
+    relay.await_route_live(ROUTE).await;
 
     // The consumer dials through a proxy that can cut relay-to-consumer.
     let proxy = DropProxy::start(relay.addr).await.expect("proxy");
@@ -96,9 +96,10 @@ async fn a_consumer_upload_is_not_held_to_the_tunnel_window() {
         dial_tunnel_raw(relay.addr, &relay.fingerprint, ROUTE, Some(token))
             .await
             .expect("tunnel leg establishes");
-    await_route_live(relay.addr, &relay.fingerprint, ROUTE).await;
+    relay.await_route_live(ROUTE).await;
 
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, ROUTE)
+    let mut consumer = relay
+        .consumer(ROUTE)
         .await
         .expect("consumer dials the relay");
     // The server side reads the bearer preamble, then nothing more, but
@@ -175,11 +176,9 @@ async fn a_stalled_consumer_does_not_freeze_another_on_the_same_route() {
         dial_tunnel_raw(relay.addr, &relay.fingerprint, ROUTE, Some(token))
             .await
             .expect("tunnel leg establishes");
-    await_route_live(relay.addr, &relay.fingerprint, ROUTE).await;
+    relay.await_route_live(ROUTE).await;
 
-    let stalled = dial_consumer(relay.addr, &relay.fingerprint, ROUTE)
-        .await
-        .expect("stalled consumer dials");
+    let stalled = relay.consumer(ROUTE).await.expect("stalled consumer dials");
     let (stalled_send, mut stalled_recv) = timeout(WIRE_RECV_TIMEOUT, tunnel.accept_bi())
         .await
         .expect("first bridge within deadline")
@@ -188,9 +187,7 @@ async fn a_stalled_consumer_does_not_freeze_another_on_the_same_route() {
         read_preamble(&mut stalled_recv).await.as_deref(),
         Some(CONSUMER_TOKEN)
     );
-    let healthy = dial_consumer(relay.addr, &relay.fingerprint, ROUTE)
-        .await
-        .expect("healthy consumer dials");
+    let healthy = relay.consumer(ROUTE).await.expect("healthy consumer dials");
     let (healthy_send, mut healthy_recv) = timeout(WIRE_RECV_TIMEOUT, tunnel.accept_bi())
         .await
         .expect("second bridge within deadline")

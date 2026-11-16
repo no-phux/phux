@@ -15,9 +15,8 @@ use phux_dial::relay::{AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, await_route_live, dial_consumer,
-    dial_consumer_with_bearer, dial_tunnel_raw, echo_when_ready, expect_post_handshake_close, mint,
-    spawn_connector, spawn_relay, spawn_relay_with,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, dial_consumer_with_bearer,
+    dial_tunnel_raw, expect_post_handshake_close, mint, spawn_relay, spawn_relay_with,
 };
 
 /// A connector presenting a token that is not in the store is refused with
@@ -48,14 +47,15 @@ async fn wrong_tunnel_token_refused_with_auth_failed() {
     }
 
     // No tunnel registered: the enrolled route is offline for consumers.
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "alpha").await;
+    let refused = relay.consumer("alpha").await;
     expect_post_handshake_close(refused, ROUTE_OFFLINE_CODE, "route offline").await;
 
     // Per-connection failure isolation: the listener survived, and the
     // real token still admits a tunnel that serves.
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"OK:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let connector = relay.connector("alpha", token, b"OK:").await;
+    relay.await_route_live("alpha").await;
+    let mut consumer = relay
+        .consumer("alpha")
         .await
         .expect("consumer dials after the refused connector");
     common::expect_echo(&mut consumer, b"OK:", b"after-refusal").await;
@@ -94,10 +94,10 @@ async fn stalled_preamble_does_not_wedge_relay() {
 
     // Concurrently, a well-behaved connector + consumer complete a full
     // round-trip on another route: one silent tunnel blocks nothing.
-    let connector =
-        spawn_connector(relay.addr, &relay.fingerprint, "alpha", alpha_token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let connector = relay.connector("alpha", alpha_token, b"A:").await;
+    relay.await_route_live("alpha").await;
+    let mut consumer = relay
+        .consumer("alpha")
         .await
         .expect("consumer dials while the staller is pending");
     common::expect_echo(&mut consumer, b"A:", b"unblocked").await;
@@ -119,8 +119,8 @@ async fn bad_consumer_bearer_rejected_per_stream_tunnel_survives() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("alpha", token, b"A:").await;
+    relay.await_route_live("alpha").await;
 
     let mut bad = dial_consumer_with_bearer(
         relay.addr,
@@ -142,7 +142,8 @@ async fn bad_consumer_bearer_rejected_per_stream_tunnel_survives() {
     }
 
     // Same tunnel, good bearer: served. Counts prove per-stream isolation.
-    let mut good = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+    let mut good = relay
+        .consumer("alpha")
         .await
         .expect("good consumer dials the surviving tunnel");
     common::expect_echo(&mut good, b"A:", b"after-reject").await;
@@ -161,16 +162,14 @@ async fn tunnel_binds_to_its_tokens_route_not_its_dial_sni() {
     let alpha_token = mint(&relay.tokens_path, "alpha");
     mint(&relay.tokens_path, "beta");
 
-    let connector =
-        spawn_connector(relay.addr, &relay.fingerprint, "beta", alpha_token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+    let connector = relay.connector("beta", alpha_token, b"A:").await;
+    relay.await_route_live("alpha").await;
 
     // Consumers naming alpha reach the tunnel; beta has no live tunnel.
-    let mut consumer =
-        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"via-alpha").await;
+    let mut consumer = relay.echo_when_ready("alpha", b"A:", b"via-alpha").await;
     common::expect_echo(&mut consumer, b"", b"more").await;
     assert_eq!(connector.bridged(), 1);
 
-    let beta = dial_consumer(relay.addr, &relay.fingerprint, "beta").await;
+    let beta = relay.consumer("beta").await;
     expect_post_handshake_close(beta, ROUTE_OFFLINE_CODE, "route offline").await;
 }
