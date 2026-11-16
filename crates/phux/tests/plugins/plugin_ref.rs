@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use crate::support::{TestHome, git, write_fixture_plugin};
+use crate::support::{TestHome, commit_all, git, init_repo, write_fixture_plugin};
 
 #[test]
 fn install_help_states_local_path_precedence() {
@@ -54,9 +54,7 @@ fn install_git_subdir_records_rev_and_updates() {
         "",
     );
     std::fs::write(repo.join("README.md"), "not a plugin\n").unwrap();
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "fixture"]);
+    let url = init_repo(&repo, "fixture");
     git(&repo, &["checkout", "--quiet", "-b", "release"]);
     write_fixture_plugin(
         &repo.join("plugins").join("demo"),
@@ -65,10 +63,8 @@ fn install_git_subdir_records_rev_and_updates() {
         "0.0.1",
         "",
     );
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "release"]);
+    commit_all(&repo, "release");
     git(&repo, &["checkout", "--quiet", "main"]);
-    let url = format!("file://{}", repo.display());
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--json"]);
     assert_ne!(code, 0, "a repo with no root manifest must fail");
@@ -126,8 +122,7 @@ fn install_git_subdir_records_rev_and_updates() {
         "0.0.1",
         "",
     );
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "bump"]);
+    commit_all(&repo, "bump");
     let (code, stdout, stderr) = home.run(&["plugin", "update", "example.subdir", "--json"]);
     assert_eq!(
         code, 0,

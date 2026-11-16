@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use crate::support::{TestHome, git};
+use crate::support::{TestHome, commit_all, git, init_repo};
 
 fn write_plugin(dir: &Path, id: &str, version: &str, build: bool) {
     std::fs::create_dir_all(dir).unwrap();
@@ -39,6 +39,22 @@ fn executable(path: &Path, body: &str) {
     std::fs::set_permissions(path, perms).unwrap();
 }
 
+/// `PATH` with a fake `git` running `body` first.
+fn fake_git(home: &TestHome, body: &str) -> String {
+    let fake = home.scratch.join("bin").join("git");
+    executable(&fake, body);
+    format!(
+        "{}:{}",
+        fake.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// The installed copy of plugin `id`'s manifest.
+fn installed_manifest(home: &TestHome, id: &str) -> String {
+    std::fs::read_to_string(home.plugins_dir().join(id).join("phux-plugin.toml")).unwrap()
+}
+
 fn head(repo: &Path) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -54,15 +70,9 @@ fn head(repo: &Path) -> String {
 fn option_shaped_ref_never_reaches_git() {
     let home = TestHome::new();
     let marker = home.scratch.join("git-invoked");
-    let fake = home.scratch.join("bin").join("git");
-    executable(
-        &fake,
+    let path = fake_git(
+        &home,
         &format!("#!/bin/sh\necho invoked > {}\nexit 1\n", marker.display()),
-    );
-    let path = format!(
-        "{}:{}",
-        fake.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
     );
     let (code, stdout, stderr) = home.run_with(
         &["plugin", "install", "--", "--upload-pack=evil://x"],
@@ -97,15 +107,9 @@ fn option_shaped_ref_never_reaches_git() {
 fn git_fetch_timeout_kills_the_process() {
     let home = TestHome::new();
     let pidfile = home.scratch.join("git.pid");
-    let fake = home.scratch.join("bin").join("git");
-    executable(
-        &fake,
+    let path = fake_git(
+        &home,
         &format!("#!/bin/sh\necho $$ > {}\nsleep 60\n", pidfile.display()),
-    );
-    let path = format!(
-        "{}:{}",
-        fake.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
     );
     let (code, _, stderr) = home.run_with(
         &["plugin", "install", "file:///tmp/phux-timeout-probe"],
@@ -132,10 +136,7 @@ fn cloned_symlink_is_refused() {
     let repo = home.scratch.join("repo");
     write_plugin(&repo, "example.symlink", "0.1.0", false);
     std::os::unix::fs::symlink("/etc/passwd", repo.join("leak")).unwrap();
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "link"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "link");
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url]);
     assert_ne!(code, 0, "{stderr}");
@@ -149,10 +150,7 @@ fn remote_build_requires_yes_off_a_terminal() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     write_plugin(&repo, "example.remote-build", "0.1.0", true);
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "build"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "build");
 
     let (code, _, stderr) = home.run(&["plugin", "install", &url]);
     assert_ne!(code, 0, "{stderr}");
@@ -213,14 +211,9 @@ fn remote_build_refusal_escapes_control_characters() {
         ),
     )
     .unwrap();
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "hostile"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "hostile");
 
-    let (code, _, stderr) = home.run_with(&["plugin", "install", &url], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "install", &url]);
     assert_ne!(code, 0, "{stderr}");
     assert_controls_are_escaped(&stderr);
     assert!(stderr.contains("Refused:"), "{stderr}");
@@ -228,17 +221,13 @@ fn remote_build_refusal_escapes_control_characters() {
     assert!(!marker.exists());
     assert!(!home.plugins_dir().join("example.hostile").exists());
 
-    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "install", &url, "--yes"]);
     assert_eq!(code, 0, "{stderr}");
     assert_controls_are_escaped(&stderr);
     assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
 
     plant_stale_build_hash(&home);
-    let (code, _, stderr) = home.run_with(&["plugin", "update", "example.hostile"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "update", "example.hostile"]);
     assert_ne!(code, 0, "{stderr}");
     assert_controls_are_escaped(&stderr);
     assert!(stderr.contains("Nothing was updated"), "{stderr}");
@@ -250,14 +239,10 @@ fn rev_pins_a_commit_until_latest() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     write_plugin(&repo, "example.pin", "0.1.0", false);
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "v1"]);
+    let url = init_repo(&repo, "v1");
     let pinned = head(&repo);
     write_plugin(&repo, "example.pin", "0.2.0", false);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "v2"]);
-    let url = format!("file://{}", repo.display());
+    commit_all(&repo, "v2");
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--rev", &pinned, "--json"]);
     assert_eq!(code, 0, "{stderr}");
@@ -274,12 +259,7 @@ fn rev_pins_a_commit_until_latest() {
     assert_eq!(code, 0, "{stderr}");
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["updated"][0]["rev"], pinned);
-    let installed = std::fs::read_to_string(
-        home.plugins_dir()
-            .join("example.pin")
-            .join("phux-plugin.toml"),
-    )
-    .unwrap();
+    let installed = installed_manifest(&home, "example.pin");
     assert!(installed.contains("version = \"0.1.0\""), "{installed}");
 
     let (code, stdout, stderr) =
@@ -287,12 +267,7 @@ fn rev_pins_a_commit_until_latest() {
     assert_eq!(code, 0, "{stderr}");
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_ne!(value["updated"][0]["rev"], pinned);
-    let installed = std::fs::read_to_string(
-        home.plugins_dir()
-            .join("example.pin")
-            .join("phux-plugin.toml"),
-    )
-    .unwrap();
+    let installed = installed_manifest(&home, "example.pin");
     assert!(installed.contains("version = \"0.2.0\""), "{installed}");
 }
 
@@ -301,17 +276,13 @@ fn update_refuses_a_rewritten_branch_without_latest() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     write_plugin(&repo, "example.ff", "0.1.0", false);
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "v1"]);
+    let url = init_repo(&repo, "v1");
     let first = head(&repo);
-    let url = format!("file://{}", repo.display());
     let (code, _, stderr) = home.run(&["plugin", "install", &url]);
     assert_eq!(code, 0, "{stderr}");
 
     write_plugin(&repo, "example.ff", "0.2.0", false);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "v2"]);
+    commit_all(&repo, "v2");
     let (code, stdout, stderr) = home.run(&["plugin", "update", "example.ff", "--json"]);
     assert_eq!(
         code, 0,
@@ -323,28 +294,17 @@ fn update_refuses_a_rewritten_branch_without_latest() {
 
     git(&repo, &["reset", "--quiet", "--hard", &first]);
     write_plugin(&repo, "example.ff", "0.3.0", false);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "rewrite"]);
+    commit_all(&repo, "rewrite");
     let (code, _, stderr) = home.run(&["plugin", "update", "example.ff"]);
     assert_ne!(code, 0, "{stderr}");
     assert!(stderr.contains("not a descendant"), "{stderr}");
     assert!(stderr.contains("--latest"), "{stderr}");
-    let installed = std::fs::read_to_string(
-        home.plugins_dir()
-            .join("example.ff")
-            .join("phux-plugin.toml"),
-    )
-    .unwrap();
+    let installed = installed_manifest(&home, "example.ff");
     assert!(installed.contains("version = \"0.2.0\""), "{installed}");
 
     let (code, _, stderr) = home.run(&["plugin", "update", "example.ff", "--latest"]);
     assert_eq!(code, 0, "{stderr}");
-    let installed = std::fs::read_to_string(
-        home.plugins_dir()
-            .join("example.ff")
-            .join("phux-plugin.toml"),
-    )
-    .unwrap();
+    let installed = installed_manifest(&home, "example.ff");
     assert!(installed.contains("version = \"0.3.0\""), "{installed}");
 }
 
@@ -367,24 +327,16 @@ fn update_changed_build_steps_need_yes_off_a_terminal() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     manifest_with_build(&repo, "evil", "0.1.0", "echo A > approved.txt");
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "step A"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "step A");
 
-    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "install", &url, "--yes"]);
     assert_eq!(code, 0, "{stderr}");
     let installed = home.plugins_dir().join("evil");
     assert!(installed.join("approved.txt").is_file());
 
     manifest_with_build(&repo, "evil", "0.2.0", "echo B > slipped.txt");
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "step B"]);
-    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    commit_all(&repo, "step B");
+    let (code, _, stderr) = home.run(&["plugin", "update", "evil"]);
     assert_ne!(code, 0, "{stderr}");
     assert!(stderr.contains("--yes"), "{stderr}");
     assert!(stderr.contains("Nothing was updated"), "{stderr}");
@@ -396,18 +348,13 @@ fn update_changed_build_steps_need_yes_off_a_terminal() {
         "changed build step B must not run"
     );
 
-    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil", "--yes"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "update", "evil", "--yes"]);
     assert_eq!(code, 0, "{stderr}");
     assert!(installed.join("slipped.txt").is_file());
 
     manifest_with_build(&repo, "evil", "0.2.1", "echo B > slipped.txt");
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "same steps"]);
-    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    commit_all(&repo, "same steps");
+    let (code, _, stderr) = home.run(&["plugin", "update", "evil"]);
     assert_eq!(
         code, 0,
         "unchanged build steps should not ask again; stderr={stderr}"
@@ -421,22 +368,15 @@ fn update_reasks_when_the_stored_build_hash_does_not_match() {
     let marker = home.scratch.join("runs.txt");
     let script = format!("echo ran >> {}", marker.display());
     manifest_with_build(&repo, "stale", "0.1.0", &script);
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "build"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "build");
 
-    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "install", &url, "--yes"]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
 
     // Any other digest, including an older encoding, takes this re-ask path.
     plant_stale_build_hash(&home);
-    let (code, _, stderr) = home.run_with(&["plugin", "update", "stale"], |cmd| {
-        cmd.stdin(std::process::Stdio::null());
-    });
+    let (code, _, stderr) = home.run(&["plugin", "update", "stale"]);
     assert_ne!(code, 0, "{stderr}");
     assert!(stderr.contains("--yes"), "{stderr}");
     assert!(stderr.contains("Nothing was updated"), "{stderr}");

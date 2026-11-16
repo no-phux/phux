@@ -10,7 +10,7 @@
 
 use std::process::Command;
 
-use crate::support::{TestHome, git, write_fixture_plugin};
+use crate::support::{TestHome, init_repo, write_fixture_plugin};
 
 const BUILD_OK: &str = r#"
 [[build]]
@@ -171,10 +171,7 @@ fn install_from_git_url_records_resolved_commit() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     write_fixture_plugin(&repo, "example.install-git", "0.1.0", "0.0.1", "");
-    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "fixture"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "fixture");
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--json"]);
 

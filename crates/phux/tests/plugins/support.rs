@@ -99,6 +99,20 @@ pub(crate) fn git(repo: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} should succeed");
 }
 
+/// Stage everything in `repo` and commit it as `message`.
+pub(crate) fn commit_all(repo: &Path, message: &str) {
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "--quiet", "-m", message]);
+}
+
+/// `git init` `repo` on `main`, commit its contents as `message`, and return
+/// its `file://` URL.
+pub(crate) fn init_repo(repo: &Path, message: &str) -> String {
+    git(repo, &["init", "--quiet", "--initial-branch=main"]);
+    commit_all(repo, message);
+    format!("file://{}", repo.display())
+}
+
 /// A minimal installable plugin in `dir`: a manifest with one action, any
 /// `build` table, and a payload file.
 pub(crate) fn write_fixture_plugin(
