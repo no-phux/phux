@@ -38,9 +38,12 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
-/// One sample per forwarding op; all share a row.
+/// One sample per forwarding op, then each bounded op at the largest values
+/// the decoder accepts; all share a row.
 fn forward_samples() -> Vec<(Command, &'static Rule)> {
-    use crate::forward::ForwardOp;
+    use crate::forward::{
+        ForwardOp, MAX_AGENT_MESSAGE_BYTES, MAX_FORWARD_ADDR_BYTES, MAX_FORWARD_CHUNK_BYTES,
+    };
     [
         ForwardOp::Open {
             addr: "localhost".to_owned(),
@@ -61,9 +64,77 @@ fn forward_samples() -> Vec<(Command, &'static Rule)> {
             id: 1,
             message: vec![crate::forward::SSH_AGENT_FAILURE],
         },
+        ForwardOp::Open {
+            addr: "x".repeat(MAX_FORWARD_ADDR_BYTES),
+            port: u16::MAX,
+        },
+        ForwardOp::Read {
+            id: u64::MAX,
+            max_bytes: u32::try_from(MAX_FORWARD_CHUNK_BYTES).unwrap(),
+        },
+        ForwardOp::Write {
+            id: u64::MAX,
+            bytes: vec![0xa5; MAX_FORWARD_CHUNK_BYTES],
+            fin: false,
+        },
+        ForwardOp::Write {
+            id: 1,
+            bytes: Vec::new(),
+            fin: true,
+        },
+        ForwardOp::AgentReply {
+            id: u64::MAX,
+            message: vec![5; MAX_AGENT_MESSAGE_BYTES],
+        },
     ]
     .into_iter()
     .map(|op| (Command::Forward { op }, &C_FORWARD))
+    .collect()
+}
+
+/// One sample per service-HTTP command, then a request carrying every
+/// optional part and a read at the largest size the decoder accepts; all
+/// share a row.
+fn service_http_samples() -> Vec<(Command, &'static Rule)> {
+    use crate::service_http::{MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpRequest};
+    let bare = ServiceHttpRequest {
+        host: None,
+        service: "opencode".to_owned(),
+        method: "GET".to_owned(),
+        target: "/api/info".to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+    let full = ServiceHttpRequest {
+        host: Some("mini".to_owned()),
+        method: "POST".to_owned(),
+        target: "/api/session?directory=%2Ftmp".to_owned(),
+        headers: vec![
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("accept".to_owned(), "text/event-stream".to_owned()),
+        ],
+        body: br#"{"title":"x"}"#.to_vec(),
+        ..bare.clone()
+    };
+    [
+        Command::ServiceHttpOpen {
+            request: Box::new(bare),
+        },
+        Command::ServiceHttpRead {
+            exchange: 1,
+            max_bytes: 1,
+        },
+        Command::ServiceHttpClose { exchange: 1 },
+        Command::ServiceHttpOpen {
+            request: Box::new(full),
+        },
+        Command::ServiceHttpRead {
+            exchange: u64::MAX,
+            max_bytes: u32::try_from(MAX_SERVICE_HTTP_READ_BYTES).unwrap(),
+        },
+    ]
+    .into_iter()
+    .map(|command| (command, &C_SERVICE_HTTP))
     .collect()
 }
 

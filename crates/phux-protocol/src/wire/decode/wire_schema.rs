@@ -39,7 +39,7 @@ use crate::ids::{
 };
 use crate::wire::encode::wire_type;
 use crate::wire::frame::{
-    ActorRef, AgentEvent, CloseReason, CommandResult, DetachReason, DirectoryEntry,
+    ActorRef, AgentEvent, CloseReason, CommandResult, CommandValue, DetachReason, DirectoryEntry,
     DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode, EventStamp, FrameKind,
     HistoryRejectionReason, HistoryTombstoneReason, MoveResult, PathErrorCode, PathKind,
     PathQueryError, PathRow, PathStatus, Scope, SpawnResult, TYPE_FRAME_COMPRESSED,
@@ -51,6 +51,7 @@ use crate::wire::ssh_origin::decode_ssh_origin;
 mod derive;
 mod frames;
 mod model;
+mod roundtrip_tests;
 mod samples;
 mod stream_samples;
 mod types;
@@ -60,7 +61,7 @@ use frames::{FRAME_COMPRESSED, FRAME_VARIANTS, frame_entry};
 use model::{FieldEntry, FrameEntry, Presence, Schema, render};
 use samples::{Sample, actor, frame_samples, generation, key, samples, stream, terminal};
 use stream_samples::{
-    host_samples, lifecycle_samples, metadata_samples, spawn_samples, stream_samples,
+    host_samples, lifecycle_samples, metadata_samples, reply_samples, spawn_samples, stream_samples,
 };
 use types::{KNOWN_TYPES, type_matches};
 
