@@ -141,6 +141,46 @@ fn find_file(dir: &Path, name: &str) -> bool {
     })
 }
 
+fn sidecar_death_dump(
+    root: &Path,
+    state: &Path,
+    pids: &Path,
+    second: i32,
+    server: u32,
+) -> String {
+    let mut out = format!(
+        "server={server}\npids:\n{}\nlife:\n{}\nstat:{:?}\n",
+        std::fs::read_to_string(pids).unwrap_or_default(),
+        std::fs::read_to_string(root.join("life")).unwrap_or_default(),
+        std::fs::read_to_string(format!("/proc/{second}/stat")).ok(),
+    );
+    fn walk(dir: &Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name == "plugin-runs.jsonl" || name.ends_with(".log") || name.ends_with(".pid")
+                })
+            {
+                out.push_str(&format!(
+                    "\n== {} ==\n{}\n",
+                    path.display(),
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                ));
+            }
+        }
+    }
+    walk(state, &mut out);
+    out
+}
+
 struct Reap(i32);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -155,7 +195,12 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
     let root = tempfile::tempdir().unwrap();
     let manifest = write_plugin(
         root.path(),
-        "echo $$ >> \"$PHUX_PLUGIN_ROOT/pids\"\n\
+        "trap 'echo \"TERM $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' TERM\n\
+         trap 'echo \"HUP $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' HUP\n\
+         trap 'echo \"INT $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"' INT\n\
+         trap 'echo \"EXIT $$ status=$?\" >> \"$PHUX_PLUGIN_ROOT/life\"' EXIT\n\
+         echo $$ >> \"$PHUX_PLUGIN_ROOT/pids\"\n\
+         echo \"start $$ ppid=$PPID\" >> \"$PHUX_PLUGIN_ROOT/life\"\n\
          env | sort > \"$PHUX_PLUGIN_ROOT/env.$$\"\n\
          pwd > \"$PHUX_PLUGIN_ROOT/cwd.$$\"\n\
          umask > \"$PHUX_PLUGIN_ROOT/umask.$$\"\n\
@@ -165,7 +210,9 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
            case \"$t\" in socket:*) bad=1 ;; esac\n\
          done\n\
          echo \"$bad\" > \"$PHUX_PLUGIN_ROOT/fds.$$\"\n\
-         sleep 1000\n",
+         echo \"sleeping $$\" >> \"$PHUX_PLUGIN_ROOT/life\"\n\
+         sleep 1000\n\
+         echo \"exit $$ $?\" >> \"$PHUX_PLUGIN_ROOT/life\"\n",
     );
     let xdg = XdgDirs::fresh("startup-upgrade");
     install_config(&xdg, &manifest);
@@ -248,7 +295,12 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         .parse()
         .unwrap();
     reap.0 = second;
-    assert!(alive(second));
+    if !alive(second) {
+        panic!(
+            "second sidecar {second} is dead\n{}",
+            sidecar_death_dump(root.path(), &xdg.state, &pids, second, server.pid())
+        );
+    }
     assert_ne!(first, second);
     wait_for_sidecar_files(root.path(), second);
     let env = std::fs::read_to_string(root.path().join(format!("env.{second}"))).unwrap();
