@@ -147,10 +147,6 @@ async fn run_trace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolErro
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tempfile::TempDir;
-
     use super::*;
     use crate::cli_adapter::fake;
 

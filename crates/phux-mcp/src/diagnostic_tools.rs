@@ -231,13 +231,11 @@ esac
         raw["later"] = json!(true);
         let bytes = raw.to_string().into_bytes();
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("whoami.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(testkit::serve_every(listener, move || {
+        let (socket, server) = testkit::spawn_serve_every(dir.path(), move || {
             ScriptSpec::new()
                 .server_features(ServerFeatureSet::with(&[ServerFeature::Whoami]))
                 .stored_metadata(Scope::Global, WHOAMI_KEY, bytes.clone())
-        }));
+        });
         let result = run_whoami(&json!({ "socket": socket.to_string_lossy() })).await;
         server.abort();
         let result = result.expect("the record is read");
