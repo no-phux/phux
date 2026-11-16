@@ -21,6 +21,7 @@ use super::{
     decode_resource_ids, decode_signal_terminal_command, decode_state_scope,
     decode_subscribe_terminal_events_command, decode_terminal_id,
 };
+use crate::wire::info::decode_counted;
 
 pub(super) fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> {
     dec.read_record(decode_input_event_body)
@@ -388,14 +389,11 @@ pub(super) fn decode_apply_input_command(
     let bytes: [u8; 16] = dec.read_array()?;
     let operation_id = InputOperationId::new(bytes).ok_or(DecodeError::InvalidInputOperationId)?;
     let terminal_id = decode_terminal_id(dec)?;
-    let count = dec.read_u16_be()? as usize;
+    let count = usize::from(dec.read_u16_be()?);
     if count > MAX_APPLY_INPUT_EVENTS {
         return Err(DecodeError::ApplyInputLimitExceeded);
     }
-    let mut events = dec.bounded_capacity(count);
-    for _ in 0..count {
-        events.push(decode_input_event(dec)?);
-    }
+    let events = decode_counted(dec, count, decode_input_event)?;
     Ok(Command::ApplyInput {
         operation_id,
         terminal_id,
