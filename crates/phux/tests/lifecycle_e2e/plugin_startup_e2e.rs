@@ -141,13 +141,7 @@ fn find_file(dir: &Path, name: &str) -> bool {
     })
 }
 
-fn sidecar_death_dump(
-    root: &Path,
-    state: &Path,
-    pids: &Path,
-    second: i32,
-    server: u32,
-) -> String {
+fn sidecar_death_dump(root: &Path, state: &Path, pids: &Path, second: i32, server: u32) -> String {
     let mut out = format!(
         "server={server}\npids:\n{}\nlife:\n{}\nstat:{:?}\n",
         std::fs::read_to_string(pids).unwrap_or_default(),
