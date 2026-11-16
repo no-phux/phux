@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.154.0"
+version = "0.155.0"
 dependencies = [
  "serde",
  "sha2",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.154.0"
+version = "0.155.0"
 dependencies = [
  "bytes",
  "phux-protocol",
