@@ -13,8 +13,9 @@
 //!
 //! Without `--json` the same failure prints the shared human error label and
 //! indented hints; message values and machine documents remain unchanged.
-//! The closed `code` vocabulary lives in
-//! [`codes`]; consumers read `docs/scripting.md#json-output-and-errors`.
+//! The document, its [`CliError`], and the closed `code` vocabulary in
+//! [`codes`] live in [`phux_client::contract`], shared with MCP; consumers
+//! read `docs/scripting.md#json-output-and-errors`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -22,60 +23,11 @@ use std::sync::Mutex;
 
 use phux_client::attach::AttachError;
 
-/// Version of the JSON error document. Additive fields do not bump it.
-pub(crate) const ERROR_SCHEMA_VERSION: u8 = 1;
+pub(crate) use phux_client::contract::{ERROR_SCHEMA_VERSION, codes, error_document};
 
-/// The closed vocabulary of stable error codes. Consumers branch on these,
-/// so renaming one is a breaking change; add new codes here.
-pub(crate) mod codes;
-
-/// One CLI failure, carrying everything both output channels need: a stable
-/// machine `code`, the human `message`, and the `remedy` naming the way out.
-#[derive(Debug, Clone)]
-pub(crate) struct CliError {
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) remedy: String,
-    /// Why this process's auto-start of the server failed, when it tried;
-    /// emitted as `error.auto_start_error`.
-    pub(crate) auto_start_error: Option<String>,
-    /// Cold metadata stays off the common error's stack footprint.
-    context: Option<Box<ErrorContext>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ErrorContext {
-    recovery: Option<phux_client::recovery::Recovery>,
-    cause_code: Option<&'static str>,
-}
-
-impl CliError {
-    pub(crate) fn new(
-        code: &'static str,
-        message: impl Into<String>,
-        remedy: impl Into<String>,
-    ) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            remedy: remedy.into(),
-            auto_start_error: None,
-            context: None,
-        }
-    }
-}
-
-impl CliError {
-    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
-        self.context.get_or_insert_with(Box::default).recovery = Some(recovery);
-        self
-    }
-
-    pub(crate) fn with_cause_code(mut self, code: &'static str) -> Self {
-        self.context.get_or_insert_with(Box::default).cause_code = Some(code);
-        self
-    }
-}
+/// One CLI failure: the shared [`phux_client::contract::Refusal`], under the
+/// name the CLI's verbs already use.
+pub(crate) type CliError = phux_client::contract::Refusal;
 
 /// A verb's failure decided in one place: the error document and the status
 /// to exit with.
@@ -123,29 +75,6 @@ fn auto_start_failure(socket_path: &Path) -> Option<String> {
     slot.as_ref()
         .filter(|(socket, _)| socket == socket_path)
         .map(|(_, error)| error.clone())
-}
-
-/// The JSON error document for `err`. `exit_code` is embedded because a
-/// consumer reading stderr may not see the process status.
-pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value {
-    let mut error = serde_json::json!({ "code": err.code, "message": err.message });
-    if let Some(auto_start_error) = &err.auto_start_error {
-        error["auto_start_error"] = serde_json::Value::from(auto_start_error.as_str());
-    }
-    if let Some(context) = &err.context {
-        if let Some(recovery) = &context.recovery {
-            error["recovery"] = serde_json::json!(recovery);
-        }
-        if let Some(code) = context.cause_code {
-            error["cause_code"] = serde_json::json!(code);
-        }
-    }
-    serde_json::json!({
-        "schema_version": ERROR_SCHEMA_VERSION,
-        "error": error,
-        "remedy": err.remedy,
-        "exit_code": exit_code,
-    })
 }
 
 /// Report `err` on stderr (one JSON line under `json`, prose plus indented
@@ -269,56 +198,11 @@ pub(crate) fn unreachable_socket_message(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn recovery_is_additive_and_never_extracted_from_message_text() {
-        use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
-        let error = super::CliError::new(
-            "session_create_failed",
-            "opaque diagnostic",
-            "inspect state",
-        )
-        .with_cause_code("outcome_unknown")
-        .with_recovery(Recovery::new(
-            ScopeKind::OrganizationAuthority,
-            Some("actual-operation".into()),
-            EffectCertainty::Unknown,
-            NextAction::Reconcile,
-        ));
-        let doc = super::error_document(&error, 1);
-        assert_eq!(doc["schema_version"], 1);
-        assert_eq!(doc["error"]["code"], "session_create_failed");
-        assert_eq!(doc["error"]["cause_code"], "outcome_unknown");
-        assert_eq!(doc["error"]["recovery"]["operation_id"], "actual-operation");
-        assert_eq!(
-            doc["error"]["recovery"]["scope"]["kind"],
-            "organization_authority"
-        );
-        assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
-    }
-
     use std::path::Path;
 
     use phux_client::attach::AttachError;
 
-    use super::{CliError, ERROR_SCHEMA_VERSION, codes, error_document, no_server_error};
-
-    /// The emit shape, pinned: `schema_version` 1, nested error object with
-    /// code and message, top-level `remedy` and `exit_code`.
-    #[test]
-    fn error_document_pins_the_contract_shape() {
-        let err = CliError::new(codes::NO_SERVER, "no server running at /tmp/x", "start one");
-        let doc = error_document(&err, 1);
-        assert_eq!(doc["schema_version"], u64::from(ERROR_SCHEMA_VERSION));
-        assert_eq!(doc["error"]["code"], "no_server");
-        assert_eq!(doc["error"]["message"], "no server running at /tmp/x");
-        assert_eq!(doc["remedy"], "start one");
-        assert_eq!(doc["exit_code"], 1);
-        // Exactly the four top-level keys; a consumer may deny-list nothing.
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
-        // The emitted form is one line.
-        let line = serde_json::to_string(&doc).unwrap_or_default();
-        assert!(!line.contains('\n'), "error line must be single-line");
-    }
+    use super::{codes, error_document, no_server_error};
 
     /// The three attach-error arms map onto the closed vocabulary, each with
     /// a non-empty remedy.
@@ -456,36 +340,5 @@ mod tests {
                 unknown.remedy
             );
         }
-    }
-
-    /// The agent verbs' codes are part of the closed vocabulary frozen by
-    /// ADR-0071 point 6.
-    #[test]
-    fn the_agent_verb_codes_live_in_the_single_closed_vocabulary() {
-        assert_eq!(codes::NO_AGENT_RECORD, "no_agent_record");
-        assert_eq!(codes::AGENT_DEPARTED, "agent_departed");
-        assert_eq!(codes::AGENT_MISMATCH, "agent_mismatch");
-        assert_eq!(codes::INVALID_KEY_SPEC, "invalid_key_spec");
-        // Added after ADR-0071 point 6 was written.
-        assert_eq!(codes::INPUT_NOT_WRITTEN, "input_not_written");
-        assert_eq!(codes::DELIVERY_UNKNOWN, "delivery_unknown");
-    }
-
-    /// The agent session family (`agent session open|close`, `agent emit`,
-    /// `agent log`) spells its codes here, `snake_case`, so the Claude shim and
-    /// the MCP adapter branch on one vocabulary.
-    #[test]
-    fn the_agent_session_codes_live_in_the_single_closed_vocabulary() {
-        assert_eq!(codes::UNSUPPORTED_SERVER, "unsupported_server");
-        assert_eq!(codes::NO_AGENT_SESSION, "no_agent_session");
-        assert_eq!(codes::AGENT_SESSION_AMBIGUOUS, "agent_session_ambiguous");
-        assert_eq!(codes::WRONG_RESOURCE_KIND, "wrong_resource_kind");
-        assert_eq!(codes::NOT_PRODUCER, "not_producer");
-        assert_eq!(codes::RECORD_INVALID, "record_invalid");
-        assert_eq!(codes::OVERFLOW, "overflow");
-        assert_eq!(codes::PARENT_NOT_FOUND, "parent_not_found");
-        assert_eq!(codes::PARENT_KIND_MISMATCH, "parent_kind_mismatch");
-        assert_eq!(codes::AGENT_SESSION_REFUSED, "agent_session_refused");
-        assert_eq!(codes::AGENT_WITHDRAWN, "agent_withdrawn");
     }
 }

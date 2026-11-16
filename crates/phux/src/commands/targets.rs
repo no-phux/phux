@@ -158,25 +158,9 @@ pub(crate) fn report_agent_resolve_error(
 ) -> ExitCode {
     json_err::emit(
         json,
-        &json_err::CliError::new(agent_resolve_code(err), err.to_string(), err.remedy()),
+        &json_err::CliError::new(err.code(), err.to_string(), err.remedy()),
         agent_resolve_exit(err, keep_status),
     )
-}
-
-/// The CLI vocabulary's spelling of [`AgentResolveError::code`], so the
-/// codes stay in [`json_err::codes`] (a test pins the two equal).
-pub(super) const fn agent_resolve_code(
-    err: &phux_client::selector::AgentResolveError,
-) -> &'static str {
-    use phux_client::selector::AgentResolveError;
-    match err {
-        AgentResolveError::Unknown { .. } => json_err::codes::NO_SUCH_TARGET,
-        AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => {
-            json_err::codes::SELECTOR_NOT_SINGLE
-        }
-        AgentResolveError::Withdrawn { .. } => json_err::codes::AGENT_WITHDRAWN,
-        AgentResolveError::PartialIndex { .. } => json_err::codes::PARTIAL_VIEW,
-    }
 }
 
 /// [`AgentResolveError::exit_code`], except a partial index exits 1 under

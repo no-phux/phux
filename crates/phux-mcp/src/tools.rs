@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
+use phux_client::contract::{Refusal, error_document};
 use phux_client::detach::DetachOutcome;
 use phux_client::read::{self, Resolved, Route, Verb};
 use phux_client::selector::{self, Selector};

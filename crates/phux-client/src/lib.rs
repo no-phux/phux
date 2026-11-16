@@ -36,6 +36,8 @@ pub mod attach;
 pub mod checklist;
 // Conditional kills bound to the server's instance token (ADR-0109).
 pub mod conditional_kill;
+// The `--json` error contract every surface reports failures on.
+pub mod contract;
 pub mod credentials;
 pub mod deadline;
 // Delegated agent credentials (ADR-0163).

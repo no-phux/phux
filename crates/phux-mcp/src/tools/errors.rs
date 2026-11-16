@@ -65,18 +65,19 @@ pub(crate) fn agent_resolve_error(err: &selector::AgentResolveError) -> ToolErro
 /// A refusal on the CLI's one-line `--json` error contract, so the tool
 /// error carries the stable `code` a caller branches on.
 pub(crate) fn contract_error(
-    code: &str,
+    code: &'static str,
     message: impl Into<String>,
     remedy: &str,
     exit_code: u8,
 ) -> ToolError {
-    let document = json!({
-        "schema_version": 1,
-        "error": { "code": code, "message": message.into() },
-        "remedy": remedy,
-        "exit_code": exit_code,
-    });
-    ToolError::new(document.to_string())
+    refusal_error(&Refusal::new(code, message, remedy), exit_code)
+}
+
+/// `refusal` rendered as the shared [`error_document`], the tool error's
+/// text and its structured document alike.
+pub(crate) fn refusal_error(refusal: &Refusal, exit_code: u8) -> ToolError {
+    let document = error_document(refusal, exit_code);
+    ToolError::with_document(document.to_string(), document)
 }
 
 /// A transport failure on the `--json` error contract, with the codes the

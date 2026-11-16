@@ -25,51 +25,17 @@ use refusal::{layout_error, move_error};
 
 const JSON_SCHEMA_VERSION: u8 = 1;
 
-/// The refusal codes a spatial edit reports, the `--json` error contract's
-/// vocabulary (`docs/scripting.md#json-output-and-errors`).
+/// The refusal codes a spatial edit reports: its slice of the one closed
+/// `--json` vocabulary in [`crate::contract::codes`]
+/// (`docs/scripting.md#json-output-and-errors`).
 pub mod codes {
-    /// A selector did not parse.
-    pub const INVALID_SELECTOR: &str = "invalid_selector";
-    /// `ratio` was not finite and strictly inside `(0, 1)`.
-    pub const INVALID_RATIO: &str = "invalid_ratio";
-    /// A selector matched no pane.
-    pub const SELECTOR_MISS: &str = "selector_miss";
-    /// A selector matched more than one pane.
-    pub const SELECTOR_NOT_SINGLE: &str = "selector_not_single";
-    /// A selector resolved to a satellite pane.
-    pub const SATELLITE_TARGET: &str = "satellite_target";
-    /// Two selectors resolved to the same pane.
-    pub const SAME_PANE: &str = "same_pane";
-    /// The panes of a same-session edit live in different sessions.
-    pub const CROSS_SESSION: &str = "cross_session";
-    /// A resolved pane has no session in the snapshot.
-    pub const UNKNOWN_TERMINAL_SESSION: &str = "unknown_terminal_session";
-    /// The session has no persisted layout.
-    pub const LAYOUT_MISSING: &str = "layout_missing";
-    /// A selected pane is not in the persisted layout.
-    pub const PANE_NOT_IN_LAYOUT: &str = "pane_not_in_layout";
-    /// The pane being inserted is already in the layout.
-    pub const PANE_ALREADY_IN_LAYOUT: &str = "pane_already_in_layout";
-    /// The layout engine or the server refused the edit.
-    pub const LAYOUT_REJECTED: &str = "layout_rejected";
-    /// The server refused the ownership move.
-    pub const MOVE_REFUSED: &str = "move_refused";
-    /// Ownership moved but the resulting state could not be read.
-    pub const POST_MOVE_STATE_FAILED: &str = "post_move_state_failed";
-    /// The destination changed windows during the move.
-    pub const DESTINATION_CHANGED: &str = "destination_changed";
-    /// The destination layout did not publish.
-    pub const DESTINATION_LAYOUT_FAILED: &str = "destination_layout_failed";
-    /// The source layout could not be cleaned up after the move.
-    pub const SOURCE_LAYOUT_FAILED: &str = "source_layout_failed";
-    /// A `projection` key did not name the addressed session.
-    pub const PROJECTION_INVALID: &str = "projection_invalid";
-    /// The wrong number of `projection` keys for the edit.
-    pub const PROJECTION_ARITY: &str = "projection_arity";
-    /// A defect in this module.
-    pub const INTERNAL_ERROR: &str = "internal_error";
-    /// A transport failure after the edit began.
-    pub const TRANSPORT: &str = "transport";
+    pub use crate::contract::codes::{
+        CROSS_SESSION, DESTINATION_CHANGED, DESTINATION_LAYOUT_FAILED, INTERNAL_ERROR,
+        INVALID_RATIO, INVALID_SELECTOR, LAYOUT_MISSING, LAYOUT_REJECTED, MOVE_REFUSED,
+        PANE_ALREADY_IN_LAYOUT, PANE_NOT_IN_LAYOUT, POST_MOVE_STATE_FAILED, PROJECTION_ARITY,
+        PROJECTION_INVALID, SAME_PANE, SATELLITE_TARGET, SELECTOR_MISS, SELECTOR_NOT_SINGLE,
+        SOURCE_LAYOUT_FAILED, TRANSPORT, UNKNOWN_TERMINAL_SESSION,
+    };
 }
 
 /// The user-facing divider direction of a split.
