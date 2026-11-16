@@ -194,7 +194,10 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the title bar; ⌘-click opens it. On the phone form a
   tap on a link opens it, and a drag across one still selects. URLs wrapped
-  across rows count. Only `http`, `https` and `mailto` open.
+  across rows count. Paths to files that exist count too, absolute, `~/` or
+  relative to the pane's directory, with or without a `:line:col` suffix;
+  ⌘-click opens the file with its default app. A pane on another machine
+  never links paths, so a click can't open a local file that shares one.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
 - **Settings.** The sliders button at the right of the desktop title bar
