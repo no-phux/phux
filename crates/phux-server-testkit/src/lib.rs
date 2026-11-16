@@ -410,6 +410,20 @@ pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
     }
 }
 
+/// An unmodified Enter press with no text (the encoder synthesizes the CR).
+#[must_use]
+pub const fn enter_key() -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key: PhysicalKey::Enter,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    }
+}
+
 /// The optional fields of a `SPAWN_RESOURCE` in group 1. `Default` is a
 /// plain default-shell Terminal spawn on the receiving server.
 #[derive(Debug, Clone, Default)]

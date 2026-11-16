@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, EventStamp, FrameKind, SESSION_CREATE_KEY,
     SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult, ViewportInfo,
@@ -160,23 +159,10 @@ pub(crate) async fn next_output(stream: &mut UnixStream, id: &ResourceId) -> (u6
     .await
 }
 
-/// An unmodified Enter press with no text (the encoder synthesizes the CR).
-pub(crate) const fn enter_key() -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::Enter,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
-
 /// Send Enter to `pane`: releases children blocked on `read _`, so their
 /// output or exit cannot race the spawn reply.
 pub(crate) async fn release(stream: &mut UnixStream, pane: &ResourceId) {
-    let key = phux_server_testkit::input_key(pane.clone(), enter_key());
+    let key = phux_server_testkit::input_key(pane.clone(), phux_server_testkit::enter_key());
     send_frame(stream, &key).await;
 }
 
