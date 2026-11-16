@@ -147,8 +147,8 @@ impl Owner {
             Query::MouseMode(id, reply) => {
                 let _ = reply.send(self.mouse_mode(&id));
             }
-            Query::BracketedPaste(id, reply) => {
-                let _ = reply.send(self.bracketed_paste(&id));
+            Query::Mode(id, mode, reply) => {
+                let _ = reply.send(self.mode(&id, mode));
             }
             Query::Prompt(id, reply) => {
                 let _ = reply.send(

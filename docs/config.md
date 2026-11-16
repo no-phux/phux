@@ -276,6 +276,7 @@ font-family = ""        # "" is the built-in face
 notifications = true
 option-as-meta = false
 copy-on-select = true
+wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
 confirm-close = false
 recent-first = true     # list the session you used last first
 ```

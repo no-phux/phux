@@ -52,6 +52,8 @@ mod apply;
 /// The headless replica: a bounded byte buffer per terminal.
 #[cfg(not(feature = "engine"))]
 pub mod byte_adapter;
+#[cfg(feature = "engine")]
+mod modes;
 mod owner;
 /// Predictive local echo over a projected grid.
 #[cfg(feature = "engine")]
@@ -320,13 +322,6 @@ impl EngineHandle {
     #[cfg(feature = "engine")]
     pub fn mouse_mode(&self, terminal_id: &ResourceId) -> Result<MouseMode, EngineError> {
         self.request(|reply| Command::Query(Query::MouseMode(terminal_id.clone(), reply)))?
-    }
-
-    /// Whether the replica has DEC 2004 bracketed paste on: the mode the
-    /// server will encode a paste against, as this replica last saw it.
-    #[cfg(feature = "engine")]
-    pub fn bracketed_paste(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
-        self.request(|reply| Command::Query(Query::BracketedPaste(terminal_id.clone(), reply)))?
     }
 
     /// Where the replica's shell is in its prompt cycle, from its OSC 133

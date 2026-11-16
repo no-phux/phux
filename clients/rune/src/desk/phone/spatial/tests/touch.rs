@@ -160,6 +160,34 @@ fn a_drag_is_a_pagers_arrows_and_a_tracking_programs_wheel_never_its_button() {
     assert_eq!(rt.state.phone.as_ref().unwrap().travel, [0.0; 2]);
 }
 
+/// Arrows recall old prompts in a chat TUI: they go only where the program
+/// keeps DEC 1007 on and the person hasn't turned them off.
+#[test]
+fn a_drag_sends_no_arrows_once_1007_is_reset_or_the_setting_is_off() {
+    let arrows = |frames: &[FrameKind]| {
+        frames
+            .iter()
+            .filter(|f| matches!(f, FrameKind::InputKey { .. }))
+            .count()
+    };
+    let (client, mut rt) = fixture(true);
+    output(&client, 1, 1, b"\x1b[?1049h\x1b[?1007l");
+    poll(&mut rt);
+    let at = in_grid(&rt);
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert_eq!(arrows(&outbound(&client)), 0, "1007 reset");
+
+    output(&client, 1, 2, b"\x1b[?1007h");
+    poll(&mut rt);
+    rt.state.settings.wheel_arrows = false;
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert_eq!(arrows(&outbound(&client)), 0, "setting off");
+
+    rt.state.settings.wheel_arrows = true;
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert!(arrows(&outbound(&client)) > 0, "both on: arrows as before");
+}
+
 #[test]
 fn a_hold_selects_by_words_and_lifting_copies_the_selection() {
     use crate::desk::phone::touch::Feedback;
