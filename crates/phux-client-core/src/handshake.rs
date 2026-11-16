@@ -202,6 +202,7 @@ mod tests {
     /// A selection the client never offered (profile, features, or limits) is refused.
     #[test]
     fn hello_ok_refuses_a_selection_outside_the_offer() {
+        type Refusal = fn(&HelloOkError) -> bool;
         let native_offer = |features| {
             ClientCapabilities::new().with_bootstrap(
                 BootstrapCapabilities::new()
@@ -226,7 +227,6 @@ mod tests {
         };
         let excessive = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).expect("valid limits");
         let defaults = BootstrapLimits::default();
-        type Refusal = fn(&HelloOkError) -> bool;
         let cases: [(
             &str,
             ClientCapabilities,
