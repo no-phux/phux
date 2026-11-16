@@ -3,7 +3,8 @@
 use super::{
     BootstrapId, BootstrapLimits, BootstrapStreamProfile, Bytes, BytesMut, DecodeError,
     EngineCodec, FrameKind, ResourceId, StreamId, TYPE_BOOTSTRAP_BEGIN, assert_round_trip,
-    bootstrap, encode_without_field, encoded_field_ids, framed, stream, tlv_field,
+    bootstrap, chunk, encode_without_field, encoded_field_ids, framed, history_page,
+    history_request, stream, tlv_field,
 };
 
 #[test]
@@ -75,49 +76,21 @@ fn opaque_lifecycle_records_reencode_byte_identically() {
 #[test]
 fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
-    let chunk = FrameKind::BootstrapChunk {
-        terminal_id: ResourceId::local(1),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        chunk_seq: 0,
-        payload: Bytes::from(vec![0; 1025]),
-    };
-    let mut encoded = BytesMut::new();
-    chunk.encode(&mut encoded);
-    assert_eq!(
-        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
-        DecodeError::BootstrapLimitExceeded
-    );
-    assert!(FrameKind::decode(&encoded).is_ok());
+    for (what, frame) in [
+        ("chunk", chunk(Bytes::from(vec![0; 1025]))),
+        ("page", history_page(Bytes::from(vec![0; 2049]), 1)),
+    ] {
+        let encoded = crate::common::encode(&frame);
+        assert_eq!(
+            FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
+            DecodeError::BootstrapLimitExceeded,
+            "{what} over the negotiated limit"
+        );
+        assert!(FrameKind::decode(&encoded).is_ok(), "{what} within the cap");
+    }
 
-    let page = FrameKind::HistoryPage {
-        terminal_id: ResourceId::local(1),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        page_seq: 1,
-        cursor: Bytes::from_static(b"cursor"),
-        next_cursor: None,
-        payload: Bytes::from(vec![0; 2049]),
-        rows: 1,
-    };
-    encoded.clear();
-    page.encode(&mut encoded);
-    assert_eq!(
-        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
-        DecodeError::BootstrapLimitExceeded
-    );
-    assert!(FrameKind::decode(&encoded).is_ok());
-
-    let request = FrameKind::HistoryRequest {
-        terminal_id: ResourceId::local(1),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        cursor: Bytes::from_static(b"cursor"),
-        max_bytes: 2049,
-        max_rows: 1024,
-    };
-    encoded.clear();
-    request.encode(&mut encoded);
+    let request = history_request(b"cursor", 2049, 1024);
+    let encoded = crate::common::encode(&request);
     let (decoded, tail) = FrameKind::decode_with_limits(&encoded, limits).unwrap();
     assert!(tail.is_empty());
     assert_eq!(decoded, request);
@@ -201,13 +174,7 @@ fn compressed_bootstrap_chunk_round_trips_byte_identically() {
 fn small_frames_are_never_wrapped() {
     use phux_protocol::caps::Compression;
 
-    let frame = FrameKind::BootstrapChunk {
-        terminal_id: ResourceId::local(1),
-        stream_id: StreamId::new(1).expect("stream id"),
-        bootstrap_id: BootstrapId::new(1).expect("bootstrap id"),
-        chunk_seq: 0,
-        payload: bytes::Bytes::from_static(b"tiny"),
-    };
+    let frame = chunk(Bytes::from_static(b"tiny"));
     let mut plain = bytes::BytesMut::new();
     frame.encode(&mut plain);
     let mut scratch = bytes::BytesMut::new();
@@ -222,10 +189,31 @@ fn small_frames_are_never_wrapped() {
 ///
 /// The encoder never produces one, so the envelope is hand-built here around
 /// an inner body whose type byte is `FRAME_COMPRESSED`.
-#[test]
-fn nested_envelopes_are_rejected() {
+/// A hand-built `FRAME_COMPRESSED` frame carrying `deflated` and claiming
+/// it inflates to `declared` bytes.
+fn envelope(deflated: &[u8], declared: u32) -> BytesMut {
     use phux_protocol::wire::encode::Encoder;
     use phux_protocol::wire::field;
+    use phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED;
+
+    let mut out = BytesMut::new();
+    out.extend_from_slice(&[0_u8; 4]);
+    {
+        let mut enc = Encoder::new(&mut out);
+        enc.write_u8(TYPE_FRAME_COMPRESSED);
+        enc.write_field_with(field::frame_compressed::ALGORITHM, |e| e.write_u8(1));
+        enc.write_field_with(field::frame_compressed::UNCOMPRESSED_LEN, |e| {
+            e.write_u32_be(declared);
+        });
+        enc.write_field(field::frame_compressed::PAYLOAD, deflated);
+    }
+    let len = u32::try_from(out.len() - 4).unwrap();
+    out[0..4].copy_from_slice(&len.to_be_bytes());
+    out
+}
+
+#[test]
+fn nested_envelopes_are_rejected() {
     use phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED;
 
     let mut inner_body = vec![TYPE_FRAME_COMPRESSED];
@@ -233,20 +221,7 @@ fn nested_envelopes_are_rejected() {
     let deflated =
         phux_protocol::wire::compress::deflate(&inner_body).expect("a run of zeros compresses");
 
-    let mut out = BytesMut::new();
-    out.extend_from_slice(&[0_u8; 4]);
-    let body_start = out.len();
-    {
-        let mut enc = Encoder::new(&mut out);
-        enc.write_u8(TYPE_FRAME_COMPRESSED);
-        enc.write_field_with(field::frame_compressed::ALGORITHM, |e| e.write_u8(1));
-        enc.write_field_with(field::frame_compressed::UNCOMPRESSED_LEN, |e| {
-            e.write_u32_be(u32::try_from(inner_body.len()).unwrap());
-        });
-        enc.write_field(field::frame_compressed::PAYLOAD, &deflated);
-    }
-    let body_len = u32::try_from(out.len() - body_start).unwrap();
-    out[0..4].copy_from_slice(&body_len.to_be_bytes());
+    let out = envelope(&deflated, u32::try_from(inner_body.len()).unwrap());
 
     assert_eq!(
         FrameKind::decode(&out).expect_err("nesting refused"),
@@ -263,43 +238,13 @@ fn nested_envelopes_are_rejected() {
 /// few hundred bytes on the wire cost the receiver 16 MiB of memory per frame.
 #[test]
 fn an_envelope_may_not_declare_more_than_the_negotiated_bounds() {
-    use phux_protocol::wire::encode::Encoder;
-    use phux_protocol::wire::field;
-    use phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED;
-
     // A real inner frame body (everything past the length prefix), so the
     // payload is above suspicion in both shape and size and only the declared
     // length lies. A body of raw zeros would fail as an unknown frame type
     // before the bound was ever reached, and would prove nothing.
-    let mut framed = BytesMut::new();
-    FrameKind::BootstrapChunk {
-        terminal_id: ResourceId::local(1),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        chunk_seq: 0,
-        payload: Bytes::from(vec![0_u8; 64 * 1024]),
-    }
-    .encode(&mut framed);
-    let body = framed[4..].to_vec();
+    let body = crate::common::encode(&chunk(Bytes::from(vec![0_u8; 64 * 1024])))[4..].to_vec();
     let deflated = phux_protocol::wire::compress::deflate(&body).expect("compresses");
-
-    let envelope = |declared: u32| {
-        let mut out = BytesMut::new();
-        out.extend_from_slice(&[0_u8; 4]);
-        let body_start = out.len();
-        {
-            let mut enc = Encoder::new(&mut out);
-            enc.write_u8(TYPE_FRAME_COMPRESSED);
-            enc.write_field_with(field::frame_compressed::ALGORITHM, |e| e.write_u8(1));
-            enc.write_field_with(field::frame_compressed::UNCOMPRESSED_LEN, |e| {
-                e.write_u32_be(declared);
-            });
-            enc.write_field(field::frame_compressed::PAYLOAD, &deflated);
-        }
-        let len = u32::try_from(out.len() - body_start).unwrap();
-        out[0..4].copy_from_slice(&len.to_be_bytes());
-        out
-    };
+    let envelope = |declared: u32| envelope(&deflated, declared);
 
     // Just under the 16 MiB frame cap: legal under the old bound, refused now.
     let greedy = envelope(15 * 1024 * 1024);

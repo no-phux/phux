@@ -38,6 +38,82 @@ const fn bootstrap(raw: u64) -> BootstrapId {
     BootstrapId::new(raw).unwrap()
 }
 
+/// The decode error for `frame`'s own encoding.
+fn decode_err(frame: &FrameKind) -> DecodeError {
+    FrameKind::decode(&crate::common::encode(frame)).unwrap_err()
+}
+
+/// The ids every history builder below shares: terminal 1, stream 2,
+/// bootstrap 3.
+fn ids() -> (ResourceId, StreamId, BootstrapId) {
+    (ResourceId::local(1), stream(2), bootstrap(3))
+}
+
+fn chunk(payload: Bytes) -> FrameKind {
+    let (terminal_id, stream_id, bootstrap_id) = ids();
+    FrameKind::BootstrapChunk {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        chunk_seq: 0,
+        payload,
+    }
+}
+
+fn history_page(payload: Bytes, rows: u32) -> FrameKind {
+    let (terminal_id, stream_id, bootstrap_id) = ids();
+    FrameKind::HistoryPage {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        page_seq: 1,
+        cursor: Bytes::from_static(b"cursor"),
+        next_cursor: None,
+        payload,
+        rows,
+    }
+}
+
+fn history_request(cursor: &'static [u8], max_bytes: u32, max_rows: u32) -> FrameKind {
+    let (terminal_id, stream_id, bootstrap_id) = ids();
+    FrameKind::HistoryRequest {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        cursor: Bytes::from_static(cursor),
+        max_bytes,
+        max_rows,
+    }
+}
+
+fn history_tombstone(reason: HistoryTombstoneReason) -> FrameKind {
+    let (terminal_id, stream_id, bootstrap_id) = ids();
+    FrameKind::HistoryTombstone {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        cursor: Bytes::from_static(b"cursor"),
+        reason,
+    }
+}
+
+fn history_rejected(
+    reason: HistoryRejectionReason,
+    required_bytes: u32,
+    required_rows: u32,
+) -> FrameKind {
+    let (terminal_id, stream_id, bootstrap_id) = ids();
+    FrameKind::HistoryRejected {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        cursor: Bytes::from_static(b"cursor"),
+        reason,
+        required_bytes,
+        required_rows,
+    }
+}
+
 fn encoded_field_ids(frame: &FrameKind) -> Vec<u64> {
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);

@@ -7,20 +7,26 @@ use super::{
     framed, select_bootstrap_profile, tlv_field,
 };
 
+/// Bootstrap capabilities offering `codec` with every required native feature.
+fn native(codec: EngineCodec) -> BootstrapCapabilities {
+    BootstrapCapabilities::new().with_native(codec, EngineFeatureSet::required_native())
+}
+
+fn client_with(bootstrap: BootstrapCapabilities) -> ClientCapabilities {
+    ClientCapabilities::new().with_bootstrap(bootstrap)
+}
+
+/// The profile `client` and `server` negotiate; panics if they cannot.
+fn selected(client: &ClientCapabilities, server: &BootstrapCapabilities) -> BootstrapProfile {
+    select_bootstrap_profile(client, server).unwrap().0
+}
+
 #[test]
 fn profile_selection_prefers_native_then_explicit_compatibility() {
-    let server = BootstrapCapabilities::new()
-        .with_native(
-            EngineCodec::LibghosttyCheckpointV2,
-            EngineFeatureSet::required_native(),
-        )
+    let server = native(EngineCodec::LibghosttyCheckpointV2)
         .with_limits(BootstrapLimits::new(64 * 1024, 256 * 1024).unwrap());
-    let client = ClientCapabilities::new().with_bootstrap(
-        BootstrapCapabilities::new()
-            .with_native(
-                EngineCodec::LibghosttyCheckpointV2,
-                EngineFeatureSet::required_native(),
-            )
+    let client = client_with(
+        native(EngineCodec::LibghosttyCheckpointV2)
             .with_limits(BootstrapLimits::new(128 * 1024, 128 * 1024).unwrap()),
     );
     let (profile, limits) = select_bootstrap_profile(&client, &server).unwrap();
@@ -28,7 +34,6 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
         profile,
         BootstrapProfile::NativeState {
             codec: EngineCodec::LibghosttyCheckpointV2,
-
             features: EngineFeatureSet::required_native(),
         }
     );
@@ -42,26 +47,17 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
         .with_bootstrap(BootstrapCapabilities::new().with_profiles(state_sync_only));
     let server = BootstrapCapabilities::new().with_profiles(state_sync_only);
     assert_eq!(
-        select_bootstrap_profile(&client, &server).unwrap().0,
+        selected(&client, &server),
         BootstrapProfile::SynthesizedVtStateSync
     );
 
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
-    let client = ClientCapabilities::new().with_bootstrap(
-        BootstrapCapabilities::new()
-            .with_native(
-                EngineCodec::LibghosttyCheckpointV2,
-                EngineFeatureSet::required_native(),
-            )
+    let client = client_with(
+        native(EngineCodec::LibghosttyCheckpointV2)
             .with_profiles(native_only)
             .with_native_codecs(EngineCodecSet::new()),
     );
-    let server = BootstrapCapabilities::new()
-        .with_native(
-            EngineCodec::LibghosttyCheckpointV2,
-            EngineFeatureSet::required_native(),
-        )
-        .with_profiles(native_only);
+    let server = native(EngineCodec::LibghosttyCheckpointV2).with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
 }
 
@@ -78,7 +74,7 @@ fn native_selection_uses_the_highest_exact_known_common_codec() {
     );
 
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
-    let client = ClientCapabilities::new().with_bootstrap(
+    let client = client_with(
         BootstrapCapabilities::new()
             .with_profiles(native_only)
             .with_native_codecs(client_codecs)
@@ -89,7 +85,7 @@ fn native_selection_uses_the_highest_exact_known_common_codec() {
         .with_native_codecs(server_codecs)
         .with_native_features(EngineFeatureSet::required_native());
     assert_eq!(
-        select_bootstrap_profile(&client, &server).unwrap().0,
+        selected(&client, &server),
         BootstrapProfile::NativeState {
             codec: EngineCodec::LibghosttySnapshotV1,
             features: EngineFeatureSet::required_native(),
@@ -99,18 +95,11 @@ fn native_selection_uses_the_highest_exact_known_common_codec() {
 
 #[test]
 fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
-    let client =
-        ClientCapabilities::new().with_bootstrap(BootstrapCapabilities::new().with_native(
-            EngineCodec::LibghosttyCheckpointV2,
-            EngineFeatureSet::required_native(),
-        ));
-    let server = BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttySnapshotV1,
-        EngineFeatureSet::required_native(),
-    );
+    let client = client_with(native(EngineCodec::LibghosttyCheckpointV2));
+    let server = native(EngineCodec::LibghosttySnapshotV1);
 
     assert_eq!(
-        select_bootstrap_profile(&client, &server).unwrap().0,
+        selected(&client, &server),
         BootstrapProfile::SynthesizedVtRaw,
         "different native contracts must never be inferred compatible"
     );
@@ -144,14 +133,10 @@ fn pre1_and_vt1_snapshots_negotiate_synthesis_in_both_directions() {
             EngineCodec::LibghosttyPre1SnapshotV1,
         ),
     ] {
-        let client = ClientCapabilities::new().with_bootstrap(
-            BootstrapCapabilities::new()
-                .with_native(client_codec, EngineFeatureSet::required_native()),
-        );
-        let server = BootstrapCapabilities::new()
-            .with_native(server_codec, EngineFeatureSet::required_native());
+        let client = client_with(native(client_codec));
+        let server = native(server_codec);
         assert_eq!(
-            select_bootstrap_profile(&client, &server).unwrap().0,
+            selected(&client, &server),
             BootstrapProfile::SynthesizedVtRaw,
             "the unchanged snapshot envelope version must not imply codec compatibility"
         );
@@ -177,18 +162,15 @@ fn retired_snapshot_id_3_falls_back_to_synthesis() {
     assert_eq!(retired_only, EngineCodecSet::new());
 
     let advertised = BootstrapProfileSet::all();
-    let client = ClientCapabilities::new().with_bootstrap(
+    let client = client_with(
         BootstrapCapabilities::new()
             .with_profiles(advertised)
             .with_native_codecs(retired_only)
             .with_native_features(EngineFeatureSet::required_native()),
     );
-    let server = BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttySnapshotV1,
-        EngineFeatureSet::required_native(),
-    );
+    let server = native(EngineCodec::LibghosttySnapshotV1);
     assert_eq!(
-        select_bootstrap_profile(&client, &server).unwrap().0,
+        selected(&client, &server),
         BootstrapProfile::SynthesizedVtRaw
     );
 }
@@ -199,7 +181,7 @@ fn future_only_codec_bits_never_select_native() {
     assert_eq!(future_only, EngineCodecSet::new());
 
     let advertised = BootstrapProfileSet::all();
-    let client = ClientCapabilities::new().with_bootstrap(
+    let client = client_with(
         BootstrapCapabilities::new()
             .with_profiles(advertised)
             .with_native_codecs(future_only)
@@ -210,13 +192,12 @@ fn future_only_codec_bits_never_select_native() {
         .with_native_codecs(future_only)
         .with_native_features(EngineFeatureSet::required_native());
     assert_eq!(
-        select_bootstrap_profile(&client, &server).unwrap().0,
+        selected(&client, &server),
         BootstrapProfile::SynthesizedVtRaw
     );
 
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
-    let client =
-        ClientCapabilities::new().with_bootstrap(client.bootstrap.with_profiles(native_only));
+    let client = client_with(client.bootstrap.with_profiles(native_only));
     let server = server.with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
 }
@@ -261,15 +242,14 @@ fn every_native_required_feature_is_strict() {
             .with_profiles(native_and_raw)
             .with_native_codecs(codecs)
             .with_native_features(features);
-        let client = ClientCapabilities::new().with_bootstrap(bootstrap);
+        let client = client_with(bootstrap);
         assert_eq!(
-            select_bootstrap_profile(&client, &server).unwrap().0,
+            selected(&client, &server),
             BootstrapProfile::SynthesizedVtRaw,
             "partial native features must fall back explicitly"
         );
 
-        let native_required =
-            ClientCapabilities::new().with_bootstrap(bootstrap.with_profiles(native_only));
+        let native_required = client_with(bootstrap.with_profiles(native_only));
         assert!(
             select_bootstrap_profile(&native_required, &server.with_profiles(native_only)).is_err(),
             "partial native features must reject when no synthesis profile is common"
@@ -283,10 +263,7 @@ fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
     const SYNTHESIZED_RAW_BIT: u8 = 0x02;
     const LEGACY_PROFILE_MASK: u8 = 0x07;
 
-    let new_server = BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttyCheckpointV2,
-        EngineFeatureSet::required_native(),
-    );
+    let new_server = native(EngineCodec::LibghosttyCheckpointV2);
     let new_offer_as_seen_by_old_server = new_server.profiles.as_wire() & LEGACY_PROFILE_MASK;
     let old_server_selection = if new_offer_as_seen_by_old_server & LEGACY_NATIVE_BIT != 0 {
         LEGACY_NATIVE_BIT
@@ -320,17 +297,14 @@ fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
 
     let old_client_profiles =
         BootstrapProfileSet::from_wire(LEGACY_NATIVE_BIT | SYNTHESIZED_RAW_BIT);
-    let old_client = ClientCapabilities::new()
-        .with_bootstrap(BootstrapCapabilities::new().with_profiles(old_client_profiles));
+    let old_client = client_with(BootstrapCapabilities::new().with_profiles(old_client_profiles));
     assert_eq!(
-        select_bootstrap_profile(&old_client, &new_server)
-            .unwrap()
-            .0,
+        selected(&old_client, &new_server),
         BootstrapProfile::SynthesizedVtRaw,
         "a new server must ignore the retired legacy native bit"
     );
 
-    let old_native_only = ClientCapabilities::new().with_bootstrap(
+    let old_native_only = client_with(
         BootstrapCapabilities::new()
             .with_profiles(BootstrapProfileSet::from_wire(LEGACY_NATIVE_BIT)),
     );
@@ -343,14 +317,9 @@ fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
 #[test]
 fn old_engine_capabilities_fall_back_without_changing_protocol_version() {
     let old_engine_client = ClientCapabilities::new();
-    let native_server = BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttyCheckpointV2,
-        EngineFeatureSet::required_native(),
-    );
+    let native_server = native(EngineCodec::LibghosttyCheckpointV2);
     assert_eq!(
-        select_bootstrap_profile(&old_engine_client, &native_server)
-            .unwrap()
-            .0,
+        selected(&old_engine_client, &native_server),
         BootstrapProfile::SynthesizedVtRaw
     );
     assert_eq!(

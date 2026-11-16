@@ -79,9 +79,7 @@ const ALLOC_CEILING: usize = 1 << 20;
 /// Assert a hostile frame both fails to decode and never reserves on the order
 /// of its declared count rather than its actual size.
 ///
-/// The four cases below differ only in which field carries the bogus
-/// `u32::MAX`; before this they also differed in what their failure message
-/// bothered to report, which is not a difference worth keeping.
+/// The cases differ only in which field carries the bogus `u32::MAX`.
 fn assert_bounded_alloc(frame: &[u8], what: &str) {
     let max = largest_alloc_during(frame);
     assert!(
@@ -95,80 +93,76 @@ fn assert_bounded_alloc(frame: &[u8], what: &str) {
     );
 }
 
-#[test]
-fn metadata_keys_huge_count_does_not_over_reserve() {
-    // METADATA_KEYS (0xD2): the KEYS field (id 2) value is a positional u32
-    // count + strings. Declare count = u32::MAX inside a tiny field.
-    let mut keys_value = Vec::new();
-    keys_value.extend_from_slice(&u32::MAX.to_be_bytes());
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
-    tlv_field(&mut fields, 2, &keys_value); // keys: huge count, no elements
-    let frame = framed_tlv(0xD2, &fields);
-    assert_bounded_alloc(&frame, "metadata keys");
+/// A hostile frame of `type_byte` whose `fields` precede `count_field`, a
+/// positional list value that declares `u32::MAX` elements, then `filler`
+/// bytes of `0xFF`, so the first element fails to decode.
+fn huge_count_frame(
+    type_byte: u8,
+    fields: &[(u32, &[u8])],
+    count_field: u32,
+    filler: usize,
+) -> Vec<u8> {
+    let mut value = u32::MAX.to_be_bytes().to_vec();
+    value.resize(4 + filler, 0xFF);
+    let mut body = Vec::new();
+    for (id, bytes) in fields {
+        tlv_field(&mut body, *id, bytes);
+    }
+    tlv_field(&mut body, count_field, &value);
+    framed_tlv(type_byte, &body)
 }
 
-#[test]
-fn directory_listing_huge_entry_count_does_not_over_reserve() {
-    // DIRECTORY_LISTING (0xD3): the ENTRIES field (id 4) value is a
-    // positional u32 count + (name, flags) pairs. Declare count = u32::MAX
-    // inside a tiny field.
-    let mut entries_value = Vec::new();
-    entries_value.extend_from_slice(&u32::MAX.to_be_bytes());
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
-    tlv_field(&mut fields, 2, b"/"); // path
-    tlv_field(&mut fields, 4, &entries_value); // entries: huge count
-    let frame = framed_tlv(0xD3, &fields);
-    assert_bounded_alloc(&frame, "directory listing entries");
-}
+const REQUEST_ID: [u8; 4] = 0u32.to_be_bytes();
+const GROUP_1: [u8; 4] = 1u32.to_be_bytes();
+
+/// Every positional list a hostile peer can inflate: (label, type byte,
+/// fields before the list, list field id).
+const HUGE_COUNT_CASES: &[(&str, u8, &[(u32, &[u8])], u32)] = &[
+    // METADATA_KEYS (0xD2): KEYS (id 2) is a u32 count + strings.
+    ("metadata keys", 0xD2, &[(1, &REQUEST_ID)], 2),
+    // DIRECTORY_LISTING (0xD3): ENTRIES (id 4) is a u32 count + (name, flags).
+    (
+        "directory listing entries",
+        0xD3,
+        &[(1, &REQUEST_ID), (2, b"/")],
+        4,
+    ),
+    // SPAWN_RESOURCE (0x22): COMMAND (id 3) is a u32 count + strings.
+    (
+        "spawn command list",
+        0x22,
+        &[(1, &REQUEST_ID), (2, &GROUP_1)],
+        3,
+    ),
+    // SPAWN_RESOURCE: ENV (id 5) is a u32 count + pairs.
+    (
+        "spawn env list",
+        0x22,
+        &[(1, &REQUEST_ID), (2, &GROUP_1)],
+        5,
+    ),
+    // ATTACHED (0x81): SNAPSHOT (id 1) starts with a u32 sessions count.
+    ("attached sessions list", 0x81, &[], 1),
+];
 
 #[test]
-fn spawn_terminal_huge_command_list_does_not_over_reserve() {
-    // SPAWN_RESOURCE (0x22): the COMMAND field (id 3) value is a positional u32
-    // count + strings. Declare count = u32::MAX inside a tiny field.
-    let mut cmd_value = Vec::new();
-    cmd_value.extend_from_slice(&u32::MAX.to_be_bytes());
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
-    tlv_field(&mut fields, 2, &1u32.to_be_bytes()); // group
-    tlv_field(&mut fields, 3, &cmd_value); // command: huge count
-    let frame = framed_tlv(0x22, &fields);
-    assert_bounded_alloc(&frame, "spawn command list");
+fn huge_declared_counts_do_not_over_reserve() {
+    for &(what, type_byte, fields, count_field) in HUGE_COUNT_CASES {
+        assert_bounded_alloc(&huge_count_frame(type_byte, fields, count_field, 0), what);
+    }
 }
 
-#[test]
-fn spawn_terminal_huge_env_list_does_not_over_reserve() {
-    // SPAWN_RESOURCE env: the ENV field (id 5) value is a positional u32 count
-    // + pairs. Declare count = u32::MAX inside a tiny field.
-    let mut env_value = Vec::new();
-    env_value.extend_from_slice(&u32::MAX.to_be_bytes());
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // request_id
-    tlv_field(&mut fields, 2, &1u32.to_be_bytes()); // group
-    tlv_field(&mut fields, 5, &env_value); // env: huge count
-    let frame = framed_tlv(0x22, &fields);
-    assert_bounded_alloc(&frame, "spawn env list");
-}
-
-#[test]
-fn attached_snapshot_huge_sessions_list_does_not_over_reserve() {
-    // ATTACHED (0x81): the SNAPSHOT field (id 1) value is a positional
-    // SessionSnapshot that starts with a u32 sessions count. Declare
-    // count = u32::MAX inside a tiny field.
-    let mut snap_value = Vec::new();
-    snap_value.extend_from_slice(&u32::MAX.to_be_bytes()); // sessions count
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &snap_value); // snapshot
-    let frame = framed_tlv(0x81, &fields);
-    assert_bounded_alloc(&frame, "attached sessions list");
+/// `ResourceId::local(1)` as its positional wire bytes.
+fn terminal_local1() -> [u8; 5] {
+    let mut terminal = [0_u8; 5];
+    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    terminal
 }
 
 #[test]
 fn negotiated_oversize_bootstrap_chunk_rejects_before_payload_allocation() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
-    let mut terminal = [0_u8; 5];
-    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let terminal = terminal_local1();
     let payload = vec![0xA5; 256 * 1024];
     let mut body = vec![TYPE_BOOTSTRAP_CHUNK];
     tlv_field(&mut body, 1, &terminal);
@@ -188,8 +182,7 @@ fn negotiated_oversize_bootstrap_chunk_rejects_before_payload_allocation() {
 
 #[test]
 fn malformed_bootstrap_payload_length_rejects_without_reserving() {
-    let mut terminal = [0_u8; 5];
-    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let terminal = terminal_local1();
     let mut body = vec![TYPE_BOOTSTRAP_CHUNK];
     tlv_field(&mut body, 1, &terminal);
     tlv_field(&mut body, 2, &1_u64.to_be_bytes());
@@ -213,8 +206,7 @@ fn malformed_bootstrap_payload_length_rejects_without_reserving() {
 
 #[test]
 fn oversized_terminal_reply_rejects_before_owned_bytes_allocation() {
-    let mut terminal = [0_u8; 5];
-    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let terminal = terminal_local1();
     let payload = vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES + 1];
     let mut body = vec![TYPE_INPUT_TERMINAL_REPLY];
     tlv_field(&mut body, 1, &terminal);
@@ -278,7 +270,10 @@ fn append_resource_output_declared_length_past_frame_rejects_without_reserving()
         result,
         Err(DecodeError::LengthOverflow | DecodeError::UnexpectedEof)
     ));
-    assert!(max < 1 << 20, "declared-length append reserved {max} bytes");
+    assert!(
+        max < ALLOC_CEILING,
+        "declared-length append reserved {max} bytes"
+    );
 }
 
 #[test]
@@ -298,16 +293,12 @@ fn snapshot_huge_resource_facet_count_does_not_over_reserve() {
     tlv_field(&mut fields, 1, &snap);
     tlv_field(&mut fields, 2, &7_u32.to_be_bytes());
     tlv_field(&mut fields, 3, &1_u32.to_be_bytes());
-    let frame = framed_tlv(0x81, &fields);
-    let max = largest_alloc_during(&frame);
-    assert!(FrameKind::decode(&frame).is_err());
-    assert!(max < 1 << 20, "facet rows reserved {max} bytes");
+    assert_bounded_alloc(&framed_tlv(0x81, &fields), "snapshot facet rows");
 }
 
 #[test]
 fn oversized_history_status_cursors_reject_before_owned_copy() {
-    let mut terminal = [0_u8; 5];
-    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let terminal = terminal_local1();
     let cursor = vec![0xA5; MAX_HISTORY_CURSOR_BYTES + 1];
     for type_byte in [TYPE_HISTORY_TOMBSTONE, TYPE_HISTORY_REJECTED] {
         let mut body = vec![type_byte];
@@ -330,8 +321,7 @@ fn oversized_history_status_cursors_reject_before_owned_copy() {
 
 #[test]
 fn malformed_history_page_scalars_reject_before_payload_allocation_in_any_field_order() {
-    let mut terminal = [0_u8; 5];
-    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let terminal = terminal_local1();
     let payload = vec![0xA5; 256 * 1024];
 
     for (page_seq, rows, expected) in [
@@ -389,30 +379,14 @@ fn assert_alloc_within_input(frame: &[u8], what: &str) {
 
 #[test]
 fn padded_huge_counts_reserve_no_more_than_the_input() {
-    // ATTACHED snapshot: a u32::MAX sessions count followed by filler.
-    let mut snap_value = u32::MAX.to_be_bytes().to_vec();
-    snap_value.resize(4 + FILLER, 0xFF);
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &snap_value);
-    assert_alloc_within_input(&framed_tlv(0x81, &fields), "attached sessions list");
-
-    // SPAWN_RESOURCE command list: a u32::MAX count followed by filler.
-    let mut cmd_value = u32::MAX.to_be_bytes().to_vec();
-    cmd_value.resize(4 + FILLER, 0xFF);
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes());
-    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
-    tlv_field(&mut fields, 3, &cmd_value);
-    assert_alloc_within_input(&framed_tlv(0x22, &fields), "spawn command list");
-
-    // SPAWN_RESOURCE env list: pairs are the widest string element.
-    let mut env_value = u32::MAX.to_be_bytes().to_vec();
-    env_value.resize(4 + FILLER, 0xFF);
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes());
-    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
-    tlv_field(&mut fields, 5, &env_value);
-    assert_alloc_within_input(&framed_tlv(0x22, &fields), "spawn env list");
+    // The attached sessions list and both spawn lists; env pairs are the
+    // widest string element.
+    for &(what, type_byte, fields, count_field) in &HUGE_COUNT_CASES[2..] {
+        assert_alloc_within_input(
+            &huge_count_frame(type_byte, fields, count_field, FILLER),
+            what,
+        );
+    }
 }
 
 /// The organization bounds (`docs/organization.md`) are enforced at decode:
