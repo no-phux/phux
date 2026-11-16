@@ -29,22 +29,6 @@ const UPDATE_POLL_WINDOW: Duration = Duration::from_secs(8);
 /// A version no real release uses, so a painted toast can only be this stub.
 const STUB_LATEST: &str = "v9.9.9";
 
-/// Wait until every phrase has been painted; panic with the transcript.
-fn wait_for(client: &common::PtyAttach, phrases: &[&str]) {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let painted = client.painted();
-        if phrases.iter().all(|phrase| painted.contains(phrase)) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "never painted {phrases:?}; painted text was:\n{painted}"
-        );
-        std::thread::sleep(POLL);
-    }
-}
-
 /// Plant a completed onboarding file and a fresh update-check cache that
 /// names [`STUB_LATEST`], then point the attach at that state dir.
 fn plant_stubbed_release(config: &std::path::Path, command: &mut CommandBuilder) {
@@ -84,7 +68,7 @@ fn harness_attach_hides_a_stubbed_newer_release() {
         .start();
     let mut client =
         common::PtyAttach::start_with(&server.socket, &[SESSION], (120, 40), plant_stubbed_release);
-    wait_for(&client, &["Sessions"]);
+    client.await_painted(&["Sessions"], DEADLINE);
 
     // The bar polls the cache once a second for this long. The stub is
     // already on disk, so the first tick would paint it if the opt-out
@@ -103,7 +87,7 @@ fn harness_attach_hides_a_stubbed_newer_release() {
     }
 
     client.send(b"echo STILL-$((4+4))\r");
-    wait_for(&client, &["STILL-8"]);
+    client.await_painted(&["STILL-8"], DEADLINE);
     assert!(
         client.is_running(),
         "the attach exited while proving the update notice stays down"

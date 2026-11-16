@@ -14,7 +14,6 @@ use crate::{common, listeners};
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,11 +41,7 @@ mode = \"paired\"
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
-    let config = tempfile::tempdir().expect("config");
-    let path = write_config(config.path(), UNSET_CONFIG);
-    let server = ServerGuard::builder("pairno")
-        .env("XDG_CONFIG_HOME", config.path())
-        .start();
+    let (_config, path, server) = unset_server("pairno");
 
     for args in [vec!["pair"], vec!["pair", "--qr"]] {
         let (code, stdout, stderr) = server.run(&args);
@@ -72,10 +67,7 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
             "{line}"
         );
         assert!(line.contains("phux doctor"), "{line}");
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("config"),
-            UNSET_CONFIG
-        );
+        assert_config_unchanged(&path);
     }
 }
 
@@ -84,11 +76,7 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
 #[test]
 #[ignore = "spawns a real phux server and a pty; run via `just e2e`."]
 fn pair_json_on_a_terminal_names_enable_and_leaves_the_config() {
-    let config = tempfile::tempdir().expect("config");
-    let path = write_config(config.path(), UNSET_CONFIG);
-    let server = ServerGuard::builder("pairjson")
-        .env("XDG_CONFIG_HOME", config.path())
-        .start();
+    let (_config, path, server) = unset_server("pairjson");
 
     // A yes is queued only if a prompt appears. The command must exit
     // before that, so the reply is never consumed.
@@ -103,10 +91,7 @@ fn pair_json_on_a_terminal_names_enable_and_leaves_the_config() {
             && transcript.contains("[policy] mode = \"paired\""),
         "{transcript}"
     );
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("config"),
-        UNSET_CONFIG
-    );
+    assert_config_unchanged(&path);
 }
 
 /// A terminal asks once. `n` and an empty answer leave the config alone
@@ -115,11 +100,7 @@ fn pair_json_on_a_terminal_names_enable_and_leaves_the_config() {
 #[test]
 #[ignore = "spawns a real phux server and a pty; run via `just e2e`."]
 fn pair_on_a_terminal_declines_without_changing_the_config() {
-    let config = tempfile::tempdir().expect("config");
-    let path = write_config(config.path(), UNSET_CONFIG);
-    let server = ServerGuard::builder("pairask")
-        .env("XDG_CONFIG_HOME", config.path())
-        .start();
+    let (_config, path, server) = unset_server("pairask");
 
     for reply in ["n\n", "\n"] {
         let (code, transcript) = drive_pty(&server, &["--qr"], "phones need paired mode", reply);
@@ -139,10 +120,7 @@ fn pair_on_a_terminal_declines_without_changing_the_config() {
                 && transcript.contains("[policy] mode = \"paired\""),
             "{transcript}"
         );
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("config"),
-            UNSET_CONFIG
-        );
+        assert_config_unchanged(&path);
     }
 }
 
@@ -158,15 +136,7 @@ fn pair_enable_writes_paired_mode_and_mints() {
         stdout.contains("Token written to"),
         "the mint should continue after the restart:\n{stdout}"
     );
-    assert_config_paired(&restarted.config_path);
-    assert!(
-        common::process_exists(restarted.child),
-        "the seed pane should survive the restart"
-    );
-    listeners::bound_listener_addr(
-        &restarted.server.socket,
-        listeners::RemoteListenerTransport::Quic,
-    );
+    restarted.assert_paired_and_bound();
 }
 
 /// Answering yes is the same path as `--enable`: the config gains
@@ -181,15 +151,7 @@ fn pair_on_a_terminal_enables_paired_mode_and_mints() {
         transcript.contains("Token written to"),
         "the mint should continue after yes:\n{transcript}"
     );
-    assert_config_paired(&restarted.config_path);
-    assert!(
-        common::process_exists(restarted.child),
-        "the seed pane should survive the restart"
-    );
-    listeners::bound_listener_addr(
-        &restarted.server.socket,
-        listeners::RemoteListenerTransport::Quic,
-    );
+    restarted.assert_paired_and_bound();
 }
 
 /// A server that bound `--quic` under `paired`, then lost the mode across
@@ -235,6 +197,39 @@ fn server_with_unbound_listener(prefix: &str) -> Restarted {
     }
 }
 
+impl Restarted {
+    /// The config gained `paired` (keeping its comment), the seed pane
+    /// survived the restart, and the listener is bound again.
+    fn assert_paired_and_bound(&self) {
+        let written = std::fs::read_to_string(&self.config_path).expect("config");
+        assert!(written.contains("# keep-me"), "{written}");
+        assert!(written.contains("width = 28"), "{written}");
+        assert!(written.contains("mode = \"paired\""), "{written}");
+        assert!(
+            common::process_exists(self.child),
+            "the seed pane should survive the restart"
+        );
+        listeners::bound_listener_addr(
+            &self.server.socket,
+            listeners::RemoteListenerTransport::Quic,
+        );
+    }
+}
+
+/// A server whose private config leaves `[policy] mode` unset.
+fn unset_server(prefix: &str) -> (tempfile::TempDir, PathBuf, ServerGuard) {
+    let config = tempfile::tempdir().expect("config");
+    let path = write_config(config.path(), UNSET_CONFIG);
+    let server = ServerGuard::builder(prefix)
+        .env("XDG_CONFIG_HOME", config.path())
+        .start();
+    (config, path, server)
+}
+
+fn assert_config_unchanged(path: &Path) {
+    assert_eq!(std::fs::read_to_string(path).expect("config"), UNSET_CONFIG);
+}
+
 fn write_config(home: &Path, body: &str) -> PathBuf {
     let path = home.join("phux/config.toml");
     std::fs::create_dir_all(path.parent().expect("parent")).expect("config dir");
@@ -242,17 +237,10 @@ fn write_config(home: &Path, body: &str) -> PathBuf {
     path
 }
 
-fn assert_config_paired(path: &Path) {
-    let written = std::fs::read_to_string(path).expect("config");
-    assert!(written.contains("# keep-me"), "{written}");
-    assert!(written.contains("width = 28"), "{written}");
-    assert!(written.contains("mode = \"paired\""), "{written}");
-}
-
 fn wait_child(parent: u32) -> u32 {
     let start = Instant::now();
     loop {
-        if let Some(pid) = child_of(parent) {
+        if let Some(pid) = common::child_of(parent) {
             return pid;
         }
         assert!(
@@ -261,18 +249,6 @@ fn wait_child(parent: u32) -> u32 {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn child_of(parent: u32) -> Option<u32> {
-    let out = std::process::Command::new("pgrep")
-        .args(["-P", &parent.to_string()])
-        .stdout(Stdio::piped())
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|line| line.trim().parse().ok())
 }
 
 /// Run `phux pair` on a pty. Wait until `needle` is visible, write `reply`,

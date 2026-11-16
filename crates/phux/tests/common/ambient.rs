@@ -288,6 +288,23 @@ pub fn until<T>(deadline: std::time::Duration, mut probe: impl FnMut() -> Option
     }
 }
 
+/// Poll `probe` until it holds; `false` once `deadline` has passed.
+pub fn eventually(deadline: std::time::Duration, mut probe: impl FnMut() -> bool) -> bool {
+    until(deadline, || probe().then_some(())).is_some()
+}
+
+/// The first direct child PID of `parent`, via `pgrep -P`.
+pub fn child_of(parent: u32) -> Option<u32> {
+    let out = Command::new("pgrep")
+        .args(["-P", &parent.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;

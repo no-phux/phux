@@ -569,6 +569,22 @@ impl PtyAttach {
     pub fn painted(&self) -> String {
         strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
     }
+
+    /// Wait until every phrase has been painted; panic with the transcript.
+    pub fn await_painted(&self, phrases: &[&str], within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let painted = self.painted();
+            if phrases.iter().all(|phrase| painted.contains(phrase)) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never painted {phrases:?}; painted text was:\n{painted}"
+            );
+            std::thread::sleep(POLL);
+        }
+    }
 }
 
 impl Drop for PtyAttach {
