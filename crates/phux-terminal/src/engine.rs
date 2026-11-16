@@ -274,7 +274,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 source: EngineSource::Fresh(None),
-                scrollback: phux_config::ScrollbackLimits::default(),
+                scrollback: phux_config_core::limits::ScrollbackLimits::default(),
                 token: token.clone(),
                 default_colors: None,
                 reports: phux_terminal_api::EngineReports {

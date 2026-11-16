@@ -2,6 +2,8 @@
 //! and the ceilings the server enforces.
 
 pub use phux_config_core::ClipboardRead;
+use phux_config_core::limits::DEFAULT_HISTORY_LINES;
+pub use phux_config_core::limits::{DEFAULT_HISTORY_BYTES, MAX_HISTORY_BYTES, ScrollbackLimits};
 use serde::{Deserialize, Serialize};
 
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
@@ -172,40 +174,6 @@ impl DefaultsCfg {
         ScrollbackLimits::new(self.history_limit, self.history_bytes)
     }
 }
-
-/// The pair of per-pane scrollback bounds libghostty prunes on together;
-/// carried as one value so no plumbing site threads them independently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollbackLimits {
-    /// Rows of history (`defaults.history-limit`).
-    pub lines: u32,
-    /// Bytes of history (`defaults.history-bytes`).
-    pub bytes: u32,
-}
-
-impl ScrollbackLimits {
-    /// Pair an explicit line and byte bound.
-    #[must_use]
-    pub const fn new(lines: u32, bytes: u32) -> Self {
-        Self { lines, bytes }
-    }
-}
-
-impl Default for ScrollbackLimits {
-    fn default() -> Self {
-        Self::new(DEFAULT_HISTORY_LINES, DEFAULT_HISTORY_BYTES)
-    }
-}
-
-const DEFAULT_HISTORY_LINES: u32 = 50_000;
-
-/// Shipped `defaults.history-bytes`: 10 MiB per pane (ADR-0143). Attach
-/// leases history rather than encoding it (ADR-0119), so this prices only
-/// the resident memory of a pane that has filled it.
-pub const DEFAULT_HISTORY_BYTES: u32 = 10 * 1024 * 1024;
-/// Largest accepted `defaults.history-bytes` (64 MiB): a resident-memory
-/// bound, held for the life of the session.
-pub const MAX_HISTORY_BYTES: u32 = 64 * 1024 * 1024;
 
 /// Shipped `defaults.agent-log-bytes`: 4 MiB per agent session.
 pub const DEFAULT_AGENT_LOG_BYTES: u32 = 4 * 1024 * 1024;

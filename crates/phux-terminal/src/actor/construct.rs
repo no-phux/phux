@@ -13,7 +13,7 @@ use super::{
     TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, VecDeque, adopt_pty,
     effects, mpsc, spawn_pty, watch,
 };
-use phux_config::ScrollbackLimits;
+use phux_config_core::limits::ScrollbackLimits;
 
 impl TerminalActor {
     /// A PTY-less actor of the given size (tests). Scrollback is
