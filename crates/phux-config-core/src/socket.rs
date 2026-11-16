@@ -10,7 +10,7 @@ use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use crate::instance;
+use crate::{guard, instance};
 
 /// Resolve the default Unix-domain-socket path.
 ///
@@ -47,7 +47,7 @@ fn inherited_socket(env: Option<OsString>, dev: bool) -> Option<PathBuf> {
     let path = PathBuf::from(env?);
     let production = production_socket_candidates()
         .iter()
-        .any(|candidate| same_socket(&path, candidate));
+        .any(|candidate| guard::same_path(&path, candidate));
     (!(dev && production)).then_some(path)
 }
 
@@ -66,7 +66,7 @@ pub fn production_socket_candidates() -> Vec<PathBuf> {
         vec![PathBuf::from(format!("/tmp/phux-{}", instance::user_segment())).join("phux.sock")];
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         let dir = PathBuf::from(dir);
-        if !is_inside(&dir, &std::env::temp_dir()) {
+        if !guard::is_inside(&dir, &std::env::temp_dir()) {
             candidates.push(dir.join("phux").join("phux.sock"));
         }
     }
@@ -99,12 +99,6 @@ const fn is_login_runtime_socket(_socket: &Path) -> bool {
     false
 }
 
-#[cfg(unix)]
-fn is_inside(path: &Path, dir: &Path) -> bool {
-    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    canonical(path).starts_with(canonical(dir))
-}
-
 /// Refuse to let a development build touch the day-to-day server.
 ///
 /// Every local connection and every server bind passes through this. A
@@ -121,7 +115,7 @@ pub fn refuse_dev_on_production(socket: &Path) -> Result<(), String> {
     if instance::build_kind() != instance::BuildKind::Dev {
         return Ok(());
     }
-    if is_login_runtime_socket(&resolved_socket(socket)) {
+    if is_login_runtime_socket(&guard::resolve(socket)) {
         return Err(refusal(socket));
     }
     for production in production_socket_candidates() {
@@ -131,7 +125,7 @@ pub fn refuse_dev_on_production(socket: &Path) -> Result<(), String> {
 }
 
 fn refuse_if_same_socket(socket: &Path, production: &Path) -> Result<(), String> {
-    if same_socket(socket, production) {
+    if guard::same_path(socket, production) {
         return Err(refusal(production));
     }
     Ok(())
@@ -146,25 +140,6 @@ fn refusal(production: &Path) -> String {
         production.display(),
         instance::DEV_PROFILE,
     )
-}
-
-/// Whether two socket paths name the same file, resolving symlinked
-/// directories (`/tmp` is `/private/tmp` on macOS). The socket itself may
-/// not exist yet, so only its directory is canonicalised.
-fn same_socket(a: &Path, b: &Path) -> bool {
-    a == b || resolved_socket(a) == resolved_socket(b)
-}
-
-fn resolved_socket(path: &Path) -> PathBuf {
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-        return path.to_path_buf();
-    };
-    let dir = if dir.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        dir
-    };
-    std::fs::canonicalize(dir).map_or_else(|_| path.to_path_buf(), |dir| dir.join(name))
 }
 
 /// The advisory lock serialising server auto-spawn within one profile.

@@ -12,6 +12,7 @@
 
 mod clipboard;
 mod error;
+pub mod guard;
 pub mod host_color;
 pub mod instance;
 pub mod known_authorities;

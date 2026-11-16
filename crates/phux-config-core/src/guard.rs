@@ -107,12 +107,19 @@ impl Layout {
 
 /// The account's home directory from the password database, independent of
 /// `$HOME` (which a sandbox rewrites while inherited paths still point home).
+#[cfg(unix)]
 fn account_home() -> Option<PathBuf> {
     nix::unistd::User::from_uid(nix::unistd::getuid())
         .ok()
         .flatten()
         .map(|user| user.dir)
         .filter(|dir| dir.is_absolute())
+}
+
+/// No password database off Unix; `$HOME` and the `XDG_*` bases still count.
+#[cfg(not(unix))]
+const fn account_home() -> Option<PathBuf> {
+    None
 }
 
 fn current_layout() -> Layout {
@@ -165,18 +172,19 @@ fn refusal(path: &Path, root: &Path) -> String {
 
 /// Whether `path` is `dir` or inside it, lexically or after resolving
 /// symlinks (`/tmp` is `/private/tmp` on macOS). Neither needs to exist.
-fn is_inside(path: &Path, dir: &Path) -> bool {
+pub(crate) fn is_inside(path: &Path, dir: &Path) -> bool {
     path.starts_with(dir) || resolve(path).starts_with(resolve(dir))
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+/// Whether two paths name the same file, compared through [`resolve`].
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     a == b || resolve(a) == resolve(b)
 }
 
 /// Make `path` absolute and canonicalise its deepest existing ancestor, so a
 /// file that does not exist yet still compares through a symlinked
 /// directory. `..` after a missing component is kept lexically.
-fn resolve(path: &Path) -> PathBuf {
+pub(crate) fn resolve(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -329,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_symlinked_directory_does_not_hide_production() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");

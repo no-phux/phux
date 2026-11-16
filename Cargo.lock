@@ -3149,7 +3149,6 @@ version = "0.154.0"
 dependencies = [
  "chrono",
  "insta",
- "nix 0.31.3",
  "phux-config-core",
  "phux-protocol",
  "serde",

@@ -19,7 +19,6 @@ pub mod mirror;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;
-pub mod production;
 pub mod project;
 pub mod satellite;
 pub mod scaffold;
@@ -39,6 +38,8 @@ pub mod widget;
 pub use check::{CheckReport, Fault, Finding};
 pub use connector::ConnectorConfigEntry;
 pub use mirror::MirrorConfigEntry;
+/// Kept at its old path; the guard itself lives in `phux_config_core::guard`.
+pub use phux_config_core::guard as production;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
