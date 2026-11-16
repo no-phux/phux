@@ -12,9 +12,42 @@ import { Classifier, type Classification } from "./classify.ts";
 import { releaseMetadataOnly } from "./release-metadata.ts";
 
 export type Detection =
-  | { kind: "paths"; paths: string[] }
+  | { kind: "paths"; paths: string[]; docsCatalog: boolean }
   | { kind: "release-metadata" }
   | { kind: "full"; reason: string };
+
+/** A flat page: `docs/<name>.md`, the set the website's `discover()` rejects. */
+const FLAT_DOC = /^docs\/[^/]+\.md$/;
+
+/**
+ * Paths from `git diff --name-status -z`. A rename or copy contributes both
+ * sides. The record ends with a NUL, so the split has a trailing empty field.
+ */
+function nameStatusPaths(raw: string): string[] {
+  const fields = raw.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const paths: string[] = [];
+  for (let i = 0; i < fields.length;) {
+    const status = fields[i] ?? "";
+    if (status.startsWith("R") || status.startsWith("C")) {
+      paths.push(fields[i + 1] ?? "", fields[i + 2] ?? "");
+      i += 3;
+    } else {
+      paths.push(fields[i + 1] ?? "");
+      i += 2;
+    }
+  }
+  return paths.filter((path) => path !== "");
+}
+
+/** True when the range adds, renames, or deletes a top-level `docs/*.md`. */
+export function docsCatalogChanged(base: string, head: string, cwd = ROOT): boolean {
+  const raw = git(
+    ["diff", "--name-status", "--find-renames", "--diff-filter=ARD", "-z", base, head, "--"],
+    cwd,
+  );
+  return nameStatusPaths(raw).some((path) => FLAT_DOC.test(path));
+}
 
 const NO_LANES: Classification = {
   needed: new Set(),
@@ -63,18 +96,19 @@ export function diffPaths(base: string, head: string, cwd = ROOT): string[] {
 }
 
 export function detect(eventName: string, eventPath: string | undefined, cwd = ROOT): Detection {
-  let base: string, head: string, paths: string[];
+  let base: string, head: string, paths: string[], docsCatalog: boolean;
   try {
     if (eventPath === undefined) throw new Failure("GITHUB_EVENT_PATH is unset");
     [base, head] = eventRange(eventName, JSON.parse(readFileSync(eventPath, "utf8")), cwd);
     paths = diffPaths(base, head, cwd);
+    docsCatalog = docsCatalogChanged(base, head, cwd);
   } catch (error) {
     return { kind: "full", reason: describe(error) };
   }
   const readPair = (path: string) => [show(base, path, cwd), show(head, path, cwd)] as const;
   return releaseMetadataOnly(paths, readPair)
     ? { kind: "release-metadata" }
-    : { kind: "paths", paths };
+    : { kind: "paths", paths, docsCatalog };
 }
 
 /** Metadata stays compile-free in ci, but releases need full native proof on their own SHA. */

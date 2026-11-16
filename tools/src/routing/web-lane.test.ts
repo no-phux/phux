@@ -78,6 +78,7 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
   for (const id of ["web-vt", "web-client"]) {
     for (const result of ["success", "failure", "cancelled"]) {
       const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", gate], {
+        cwd: repoPath("."),
         env: {
           ...process.env,
           EVENT_NAME: "pull_request",

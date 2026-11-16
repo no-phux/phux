@@ -135,9 +135,12 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
     ["guards", "failure", 1],
     ["plan", "skipped", 1],
     ["plan", "failure", 1],
+    ["docs-catalog", "skipped", 0],
+    ["docs-catalog", "failure", 1],
   ] as const) {
     const results = JSON.stringify({ ...baseline, [id]: { result } });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+      cwd: repoPath("."),
       env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
       stdout: "ignore",
     }).exitCode;
@@ -211,6 +214,37 @@ test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   expect(group).toContain("github.event_name == 'push' && github.sha");
   expect(group.endsWith(" || github.ref }}")).toBe(true);
   expect(group).not.toContain("merge_group");
+});
+
+test("docs catalog is path-filtered, credential-free, and required by ci", () => {
+  const lane = job(CI, "docs-catalog");
+  expect(str(lane["if"])).toBe("needs.plan.outputs.docs_catalog == 'true'");
+  expect(str(lane["runs-on"])).toBe("ubuntu-latest");
+  expect(lane["timeout-minutes"]).toBe(5);
+  expect(needs(lane)).toEqual(["plan"]);
+  expect(needs(job(CI, "ci"))).toContain("docs-catalog");
+  const checkouts = steps(lane).filter((step) => uses(step).startsWith("actions/checkout@"));
+  expect(checkouts).toHaveLength(2);
+  const website = checkouts.find((step) => withInput(step, "repository") === "no-phux/website");
+  expect(website).toBeDefined();
+  expect(withInput(website ?? {}, "ref")).toBe("main");
+  expect(withInput(website ?? {}, "path")).toBe("website");
+  expect(withInput(website ?? {}, "sparse-checkout")).toBe("scripts/docs-catalog.ts");
+  expect(withInput(website ?? {}, "sparse-checkout-cone-mode")).toBe(false);
+  expect(withInput(website ?? {}, "persist-credentials")).toBe(false);
+  expect(withInput(website ?? {}, "token")).toBeUndefined();
+  expect(JSON.stringify(website?.["with"])).not.toMatch(/secrets\.|github\.token/);
+  for (const step of checkouts) expect(withInput(step, "persist-credentials")).toBe(false);
+  const command = steps(lane).map(run).join("\n");
+  expect(command).toContain(
+    'bun -e \'import {discover} from "./website/scripts/docs-catalog.ts"; await discover("docs")\'',
+  );
+  expect(command).toContain(
+    "open a no-phux/website PR that adds the ORIENTATION entry for the page first, then re-run",
+  );
+  const guards = steps(job(CI, "guards")).map(run);
+  expect(guards).toContain("bash scripts/check-website-docs-catalog.sh");
+  expect(guards).toContain("bash scripts/check-website-docs-catalog_test.sh");
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {

@@ -77,6 +77,20 @@ test("coverage is the pull-request lane set on either event", () => {
   expect(plan(c, "pull_request", options).coverage).toBe("guards,lint,tests,e2e");
 });
 
+test("docs catalog is selected only for a flat page add, rename, or delete", () => {
+  const docs = classifier.classify(["docs/development.md"]);
+  const scope = scopeOf(["docs/development.md"]);
+  expect(plan(docs, "pull_request", { scope, docsCatalog: true }).docsCatalog).toBe(true);
+  expect(plan(docs, "pull_request", { scope, docsCatalog: false }).docsCatalog).toBe(false);
+  expect(plan(docs, "push", { scope: { kind: "none" } }).docsCatalog).toBe(false);
+  // No status and no scope fail closed, the same way an unknown diff does.
+  expect(plan(docs, "pull_request").docsCatalog).toBe(true);
+  const hidden = planOutputs(plan(docs, "pull_request", { scope, docsCatalog: false }), docs);
+  expect(hidden["docs_catalog"]).toBe(false);
+  expect(String(hidden["coverage"])).not.toContain("docs_catalog");
+  expect(reused(plan(docs, "push", { scope, docsCatalog: true })).docsCatalog).toBe(true);
+});
+
 test("outputs name every lane and the web engine only inside the web lane", () => {
   const c = classifier.classify(["clients/phux-vt-web/vendor/ghostty-vt.wasm"]);
   const outputs = planOutputs(plan(c, "pull_request"), c);

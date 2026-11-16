@@ -2,6 +2,7 @@
 // scripts that job actually runs. workflows.test.ts keeps the shared
 // success-or-skip cases; this file is the event split.
 import { expect, test } from "bun:test";
+import { repoPath } from "../lib/repo.ts";
 import { job, jobs, run, steps, workflow } from "../policy/workflows.ts";
 import { NATIVE_SETUP_PATHS, plan, planOutputs, reused, triggerFor } from "./plan.ts";
 import { classifyDetection } from "./detect.ts";
@@ -17,6 +18,7 @@ const baseline = {
 };
 const aggregate = (results: unknown, event: string): number =>
   Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+    cwd: repoPath("."),
     env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
     stdout: "ignore",
   }).exitCode;
@@ -97,6 +99,18 @@ test.each(["pull_request", "push", "merge_group"])(
     }
   },
 );
+
+test("a skipped docs catalog passes on main and a failure does not", () => {
+  const ready = {
+    ...baseline,
+    native: { result: "success" },
+    icount: { result: "success" },
+  };
+  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "push")).toBe(0);
+  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "merge_group")).toBe(0);
+  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "pull_request")).toBe(1);
+  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "push")).toBe(1);
+});
 
 test("native setup's path list covers every script that job runs", () => {
   const commands = steps(job(CI, "native")).map(run).join("\n");
