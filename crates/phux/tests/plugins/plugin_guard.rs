@@ -11,6 +11,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+use crate::common::Out;
+
 struct TestHome {
     _tmp: TempDir,
     xdg_config: PathBuf,
@@ -42,12 +44,7 @@ impl TestHome {
             .current_dir(&self.scratch)
             .args(args);
         edit(&mut cmd);
-        let out = cmd.output().expect("run phux");
-        (
-            out.status.code().unwrap(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        Out::of(&mut cmd).into_parts()
     }
 
     fn plugins_dir(&self) -> PathBuf {

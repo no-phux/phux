@@ -8,19 +8,17 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
+use crate::common::Out;
+
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        // A developer's allowlist must not make `target/` a recognized install.
-        .env_remove("PHUX_INSTALL_DIR")
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    Out::of(
+        crate::common::phux_cmd(crate::runner::phux_bin())
+            // A developer's allowlist must not make `target/` a recognized install.
+            .env_remove("PHUX_INSTALL_DIR")
+            .args(args),
     )
+    .into_parts()
 }
 
 /// Parse the single JSON line the `--json` error contract puts on stderr.

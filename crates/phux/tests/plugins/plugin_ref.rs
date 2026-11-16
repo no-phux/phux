@@ -9,6 +9,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+use crate::common::Out;
+
 struct TestHome {
     _tmp: TempDir,
     xdg_config: PathBuf,
@@ -32,19 +34,15 @@ impl TestHome {
     }
 
     fn run_in(&self, cwd: &Path, args: &[&str]) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(crate::runner::phux_bin())
-            .env("XDG_CONFIG_HOME", &self.xdg_config)
-            .env("XDG_DATA_HOME", &self.xdg_data)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .expect("run phux binary");
-        (
-            out.status.code().expect("phux exited via code, not signal"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
+        Out::of(
+            crate::common::phux_cmd(crate::runner::phux_bin())
+                .env("XDG_CONFIG_HOME", &self.xdg_config)
+                .env("XDG_DATA_HOME", &self.xdg_data)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .current_dir(cwd)
+                .args(args),
         )
+        .into_parts()
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {

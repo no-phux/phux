@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::common::Out;
+
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 const INSPECT_ACTION: &str = "inspect";
 const LIST_ACTION: &str = "list-integrations";
@@ -26,18 +28,14 @@ fn run_demo(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_demo_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", demo_xdg())
-        .env("PHUX_BIN", crate::runner::phux_bin())
-        .envs(envs.iter().copied())
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    Out::of(
+        crate::common::phux_cmd(crate::runner::phux_bin())
+            .env("XDG_CONFIG_HOME", demo_xdg())
+            .env("PHUX_BIN", crate::runner::phux_bin())
+            .envs(envs.iter().copied())
+            .args(args),
     )
+    .into_parts()
 }
 
 fn stdout_from_json(output: &serde_json::Value) -> &str {
