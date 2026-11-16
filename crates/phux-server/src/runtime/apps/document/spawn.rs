@@ -1,13 +1,15 @@
 //! Spawning a document resource under the resource its producer runs in.
 
 use super::engine::DocumentActor;
-use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError};
+use phux_protocol::wire::frame::SpawnError;
 use tracing::debug;
 
 use super::{DocumentApi, attach_document};
-use crate::mailbox::Outbound;
 use crate::runtime::apps::ResourceSpawn;
-use crate::runtime::spawn_reply::{refuse_spawn, spawned_result};
+use crate::runtime::apps::producer_stream::{
+    SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child,
+};
+use crate::runtime::spawn_reply::refuse_spawn;
 
 /// The target, wire parent, and core parent a document spawn binds to, or
 /// why it is refused. The spawner must be a connection that may publish;
@@ -95,28 +97,18 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
                 }
                 _ => SpawnError::ParentKindMismatch,
             })?;
-        let wire = s
-            .spawn_resource_actor(core, handle, token, bundle.actor.run())
-            .map_err(|error| {
-                s.reap_resource(core);
-                SpawnError::SpawnFailed(error.to_string())
-            })?;
-        let announcement = crate::state::EventRecord::new(
-            Some(wire.clone()),
-            AgentEvent::ResourceSpawned {
-                kind: A::WIRE_KIND,
-                parent: Some(parent.clone()),
-            },
-        )
-        .with_parent(Some(parent.clone()))
-        .with_actor(Some(client_id))
-        .with_operation_id(resource.idempotency_key);
-        let _ = s.record_and_fanout(announcement);
-        crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
-        s.resources_mut().record_spawn(core, client_id);
-        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
-        s.mark_if_viewer_session(client_id, &wire);
-        Ok((core, wire))
+        let child = SpawnedChild {
+            core,
+            handle,
+            token,
+            actor: bundle.actor.run(),
+            kind: A::WIRE_KIND,
+            parent: &parent,
+            client_id,
+            idempotency_key: resource.idempotency_key,
+            out_tx,
+        };
+        register_spawned_child(s, child).map(|wire| (core, wire))
     });
     let (core_doc, wire_doc) = match registered {
         Ok(pair) => pair,
@@ -125,27 +117,18 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
             return;
         }
     };
-    crate::runtime::connections::spawn_resource_exit_watcher(
-        state.clone(),
-        core_doc,
-        Some(bundle.exit_notify),
-        root_token.clone(),
-        None,
-    );
-    let instance = resource
-        .bind_instance
-        .then(|| state.with(|s| s.idspace.instance()));
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::ResourceSpawned {
-            request_id,
-            result: spawned_result(wire_doc.clone(), instance),
-        }))
-        .await;
-    // The spawner watches its own document: run the (empty) bootstrap and
-    // the live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does
-    // not list the kind stays its producer, streamed nothing.
-    if decodes.contains(A::WIRE_KIND) {
-        let _ = attach_document::<A>(
+    let finish = SpawnFinish {
+        state,
+        request_id,
+        out_tx,
+        root_token,
+        bind_instance: resource.bind_instance,
+        decodes,
+        kind: A::WIRE_KIND,
+    };
+    // The spawner watches its own document.
+    let attach = async || {
+        attach_document::<A>(
             state,
             client_id,
             &wire_doc,
@@ -155,7 +138,16 @@ pub(crate) async fn spawn_document<A: DocumentApi>(spawn: ResourceSpawn<'_>) {
             bootstrap_limits,
             connection_token,
         )
-        .await;
-    }
+        .await
+    };
+    finish_spawn(
+        finish,
+        core_doc,
+        &wire_doc,
+        bundle.exit_notify,
+        async || {},
+        attach,
+    )
+    .await;
     debug!(?client_id, request_id, resource = %wire_doc, kind = A::LABEL, target, "SPAWN_RESOURCE: document bound to its parent");
 }
