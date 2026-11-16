@@ -5,6 +5,7 @@
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
+use crate::wire::frame::command_codec::unknown_command;
 use crate::wire::frame::{
     COMMAND_TAG_MIRROR, COMMAND_TAG_MIRROR_PROVIDE, Command, MAX_MIRROR_TARGET, MAX_MIRROR_TARGETS,
     MirrorOp,
@@ -36,11 +37,9 @@ pub(super) fn encode(host: Option<&str>, op: &MirrorOp, enc: &mut Encoder<'_>) {
     }
 }
 
-/// Decode a `MIRROR` command; `None` (reading nothing) for any other tag.
-pub(super) fn decode_command(
-    tag: u8,
-    dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+/// Decode a `MIRROR` or `MIRROR_PROVIDE` command; any other tag is an
+/// unknown command.
+pub(super) fn decode_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let bounded = |d: &mut Decoder<'_>, max: usize| -> Result<String, DecodeError> {
         let text = d.read_str()?;
         if text.len() > max {
@@ -50,10 +49,10 @@ pub(super) fn decode_command(
     };
     if tag == COMMAND_TAG_MIRROR_PROVIDE {
         let targets = bounded(dec, MAX_MIRROR_TARGETS)?;
-        return Ok(Some(Command::MirrorProvide { targets }));
+        return Ok(Command::MirrorProvide { targets });
     }
     if tag != COMMAND_TAG_MIRROR {
-        return Ok(None);
+        return Err(unknown_command(tag));
     }
     let host = dec.read_option("Mirror.host tag", |d| Ok(d.read_str()?.to_owned()))?;
     let op = match dec.read_u8()? {
@@ -67,7 +66,7 @@ pub(super) fn decode_command(
         },
         other => return Err(DecodeError::unknown_enum("MirrorOp", other)),
     };
-    Ok(Some(Command::Mirror { host, op }))
+    Ok(Command::Mirror { host, op })
 }
 
 #[cfg(test)]

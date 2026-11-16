@@ -329,6 +329,43 @@ fn newer_peer_values_are_correlated_or_tolerated() {
     assert_round_trip(&frame);
 }
 
+/// `COMMAND` frame bytes carrying `request_id` 41 and the nested command
+/// `body` (its tag byte first).
+fn command_frame(body: &[u8]) -> Vec<u8> {
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &41u32.to_be_bytes());
+    tlv_field(&mut fields, 2, body);
+    framed_tlv(0x31, &fields)
+}
+
+/// The freed tag `0x2a` sits inside the organization tag range, whose
+/// field-tagged body is read before the tag is matched: a malformed body
+/// fails as malformed, never as an unknown command.
+#[test]
+fn freed_org_tag_with_a_malformed_body_is_a_tlv_error() {
+    // Field 1 declares five value bytes and carries none.
+    assert_eq!(
+        FrameKind::decode(&command_frame(&[0x2a, 0x01, 0x04, 0x05])).unwrap_err(),
+        DecodeError::UnexpectedEof,
+    );
+}
+
+/// The freed tag `0x2a` with a well-formed body is an unknown command that
+/// still surfaces its `request_id`.
+#[test]
+fn freed_org_tag_with_a_well_formed_body_is_an_unknown_command() {
+    let mut body = vec![0x2a];
+    tlv_field(&mut body, 0x7f, b"newer");
+    assert_eq!(
+        FrameKind::decode(&command_frame(&body)).unwrap_err(),
+        DecodeError::UnsupportedCommand {
+            request_id: 41,
+            field: "Command",
+            value: 0x2a,
+        },
+    );
+}
+
 #[test]
 fn layer_set_round_trips_drops_unknown_bits_and_forces_l1() {
     for ls in [

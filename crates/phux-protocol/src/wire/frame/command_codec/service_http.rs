@@ -9,6 +9,7 @@ use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::frame::codec::{decode_env, encode_env};
+use crate::wire::frame::command_codec::unknown_command;
 use crate::wire::frame::{
     COMMAND_TAG_SERVICE_HTTP_CLOSE, COMMAND_TAG_SERVICE_HTTP_OPEN, COMMAND_TAG_SERVICE_HTTP_READ,
     COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK, COMMAND_VALUE_TAG_SERVICE_HTTP_HEAD, Command,
@@ -37,10 +38,7 @@ pub(super) fn encode_close(exchange: u64, enc: &mut Encoder<'_>) {
 
 /// Decode a `SERVICE_HTTP_*` command; `None` (reading nothing) for any
 /// other tag.
-pub(super) fn decode_command(
-    tag: u8,
-    dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+pub(super) fn decode_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_SERVICE_HTTP_OPEN => Command::ServiceHttpOpen {
             request: Box::new(decode_open(dec)?),
@@ -57,9 +55,9 @@ pub(super) fn decode_command(
         COMMAND_TAG_SERVICE_HTTP_CLOSE => Command::ServiceHttpClose {
             exchange: dec.read_u64_be()?,
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 fn decode_open(dec: &mut Decoder<'_>) -> Result<ServiceHttpRequest, DecodeError> {

@@ -61,8 +61,8 @@ use command_bodies::{
     decode_resource_ids, decode_signal_terminal_command, decode_state_scope,
     decode_subscribe_terminal_events_command,
 };
-pub(in crate::wire) use command_decode::decode_command;
 use command_decode::decode_optional_key;
+pub(in crate::wire) use command_decode::{decode_command, unknown_command};
 pub(in crate::wire) use command_encode::encode_command;
 use command_encode::encode_optional_client_id;
 pub(in crate::wire) use event_decode::decode_agent_event;
