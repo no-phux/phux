@@ -13,8 +13,8 @@ use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::ServerError;
 use phux_server::runtime::ServerConfig;
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local,
-    send_frame, spawn_server, wait_for_raw_socket, wait_for_socket,
+    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, SpawnedServer, recv_typed, run_local,
+    send_frame, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
@@ -80,29 +80,27 @@ async fn ping(stream: &mut tokio::net::UnixStream, nonce: u64) {
 fn listener_recovers_a_stale_path_survives_partial_frames_and_unlinks() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        std::fs::write(&socket_path, b"stale leftover").unwrap();
-        let (shutdown, handle) = spawn_server(socket_path.clone(), None);
+        std::fs::write(tmp.path().join("phux.sock"), b"stale leftover").unwrap();
+        let server = SpawnedServer::builder().start_in(tmp);
 
-        let mut partial = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut partial = server.connect_raw().await;
         partial.write_all(&[0x00, 0x09]).await.unwrap();
         drop(partial);
-        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = server.connect_raw().await;
         ping(&mut stream, 0xCAFE_BABE_1234_5678).await;
 
         drop(stream);
-        join_after_shutdown(shutdown, handle).await;
-        assert!(!socket_path.exists(), "the socket is unlinked on shutdown");
+        // `stop` also asserts the socket is unlinked on shutdown.
+        server.stop().await;
     });
 }
 
 #[test]
 fn a_second_server_on_a_live_socket_is_socket_busy() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown, handle) = spawn_server(socket_path.clone(), None);
-        let _probe = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::builder().start();
+        let _probe = server.connect().await;
+        let socket_path = server.socket.clone();
         let cfg = ServerConfig {
             socket_path: socket_path.clone(),
             ..ServerConfig::with_default_socket()
@@ -114,7 +112,7 @@ fn a_second_server_on_a_live_socket_is_socket_busy() {
             matches!(second, Err(ServerError::SocketBusy(ref p)) if *p == socket_path),
             "{second:?}"
         );
-        join_after_shutdown(shutdown, handle).await;
+        server.stop().await;
     });
 }
 

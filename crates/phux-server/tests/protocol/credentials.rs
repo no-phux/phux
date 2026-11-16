@@ -347,6 +347,20 @@ fn full_exchange_is_capped_at_120_seconds_even_after_approval() {
     });
 }
 
+/// A request, a provider read, and a completion: every credential verb.
+fn every_operation() -> [CredentialOp; 3] {
+    [
+        CredentialOp::Request(request()),
+        CredentialOp::Next {
+            provider: PROVIDER.to_owned(),
+        },
+        CredentialOp::Complete {
+            id: "01010101010101010101010101010101".to_owned(),
+            values: None,
+        },
+    ]
+}
+
 #[test]
 fn credentials_require_both_bind_and_input_at_global_for_every_operation() {
     run_local(async {
@@ -355,16 +369,7 @@ fn credentials_require_both_bind_and_input_at_global_for_every_operation() {
             let policy = FnPolicy::scoped(&[scope]);
             let server = Server::start(300, Some(Arc::new(policy)));
             let mut peer = server.connect("scoped-agent").await;
-            for operation in [
-                CredentialOp::Request(request()),
-                CredentialOp::Next {
-                    provider: PROVIDER.to_owned(),
-                },
-                CredentialOp::Complete {
-                    id: "01010101010101010101010101010101".to_owned(),
-                    values: None,
-                },
-            ] {
+            for operation in every_operation() {
                 denied(&op(&mut peer, 9, operation).await);
             }
             server.stop().await;
@@ -406,16 +411,7 @@ fn a_real_delegated_agent_socket_cannot_request_or_serve_credentials() {
             SOCKET_CONNECT_DEADLINE,
         )
         .await;
-        for operation in [
-            CredentialOp::Request(request()),
-            CredentialOp::Next {
-                provider: PROVIDER.to_owned(),
-            },
-            CredentialOp::Complete {
-                id: "01010101010101010101010101010101".to_owned(),
-                values: None,
-            },
-        ] {
+        for operation in every_operation() {
             denied(&op(&mut agent, 9, operation).await);
         }
         assert_eq!(
