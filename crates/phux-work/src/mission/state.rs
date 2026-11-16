@@ -208,195 +208,97 @@ mod tests {
         assert_eq!(got.event_kind, Some("launched"));
     }
 
+    use AgentReport::{Blocked, Done as AgentDone, Other, Working as AgentWorking};
+    use ObjectiveState::{Done, DoneUnchecked, Failed, NeedsYou, Queued, Working};
+    use TerminalFact::{Exited, Gone, Running};
+
+    /// One projection case: label, stored state, observed agent report,
+    /// terminal fact and credential loss, then the expected state and event.
+    /// An absent event means the state is unchanged (see [`apply`]).
+    type Case<'a> = (
+        &'a str,
+        ObjectiveState,
+        Option<AgentReport>,
+        TerminalFact,
+        bool,
+        ObjectiveState,
+        Option<&'a str>,
+    );
+
+    fn check(cases: &[Case<'_>]) {
+        for &(label, current, agent, terminal, credential_lost, next, event) in cases {
+            let got = apply(ProjectionInput {
+                agent,
+                terminal: Some(terminal),
+                credential_lost,
+                ..input(current)
+            });
+            assert_eq!(got.next, next, "{label}");
+            assert_eq!(got.event_kind, event, "{label}");
+        }
+    }
+
+    const fn exited(status: Option<i32>) -> TerminalFact {
+        Exited { status }
+    }
+
     #[test]
     fn agent_reports_map_and_identical_reports_are_no_ops() {
-        let working = apply(ProjectionInput {
-            agent: Some(AgentReport::Working),
-            ..input(ObjectiveState::Queued)
-        });
-        assert_eq!(working.next, ObjectiveState::Working);
-        assert_eq!(working.event_kind, Some("agent_working"));
-        assert_eq!(
-            apply(ProjectionInput {
-                agent: Some(AgentReport::Working),
-                ..input(ObjectiveState::Working)
-            })
-            .event_kind,
-            None
-        );
-
-        let blocked = apply(ProjectionInput {
-            agent: Some(AgentReport::Blocked),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(blocked.next, ObjectiveState::NeedsYou);
-        assert_eq!(blocked.event_kind, Some("needs_you"));
-
-        let resumed = apply(ProjectionInput {
-            agent: Some(AgentReport::Working),
-            ..input(ObjectiveState::NeedsYou)
-        });
-        assert_eq!(resumed.next, ObjectiveState::Working);
-        assert_eq!(resumed.event_kind, Some("agent_working"));
-
-        let done = apply(ProjectionInput {
-            agent: Some(AgentReport::Done),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(done.next, ObjectiveState::DoneUnchecked);
-        assert_eq!(done.event_kind, Some("done_unchecked"));
-
-        assert_eq!(
-            apply(ProjectionInput {
-                agent: Some(AgentReport::Other),
-                ..input(ObjectiveState::Working)
-            })
-            .event_kind,
-            None
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                agent: None,
-                ..input(ObjectiveState::Working)
-            })
-            .event_kind,
-            None
-        );
+        #[rustfmt::skip]
+        let cases: &[Case<'_>] = &[
+            ("working from queued", Queued,   Some(AgentWorking), Running, false, Working,       Some("agent_working")),
+            ("working again",       Working,  Some(AgentWorking), Running, false, Working,       None),
+            ("blocked",             Working,  Some(Blocked),      Running, false, NeedsYou,      Some("needs_you")),
+            ("resumed",             NeedsYou, Some(AgentWorking), Running, false, Working,       Some("agent_working")),
+            ("done",                Working,  Some(AgentDone),    Running, false, DoneUnchecked, Some("done_unchecked")),
+            ("other word",          Working,  Some(Other),        Running, false, Working,       None),
+            ("no report",           Working,  None,               Running, false, Working,       None),
+        ];
+        check(cases);
     }
 
     #[test]
     fn exit_status_distinguishes_done_from_failure() {
-        let clean = apply(ProjectionInput {
-            agent: Some(AgentReport::Done),
-            terminal: Some(TerminalFact::Exited { status: Some(0) }),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(clean.next, ObjectiveState::DoneUnchecked);
-        assert_eq!(clean.event_kind, Some("done_unchecked"));
-
-        assert_eq!(
-            apply(ProjectionInput {
-                terminal: Some(TerminalFact::Exited { status: Some(0) }),
-                ..input(ObjectiveState::DoneUnchecked)
-            })
-            .event_kind,
-            None
-        );
-
-        let dirty = apply(ProjectionInput {
-            agent: Some(AgentReport::Done),
-            terminal: Some(TerminalFact::Exited { status: Some(1) }),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(dirty.next, ObjectiveState::Failed);
-        assert_eq!(dirty.event_kind, Some("failed"));
-
-        let without_done = apply(ProjectionInput {
-            terminal: Some(TerminalFact::Exited { status: Some(0) }),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(without_done.next, ObjectiveState::Failed);
-        assert_eq!(without_done.event_kind, Some("failed"));
-
-        let unknown = apply(ProjectionInput {
-            terminal: Some(TerminalFact::Exited { status: None }),
-            ..input(ObjectiveState::NeedsYou)
-        });
-        assert_eq!(unknown.next, ObjectiveState::Failed);
-
-        let after = apply(ProjectionInput {
-            terminal: Some(TerminalFact::Exited { status: Some(9) }),
-            ..input(ObjectiveState::DoneUnchecked)
-        });
-        assert_eq!(after.next, ObjectiveState::Failed);
-        assert_eq!(after.event_kind, Some("failed"));
+        #[rustfmt::skip]
+        let cases: &[Case<'_>] = &[
+            ("done, clean exit",        Working,       Some(AgentDone), exited(Some(0)), false, DoneUnchecked, Some("done_unchecked")),
+            ("clean exit after done",   DoneUnchecked, None,            exited(Some(0)), false, DoneUnchecked, None),
+            ("done, dirty exit",        Working,       Some(AgentDone), exited(Some(1)), false, Failed,        Some("failed")),
+            ("clean exit without done", Working,       None,            exited(Some(0)), false, Failed,        Some("failed")),
+            ("unknown status",          NeedsYou,      None,            exited(None),    false, Failed,        Some("failed")),
+            ("dirty exit after done",   DoneUnchecked, None,            exited(Some(9)), false, Failed,        Some("failed")),
+        ];
+        check(cases);
     }
 
     #[test]
     fn a_missing_terminal_fails_only_work_in_progress() {
-        let lost = apply(ProjectionInput {
-            terminal: Some(TerminalFact::Gone),
-            ..input(ObjectiveState::Working)
-        });
-        assert_eq!(lost.next, ObjectiveState::Failed);
-        assert_eq!(lost.event_kind, Some("terminal_lost"));
-        assert_eq!(
-            apply(ProjectionInput {
-                terminal: Some(TerminalFact::Gone),
-                ..input(ObjectiveState::NeedsYou)
-            })
-            .event_kind,
-            Some("terminal_lost")
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                terminal: Some(TerminalFact::Gone),
-                ..input(ObjectiveState::DoneUnchecked)
-            })
-            .event_kind,
-            None
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                terminal: Some(TerminalFact::Gone),
-                ..input(ObjectiveState::Failed)
-            })
-            .event_kind,
-            None
-        );
+        #[rustfmt::skip]
+        let cases: &[Case<'_>] = &[
+            ("working",        Working,       None, Gone, false, Failed,        Some("terminal_lost")),
+            ("needs you",      NeedsYou,      None, Gone, false, Failed,        Some("terminal_lost")),
+            ("done unchecked", DoneUnchecked, None, Gone, false, DoneUnchecked, None),
+            ("failed",         Failed,        None, Gone, false, Failed,        None),
+        ];
+        check(cases);
     }
 
     #[test]
     fn credential_lost_wins_and_terminal_states_do_not_reopen() {
-        let lost = apply(ProjectionInput {
+        #[rustfmt::skip]
+        let cases: &[Case<'_>] = &[
+            ("lost over a dirty exit", Working,       Some(AgentWorking), exited(Some(1)), true,  NeedsYou,      Some("needs_you")),
+            ("lost while needing you", NeedsYou,      None,               Running,         true,  NeedsYou,      None),
+            ("lost reopens a failure", Failed,        None,               Gone,            true,  NeedsYou,      Some("needs_you")),
+            ("working after failure",  Failed,        Some(AgentWorking), Running,         false, Failed,        None),
+            ("done after done",        DoneUnchecked, Some(AgentDone),    Running,         false, DoneUnchecked, None),
+        ];
+        check(cases);
+        let done = project(&ProjectionInput {
             credential_lost: true,
-            agent: Some(AgentReport::Working),
-            terminal: Some(TerminalFact::Exited { status: Some(1) }),
-            ..input(ObjectiveState::Working)
+            ..input(Done)
         });
-        assert_eq!(lost.next, ObjectiveState::NeedsYou);
-        assert_eq!(lost.event_kind, Some("needs_you"));
-        assert_eq!(
-            apply(ProjectionInput {
-                credential_lost: true,
-                ..input(ObjectiveState::NeedsYou)
-            })
-            .event_kind,
-            None
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                credential_lost: true,
-                terminal: Some(TerminalFact::Gone),
-                ..input(ObjectiveState::Failed)
-            })
-            .next,
-            ObjectiveState::NeedsYou
-        );
-        assert_eq!(
-            project(&ProjectionInput {
-                credential_lost: true,
-                ..input(ObjectiveState::Done)
-            })
-            .next,
-            ObjectiveState::Done
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                agent: Some(AgentReport::Working),
-                ..input(ObjectiveState::Failed)
-            })
-            .event_kind,
-            None
-        );
-        assert_eq!(
-            apply(ProjectionInput {
-                agent: Some(AgentReport::Done),
-                ..input(ObjectiveState::DoneUnchecked)
-            })
-            .event_kind,
-            None
-        );
+        assert_eq!(done.next, Done, "a finished objective stays done");
     }
 
     #[test]
