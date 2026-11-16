@@ -64,8 +64,8 @@ fn old_image_with_retained_panes() -> (
     let (exited, exited_wire, exited_token) = register_seeded_pane(&mut old, sid);
     let (running, running_wire, running_token) = register_seeded_pane(&mut old, sid);
     let _ = old.build_session_snapshot(sid);
-    old.note_retain_request(running, 60);
-    old.note_retain_request(exited, 60);
+    old.retained_mut().note_request(running, 60);
+    old.retained_mut().note_request(exited, 60);
     let _retention = old
         .retain_exited(exited, phux_core::process::ExitOutcome::exited(5), 1)
         .expect("retained");

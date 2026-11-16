@@ -279,10 +279,10 @@ where
             cx.spawn(core, p.wire_id, handle, token, engine, exit_notify)?;
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
-                cx.state.note_retain_request(core, secs);
+                cx.state.retained_mut().note_request(core, secs);
             }
             if let Some(exit) = p.retained_exit {
-                cx.state.restore_retained_exit(core, exit_facet(exit));
+                cx.state.retained_mut().restore_exit(core, exit_facet(exit));
             }
         }
         Ok(())

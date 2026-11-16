@@ -204,7 +204,7 @@ fn live(state: &SharedState, name: &str) -> bool {
         s.find_session_by_name(name).is_some_and(|session| {
             s.session_terminals(session)
                 .into_iter()
-                .any(|pane| s.resource_handle(pane).is_some() && s.retained_exit(pane).is_none())
+                .any(|pane| s.resource_handle(pane).is_some() && s.retained().exit(pane).is_none())
         })
     })
 }

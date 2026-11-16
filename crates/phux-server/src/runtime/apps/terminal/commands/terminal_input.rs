@@ -53,7 +53,7 @@ fn refit_client_terminals(
     label: &'static str,
 ) {
     for terminal_id in s.viewport_terminals(client_id) {
-        if s.retained_exit(terminal_id).is_some() {
+        if s.retained().exit(terminal_id).is_some() {
             continue;
         }
         let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, latest) else {

@@ -84,7 +84,10 @@ pub(super) fn commit_close(
 fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedResource> {
     let reason = s.begin_resource_close(resource)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
-    let exit = s.retained_outcome(resource).unwrap_or(ExitOutcome::UNKNOWN);
+    let exit = s
+        .retained()
+        .outcome(resource)
+        .unwrap_or(ExitOutcome::UNKNOWN);
     // Interned before the reap, which retires the wire id.
     let wire_terminal_id = s.idspace.intern_resource(resource);
     let parent = s

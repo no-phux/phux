@@ -11,7 +11,7 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
     s.idspace
         .resource_from_wire(wire_terminal_id)
-        .is_some_and(|pane| s.retained_exit(pane).is_some())
+        .is_some_and(|pane| s.retained().exit(pane).is_some())
 }
 
 /// Spawn the per-pane detector metadata drain (ADR-0046): the actor emits

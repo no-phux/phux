@@ -185,7 +185,7 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 .retain_secs
                 .or_else(|| s.config().retain.resolve(None));
             if let Some(secs) = retain {
-                s.note_retain_request(terminal, secs);
+                s.retained_mut().note_request(terminal, secs);
             }
         }
         journal_pane_spawned(s, &wire, attribution);

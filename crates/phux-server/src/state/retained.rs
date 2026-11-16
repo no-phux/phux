@@ -74,7 +74,7 @@ pub(crate) struct Retention {
 /// Per-pane retention bookkeeping. Every entry is keyed by a registry id and
 /// forgotten by the reap that retires it.
 #[derive(Debug, Default)]
-pub(super) struct RetainedTable {
+pub(crate) struct RetainedTable {
     /// Seconds each pane asked to be retained, resolved at spawn.
     requested: HashMap<ResourceId, u32>,
     /// The exit facet of every pane retained after its process exited.
@@ -85,6 +85,51 @@ pub(super) struct RetainedTable {
 }
 
 impl RetainedTable {
+    /// Record that `pane` is retained for `secs` after its process exits.
+    /// Called in the lock that registers the pane.
+    pub(crate) fn note_request(&mut self, pane: ResourceId, secs: u32) {
+        self.requested.insert(pane, secs);
+    }
+
+    /// Seconds `pane` asked to be retained after its process exits, while
+    /// it has not exited yet.
+    #[must_use]
+    pub(crate) fn request(&self, pane: ResourceId) -> Option<u32> {
+        if self.exited.contains_key(&pane) {
+            return None;
+        }
+        self.requested.get(&pane).copied()
+    }
+
+    /// Restore a retained pane's exit record in a resumed image (ADR-0124
+    /// §6), so the close that reports it carries how its process ended.
+    pub(crate) fn restore_exit(&mut self, pane: ResourceId, facet: ExitFacet) {
+        self.exited.insert(pane, facet);
+    }
+
+    /// The exit facet of a retained pane whose process has exited; `None`
+    /// for a live pane and for one that is not retained.
+    #[must_use]
+    pub(crate) fn exit(&self, pane: ResourceId) -> Option<ExitFacet> {
+        self.exited.get(&pane).copied()
+    }
+
+    /// How a retained pane's process ended, as an exit outcome for the
+    /// `RESOURCE_CLOSED` and `pane_closed` that purge it.
+    #[must_use]
+    pub(crate) fn outcome(&self, pane: ResourceId) -> Option<ExitOutcome> {
+        self.exit(pane).map(|facet| ExitOutcome {
+            status: facet.exit_status,
+            signal: facet.signal,
+        })
+    }
+
+    /// A retained pane's exit facet, for `GET_TERMINAL_STATE`.
+    #[must_use]
+    pub(crate) fn process_exit(&self, pane: ResourceId) -> Option<ProcessExit> {
+        self.exit(pane).map(|facet| process_exit(&facet))
+    }
+
     /// Drop every entry for a reaped pane.
     pub(super) fn forget(&mut self, pane: ResourceId) {
         self.requested.remove(&pane);
@@ -94,50 +139,23 @@ impl RetainedTable {
 }
 
 impl ServerState {
+    /// Retain-on-exit bookkeeping (ADR-0124). Retaining an exited pane
+    /// reads other tables, so [`Self::retain_exited`] stays here.
+    #[must_use]
+    pub(crate) const fn retained(&self) -> &RetainedTable {
+        &self.retained
+    }
+
+    /// Mutable [`Self::retained`].
+    pub(crate) const fn retained_mut(&mut self) -> &mut RetainedTable {
+        &mut self.retained
+    }
+
     /// Whether engine retirement must preserve this durable record. Explicit purge is separate.
     pub(crate) fn record_survives_exit(&self, pane: ResourceId) -> bool {
         self.registry()
             .record(pane)
             .is_some_and(|record| record.durable_result)
-    }
-
-    /// Record that `pane` is retained for `secs` after its process exits.
-    /// Called in the lock that registers the pane.
-    pub(crate) fn note_retain_request(&mut self, pane: ResourceId, secs: u32) {
-        self.retained.requested.insert(pane, secs);
-    }
-
-    /// Seconds `pane` asked to be retained after its process exits, while
-    /// it has not exited yet.
-    #[must_use]
-    pub fn retain_request(&self, pane: ResourceId) -> Option<u32> {
-        if self.retained.exited.contains_key(&pane) {
-            return None;
-        }
-        self.retained.requested.get(&pane).copied()
-    }
-
-    /// Restore a retained pane's exit record in a resumed image (ADR-0124
-    /// §6), so the close that reports it carries how its process ended.
-    pub(crate) fn restore_retained_exit(&mut self, pane: ResourceId, facet: ExitFacet) {
-        self.retained.exited.insert(pane, facet);
-    }
-
-    /// How a retained pane's process ended, as an exit outcome for the
-    /// `RESOURCE_CLOSED` and `pane_closed` that purge it.
-    #[must_use]
-    pub fn retained_outcome(&self, pane: ResourceId) -> Option<ExitOutcome> {
-        self.retained_exit(pane).map(|facet| ExitOutcome {
-            status: facet.exit_status,
-            signal: facet.signal,
-        })
-    }
-
-    /// The exit facet of a retained pane whose process has exited; `None`
-    /// for a live pane and for one that is not retained.
-    #[must_use]
-    pub fn retained_exit(&self, pane: ResourceId) -> Option<ExitFacet> {
-        self.retained.exited.get(&pane).copied()
     }
 
     /// Keep `pane` as `Exited` unless something is already closing it (then
@@ -179,12 +197,6 @@ impl ServerState {
             self.mark_resource_closing(oldest, CloseReason::Exited);
             self.detach_resource_actor(oldest);
         }
-    }
-
-    /// A retained pane's exit facet, for `GET_TERMINAL_STATE`.
-    #[must_use]
-    pub fn retained_process_exit(&self, pane: ResourceId) -> Option<ProcessExit> {
-        self.retained_exit(pane).map(|facet| process_exit(&facet))
     }
 
     /// Why `pane` is leaving, when a closer recorded it and the close has not
@@ -271,7 +283,7 @@ mod tests {
             let (_, pane) = s.seed_session(name);
             let token = CancellationToken::new();
             s.resources.register_token_for_test(pane, token);
-            s.note_retain_request(pane, 30);
+            s.retained_mut().note_request(pane, 30);
             panes.push(pane);
         }
         s.mark_resource_closing(panes[0], CloseReason::Killed);
@@ -283,7 +295,7 @@ mod tests {
         let first = s
             .retain_exited(panes[1], ExitOutcome::exited(3), 1)
             .expect("retained");
-        let facet = s.retained_exit(panes[1]).expect("facet");
+        let facet = s.retained().exit(panes[1]).expect("facet");
         assert_eq!(facet.exit_status, Some(3));
         assert_eq!(facet.retained_until_ms, 30_001);
         assert_eq!(first.hold, Duration::from_secs(30));
@@ -295,7 +307,7 @@ mod tests {
         let (_, fourth) = s.seed_session("d");
         s.resources
             .register_token_for_test(fourth, CancellationToken::new());
-        s.note_retain_request(fourth, 30);
+        s.retained_mut().note_request(fourth, 30);
         let _ = s.retain_exited(fourth, ExitOutcome::exited(0), 3);
         assert!(first.token.is_cancelled(), "the oldest is evicted");
         assert_eq!(s.pending_close_reason(panes[1]), Some(CloseReason::Exited));

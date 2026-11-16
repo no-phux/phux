@@ -46,7 +46,7 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
                 .with(|s| s.idspace.resource_from_wire(&running_wire))
                 .expect("the running pane is rebuilt");
             assert_eq!(
-                resumed.with(|s| s.retain_request(running_pane)),
+                resumed.with(|s| s.retained().request(running_pane)),
                 Some(60),
                 "its retention request survived the upgrade"
             );

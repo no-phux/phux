@@ -67,7 +67,7 @@ pub(in crate::runtime) fn attached_input_allowed(
         }
         return false;
     }
-    if s.retained_exit(resource).is_some() {
+    if s.retained().exit(resource).is_some() {
         return false;
     }
     if !s.subscribers_for_resource(resource).contains(&client) {

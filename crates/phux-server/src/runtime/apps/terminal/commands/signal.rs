@@ -36,7 +36,7 @@ pub(crate) async fn handle_signal_terminal(
     if state.with(|s| {
         s.idspace
             .resource_from_wire(terminal_id)
-            .is_some_and(|pane| s.retained_exit(pane).is_some())
+            .is_some_and(|pane| s.retained().exit(pane).is_some())
     }) {
         return CommandResult::error(
             ErrorCode::InvalidCommand,

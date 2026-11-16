@@ -230,7 +230,7 @@ fn reconcile_process_exit(
     let (retained, pending) = state.with(|s| {
         let pane = s.idspace.resource_from_wire(terminal_id);
         (
-            pane.and_then(|pane| s.retained_process_exit(pane)),
+            pane.and_then(|pane| s.retained().process_exit(pane)),
             pane.and_then(|pane| s.pending_close_reason(pane)),
         )
     });

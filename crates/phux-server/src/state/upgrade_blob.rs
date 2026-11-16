@@ -144,7 +144,9 @@ impl ServerState {
             .into_iter()
             .filter(|sid| self.session_wire(*sid).is_some())
             .flat_map(|sid| self.legacy_panes_of(sid))
-            .filter(|tid| self.resource_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
+            .filter(|tid| {
+                self.resource_wire(*tid).is_some() && self.retained().exit(*tid).is_none()
+            })
             .filter_map(|tid| Some((tid, self.resource_handle(tid)?.clone())))
             .collect()
     }

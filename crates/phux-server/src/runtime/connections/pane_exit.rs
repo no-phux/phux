@@ -251,7 +251,7 @@ fn reap_exited_pane(
     // ADR-0104 §2: a cascading parent may already have reaped this child.
     let reason = s.begin_resource_close(pane)?;
     // ADR-0124: a retained pane's close reports the exit it was kept with.
-    let exit = s.retained_outcome(pane).unwrap_or(exit);
+    let exit = s.retained().outcome(pane).unwrap_or(exit);
     // Interned before the cascade and the reap, which retires the wire id.
     let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
@@ -322,7 +322,7 @@ fn cascade_children(
         let wire_child_id = s.idspace.intern_resource(child);
         let child_targets = s.terminal_fanout_targets(child);
         let publication_fences = s.attach_publication_fences(child);
-        let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
+        let child_exit = s.retained().outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
         journal_pane_closed(
             s,

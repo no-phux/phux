@@ -174,7 +174,8 @@ fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
     state.with_mut(|s| {
         s.subscribe_resource(client, foreign, None);
         s.unsubscribe_resource(client, unsubscribed);
-        s.restore_retained_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
+        s.retained_mut()
+            .restore_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
     });
     let foreign_wire = state.with_mut(|s| s.idspace.intern_resource(foreign));
     handle_terminal_resize(&state, client, &foreign_wire, (137, 57), None);

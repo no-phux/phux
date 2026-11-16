@@ -201,7 +201,8 @@ fn configure_focus_admission(
         s.set_input_lease(pane, DESKTOP);
     }
     if retained {
-        s.restore_retained_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
+        s.retained_mut()
+            .restore_exit(pane, phux_protocol::wire::info::ExitFacet::new(0, 1));
     }
     if !authorized {
         s.config_mut().policy_engine = Arc::new(FnPolicy::scoped(&["observe@global"]));

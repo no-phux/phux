@@ -52,7 +52,7 @@ pub(crate) fn with_route_input_destination<R>(
                     .to_owned(),
             });
         }
-        if s.retained_exit(pane).is_some() {
+        if s.retained().exit(pane).is_some() {
             return Err(exited_input_refusal());
         }
         if s.input_blocked(pane, client_id) {

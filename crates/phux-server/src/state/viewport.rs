@@ -167,7 +167,7 @@ impl ServerState {
                 .resolve_terminal_geometry(terminal, latest)
                 .unwrap_or(HEADLESS_TERMINAL_DIMS);
             let cell_px = self.resolve_terminal_cell_px(terminal);
-            if self.retained_exit(terminal).is_some() {
+            if self.retained().exit(terminal).is_some() {
                 continue;
             }
             let resized = self

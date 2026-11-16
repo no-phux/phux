@@ -86,7 +86,7 @@ fn apply_pane_viewport(
     let Ok(terminal) = pane.handle.terminal() else {
         return;
     };
-    if state.retained_exit(pane.terminal_id).is_some() {
+    if state.retained().exit(pane.terminal_id).is_some() {
         return;
     }
     let Some((cols, rows)) = state.resolve_terminal_geometry(pane.terminal_id, Some(viewport))

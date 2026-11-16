@@ -160,7 +160,7 @@ impl ServerState {
             };
             let wire = self.idspace.intern_resource(pid);
             let cwd = Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
-            let exit = self.retained_exit(pid);
+            let exit = self.retained().exit(pid);
             let lifecycle = if exit.is_some() {
                 phux_protocol::wire::frame::ResourceLifecycle::Exited
             } else {
