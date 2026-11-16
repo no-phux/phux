@@ -1036,22 +1036,10 @@ fn overlay_actions_push_their_overlay() {
 /// (the palette) ignores it.
 #[test]
 fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
-    use crate::attach::fleet::{FLEET_LIVE_KEY, fleet_items};
+    use crate::attach::fleet::{FLEET_LIVE_KEY, local_fleet_items};
 
     let workspace = ArrangementDoc::single(tid(1));
-    let fresh = fleet_items(
-        &workspace,
-        &[],
-        None,
-        &HashMap::new(),
-        &HashMap::new(),
-        crate::attach::fleet::ForeignSessions {
-            layouts: &HashMap::new(),
-            agents: &HashMap::new(),
-            terminals: &HashMap::new(),
-        },
-        &[],
-    );
+    let fresh = local_fleet_items(&workspace, &HashMap::new(), &HashMap::new());
     let mut f = fx(workspace.clone());
     f.run(&bare_action("agent-fleet"));
     assert!(f.overlays.refresh_items(FLEET_LIVE_KEY, &fresh));
@@ -1219,19 +1207,8 @@ fn focus_pane_switches_window_and_focuses_leaf() {
     // A fleet row commits the same focus-pane.
 
     let mut workspace = fleet_workspace();
-    let items = crate::attach::fleet::fleet_items(
-        &workspace,
-        &[],
-        None,
-        &HashMap::new(),
-        &HashMap::new(),
-        crate::attach::fleet::ForeignSessions {
-            layouts: &HashMap::new(),
-            agents: &HashMap::new(),
-            terminals: &HashMap::new(),
-        },
-        &[],
-    );
+    let items =
+        crate::attach::fleet::local_fleet_items(&workspace, &HashMap::new(), &HashMap::new());
     let effects = run(&items[1].action.clone(), &mut workspace);
     assert_eq!((workspace.active, effects.set_focus), (0, Some(tid(2))));
 }
@@ -1381,18 +1358,10 @@ fn session_picker_keeps_selection_across_a_live_rename() {
         None,
         &SessionCounts::default(),
     );
-    let logs = host_grouped_session_items(
-        &[],
-        None,
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
-        &host_fixture(),
-        &[],
-        &ArrangementDoc::single(tid(1)),
-    )
-    .into_iter()
-    .find(|item| item.label == "logs")
-    .expect("satellite logs row");
+    let logs = grouped(&[], None, &host_fixture(), &[])
+        .into_iter()
+        .find(|item| item.label == "logs")
+        .expect("satellite logs row");
     assert_eq!(logs.action.args.get("id"), Some(&Value::Integer(2)));
     assert_eq!(
         logs.action.args.get("host"),
@@ -1996,21 +1965,32 @@ fn host_fixture() -> Vec<HostInventory> {
     ]
 }
 
+/// The host-grouped picker from this machine (`LOCAL_HOST_HEADER`), with no
+/// session counts, over a one-pane workspace.
+fn grouped(
+    sessions: &[SessionInfo],
+    focused: Option<u32>,
+    satellites: &[HostInventory],
+    machines: &[&phux_core::host_list::HostJson],
+) -> Vec<crate::render::overlay::SelectItem> {
+    host_grouped_session_items(
+        sessions,
+        focused.map(SessionId::new),
+        &SessionCounts::default(),
+        LOCAL_HOST_HEADER,
+        satellites,
+        machines,
+        &ArrangementDoc::single(tid(1)),
+    )
+}
+
 /// The picker groups under a header per host, keeps an unreachable host
 /// visible, commits `switch-session { name, host, id }` for a satellite, and
 /// marks a satellite session already open here. No inventory: ungrouped.
 #[test]
 fn session_picker_groups_rows_by_host() {
     let sessions = [sinfo(1, "work")];
-    let items = host_grouped_session_items(
-        &sessions,
-        Some(SessionId::new(1)),
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
-        &host_fixture(),
-        &[],
-        &ArrangementDoc::single(tid(1)),
-    );
+    let items = grouped(&sessions, Some(1), &host_fixture(), &[]);
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
         labels,
@@ -2062,15 +2042,7 @@ fn session_picker_groups_rows_by_host() {
     );
 
     let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let grouped = host_grouped_session_items(
-        &sessions,
-        Some(SessionId::new(1)),
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
-        &[],
-        &[],
-        &ArrangementDoc::single(tid(1)),
-    );
+    let grouped = grouped(&sessions, Some(1), &[], &[]);
     assert_eq!(
         grouped.len(),
         session_picker_items(
@@ -2149,14 +2121,11 @@ fn session_picker_lists_other_machines() {
 
     let hosts = machine_fixture();
     let sessions = [sinfo(1, "work")];
-    let items = host_grouped_session_items(
+    let items = grouped(
         &sessions,
-        Some(SessionId::new(1)),
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
+        Some(1),
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Local),
-        &ArrangementDoc::single(tid(1)),
     );
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
@@ -2222,14 +2191,11 @@ fn session_picker_lists_other_machines() {
 #[test]
 fn a_machine_row_commits_switch_host() {
     let hosts = machine_fixture();
-    let items = host_grouped_session_items(
+    let items = grouped(
         &[],
         None,
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &ArrangementDoc::single(tid(1)),
     );
     let phall = items.iter().find(|i| i.label == "phall").expect("row");
     let effects = run(&phall.action, &mut ArrangementDoc::single(tid(1)));
@@ -2248,14 +2214,11 @@ fn session_picker_filter_spans_machines() {
     use phux_protocol::input::key::PhysicalKey;
 
     let hosts = machine_fixture();
-    let items = host_grouped_session_items(
+    let items = grouped(
         &[sinfo(1, "work"), sinfo(2, "notes")],
-        Some(SessionId::new(1)),
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
+        Some(1),
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &ArrangementDoc::single(tid(1)),
     );
     let press = |key, text: Option<&str>| crate::test_util::press_text(key, text);
     let mut picker = SelectList::new("Sessions", items, &Theme::default());
@@ -2285,14 +2248,11 @@ fn session_picker_with_machines_render() {
     use ratatui::layout::Rect;
 
     let hosts = machine_fixture();
-    let mut items = host_grouped_session_items(
+    let mut items = grouped(
         &[sinfo(1, "work"), sinfo(2, "notes")],
-        Some(SessionId::new(1)),
-        &SessionCounts::default(),
-        LOCAL_HOST_HEADER,
+        Some(1),
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &ArrangementDoc::single(tid(1)),
     );
     items.push(new_session_item());
     let picker = SelectList::new("Sessions", items, &Theme::default());

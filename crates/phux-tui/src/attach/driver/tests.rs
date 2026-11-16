@@ -1025,18 +1025,10 @@ fn all_floating_overlays_keep_sidebar_visible() {
         .collect(),
         ..KeybindingsCfg::default()
     };
-    let fleet_items = crate::attach::fleet::fleet_items(
+    let fleet_items = crate::attach::fleet::local_fleet_items(
         &ArrangementDoc::single(ResourceId::local(1)),
-        &[],
-        None,
         &HashMap::new(),
         &HashMap::new(),
-        crate::attach::fleet::ForeignSessions {
-            layouts: &HashMap::new(),
-            agents: &HashMap::new(),
-            terminals: &HashMap::new(),
-        },
-        &[],
     );
     assert!(!fleet_items.iter().all(SelectItem::is_header));
     let overlays: Vec<(&str, Box<dyn RenderOverlay>)> = vec![
