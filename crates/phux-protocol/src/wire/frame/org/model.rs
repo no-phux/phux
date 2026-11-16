@@ -88,11 +88,8 @@ impl LaunchSpec {
         }
     }
 
-    /// Builder setter for [`Self::cwd`].
-    #[must_use]
-    pub fn with_cwd(mut self, cwd: Option<String>) -> Self {
-        self.cwd = cwd;
-        self
+    builder_setters! {
+        fn with_cwd(cwd: Option<String>) => cwd;
     }
 
     /// Builder setter for [`Self::env`].
@@ -102,18 +99,9 @@ impl LaunchSpec {
         self
     }
 
-    /// Builder setter for [`Self::term`].
-    #[must_use]
-    pub fn with_term(mut self, term: Option<String>) -> Self {
-        self.term = term;
-        self
-    }
-
-    /// Builder setter for [`Self::restore`].
-    #[must_use]
-    pub fn with_restore(mut self, restore: Option<Vec<u8>>) -> Self {
-        self.restore = restore;
-        self
+    builder_setters! {
+        fn with_term(term: Option<String>) => term;
+        fn with_restore(restore: Option<Vec<u8>>) => restore;
     }
 }
 
