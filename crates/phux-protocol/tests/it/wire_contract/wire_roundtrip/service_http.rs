@@ -1,9 +1,11 @@
-//! `SERVICE_HTTP_*` commands and replies: round trips and decoder bounds.
+//! `SERVICE_HTTP_*` commands and replies: decoder bounds. Their round trips
+//! run over the wire-schema sample corpus
+//! (`src/wire/decode/wire_schema/roundtrip_tests.rs`).
 
 use super::{BytesMut, Command, CommandResult, CommandValue, DecodeError, FrameKind};
 use phux_protocol::service_http::{
     MAX_SERVICE_HTTP_BODY_BYTES, MAX_SERVICE_HTTP_HEAD_BYTES, MAX_SERVICE_HTTP_HEADERS,
-    MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest,
+    MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpRequest,
 };
 
 fn request() -> ServiceHttpRequest {
@@ -42,44 +44,6 @@ const fn reply(value: CommandValue) -> FrameKind {
     FrameKind::CommandResult {
         request_id: 5,
         result: CommandResult::OkWith(value),
-    }
-}
-
-#[test]
-fn service_http_commands_and_replies_round_trip() {
-    let mut local = request();
-    local.host = None;
-    local.body.clear();
-    let frames = [
-        open(request()),
-        open(local),
-        FrameKind::Command {
-            request_id: 6,
-            command: Command::ServiceHttpRead {
-                exchange: u64::MAX,
-                max_bytes: u32::try_from(MAX_SERVICE_HTTP_READ_BYTES).unwrap(),
-            },
-        },
-        FrameKind::Command {
-            request_id: 7,
-            command: Command::ServiceHttpClose { exchange: 9 },
-        },
-        reply(CommandValue::ServiceHttpHead(ServiceHttpHead {
-            exchange: 9,
-            status: 401,
-            headers: vec![("www-authenticate".to_owned(), "Basic".to_owned())],
-        })),
-        reply(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
-            bytes: b"data: {}\n\n".to_vec(),
-            end: false,
-        })),
-        reply(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
-            bytes: Vec::new(),
-            end: true,
-        })),
-    ];
-    for frame in frames {
-        assert_eq!(decoded(&frame).unwrap(), frame);
     }
 }
 
