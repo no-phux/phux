@@ -189,6 +189,7 @@ The kind's facet.
 - `phux.controller/v1`
 - `phux.tags/v1`
 - `phux.link/v1`
+- `phux.note/v1`
 
 ## Kind `AGENT_SESSION`
 

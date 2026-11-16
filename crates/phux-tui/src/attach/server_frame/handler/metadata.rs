@@ -164,6 +164,9 @@ pub(super) fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if key == RESOURCE_AGENT_KEY {
         return Ok(apply_agent_broadcast(ctx, scope, value));
     }
+    if key == phux_protocol::wire::frame::RESOURCE_NOTE_KEY {
+        return Ok(note_outcome(scope, value.as_deref()));
+    }
     if key == RESOURCE_ASKED_KEY {
         let Scope::Resource(terminal) = scope else {
             return Ok(FrameOutcome::default());
@@ -321,4 +324,23 @@ fn adopt_workspace<W: crate::attach::RenderSink>(
     let attach_panes = unknown_layout_leaves(ctx.workspace, ctx.panes, ctx.surface_leaves());
     *ctx.focused_resource = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
     attach_panes
+}
+
+/// A program posted a note for a pane (`phux notify`): toast it, naming the
+/// pane under the note's own words.
+fn note_outcome(scope: &Scope, value: Option<&[u8]>) -> FrameOutcome {
+    let (Scope::Resource(terminal), Some(note)) =
+        (scope, value.and_then(phux_client_core::note::parse_note))
+    else {
+        return FrameOutcome::default();
+    };
+    let from = format!(
+        "from {}",
+        phux_client::selector::format_terminal_id(terminal)
+    );
+    let lines = note.body.into_iter().chain([from]).collect();
+    FrameOutcome {
+        note: Some(crate::attach::jobs::Toast::lines(note.title, lines)),
+        ..FrameOutcome::default()
+    }
 }

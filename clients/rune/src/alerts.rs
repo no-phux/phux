@@ -179,6 +179,8 @@ impl Tracker {
 /// The system side: posting, clicks, and the Dock.
 pub struct Alerts {
     tracker: Tracker,
+    /// Where each alert posted outside the list leads, by id.
+    posted: HashMap<String, Target>,
     clicks: Arc<Mutex<Vec<String>>>,
     quiet_until: Option<Instant>,
     badge: usize,
@@ -188,6 +190,7 @@ impl Default for Alerts {
     fn default() -> Self {
         Self {
             tracker: Tracker::default(),
+            posted: HashMap::new(),
             clicks: Arc::new(Mutex::new(Vec::new())),
             quiet_until: None,
             badge: 0,
@@ -235,6 +238,16 @@ impl Alerts {
         }
     }
 
+    /// Post one alert now, outside the list: an edge, such as a program's
+    /// note, with nothing to take back. Posting the same id replaces it.
+    pub fn post_now(&mut self, alert: Alert) {
+        self.posted.insert(alert.id.clone(), alert.target);
+        #[cfg(target_os = "linux")]
+        linux::post(&alert.id, &alert.title, &alert.body);
+        #[cfg(not(target_os = "linux"))]
+        notify::post(&Notification::new(alert.id, alert.title).body(alert.body));
+    }
+
     /// Whether a click is waiting for `take_clicks`.
     pub fn clicked(&self) -> bool {
         !self
@@ -249,7 +262,11 @@ impl Alerts {
         let clicks = std::mem::take(&mut *self.clicks.lock().unwrap_or_else(|e| e.into_inner()));
         clicks
             .iter()
-            .filter_map(|id| self.tracker.target(id))
+            .filter_map(|id| {
+                self.tracker
+                    .target(id)
+                    .or_else(|| self.posted.get(id).cloned())
+            })
             .collect()
     }
 }

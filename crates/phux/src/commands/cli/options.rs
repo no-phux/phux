@@ -222,3 +222,17 @@ impl From<SignalArg> for TerminalSignal {
         }
     }
 }
+
+/// How much a `phux notify` note matters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+#[usage(ignore_case)]
+pub(crate) enum NoteLevelArg {
+    /// Something worth knowing.
+    #[default]
+    Info,
+    /// Something to look at.
+    #[usage(alias = "warning")]
+    Warn,
+    /// Something went wrong.
+    Error,
+}

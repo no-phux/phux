@@ -164,6 +164,13 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
+/// Terminal-scoped key holding the latest note posted with `phux notify`.
+///
+/// UTF-8 JSON `{ "level", "title", "body"?, "at" }`, `level` one of `info`,
+/// `warn`, `error` (`docs/scripting.md#notes`). Each note replaces the last.
+/// Stored opaquely.
+pub const RESOURCE_NOTE_KEY: &str = "phux.note/v1";
+
 /// Terminal-scoped key holding the declared agent identity and lifecycle.
 ///
 /// `docs/program-sequences.md#the-agent-record`, ADR-0040. A consumer that finds it MUST

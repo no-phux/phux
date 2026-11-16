@@ -348,6 +348,14 @@ pub(super) async fn sync_agent_meta_subscriptions(
             key: key.to_owned(),
         })
         .await?;
+        // Notes are edges: only a change after this is news, so no read.
+        if id.is_local() {
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Resource(id.clone()),
+                key: phux_protocol::wire::frame::RESOURCE_NOTE_KEY.to_owned(),
+            })
+            .await?;
+        }
         agent_meta.subscribed.insert(id.clone());
     }
     Ok(())

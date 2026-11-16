@@ -1,5 +1,7 @@
 use super::*;
-use phux_protocol::wire::frame::{AgentEvent, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, Scope};
+use phux_protocol::wire::frame::{
+    AgentEvent, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, Scope,
+};
 
 fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane
@@ -418,6 +420,7 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
         [
             FrameKind::SubscribeMetadata { .. },
             FrameKind::SubscribeMetadata { .. },
+            FrameKind::SubscribeMetadata { .. },
             FrameKind::SubscribeMetadata { .. }
         ]
     ));
@@ -504,7 +507,7 @@ fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
         4,
     ));
     let frames = refresh_after_settling(&mut plane, current);
-    assert_eq!(frames.len(), 6, "{frames:?}");
+    assert_eq!(frames.len(), 8, "{frames:?}");
     for pair in frames.chunks(2) {
         assert!(
             matches!(
@@ -538,9 +541,10 @@ fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
                 FrameKind::GetMetadata { .. },
                 FrameKind::SubscribeMetadata { .. },
                 FrameKind::SubscribeMetadata { .. },
+                FrameKind::SubscribeMetadata { .. },
             ]
         ),
-        "the asked and occupant reads from before the detach are still in flight: {frames:?}"
+        "the asked, occupant and note reads from before the detach are still in flight: {frames:?}"
     );
 }
 
@@ -591,3 +595,39 @@ mod asked;
 mod listing;
 mod occupant;
 mod satellite;
+
+#[test]
+fn a_note_read_is_the_baseline_and_only_a_live_change_is_news() {
+    let (mut plane, request_id) = browsing();
+    answer_state(&mut plane, request_id, snapshot());
+    let read = outbound(&mut plane)
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::GetMetadata {
+                request_id, key, ..
+            } if key == RESOURCE_NOTE_KEY => Some(*request_id),
+            _ => None,
+        })
+        .expect("a note read");
+    let _ = plane.take_events();
+    let note = br#"{"level":"warn","title":"deploy 90%"}"#;
+    answer_metadata(&mut plane, read, Some(&note[..]));
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: Scope::Resource(terminal()),
+            key: RESOURCE_NOTE_KEY.to_owned(),
+            value: Some(note.to_vec()),
+            actor: None,
+        })
+        .unwrap();
+    let notes: Vec<(bool, Option<String>)> = plane
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Note { live, note, .. } => Some((live, note.map(|note| note.title))),
+            _ => None,
+        })
+        .collect();
+    let title = Some("deploy 90%".to_owned());
+    assert_eq!(notes, vec![(false, title.clone()), (true, title)]);
+}

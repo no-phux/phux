@@ -81,6 +81,7 @@ impl Event {
                 | Self::NativeAgentResult { .. }
                 | Self::AgentMetadata { .. }
                 | Self::BackgroundWork { .. }
+                | Self::Note { .. }
                 | Self::SessionProject { .. }
                 | Self::ApprovalsChanged
                 | Self::ApprovalDecision { .. }

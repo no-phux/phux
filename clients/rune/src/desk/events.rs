@@ -137,6 +137,11 @@ impl Desk {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::Note {
+                terminal_id,
+                note: Some(note),
+                live: true,
+            } => self.note_posted(&terminal_id, &note),
             Event::CommandResult {
                 request_id,
                 ref result,

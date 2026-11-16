@@ -381,6 +381,8 @@ Read the reply from the terminal in raw mode; an answer starting
 - **OSC 9, OSC 777, OSC 99 (desktop notifications).** phux ignores these
   from a pane. It sends its own notifications to your terminal when a
   pane's state changes, so a program reports state and lets phux decide.
+  A program with something to say runs
+  [`phux notify`](./scripting.md#notes) instead.
 - **OSC 133 (shell integration).** Emitted by the shell. OSC 133 `A` ends a
   pane's `working` and `blocked` records.
 - **OSC 0 and 2 (title).** Free-form. An OSC 7501 `title` labels a record
