@@ -56,7 +56,7 @@ fn attach_native_callbacks(
     native: &NativeReplica,
     terminal: &mut GhosttyTerminal<'static, 'static>,
 ) -> Result<(), GhosttyEngineError> {
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(terminal)?;
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(terminal)?;
     if terminal.width_px()? == 0 || terminal.height_px()? == 0 {
         terminal.resize(terminal.cols()?, terminal.rows()?, 8, 16)?;
     }

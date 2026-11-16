@@ -162,7 +162,7 @@ impl PaneSlot {
                 terminal.set_scrollback_max_lines(Some(10_000))?;
                 terminal
             };
-            phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+            phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
             terminal.resize(
                 cols.max(1),
                 rows.max(1),

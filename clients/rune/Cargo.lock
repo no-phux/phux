@@ -2600,6 +2600,7 @@ dependencies = [
  "phux-core",
  "phux-perf",
  "phux-protocol",
+ "phux-vt",
  "serde",
  "serde_json",
  "sha2",
@@ -2623,6 +2624,7 @@ dependencies = [
  "phux-dial",
  "phux-perf",
  "phux-protocol",
+ "phux-vt",
  "quinn",
  "rcgen",
  "rustls",
@@ -2693,8 +2695,6 @@ dependencies = [
  "bytes",
  "flate2",
  "int-enum",
- "libghostty-vt",
- "png 0.18.1",
  "schemars",
  "serde",
  "serde_json",
@@ -2741,6 +2741,18 @@ version = "0.1.0"
 dependencies = [
  "phux-rune",
  "serde_json",
+]
+
+[[package]]
+name = "phux-vt"
+version = "0.154.0"
+dependencies = [
+ "bytes",
+ "flate2",
+ "libghostty-vt",
+ "phux-core",
+ "phux-protocol",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

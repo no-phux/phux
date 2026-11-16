@@ -25,11 +25,10 @@ walks through framing, the handshake, and how changes are made.
 The default build is pure Rust and compiles to wasm: the `wire` codec, the
 `input` atoms, `ids`, `caps`, `kinds`, `policy`, `scope`, and `Version`.
 
-- `render-pool`: the libghostty render pool, pulling in `libghostty-vt`
-  without PNG or Kitty graphics.
-- `server`: `render-pool` plus conversions to libghostty's own types and
-  the engine-dependent SGR and Kitty replay helpers. Native terminal
-  consumers enable it; decoding wire messages does not need it.
+The crate has no optional features and never links a VT engine. The
+libghostty glue phux's native crates share (render pool, SGR and Kitty
+replay, conversions to libghostty's input atoms) lives in the workspace's
+unpublished `phux-vt` crate.
 
 ## Status
 

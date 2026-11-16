@@ -25,7 +25,7 @@ use libghostty_vt::{
     style::{Style, StyleColor, Underline},
 };
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
-use phux_protocol::render_pool::{RenderPool, RenderWalk};
+use phux_vt::render_pool::{RenderPool, RenderWalk};
 
 use crate::error::RecordError;
 use crate::raster::Theme;

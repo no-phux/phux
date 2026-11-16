@@ -3,14 +3,14 @@ use super::*;
 #[test]
 fn snapshot_replays_kitty_graphics_placements() {
     let mut terminal = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)
         .expect("kitty config");
     terminal.resize(10, 5, 8, 16).expect("cell geometry");
     terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,q=2;AAECAw==\x1b\\");
 
     let snap = synthesize(&terminal).expect("synth");
     let mut replica = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica)
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica)
         .expect("replica kitty config");
     replica.resize(10, 5, 8, 16).expect("replica cell geometry");
     replica.vt_write(&snap.bytes);
@@ -31,7 +31,7 @@ fn repeated_snapshots_remove_deleted_classic_and_virtual_images() {
     let mut source = fresh(10, 5);
     let mut replica = fresh(10, 5);
     for terminal in [&mut source, &mut replica] {
-        phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(terminal)
+        phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(terminal)
             .expect("kitty config");
         terminal.resize(10, 5, 8, 16).expect("cell geometry");
     }
@@ -68,12 +68,12 @@ fn repeated_snapshots_remove_deleted_classic_and_virtual_images() {
 #[test]
 fn image_replay_preserves_snapshot_cursor() {
     let mut source = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,p=1,C=1,q=2;AAECAw==\x1b\\\x1b[4;6H");
     let snapshot = synthesize(&source).unwrap();
     let mut replica = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
     replica.resize(10, 5, 8, 16).unwrap();
     replica.vt_write(&snapshot.bytes);
     // A printable byte observes the receiver's actual restored cursor.
@@ -89,7 +89,7 @@ fn image_replay_preserves_snapshot_cursor() {
 #[test]
 fn image_payload_obeys_the_synthesis_byte_ceiling() {
     let mut source = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,p=1,C=1,q=2;AAECAw==\x1b\\");
     let required = synthesize(&source).unwrap().bytes.len();
@@ -107,7 +107,7 @@ fn image_payload_obeys_the_synthesis_byte_ceiling() {
 fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
     const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut source = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"visible text");
     let text_budget = synthesize(&source).unwrap().bytes.len() + 128;
@@ -142,8 +142,7 @@ fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
     ));
     let full = synthesize(&source).expect("full image snapshot");
     let mut image_receiver = fresh(10, 5);
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut image_receiver)
-        .unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut image_receiver).unwrap();
     image_receiver.vt_write(&full.bytes);
     assert_eq!(
         image_receiver

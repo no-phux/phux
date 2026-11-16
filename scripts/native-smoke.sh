@@ -9,7 +9,8 @@ phux_info "native smoke: checking prerequisites"
 bash scripts/doctor.sh native
 phux_info "native smoke: core and protocol tests"
 cargo test --locked -p phux-core
-cargo test --locked -p phux-protocol --features server
+cargo test --locked -p phux-protocol
+cargo test --locked -p phux-vt --features kitty
 phux_info "native smoke: building CLI and MCP"
 cargo build --locked -p phux -p phux-mcp
 "${CARGO_TARGET_DIR:-target}/debug/phux" --version

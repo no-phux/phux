@@ -35,7 +35,9 @@ phux-client.workspace = true
 # (ADR-0100). Wasm consumers depend on client-core directly and never
 # build phux-tui; a synthesis-profile fallback here was never compiled.
 phux-client-core = { workspace = true, features = ["native-engine"] }
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
+# Render pool, SGR and Kitty replay, and the shared cell-style projection.
+phux-vt = { workspace = true, features = ["kitty"] }
 phux-core.workspace = true
 # The config schema and the status-bar widget specs and option validators.
 # The widget runtime (`render::chrome::status_bar::widgets`: the trait,

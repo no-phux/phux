@@ -16,7 +16,7 @@
 use std::io::{self, Write};
 
 use libghostty_vt::{Terminal as GhosttyTerminal, kitty::graphics::PlacementIterator};
-use phux_protocol::kitty_replay::{self, ImageSend, KittyResidency};
+use phux_vt::kitty_replay::{self, ImageSend, KittyResidency};
 
 use super::{FrontBuffer, RenderError};
 

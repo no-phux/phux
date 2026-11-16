@@ -47,6 +47,7 @@ assert_is_empty = "allow"
 # Internal.
 phux-protocol = { path = "crates/phux-protocol" }
 phux-record = { path = "crates/phux-record" }
+phux-vt = { path = "crates/phux-vt" }
 phux-core = { path = "crates/phux-core" }
 phux-agent-rules = { path = "crates/phux-agent-rules" }
 phux-agent-host = { path = "crates/phux-agent-host" }

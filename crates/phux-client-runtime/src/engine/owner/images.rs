@@ -209,7 +209,7 @@ fn decode_image(image: &Image<'_>) -> Result<Option<Arc<ImageData>>, libghostty_
         return Ok(None);
     };
     // RGB storage may use the full engine budget before adding alpha.
-    let limit = usize::try_from(phux_protocol::kitty_replay::KITTY_IMAGE_STORAGE_LIMIT_BYTES)
+    let limit = usize::try_from(phux_vt::kitty_replay::KITTY_IMAGE_STORAGE_LIMIT_BYTES)
         .map_err(|_| libghostty_vt::Error::OutOfMemory)?;
     if count > limit / 3 {
         return Ok(None);

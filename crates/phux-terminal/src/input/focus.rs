@@ -3,6 +3,7 @@
 
 use libghostty_vt::{Error, Terminal as GhosttyTerminal, mode::Mode};
 use phux_protocol::input::focus::FocusEvent;
+use phux_vt::input::ToGhostty as _;
 
 /// Per-pane focus encoder; owns the reusable output buffer.
 #[derive(Debug, Default)]
@@ -39,7 +40,7 @@ impl PerTerminalFocusEncoder {
             return Ok(None);
         }
         // Wire atom -> libghostty's focus::Event for the encoder (ADR-0024).
-        let event = libghostty_vt::focus::Event::from(event);
+        let event = event.to_ghostty();
         // 8 bytes is plenty for CSI I / CSI O (3 bytes each).
         self.buf.resize(8, 0);
         let written = loop {

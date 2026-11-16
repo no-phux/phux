@@ -12,7 +12,7 @@ use phux_core::screen::{
     ROW_WINDOW_MAX, RenderedScreen, SCHEMA_VERSION, ScreenState, SemanticContent, SoftWrap,
     TRUNCATED_ROW_WINDOW,
 };
-use phux_protocol::{
+use phux_vt::{
     kitty_replay,
     render_pool::{RenderPool, RenderWalk, TerminalGeneration},
     sgr::{write_reset_and_sgr, write_reset_and_sgr_unresolved},

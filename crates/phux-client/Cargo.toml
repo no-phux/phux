@@ -19,7 +19,7 @@ workspace = true
 testkit = ["phux-client-runtime/testing", "dep:phux-wire-fixtures"]
 
 [dependencies]
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 phux-core.workspace = true
 # Only the asciicast codec: `default-features = false` drops `render`. By
 # path because cargo will not let a member disable a workspace dependency's
@@ -64,6 +64,8 @@ phux-wire-fixtures.workspace = true
 # `testing`: the scripted `FnPolicy` HELLO engine.
 phux-server = { workspace = true, features = ["testing"] }
 phux-terminal.workspace = true
+# Wire-to-libghostty key conversions for the native encoder round trips.
+phux-vt.workspace = true
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.
 quinn = { workspace = true }

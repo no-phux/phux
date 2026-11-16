@@ -51,47 +51,6 @@ pub struct MouseEvent {
     pub y: f64,
 }
 
-/// Server-side mouse state handles + atom conversions (libghostty boundary).
-#[cfg(feature = "server")]
-mod server_side {
-    use super::{MouseAction, MouseButton};
-
-    /// The inner program's DECSET mouse-tracking state (not a wire field).
-    pub use libghostty_vt::mouse::{Format as MouseEncoding, TrackingMode as MouseProtocol};
-
-    impl From<MouseAction> for libghostty_vt::mouse::Action {
-        fn from(a: MouseAction) -> Self {
-            match a {
-                MouseAction::Press => Self::Press,
-                MouseAction::Release => Self::Release,
-                MouseAction::Motion => Self::Motion,
-            }
-        }
-    }
-
-    impl From<MouseButton> for libghostty_vt::mouse::Button {
-        fn from(b: MouseButton) -> Self {
-            match b {
-                MouseButton::Unknown => Self::Unknown,
-                MouseButton::Left => Self::Left,
-                MouseButton::Right => Self::Right,
-                MouseButton::Middle => Self::Middle,
-                MouseButton::Four => Self::Four,
-                MouseButton::Five => Self::Five,
-                MouseButton::Six => Self::Six,
-                MouseButton::Seven => Self::Seven,
-                MouseButton::Eight => Self::Eight,
-                MouseButton::Nine => Self::Nine,
-                MouseButton::Ten => Self::Ten,
-                MouseButton::Eleven => Self::Eleven,
-            }
-        }
-    }
-}
-
-#[cfg(feature = "server")]
-pub use server_side::{MouseEncoding, MouseProtocol};
-
 #[cfg(test)]
 mod tests {
     use super::*;

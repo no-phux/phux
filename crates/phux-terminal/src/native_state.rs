@@ -15,10 +15,10 @@ use std::{
 };
 
 use libghostty_vt::{Error as GhosttyError, Terminal as GhosttyTerminal};
-use phux_client_core::engine::ghostty::snapshot::{
+use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
+use phux_vt::snapshot::{
     EncodedSnapshot, SnapshotCaptureError, SnapshotCaptureLimits, SnapshotHistoryRecord,
 };
-use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
 
 /// Opaque manager-local generation identity: SHA-256 of READY bytes and nonce.
 pub use phux_terminal_api::native_state::{OpaqueHistoryCursor, TOKEN_LEN};

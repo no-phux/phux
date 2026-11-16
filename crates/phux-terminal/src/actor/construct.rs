@@ -149,7 +149,7 @@ impl TerminalActor {
         // (ADR-0094).
         terminal.set_scrollback_max_bytes(Some(scrollback.bytes as usize))?;
         terminal.set_continuation_max_bytes(64 * 1024 * 1024)?;
-        phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+        phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
         if let Some(colors) = default_colors {
             Self::install_default_colors(&mut terminal, colors)?;
         }

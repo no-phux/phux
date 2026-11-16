@@ -33,7 +33,7 @@ required-features = ["dhat-heap"]
 # Native ANSI tokens only; already locked transitively. std::io::IsTerminal
 # owns stream detection and output.rs owns policy, avoiding a styling framework.
 anstyle = "1.0"
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 phux-core.workspace = true
 # `snapshot --format vt` decodes the server's base64 rendered capture to
 # raw bytes for stdout (D9); already in the dep graph, see the workspace

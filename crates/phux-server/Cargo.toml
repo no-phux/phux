@@ -152,6 +152,8 @@ iai-callgrind.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # Tests drive the native engine the client kernel uses.
 phux-client-core = { workspace = true, features = ["native-engine"] }
+# Kitty replay for the image-resync tests.
+phux-vt = { workspace = true, features = ["kitty"] }
 # Shared integration-test scaffolding, built once as an rlib.
 phux-server-testkit.workspace = true
 # `testing` adds `DropProxy` for the send-window tests. `relay`: the relay

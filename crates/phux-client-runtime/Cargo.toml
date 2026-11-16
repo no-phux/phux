@@ -19,7 +19,7 @@ default = ["engine"]
 # projected grid. Without it a bounded byte adapter keeps the transport and
 # control-plane lanes buildable and testable with no Zig toolchain, the way
 # phux-mobile's headless `wire` lane does.
-engine = ["dep:libghostty-vt", "phux-client-core/native-engine"]
+engine = ["dep:libghostty-vt", "dep:phux-vt", "phux-client-core/native-engine"]
 # Test-only hooks a consumer's tests need to drive session and publication
 # state without a network, the way phux-dial's `testing` feature exposes its fixtures.
 testing = []
@@ -57,6 +57,8 @@ phux-perf.workspace = true
 # The engine the owner thread hosts; optional so the headless lane links no
 # Zig (see the `engine` feature).
 libghostty-vt = { workspace = true, optional = true }
+# Kitty storage bounds and input conversions for the engine owner thread.
+phux-vt = { workspace = true, optional = true, features = ["kitty"] }
 # The QUIC lane's connection handle and close reasons; phux-dial re-exports
 # neither.
 quinn.workspace = true

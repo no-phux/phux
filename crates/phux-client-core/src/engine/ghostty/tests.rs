@@ -111,7 +111,7 @@ fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {
     source
         .set_continuation_max_bytes(CONTINUATION_LIMIT)
         .unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(8, 3, 8, 16).unwrap();
     source.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=42,c=2,r=2,C=1;/wAA/w==\x1b\\");
     assert_eq!(kitty_pixels(&source, 42), Some(vec![255, 0, 0, 255]));

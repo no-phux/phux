@@ -27,7 +27,9 @@ stress = []
 # Optional (not dev-dependencies) so default test builds do not compile them.
 criterion = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
+# Render pool, SGR and Kitty replay, input conversions, the GHOSTSNP codec.
+phux-vt = { workspace = true, features = ["kitty"] }
 phux-core.workspace = true
 phux-resource.workspace = true
 phux-terminal-api.workspace = true
@@ -60,7 +62,6 @@ portable-pty.workspace = true
 portable-pty-adopt.workspace = true
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
-phux-client-core = { workspace = true, features = ["native-engine"] }
 libghostty-vt.workspace = true
 sha2 = "0.11"
 

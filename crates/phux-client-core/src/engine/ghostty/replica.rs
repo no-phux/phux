@@ -309,7 +309,7 @@ mod clear_tests {
     fn clearing_replays_partial_kitty_command_without_transmitting_it_early() {
         let mut terminal = GhosttyTerminal::new(20, 2).unwrap();
         terminal.set_continuation_max_bytes(4096).unwrap();
-        phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+        phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
         terminal.vt_write(b"visible\x1b_Ga=T,f=32,s=1,v=1,i=42,q=2;/wAA");
         clear_terminal_presentation(&mut terminal).unwrap();
         terminal.vt_write(b"/w==\x1b\\");

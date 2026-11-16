@@ -57,7 +57,7 @@ fn stock_bytes_are_unchanged_with_images_both_screens_and_continuation() {
     terminal
         .set_continuation_max_bytes(64 * 1024 * 1024)
         .unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
+    crate::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal).unwrap();
     terminal.resize(200, 3, 8, 16).unwrap();
     terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;/wAA/w==\x1b\\");
     terminal.vt_write(&b"history\r\n".repeat(3000));

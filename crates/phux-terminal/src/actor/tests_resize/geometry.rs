@@ -11,7 +11,7 @@ fn kitty_snapshot_keeps_natural_extent_after_pixel_metrics_change() {
         .actor;
     let snapshot = actor.synthesize_with_scrollback(None).unwrap();
     let mut replica = GhosttyTerminal::new(10, 5).unwrap();
-    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
+    phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
     replica.resize(10, 5, 8, 16).unwrap();
     replica.vt_write(&snapshot.bytes);
     // More pixels fit without changing the text grid or requesting a new snapshot.
@@ -49,7 +49,7 @@ fn kitty_bootstrap_uses_initial_and_pixel_only_geometry() {
         }
         let snapshot = actor.synthesize_with_scrollback(None).unwrap();
         let mut replica = GhosttyTerminal::new(10, 5).unwrap();
-        phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
+        phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut replica).unwrap();
         replica
             .resize(10, 5, u32::from(cell.0), u32::from(cell.1))
             .unwrap();

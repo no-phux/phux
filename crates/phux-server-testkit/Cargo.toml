@@ -18,7 +18,9 @@ workspace = true
 # A crate rather than `tests/common/` so it compiles once, not once per
 # phux-server test binary.
 [dependencies]
-phux-protocol = { workspace = true, features = ["render-pool"] }
+phux-protocol.workspace = true
+# The shared render trio only (ADR-0086).
+phux-vt = { workspace = true, features = ["render-pool"] }
 # Public `ServerRuntime` surface only, never internals. `testing`: the
 # scripted `FnPolicy` HELLO engine.
 phux-server = { workspace = true, features = ["testing"] }

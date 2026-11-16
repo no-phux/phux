@@ -16,7 +16,7 @@ use libghostty_vt::{
     style::{Style, StyleColor, Underline},
 };
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
-use phux_protocol::{
+use phux_vt::{
     kitty_replay,
     render_pool::{RenderPool, RenderWalk, TerminalGeneration},
     sgr::write_reset_and_sgr,
