@@ -82,91 +82,54 @@ fn apply_ops_from(ops: Vec<Op>, mut next_id: u32) -> (Option<LayoutNode>, Vec<Re
     (tree, alive)
 }
 
-/// `tree` with `target` removed by phux-core's generic edit, in the
-/// `kill_pane` shape: `Ok(None)` once the last leaf goes.
-fn core_remove(tree: &LayoutNode, target: &ResourceId) -> Result<Option<LayoutNode>, LayoutError> {
-    let mut slot = Some(to_core(tree));
-    phux_core::arrangement::remove(&mut slot, target).map_err(from_core_err)?;
-    Ok(slot.as_ref().map(from_core))
-}
-
-type CoreNode = phux_core::LayoutNode<ResourceId>;
-
-const fn core_dir(dir: SplitDir) -> phux_core::SplitDir {
-    match dir {
-        SplitDir::Horizontal => phux_core::SplitDir::Horizontal,
-        SplitDir::Vertical => phux_core::SplitDir::Vertical,
-    }
-}
-
-fn to_core(node: &LayoutNode) -> CoreNode {
-    match node {
-        LayoutNode::Leaf(id) => CoreNode::Leaf(id.clone()),
-        LayoutNode::Split { dir, ratio, left, right } => CoreNode::Split {
-            dir: core_dir(*dir),
-            ratio: *ratio,
-            left: Box::new(to_core(left)),
-            right: Box::new(to_core(right)),
-        },
-    }
-}
-
-fn from_core(node: &CoreNode) -> LayoutNode {
-    match node {
-        CoreNode::Leaf(id) => LayoutNode::Leaf(id.clone()),
-        CoreNode::Split { dir, ratio, left, right } => LayoutNode::Split {
-            dir: match dir {
-                phux_core::SplitDir::Horizontal => SplitDir::Horizontal,
-                phux_core::SplitDir::Vertical => SplitDir::Vertical,
-            },
-            ratio: *ratio,
-            left: Box::new(from_core(left)),
-            right: Box::new(from_core(right)),
-        },
-    }
-}
-
-fn from_core_err(e: phux_core::LayoutError<ResourceId>) -> LayoutError {
-    match e {
-        phux_core::LayoutError::PaneNotInLayout(id) => LayoutError::PaneNotInLayout(id),
-        phux_core::LayoutError::InvalidRatio(r) => LayoutError::InvalidRatio(r),
-    }
-}
-
-/// `tree` with `target` split by phux-core's generic edit.
-fn core_split(
-    tree: &LayoutNode,
+/// `panes` with `new_pane` placed right after `target`.
+fn inserted_after(
+    panes: &[ResourceId],
     target: &ResourceId,
     new_pane: &ResourceId,
-    dir: SplitDir,
-) -> Result<LayoutNode, LayoutError> {
-    let mut out = to_core(tree);
-    out.split(target, new_pane.clone(), core_dir(dir), 0.5).map_err(from_core_err)?;
-    Ok(from_core(&out))
+) -> Vec<ResourceId> {
+    let mut out = Vec::with_capacity(panes.len() + 1);
+    for pane in panes {
+        out.push(pane.clone());
+        if pane == target {
+            out.push(new_pane.clone());
+        }
+    }
+    out
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
     /// Invariant 0: on unique-leaf trees (all the clients build),
-    /// `kill_pane` and `split_at` agree with phux-core's generic
-    /// `remove`/`split`, for present and absent targets alike. Duplicate
-    /// leaves are out of contract: core `remove` drops every match, the
-    /// retired client walk dropped the first.
+    /// `kill_pane` drops exactly its target (`Ok(None)` for the last leaf)
+    /// and `split_at` places the new pane right after its target, both in
+    /// leaf order; an absent target is refused. These wrap phux-core's
+    /// `remove`/`split`; duplicate leaves are out of contract (core
+    /// `remove` drops every copy, the retired client walk dropped the
+    /// first).
     #[test]
-    fn proptest_tree_edits_match_core(ops in prop::collection::vec(arb_op(), 1..20)) {
-        let (tree, alive) = apply_ops(ops);
+    fn proptest_tree_edits_keep_leaf_order(ops in prop::collection::vec(arb_op(), 1..20)) {
+        let (tree, _) = apply_ops(ops);
         let Some(tree) = tree else { return Ok(()) };
+        let panes = leaves(&tree);
         let absent = t(9_999);
-        for target in alive.iter().chain(std::iter::once(&absent)) {
-            prop_assert_eq!(kill_pane(&tree, target), core_remove(&tree, target));
-            for dir in [SplitDir::Horizontal, SplitDir::Vertical] {
-                prop_assert_eq!(
-                    split_at(&tree, target, &absent, dir, 0.5),
-                    core_split(&tree, target, &absent, dir)
-                );
-            }
+        for target in &panes {
+            let kept: Vec<_> = panes.iter().filter(|p| *p != target).cloned().collect();
+            let after_kill = kill_pane(&tree, target).unwrap();
+            prop_assert_eq!(after_kill.as_ref().map_or_else(Vec::new, leaves), kept);
+            prop_assert_eq!(after_kill.is_none(), panes.len() == 1);
+            let split = split_at(&tree, target, &absent, SplitDir::Vertical, 0.5).unwrap();
+            prop_assert_eq!(leaves(&split), inserted_after(&panes, target, &absent));
         }
+        prop_assert_eq!(
+            kill_pane(&tree, &absent),
+            Err(LayoutError::PaneNotInLayout(absent.clone()))
+        );
+        prop_assert_eq!(
+            split_at(&tree, &absent, &t(10_000), SplitDir::Horizontal, 0.5),
+            Err(LayoutError::PaneNotInLayout(absent))
+        );
     }
 
     /// Invariant 1: every ResourceId appears as exactly one leaf.
