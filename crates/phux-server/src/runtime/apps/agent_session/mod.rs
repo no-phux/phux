@@ -185,7 +185,7 @@ impl ResourceApp for AgentSessionApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
-            match attach::attach_agent_session(
+            let result = attach::attach_agent_session(
                 stream.state,
                 stream.client_id,
                 stream.wire,
@@ -196,16 +196,8 @@ impl ResourceApp for AgentSessionApp {
                 stream.connection_token,
                 stream.after_seq,
             )
-            .await
-            {
-                CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
-                CommandResult::Error { code, message } => {
-                    Err(AttachResourceFailure { code, message })
-                }
-                other => Err(AttachResourceFailure::internal(&format!(
-                    "agent session attach returned an unexpected result: {other:?}"
-                ))),
-            }
+            .await;
+            super::producer_stream::result_to_attach_failure("agent session", result)
         }
         .boxed_local()
     }

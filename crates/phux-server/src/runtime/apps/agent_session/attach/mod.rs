@@ -16,6 +16,7 @@ use tracing::debug;
 
 use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
+use crate::runtime::apps::producer_stream::{self, StreamAttach, StreamCut, StreamIds};
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::{AgentSessionBootstrap, BootstrapRequest};
 
@@ -31,6 +32,13 @@ fn validate_cut(cut: &AgentSessionBootstrap) -> Result<(), String> {
     Ok(())
 }
 
+fn session_closed() -> CommandResult {
+    CommandResult::error(
+        ErrorCode::TerminalNotFound,
+        "the session closed before its bootstrap was cut",
+    )
+}
+
 /// The same validated cut serves explicit subscriptions and lag recovery.
 async fn capture_cut(
     bootstrap: &mpsc::Sender<BootstrapRequest>,
@@ -44,30 +52,38 @@ async fn capture_cut(
             after_seq,
         })
         .await
-        .map_err(|_| {
-            CommandResult::error(
-                ErrorCode::TerminalNotFound,
-                "the session closed before its bootstrap was cut",
-            )
-        })?;
-    let cut = rx.await.map_err(|_| {
-        CommandResult::error(
-            ErrorCode::TerminalNotFound,
-            "the session closed before its bootstrap was cut",
-        )
-    })?;
+        .map_err(|_| session_closed())?;
+    let cut = rx.await.map_err(|_| session_closed())?;
     validate_cut(&cut).map_err(|message| CommandResult::Error {
         code: ErrorCode::CodecUnavailable,
         message,
     })?;
     Ok(cut)
 }
+
+/// An explicit subscription's cut: [`capture_cut`], noting a replay that
+/// starts after evicted records.
+async fn attach_cut(
+    bootstrap: &mpsc::Sender<BootstrapRequest>,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    after_seq: Option<u64>,
+) -> Result<AgentSessionBootstrap, CommandResult> {
+    let cut = capture_cut(bootstrap, after_seq).await?;
+    if cut.dropped > 0 {
+        debug!(
+            session = %terminal_id,
+            dropped = cut.dropped,
+            "ATTACH_RESOURCE: the replay starts after evicted records"
+        );
+    }
+    Ok(cut)
+}
+
 /// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
 /// or a cursor-anchored suffix, followed by live records. The live subscription
 /// precedes the cut so nothing appended between them is lost.
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
 pub(crate) async fn attach_agent_session(
@@ -84,92 +100,94 @@ pub(crate) async fn attach_agent_session(
     let Ok(session) = handle.agent_session() else {
         return CommandResult::error(ErrorCode::WrongResourceKind, "not an agent session");
     };
-    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
-    else {
-        return CommandResult::error(
-            ErrorCode::ResourceExhausted,
-            "ATTACH_RESOURCE bootstrap id space exhausted",
-        );
-    };
-    let stream_id = crate::runtime::stream_id_from(client_id.0);
-    let live = handle.output.subscribe();
-    // Await the old task's exit before BEGIN: no prior generation may leak
-    // output between this replacement's bootstrap frames.
-    crate::runtime::pump::stop_output(state, client_id, core).await;
-
-    let cut = match capture_cut(&session.bootstrap, after_seq).await {
-        Ok(cut) => cut,
-        Err(result) => return result,
-    };
-    if cut.dropped > 0 {
-        debug!(
-            session = %terminal_id,
-            dropped = cut.dropped,
-            "ATTACH_RESOURCE: the replay starts after evicted records"
-        );
-    }
-
-    let (cancel, done, last_seq, prior) = state.with_mut(|s| {
-        s.resources_mut()
-            .replace_pump(client_id, core, bootstrap_id)
-    });
-    let pump_done = done.clone().drop_guard();
-    if let Some((prior_id, prior_done, prior_seq)) = prior {
-        prior_done.cancelled().await;
-        let tombstone = FrameKind::BootstrapTombstone {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id: prior_id,
-            reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
-            last_valid_seq: prior_seq.load(std::sync::atomic::Ordering::Acquire),
-        };
-        if out_tx.send(Outbound::Frame(tombstone)).await.is_err() {
-            return CommandResult::error(
-                ErrorCode::ResourceExhausted,
-                "the client went away before its replacement bootstrap",
-            );
-        }
-    }
-    for frame in bootstrap_frames(terminal_id, stream_id, bootstrap_id, &cut, limits) {
-        if out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return CommandResult::error(
-                ErrorCode::ResourceExhausted,
-                "the client went away mid-bootstrap",
-            );
-        }
-    }
-    last_seq.store(cut.base_seq, std::sync::atomic::Ordering::Release);
-
-    let pump = live::LivePump {
-        state: state.clone(),
+    let attach = StreamAttach {
+        state,
         client_id,
+        terminal_id,
         core,
-        bootstrap: session.bootstrap.clone(),
-        out_tx: out_tx.clone(),
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
+        handle,
+        out_tx,
         limits,
-        cancel,
-        last_seq,
+        connection_token,
     };
-    let connection_cancel = connection_token.clone();
-    let handle = tokio::task::spawn_local(async move {
-        let _done = pump_done;
-        tokio::select! {
-            () = connection_cancel.cancelled() => {}
-            () = pump.run(live, cut.base_seq) => {}
+    let recovery = live::ReplayThenRepublish {
+        bootstrap: session.bootstrap.clone(),
+    };
+    let cut = attach_cut(&session.bootstrap, terminal_id, after_seq);
+    producer_stream::attach_stream(attach, cut, recovery).await
+}
+
+/// A cut announces a full retained replacement, or a suffix resuming after
+/// a cursor; its payload is the retained records, packed whole into chunks
+/// whenever a record fits the budget.
+impl StreamCut for AgentSessionBootstrap {
+    fn base_seq(&self) -> u64 {
+        self.base_seq
+    }
+
+    fn profile(&self) -> BootstrapStreamProfile {
+        self.resume_after_seq
+            .map_or(BootstrapStreamProfile::AgentEventsJsonlV1, |after_seq| {
+                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq }
+            })
+    }
+
+    fn chunks(&self, ids: StreamIds, limits: BootstrapLimits) -> impl Iterator<Item = FrameKind> {
+        let budget = usize::try_from(limits.max_chunk_bytes()).unwrap_or(DEFAULT_AGENT_CHUNK_BYTES);
+        let mut packer = RecordPacker {
+            records: self.records.iter().peekable(),
+            offset: 0,
+            budget,
+        };
+        let mut chunk_seq = 0u32;
+        std::iter::from_fn(move || {
+            let payload = packer.next_payload()?;
+            let frame = ids.chunk(chunk_seq, payload);
+            chunk_seq = chunk_seq.saturating_add(1);
+            Some(frame)
+        })
+    }
+}
+
+/// Packs records into chunk payloads of at most `budget` bytes. A negotiated
+/// budget can be smaller than one record: payloads stay bounded even then,
+/// produced lazily instead of allocating one frame per byte for a peer that
+/// advertises a tiny budget.
+struct RecordPacker<'a> {
+    records: std::iter::Peekable<std::slice::Iter<'a, Bytes>>,
+    /// How much of the next record earlier chunks already carried.
+    offset: usize,
+    budget: usize,
+}
+
+impl RecordPacker<'_> {
+    fn next_payload(&mut self) -> Option<Bytes> {
+        let mut payload = Vec::new();
+        while let Some(record) = self.records.peek() {
+            let remaining = &record[self.offset..];
+            // Preserve whole-record chunks whenever a record fits the
+            // budget, including for older consumers' default-size offers.
+            if !payload.is_empty() && payload.len() + remaining.len() > self.budget {
+                break;
+            }
+            let take = remaining.len().min(self.budget - payload.len());
+            payload.extend_from_slice(&remaining[..take]);
+            self.offset += take;
+            if self.offset == record.len() {
+                self.records.next();
+                self.offset = 0;
+            }
+            if payload.len() == self.budget {
+                break;
+            }
         }
-    });
-    state.with_mut(|s| {
-        s.resources_mut()
-            .track_output_pump(client_id, core, handle.abort_handle(), done, None);
-    });
-    CommandResult::Ok
+        (!payload.is_empty()).then(|| Bytes::from(payload))
+    }
 }
 
 /// The bootstrap frame run for one cut: BEGIN, the retained records in
 /// chunks, then READY.
+#[cfg(test)]
 fn bootstrap_frames(
     terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
@@ -177,68 +195,12 @@ fn bootstrap_frames(
     cut: &AgentSessionBootstrap,
     limits: BootstrapLimits,
 ) -> impl Iterator<Item = FrameKind> {
-    let budget = usize::try_from(limits.max_chunk_bytes()).unwrap_or(DEFAULT_AGENT_CHUNK_BYTES);
-    let begin = FrameKind::BootstrapBegin {
+    let ids = StreamIds {
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
-        profile: cut
-            .resume_after_seq
-            .map_or(BootstrapStreamProfile::AgentEventsJsonlV1, |after_seq| {
-                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq }
-            }),
-        cols: 0,
-        rows: 0,
-        base_seq: cut.base_seq,
     };
-    // A negotiated budget can be smaller than one record. Bound payloads
-    // even then, and produce frames lazily instead of allocating one frame
-    // per byte for a peer that advertises a tiny budget.
-    let mut records = cut.records.iter().peekable();
-    let mut offset = 0;
-    let mut chunk_seq = 0u32;
-    let chunks = std::iter::from_fn(move || {
-        let mut payload = Vec::new();
-        while let Some(record) = records.peek() {
-            let remaining = &record[offset..];
-            // Preserve whole-record chunks whenever a record fits the
-            // budget, including for older consumers' default-size offers.
-            if !payload.is_empty() && payload.len() + remaining.len() > budget {
-                break;
-            }
-            let take = remaining.len().min(budget - payload.len());
-            payload.extend_from_slice(&remaining[..take]);
-            offset += take;
-            if offset == record.len() {
-                records.next();
-                offset = 0;
-            }
-            if payload.len() == budget {
-                break;
-            }
-        }
-        if payload.is_empty() {
-            return None;
-        }
-        let frame = FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload: Bytes::from(payload),
-        };
-        chunk_seq = chunk_seq.saturating_add(1);
-        Some(frame)
-    });
-    let ready = FrameKind::BootstrapReady {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        history_cursor: None,
-    };
-    std::iter::once(begin)
-        .chain(chunks)
-        .chain(std::iter::once(ready))
+    producer_stream::bootstrap_frames(cut, ids, limits)
 }
 
 mod live;

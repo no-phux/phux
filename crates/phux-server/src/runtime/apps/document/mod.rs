@@ -337,7 +337,7 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
-            match attach_document::<A>(
+            let result = attach_document::<A>(
                 stream.state,
                 stream.client_id,
                 stream.wire,
@@ -347,17 +347,8 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
                 stream.limits,
                 stream.connection_token,
             )
-            .await
-            {
-                CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
-                CommandResult::Error { code, message } => {
-                    Err(AttachResourceFailure { code, message })
-                }
-                other => Err(AttachResourceFailure::internal(&format!(
-                    "{} attach returned an unexpected result: {other:?}",
-                    A::LABEL
-                ))),
-            }
+            .await;
+            super::producer_stream::result_to_attach_failure(A::LABEL, result)
         }
         .boxed_local()
     }

@@ -27,6 +27,7 @@ mod context;
 pub(crate) mod document;
 pub(crate) mod lane;
 pub(crate) mod mirror_demand;
+mod producer_stream;
 pub(crate) mod spawn;
 pub(crate) mod terminal;
 pub(crate) mod upgrade;
