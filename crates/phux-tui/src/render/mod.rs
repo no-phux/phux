@@ -129,30 +129,41 @@ mod home_to_tilde_tests {
 mod clip_text_tests {
     use super::{clip_text, display_width};
 
+    /// Exact clips, never over the budget in cells. A fitting string is
+    /// untouched; a clip lands exactly on the budget with an ellipsis; a
+    /// zero budget yields nothing. Multi-byte text counts characters, not
+    /// bytes, and a double-width character that would straddle the last
+    /// cell is dropped whole. Zero-width marks ride with their base. Bidi
+    /// overrides and control characters are dropped (chrome text reaches an
+    /// emitter that writes escape sequences), but Hebrew letters are content.
     #[test]
-    fn a_string_that_fits_is_untouched() {
-        assert_eq!(clip_text("branch", 6), "branch");
-        assert_eq!(clip_text("branch", 99), "branch");
-    }
-
-    #[test]
-    fn a_clip_lands_exactly_on_the_budget() {
-        assert_eq!(clip_text("wave2/sidebar", 6), "wave2\u{2026}");
-        assert_eq!(clip_text("wave2/sidebar", 6).chars().count(), 6);
-        assert_eq!(clip_text("wave2/sidebar", 1), "\u{2026}");
-    }
-
-    #[test]
-    fn a_zero_budget_yields_nothing() {
-        assert_eq!(clip_text("anything", 0), "");
-    }
-
-    /// Char counts, not byte counts: a multi-byte label must not be cut
-    /// mid-codepoint or over-budget.
-    #[test]
-    fn multibyte_text_is_counted_in_characters() {
-        assert_eq!(clip_text("échantillon", 4), "éch\u{2026}");
-        assert_eq!(clip_text("échantillon", 4).chars().count(), 4);
+    fn clips_are_exact_and_within_the_budget() {
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            ("fits exactly", "branch", 6, "branch"),
+            ("fits with room", "branch", 99, "branch"),
+            ("clipped to the budget", "wave2/sidebar", 6, "wave2\u{2026}"),
+            ("budget of one", "wave2/sidebar", 1, "\u{2026}"),
+            ("zero budget", "anything", 0, ""),
+            ("multibyte", "échantillon", 4, "éch\u{2026}"),
+            ("wide straddle", "日本語", 4, "日\u{2026}"),
+            ("combining mark", "cafe\u{301}/src", 8, "cafe\u{301}/src"),
+            ("emoji presentation", "\u{2705}\u{fe0f} build", 20, "\u{2705}\u{fe0f} build"),
+            ("rlo override", "run\u{202e}gpj.exe", 40, "rungpj.exe"),
+            ("isolates", "\u{2066}a\u{2069}", 40, "a"),
+            ("rlm mark", "x\u{200f}y", 40, "xy"),
+            ("hebrew", "\u{5e9}\u{5dc}\u{5d5}\u{5dd}", 40, "\u{5e9}\u{5dc}\u{5d5}\u{5dd}"),
+            ("csi", "a\u{1b}[31mb", 40, "a[31mb"),
+            ("bel", "a\u{7}b", 40, "ab"),
+        ];
+        for (case, text, max, want) in cases {
+            let out = clip_text(text, max);
+            assert_eq!(out, want, "{case}");
+            assert!(display_width(&out) <= max, "{case}: over budget");
+        }
+        // Overrides cost no budget, so they cannot shift a cut.
+        assert_eq!(clip_text("abcdef", 4), clip_text("abc\u{202e}def", 4));
+        assert!(!clip_text("x\u{1b}]0;evil\u{7}y", 3).contains('\u{1b}'));
     }
 
     /// CELLS, not chars. A CJK label clipped by `chars().count()` is
@@ -172,52 +183,5 @@ mod clip_text_tests {
         assert_eq!(clip_text("日本語のテスト", 7), "日本語\u{2026}");
         // Exactly the budget: untouched, no ellipsis.
         assert_eq!(clip_text("日本語", 6), "日本語");
-    }
-
-    /// A double-width character that would straddle the last cell is
-    /// dropped whole. Half a glyph is not a shorter glyph.
-    #[test]
-    fn a_wide_char_never_straddles_the_budget() {
-        // Budget 4 = ellipsis + 3 cells: one CJK char (2) fits, the
-        // second would need cells 3-4 and does not.
-        let out = clip_text("日本語", 4);
-        assert_eq!(out, "日\u{2026}");
-        assert!(display_width(&out) <= 4);
-    }
-
-    /// Zero-width marks ride with their base and cost no budget, so a
-    /// decomposed or emoji-qualified label is not truncated at the first
-    /// one.
-    #[test]
-    fn zero_width_marks_ride_with_their_base() {
-        assert_eq!(clip_text("cafe\u{301}/src", 8), "cafe\u{301}/src");
-        assert_eq!(
-            clip_text("\u{2705}\u{fe0f} build", 20),
-            "\u{2705}\u{fe0f} build"
-        );
-    }
-
-    /// Bidi overrides never survive a clip either (they reorder later text).
-    #[test]
-    fn bidi_overrides_are_dropped_but_rtl_letters_are_not() {
-        assert_eq!(clip_text("run\u{202e}gpj.exe", 40), "rungpj.exe");
-        assert_eq!(clip_text("\u{2066}a\u{2069}", 40), "a");
-        assert_eq!(clip_text("x\u{200f}y", 40), "xy");
-        // Hebrew letters are content, not formatting: untouched.
-        assert_eq!(
-            clip_text("\u{5e9}\u{5dc}\u{5d5}\u{5dd}", 40),
-            "\u{5e9}\u{5dc}\u{5d5}\u{5dd}"
-        );
-        // And they cost no budget, so they cannot shift a cut.
-        assert_eq!(clip_text("abcdef", 4), clip_text("abc\u{202e}def", 4));
-    }
-
-    /// Control characters never survive: chrome text reaches an emitter
-    /// that writes escape sequences, and a pane names itself.
-    #[test]
-    fn control_characters_are_dropped() {
-        assert_eq!(clip_text("a\u{1b}[31mb", 40), "a[31mb");
-        assert_eq!(clip_text("a\u{7}b", 40), "ab");
-        assert!(!clip_text("x\u{1b}]0;evil\u{7}y", 3).contains('\u{1b}'));
     }
 }
