@@ -990,7 +990,7 @@ mod tests {
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
-    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, serve_every};
+    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, spawn_serve_every};
 
     use super::*;
 
@@ -1079,6 +1079,15 @@ mod tests {
         outcome
     }
 
+    /// Feed `tracker` a record in `state`.
+    fn see(tracker: &mut EdgeTracker, state: AgentMetaState) -> Verdict {
+        tracker.observe(Some(&state_record(state)))
+    }
+
+    const fn satisfied(from: AgentMetaState, to: AgentMetaState) -> Verdict {
+        Verdict::Satisfied { from, to }
+    }
+
     /// A pane resting at `idle` must not satisfy `--until idle`, however
     /// often the level is re-read.
     #[test]
@@ -1086,7 +1095,7 @@ mod tests {
         let mut tracker = EdgeTracker::new(AgentMetaState::Idle, &[AgentMetaState::Idle]);
         for _ in 0..100 {
             assert_eq!(
-                tracker.observe(Some(&state_record(AgentMetaState::Idle))),
+                see(&mut tracker, AgentMetaState::Idle),
                 Verdict::Pending,
                 "a repeated level read must never satisfy a completion gate"
             );
@@ -1096,55 +1105,31 @@ mod tests {
 
     #[test]
     fn a_working_to_idle_transition_satisfies_the_wait() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Working, &[AgentMetaState::Idle]);
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Idle))),
-            Verdict::Satisfied {
-                from: AgentMetaState::Working,
-                to: AgentMetaState::Idle,
-            }
-        );
+        use AgentMetaState::{Idle, Working};
+        let mut tracker = EdgeTracker::new(Working, &[Idle]);
+        assert_eq!(see(&mut tracker, Idle), satisfied(Working, Idle));
         assert_eq!(tracker.edges(), 1);
     }
 
     /// An already-blocked pane must still transition to satisfy `blocked`.
     #[test]
     fn an_already_blocked_baseline_needs_a_transition_too() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Blocked, &[AgentMetaState::Blocked]);
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Blocked))),
-            Verdict::Pending
-        );
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Working))),
-            Verdict::Pending
-        );
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Blocked))),
-            Verdict::Satisfied {
-                from: AgentMetaState::Working,
-                to: AgentMetaState::Blocked,
-            }
-        );
+        use AgentMetaState::{Blocked, Working};
+        let mut tracker = EdgeTracker::new(Blocked, &[Blocked]);
+        assert_eq!(see(&mut tracker, Blocked), Verdict::Pending);
+        assert_eq!(see(&mut tracker, Working), Verdict::Pending);
+        assert_eq!(see(&mut tracker, Blocked), satisfied(Working, Blocked));
     }
 
     /// A transition into a state nobody asked for keeps the wait open, and
     /// re-arms the edge: the next transition is measured from there.
     #[test]
     fn an_untargeted_transition_advances_the_baseline_without_satisfying() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Idle, &[AgentMetaState::Done]);
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Working))),
-            Verdict::Pending
-        );
-        assert_eq!(tracker.last(), AgentMetaState::Working);
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Done))),
-            Verdict::Satisfied {
-                from: AgentMetaState::Working,
-                to: AgentMetaState::Done,
-            }
-        );
+        use AgentMetaState::{Done, Idle, Working};
+        let mut tracker = EdgeTracker::new(Idle, &[Done]);
+        assert_eq!(see(&mut tracker, Working), Verdict::Pending);
+        assert_eq!(tracker.last(), Working);
+        assert_eq!(see(&mut tracker, Done), satisfied(Working, Done));
     }
 
     /// A tombstone or a withdrawal to `unknown` is a departure, never a
@@ -1371,16 +1356,11 @@ mod tests {
         let terminals = vec![ResourceId::local(7), ResourceId::local(8)];
         let snapshot = fleet_snapshot(&terminals);
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = UnixListener::bind(&socket).expect("bind scripted server");
-        let server = tokio::spawn(async move {
-            serve_every(listener, move || {
-                ScriptSpec::new()
-                    .state(snapshot.clone())
-                    .metadata(|_scope, key| (key == RESOURCE_AGENT_KEY).then(|| record("blocked")))
-                    .end(EndOfScript::ServeUntilDetach)
-            })
-            .await;
+        let (socket, server) = spawn_serve_every(dir.path(), move || {
+            ScriptSpec::new()
+                .state(snapshot.clone())
+                .metadata(|_scope, key| (key == RESOURCE_AGENT_KEY).then(|| record("blocked")))
+                .end(EndOfScript::ServeUntilDetach)
         });
 
         let result = wait_for_any_agent_state(

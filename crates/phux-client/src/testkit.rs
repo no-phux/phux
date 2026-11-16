@@ -327,6 +327,37 @@ pub async fn serve_every(
     }
 }
 
+/// Bind `phux.sock` in `dir` and [`serve_every`] connection on it. Returns
+/// the socket path and the server task (abort it when done).
+///
+/// # Panics
+///
+/// If the bind fails.
+#[must_use]
+pub fn spawn_serve_every(
+    dir: &std::path::Path,
+    make_spec: impl Fn() -> ScriptSpec + Send + 'static,
+) -> (std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    let socket = dir.join("phux.sock");
+    let listener = UnixListener::bind(&socket).expect("bind scripted server");
+    (socket, tokio::spawn(serve_every(listener, make_spec)))
+}
+
+/// Bind `phux.sock` in `dir` and [`hold_silent`] every connection on it.
+/// Returns the socket path and the peer task (abort it when done).
+///
+/// # Panics
+///
+/// If the bind fails.
+#[must_use]
+pub fn spawn_hold_silent(
+    dir: &std::path::Path,
+) -> (std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    let socket = dir.join("phux.sock");
+    let listener = UnixListener::bind(&socket).expect("bind stalled peer");
+    (socket, tokio::spawn(hold_silent(listener)))
+}
+
 /// Accept every connection and never read from or write to it: a peer that
 /// is listening but never answers `HELLO`.
 ///
