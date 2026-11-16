@@ -8,11 +8,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, Layer, ServerCapabilities, TerminalColor, TerminalDefaultColors,
-    select_bootstrap_profile,
-};
+use phux_protocol::caps::{Layer, ServerCapabilities, TerminalColor, TerminalDefaultColors};
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, Scope, ViewportInfo};
 use tokio::net::UnixStream;

@@ -113,13 +113,11 @@ fn a_kill_reply_is_consumed_once_whatever_it_says() {
             request_id: 7,
             result: CommandResult::Ok,
         },
-        FrameKind::CommandResult {
-            request_id: 7,
-            result: CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: "satellite edge link is down".to_owned(),
-            },
-        },
+        phux_wire_fixtures::command_err(
+            7,
+            ErrorCode::SatelliteUnreachable,
+            "satellite edge link is down",
+        ),
         unreachable_reply(7, "edge"),
     ] {
         let mut kills = OrphanKills::default();
@@ -255,13 +253,11 @@ fn an_unreachable_satellite_forgets_its_strays() {
             code: ErrorCode::SatelliteUnreachable,
             message: "satellite edge is unreachable: link is down".to_owned(),
         },
-        FrameKind::CommandResult {
-            request_id: 3,
-            result: CommandResult::Error {
-                code: ErrorCode::SatelliteUnreachable,
-                message: "satellite edge did not answer within 30s".to_owned(),
-            },
-        },
+        phux_wire_fixtures::command_err(
+            3,
+            ErrorCode::SatelliteUnreachable,
+            "satellite edge did not answer within 30s",
+        ),
         FrameKind::ResourceSpawned {
             request_id: 3,
             result: SpawnResult::Err(SpawnError::SatelliteUnreachable(
@@ -284,13 +280,11 @@ fn an_unreachable_satellite_forgets_its_strays() {
     assert_eq!(waiting(&mut kills, now), Vec::new(), "no host named");
 
     let mut kills = with_strays(vec![edge(9)], now);
-    kills.observe(FrameKind::CommandResult {
-        request_id: 3,
-        result: CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "satellite edge has no such terminal".to_owned(),
-        },
-    });
+    kills.observe(phux_wire_fixtures::command_err(
+        3,
+        ErrorCode::TerminalNotFound,
+        "satellite edge has no such terminal",
+    ));
     assert_eq!(waiting(&mut kills, now), vec![edge(9)], "not unreachable");
 }
 
@@ -450,13 +444,7 @@ fn a_refused_conditional_kill_forgets_the_stray() {
         let now = Instant::now();
         let mut kills = with_spawned(vec![bound(edge(9))], now);
         let (request_id, _) = only_command(retries(&mut kills, now));
-        let refusal = FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code,
-                message: "refused".to_owned(),
-            },
-        };
+        let refusal = phux_wire_fixtures::command_err(request_id, code, "refused");
         assert_eq!(kills.observe(refusal), None, "{code:?}");
         assert_eq!(waiting(&mut kills, now), Vec::new(), "{code:?}");
     }

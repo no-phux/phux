@@ -112,6 +112,8 @@ phux-frozen.workspace = true
 # phux-h5hj.3: the one scripted server every client-side unit test speaks
 # to, so a fake cannot lie about the server's frame order.
 phux-client = { workspace = true, features = ["testkit"] }
+# Frame builders for the frame-handler and attach-loop tests.
+phux-wire-fixtures.workspace = true
 # `tests/sidebar_branch_e2e.rs` stands up a real `ServerRuntime` and waits for
 # its UDS, which is exactly what the server's own integration scaffolding
 # already does. Sharing it deletes a hand-copied server fixture, connect-poll,

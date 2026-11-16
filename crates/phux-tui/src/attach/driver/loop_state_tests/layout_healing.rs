@@ -75,25 +75,6 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
     let foreign = ResourceId::local(7);
     let stored_partial = ArrangementDoc::single(focus.clone()).encode_cbor().unwrap();
     for stored in [None, Some(stored_partial)] {
-        let (a, b) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(a);
-        let mut server = Connection::from_stream(b);
-        let negotiated = NegotiatedBootstrap {
-            profile: BootstrapProfile::SynthesizedVtRaw,
-            limits: BootstrapLimits::default(),
-            server_features: ServerFeatureSet::new(),
-            server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
-        };
-        let mut state = SessionLoop::new(
-            negotiated,
-            PredictiveConfig::disabled(),
-            false,
-            None,
-            EntryPick::default(),
-            None,
-        )
-        .unwrap();
-        let mut out = Vec::new();
         let attached = FrameKind::Attached {
             attach_id: 1,
             initial_client_id: ClientId::new(1),
@@ -112,10 +93,13 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
                     ResourceInfo::new(foreign.clone(), WindowId::new(2), 80, 24),
                 ]),
         };
-        state
-            .bootstrap(&mut client, &mut out, attached, None)
-            .await
-            .unwrap();
+        let LoopRig {
+            mut state,
+            mut client,
+            server,
+            mut out,
+        } = Box::pin(LoopRig::plain().bootstrapped(attached)).await;
+        let mut server = Connection::from_stream(server);
         state
             .emit_deferred_bootstrap_outbound(&mut client)
             .await
@@ -171,27 +155,6 @@ async fn an_organization_record_keeps_a_closed_view_unarranged() {
     let focus = ResourceId::local(1);
     let hidden = ResourceId::local(4);
     let stored = ArrangementDoc::single(focus.clone()).encode_cbor().unwrap();
-    let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let mut client = Connection::from_stream(a);
-    let mut server = Connection::from_stream(b);
-    let negotiated = NegotiatedBootstrap {
-        profile: BootstrapProfile::SynthesizedVtRaw,
-        limits: BootstrapLimits::default(),
-        server_features: ServerFeatureSet::new(),
-        server_features_ext: phux_protocol::ServerFeatureExtSet::with(&[
-            phux_protocol::ServerFeatureExt::Organization,
-        ]),
-    };
-    let mut state = SessionLoop::new(
-        negotiated,
-        PredictiveConfig::disabled(),
-        false,
-        None,
-        EntryPick::default(),
-        None,
-    )
-    .unwrap();
-    let mut out = Vec::new();
     let attached = FrameKind::Attached {
         attach_id: 1,
         initial_client_id: ClientId::new(1),
@@ -207,10 +170,16 @@ async fn an_organization_record_keeps_a_closed_view_unarranged() {
                 ResourceInfo::new(hidden.clone(), WindowId::new(1), 80, 24),
             ]),
     };
-    state
-        .bootstrap(&mut client, &mut out, attached, None)
-        .await
-        .unwrap();
+    let organization =
+        phux_protocol::ServerFeatureExtSet::with(&[phux_protocol::ServerFeatureExt::Organization]);
+    let rig = LoopRig::new(ServerFeatureSet::new(), organization);
+    let LoopRig {
+        mut state,
+        mut client,
+        server,
+        mut out,
+    } = Box::pin(rig.bootstrapped(attached)).await;
+    let mut server = Connection::from_stream(server);
     state
         .emit_deferred_bootstrap_outbound(&mut client)
         .await

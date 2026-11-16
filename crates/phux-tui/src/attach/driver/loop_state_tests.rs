@@ -13,6 +13,62 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 #[path = "loop_state_tests/agent_streams.rs"]
 mod agent_streams;
 
+/// A fresh raw synthesized-VT attach loop over one end of a socket pair.
+///
+/// The server end stays a raw socket: each test wraps it in a
+/// [`Connection`], reads it as bytes, or holds it unread.
+struct LoopRig {
+    state: SessionLoop,
+    client: Connection,
+    server: tokio::net::UnixStream,
+    out: Vec<u8>,
+}
+
+impl LoopRig {
+    /// A loop on a server advertising `features` and `features_ext`.
+    fn new(features: ServerFeatureSet, features_ext: phux_protocol::ServerFeatureExtSet) -> Self {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let negotiated = NegotiatedBootstrap {
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features: features,
+            server_features_ext: features_ext,
+        };
+        let state = SessionLoop::new(
+            negotiated,
+            PredictiveConfig::disabled(),
+            false,
+            None,
+            EntryPick::default(),
+            None,
+        )
+        .unwrap();
+        Self {
+            state,
+            client: Connection::from_stream(client),
+            server,
+            out: Vec::new(),
+        }
+    }
+
+    /// A loop on a server advertising nothing.
+    fn plain() -> Self {
+        Self::new(
+            ServerFeatureSet::new(),
+            phux_protocol::ServerFeatureExtSet::new(),
+        )
+    }
+
+    /// The loop bootstrapped from `attached`.
+    async fn bootstrapped(mut self, attached: FrameKind) -> Self {
+        self.state
+            .bootstrap(&mut self.client, &mut self.out, attached, None)
+            .await
+            .unwrap();
+        self
+    }
+}
+
 // Keep the test namespace and snapshot identity while grouping by responsibility.
 include!("loop_state_tests/layout_read.rs");
 include!("loop_state_tests/bootstrap_resize.rs");

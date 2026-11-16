@@ -252,7 +252,7 @@ async fn answer_inventory(
 /// re-attaches it, and a replay refusal flags it down again.
 #[tokio::test(flavor = "current_thread")]
 async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
-    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+    use phux_protocol::wire::frame::ErrorCode;
     use phux_protocol::wire::info::HostInventory;
 
     let (mut state, mut client, mut server, _) =
@@ -336,13 +336,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
             &mut client,
             &mut out,
             None,
-            FrameKind::CommandResult {
-                request_id: attach,
-                result: CommandResult::Error {
-                    code: ErrorCode::SatelliteUnreachable,
-                    message: "link is down".to_owned(),
-                },
-            },
+            phux_wire_fixtures::command_err(attach, ErrorCode::SatelliteUnreachable, "link is down"),
             false,
             &mut RepaintAccumulator::default(),
         )

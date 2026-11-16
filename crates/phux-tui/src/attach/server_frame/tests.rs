@@ -12,13 +12,14 @@ use phux_client_core::session::EffectBuffer;
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId, WindowId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, CommandResult, DetachReason, ErrorCode, FrameKind, Scope, SpawnResult,
+    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::{
     AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo,
 };
 
 use crate::layout::{LayoutNode, SplitDir};
+use phux_wire_fixtures::{closed, command_err, command_ok, output};
 
 use crate::attach::actions::{
     Adopt, ParkedAdopt, PendingSplit, PendingWindow, SpawnedPane, SplitHost,
@@ -107,16 +108,6 @@ fn ready_frame(terminal_id: &ResourceId) -> FrameKind {
     }
 }
 
-fn output_frame(terminal_id: &ResourceId, seq: u64, bytes: &[u8]) -> FrameKind {
-    FrameKind::ResourceOutput {
-        terminal_id: terminal_id.clone(),
-        stream_id: stream(),
-        bootstrap_id: bootstrap(),
-        seq,
-        bytes: bytes::Bytes::copy_from_slice(bytes),
-    }
-}
-
 fn history_page(terminal_id: &ResourceId, cursor: &'static [u8]) -> FrameKind {
     FrameKind::HistoryPage {
         terminal_id: terminal_id.clone(),
@@ -147,15 +138,6 @@ fn meta_changed(scope: Scope, key: &str, value: Option<Vec<u8>>) -> FrameKind {
     }
 }
 
-fn closed(terminal_id: &ResourceId, exit_status: Option<i32>) -> FrameKind {
-    FrameKind::ResourceClosed {
-        terminal_id: terminal_id.clone(),
-        exit_status,
-        reason: CloseReason::Unknown,
-        signal: None,
-    }
-}
-
 fn event(terminal_id: &ResourceId, event: AgentEvent) -> FrameKind {
     FrameKind::Event {
         terminal: Some(terminal_id.clone()),
@@ -173,23 +155,6 @@ fn asked() -> AgentEvent {
     }
 }
 
-fn command_ok(request_id: u32) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Ok,
-    }
-}
-
-fn command_err(request_id: u32, code: ErrorCode, message: &str) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Error {
-            code,
-            message: message.to_owned(),
-        },
-    }
-}
-
 fn unreachable_refusal(request_id: u32) -> FrameKind {
     command_err(
         request_id,
@@ -204,11 +169,7 @@ fn reachable_refusal() -> FrameKind {
 }
 
 fn attached(snapshot: SessionSnapshot, client: u32) -> FrameKind {
-    FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(client),
-    }
+    phux_wire_fixtures::attached(1, snapshot, client)
 }
 
 fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
@@ -339,7 +300,7 @@ impl H {
     /// Live output at the pane's next sequence.
     fn output(&mut self, id: &ResourceId, bytes: &[u8]) -> FrameOutcome {
         let seq = self.next_seq(id);
-        self.send(output_frame(id, seq, bytes))
+        self.send(output(id, seq, bytes))
     }
 
     /// A replacement bootstrap (BEGIN/CHUNK/READY) of `bytes` at `cols x
@@ -360,29 +321,16 @@ impl H {
                 .expect("id"),
         )
         .expect("next bootstrap");
-        let base_seq = published.last_seq();
-        self.send(FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
-            base_seq,
-        });
-        self.send(FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::copy_from_slice(bytes),
-        });
-        let outcome = self.send(FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        });
+        let options = phux_wire_fixtures::BootstrapOptions {
+            base_seq: published.last_seq(),
+            ..phux_wire_fixtures::BootstrapOptions::default()
+        };
+        let ids = [stream_id.get(), bootstrap_id.get()];
+        let [begin, chunk, ready] =
+            phux_wire_fixtures::bootstrap_frames_with(id, ids, [cols, rows], bytes, options);
+        self.send(begin);
+        self.send(chunk);
+        let outcome = self.send(ready);
         if outcome.layout_replaced
             && let Some(active) = self
                 .mirror
@@ -485,13 +433,11 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
         "publication damage stays behind ATTACH_READY"
     );
     assert!(
-        route(output_frame(&id, 1, b"before-barrier"))
-            .damaged
-            .is_empty(),
+        route(output(&id, 1, b"before-barrier")).damaged.is_empty(),
         "pre-barrier live output must not paint directly"
     );
     assert!(route(FrameKind::AttachReady { attach_id: 7 }).damaged(&id));
-    assert!(route(output_frame(&id, 2, b"after-barrier")).damaged(&id));
+    assert!(route(output(&id, 2, b"after-barrier")).damaged(&id));
 }
 
 #[test]
@@ -603,7 +549,7 @@ fn terminal_output_seq_zero_is_rejected() {
         &[(&pane, 80, 24, b"")],
     );
     let route = route_engine_frame(
-        &output_frame(&pane, 0, b"hi"),
+        &output(&pane, 0, b"hi"),
         &mut h.mirror.engine_kernel,
         &mut h.mirror.kernel_effects,
     );
@@ -627,7 +573,7 @@ fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
     assert_eq!(h.mirror.panes[&ready].last_title, "shell");
     h.send(begin_frame(&pending));
 
-    let pre_barrier = h.send(output_frame(&ready, 1, b"\x1b]2;vim\x07"));
+    let pre_barrier = h.send(output(&ready, 1, b"\x1b]2;vim\x07"));
     assert!(!pre_barrier.chrome_dirty);
     assert_eq!(
         h.mirror.panes[&ready].last_title, "vim",
@@ -1079,7 +1025,7 @@ fn output_before_snapshot_uses_current_viewport_width() {
         &[(&pane, 120, 30, b"")],
     )
     .with_viewport((120, 30));
-    h.send(output_frame(&pane, 1, b"\x1b[1;100HX"));
+    h.send(output(&pane, 1, b"\x1b[1;100HX"));
     let terminal =
         crate::attach::pane_state::published_terminal(&h.mirror.engine_kernel, &pane).unwrap();
     assert_eq!(
@@ -1236,7 +1182,7 @@ fn synthesized_raw_output_does_not_yield_frame_ack() {
         ws1(split2(1, 2, 1)),
         &[(&left, 80, 24, b""), (&right, 80, 24, b"")],
     );
-    assert_eq!(h.send(output_frame(&right, 1, b"hi")).ack, None);
+    assert_eq!(h.send(output(&right, 1, b"hi")).ack, None);
 }
 
 /// Every withheld pane settles in ONE synchronized frame, including a pane

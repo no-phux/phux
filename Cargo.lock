@@ -3485,6 +3485,7 @@ dependencies = [
  "phux-protocol",
  "phux-record",
  "phux-server-testkit",
+ "phux-wire-fixtures",
  "proptest",
  "ratatui",
  "rustix",

@@ -36,7 +36,7 @@ fn malformed_history_tombstones_only_history_and_replacement_publishes_atomicall
             .state,
         phux_client_core::history::HistoryLoadState::Tombstoned
     );
-    h.send(output_frame(&id, 1, b"\x1b]2;old-live\x07"));
+    h.send(output(&id, 1, b"\x1b]2;old-live\x07"));
     let title = |h: &H| {
         h.mirror
             .engine_kernel
