@@ -3,8 +3,7 @@ use super::*;
 
 #[test]
 fn the_resource_listing_takes_live_titles_and_drops_a_closed_resource() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let listed_title = |plane: &ControlPlane| {
         let topology = plane.topology().unwrap();
         let resource = topology.resources.iter().find(|r| r.id == terminal());

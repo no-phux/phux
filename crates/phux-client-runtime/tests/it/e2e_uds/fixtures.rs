@@ -4,7 +4,10 @@ use super::*;
 
 /// Spawn `/bin/cat` in group 1 from a raw `controller` connection, as
 /// `request_id`; returns the new pane.
-pub(super) async fn controller_spawn_cat(controller: &mut UnixStream, request_id: u32) -> ResourceId {
+pub(super) async fn controller_spawn_cat(
+    controller: &mut UnixStream,
+    request_id: u32,
+) -> ResourceId {
     let spawn = Spawn {
         initial_size: Some((40, 8)),
         ..Spawn::command(&["/bin/cat"])
@@ -58,7 +61,10 @@ impl Live {
 /// already accepted into a black hole: still open, never answering, the
 /// half-open link a dead NAT mapping or a stale USB forward leaves behind.
 /// Connections accepted after the freeze relay normally.
-pub(super) fn freezable_relay(server: std::path::PathBuf, listen: &std::path::Path) -> Arc<AtomicUsize> {
+pub(super) fn freezable_relay(
+    server: std::path::PathBuf,
+    listen: &std::path::Path,
+) -> Arc<AtomicUsize> {
     // Connections with an index below this value are black-holed.
     let frozen_below = Arc::new(AtomicUsize::new(0));
     let listener = UnixListener::bind(listen).unwrap();

@@ -88,38 +88,29 @@ fn screen_swaps_retire_only_affected_presentations_and_publish_every_view() {
     select(&owner, sibling, 0, 3);
     let sibling_frame = publication.acquire_view(sibling).unwrap();
     let held = publication.acquire_view(right).unwrap();
+    // Each swap republishes both views at the tail with no selection.
+    let swapped = |seq: u64, top: &str| {
+        for view in [left, right] {
+            let frame = publication.acquire_view(view).unwrap();
+            assert_eq!((frame.last_seq, frame.row_text(0).as_str()), (seq, top));
+            assert!(frame.scrollbar.at_tail());
+            assert!(
+                frame
+                    .buffer
+                    .cells
+                    .iter()
+                    .all(|cell| cell.flags & CELL_SELECTED == 0)
+            );
+        }
+    };
     output(&owner, &terminal, 1, b"\x1b[?1049h\x1b[HALT");
-    for view in [left, right] {
-        let frame = publication.acquire_view(view).unwrap();
-        assert_eq!(frame.last_seq, 1);
-        assert_eq!(frame.row_text(0), "ALT");
-        assert!(frame.scrollbar.at_tail());
-        assert!(
-            frame
-                .buffer
-                .cells
-                .iter()
-                .all(|cell| cell.flags & CELL_SELECTED == 0)
-        );
-    }
+    swapped(1, "ALT");
     assert!(owner.pin_view(right, old).is_err());
     assert!(owner.pin_view(right, found[0].start).is_err());
     let (alt, _) = select(&owner, right, 0, 2);
     let alt_search = owner.search_view(right, "ALT".into(), true).unwrap();
     output(&owner, &terminal, 2, b"\x1b[?1049l");
-    for view in [left, right] {
-        let frame = publication.acquire_view(view).unwrap();
-        assert_eq!(frame.last_seq, 2);
-        assert_eq!(frame.row_text(0), "two");
-        assert!(frame.scrollbar.at_tail());
-        assert!(
-            frame
-                .buffer
-                .cells
-                .iter()
-                .all(|cell| cell.flags & CELL_SELECTED == 0)
-        );
-    }
+    swapped(2, "two");
     assert!(owner.pin_view(right, alt).is_err());
     assert!(owner.pin_view(right, alt_search[0].start).is_err());
     assert_eq!(

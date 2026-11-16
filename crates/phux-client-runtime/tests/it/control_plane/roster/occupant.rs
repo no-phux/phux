@@ -10,8 +10,7 @@ fn occupant_changed(plane: &mut ControlPlane, foreground: &str) {
 
 #[test]
 fn the_foreground_names_the_pane_and_follows_it() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let label = |plane: &ControlPlane| plane.topology().unwrap().pane(&terminal()).unwrap().label();
     occupant_changed(&mut plane, "claude");
     assert!(label(&plane).starts_with("claude"), "{}", label(&plane));

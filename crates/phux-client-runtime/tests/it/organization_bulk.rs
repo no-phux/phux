@@ -21,243 +21,10 @@ use phux_protocol::wire::frame::{
     SessionLifetime, SessionRecord,
 };
 
-const fn session(n: u8) -> SessionKey {
-    SessionKey::new([n; 16]).unwrap()
-}
+use crate::embedded::{answer, commands};
 
-fn resource(n: usize) -> ResourceKey {
-    let mut key = [0x40; 16];
-    key[..8].copy_from_slice(&(n as u64).to_le_bytes());
-    ResourceKey::new(key).unwrap()
-}
-
-use crate::embedded::{answer, commands, opened, reopen};
-use phux_wire_fixtures::HelloOk;
-
-/// A bare server, advertising `ORGANIZATION` and `SESSION_KILL` when
-/// `supported`.
-fn hello(supported: bool) -> FrameKind {
-    let ext = if supported {
-        ServerFeatureExtSet::with(&[
-            ServerFeatureExt::Organization,
-            ServerFeatureExt::SessionKill,
-        ])
-    } else {
-        ServerFeatureExtSet::new()
-    };
-    HelloOk::new([0xAB; 16], ServerCapabilities::new())
-        .features_ext(ext)
-        .build()
-}
-
-fn inventory(count: usize, moved: usize, revision: u64, authority: u8) -> OrganizationPage {
-    OrganizationPage::new(
-        AuthorityId::new([authority; 16]).unwrap(),
-        Revision::new(revision),
-        5,
-    )
-    .with_sessions(
-        (1..=3)
-            .map(|n| {
-                SessionRecord::new(session(n), format!("session-{n}"), Revision::new(revision))
-                    .with_lifetime(SessionLifetime::Persistent)
-                    .with_members(
-                        u32::try_from(
-                            (0..count)
-                                .filter(|index| {
-                                    let owner = if *index < moved {
-                                        session(3)
-                                    } else {
-                                        source(*index)
-                                    };
-                                    owner == session(n)
-                                })
-                                .count(),
-                        )
-                        .unwrap(),
-                    )
-            })
-            .collect(),
-    )
-    .with_resources(
-        (0..count)
-            .map(|n| {
-                ResourceRecord::new(
-                    resource(n),
-                    if n < moved { session(3) } else { source(n) },
-                    Revision::new(1),
-                )
-                .with_live(Some(ResourceId::local(u32::try_from(n + 1).unwrap())))
-                .with_activation(Some(ActivationInfo::new(
-                    ActivationId::new(1),
-                    ServerInstance::new([9; 16]),
-                    ExecState::Running,
-                )))
-            })
-            .collect(),
-    )
-}
-
-const fn source(n: usize) -> SessionKey {
-    if n.is_multiple_of(2) {
-        session(1)
-    } else {
-        session(2)
-    }
-}
-
-fn seed(plane: &mut ControlPlane, count: usize, moved: usize, revision: u64, authority: u8) {
-    let mut all = inventory(count, moved, revision, authority);
-    let resources = std::mem::take(&mut all.resources);
-    let page_count = resources.len().div_ceil(128);
-    for (index, chunk) in resources.chunks(128).enumerate() {
-        let request = commands(plane)
-            .into_iter()
-            .find_map(|(id, command)| {
-                matches!(command, Command::GetOrganization { .. }).then_some(id)
-            })
-            .expect("inventory read");
-        let mut page = all.clone().with_resources(chunk.to_vec());
-        if index > 0 {
-            page.sessions.clear();
-        }
-        if index + 1 < page_count {
-            page.next_cursor = Some(vec![u8::try_from(index + 1).unwrap()]);
-        }
-        answer(
-            plane,
-            request,
-            CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        );
-    }
-}
-
-fn plane(count: usize) -> ControlPlane {
-    let mut plane = opened(ControlOptions::default(), hello(true));
-    seed(&mut plane, count, 0, 2, 1);
-    commands(&mut plane);
-    plane.take_events();
-    plane
-}
-
-fn selection(count: usize) -> Vec<ResourceKey> {
-    (0..count).map(resource).collect()
-}
-
-fn chunk(
-    plane: &mut ControlPlane,
-    expected: OperationId,
-    start: usize,
-    end: usize,
-    revision: u64,
-) -> (u32, Command) {
-    let sent = commands(plane);
-    let [
-        (
-            request,
-            command @ Command::ResourceMoveMany {
-                operation,
-                items,
-                to,
-                to_expected,
-            },
-        ),
-    ] = sent.as_slice()
-    else {
-        panic!("one move chunk expected: {sent:?}");
-    };
-    assert_eq!(*operation, expected);
-    assert_eq!(*to, session(3));
-    assert_eq!(*to_expected, Revision::new(revision));
-    assert_eq!(items.len(), end - start);
-    for (n, item) in (start..end).zip(items) {
-        assert_eq!(item.resource, resource(n));
-        assert_eq!(item.from, source(n));
-        assert_eq!(item.from_expected, Revision::new(revision));
-    }
-    (*request, command.clone())
-}
-
-fn commit(plane: &mut ControlPlane, request: u32, operation: OperationId, revision: u64) {
-    answer(
-        plane,
-        request,
-        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
-            operation,
-            Revision::new(revision),
-        )))),
-    );
-}
-
-fn outcomes(plane: &mut ControlPlane) -> Vec<(OperationId, OrgOutcome)> {
-    plane
-        .take_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::OrganizationOperation { operation, outcome } => Some((operation, outcome)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn reconnect(plane: &mut ControlPlane, supported: bool) {
-    plane.connection_lost(None);
-    reopen(plane, hello(supported));
-}
-
-fn answer_page(plane: &mut ControlPlane, request: u32, page: OrganizationPage) {
-    answer(
-        plane,
-        request,
-        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-    );
-}
-
-fn expired_cursor() -> CommandResult {
-    CommandResult::Refused(Refusal::InvalidArgument {
-        field: "cursor".to_owned(),
-        reason: "expired".to_owned(),
-    })
-}
-
-fn read_failed() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InvalidCommand,
-        message: "read failed".to_owned(),
-    }
-}
-
-fn ids(results: &[(OperationId, OrgOutcome)]) -> Vec<OperationId> {
-    results.iter().map(|(id, _)| *id).collect()
-}
-
-/// A 257-resource move of everything to session 3, its first chunk sent.
-fn first_chunk_sent() -> (ControlPlane, Vec<OperationId>, u32) {
-    let mut plane = plane(257);
-    let operations = plane.move_resources(&selection(257), session(3)).unwrap();
-    let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
-    (plane, operations, request)
-}
-
-/// [`first_chunk_sent`] with that chunk committed and the post-receipt
-/// inventory read queued; returns that read's request id.
-fn first_chunk_committed() -> (ControlPlane, Vec<OperationId>, u32) {
-    let (mut plane, operations, request) = first_chunk_sent();
-    commit(&mut plane, request, operations[0], 3);
-    let (read, _) = commands(&mut plane).remove(0);
-    (plane, operations, read)
-}
-
-/// The first chunk committed and the second never sent.
-fn assert_tail_cancelled(plane: &mut ControlPlane) {
-    assert!(matches!(
-        outcomes(plane).as_slice(),
-        [
-            (_, OrgOutcome::Committed(_)),
-            (_, OrgOutcome::NotSent { .. })
-        ]
-    ));
-}
+mod fixtures;
+use fixtures::*;
 
 #[test]
 fn three_chunks_refresh_revisions_and_deliver_each_receipt_in_order() {
@@ -460,14 +227,6 @@ fn invalid_selection_and_full_capacity_submit_nothing() {
 }
 
 #[test]
-fn a_failed_inventory_read_cancels_only_the_unsubmitted_tail() {
-    let (mut plane, _, read) = first_chunk_committed();
-    answer(&mut plane, read, read_failed());
-    assert_tail_cancelled(&mut plane);
-    assert_eq!(plane.pending_organization_operations().count(), 0);
-}
-
-#[test]
 fn an_inventory_started_before_the_receipt_is_not_the_chunk_barrier() {
     let (mut plane, operations, request) = first_chunk_sent();
     plane.refresh_organization().unwrap();
@@ -543,28 +302,45 @@ fn acceptance_without_a_commit_receipt_does_not_advance_bulk_work() {
     ));
 }
 
+/// A failed or terminally refused post-receipt inventory read cancels only
+/// the unsubmitted tail, and the first page is not read again.
 #[test]
 fn terminal_inventory_refusals_cancel_tails_without_retrying_the_first_page() {
-    for refusal in [
-        Refusal::Unauthorized {
-            verb: Verb::Inventory,
-        },
-        Refusal::Unsupported {
-            capability: "organization".to_owned(),
-        },
-        Refusal::StoreFailure {
-            reason: "disk unavailable".to_owned(),
-        },
-        Refusal::InvalidArgument {
-            field: "cursor".to_owned(),
-            reason: "expired".to_owned(),
-        },
+    let refused = |refusal| CommandResult::Refused(refusal);
+    for (label, answer_read) in [
+        (
+            "a_failed_inventory_read_cancels_only_the_unsubmitted_tail",
+            read_failed(),
+        ),
+        (
+            "unauthorized",
+            refused(Refusal::Unauthorized {
+                verb: Verb::Inventory,
+            }),
+        ),
+        (
+            "unsupported",
+            refused(Refusal::Unsupported {
+                capability: "organization".to_owned(),
+            }),
+        ),
+        (
+            "store failure",
+            refused(Refusal::StoreFailure {
+                reason: "disk unavailable".to_owned(),
+            }),
+        ),
+        ("expired cursor", expired_cursor()),
     ] {
         let (mut plane, _, read) = first_chunk_committed();
-        answer(&mut plane, read, CommandResult::Refused(refusal));
-        assert!(commands(&mut plane).is_empty());
-        assert_tail_cancelled(&mut plane);
-        assert_eq!(plane.pending_organization_operations().count(), 0);
+        answer(&mut plane, read, answer_read);
+        assert!(commands(&mut plane).is_empty(), "{label}");
+        assert_tail_cancelled_in(&mut plane, label);
+        assert_eq!(
+            plane.pending_organization_operations().count(),
+            0,
+            "{label}"
+        );
     }
 }
 

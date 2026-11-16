@@ -51,6 +51,13 @@ fn discovered() -> (ControlPlane, u32) {
     (plane, agent)
 }
 
+/// [`discovered`] with the declaration read answered: nothing declared.
+fn settled() -> ControlPlane {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    plane
+}
+
 /// An inventoried terminal with both roster reads outstanding:
 /// `(plane, agent read, asked read)`.
 fn discovered_both() -> (ControlPlane, u32, u32) {
@@ -270,8 +277,7 @@ fn reconnect_resubscribes_and_does_not_correlate_old_metadata() {
 
 #[test]
 fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let request_id = plane.refresh_topology().unwrap();
     let _ = outbound(&mut plane);
     title_changed(&mut plane, "new title");
@@ -294,8 +300,7 @@ fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
 /// the shell retitled the pane used to blank the label other clients saw.
 #[test]
 fn a_refresh_keeps_the_shell_title_the_snapshot_cannot_carry() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     title_changed(&mut plane, "opencode");
     let _ = refresh_after_settling(&mut plane, snapshot());
     let descriptor = plane.topology().unwrap().pane(&terminal()).unwrap();
@@ -304,8 +309,7 @@ fn a_refresh_keeps_the_shell_title_the_snapshot_cannot_carry() {
 
 #[test]
 fn an_animating_title_cannot_starve_a_spawn_out_of_the_inventory() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     spawn_second_pane(&mut plane);
     let inventory = state_id(&outbound(&mut plane));
     for frame in ["⠋", "⠙", "⠹"] {
@@ -402,8 +406,7 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
 
 #[test]
 fn a_spawn_receipt_fences_an_older_inventory_even_before_its_broadcast() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let old_inventory = plane.refresh_topology().unwrap();
     spawn_second_pane(&mut plane);
     assert!(
@@ -442,8 +445,7 @@ fn refresh_after_settling(plane: &mut ControlPlane, snapshot: SessionSnapshot) -
 
 #[test]
 fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let frames = refresh_after_settling(&mut plane, with_second_pane());
     assert_eq!(frames.len(), 8, "{frames:?}");
     for pair in frames.chunks(2) {
@@ -462,8 +464,7 @@ fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
 
 #[test]
 fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     plane
         .feed(FrameKind::Detached {
             reason: Some(DetachReason::Requested),
