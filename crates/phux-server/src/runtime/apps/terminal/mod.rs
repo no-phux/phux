@@ -13,7 +13,6 @@ mod clipboard_read;
 pub(crate) mod commands;
 mod engine;
 mod frames;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) mod history;
 pub(crate) mod input_lane;
 pub(crate) mod launch;
@@ -32,16 +31,9 @@ pub(crate) use commands::TerminalApp;
 pub(crate) fn bootstrap_capabilities(
     state: &crate::state::SharedState,
 ) -> phux_protocol::caps::BootstrapCapabilities {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    {
-        state
-            .terminal_engine()
-            .map_or_else(phux_protocol::caps::BootstrapCapabilities::new, |engine| {
-                engine.bootstrap_capabilities()
-            })
-    }
-    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-    {
-        phux_protocol::caps::BootstrapCapabilities::new()
-    }
+    state
+        .terminal_engine()
+        .map_or_else(phux_protocol::caps::BootstrapCapabilities::new, |engine| {
+            engine.bootstrap_capabilities()
+        })
 }

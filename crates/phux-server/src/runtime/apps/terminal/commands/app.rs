@@ -276,7 +276,6 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     let Some(terminal) = routed_terminal(handle) else {
         return;
     };
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let _ = terminal
         .native_release
         .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });

@@ -280,7 +280,6 @@ pub(super) fn refuse_invalid_role_policy(command: &Command) -> Option<CommandRes
 
 /// Whether a negotiated bootstrap profile streams the official progressive
 /// libghostty snapshot rather than a synthesized VT bootstrap.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) const fn native_checkpoint_profile(
     profile: phux_protocol::caps::BootstrapStreamProfile,
 ) -> bool {

@@ -10,9 +10,7 @@ mod two_pump;
 mod two_pump_lagged;
 
 use handshake::attach;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use handshake::{answer_native_attach, native_attach_handle};
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use native_pump::{empty_native_checkpoint, native_profile, spawn_native_pump};
 use two_pump::{
     Seen, TwoPumpConsumer, answer_gap_resync, assert_quiet, frames_seen, let_pumps_run, live,

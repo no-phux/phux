@@ -45,9 +45,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
-phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
+phux-server = { path = "../phux-server", default-features = false }
 # The Terminal app: this binary composes the server with what a pane runs.
-phux-terminal = { workspace = true, features = ["native-engine"] }
+phux-terminal.workspace = true
 phux-terminal-api.workspace = true
 # `phux agent explain` evaluates detection manifests with no daemon in the
 # loop (phux-w7z2.24). The rules crate is the same evaluator the server

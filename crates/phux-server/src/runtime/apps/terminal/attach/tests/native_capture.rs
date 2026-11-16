@@ -11,7 +11,6 @@ use phux_terminal::actor::TerminalResource as _;
 /// in-place respawn, a reflow) is superseded, not refused: the pump asks
 /// for the resync and republishes, and the client is never told its
 /// generation was lost or disconnected.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing() {
     crate::runtime::test_support::local(async {
@@ -104,7 +103,6 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
 /// connection fault: the client learns of the exit from
 /// `RESOURCE_CLOSED` and keeps its connection. Hosted CI saw the old
 /// mapping disconnect `a_consumer_that_falls_behind...` mid-flood.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_fault() {
     crate::runtime::test_support::local(async {
@@ -144,7 +142,6 @@ async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_faul
 /// A native capacity failure on a fresh attach, or on a replacement after
 /// one that succeeded, sends `CODEC_UNAVAILABLE`, publishes nothing more,
 /// and closes the connection cleanly without reaping the Terminal.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 async fn native_capacity_failure_closes(attempts: &[bool]) {
     let state = SharedState::new();
     let (_session, terminal) = state.with_mut(|s| s.seed_session("capacity"));
@@ -209,7 +206,6 @@ async fn native_capacity_failure_closes(attempts: &[bool]) {
     );
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_capacity_failure_on_a_fresh_or_replacement_attach_closes() {
     for attempts in [&[false][..], &[true, false]] {

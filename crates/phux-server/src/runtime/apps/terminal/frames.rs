@@ -5,7 +5,6 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
 use super::commands::{handle_frame_ack, handle_terminal_input, handle_terminal_resize};
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::history::{HistoryPageRequest, serve_history_request};
 use super::input_lane::{InputLaneHandle, InputStalled, RoutedInput};
 use crate::runtime::apps::ResourceFrame;
@@ -73,7 +72,6 @@ pub(super) async fn serve_frame(ctx: ResourceFrame<'_>, frame: FrameKind) -> Fra
                 seq,
             );
         }
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         FrameKind::HistoryRequest {
             terminal_id,
             stream_id,

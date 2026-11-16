@@ -8,8 +8,6 @@
 //! forbids any further history status for it; a cursor naming an unknown
 //! terminal gets `HISTORY_TOMBSTONE { Released }` (L1 §4.5).
 
-#![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-
 use bytes::Bytes;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,

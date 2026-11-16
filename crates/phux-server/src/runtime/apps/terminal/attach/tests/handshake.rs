@@ -50,7 +50,6 @@ pub(super) async fn attach(
     .await;
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn native_attach_handle() -> (
     ResourceHandle,
     tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
@@ -74,7 +73,6 @@ pub(super) fn native_attach_handle() -> (
     )
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) async fn answer_native_attach(
     consumer_attach_rx: &mut tokio::sync::mpsc::Receiver<
         phux_terminal::actor::ConsumerAttachRequest,

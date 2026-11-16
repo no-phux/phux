@@ -102,11 +102,6 @@
         },
         {
           "type": "toml",
-          "path": "crates/phux-server/tests/fixtures/host-only-engine/Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client-core' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-dial' || @.name.value=='phux-git' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-terminal-api' || @.name.value=='phux-tree' || @.name.value=='phux-work' || @.name.value=='quictun'))].version"
-        },
-        {
-          "type": "toml",
           "path": "scripts/plugin-index/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-protocol'))].version"
         }

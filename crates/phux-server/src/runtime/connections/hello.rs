@@ -6,8 +6,6 @@ use crate::auth::Standing;
 use crate::state::{ClientId, Outbound, SharedState};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet, QUIC_STREAMS,

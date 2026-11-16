@@ -152,16 +152,9 @@ const MAILBOX_DEADLINE: Duration = Duration::from_secs(30);
 /// Register a [`stub_terminal`] for `pane` and return its receivers. The
 /// native channels are closed, so capture falls back to the VT path.
 fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubRx {
-    #[cfg_attr(
-        not(all(feature = "native-engine", not(target_arch = "wasm32"))),
-        allow(unused_mut)
-    )]
     let (handle, mut rx) = stub_terminal();
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    {
-        rx.native_bootstrap.close();
-        rx.native_publication.close();
-    }
+    rx.native_bootstrap.close();
+    rx.native_publication.close();
     state.with_mut(|s| {
         s.register_resource_handle(pane, handle, CancellationToken::new())
             .unwrap();

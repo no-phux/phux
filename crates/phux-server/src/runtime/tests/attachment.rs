@@ -150,7 +150,6 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
 
 /// A native replacement bootstrap that fails after a resync closes the
 /// connection with `CODEC_UNAVAILABLE` and rolls back the consumer.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,

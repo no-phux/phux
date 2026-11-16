@@ -14,9 +14,6 @@ authors.workspace = true
 workspace = true
 
 [features]
-default = ["native-engine"]
-# Always on; kept so dependents that name it still resolve.
-native-engine = []
 # Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
 # to its dependents, so these are opt-in and enabled only as a dev-dependency.
 test-support = ["phux-terminal-api/test-support"]
@@ -33,7 +30,7 @@ dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-resource.workspace = true
-phux-terminal-api = { workspace = true, features = ["native-engine"] }
+phux-terminal-api.workspace = true
 phux-agent-session.workspace = true
 phux-agent-rules.workspace = true
 phux-config.workspace = true
@@ -87,7 +84,7 @@ required-features = ["stress"]
 [[bench]]
 name = "capture"
 harness = false
-required-features = ["native-engine", "capture-bench"]
+required-features = ["capture-bench"]
 
 # Callgrind instruction counts for the engine hot paths; see `phux-server`'s
 # `icount` bench for the rest of the guarded set.

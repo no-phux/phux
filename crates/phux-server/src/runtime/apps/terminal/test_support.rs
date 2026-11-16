@@ -19,18 +19,15 @@ pub(crate) use phux_terminal::actor::{
     ConsumerAttachOutcome, ResourceOutput, ResyncAudience, ResyncReason, ScreenReply,
     ScreenRequest, TerminalHandle, TerminalResource,
 };
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) use phux_terminal::actor::{NativeBootstrapReply, NativePublicationReply};
 pub(crate) use phux_terminal::grid::SnapshotBytes;
 pub(crate) use phux_terminal::{ControlRequest, TerminalActorBundle, TerminalInput, vt};
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) use phux_terminal_api::native_state::NativeStateError;
 
 use phux_terminal::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, ResizeReceiver, ResizeSender, SnapshotRequest,
     StateSyncBootstrap, TerminalActor,
 };
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use phux_terminal::actor::{NativeBootstrapRequest, NativePublicationRequest};
 
 /// An unstarted no-PTY actor whose grid holds `seed`.
@@ -75,9 +72,7 @@ pub(crate) struct StubRx {
     pub(crate) resize: ResizeReceiver,
     pub(crate) consumer_attach: mpsc::Receiver<ConsumerAttachRequest>,
     pub(crate) consumer_detach: mpsc::Receiver<ConsumerDetachRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(crate) native_bootstrap: mpsc::Receiver<NativeBootstrapRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(crate) native_publication: mpsc::Receiver<NativePublicationRequest>,
     _keep: Vec<Box<dyn std::any::Any>>,
 }
@@ -104,9 +99,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
     keep.push(Box::new(input_modes));
     let (consumer_attach, attach_rx) = channel(8);
     let (consumer_detach, detach_rx) = channel(8);
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let (native_bootstrap, native_bootstrap_rx) = channel(8);
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let (native_publication, native_publication_rx) = channel(8);
     let facet = TerminalHandle {
         consumer_attach,
@@ -119,9 +112,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
             &phux_terminal::TerminalEngine,
         ),
         snapshot,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         native_bootstrap,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         native_publication,
         screen,
         pwd,
@@ -135,9 +126,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
         resize: resize_rx,
         consumer_attach: attach_rx,
         consumer_detach: detach_rx,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         native_bootstrap: native_bootstrap_rx,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         native_publication: native_publication_rx,
         _keep: keep,
     };

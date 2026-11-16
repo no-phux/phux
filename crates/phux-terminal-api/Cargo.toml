@@ -14,7 +14,6 @@ workspace = true
 
 [features]
 default = []
-native-engine = []
 test-support = []
 
 [dependencies]

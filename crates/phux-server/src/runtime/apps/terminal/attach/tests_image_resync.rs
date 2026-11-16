@@ -33,7 +33,6 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                 drain: None,
                 snapshot: Some(terminal.snapshot.clone()),
                 last_seq: None,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 terminal,
             };
             let mut generation = PumpGeneration::opened_at(0, BootstrapId::new(1).unwrap());

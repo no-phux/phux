@@ -95,7 +95,6 @@ impl Fixture {
             drain: Some(CancellationToken::new()),
             snapshot: Some(self.terminal.snapshot.clone()),
             last_seq: None,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: self.terminal.clone(),
         };
         (ctx, rx)
@@ -408,7 +407,6 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
 
 /// Native READY is a validated engine checkpoint, not merely a frame
 /// label: decode its opaque payload and recover the actor's final title.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_native_final_checkpoint_is_decodable_before_close() {
     crate::runtime::test_support::local(async {

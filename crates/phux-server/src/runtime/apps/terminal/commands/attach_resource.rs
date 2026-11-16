@@ -25,7 +25,6 @@ pub(in crate::runtime) struct AttachResourceGeneration {
         Option<phux_terminal_api::actor::StateSyncBootstrap>,
     /// Hands the pump its post-replay live receiver at the native publication
     /// fence.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::runtime) native_publication_gate:
         Option<oneshot::Sender<phux_terminal_api::actor::NativePublicationReply>>,
 }
@@ -71,7 +70,6 @@ impl AttachResourceSession<'_> {
         self.state.with_mut(|s| {
             s.cancel_attach_terminal_pump(self.client_id, self.core);
         });
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let _ =
             self.terminal
                 .native_release
@@ -187,7 +185,6 @@ impl AttachResourceSession<'_> {
             ));
         }
 
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let (native_publication_gate_tx, native_publication_gate_rx) =
             oneshot::channel::<phux_terminal_api::actor::NativePublicationReply>();
         let snapshot_gate = if tick_managed {
@@ -203,7 +200,6 @@ impl AttachResourceSession<'_> {
                 token,
                 output_rx,
                 snapshot_gate: gate_rx,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 native_publication_gate: native_publication_gate_rx,
             };
             let last_seq = std::sync::Arc::clone(&generation_last_seq);
@@ -217,7 +213,6 @@ impl AttachResourceSession<'_> {
             live_gate_tx,
             snapshot_gate,
             state_sync_bootstrap: outcome.and_then(|outcome| outcome.state_sync_bootstrap),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_publication_gate: Some(native_publication_gate_tx),
         })
     }
@@ -233,7 +228,6 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
     /// Delivers the published cut, releasing the first forwarded delta.
     pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::runtime) native_publication_gate:
         oneshot::Receiver<phux_terminal_api::actor::NativePublicationReply>,
 }
@@ -244,10 +238,6 @@ impl AttachResourcePumpChannels {
     /// generation was cancelled or abandoned first.
     pub(in crate::runtime) async fn published(
         self,
-        #[cfg_attr(
-            not(all(feature = "native-engine", not(target_arch = "wasm32"))),
-            allow(unused_variables)
-        )]
         profile: phux_protocol::caps::BootstrapStreamProfile,
     ) -> Option<(
         crate::runtime::apps::terminal::attach::OutputPumpStart,
@@ -262,7 +252,6 @@ impl AttachResourcePumpChannels {
             replay: Vec::new(),
             live: None,
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(profile) {
             let publication = self.native_publication_gate.await.ok()?;
             start.live = Some(publication.live);

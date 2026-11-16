@@ -3,14 +3,6 @@
 
 use super::*;
 
-#[cfg_attr(
-    not(all(feature = "native-engine", not(target_arch = "wasm32"))),
-    allow(
-        unused_variables,
-        unused_mut,
-        reason = "native publication activation is optional"
-    )
-)]
 pub(super) async fn release_gates(
     state: &SharedState,
     connection_token: &CancellationToken,
@@ -28,7 +20,6 @@ pub(super) async fn release_gates(
             replay: Vec::new(),
             live: None,
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Some(cursor) = gate.native_cursor {
             let publication = match activate_native_publication(
                 &gate.terminal,

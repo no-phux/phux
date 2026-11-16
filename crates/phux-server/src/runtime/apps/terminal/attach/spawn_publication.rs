@@ -58,7 +58,6 @@ impl SpawnPublication<'_> {
 
     /// Capture the pane's first native checkpoint. `None` once the actor is
     /// gone or refuses the capture.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) async fn capture_native_checkpoint(
         &self,
     ) -> Option<phux_terminal_api::actor::NativeBootstrapReply> {
@@ -148,7 +147,6 @@ impl SpawnPublication<'_> {
 
     /// Capture and frame the first generation for the negotiated profile.
     async fn stage_first_generation(&self) -> Result<FirstGeneration, &'static str> {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if publishes_native_checkpoints(self.profile) {
             let reply = self
                 .capture_native_checkpoint()
@@ -184,7 +182,6 @@ impl SpawnPublication<'_> {
         Ok(FirstGeneration {
             frames,
             cut,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             cursor: None,
         })
     }
@@ -215,16 +212,11 @@ impl SpawnPublication<'_> {
                 return;
             }
         }
-        #[cfg_attr(
-            not(all(feature = "native-engine", not(target_arch = "wasm32"))),
-            allow(unused_mut)
-        )]
         let mut start = OutputPumpStart {
             published_cut: generation.cut,
             replay: Vec::new(),
             live: None,
         };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Some(cursor) = generation.cursor {
             let Ok(publication) = activate_native_publication(
                 &self.terminal,
@@ -248,7 +240,6 @@ impl SpawnPublication<'_> {
 
 /// How often a spawn's first capture is asked for before the spawn is
 /// refused.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const CAPTURE_ASKS: usize = 3;
 
 /// `ask` for a capture, again while the actor answers that it invalidated
@@ -256,7 +247,6 @@ const CAPTURE_ASKS: usize = 3;
 /// loan. That is no refusal, and a pane has no pump yet to wait for the
 /// resync, so a command that exits at once would be reaped as a failed
 /// spawn. The actor outlives EOF and captures the final screen when asked.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 async fn past_invalidation<T, F>(mut ask: impl FnMut() -> F) -> Result<T, NativeRequestFailure>
 where
     F: Future<Output = Result<T, NativeRequestFailure>>,
@@ -277,11 +267,10 @@ struct FirstGeneration {
     pub(super) frames: Vec<FrameKind>,
     pub(super) cut: u64,
     /// The native publication to activate once the frames are queued.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
 }
 
-#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use std::cell::Cell;
 
