@@ -43,6 +43,9 @@ async fn fold_of_an_empty_outcome_raises_nothing() {
     assert!(!state.peers.chrome_dirty);
 }
 
+/// (case, outcome, repaint level, drain chrome when asserted, folded-state check).
+type FoldCase<'a> = (&'a str, FrameOutcome, RepaintLevel, Option<bool>, &'a dyn Fn(&SessionLoop) -> bool);
+
 /// One outcome on a fresh loop raises the fleet and the paint its row names.
 /// Foreign state waits for the drain (which then owes the strip a refresh);
 /// unchanged painter inputs owe no paint; a replaced layout repaints fully.
@@ -72,7 +75,7 @@ async fn fold_raises_the_fleet_and_the_paint_each_outcome_owes() {
     let layout_kept = |s: &SessionLoop| s.peers.foreign_layouts.contains_key(&SessionId::new(2));
     let anything = |_: &SessionLoop| true;
     #[rustfmt::skip] // a case table, one row per case
-    let cases: [(&str, FrameOutcome, RepaintLevel, Option<bool>, &dyn Fn(&SessionLoop) -> bool); 4] = [
+    let cases: [FoldCase<'_>; 4] = [
         ("foreign agent record", agent, RepaintLevel::None, Some(true), &agent_kept),
         ("foreign layout", foreign_layout, RepaintLevel::None, Some(true), &layout_kept),
         ("chrome dirty, painters unchanged", chrome, RepaintLevel::None, Some(false), &anything),

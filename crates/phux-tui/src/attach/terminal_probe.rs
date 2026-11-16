@@ -499,6 +499,8 @@ mod tests {
         assert_eq!(PROBE_QUERY, b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c");
     }
 
+    type ExchangeCase<'a> = (&'a str, &'a [&'a [u8]], ProbeRead, Option<usize>);
+
     /// How a reply ends the exchange early, without spending the budget. A
     /// terminal that ignores OSC 10/11 still answers DA1, and that reply ends
     /// it. Colours (with or without a trailing DA1) yield the palette as soon
@@ -513,9 +515,8 @@ mod tests {
         const BOTH_DA1: &[u8] = b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\\x1b]11;#12181b\x07\x1b[?1;2c";
         const FG_DA1_BG: &[u8] = b"\x1b]10;rgb:ff/00/00\x1b\\\x1b[?6c\x1b]11;rgb:00/00/00\x1b\\";
         let colors = ProbeRead::Colors(sample_palette());
-        // (case, chunks, outcome, poll count when it matters)
         #[rustfmt::skip] // a case table, one row per case
-        let cases: [(&str, &[&[u8]], ProbeRead, Option<usize>); 6] = [
+        let cases: [ExchangeCase<'_>; 6] = [
             ("da1 only", &[b"\x1b[?64;1;2;6;9;15;18;21;22c"], Unsupported, Some(1)),
             ("colours then da1 in one read", &[BOTH_DA1], colors, None),
             ("colours do not wait for da1", &[FG, BG, b"\x1b[?6c"], colors, Some(2)),

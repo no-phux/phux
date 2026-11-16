@@ -172,6 +172,16 @@ fn copy_to_host_clipboard_blank_span_writes_nothing() {
     );
 }
 
+/// (case, screen size, bytes written, request, must contain, must not contain).
+type ExtractCase<'a> = (
+    &'a str,
+    (u16, u16),
+    &'a [u8],
+    CopyRequest,
+    &'a [&'a str],
+    &'a [&'a str],
+);
+
 /// Each request over a written screen, as the text it must contain and
 /// must not. A rectangle takes its cells (linear across rows); a word grab
 /// the word under the cursor; a line grab its whole row and never the next;
@@ -184,7 +194,7 @@ fn extraction_resolves_each_request_over_the_screen() {
     let output = [PROMPT, b"cat f\r\n\x1b]133;C\x07the-output-line\r\n"].concat();
     let semantic = [PROMPT, b"ls -la"].concat();
     #[rustfmt::skip] // a case table, one row per case
-    let cases: [(&str, (u16, u16), &[u8], CopyRequest, &[&str], &[&str]); 5] = [
+    let cases: [ExtractCase<'_>; 5] = [
         ("two linear rows", (20, 3), b"abc\r\ndef", rect_req(0, 0, 1, 2), &["abc", "def"], &[]),
         ("line grab", (20, 3), b"alpha beta\r\ngamma", grab_req(Line, 0, 2), &["alpha", "beta"], &["gamma"]),
         ("all grab", (20, 3), b"first\r\nsecond", grab_req(All, 0, 0), &["first", "second"], &[]),
