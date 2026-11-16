@@ -45,23 +45,7 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         return Ok(Command::DescribeApi);
     }
     if tag == crate::wire::frame::COMMAND_TAG_CREDENTIALS {
-        let bytes = dec.read_bytes()?;
-        if bytes.len() > crate::credentials::MAX_CREDENTIAL_PAYLOAD {
-            return Err(DecodeError::InvalidCredentialPayload);
-        }
-        let op: crate::credentials::CredentialOp =
-            serde_json::from_slice(bytes).map_err(|error| {
-                if crate::wire::error::names_unknown_json(&error.to_string()) {
-                    DecodeError::UnsupportedPayload {
-                        payload: "CredentialOp",
-                    }
-                } else {
-                    DecodeError::InvalidCredentialPayload
-                }
-            })?;
-        op.validate()
-            .map_err(|_| DecodeError::InvalidCredentialPayload)?;
-        return Ok(Command::Credentials { op });
+        return decode_credentials_command(dec);
     }
     if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
         return Ok(Command::HostChecklist);
@@ -70,21 +54,7 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         return Ok(Command::PrivacyStatus);
     }
     if tag == crate::wire::frame::COMMAND_TAG_NATIVE_AGENT {
-        let bytes = dec.read_bytes()?;
-        if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
-            return Err(DecodeError::NativeAgentLimitExceeded);
-        }
-        let request =
-            crate::native_agent::NativeRequestPayload::decode(bytes).map_err(|message| {
-                if crate::wire::error::names_unknown_json(&message) {
-                    DecodeError::UnsupportedPayload {
-                        payload: "NativeRequest",
-                    }
-                } else {
-                    DecodeError::InvalidNativeAgentPayload
-                }
-            })?;
-        return Ok(Command::NativeAgent { request });
+        return decode_native_agent_command(dec);
     }
     // Each family claims a disjoint tag set and returns `None` (reading
     // nothing) for the rest.
@@ -119,6 +89,58 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         return Ok(Command::Forward { op });
     }
     Err(DecodeError::unknown_enum("Command", tag))
+}
+
+/// Decode `CREDENTIALS`: a JSON `CredentialOp` that must also validate.
+fn decode_credentials_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let invalid = || DecodeError::InvalidCredentialPayload;
+    let bytes = json_body(dec, crate::credentials::MAX_CREDENTIAL_PAYLOAD, invalid())?;
+    let op: crate::credentials::CredentialOp = serde_json::from_slice(bytes)
+        .map_err(|error| json_error(&error.to_string(), "CredentialOp", invalid()))?;
+    op.validate().map_err(|_| invalid())?;
+    Ok(Command::Credentials { op })
+}
+
+/// Decode `NATIVE_AGENT`: a strict JSON `NativeRequest`.
+fn decode_native_agent_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let bytes = json_body(
+        dec,
+        crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES,
+        DecodeError::NativeAgentLimitExceeded,
+    )?;
+    let request = crate::native_agent::NativeRequestPayload::decode(bytes).map_err(|message| {
+        json_error(
+            &message,
+            "NativeRequest",
+            DecodeError::InvalidNativeAgentPayload,
+        )
+    })?;
+    Ok(Command::NativeAgent { request })
+}
+
+/// Read a length-prefixed JSON body, refusing one over `max` bytes with
+/// `too_large` before it is parsed.
+fn json_body<'a>(
+    dec: &mut Decoder<'a>,
+    max: usize,
+    too_large: DecodeError,
+) -> Result<&'a [u8], DecodeError> {
+    let bytes = dec.read_bytes()?;
+    if bytes.len() > max {
+        return Err(too_large);
+    }
+    Ok(bytes)
+}
+
+/// A JSON parse failure as a decode error: a variant or field this build
+/// does not know is a newer peer's payload, refused as unsupported; any
+/// other failure is `invalid`.
+fn json_error(message: &str, payload: &'static str, invalid: DecodeError) -> DecodeError {
+    if crate::wire::error::names_unknown_json(message) {
+        DecodeError::UnsupportedPayload { payload }
+    } else {
+        invalid
+    }
 }
 
 /// Decode the producer verbs `APPEND_RESOURCE_OUTPUT` and
