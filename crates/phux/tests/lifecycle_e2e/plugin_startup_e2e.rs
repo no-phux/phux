@@ -393,11 +393,7 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
     let mut server = start_server(&xdg, "sreap");
     let pid_path = root.path().join("pid");
     assert!(poll_until(Duration::from_secs(20), || pid_ready(&pid_path)));
-    let pid: i32 = std::fs::read_to_string(&pid_path)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let pid = read_pid(&pid_path);
     let reap = Reap(pid);
     wait_for_server_pidfile(&server, &xdg.state);
     server.sigkill();
@@ -414,35 +410,31 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
     drop(reap);
 }
 
-#[test]
-fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
+/// A sidecar whose leader writes its pid, waits `delay`, forks a sleeping
+/// grandchild, and honors `SIGTERM`. A SIGKILL of the server must leave
+/// neither behind once the next server starts. `survives` and `reaped` are
+/// the case's failure messages.
+fn assert_grandchild_reaped(tag: &str, delay: &str, survives: &str, reaped: &str) {
     let root = tempfile::tempdir().unwrap();
     let manifest = write_plugin(
         root.path(),
-        "echo $$ > \"$PHUX_PLUGIN_ROOT/pid\"\n\
-         sleep 0.25\n\
-         sleep 1000 &\n\
-         echo $! > \"$PHUX_PLUGIN_ROOT/grand\"\n\
-         wait\n",
+        &format!(
+            "echo $$ > \"$PHUX_PLUGIN_ROOT/pid\"\n{delay}\
+             sleep 1000 &\n\
+             echo $! > \"$PHUX_PLUGIN_ROOT/grand\"\n\
+             wait\n"
+        ),
     );
-    let xdg = XdgDirs::fresh("startup-grand");
+    let xdg = XdgDirs::fresh(&format!("startup-{tag}"));
     install_config(&xdg, &manifest);
-    let mut server = start_server(&xdg, "sgrand");
+    let mut server = start_server(&xdg, tag);
     let grand_path = root.path().join("grand");
     assert!(
         poll_until(Duration::from_secs(20), || pid_ready(&grand_path)),
-        "sidecar did not fork a grandchild"
+        "{tag}: sidecar did not fork a grandchild"
     );
-    let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    let grand: i32 = std::fs::read_to_string(&grand_path)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let leader = read_pid(&root.path().join("pid"));
+    let grand = read_pid(&grand_path);
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
     wait_for_server_pidfile(&server, &xdg.state);
@@ -453,72 +445,46 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
     {
         assert!(
             poll_until(Duration::from_secs(20), || !alive(leader)),
-            "PDEATHSIG should terminate a leader that honors SIGTERM"
+            "{tag}: PDEATHSIG should terminate a leader that honors SIGTERM"
         );
-        assert!(
-            alive(grand),
-            "the grandchild should survive the leader's SIGTERM"
-        );
+        assert!(alive(grand), "{tag}: {survives}");
     }
-    let next = start_server(&xdg, "sgrand2");
+    #[cfg(not(target_os = "linux"))]
+    let _ = survives;
+    let next = start_server(&xdg, &format!("{tag}2"));
     assert!(
         poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
-        "the next server start should reap the leftover grandchild"
+        "{tag}: {reaped}"
     );
     drop(next);
     drop(reap_grand);
     drop(reap_leader);
 }
 
+fn read_pid(path: &Path) -> i32 {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
+    assert_grandchild_reaped(
+        "sgrand",
+        "sleep 0.25\n",
+        "the grandchild should survive the leader's SIGTERM",
+        "the next server start should reap the leftover grandchild",
+    );
+}
+
 #[test]
 fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
-    let root = tempfile::tempdir().unwrap();
-    let manifest = write_plugin(
-        root.path(),
-        "echo $$ > \"$PHUX_PLUGIN_ROOT/pid\"\n\
-         sleep 1000 &\n\
-         echo $! > \"$PHUX_PLUGIN_ROOT/grand\"\n\
-         wait\n",
+    assert_grandchild_reaped(
+        "stick",
+        "",
+        "an immediately forked grandchild should survive the leader",
+        "the next start should reap a same-tick grandchild",
     );
-    let xdg = XdgDirs::fresh("startup-same-tick");
-    install_config(&xdg, &manifest);
-    let mut server = start_server(&xdg, "stick");
-    let grand_path = root.path().join("grand");
-    assert!(
-        poll_until(Duration::from_secs(20), || pid_ready(&grand_path)),
-        "sidecar did not fork a grandchild"
-    );
-    let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    let grand: i32 = std::fs::read_to_string(&grand_path)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    let reap_leader = Reap(leader);
-    let reap_grand = Reap(grand);
-    wait_for_server_pidfile(&server, &xdg.state);
-    server.sigkill();
-    #[cfg(target_os = "linux")]
-    {
-        assert!(
-            poll_until(Duration::from_secs(20), || !alive(leader)),
-            "PDEATHSIG should terminate a leader that honors SIGTERM"
-        );
-        assert!(
-            alive(grand),
-            "an immediately forked grandchild should survive the leader"
-        );
-    }
-    let next = start_server(&xdg, "stick2");
-    assert!(
-        poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
-        "the next start should reap a same-tick grandchild"
-    );
-    drop(next);
-    drop(reap_grand);
-    drop(reap_leader);
 }

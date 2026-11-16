@@ -2,19 +2,19 @@
 
 use crate::common;
 
-#[test]
-#[ignore = "spawns private servers and PTYs; run through just e2e"]
-fn agent_verify_self_test_covers_the_harness_without_real_agents() {
-    let output = std::process::Command::new("python3")
-        .arg(crate::runner::manifest_dir().join("../../scripts/agent-verify/self_test.py"))
+/// Run the repository script `script` under `program` against the CLI CI
+/// built, and require it to pass; `what` names it in the failure.
+fn assert_script_passes(program: &str, script: &str, env: &[(&str, &str)], what: &str) {
+    let output = std::process::Command::new(program)
+        .arg(crate::runner::manifest_dir().join("../..").join(script))
         .env("PHUX", crate::runner::phux_bin())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .envs(env.iter().copied())
         .stdin(std::process::Stdio::null())
         .output()
-        .expect("run agent-verify self-test");
+        .expect("run the repository script");
     assert!(
         output.status.success(),
-        "agent-verify self-test failed: {}\nstdout:\n{}\nstderr:\n{}",
+        "{what} failed: {}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -23,20 +23,19 @@ fn agent_verify_self_test_covers_the_harness_without_real_agents() {
 
 #[test]
 #[ignore = "spawns private servers and PTYs; run through just e2e"]
-fn introductory_examples_use_real_output_and_propagate_failures() {
-    let output = std::process::Command::new("bash")
-        .arg(crate::runner::manifest_dir().join("../../scripts/examples-smoke.sh"))
-        .env("PHUX", crate::runner::phux_bin())
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("run introductory examples");
-    assert!(
-        output.status.success(),
-        "examples failed: {}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+fn agent_verify_self_test_covers_the_harness_without_real_agents() {
+    assert_script_passes(
+        "python3",
+        "scripts/agent-verify/self_test.py",
+        &[("PYTHONDONTWRITEBYTECODE", "1")],
+        "agent-verify self-test",
     );
+}
+
+#[test]
+#[ignore = "spawns private servers and PTYs; run through just e2e"]
+fn introductory_examples_use_real_output_and_propagate_failures() {
+    assert_script_passes("bash", "scripts/examples-smoke.sh", &[], "examples");
 }
 
 #[test]

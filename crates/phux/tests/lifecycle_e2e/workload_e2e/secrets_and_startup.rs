@@ -173,21 +173,11 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
     prepare_dirs(dir.path());
     let registry = dir.path().join("elsewhere-workload-keys");
     let registry = registry.to_str().expect("utf-8 tempdir");
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &["--exit-after-idle", "5"],
         &[("PHUX_WORKLOAD_KEYS", registry)],
-    )
-    .output()
-    .expect("run phux server");
-    let stderr = text(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "an unset mode beside a named registry must refuse: {stderr}"
-    );
-    assert!(
-        stderr.contains("[policy] mode") && stderr.contains("PHUX_WORKLOAD_KEYS"),
-        "the refusal names the setting and the remedy: {stderr}"
+        &["[policy] mode", "PHUX_WORKLOAD_KEYS"],
     );
 }
 
@@ -199,7 +189,7 @@ fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
 fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &[
             "--quic",
@@ -208,17 +198,7 @@ fn an_unset_mode_beside_a_remote_listener_refuses_to_start() {
             "5",
         ],
         &[],
-    )
-    .output()
-    .expect("run phux server");
-    let stderr = text(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "an unset mode beside a listener must refuse: {stderr}"
-    );
-    assert!(
-        stderr.contains("[policy] mode") && stderr.contains("paired"),
-        "the refusal names the setting and the remedy: {stderr}"
+        &["[policy] mode", "paired"],
     );
 }
 
@@ -230,22 +210,31 @@ fn the_retired_workload_mtls_variable_refuses_to_start() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
     paired(dir.path());
-    let out = server_command(
+    assert_start_refused(
         dir.path(),
         &["--exit-after-idle", "5"],
         &[("PHUX_WORKLOAD_MTLS", "1")],
-    )
-    .output()
-    .expect("run phux server");
+        &["PHUX_WORKLOAD_MTLS is retired", "[policy] mode"],
+    );
+}
+
+/// `phux server ARGS` with `env` must fail to start, and its stderr must
+/// name every needle (the setting and its remedy or replacement).
+fn assert_start_refused(dir: &Path, args: &[&str], env: &[(&str, &str)], needles: &[&str]) {
+    let out = server_command(dir, args, env)
+        .output()
+        .expect("run phux server");
     let stderr = text(&out.stderr);
     assert!(
         !out.status.success(),
-        "the retired variable must refuse: {stderr}"
+        "{args:?} {env:?} must refuse to start: {stderr}"
     );
-    assert!(
-        stderr.contains("PHUX_WORKLOAD_MTLS is retired") && stderr.contains("[policy] mode"),
-        "the refusal names the replacement: {stderr}"
-    );
+    for needle in needles {
+        assert!(
+            stderr.contains(needle),
+            "the refusal names {needle:?}: {stderr}"
+        );
+    }
 }
 
 /// Poll `child` until it exits or `deadline` passes, then collect it.
