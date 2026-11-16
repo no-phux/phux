@@ -9,7 +9,10 @@ The hosted counterpart of [local validation](./development.md#validating-a-chang
 One classifier, `bun tools/main.ts detect-changes` over
 [`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts), decides
 which lanes a change can affect. Unknown paths fail closed and run everything;
-handwritten docs normally run only guards. Docs read by tests, including
+handwritten docs normally run only guards. An add, rename, or delete of a
+top-level `docs/*.md` also runs the docs catalog job. That job reads
+`no-phux/website` main's `scripts/docs-catalog.ts` at runtime, so a change
+on website main can alter phux CI results. Docs read by tests, including
 `docs/agents.md` and generated references, select their Rust consumers.
 A library change runs the tests of its dependents.
 
