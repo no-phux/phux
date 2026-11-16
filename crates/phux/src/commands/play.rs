@@ -2,7 +2,7 @@
 //! Terminal whose PTY is fed from the cast, so it can be attached, snapshot,
 //! resized, observed, and killed like any pane.
 //!
-//! [`run_play`] has two modes. The launcher validates the cast and
+//! [`run`] has two modes. The launcher validates the cast and
 //! `SPAWN_RESOURCE`s a pane whose command is this same binary with the hidden
 //! `--pty-writer`; TARGET says where the pane goes, never what is overwritten.
 //! The writer runs inside that pane, where stdout is the PTY. Both halves are
@@ -40,7 +40,7 @@ const HOLD_TICK: Duration = Duration::from_secs(3600);
     clippy::struct_excessive_bools,
     reason = "one field per CLI flag; collapsing the four booleans into enums would put a translation layer between `--help` and this struct for no reader's benefit"
 )]
-pub(crate) struct PlayArgs<'a> {
+pub(crate) struct Request<'a> {
     /// The `.cast` to play.
     pub(crate) file: &'a Path,
     /// Where the playback pane goes; `None` means beside the focused pane.
@@ -76,8 +76,46 @@ struct Loaded {
     idle_limit: Option<f64>,
 }
 
+/// Run `phux play` as parsed.
+pub(crate) fn run(args: crate::commands::PlayArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::PlayArgs {
+        file,
+        target,
+        speed,
+        idle_limit,
+        loops,
+        split,
+        ratio,
+        no_fit,
+        close,
+        json,
+        pty_writer,
+    } = args;
+    run_play(&Request {
+        file: &file,
+        target: target.as_deref(),
+        speed: speed.0,
+        idle_limit,
+        // The CLI spells "repeat forever" as `--loop` with no value,
+        // which clap fills in as 0; `passes` carries that as `None` so
+        // the player's loop condition is a plain "count remaining".
+        passes: match loops {
+            None => Some(1),
+            Some(0) => None,
+            Some(n) => Some(n),
+        },
+        split,
+        ratio,
+        no_fit,
+        close,
+        json: json.json,
+        socket,
+        pty_writer,
+    })
+}
+
 /// Run `phux play` in whichever of its two modes the argv selected.
-pub(crate) fn run_play(args: &PlayArgs<'_>) -> ExitCode {
+fn run_play(args: &Request<'_>) -> ExitCode {
     if args.pty_writer {
         return run_writer(args);
     }
@@ -88,7 +126,7 @@ pub(crate) fn run_play(args: &PlayArgs<'_>) -> ExitCode {
 
 /// The user-facing half: validate in the caller's terminal (so a bad file is
 /// a plain stderr line), spawn a pane that plays, report it.
-fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
+fn run_launcher(args: &Request<'_>) -> ExitCode {
     // Absolute: the pane's child is spawned by the daemon, not from this cwd.
     let file = match std::fs::canonicalize(args.file) {
         Ok(path) => path,
@@ -169,7 +207,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
 
 /// Build the writer argv: this binary in writer mode, with every option
 /// explicit, including the already-resolved `--socket`.
-fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &PlayArgs<'_>) -> Vec<String> {
+fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &Request<'_>) -> Vec<String> {
     let mut argv = vec![
         exe.to_string_lossy().into_owned(),
         "play".to_owned(),
@@ -209,7 +247,7 @@ fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &PlayArgs<'_>) -> V
 
 /// Report the pane that is now playing: its id, and the duration at the
 /// chosen speed.
-fn report(pane: &ResourceId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) -> ExitCode {
+fn report(pane: &ResourceId, file: &Path, loaded: &Loaded, args: &Request<'_>) -> ExitCode {
     let length = pass_duration(&loaded.events, args.speed);
     let name = short_name(file);
     if args.json {
@@ -231,7 +269,7 @@ fn play_json(
     pane: &ResourceId,
     file: &Path,
     loaded: &Loaded,
-    args: &PlayArgs<'_>,
+    args: &Request<'_>,
     duration_ms: u64,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -260,7 +298,7 @@ fn short_name(file: &Path) -> String {
 
 /// The in-pane half: stdout is the pane's PTY, which is also where its
 /// diagnostics belong. The launcher already validated.
-fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
+fn run_writer(args: &Request<'_>) -> ExitCode {
     let loaded = match load(args.file, args.idle_limit) {
         Ok(loaded) => loaded,
         Err(code) => return code,
@@ -310,7 +348,7 @@ fn play_pass(
     socket: &Path,
     pane: Option<&ResourceId>,
     events: &[CastEvent],
-    args: &PlayArgs<'_>,
+    args: &Request<'_>,
 ) {
     let anchor = Instant::now();
     for event in events {
@@ -484,241 +522,4 @@ pub(crate) fn parse_speed(value: &str) -> Result<Speed, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "tests"
-    )]
-
-    use super::*;
-
-    fn header(idle: Option<f64>) -> CastHeader {
-        CastHeader {
-            cols: 80,
-            rows: 24,
-            timestamp: None,
-            idle_time_limit: idle,
-            command: None,
-            title: None,
-            env: std::collections::BTreeMap::new(),
-            theme: None,
-        }
-    }
-
-    fn args(file: &Path, passes: Option<u32>, idle: Option<f64>) -> PlayArgs<'_> {
-        PlayArgs {
-            file,
-            target: None,
-            speed: Speed::NORMAL,
-            idle_limit: idle,
-            passes,
-            split: SpawnSplit::Horizontal,
-            ratio: 0.5,
-            no_fit: false,
-            close: false,
-            json: false,
-            socket: None,
-            pty_writer: false,
-        }
-    }
-
-    /// `phux play --json` pins `schema_version` 1 plus the documented result
-    /// fields (§4.16).
-    #[test]
-    fn play_json_pins_the_contract_shape() {
-        let file = Path::new("/home/me/demo.cast");
-        let loaded = Loaded {
-            header: header(Some(2.0)),
-            events: vec![CastEvent {
-                time_ms: 0,
-                code: EventCode::Output,
-                data: "hi".to_owned(),
-            }],
-            idle_limit: Some(2.0),
-        };
-        let spec = args(file, Some(1), Some(2.0));
-        let pane = ResourceId::local(7);
-        let doc = play_json(&pane, file, &loaded, &spec, 17_198);
-        assert_eq!(doc["schema_version"], 1);
-        assert_eq!(doc["terminal_id"], 7);
-        assert_eq!(doc["path"], "/home/me/demo.cast");
-        assert_eq!(doc["cols"], 80);
-        assert_eq!(doc["rows"], 24);
-        assert_eq!(doc["events"], 1);
-        assert_eq!(doc["speed"], 1.0);
-        assert_eq!(doc["idle_limit"], 2.0);
-        assert_eq!(doc["duration_ms"], 17_198);
-        assert_eq!(doc["passes"], 1);
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(10));
-    }
-
-    #[test]
-    fn parse_speed_accepts_the_documented_range_and_names_it_on_failure() {
-        assert_eq!(parse_speed("1").expect("1 parses"), Speed::NORMAL);
-        let parsed = parse_speed("2.5").expect("2.5 parses").get();
-        assert!((parsed - 2.5).abs() < f64::EPSILON, "got {parsed}");
-        let err = parse_speed("0").expect_err("zero must be rejected");
-        assert!(
-            err.contains("0.01"),
-            "diagnostic must name the bound: {err}"
-        );
-        assert!(parse_speed("fast").is_err());
-        assert!(parse_speed("-1").is_err());
-    }
-
-    #[test]
-    fn the_flag_beats_the_header_and_zero_means_no_clamp() {
-        // The recording says 2s; the caller says 0.5s. The caller wins.
-        assert_eq!(
-            effective_idle_limit(&header(Some(2.0)), Some(0.5)),
-            Some(0.5)
-        );
-        // No flag: the recording's own limit is honored, so playback agrees
-        // with the recorder that wrote the file.
-        assert_eq!(effective_idle_limit(&header(Some(2.0)), None), Some(2.0));
-        // Neither: the raw timeline.
-        assert_eq!(effective_idle_limit(&header(None), None), None);
-        // An explicit 0 disables a header limit rather than clamping to zero
-        // — the same spelling `phux rec --idle-limit 0` uses.
-        assert_eq!(effective_idle_limit(&header(Some(2.0)), Some(0.0)), None);
-        assert_eq!(effective_idle_limit(&header(Some(f64::NAN)), None), None);
-    }
-
-    #[test]
-    fn writer_argv_round_trips_through_the_cli_parser() {
-        // The writer argv the launcher builds must parse in the same binary.
-
-        let file = Path::new("/tmp/demo.cast");
-        let mut spec = args(file, Some(3), Some(1.5));
-        spec.no_fit = true;
-        spec.close = true;
-        let argv = writer_argv(
-            Path::new("/usr/local/bin/phux"),
-            file,
-            Path::new("/tmp/phux.sock"),
-            &spec,
-        );
-
-        let cli = crate::parse_cli(&argv).expect("the writer argv must parse");
-        // `--socket` is the root global now, so the writer's copy lands on
-        // the top-level field rather than inside the Play variant.
-        assert_eq!(cli.socket.as_deref(), Some(Path::new("/tmp/phux.sock")));
-        let Some(crate::commands::Command::Play {
-            file: parsed_file,
-            speed,
-            idle_limit,
-            loops,
-            no_fit,
-            close,
-            pty_writer,
-            ..
-        }) = cli.command
-        else {
-            panic!("expected the play subcommand");
-        };
-        assert!(pty_writer, "the pane's process must be in writer mode");
-        assert_eq!(parsed_file, file);
-        assert_eq!(speed.0, Speed::NORMAL);
-        assert_eq!(idle_limit, Some(1.5));
-        assert_eq!(loops, Some(3));
-        assert!(no_fit);
-        assert!(close);
-    }
-
-    #[test]
-    fn writer_argv_spells_forever_as_the_bare_loop_flag() {
-        let file = Path::new("/tmp/demo.cast");
-        // `None` passes = play until killed. It must survive the round trip
-        // as `Some(0)`, the CLI's spelling of forever — an argv that dropped
-        // it would silently turn an infinite loop into a single pass.
-        let argv = writer_argv(
-            Path::new("/usr/local/bin/phux"),
-            file,
-            Path::new("/tmp/phux.sock"),
-            &args(file, None, None),
-        );
-        let cli = crate::parse_cli(&argv).expect("the writer argv must parse");
-        let Some(crate::Command::Play { loops, .. }) = cli.command else {
-            panic!("expected the play subcommand");
-        };
-        assert_eq!(loops, Some(0));
-
-        // A single pass is the default on both sides, so it says nothing.
-        let single = writer_argv(
-            Path::new("/usr/local/bin/phux"),
-            file,
-            Path::new("/tmp/phux.sock"),
-            &args(file, Some(1), None),
-        );
-        assert!(
-            !single.iter().any(|arg| arg == "--loop"),
-            "a single pass must not emit --loop: {single:?}"
-        );
-    }
-
-    #[test]
-    fn writer_argv_always_names_the_socket() {
-        // Even with no `--socket` from the user: the launcher resolved a
-        // path and the pane must dial that one, not re-derive a default
-        // that may differ from the server it was spawned by.
-        let file = Path::new("/tmp/demo.cast");
-        let argv = writer_argv(
-            Path::new("/usr/local/bin/phux"),
-            file,
-            Path::new("/run/user/1000/phux/phux.sock"),
-            &args(file, Some(1), None),
-        );
-        let socket_at = argv
-            .iter()
-            .position(|arg| arg == "--socket")
-            .expect("argv must carry --socket");
-        assert_eq!(argv[socket_at + 1], "/run/user/1000/phux/phux.sock");
-        assert_eq!(argv[0], "/usr/local/bin/phux", "argv[0] is the phux binary");
-        assert_eq!(
-            argv.last().map(String::as_str),
-            Some("/tmp/demo.cast"),
-            "the cast is the trailing positional"
-        );
-    }
-
-    #[test]
-    fn load_rejects_a_file_that_is_not_a_cast() {
-        let dir = std::env::temp_dir().join(format!("phux-play-load-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("not-a-cast.txt");
-        std::fs::write(&path, b"this is not asciicast\n").expect("write");
-        assert!(
-            load(&path, None).is_err(),
-            "a non-cast must fail in the launcher, not in the pane"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn load_clamps_with_the_headers_own_limit() {
-        let dir = std::env::temp_dir().join(format!("phux-play-clamp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("gap.cast");
-        std::fs::write(
-            &path,
-            b"{\"version\":2,\"width\":80,\"height\":24,\"idle_time_limit\":2.0}\n\
-              [0.0, \"o\", \"a\"]\n\
-              [30.0, \"o\", \"b\"]\n",
-        )
-        .expect("write");
-
-        let loaded = load(&path, None).expect("a well-formed cast loads");
-        assert_eq!(loaded.idle_limit, Some(2.0));
-        assert_eq!(
-            loaded.events[1].time_ms, 2_000,
-            "a 30s pause under a 2s header limit must collapse to 2s"
-        );
-
-        // And the flag overrides it, all the way through to the timeline.
-        let loaded = load(&path, Some(0.25)).expect("cast loads");
-        assert_eq!(loaded.events[1].time_ms, 250);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-}
+mod tests;

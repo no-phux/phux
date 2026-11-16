@@ -214,7 +214,7 @@ fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) ->
     // Bearer ids never carry the digest prefix; an enrolled certificate's
     // always does. Its revocation lives in the workload registry.
     if credential_id.starts_with("sha256:") {
-        return crate::commands::workload::run(
+        return crate::commands::workload::run_action(
             crate::commands::workload::WorkloadAction::Revoke {
                 credential_id: credential_id.to_owned(),
             },

@@ -91,6 +91,27 @@ fn success_text(pane: &ResourceId, payload: &AskedPayload) -> String {
     )
 }
 
+/// Run `phux ask` as parsed.
+pub(crate) fn run(args: crate::commands::AskArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::AskArgs {
+        target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json,
+        question,
+    } = args;
+    run_ask(
+        &target,
+        id,
+        suggestions,
+        elapsed_seconds,
+        json.json,
+        question,
+        socket,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

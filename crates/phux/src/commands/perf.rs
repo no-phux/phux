@@ -113,13 +113,13 @@ pub(crate) fn run_perf(
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    match rt.block_on(run(json, plan, &socket_path)) {
+    match rt.block_on(run_plan(json, plan, &socket_path)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => json_err::report_no_server(json, &err, &socket_path, "perf"),
     }
 }
 
-async fn run(json: bool, plan: Plan, socket_path: &Path) -> Result<(), AttachError> {
+async fn run_plan(json: bool, plan: Plan, socket_path: &Path) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
     match plan {
         Plan::Report(opts) => report(opts, &mut conn).await,
@@ -287,4 +287,23 @@ fn print_report(json: bool, report: &PerfReport, interval: Option<Duration>) {
     } else {
         out!("{}", phux_perf::render_report(report, interval));
     }
+}
+
+/// Run `phux perf` as parsed.
+pub(crate) fn run(args: crate::commands::PerfArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::PerfArgs {
+        action,
+        json,
+        watch,
+        reset,
+    } = args;
+    run_perf(
+        PerfOptions {
+            json: json.json,
+            watch,
+            reset,
+        },
+        action,
+        socket,
+    )
 }

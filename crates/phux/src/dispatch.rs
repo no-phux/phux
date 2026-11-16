@@ -6,15 +6,6 @@ use std::process::ExitCode;
 use crate::commands::{self, Command};
 use crate::skill;
 
-use self::attach::run_naked_invocation;
-use self::machines::run_service;
-
-pub(crate) mod attach;
-mod machines;
-mod panes;
-mod recording;
-mod sessions;
-
 /// The verb table: one arm per subcommand. `socket` is the shared root
 /// global; `root_rec` and `root_remote` are read only by the naked (`None`)
 /// arm.
@@ -29,225 +20,100 @@ pub(crate) fn dispatch(
     root_remote: Option<String>,
 ) -> ExitCode {
     match command {
-        Some(Command::Attach(args)) => attach::attach(args, socket),
+        Some(Command::Attach(args)) => commands::attach_cli::run(args, socket),
         Some(Command::Native(args)) => commands::native_terminal::run(args, socket),
-        Some(Command::Server(args)) => machines::server(args, socket),
-        Some(Command::Ls(args)) => sessions::ls(args, socket),
-        Some(Command::Whoami(commands::WhoamiArgs { json, remote })) => {
-            commands::whoami::run_whoami(json.json, remote.with_socket(socket))
+        Some(Command::Server(args)) => commands::server::run(args, socket),
+        Some(Command::Ls(args)) => commands::ls::run(args, socket),
+        Some(Command::Whoami(args)) => commands::whoami::run(args, socket),
+        Some(Command::Status(args)) => commands::status::run(args, socket),
+        Some(Command::RuntimeInfo(args)) => commands::runtime_info::run(args.json.json),
+        Some(Command::Perf(args)) => commands::perf::run(args, socket),
+        Some(Command::New(args)) => commands::new::run(args, socket),
+        Some(Command::Spawn(args)) => commands::spawn::run(args, socket),
+        Some(Command::Launch(args)) => commands::launch::run(args, socket),
+        Some(Command::Kill(args)) => commands::kill::run(args, socket),
+        Some(Command::Detach(args)) => commands::detach::run(args, socket),
+        Some(Command::InsertPane(args)) => commands::spatial::insert_pane(args, socket),
+        Some(Command::Mv(args)) => commands::spatial::mv(args, socket),
+        Some(Command::Rm(args)) => commands::org::run_rm(&args.target, args.yes, args.json, socket),
+        Some(Command::Relaunch(args)) => {
+            commands::org::run_relaunch(&args.target, args.json, socket)
         }
-        Some(Command::Status(commands::StatusArgs { json })) => {
-            commands::status::run_status(json.json, socket)
+        Some(Command::Restore(args)) => {
+            commands::org::run_restore(args.session.as_deref(), args.verbose, args.json, socket)
         }
-        Some(Command::RuntimeInfo(commands::RuntimeInfoArgs { json })) => {
-            commands::runtime_info::run(json.json)
-        }
-        Some(Command::Perf(args)) => machines::perf(args, socket),
-        Some(Command::New(args)) => sessions::new(args, socket),
-        Some(Command::Spawn(args)) => panes::spawn(args, socket),
-        Some(Command::Launch(args)) => panes::launch(args, socket),
-        Some(Command::Kill(args)) => sessions::kill(args, socket),
-        Some(Command::Detach(commands::DetachArgs {
-            session,
-            yes,
-            json,
-            remote,
-        })) => commands::detach::run_detach(session, yes, json.json, remote.with_socket(socket)),
-        Some(Command::InsertPane(args)) => panes::insert_pane(args, socket),
-        Some(Command::Mv(args)) => panes::mv(args, socket),
-        Some(Command::Rm(commands::RmArgs { target, yes, json })) => {
-            commands::org::run_rm(&target, yes, json, socket)
-        }
-        Some(Command::Relaunch(commands::RelaunchArgs { target, json })) => {
-            commands::org::run_relaunch(&target, json, socket)
-        }
-        Some(Command::Restore(commands::RestoreArgs {
-            session,
-            verbose,
-            json,
-        })) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
-        Some(Command::Organize(args)) => sessions::organize(args, socket),
-        Some(Command::SwapPane(args)) => panes::swap_pane(args, socket),
-        Some(Command::Resize(commands::ResizeArgs {
-            target,
-            geometry,
-            json,
-        })) => commands::resize::run_resize(&target, geometry, json.json, socket),
-        Some(Command::Take(commands::TakeArgs { target, ttl, json })) => {
-            commands::supervise::run_take(&target, ttl, json.json, socket)
-        }
-        Some(Command::Give(commands::GiveArgs { target, json })) => {
-            commands::supervise::run_give(&target, json.json, socket)
-        }
-        Some(Command::Signal(args)) => panes::signal(args, socket),
-        Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
-            commands::approvals::run_approvals(json.json, socket)
-        }
+        Some(Command::Organize(args)) => commands::organize::run(args, socket),
+        Some(Command::SwapPane(args)) => commands::spatial::swap_pane(args, socket),
+        Some(Command::Resize(args)) => commands::resize::run(args, socket),
+        Some(Command::Take(args)) => commands::supervise::take(args, socket),
+        Some(Command::Give(args)) => commands::supervise::give(args, socket),
+        Some(Command::Signal(args)) => commands::supervise::signal(args, socket),
+        Some(Command::Approvals(args)) => commands::approvals::run(args, socket),
         Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
-        Some(Command::Approve(commands::ApproveArgs { id, yes, json })) => {
-            commands::approvals::run_approve(&id, yes, json.json, socket)
+        Some(Command::Approve(args)) => commands::approvals::approve(args, socket),
+        Some(Command::Deny(args)) => commands::approvals::deny(args, socket),
+        Some(Command::Update(args)) => commands::update::run(args, socket),
+        Some(Command::Channel(args)) => commands::channel::run(args, socket),
+        Some(Command::Upgrade(args)) => {
+            commands::upgrade::run_upgrade(socket, args.close_agent_sessions)
         }
-        Some(Command::Deny(commands::DenyArgs { id, json })) => {
-            commands::approvals::run_deny(&id, json.json, socket)
-        }
-        Some(Command::Update(commands::UpdateArgs { opts })) => {
-            commands::update::run_update(&opts, socket)
-        }
-        Some(Command::Channel(commands::ChannelArgs { channel, json })) => {
-            commands::channel::run(channel, json.json, socket)
-        }
-        Some(Command::Upgrade(commands::UpgradeArgs {
-            close_agent_sessions,
-        })) => commands::upgrade::run_upgrade(socket, close_agent_sessions),
-        Some(Command::Rename(commands::RenameArgs {
-            target,
-            new_name,
-            json,
-            remote,
-        })) => {
-            commands::rename::run_rename(&target, &new_name, json.json, remote.with_socket(socket))
-        }
-        Some(Command::Lock(commands::LockArgs {
-            target,
-            json,
-            remote,
-        })) => commands::org::run_lock(&target, true, json.json, remote.with_socket(socket)),
-        Some(Command::Unlock(commands::UnlockArgs {
-            target,
-            json,
-            remote,
-        })) => commands::org::run_lock(&target, false, json.json, remote.with_socket(socket)),
-        Some(Command::Snapshot(args)) => panes::snapshot(args, socket),
-        Some(Command::SendKeys(commands::SendKeysArgs { target, keys, json })) => {
-            commands::send_keys::run_send_keys(&target, &keys, json.json, socket)
-        }
-        Some(Command::Upload(args)) => panes::upload(args, socket),
-        Some(Command::Download(args)) => machines::download(args, socket),
-        Some(Command::Forward(args)) => {
-            let spec = args.remote.with_socket(socket);
-            commands::forward::run(args.local.as_deref(), args.yes, spec)
-        }
-        Some(Command::Paste(commands::PasteArgs {
-            target,
-            text,
-            untrusted,
-            json,
-        })) => commands::paste::run_paste(&target, text, untrusted, json.json, socket),
-        Some(Command::Wait(args)) => panes::wait(args, socket),
-        Some(Command::Watch(args)) => panes::watch(args, socket),
-        Some(Command::Resource(commands::ResourceArgs { action })) => {
-            commands::resource::run_resource(&action, socket)
-        }
-        Some(Command::Terminal(commands::TerminalArgs { action })) => {
-            commands::terminal::run(&action, socket)
-        }
-        Some(Command::Rec(args)) => recording::rec(args, socket),
-        Some(Command::Play {
-            file,
-            target,
-            speed,
-            idle_limit,
-            loops,
-            split,
-            ratio,
-            no_fit,
-            close,
-            json,
-            pty_writer,
-        }) => commands::play::run_play(&commands::play::PlayArgs {
-            file: &file,
-            target: target.as_deref(),
-            speed: speed.0,
-            idle_limit,
-            // The CLI spells "repeat forever" as `--loop` with no value,
-            // which clap fills in as 0; `passes` carries that as `None` so
-            // the player's loop condition is a plain "count remaining".
-            passes: match loops {
-                None => Some(1),
-                Some(0) => None,
-                Some(n) => Some(n),
-            },
-            split,
-            ratio,
-            no_fit,
-            close,
-            json: json.json,
-            socket,
-            pty_writer,
-        }),
-        Some(Command::Ask(args)) => panes::ask(args, socket),
-        Some(Command::Agent(commands::AgentArgs { action })) => {
-            commands::agent::run_agent(&action, socket)
-        }
-        Some(Command::Run(args)) => panes::run(args, socket),
-        Some(Command::Config(commands::ConfigArgs { action })) => {
-            commands::config::run_config(&action, socket)
-        }
+        Some(Command::Rename(args)) => commands::rename::run(args, socket),
+        Some(Command::Lock(args)) => commands::org::run_lock(
+            &args.target,
+            true,
+            args.json.json,
+            args.remote.with_socket(socket),
+        ),
+        Some(Command::Unlock(args)) => commands::org::run_lock(
+            &args.target,
+            false,
+            args.json.json,
+            args.remote.with_socket(socket),
+        ),
+        Some(Command::Snapshot(args)) => commands::snapshot::run(args, socket),
+        Some(Command::SendKeys(args)) => commands::send_keys::run(args, socket),
+        Some(Command::Upload(args)) => commands::upload::run(args, socket),
+        Some(Command::Download(args)) => commands::download::run(args, socket),
+        Some(Command::Forward(args)) => commands::forward::run(args, socket),
+        Some(Command::Paste(args)) => commands::paste::run(args, socket),
+        Some(Command::Wait(args)) => commands::wait::run(args, socket),
+        Some(Command::Watch(args)) => commands::watch::run(args, socket),
+        Some(Command::Resource(args)) => commands::resource::run(args, socket),
+        Some(Command::Terminal(args)) => commands::terminal::run(args, socket),
+        Some(Command::Rec(args)) => commands::rec::run(args, socket),
+        Some(Command::Play(args)) => commands::play::run(args, socket),
+        Some(Command::Ask(args)) => commands::ask::run(args, socket),
+        Some(Command::Agent(args)) => commands::agent::run(args, socket),
+        Some(Command::Run(args)) => commands::run::run(args, socket),
+        Some(Command::Config(args)) => commands::config::run_config(&args.action, socket),
         Some(Command::Migrate(args)) => commands::migrate::run(args, socket),
-        Some(Command::Plugin(commands::PluginArgs { action })) => {
-            commands::plugin::run_plugin(&action)
-        }
-        Some(Command::Theme(commands::ThemeArgs { action })) => {
-            commands::theme::run_theme(&action, socket)
-        }
-        Some(Command::Omarchy(commands::OmarchyArgs { action })) => {
-            commands::omarchy::run_omarchy(&action, socket)
-        }
-        Some(Command::Archive(commands::ArchiveArgs { action })) => {
-            commands::archive::run_archive(&action, socket)
-        }
-        Some(Command::Tag(commands::TagArgs { action })) => commands::tag::run_tag(&action, socket),
-        Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
-        Some(Command::Bootstrap(args)) => machines::bootstrap(args, socket),
-        Some(Command::Relay(commands::RelayArgs { action })) => commands::relay::run_relay(action),
-        Some(Command::Pair(args)) => machines::pair(args, socket),
-        Some(Command::Workload(commands::WorkloadArgs { action, json })) => {
-            commands::workload::run(action, json)
-        }
-        Some(Command::Completion(commands::CompletionArgs { shell })) => {
-            commands::completion::run_completion(shell.into())
-        }
+        Some(Command::Plugin(args)) => commands::plugin::run(args),
+        Some(Command::Theme(args)) => commands::theme::run(args, socket),
+        Some(Command::Omarchy(args)) => commands::omarchy::run_omarchy(&args.action, socket),
+        Some(Command::Archive(args)) => commands::archive::run_archive(&args.action, socket),
+        Some(Command::Tag(args)) => commands::tag::run(args, socket),
+        Some(Command::StdioBridge(_)) => commands::stdio_bridge::run_stdio_bridge(socket),
+        Some(Command::Bootstrap(args)) => commands::bootstrap::run(args, socket),
+        Some(Command::Relay(args)) => commands::relay::run(args),
+        Some(Command::Pair(args)) => commands::pair::run(args, socket),
+        Some(Command::Workload(args)) => commands::workload::run(args),
+        Some(Command::Completion(args)) => commands::completion::run(args),
         // Returned above, before process-global setup.
         Some(Command::Mcp(..)) => ExitCode::FAILURE,
-        Some(Command::Skill(commands::SkillArgs { action, scope })) => {
-            skill::dispatch(action, scope, socket)
-        }
-        Some(Command::Mission(commands::MissionArgs { action })) => {
-            commands::mission::run(action, socket)
-        }
-        Some(Command::Mail(commands::MailArgs { action })) => commands::coord::run_mail(&action),
-        Some(Command::Claim(commands::ClaimArgs { action })) => commands::coord::run_claim(&action),
-        Some(Command::Worktree(commands::WorktreeArgs { action })) => {
-            commands::worktree::run_worktree(&action, socket)
-        }
-        Some(Command::Project(commands::ProjectArgs { action })) => {
-            commands::project::run_project(&action, socket)
-        }
-        Some(Command::Idea {
-            private,
-            flush,
-            text,
-        }) => commands::idea::run(private, flush, text.as_deref()),
-        Some(Command::Doctor(commands::DoctorArgs { json })) => {
-            commands::doctor::run_doctor(json, socket)
-        }
-        Some(Command::Logs(commands::LogsArgs {
-            server,
-            client,
-            pid,
-            follow,
-            lines,
-            json,
-        })) => commands::logs::run_logs(server, client, pid, follow, lines, json),
-        Some(Command::Audit(commands::AuditArgs { action })) => commands::audit::run(action),
-        Some(Command::Report(commands::ReportArgs { action, json })) => {
-            commands::report::run_report(action, json.json)
-        }
-        Some(Command::Host(commands::HostArgs { action })) => commands::host::run_host(&action),
-        Some(Command::Service(commands::ServiceArgs { action })) => run_service(action, socket),
-        Some(Command::GenReferenceDocs(commands::GenReferenceDocsArgs { out })) => {
-            commands::gen_reference_docs::run_gen_reference_docs(out)
-        }
-        None => run_naked_invocation(root_rec, root_remote, socket),
+        Some(Command::Skill(args)) => skill::dispatch(args.action, args.scope, socket),
+        Some(Command::Mission(args)) => commands::mission::run(args, socket),
+        Some(Command::Mail(args)) => commands::coord::mail(args),
+        Some(Command::Claim(args)) => commands::coord::claim(args),
+        Some(Command::Worktree(args)) => commands::worktree::run(args, socket),
+        Some(Command::Project(args)) => commands::project::run_project(&args.action, socket),
+        Some(Command::Idea(args)) => commands::idea::run(args),
+        Some(Command::Doctor(args)) => commands::doctor::run(args, socket),
+        Some(Command::Logs(args)) => commands::logs::run(args),
+        Some(Command::Audit(args)) => commands::audit::run(args),
+        Some(Command::Report(args)) => commands::report::run(args),
+        Some(Command::Host(args)) => commands::host::run(args),
+        Some(Command::Service(args)) => commands::service::run(args, socket),
+        Some(Command::GenReferenceDocs(args)) => commands::gen_reference_docs::run(args),
+        None => commands::attach_cli::run_naked_invocation(root_rec, root_remote, socket),
     }
 }

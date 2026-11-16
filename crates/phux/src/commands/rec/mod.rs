@@ -2,7 +2,7 @@
 //! (ADR-0060). [`run_rec`] is the headless verb (a pure observer via
 //! `phux_client::record`, or a zero-vote composited attach); [`finalize`] is
 //! the tail of the interactive `--rec` path, whose cast is already on disk.
-//! Both go through [`spec::plan`]. [`run_mark`] posts an asciicast `m` event
+//! Both go through [`spec::plan`]. [`mark::run_mark`] posts an asciicast `m` event
 //! to every recording in progress.
 //!
 //! stdout carries only the completion line (or one JSON object under
@@ -31,15 +31,15 @@ use crate::commands::{
 
 pub(crate) use spec::RecordSpec;
 
+mod mark;
+use mark::run_mark;
+
 /// How often the headless capture repaints its stderr progress line.
 const PROGRESS_PERIOD: Duration = Duration::from_millis(250);
 
 /// Pixel size of a composited capture when `--size` is omitted: 1080p.
 const DEFAULT_COMPOSITE_WIDTH_PX: u32 = 1920;
 const DEFAULT_COMPOSITE_HEIGHT_PX: u32 = 1080;
-
-/// Longest marker label `phux rec mark` accepts.
-const MARK_LABEL_MAX_CHARS: usize = 256;
 
 /// Subcommands of `phux rec`. Absent, the verb captures or re-renders.
 #[derive(Debug, Subcommands)]
@@ -460,69 +460,6 @@ pub(crate) fn missing_out(json: bool) -> ExitCode {
     )
 }
 
-/// `phux rec mark LABEL`: append one asciicast marker to every live inbox.
-pub(crate) fn run_mark(label: &str, json: bool) -> ExitCode {
-    if label.chars().count() > MARK_LABEL_MAX_CHARS {
-        return json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::IO,
-                format!("marker label is longer than {MARK_LABEL_MAX_CHARS} characters"),
-                "shorten the label; an empty label is a legal marker",
-            ),
-            2,
-        );
-    }
-    if label.contains(['\n', '\r']) {
-        return json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::IO,
-                "a marker label cannot contain a newline",
-                "pass a single-line label",
-            ),
-            2,
-        );
-    }
-    match phux_record::post_mark(label) {
-        Ok(0) => json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::IO,
-                "no live recording to mark",
-                "start a recording with `phux rec` or `phux --rec`, then run `phux rec mark` again",
-            ),
-            1,
-        ),
-        Ok(recordings) => {
-            if json {
-                outln!("{}", mark_json(label, recordings));
-            } else {
-                let noun = if recordings == 1 {
-                    "recording"
-                } else {
-                    "recordings"
-                };
-                if label.is_empty() {
-                    outln!("phux: marked {recordings} {noun}");
-                } else {
-                    outln!("phux: marked {recordings} {noun} ({label})");
-                }
-            }
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::IO,
-                format!("could not post a marker: {err}"),
-                "check that the mark directory is writable (`PHUX_REC_MARK_DIR` or $XDG_RUNTIME_DIR/phux-rec-marks)",
-            ),
-            1,
-        ),
-    }
-}
-
 /// `--speed-marked` must sit in `(1, 100]`. `None` leaves timing alone.
 fn checked_speed(speed: Option<f64>, json: bool) -> Result<Option<f64>, ExitCode> {
     let Some(speed) = speed else {
@@ -540,16 +477,6 @@ fn checked_speed(speed: Option<f64>, json: bool) -> Result<Option<f64>, ExitCode
         ),
         2,
     ))
-}
-
-/// The `phux rec mark --json` result. `recordings` is how many inboxes
-/// accepted the label.
-fn mark_json(label: &str, recordings: usize) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": 1,
-        "label": label,
-        "recordings": recordings,
-    })
 }
 
 /// Project a capture onto a cast header and timeline. Zero dimensions mean
@@ -792,6 +719,55 @@ const fn cast_version(version: u8) -> CastVersion {
 /// it.
 fn idle_limit(secs: f64) -> Option<f64> {
     (secs.is_finite() && secs > 0.0).then_some(secs)
+}
+
+/// Run `phux rec` as parsed: `rec mark` posts a marker; anything else
+/// records, which needs `-o`.
+pub(crate) fn run(args: crate::commands::RecArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::RecArgs {
+        action,
+        target,
+        out,
+        format,
+        from,
+        duration,
+        fps,
+        idle_limit,
+        max_bytes,
+        cast_version,
+        composited,
+        size,
+        speed_marked,
+        marker_labels,
+        json,
+    } = args;
+    if let Some(RecAction::Mark {
+        label,
+        json: mark_json,
+    }) = action
+    {
+        return run_mark(&label, json.json || mark_json.json);
+    }
+    let Some(out) = out else {
+        return missing_out(json.json);
+    };
+    run_rec(RecArgs {
+        target: target.as_deref(),
+        out: &out,
+        format,
+        from: from.as_deref(),
+        duration,
+        fps,
+        idle_limit,
+        max_bytes,
+        cast_version,
+        json: json.json,
+        socket,
+        composited,
+        size: size.as_deref(),
+        speed_marked,
+        marker_labels,
+    })
 }
 
 #[cfg(test)]

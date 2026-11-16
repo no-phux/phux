@@ -143,6 +143,19 @@ fn report(pane: &phux_protocol::ids::ResourceId, outcome: ResizeOutcome, json: b
     ExitCode::FAILURE
 }
 
+/// Run `phux resize` as parsed.
+pub(crate) fn run(
+    args: crate::commands::ResizeArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::ResizeArgs {
+        target,
+        geometry,
+        json,
+    } = args;
+    run_resize(&target, geometry, json.json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(

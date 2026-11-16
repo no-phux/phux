@@ -208,6 +208,31 @@ fn report_result(result: &phux_client::wait::WaitResult, json: bool) -> ExitCode
     }
 }
 
+/// Run `phux wait` as parsed.
+pub(crate) fn run(args: crate::commands::WaitArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::WaitArgs {
+        session,
+        until,
+        regex,
+        tail,
+        output_only,
+        idle,
+        timeout,
+        json,
+    } = args;
+    run_wait(WaitArgs {
+        session: session.as_deref(),
+        until,
+        regex,
+        idle,
+        tail,
+        output_only,
+        timeout,
+        json: json.json,
+        socket,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {

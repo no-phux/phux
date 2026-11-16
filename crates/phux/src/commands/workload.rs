@@ -217,7 +217,7 @@ pub(crate) enum WorkloadAction {
 }
 
 /// `phux workload ...`. Exit 0 on success, 1 on any refusal or failure.
-pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
+pub(crate) fn run_action(action: WorkloadAction, json: bool) -> ExitCode {
     let paths = WorkloadPaths::from_env();
     let outcome = match action {
         WorkloadAction::Authority {
@@ -330,4 +330,9 @@ fn timestamp(seconds: i64) -> String {
         || seconds.to_string(),
         |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true),
     )
+}
+
+/// Run `phux workload` as parsed.
+pub(crate) fn run(args: crate::commands::WorkloadArgs) -> ExitCode {
+    run_action(args.action, args.json)
 }

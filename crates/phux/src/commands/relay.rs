@@ -210,6 +210,11 @@ fn run_relay_pair(route: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Run `phux relay` as parsed.
+pub(crate) fn run(args: crate::commands::RelayArgs) -> ExitCode {
+    run_relay(args.action)
+}
+
 #[cfg(test)]
 mod tests {
     use super::banner_line;

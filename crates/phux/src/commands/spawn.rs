@@ -443,5 +443,80 @@ fn placement_failed(json: bool, message: String) -> ExitCode {
     )
 }
 
+/// Run `phux spawn` as parsed: refuse an `--app` the pane cannot host,
+/// resolve `--idempotency-key`, then spawn.
+pub(crate) fn run(args: crate::commands::SpawnArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SpawnArgs {
+        satellite,
+        target,
+        split,
+        ratio,
+        projection,
+        cwd,
+        retain,
+        idempotency_key,
+        app,
+        browser,
+        headless,
+        json,
+        command,
+    } = args;
+    let spec = app.as_deref().map(|name| phux_client::app::AppSpec {
+        name,
+        browser: browser.as_deref(),
+        headless,
+    });
+    if let Some(refusal) = spec.as_ref().and_then(phux_client::app::pane_refusal) {
+        return json_err::emit(
+            json.json,
+            &json_err::CliError::new(
+                json_err::codes::USAGE_ERROR,
+                refusal,
+                "pass `--browser` for a browser, which a pane can mirror",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        );
+    }
+    let app = spec.map(|spec| {
+        phux_client::app::helper_argv(
+            &std::env::current_exe()
+                .map_or_else(|_| "phux".to_owned(), |exe| exe.display().to_string()),
+            spec,
+        )
+    });
+    if app.is_some() && !command.is_empty() {
+        return json_err::emit(
+            json.json,
+            &json_err::CliError::new(
+                json_err::codes::USAGE_ERROR,
+                "`--app` runs its own command; drop the command after `--`",
+                "pass app arguments with `phux spawn -- phux agent app run NAME -- ARGS`",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        );
+    }
+    match parse_key_arg(idempotency_key.as_deref(), json.json) {
+        Ok(idempotency_key) => run_spawn(
+            satellite,
+            target,
+            split,
+            ratio,
+            projection.as_deref(),
+            cwd,
+            json.json,
+            socket,
+            SpawnCommand {
+                app: app.is_some(),
+                argv: app.unwrap_or(command),
+            },
+            SpawnDurability {
+                retain_secs: retain,
+                idempotency_key,
+            },
+        ),
+        Err(code) => code,
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 use super::{
     RecOutcome, cast_version, checked_speed, composite_cells, human_bytes, human_duration,
-    idle_limit, into_timeline, mark_json, parse_resize, rec_json,
+    idle_limit, into_timeline, mark::mark_json, parse_resize, rec_json,
 };
 use phux_client::record::HeadlessRecording;
 use phux_record::cast::{CastEvent, CastVersion, EventCode};

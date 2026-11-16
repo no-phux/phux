@@ -481,6 +481,15 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
     ExitCode::SUCCESS
 }
 
+/// Run `phux agent` as parsed.
+pub(crate) fn run(
+    args: crate::commands::AgentArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::AgentArgs { action } = args;
+    run_agent(&action, socket)
+}
+
 #[cfg(test)]
 mod client_contract;
 

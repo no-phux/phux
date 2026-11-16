@@ -3,7 +3,9 @@ use crate::commands::{TerminalAction, cli_runtime};
 use phux_protocol::api::TerminalCreate;
 use std::{path::PathBuf, process::ExitCode};
 
-pub(crate) fn run(action: &TerminalAction, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run(args: crate::commands::TerminalArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::TerminalArgs { action } = args;
+    let action = &action;
     let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let runtime = match cli_runtime() {
         Ok(runtime) => runtime,

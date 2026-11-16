@@ -282,6 +282,18 @@ pub(crate) fn run_nonce() -> String {
     format!("{}x{nanos}x{seq}", std::process::id())
 }
 
+/// Run `phux run` as parsed.
+pub(crate) fn run(args: crate::commands::RunArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::RunArgs {
+        target,
+        command,
+        timeout,
+        force,
+        json,
+    } = args;
+    run_run(&target, &command, timeout, force, json.json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use phux_client::agent_meta::ShellAvailability;

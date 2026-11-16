@@ -48,6 +48,7 @@ pub(crate) mod approvals;
 pub(crate) mod archive;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod attach_cli;
 pub(crate) mod audit;
 pub(crate) mod bootstrap;
 pub(crate) mod channel;
@@ -255,7 +256,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         // `start` / `add --start` dial it. `--socket` names that server.
         Command::Mission(..) => None,
         // Capture talks to the ideas endpoint, never the phux server socket.
-        Command::Idea { .. } => Some("idea"),
+        Command::Idea(..) => Some("idea"),
         _ => None,
     }
 }

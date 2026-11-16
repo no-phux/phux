@@ -216,7 +216,7 @@ ownership recommendation. No keeper bootload service exists today.
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
 | the wire | `phux-protocol/src/wire/frame/catalog.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
-| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
+| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `commands/<verb>.rs` (its `run(args, socket)` entry point), one arm in `src/dispatch.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
 | config | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen` |
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-terminal/src/agent_detect/` |
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |

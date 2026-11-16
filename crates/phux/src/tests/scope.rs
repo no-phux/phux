@@ -129,25 +129,27 @@ fn root_rec_before_a_verb_is_refused_post_parse() {
 #[test]
 fn a_one_off_relay_hop_carries_the_route_and_the_servers_ca() {
     let ca = format!("sha256:{}", "AB".repeat(32));
-    let hop = crate::dispatch::attach::relay_hop(Some("relay:4433"), Some("mini-route"), Some(ca))
-        .expect("hop")
-        .expect("a relay route");
+    let hop =
+        crate::commands::attach_cli::relay_hop(Some("relay:4433"), Some("mini-route"), Some(ca))
+            .expect("hop")
+            .expect("a relay route");
     assert_eq!(hop.route, "mini-route");
     assert_eq!(hop.ca, Some(format!("sha256:{}", "ab".repeat(32))));
-    let unpinned = crate::dispatch::attach::relay_hop(Some("relay:4433"), Some("mini-route"), None)
-        .expect("planning refuses it later, by name")
-        .expect("a relay route");
+    let unpinned =
+        crate::commands::attach_cli::relay_hop(Some("relay:4433"), Some("mini-route"), None)
+            .expect("planning refuses it later, by name")
+            .expect("a relay route");
     assert_eq!(unpinned.ca, None);
     assert_eq!(
-        crate::dispatch::attach::relay_hop(Some("relay:4433"), None, None),
+        crate::commands::attach_cli::relay_hop(Some("relay:4433"), None, None),
         Ok(None)
     );
     assert_eq!(
-        crate::dispatch::attach::relay_hop(None, Some("host"), None),
+        crate::commands::attach_cli::relay_hop(None, Some("host"), None),
         Ok(None)
     );
     for (quic, route) in [(Some("relay:4433"), None), (None, Some("host"))] {
-        let err = crate::dispatch::attach::relay_hop(
+        let err = crate::commands::attach_cli::relay_hop(
             quic,
             route,
             Some(format!("sha256:{}", "ab".repeat(32))),
@@ -156,8 +158,12 @@ fn a_one_off_relay_hop_carries_the_route_and_the_servers_ca() {
         assert!(err.contains("--tls-server-name"), "{err}");
     }
     assert!(
-        crate::dispatch::attach::relay_hop(Some("r:1"), Some("r"), Some("sha256:no".to_owned()))
-            .is_err()
+        crate::commands::attach_cli::relay_hop(
+            Some("r:1"),
+            Some("r"),
+            Some("sha256:no".to_owned())
+        )
+        .is_err()
     );
 }
 
@@ -178,7 +184,7 @@ fn attach_dial_auth_flags_need_one_transport() {
         else {
             panic!("{line} must parse as Attach; any refusal is post-parse");
         };
-        crate::dispatch::attach::dial_auth_without_transport(
+        crate::commands::attach_cli::dial_auth_without_transport(
             quic.as_deref(),
             ws.as_deref(),
             token.as_deref(),
@@ -300,15 +306,15 @@ fn attach_viewer_and_take_parse_refuse_each_other_and_map_to_roles() {
         ("phux attach --viewer --take", false),
     ]);
     assert_eq!(
-        crate::dispatch::attach::declared_attach_role(true, false),
+        crate::commands::attach_cli::declared_attach_role(true, false),
         RolePolicy::VIEWER
     );
     assert_eq!(
-        crate::dispatch::attach::declared_attach_role(false, true),
+        crate::commands::attach_cli::declared_attach_role(false, true),
         RolePolicy::TAKEOVER
     );
     assert_eq!(
-        crate::dispatch::attach::declared_attach_role(false, false),
+        crate::commands::attach_cli::declared_attach_role(false, false),
         RolePolicy::PRIMARY,
         "no flag is the default attach, which writes no role byte"
     );

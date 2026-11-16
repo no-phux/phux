@@ -118,6 +118,12 @@ fn render_tags(id: &ResourceId, tags: &[String]) -> String {
     format!("{}\t{}", selector::format_terminal_id(id), tags.join(" "))
 }
 
+/// Run `phux tag` as parsed.
+pub(crate) fn run(args: crate::commands::TagArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::TagArgs { action } = args;
+    run_tag(&action, socket)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests")]

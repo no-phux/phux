@@ -365,6 +365,15 @@ fn fail(json: bool, message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Run `phux theme` as parsed.
+pub(crate) fn run(
+    args: crate::commands::ThemeArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::ThemeArgs { action } = args;
+    run_theme(&action, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

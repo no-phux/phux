@@ -69,3 +69,17 @@ pub(crate) async fn run_rename_on(
         ),
     }
 }
+
+/// Run `phux rename` as parsed.
+pub(crate) fn run(
+    args: crate::commands::RenameArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::RenameArgs {
+        target,
+        new_name,
+        json,
+        remote,
+    } = args;
+    run_rename(&target, &new_name, json.json, remote.with_socket(socket))
+}

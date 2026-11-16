@@ -384,6 +384,15 @@ fn report_wait_failure(json: bool, socket: &Path, err: &ResourceWaitError) -> Ex
     json_err::emit(json, &failure, code)
 }
 
+/// Run `phux resource` as parsed.
+pub(crate) fn run(
+    args: crate::commands::ResourceArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::ResourceArgs { action } = args;
+    run_resource(&action, socket)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, reason = "tests")]
 mod tests {

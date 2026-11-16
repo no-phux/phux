@@ -75,6 +75,20 @@ fn payload_from(text: Option<String>, stdin: &mut impl Read) -> std::io::Result<
     }
 }
 
+/// Run `phux paste` as parsed.
+pub(crate) fn run(
+    args: crate::commands::PasteArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::PasteArgs {
+        target,
+        text,
+        untrusted,
+        json,
+    } = args;
+    run_paste(&target, text, untrusted, json.json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

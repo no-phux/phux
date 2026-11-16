@@ -377,6 +377,15 @@ fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode
     json_err::report_no_server(json, err, socket_path, "status")
 }
 
+/// Run `phux status` as parsed.
+pub(crate) fn run(
+    args: crate::commands::StatusArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::StatusArgs { json } = args;
+    run_status(json.json, socket)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests;

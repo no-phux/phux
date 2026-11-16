@@ -488,5 +488,18 @@ fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
     }
 }
 
+/// Run `phux doctor` as parsed.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "every verb entry point takes its parsed Args by value, as dispatch hands them over"
+)]
+pub(crate) fn run(
+    args: crate::commands::DoctorArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::DoctorArgs { json } = args;
+    run_doctor(json, socket)
+}
+
 #[cfg(test)]
 mod tests;

@@ -41,7 +41,7 @@ pub(crate) struct BootstrapArgs {
 }
 
 /// Run `phux bootstrap`.
-pub(crate) fn run(args: &BootstrapArgs) -> ExitCode {
+pub(crate) fn run_request(args: &BootstrapArgs) -> ExitCode {
     let port_range = match args.port_range.as_deref().map(parse_port_range).transpose() {
         Ok(range) => range,
         Err(err) => {
@@ -167,6 +167,21 @@ pub(crate) fn parse_port_range(raw: &str) -> Result<(u16, u16), String> {
         return Err(format!("{raw:?} has its lower bound last"));
     }
     Ok((min, max))
+}
+
+/// Run the hidden `phux bootstrap` as parsed.
+pub(crate) fn run(args: crate::commands::BootstrapArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::BootstrapArgs {
+        client_version,
+        port_range,
+        linger,
+    } = args;
+    run_request(&BootstrapArgs {
+        socket,
+        client_version,
+        port_range,
+        linger,
+    })
 }
 
 #[cfg(test)]

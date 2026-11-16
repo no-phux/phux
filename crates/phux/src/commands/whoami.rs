@@ -175,6 +175,14 @@ fn or_none(value: Option<&str>) -> String {
     value.unwrap_or(NONE).to_owned()
 }
 
+/// Run `phux whoami` as parsed.
+pub(crate) fn run(
+    args: crate::commands::WhoamiArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    run_whoami(args.json.json, args.remote.with_socket(socket))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, reason = "tests")]

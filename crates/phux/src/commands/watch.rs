@@ -10,6 +10,25 @@ use phux_config::socket::default_socket_path;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 mod render;
+/// Run `phux watch` as parsed.
+pub(crate) fn run(args: crate::commands::WatchArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::WatchArgs {
+        session,
+        until,
+        timeout,
+        after,
+        json,
+    } = args;
+    run_watch(WatchArgs {
+        session: session.as_deref(),
+        until: &until,
+        timeout,
+        after: after.as_deref(),
+        json: json.json,
+        socket,
+    })
+}
+
 #[cfg(test)]
 mod tests;
 

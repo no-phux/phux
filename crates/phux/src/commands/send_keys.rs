@@ -117,6 +117,15 @@ fn failure_error(
     ))
 }
 
+/// Run `phux send-keys` as parsed.
+pub(crate) fn run(
+    args: crate::commands::SendKeysArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::SendKeysArgs { target, keys, json } = args;
+    run_send_keys(&target, &keys, json.json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

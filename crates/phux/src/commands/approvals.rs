@@ -261,6 +261,24 @@ fn now_ms() -> u64 {
         })
 }
 
+/// Run `phux approvals` as parsed.
+pub(crate) fn run(args: crate::commands::ApprovalsArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::ApprovalsArgs { json } = args;
+    run_approvals(json.json, socket)
+}
+
+/// Run `phux approve` as parsed.
+pub(crate) fn approve(args: crate::commands::ApproveArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::ApproveArgs { id, yes, json } = args;
+    run_approve(&id, yes, json.json, socket)
+}
+
+/// Run `phux deny` as parsed.
+pub(crate) fn deny(args: crate::commands::DenyArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::DenyArgs { id, json } = args;
+    run_deny(&id, json.json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

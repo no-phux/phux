@@ -294,3 +294,9 @@ pub(super) fn fail(json: bool, message: &str) -> ExitCode {
     error!("{message}");
     ExitCode::FAILURE
 }
+
+/// Run `phux plugin` as parsed.
+pub(crate) fn run(args: crate::commands::PluginArgs) -> ExitCode {
+    let crate::commands::PluginArgs { action } = args;
+    run_plugin(&action)
+}

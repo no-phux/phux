@@ -360,6 +360,41 @@ fn footer(screen: &ScreenState) -> String {
     out
 }
 
+/// Run `phux snapshot` as parsed.
+pub(crate) fn run(args: crate::commands::SnapshotArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SnapshotArgs {
+        session,
+        json,
+        scrollback,
+        cells,
+        tail,
+        unwrap,
+        rendered,
+        format,
+        out,
+        cols,
+        rows,
+    } = args;
+    run_snapshot(
+        session.as_deref(),
+        json.json,
+        &ReadOpts {
+            scrollback,
+            cells,
+            tail,
+            unwrap,
+            format,
+            out,
+        },
+        &RenderedOpts {
+            rendered,
+            cols,
+            rows,
+        },
+        socket,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

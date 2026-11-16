@@ -533,5 +533,14 @@ pub(crate) fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
     )
 }
 
+/// Run `phux worktree` as parsed.
+pub(crate) fn run(
+    args: crate::commands::WorktreeArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::WorktreeArgs { action } = args;
+    run_worktree(&action, socket)
+}
+
 #[cfg(test)]
 mod tests;

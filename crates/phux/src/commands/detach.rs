@@ -121,3 +121,17 @@ fn fail(json: bool, code: &'static str, message: String, exit: u8) -> ExitCode {
         exit,
     )
 }
+
+/// Run `phux detach` as parsed.
+pub(crate) fn run(
+    args: crate::commands::DetachArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let crate::commands::DetachArgs {
+        session,
+        yes,
+        json,
+        remote,
+    } = args;
+    run_detach(session, yes, json.json, remote.with_socket(socket))
+}

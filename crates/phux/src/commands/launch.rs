@@ -17,22 +17,32 @@ mod native;
 /// `phux launch` (phux-ark7, ADR-0042) — resolve a named agent integration
 /// template from an enabled plugin and spawn a pane running its `[launch]`
 /// command.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_launch(
-    integration: Option<String>,
-    list: bool,
-    print: bool,
-    mode: LaunchMode,
-    session: Option<&str>,
-    json: bool,
-    target: Option<String>,
-    split: SpawnSplit,
-    ratio: f32,
-    projection: Option<&str>,
-    cwd: Option<PathBuf>,
+pub(crate) fn run(
+    crate::commands::LaunchArgs {
+        integration,
+        list,
+        print,
+        acp,
+        session,
+        json,
+        target,
+        split,
+        ratio,
+        projection,
+        cwd,
+        extra,
+    }: crate::commands::LaunchArgs,
     socket: Option<PathBuf>,
-    extra: &[String],
 ) -> ExitCode {
+    let mode = if acp {
+        LaunchMode::Native
+    } else {
+        LaunchMode::Terminal
+    };
+    let session = session.as_deref();
+    let json = json.json;
+    let projection = projection.as_deref();
+    let extra = extra.as_slice();
     let config_path = config_loader::config_path();
     if list {
         return run_list(&config_path, mode, json);

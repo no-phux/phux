@@ -469,6 +469,18 @@ fn list(path: Option<&str>, holder: Option<String>, json: bool) -> ExitCode {
     }
 }
 
+/// Run `phux mail` as parsed.
+pub(crate) fn mail(args: crate::commands::MailArgs) -> ExitCode {
+    let crate::commands::MailArgs { action } = args;
+    run_mail(&action)
+}
+
+/// Run `phux claim` as parsed.
+pub(crate) fn claim(args: crate::commands::ClaimArgs) -> ExitCode {
+    let crate::commands::ClaimArgs { action } = args;
+    run_claim(&action)
+}
+
 #[cfg(test)]
 mod tests {
     use phux_protocol::ResourceId;

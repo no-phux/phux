@@ -1,6 +1,6 @@
 //! `phux rec`.
 
-use crate::commands::{JsonOpt, RecFormat, rec::RecAction};
+use crate::commands::{JsonOpt, RecFormat, SpawnSplit, play, rec::RecAction};
 use usage::Args;
 
 /// Record a pane and export it as an asciinema cast, an animated GIF, or
@@ -118,4 +118,69 @@ pub(crate) struct RecArgs {
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
+}
+
+// `phux play`; its help is declared on the `Command::Play` variant.
+#[derive(Debug, Args)]
+pub(crate) struct PlayArgs {
+    /// The .cast file to play.
+    #[usage(value_name = "FILE")]
+    pub(crate) file: std::path::PathBuf,
+
+    /// Selector for the pane the playback pane is created beside.
+    /// Defaults to `.` (the focused pane). Never written to.
+    #[usage(value_name = "TARGET")]
+    pub(crate) target: Option<String>,
+
+    /// Playback rate. 1 is real time, 2 is twice as fast, 0.5 half
+    /// speed. Between 0.01 and 100; no events are ever dropped.
+    #[usage(long, value_name = "N", default = "1")]
+    pub(crate) speed: play::SpeedArg,
+
+    /// Collapse any pause longer than SECS down to SECS. Defaults to
+    /// the idle limit the recording itself declares; 0 plays the raw
+    /// timeline.
+    #[usage(long = "idle-limit", value_name = "SECS")]
+    pub(crate) idle_limit: Option<f64>,
+
+    /// Repeat the recording. Bare `--loop` repeats until the pane is
+    /// killed; `--loop N` plays it N times.
+    #[usage(long = "loop", value_name = "N", num_args = 0..=1,
+          default_missing = "0")]
+    pub(crate) loops: Option<u32>,
+
+    /// Placement axis: `horizontal` puts the new pane to the right;
+    /// `vertical` puts it below.
+    #[usage(long, value_enum, default = "horizontal")]
+    pub(crate) split: SpawnSplit,
+
+    /// Fraction of the split retained by TARGET.
+    #[usage(
+        long,
+        default = "0.5",
+        default_value_t = 0.5,
+        validate = "float(value) > 0 && float(value) < 1",
+        validate_error = "ratio must be finite and strictly between 0 and 1"
+    )]
+    pub(crate) ratio: f32,
+
+    /// Leave the pane's grid alone instead of fitting it to the
+    /// recording's. Output wider than the pane will wrap.
+    #[usage(long = "no-fit")]
+    pub(crate) no_fit: bool,
+
+    /// Close the pane when playback ends, instead of holding the final
+    /// frame until it is killed.
+    #[usage(long)]
+    pub(crate) close: bool,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+
+    /// Internal: this process IS the pane, so write the recording to
+    /// stdout rather than spawning one. Hidden because it is an
+    /// implementation detail of the pane this verb creates, not a
+    /// promise that phux ships a shell-level cast viewer.
+    #[usage(long = "pty-writer", hide)]
+    pub(crate) pty_writer: bool,
 }

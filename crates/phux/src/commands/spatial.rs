@@ -155,6 +155,62 @@ fn print_success(json: bool, outcome: &SpatialOutcome) -> ExitCode {
     crate::output::json(&outcome.document)
 }
 
+/// Run `phux insert-pane` as parsed.
+pub(crate) fn insert_pane(
+    args: crate::commands::InsertPaneArgs,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let crate::commands::InsertPaneArgs {
+        target,
+        new_pane,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_insert_pane(
+        &target,
+        &new_pane,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux mv` as parsed.
+pub(crate) fn mv(args: crate::commands::MvArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::MvArgs {
+        source,
+        dest,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_mv(
+        &source,
+        &dest,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux swap-pane` as parsed.
+pub(crate) fn swap_pane(args: crate::commands::SwapPaneArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SwapPaneArgs {
+        first,
+        second,
+        projection,
+        json,
+    } = args;
+    run_swap_pane(&first, &second, projection, json, socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

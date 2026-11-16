@@ -346,5 +346,22 @@ fn file_json(facts: &FileFacts) -> serde_json::Value {
     })
 }
 
+/// Run `phux logs` as parsed.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "every verb entry point takes its parsed Args by value, as dispatch hands them over"
+)]
+pub(crate) fn run(args: crate::commands::LogsArgs) -> ExitCode {
+    let crate::commands::LogsArgs {
+        server,
+        client,
+        pid,
+        follow,
+        lines,
+        json,
+    } = args;
+    run_logs(server, client, pid, follow, lines, json)
+}
+
 #[cfg(test)]
 mod tests;

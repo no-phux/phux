@@ -7,11 +7,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use super::update::channel::ChannelArg;
 use super::update::{UpdateOpts, run_update};
 
 /// Show the current channel, or switch to `channel` and install it.
-pub(crate) fn run(channel: Option<ChannelArg>, json: bool, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run(args: crate::commands::ChannelArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::ChannelArgs { channel, json } = args;
+    let json = json.json;
     run_update(
         &UpdateOpts {
             check: channel.is_none(),

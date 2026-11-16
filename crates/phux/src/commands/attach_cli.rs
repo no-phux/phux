@@ -1,5 +1,5 @@
-//! `phux attach` and the naked `phux`: plan the recording, then dial
-//! whichever transport the flags named.
+//! The CLI entry points of `phux attach` and the naked `phux`: plan the
+//! recording, then dial whichever transport the flags named.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -117,7 +117,7 @@ pub(crate) const fn declared_attach_role(
 
 /// Run `phux attach`: resolve the recording plan, then dial whichever
 /// transport the flags named.
-pub(super) fn attach(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCode {
     let commands::AttachArgs {
         session,
         quic,

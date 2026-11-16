@@ -225,3 +225,30 @@ async fn refuse_kind_before_asking(
     phux_client::read::require_terminal(Verb::Signal, &resolved)
         .map_err(|err| crate::commands::read_kind::wrong_kind(json, &err))
 }
+
+/// Run `phux take` as parsed.
+pub(crate) fn take(args: crate::commands::TakeArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::TakeArgs { target, ttl, json } = args;
+    run_take(&target, ttl, json.json, socket)
+}
+
+/// Run `phux give` as parsed.
+pub(crate) fn give(args: crate::commands::GiveArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::GiveArgs { target, json } = args;
+    run_give(&target, json.json, socket)
+}
+
+/// Run `phux signal` as parsed: resolve `--idempotency-key`, then signal.
+pub(crate) fn signal(args: crate::commands::SignalArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SignalArgs {
+        target,
+        signal,
+        idempotency_key,
+        yes,
+        json,
+    } = args;
+    match crate::commands::spawn::parse_key_arg(idempotency_key.as_deref(), json.json) {
+        Ok(key) => run_signal(&target, signal, key, yes, json.json, socket),
+        Err(code) => code,
+    }
+}
