@@ -3,6 +3,37 @@ use super::*;
 
 // ---- membership ------------------------------------------------------------
 
+/// Two persistent sessions `a` and `b`, with `a` holding two shells laid out
+/// as one horizontal split of `ratio` in group `[5; 16]`.
+fn two_sessions_with_a_split(ratio: f32) -> (Harness, SessionKey, SessionKey, [ResourceKey; 2]) {
+    let mut h = Harness::new();
+    let a = h.create_session("a", SessionLifetime::Persistent);
+    let b = h.create_session("b", SessionLifetime::Persistent);
+    let r1 = h.shell_in(a);
+    let r2 = h.shell_in(a);
+    h.run(Op::ArrangementReplace {
+        owner: ArrangementOwner::Session(a),
+        expected: Revision::FIRST,
+        groups: vec![split_group(ratio, r1, r2)],
+    })
+    .expect("arrangement");
+    (h, a, b, [r1, r2])
+}
+
+fn split_group(ratio: f32, r1: ResourceKey, r2: ResourceKey) -> Group {
+    Group {
+        locked: false,
+        id: [5; 16],
+        name: None,
+        tree: LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio,
+            left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], r1))),
+            right: Box::new(LayoutNode::Leaf(EntryRef::member([2; 16], r2))),
+        },
+    }
+}
+
 #[test]
 pub(super) fn resource_move_refusals_and_ephemeral_source_deletion() {
     let mut h = Harness::new();
@@ -47,15 +78,7 @@ pub(super) fn resource_move_refusals_and_ephemeral_source_deletion() {
         .err(),
         Some(Refusal::NotFound)
     );
-    let applied = h
-        .run(Op::ResourceMove {
-            resource: r,
-            from: quick,
-            from_expected: rq,
-            to: dest,
-            to_expected: rd,
-        })
-        .expect("move");
+    let applied = h.move_resource(r, quick, dest).expect("move");
     assert!(applied.effects.is_empty(), "a move never touches execution");
     assert!(h.reg.org().session(&quick).is_none(), "emptied ephemeral");
     assert_eq!(h.session(dest).members, vec![r]);
@@ -70,38 +93,9 @@ pub(super) fn resource_move_refusals_and_ephemeral_source_deletion() {
 
 #[test]
 pub(super) fn moving_out_prunes_the_source_arrangement() {
-    let mut h = Harness::new();
-    let a = h.create_session("a", SessionLifetime::Persistent);
-    let b = h.create_session("b", SessionLifetime::Persistent);
-    let r1 = h.shell_in(a);
-    let r2 = h.shell_in(a);
-    let tree = LayoutNode::Split {
-        dir: SplitDir::Horizontal,
-        ratio: 0.5,
-        left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], r1))),
-        right: Box::new(LayoutNode::Leaf(EntryRef::member([2; 16], r2))),
-    };
-    h.run(Op::ArrangementReplace {
-        owner: ArrangementOwner::Session(a),
-        expected: Revision::FIRST,
-        groups: vec![Group {
-            locked: false,
-            id: [5; 16],
-            name: None,
-            tree,
-        }],
-    })
-    .expect("arrangement");
+    let (mut h, a, b, [r1, r2]) = two_sessions_with_a_split(0.5);
     let ak = h.session(a).arrangement.expect("linked");
-    let (ra, rb) = (h.session(a).revision, h.session(b).revision);
-    h.run(Op::ResourceMove {
-        resource: r1,
-        from: a,
-        from_expected: ra,
-        to: b,
-        to_expected: rb,
-    })
-    .expect("move");
+    h.move_resource(r1, a, b).expect("move");
     let arrangement = h.reg.org().arrangement(&ak).expect("kept");
     assert_eq!(arrangement.resources(), vec![r2]);
     assert_eq!(arrangement.revision, Revision(3));
@@ -109,43 +103,17 @@ pub(super) fn moving_out_prunes_the_source_arrangement() {
 
 #[test]
 pub(super) fn undoing_a_move_restores_the_source_placement() {
-    let mut h = Harness::new();
-    let a = h.create_session("a", SessionLifetime::Persistent);
-    let b = h.create_session("b", SessionLifetime::Persistent);
-    let r1 = h.shell_in(a);
-    let r2 = h.shell_in(a);
-    let groups = vec![Group {
-        locked: false,
-        id: [5; 16],
-        name: None,
-        tree: LayoutNode::Split {
-            dir: SplitDir::Horizontal,
-            ratio: 0.3,
-            left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], r1))),
-            right: Box::new(LayoutNode::Leaf(EntryRef::member([2; 16], r2))),
-        },
-    }];
-    h.run(Op::ArrangementReplace {
-        owner: ArrangementOwner::Session(a),
-        expected: Revision::FIRST,
-        groups: groups.clone(),
-    })
-    .expect("arrangement");
+    let (mut h, a, b, [r1, r2]) = two_sessions_with_a_split(0.3);
     let ak = h.session(a).arrangement.expect("linked");
-    let (ra, rb) = (h.session(a).revision, h.session(b).revision);
-    let moved = h
-        .run(Op::ResourceMove {
-            resource: r1,
-            from: a,
-            from_expected: ra,
-            to: b,
-            to_expected: rb,
-        })
-        .expect("move");
+    let moved = h.move_resource(r1, a, b).expect("move");
     h.undo(moved.operation).expect("undo");
     assert_eq!(h.resource(r1).session, a);
     let arrangement = h.reg.org().arrangement(&ak).expect("kept");
-    assert_eq!(arrangement.groups, groups, "the pane is back where it was");
+    assert_eq!(
+        arrangement.groups,
+        vec![split_group(0.3, r1, r2)],
+        "the pane is back where it was"
+    );
 }
 
 #[test]
@@ -154,16 +122,7 @@ pub(super) fn undoing_a_move_out_of_a_deleted_session_refuses() {
     let quick = h.create_session("quick", SessionLifetime::Ephemeral);
     let dest = h.create_session("dest", SessionLifetime::Persistent);
     let r = h.session(quick).members[0];
-    let (rq, rd) = (h.session(quick).revision, h.session(dest).revision);
-    let moved = h
-        .run(Op::ResourceMove {
-            resource: r,
-            from: quick,
-            from_expected: rq,
-            to: dest,
-            to_expected: rd,
-        })
-        .expect("move");
+    let moved = h.move_resource(r, quick, dest).expect("move");
     assert!(
         h.reg.org().session(&quick).is_none(),
         "the empty ephemeral went"
@@ -260,16 +219,7 @@ pub(super) fn undo_restores_membership_only_while_revisions_match() {
     let a = h.create_session("a", SessionLifetime::Persistent);
     let b = h.create_session("b", SessionLifetime::Persistent);
     let r = h.shell_in(a);
-    let (ra, rb) = (h.session(a).revision, h.session(b).revision);
-    let moved = h
-        .run(Op::ResourceMove {
-            resource: r,
-            from: a,
-            from_expected: ra,
-            to: b,
-            to_expected: rb,
-        })
-        .expect("move");
+    let moved = h.move_resource(r, a, b).expect("move");
     let receipt = moved.transition.receipt.clone().expect("receipt");
     assert!(receipt.undo.is_some());
 

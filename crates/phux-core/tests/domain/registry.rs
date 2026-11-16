@@ -132,16 +132,8 @@ fn a_move_changes_membership_and_keeps_every_handle() {
     let b = h.create_session("b", SessionLifetime::Persistent);
     let t = h.shell_in(a);
     let tid = h.reg.resource_id(&t).expect("handle");
-    let (ra, rb) = (h.session(a).revision, h.session(b).revision);
 
-    h.run(Op::ResourceMove {
-        resource: t,
-        from: a,
-        from_expected: ra,
-        to: b,
-        to_expected: rb,
-    })
-    .expect("move");
+    h.move_resource(t, a, b).expect("move");
     assert_eq!(h.reg.resource_id(&t), Some(tid));
     assert_eq!(h.reg.session_of(tid), h.reg.session_id(&b));
     assert!(h.reg.members(h.reg.session_id(&a).expect("a")).is_empty());
