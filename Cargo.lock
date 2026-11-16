@@ -3080,6 +3080,7 @@ dependencies = [
  "criterion",
  "insta",
  "libghostty-vt",
+ "phux-core",
  "phux-frozen",
  "phux-perf",
  "phux-protocol",
