@@ -4,29 +4,20 @@
 use std::time::Duration;
 
 use phux_protocol::input::focus::FocusEvent;
-use phux_protocol::wire::frame::{AttachTarget, CommandResult, CommandValue, ErrorCode, FrameKind};
-use phux_protocol::wire::info::SessionSnapshot;
+use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind};
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, SpawnedServer, attach_by_name, command, recv_typed, run_local,
-    send_frame, spawn_server_connected, spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SpawnedServer, attach_by_name, recv_typed, run_local, send_frame, server_state as state,
+    spawn_server_connected,
 };
 
 use super::common::{
     attach, attached, canonical_cwd, create_if_missing, focused_name, with_attach_id,
 };
-
-async fn state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get_state = phux_server_testkit::get_state();
-    match command(stream, request_id, get_state).await {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("GET_STATE failed: {other:?}"),
-    }
-}
 
 /// The `ERROR` an `ATTACH` fails with: no `request_id` (it is not a COMMAND).
 async fn attach_error(stream: &mut UnixStream) -> (ErrorCode, String) {
@@ -106,7 +97,7 @@ fn last_follows_the_seed_then_focus_and_create_if_missing_reuses() {
     run_local(async {
         let seed = "phux-custom-project";
         let server = SpawnedServer::start(Some(seed), |_| {});
-        let connect = || wait_for_socket(&server.socket, SOCKET_CONNECT_DEADLINE);
+        let connect = || server.connect();
 
         let mut first = connect().await;
         send_frame(&mut first, &attach(AttachTarget::Last, 80, 24)).await;
@@ -153,9 +144,7 @@ fn last_follows_the_seed_then_focus_and_create_if_missing_reuses() {
 #[test]
 fn attach_reports_wire_fallback_and_live_cwd() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) = spawn_server_seed_pty_no_cmd(socket.clone(), None);
+        let server = SpawnedServer::pty(None);
         let blocked = |script: &str| {
             Some(vec![
                 "/bin/sh".to_owned(),
@@ -166,7 +155,7 @@ fn attach_reports_wire_fallback_and_live_cwd() {
         let dir = TempDir::new().unwrap();
         let dir_path = dir.path().canonicalize().unwrap();
 
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = server.connect().await;
         let honored = create_if_missing(
             "honored",
             blocked("read _"),
@@ -175,8 +164,8 @@ fn attach_reports_wire_fallback_and_live_cwd() {
         send_frame(&mut stream, &honored).await;
         assert_eq!(canonical_cwd(&attached(&mut stream).await, 0), dir_path);
 
-        let bogus = tmp.path().join("does-not-exist");
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let bogus = server.tmp.path().join("does-not-exist");
+        let mut stream = server.connect().await;
         let fallback = create_if_missing(
             "fallback",
             blocked("read _"),
@@ -200,7 +189,7 @@ fn attach_reports_wire_fallback_and_live_cwd() {
         let live = TempDir::new().unwrap();
         let live_path = live.path().canonicalize().unwrap();
         let script = format!("cd '{}' && read _", live_path.display());
-        let mut creator = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut creator = server.connect().await;
         send_frame(
             &mut creator,
             &create_if_missing(
@@ -212,7 +201,7 @@ fn attach_reports_wire_fallback_and_live_cwd() {
         .await;
         attached(&mut creator).await;
         tokio::time::sleep(Duration::from_millis(150)).await;
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = server.connect().await;
         send_frame(&mut stream, &attach_by_name("live")).await;
         let snapshot = attached(&mut stream).await;
         let pane = snapshot
