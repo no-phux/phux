@@ -157,10 +157,8 @@ async fn a_replaced_layout_over_unchanged_tiles_repaints_in_place() {
     assert_eq!(repaint.drain().level, RepaintLevel::Full, "the tiles moved");
 }
 
-/// A switch hands the next entry what the server-wide sweeps knew: the
-/// session being left joins the peer layouts, every agent record is kept,
-/// and once ATTACHED names the new session its own panes' records move back
-/// to the local index.
+/// A switch carries the peer caches: the session left joins the peer
+/// layouts and the new session's own records move back to the local index.
 #[tokio::test(flavor = "current_thread")]
 async fn a_switch_carries_the_peer_caches_into_the_next_entry() {
     let (mut old, _client, _server, _a) = published_single_pane_loop().await;

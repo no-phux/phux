@@ -65,9 +65,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     bash scripts/check-ghostty-pin.sh
 
 
-# The binding crate's opt-in UniFFI encoder (ADR-0135). The unit pool builds
-# default features only, and the mobile artifact never carries the c-abi lane,
-# so this proves the lib target with c-abi off.
+# The binding crate with the mobile artifact's exact features (ADR-0135).
 [group('gates')]
 [private]
 binding-uniffi-test:

@@ -51,9 +51,9 @@ mod tests {
 
     #[test]
     fn a_close_button_owns_its_press_in_a_selectable_draggable_header() {
-        let (client, _) = crate::grid::budget::input_fixture();
-        let mut desk = Desk::settings_test_fixture();
-        desk.client = Some(client.clone());
+        let (client, _) = crate::test_support::input_fixture();
+        let mut desk = crate::test_support::window();
+        desk.connection.client = Some(client.clone());
         let snapshot =
             SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
                 .with_sessions(vec![
@@ -69,8 +69,8 @@ mod tests {
                 ),
             })
             .unwrap();
-        desk.topology = Some(Topology::from_snapshot(&snapshot));
-        desk.topology.as_mut().unwrap().sessions[1].key = Some(key());
+        desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
+        desk.connection.topology.as_mut().unwrap().sessions[1].key = Some(key());
         let mut rt = Runtime::new(desk, header, (240.0, 80.0), Env::new(true, 1.0));
         rt.frame(0.0);
         let button = format!("session-close-{}", key());
@@ -83,7 +83,7 @@ mod tests {
         rt.pointer_move(x + 6.0, y + 6.0);
         rt.frame(0.0);
         assert!(
-            rt.state.reorder.held.is_none(),
+            rt.state.connection.reorder.held.is_none(),
             "the parent never starts dragging"
         );
         assert_eq!(client.selected_session(), Some(1));
@@ -105,7 +105,7 @@ mod tests {
             "the header never selects"
         );
         assert!(
-            rt.state.tabs.renaming.is_none(),
+            rt.state.connection.tabs.renaming.is_none(),
             "the header never double-presses"
         );
         rt.update(|d, _| d.cancel_pending());
@@ -128,7 +128,7 @@ mod tests {
             let ink = crate::ui::ink(true, rune::oklch(0.6, 0.15, 250.0), None);
             session_controls(None, "satellite", &ink)
         }
-        let desk = Desk::settings_test_fixture();
+        let desk = crate::test_support::window();
         let mut rt = Runtime::new(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));
         rt.frame(0.0);
         assert!(!rt.accessibility_action(

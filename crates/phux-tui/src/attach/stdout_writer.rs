@@ -1,13 +1,7 @@
-//! Off-loop stdout writer.
-//!
-//! A blocking flush to a slow tty inside the `select!` loop would starve the
-//! stdin/signal arms (Ctrl-C and detach stop working). [`StdoutSink`] is the
-//! driver's `out`: writes accumulate in memory, and `flush()` hands the frame
-//! to a dedicated thread that owns the real stdout.
-//!
-//! Backpressure is bounded and lossless at the frame level: once the queued
-//! backlog exceeds [`CAP_BYTES`] the sink drops it and sets `needs_resync`,
-//! and the driver repaints a self-contained full frame (`ED2` + redraw) that
+//! Off-loop stdout writer: a blocking flush to a slow tty would starve the
+//! stdin and signal arms, so [`StdoutSink`] buffers and hands each frame to
+//! a thread that owns stdout. Past [`CAP_BYTES`] of backlog it drops the
+//! queue and sets `needs_resync`; the driver then repaints a full frame that
 //! supersedes every dropped diff.
 
 use std::collections::VecDeque;
@@ -18,10 +12,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-/// Frames at or under this size are written on the runtime thread when the
-/// stdout writer is idle, so a keystroke echo does not wait out a condvar
-/// wakeup. Larger frames, and any frame the nonblocking dup refuses, stay
-/// on the writer thread.
+/// Frames up to this size are written on the runtime thread when the
+/// writer is idle, so a keystroke echo skips the condvar wakeup.
 const DIRECT_MAX: usize = 4096;
 
 /// Backlog cap: how much ALREADY-QUEUED work may pile up before the sink
@@ -274,13 +266,9 @@ pub(super) fn spawn_stdout_writer() -> (StdoutSink, WriterHandle) {
     spawn_writer_into(io::stdout(), stdout_direct_fd())
 }
 
-/// Nonblocking handle on process stdout for a small echo frame. `None` when
-/// it cannot be opened without changing the writer thread's stdout.
-///
-/// `dup` shares `O_NONBLOCK` with the writer's descriptor. A full outer PTY
-/// then makes that thread's `write(2)` return `EAGAIN`, and the thread
-/// exits, so later frames never land. On Linux, reopening `/proc/self/fd/N`
-/// is a new file description, so only this handle is nonblocking.
+/// Nonblocking handle on stdout for a small echo frame. A `dup` would share
+/// `O_NONBLOCK` with the writer thread's descriptor (an `EAGAIN` there kills
+/// the thread); reopening `/proc/self/fd/N` is a new file description.
 #[cfg(target_os = "linux")]
 fn stdout_direct_fd() -> Option<OwnedFd> {
     let stdout = io::stdout();

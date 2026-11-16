@@ -1,16 +1,8 @@
-//! Background jobs: work the TUI runs off the input loop and reports back
-//! as a toast (ADR-0172).
-//!
-//! An action handler describes the work as a [`Job`] and hands it to the
-//! effect pass (`ActionEffects::job`), which calls [`Jobs::start`]: a job of
-//! an exclusive [`JobKind`] is refused while another of its kind is in
-//! flight, any other is spawned and its starting notice returned. The
-//! finished job's [`JobDone`] reaches the driver through [`Jobs::next`], one
-//! `select!` arm for every kind of job.
-//!
-//! The production attach uses one `Jobs` per process ([`Jobs::process`]): a
-//! job outlives the attach loop that started it, across session switches and
-//! reconnects, so its in-flight guard and its result must too.
+//! Background jobs (ADR-0172): work run off the input loop that reports
+//! back as a toast. [`Jobs::start`] refuses a second job of an exclusive
+//! [`JobKind`]; results arrive through [`Jobs::next`]. The production attach
+//! shares one `Jobs` per process ([`Jobs::process`]) so a job and its guard
+//! outlive session switches and reconnects.
 
 use std::collections::HashSet;
 use std::fmt;

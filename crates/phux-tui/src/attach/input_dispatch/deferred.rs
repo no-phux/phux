@@ -1,11 +1,6 @@
-//! Arrangement edits that arrived before the initial layout read.
-//!
-//! `close-view` and `reopen-views` change the shared arrangement. Applying
-//! them to the bootstrap fallback, then skipping the save because the read
-//! fence is down, drops the edit: detach and reattach show only the
-//! arrangement the session was created with (#1475). The keystroke is held
-//! and applied to the workspace the read adopts, then saved. Nothing here
-//! places a member the user did not ask to show.
+//! Arrangement edits (`close-view`, `reopen-views`) that arrived before the
+//! initial layout read: held and applied to the workspace the read adopts,
+//! then saved, instead of being dropped on the bootstrap fallback (#1475).
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,11 +18,8 @@ pub(in crate::attach) enum DeferredArrangementEdit {
     ReopenViews,
 }
 
-/// Apply `edits` to the workspace the layout read adopted.
-///
-/// Returns whether the document changed, which is the caller's cue to save
-/// it. An edit that names a pane the adopted layout does not hold does
-/// nothing. Members the user did not ask to reopen stay hidden.
+/// Apply `edits` to the workspace the layout read adopted; `true` when it
+/// changed and must be saved. Edits naming a pane it lacks do nothing.
 pub(in crate::attach) fn apply_deferred_arrangement_edits(
     edits: &mut Vec<DeferredArrangementEdit>,
     workspace: &mut ArrangementDoc,

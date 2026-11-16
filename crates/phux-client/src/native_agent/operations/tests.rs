@@ -8,7 +8,6 @@
 
 use super::*;
 use crate::testkit::{ScriptSpec, ScriptedServer};
-use phux_protocol::caps::ServerFeatureExtSet;
 use tokio::net::UnixListener;
 
 fn command() -> NativeCommand {
@@ -116,25 +115,8 @@ fn mock(spec: ScriptSpec) -> (tempfile::TempDir, tokio::task::JoinHandle<Vec<Fra
 }
 
 #[tokio::test]
-async fn legacy_peer_gets_no_command_or_subscription() {
-    let (dir, task) = mock(ScriptSpec::new());
-    let result = submit_command(&dir.path().join("native.sock"), 22, command())
-        .await
-        .unwrap();
-    assert_eq!(result.disposition, NativeDisposition::Refused);
-    assert_eq!(result.operation_id, command().operation_id);
-    let seen = task.await.unwrap();
-    assert!(!seen.iter().any(|frame| matches!(
-        frame,
-        FrameKind::Command { .. } | FrameKind::SubscribeEvents { .. }
-    )));
-}
-
-#[tokio::test]
 async fn missing_receipt_is_unknown_and_command_is_never_replayed() {
-    let spec = ScriptSpec::new()
-        .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::NativeAgent]));
-    let (dir, task) = mock(spec);
+    let (dir, task) = mock(ScriptSpec::new());
     let result = submit_command(&dir.path().join("native.sock"), 22, command())
         .await
         .unwrap();
@@ -165,7 +147,9 @@ async fn missing_receipt_is_unknown_and_command_is_never_replayed() {
 
 #[tokio::test]
 async fn legacy_peer_gets_no_spawn() {
-    let (dir, task) = mock(ScriptSpec::new());
+    let (dir, task) = mock(
+        ScriptSpec::new().server_features_ext(phux_protocol::caps::ServerFeatureExtSet::new()),
+    );
     let spec = SpawnNativeAgent {
         session: "work".into(),
         backend: "acp".into(),

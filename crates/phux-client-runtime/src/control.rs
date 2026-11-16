@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
     INPUT_RETRY_HORIZON, InputReplayJournal, ReplayDisposition, ReplayReport,
@@ -26,7 +26,7 @@ use phux_client_core::input_replay::{
 use phux_client_core::session::{
     HistoryRejectionReason, HistoryUnavailableReason, KernelEffect, KernelSend, KernelStatus,
 };
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, ServerFeature};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::{ClientId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -95,12 +95,9 @@ pub use geometry::TerminalResizeOutcome;
 pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
 pub use mirror::{MirrorCall, MirrorError};
-pub use options::{
-    ControlOptions, InboundDelivery, MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES,
-    PredictionStyle, SessionRecovery,
-};
+pub use options::{ControlOptions, PredictionStyle, SessionRecovery};
 pub use org_plane::{ArrangementSubmitError, mint_operation};
-pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use organization::{IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
 pub use topology::{
     AgentSessionDescriptor, DocumentDescriptor, PaneDescriptor, ResourceDescriptor,
@@ -117,7 +114,7 @@ pub const EVENT_QUEUE_CAP: usize = 4096;
 
 /// Maximum retained clipboard payload capacity in the undrained event queue.
 /// Clipboard events are droppable, never replayed to recover an overflow.
-pub const CLIPBOARD_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const CLIPBOARD_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A spawn a consumer asks for.
 #[derive(Debug, Clone, Default)]
@@ -214,10 +211,6 @@ pub struct ControlPlane {
     connection_epoch: u64,
     /// The epoch authorized to deliver inbound frames; absent after loss.
     live_connection_epoch: Option<u64>,
-    /// Frames read off the socket and not yet drained, under
-    /// [`InboundDelivery::Queued`].
-    inbound: Vec<Bytes>,
-    inbound_bytes: usize,
     offered_caps: ClientCapabilities,
     status: Status,
     handshake_ready: bool,
@@ -328,6 +321,6 @@ pub fn encode(frame: &FrameKind) -> Vec<u8> {
 /// The retry-horizon bound a driver may sleep against when nothing is
 /// queued, so a wake never waits longer than one horizon.
 #[must_use]
-pub const fn max_expiry_wait() -> Duration {
+pub(crate) const fn max_expiry_wait() -> Duration {
     INPUT_RETRY_HORIZON
 }

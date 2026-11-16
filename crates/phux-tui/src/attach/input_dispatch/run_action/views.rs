@@ -1,8 +1,6 @@
 //! Overlays and views: the command palette, pickers, settings, copy mode,
 //! the agent fleet and attention, and sidebar filters.
 
-use phux_protocol::ResourceId;
-
 use crate::attach::copy::extract_selection_text;
 use crate::attach::input_dispatch::args::{
     focus_terminal, ordered_workspace_panes, str_arg, usize_arg,
@@ -18,10 +16,8 @@ use crate::render::overlay::{CopyRequest, SelectItem, SelectList, SelectionGrab,
 
 use super::{ActionCall, focus_in_window};
 
-/// Open the single fuzzy discovery surface. `show-help` and
-/// `command-palette` are entry aliases so users never have to choose between
-/// a reference modal and an executable finder. The recording marker row
-/// shows only while a recording is live.
+/// Open the fuzzy finder; `show-help` and `command-palette` are aliases. The
+/// marker row shows only while a recording is live.
 pub(in crate::attach) fn push_action_finder(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     let mut items = crate::attach::action_registry::palette_items(
         ctx.keybindings,
@@ -51,10 +47,8 @@ pub(in crate::attach) fn push_settings(ActionCall { ctx, .. }: ActionCall<'_, '_
         )));
 }
 
-/// Post an asciicast `m` marker to every recording this machine has open.
-///
-/// The bare chord writes an empty label. Nothing is recording when the
-/// inbox directory has no live file, and that bells.
+/// Post an asciicast `m` marker to every recording this machine has open;
+/// bells when none is.
 pub(in crate::attach) fn rec_mark(
     ActionCall {
         resolved, effects, ..
@@ -111,7 +105,7 @@ pub(in crate::attach) fn report_bug(
     let draft = crate::report::ReportDraft {
         note: str_arg(resolved, "note"),
         session,
-        pane: focused.map(pane_selector),
+        pane: focused.map(crate::render::overlay::confirm::selector),
         window: Some(ctx.workspace.active),
         viewport: Some(ctx.viewport),
         alt_screen,
@@ -148,13 +142,6 @@ pub(in crate::attach) fn report_bug(
     }
 }
 
-fn pane_selector(id: &ResourceId) -> String {
-    match id {
-        ResourceId::Local { id } => format!("@{id}"),
-        ResourceId::Satellite { host, id } => format!("{host}/@{id}"),
-    }
-}
-
 /// Push the first-run onboarding hint card.
 pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
     ctx.overlays
@@ -165,12 +152,8 @@ pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall
         )));
 }
 
-/// phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
-/// the cursor without extending the selection unless Shift is held;
-/// mouse drag can select and copy in one gesture. The copy cursor starts
-/// where the pane's own cursor was last painted (the prompt, usually), so
-/// the output just above it is a few keystrokes away; a hidden or
-/// scrolled-off cursor starts at the top-left.
+/// Enter copy mode, the cursor starting where the pane's cursor was last
+/// painted (top-left when hidden or scrolled off).
 pub(in crate::attach) fn push_copy_mode(
     ActionCall {
         ctx,

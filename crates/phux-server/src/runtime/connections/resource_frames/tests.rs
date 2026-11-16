@@ -128,18 +128,17 @@ async fn exchange_inspecting(
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_focus_updates_activity_before_delivery_admission_but_after_authorization() {
-    LocalSet::new()
-        .run_until(async {
-            for (leased, retained, authorized) in [
-                (true, false, true),
-                (false, false, true),
-                (false, true, true),
-                (true, false, false),
-            ] {
-                local_focus_activity_case(leased, retained, authorized).await;
-            }
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        for (leased, retained, authorized) in [
+            (true, false, true),
+            (false, false, true),
+            (false, true, true),
+            (true, false, false),
+        ] {
+            local_focus_activity_case(leased, retained, authorized).await;
+        }
+    })
+    .await;
 }
 
 async fn local_focus_activity_case(leased: bool, retained: bool, authorized: bool) {
@@ -380,19 +379,18 @@ async fn unavailable_history_preserves_the_negotiated_codec_first_outcome() {
 /// never by text.
 #[tokio::test(flavor = "current_thread")]
 async fn clipboard_replies_need_input_authority_and_a_known_selection() {
-    LocalSet::new()
-        .run_until(async {
-            for (leased, authorized, selection, delivered) in [
-                (false, true, b'c', true),
-                (false, true, b'p', true),
-                (false, true, b's', false),
-                (true, true, b'c', false),
-                (false, false, b'c', false),
-            ] {
-                clipboard_reply_case(leased, authorized, selection, delivered).await;
-            }
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        for (leased, authorized, selection, delivered) in [
+            (false, true, b'c', true),
+            (false, true, b'p', true),
+            (false, true, b's', false),
+            (true, true, b'c', false),
+            (false, false, b'c', false),
+        ] {
+            clipboard_reply_case(leased, authorized, selection, delivered).await;
+        }
+    })
+    .await;
 }
 
 async fn clipboard_reply_case(leased: bool, authorized: bool, selection: u8, delivered: bool) {

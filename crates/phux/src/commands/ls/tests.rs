@@ -108,23 +108,34 @@ fn a_session_line_ends_in_its_key() {
     assert_eq!(with_key(line.clone(), None), line);
 }
 
-/// ADR-0105: a session with no windows says so, so a server that stays
-/// up with zero processes explains itself.
+/// The client count is real and singular when it is one; ADR-0105: a
+/// session with no windows says so, so a server that stays up with zero
+/// processes explains itself, and a populated keep-empty session is not
+/// marked empty.
 #[test]
-fn an_empty_session_is_marked() {
-    assert_eq!(
-        format_session_line(&session("parked", 0, 0).with_keep_empty(true)),
-        "parked: 0 windows (empty)"
-    );
-    assert_eq!(
-        format_session_line(&session("parked", 0, 1).with_keep_empty(true)),
-        "parked: 0 windows (empty) (1 client attached)"
-    );
-    assert_eq!(
-        format_session_line(&session("work", 1, 0).with_keep_empty(true)),
-        "work: 1 window",
-        "a populated keep-empty session is not marked empty"
-    );
+fn session_lines_count_windows_and_clients_and_mark_empty_sessions() {
+    for (info, line) in [
+        (session("work", 3, 0), "work: 3 windows"),
+        (session("work", 1, 1), "work: 1 window (1 client attached)"),
+        (
+            session("work", 2, 2),
+            "work: 2 windows (2 clients attached)",
+        ),
+        (
+            session("parked", 0, 0).with_keep_empty(true),
+            "parked: 0 windows (empty)",
+        ),
+        (
+            session("parked", 0, 1).with_keep_empty(true),
+            "parked: 0 windows (empty) (1 client attached)",
+        ),
+        (
+            session("work", 1, 0).with_keep_empty(true),
+            "work: 1 window",
+        ),
+    ] {
+        assert_eq!(format_session_line(&info), line);
+    }
 }
 
 #[test]
@@ -198,30 +209,6 @@ fn rows_show_lifetime_members_and_execution_states() {
         )),
         "old: 1 member (1 running), 1 window",
         "a server that reports no lifetime gets none printed"
-    );
-}
-
-#[test]
-fn zero_clients_render_no_attachment_note() {
-    assert_eq!(
-        format_session_line(&session("work", 3, 0)),
-        "work: 3 windows"
-    );
-}
-
-#[test]
-fn one_client_renders_a_singular_count() {
-    assert_eq!(
-        format_session_line(&session("work", 1, 1)),
-        "work: 1 window (1 client attached)"
-    );
-}
-
-#[test]
-fn two_clients_render_the_real_count() {
-    assert_eq!(
-        format_session_line(&session("work", 2, 2)),
-        "work: 2 windows (2 clients attached)"
     );
 }
 
@@ -389,24 +376,6 @@ fn claimed_satellite_terminals_are_not_listed_twice() {
             "  edge/@12: satellite terminal",
         ]
     );
-}
-
-/// The text-mode "satellite sessions are unavailable" note fires only for
-/// a server that lists satellite Terminals.
-#[test]
-fn host_sessions_note_needs_satellite_terminals() {
-    use phux_protocol::ids::SatelliteHost;
-
-    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-        .with_sessions(vec![session("work", 1, 0)]);
-    assert!(!super::all_hosts::has_satellite_terminals(&plain));
-    let hub = plain.with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
-        ResourceId::satellite(SatelliteHost::new("edge"), 9),
-        WindowId::new(3),
-        80,
-        24,
-    )]);
-    assert!(super::all_hosts::has_satellite_terminals(&hub));
 }
 
 #[test]

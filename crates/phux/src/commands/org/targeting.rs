@@ -46,11 +46,8 @@ pub(super) async fn connect(
         .map_err(|err| server.report_unreachable(json, &err, verb))
 }
 
-/// Read every record, refusing a server without `ORGANIZATION` first.
+/// Read every record.
 pub(super) async fn records(conn: &mut Connection, verb: &str) -> Result<OrgInventory, Refusal> {
-    if !org::supported(conn) {
-        return Err(Refusal::org(verb, &OrgError::Unsupported));
-    }
     org::fetch(conn, OrgFilter::All, 1)
         .await
         .map_err(|err| Refusal::org(verb, &err))

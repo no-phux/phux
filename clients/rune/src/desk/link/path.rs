@@ -67,7 +67,7 @@ impl Path {
 impl Desk {
     /// While this window is on another machine, watch the network path.
     pub(in crate::desk) fn follow_path(&mut self, tx: &mut Tx) {
-        let (Some(client), Some(_)) = (&self.client, &self.machines.current) else {
+        let (Some(client), Some(_)) = (&self.connection.client, &self.machines.current) else {
             return;
         };
         let now = Instant::now();

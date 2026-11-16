@@ -3,6 +3,7 @@
 
 mod agents;
 mod attach;
+mod credentials;
 mod machines;
 mod maintain;
 mod more;
@@ -18,6 +19,7 @@ mod settings;
 
 pub(crate) use self::agents::*;
 pub(crate) use self::attach::*;
+pub(crate) use self::credentials::*;
 pub(crate) use self::machines::*;
 pub(crate) use self::maintain::*;
 pub(crate) use self::more::*;
@@ -111,6 +113,9 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Agents", display_order = 71)]
     Approvals(ApprovalsArgs),
+
+    #[usage(help_heading = "Agents", display_order = 74)]
+    Credentials(CredentialsArgs),
 
     #[usage(help_heading = "Agents", display_order = 72)]
     Approve(ApproveArgs),

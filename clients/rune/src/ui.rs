@@ -4,9 +4,10 @@ use rune::tok;
 use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 
 use crate::desk::Desk;
+use crate::desk::surfaces::Surface;
+use crate::features::changes;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
-mod changes;
 mod documents;
 mod galaxy;
 mod hive;
@@ -17,6 +18,7 @@ mod machines;
 mod news;
 mod onboarding;
 mod overlay;
+pub(crate) use overlay::key_hint;
 mod pair;
 mod palette;
 mod panes;
@@ -236,13 +238,8 @@ fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
         return root.fill(tint);
     }
     let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
-    root.system_material(rune::SystemMaterial::Glass).child(
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(tint.alpha(alpha))
-            .inert(),
-    )
+    root.system_material(rune::SystemMaterial::Glass)
+        .child(el().cover().fill(tint.alpha(alpha)).inert())
 }
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every
@@ -267,22 +264,43 @@ fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
 
 /// What floats over the window: banners, cards, sheets and menus.
 fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
-    root.children(status::banner(desk, p))
-        .children(updates::card(desk, p, band))
-        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
-        .children(playground::open(desk, p, cx))
-        .children(desk.settings_open.then(|| settings::view(desk, p)))
-        .children(machines::sheet(desk, p))
-        .children(desk.news.open.then(|| news::view(desk, p)))
-        .children(desk.changes.open.then(|| changes::view(desk, p)))
-        .children(popup::view(desk, p))
-        .children(tabs::rename_sheet(desk, p))
-        .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
-        .children(
-            desk.pointer
-                .menu
-                .map(|at| palette::context_menu(desk, at, p)),
-        )
+    let root = root
+        .children(status::banner(desk, p))
+        .children(updates::card(desk, p, band));
+    floating_surfaces(root, desk, p, band, cx)
+}
+
+/// Paint exactly the ordering that determines keyboard, IME and paste
+/// ownership. The phone places its keyboard after these layers.
+fn floating_surfaces(mut root: El, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> El {
+    for surface in desk.surfaces() {
+        root = root.children(surface_view(surface, desk, p, top, cx));
+    }
+    root
+}
+
+fn surface_view(surface: Surface, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> Option<El> {
+    match surface {
+        Surface::PhoneNavigation => phone::navigation::view(desk, p, top),
+        Surface::Inbox => Some(inbox::view(desk, p)),
+        Surface::Playground(_) => playground::open(desk, p, cx),
+        // A phone's Settings is already painted in its stage, not a scrim.
+        Surface::Settings => desk.phone.is_none().then(|| settings::view(desk, p)),
+        Surface::Machines => machines::sheet(desk, p),
+        Surface::News => Some(news::view(desk, p)),
+        Surface::Changes => Some(changes::view(desk, p)),
+        Surface::Popup => popup::view(desk, p),
+        Surface::Rename => tabs::rename_sheet(desk, p),
+        Surface::Palette => Some(palette::view(
+            desk,
+            p,
+            if desk.phone.is_some() { 8.0 } else { 96.0 },
+        )),
+        Surface::ContextMenu => desk
+            .pointer
+            .menu
+            .map(|at| palette::context_menu(desk, at, p)),
+    }
 }
 
 /// The bare window: the pane edge to edge under a band the traffic lights
@@ -373,9 +391,7 @@ impl Sheet {
             .child(el().w_full().px(14.0).py(10.0).child(foot));
         col()
             .key(format!("{}-scrim", self.key))
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .py(MARGIN)
             .px(MARGIN)
             .items_center()
@@ -410,6 +426,17 @@ pub(crate) fn icon_press(
                 .a11y_hidden(),
         )
         .hover_group()
+}
+
+/// Covering the whole of its parent, over what came before it.
+pub(crate) trait Cover {
+    fn cover(self) -> Self;
+}
+
+impl Cover for El {
+    fn cover(self) -> El {
+        self.absolute(0.0, 0.0).w_full().h_full()
+    }
 }
 
 /// Something to press: a wash under the pointer that deepens while held, and
@@ -466,13 +493,19 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+pub use test_support::{element, offscreen};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
 
     #[test]
     fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
         rt.frame(0.0);

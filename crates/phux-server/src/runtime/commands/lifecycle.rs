@@ -199,39 +199,15 @@ pub(crate) fn create_empty_session(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
     use std::sync::atomic::Ordering;
-    use std::sync::{Arc, Mutex};
 
     use phux_core::{Actor, ExitOutcome, ExitPolicy, SessionLifetime, TerminalLaunch};
-    use phux_protocol::policy::{PeerIdentity, TransportType};
     use phux_protocol::wire::frame::Command;
-    use tracing_subscriber::fmt::MakeWriter;
 
     use super::super::routing::{CommandContext, handle_command};
     use crate::org_store::MemOrgStore;
     use crate::state::{ServerState, TerminalTarget};
-
-    #[derive(Clone, Default)]
-    struct Buf(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Buf {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log").extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for Buf {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
 
     /// `SHUTDOWN` offers a still-pending activation report once more, then
     /// warns, before `shutting_down` makes later reports a silent no-op.
@@ -261,34 +237,17 @@ mod tests {
             );
             ServerState::reset_executor_persist_attempts();
             let client = s.new_client_id();
-            s.set_peer_identity(
-                client,
-                PeerIdentity {
-                    uid: 1,
-                    pid: None,
-                    exe_path: None,
-                    mcp_host_key: None,
-                    transport: TransportType::UnixSocket,
-                    source_addr: None,
-                },
-            );
+            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
 
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(4);
         let ctx = CommandContext::for_test(&state, client, &out_tx);
-        let buf = Buf::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
-            .with_writer(buf.clone())
-            .finish();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::callsite::rebuild_interest_cache();
+        let ((), log) = crate::runtime::test_support::with_info_log(|| {
             runtime.block_on(handle_command(&ctx, 1, Command::Shutdown));
         });
         out_rx.try_recv().expect("SHUTDOWN acks");
@@ -298,7 +257,6 @@ mod tests {
             1,
             "SHUTDOWN must offer the pending report once more"
         );
-        let log = String::from_utf8(buf.0.lock().expect("log").clone()).unwrap();
         assert!(
             log.contains(
                 "shutdown with undurable executor evidence; restart can only reconcile committed state"

@@ -237,12 +237,14 @@ pub(crate) struct ApprovalsArgs {
 /// Releases the held action ID once: the server runs it as the workload
 /// that asked, under that workload's own grant, and answers that
 /// workload. Asks on a terminal; pass `--yes` when stdin is not one.
+/// Credential requests require interactive review of the exact references
+/// and identities; `--yes` cannot approve them.
 #[derive(Debug, Args)]
 pub(crate) struct ApproveArgs {
     /// The approval id `phux approvals` lists.
     pub(crate) id: String,
 
-    /// Approve without asking.
+    /// Approve a noncredential held action without asking.
     #[usage(long)]
     pub(crate) yes: bool,
 

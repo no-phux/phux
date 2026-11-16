@@ -218,25 +218,21 @@ mod tests {
     #[test]
     fn a_retry_within_one_incarnation_forwards_and_across_a_restart_does_not() {
         let fence = OperationFence::default();
-        let now = Instant::now();
-        assert_eq!(
-            fence.admit(key(1), A, ClientId(7), vec![1], now),
-            FenceVerdict::Forward
-        );
-        assert_eq!(
-            fence.admit(key(1), A, ClientId(8), vec![1], now),
-            FenceVerdict::Forward,
-            "a retry to the same satellite process is the satellite's to dedupe"
-        );
-        assert_eq!(
-            fence.admit(key(1), B, ClientId(8), vec![1], now),
-            FenceVerdict::IncarnationChanged
-        );
-        assert_eq!(
-            fence.admit(key(2), B, ClientId(8), vec![1], now),
-            FenceVerdict::Forward,
-            "a new id is new to the new incarnation too"
-        );
+        let admit = |value, incarnation, client| {
+            fence.admit(
+                key(value),
+                incarnation,
+                ClientId(client),
+                vec![1],
+                Instant::now(),
+            )
+        };
+        assert_eq!(admit(1, A, 7), FenceVerdict::Forward);
+        // A retry to the same satellite process is the satellite's to dedupe.
+        assert_eq!(admit(1, A, 8), FenceVerdict::Forward);
+        assert_eq!(admit(1, B, 8), FenceVerdict::IncarnationChanged);
+        // A new id is new to the new incarnation too.
+        assert_eq!(admit(2, B, 8), FenceVerdict::Forward);
     }
 
     #[test]
@@ -287,30 +283,17 @@ mod tests {
             fence.admit(key, A, ClientId(9), fenced_terminals(command), now);
         }
         let id = |byte: u8| IdempotencyKey::new([byte; 16]).expect("non-zero");
-        assert_eq!(
-            fence.event_operation(&id(1), 5),
-            EventOperation::Forwarded(ClientId(9))
-        );
-        assert_eq!(
-            fence.event_operation(&id(1), 6),
-            EventOperation::Misattributed
-        );
-        assert_eq!(
-            fence.event_operation(&id(2), 7),
-            EventOperation::Forwarded(ClientId(9))
-        );
-        assert_eq!(
-            fence.event_operation(&id(2), 5),
-            EventOperation::Misattributed
-        );
-        assert_eq!(
-            fence.event_operation(&id(3), 5),
-            EventOperation::Misattributed
-        );
-        assert_eq!(
-            fence.event_operation(&id(3), 8),
-            EventOperation::Forwarded(ClientId(9))
-        );
+        let forwarded = EventOperation::Forwarded(ClientId(9));
+        for (byte, terminal, expected) in [
+            (1, 5, forwarded),
+            (1, 6, EventOperation::Misattributed),
+            (2, 7, forwarded),
+            (2, 5, EventOperation::Misattributed),
+            (3, 5, EventOperation::Misattributed),
+            (3, 8, forwarded),
+        ] {
+            assert_eq!(fence.event_operation(&id(byte), terminal), expected);
+        }
     }
 
     #[test]

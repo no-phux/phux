@@ -137,10 +137,11 @@ impl Desk {
             .socket
             .as_ref()
             .map_err(|_| "Connect to the local host before starting a producer.")?;
-        if self.status != phux_client_runtime::control::Status::Attached {
+        if self.connection.status != phux_client_runtime::control::Status::Attached {
             return Err("Connect to the local host before starting a producer.".to_owned());
         }
         if self
+            .connection
             .client
             .as_ref()
             .and_then(|c| c.selected_session())
@@ -158,7 +159,9 @@ impl Desk {
             Ok(argv) => argv,
             Err(why) => return self.say(NoticeKind::Error, why),
         };
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         let session_id = client.selected_session();
         let request = client.with_control(|control| {
             control.spawn_terminal_once(SpawnRequest {
@@ -169,9 +172,10 @@ impl Desk {
                 ..SpawnRequest::default()
             })
         });
-        self.pending_splits
+        self.connection
+            .pending_splits
             .insert(request, (self.placement_session(client), None));
-        self.resources.starting.insert(request, source);
+        self.connection.resources.starting.insert(request, source);
         self.say(NoticeKind::Info, "Starting a dedicated producer terminal. Its output shows prerequisites and failures; Ctrl-C there stops the mirror. Open the published document from the palette.");
     }
 
@@ -180,7 +184,7 @@ impl Desk {
         id: &phux_protocol::ResourceId,
         exit: Option<i32>,
     ) -> bool {
-        let Some(source) = self.resources.producers.remove(id) else {
+        let Some(source) = self.connection.resources.producers.remove(id) else {
             return false;
         };
         let status = exit.map_or_else(

@@ -1,10 +1,6 @@
-//! Non-Terminal layout leaves (docs/resource-kinds.md): another client puts
-//! a document or surface into the session's arrangement, and the TUI adopts
-//! it as a placeholder tile instead of refusing the attach.
-//!
-//! The kind comes from the server's graph: a server that knows this client
-//! decodes no documents never bootstraps one to it, so only the fallback
-//! test below feeds a document bootstrap.
+//! Non-Terminal layout leaves (docs/resource-kinds.md): a document or surface
+//! another client arranged is adopted as a placeholder tile. Only the
+//! fallback test feeds a document bootstrap; a server never sends one.
 
 use super::*;
 

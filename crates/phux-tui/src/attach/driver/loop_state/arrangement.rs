@@ -1,9 +1,7 @@
-//! The attached session's arrangement record on an `ORGANIZATION` server:
-//! open the link, read and adopt the record, write local layout changes.
+//! The attached session's arrangement record on an `ORGANIZATION` server.
 //!
-//! A read is handed to the frame handler as the layout value the legacy
-//! `phux.tui.layout/v1` key would carry, so both paths share one
-//! reconciliation (focus kept, unknown leaves attached, the empty state).
+//! A read reaches the frame handler as the value the legacy layout key would
+//! carry, so both paths share one reconciliation.
 
 use phux_protocol::ids::SessionId;
 
@@ -20,11 +18,9 @@ impl super::SessionLoop {
         self.arrangement.as_ref().is_some_and(|link| !link.loaded())
     }
 
-    /// Open the arrangement link for `session` when the server advertises
-    /// `ORGANIZATION` and a control dial exists. `true` when the link is set
-    /// and owes its first read; `false` keeps the legacy key. The link
-    /// connects on that read, so a control connection that cannot open is a
-    /// failed read (reported, retried on the next one), never the legacy key.
+    /// Open the arrangement link for `session` on an `ORGANIZATION` server
+    /// with a control dial; `true` when it owes its first read. It connects
+    /// on that read, so a failure is a failed read, never the legacy key.
     pub(super) fn open_arrangement_link(&mut self, session: SessionId) -> bool {
         self.arrangement = None;
         self.peer_reader = None;
@@ -154,11 +150,9 @@ impl super::SessionLoop {
         Ok(Step::Continue)
     }
 
-    /// Write `document` as the session's arrangement record. `false` when
-    /// there is no link (the caller uses the legacy key). Until a read of
-    /// the record has succeeded nothing is written, since a compare-and-swap
-    /// against a record this client never saw would replace it whole: the
-    /// edit is reported unsaved and the read is owed again.
+    /// Write `document` as the arrangement record; `false` without a link.
+    /// Nothing is written before a read succeeded (a blind compare-and-swap
+    /// would replace the record whole): the edit is reported unsaved.
     pub(super) async fn write_arrangement(&mut self, document: &ArrangementDoc) -> bool {
         let Some(link) = self.arrangement.as_mut() else {
             return false;

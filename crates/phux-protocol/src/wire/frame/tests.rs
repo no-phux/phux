@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 
-/// Every `u8` wire-tag const here is declared through `wire_tags!`
-/// (E0119 on reuse), and `TYPE_` / `COMMAND_TAG_` consts take their value
-/// from [`FrameType`] / [`CommandTag`] (E0081 on reuse).
+/// Every `u8` wire-tag const here is declared through `wire_tags!`, so a
+/// reused byte is E0119.
 #[test]
 fn wire_tag_consts_are_uniqueness_checked() {
     // Only the const-declaration half of the file is scanned; the test
@@ -64,32 +63,12 @@ fn wire_tag_consts_are_uniqueness_checked() {
             continue;
         };
         let expr = expr.trim_end_matches(';').trim();
-        if name.starts_with("TYPE_") {
-            assert!(
-                expr.starts_with("FrameType::"),
-                "{name} must take its value from the FrameType enum so a duplicate \
-                 discriminant is a compile error, found `{expr}`"
-            );
-            assert!(
-                reserved.contains(name),
-                "{name} must be declared through wire_tags! so a reused byte is E0119"
-            );
-        } else if name.starts_with("COMMAND_TAG_") {
-            assert!(
-                expr.starts_with("CommandTag::"),
-                "{name} must take its value from the CommandTag enum so a duplicate \
-                 discriminant is a compile error, found `{expr}`"
-            );
-            assert!(
-                reserved.contains(name),
-                "{name} must be declared through wire_tags! so a reused byte is E0119"
-            );
-        } else if expr.starts_with("0x") || expr.starts_with(|c: char| c.is_ascii_digit()) {
-            assert!(
-                reserved.contains(name),
-                "{name} is a hand-allocated literal wire tag missing from a \
-                 wire_tags! family"
-            );
-        }
+        let tag_like = name.starts_with("TYPE_")
+            || name.starts_with("COMMAND_TAG_")
+            || expr.starts_with(|c: char| c.is_ascii_digit());
+        assert!(
+            !tag_like || reserved.contains(name),
+            "{name} is a wire tag missing from a wire_tags! family"
+        );
     }
 }

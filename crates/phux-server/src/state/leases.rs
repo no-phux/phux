@@ -1,6 +1,6 @@
 use phux_core::ids::ResourceId;
 use phux_protocol::ids::LeaseEpoch;
-use phux_protocol::wire::frame::{ActorRef, AgentEvent};
+use phux_protocol::wire::frame::AgentEvent;
 use tokio::sync::mpsc;
 
 use super::{ClientId, Outbound, SatelliteLease, ServerState};
@@ -88,54 +88,6 @@ impl ServerState {
             phux_core::actor::PrincipalKind::Human,
             crate::policy::ConnectionGrant::kind,
         )
-    }
-
-    /// Who held `resource`'s input lease at any time in `[from_ms, to_ms]`
-    /// (Unix milliseconds), answered from the journal's `LeaseChanged`
-    /// events without any keystroke log (ADR-0163 §7).
-    #[must_use]
-    pub fn lease_evidence(
-        &self,
-        resource: &phux_protocol::ids::ResourceKey,
-        from_ms: u64,
-        to_ms: u64,
-    ) -> LeaseEvidence {
-        let mut epochs: Vec<LeaseInterval> = Vec::new();
-        for entry in self.journal.retained() {
-            let AgentEvent::LeaseChanged {
-                resource: changed,
-                epoch,
-                holder,
-            } = &entry.event
-            else {
-                continue;
-            };
-            if changed != resource {
-                continue;
-            }
-            let at = entry.stamp.ts_ms;
-            if let Some(open) = epochs.last_mut() {
-                open.until_ms = Some(at);
-            }
-            epochs.push(LeaseInterval {
-                epoch: *epoch,
-                holder: holder.clone(),
-                from_ms: at,
-                until_ms: None,
-            });
-        }
-        let intervals = epochs
-            .into_iter()
-            .filter(|interval| {
-                interval.holder.is_some()
-                    && interval.from_ms <= to_ms
-                    && interval.until_ms.is_none_or(|until| until >= from_ms)
-            })
-            .collect();
-        LeaseEvidence {
-            intervals,
-            complete: self.journal.evicted_through() == 0,
-        }
     }
 
     /// Open a lease epoch's record: journal `LeaseChanged` for `terminal`
@@ -355,29 +307,6 @@ impl ServerState {
         self.leases
             .unregister_satellite_proxy_attach(client, host, terminal);
     }
-}
-
-/// One lease epoch as the journal recorded it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseInterval {
-    /// The epoch.
-    pub epoch: LeaseEpoch,
-    /// Who held the lease through it.
-    pub holder: Option<ActorRef>,
-    /// When it opened, Unix milliseconds.
-    pub from_ms: u64,
-    /// When the next epoch opened; `None` while it is current.
-    pub until_ms: Option<u64>,
-}
-
-/// Who was driving a resource over an interval.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseEvidence {
-    /// The held epochs overlapping the interval, oldest first.
-    pub intervals: Vec<LeaseInterval>,
-    /// `false` once the journal has evicted anything, so an earlier epoch
-    /// may be missing from the answer.
-    pub complete: bool,
 }
 
 #[cfg(test)]

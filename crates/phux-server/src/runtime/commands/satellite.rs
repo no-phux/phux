@@ -6,16 +6,11 @@
 
 use super::*;
 
-/// Relay one satellite-targeted command (already rewritten to the
-/// satellite's `Local` ids) over the owning hub link and send the correlated
-/// `COMMAND_RESULT` (ADR-0007 §4). A non-hub server answers
-/// `UnsupportedSatelliteRoute`; an unreachable satellite fails fast.
-///
-/// Stream-establishing commands register the caller as a hub-side proxy
-/// subscriber atomically with the relay; `DETACH_RESOURCE` is resolved
-/// hub-side so one consumer's detach never tears down the shared link
-/// stream. Every hub consumer is one identity on the satellite, so the hub
-/// owns input-lease exclusion between its consumers (L1 §9.1).
+/// Relay one satellite-targeted command (already rewritten to `Local` ids)
+/// over the hub link and send the correlated `COMMAND_RESULT` (ADR-0007 §4).
+/// Stream-establishing commands register a hub-side proxy subscriber with
+/// the relay; `DETACH_RESOURCE` resolves hub-side. Every hub consumer is one
+/// identity on the satellite, so the hub owns lease exclusion (L1 §9.1).
 #[allow(
     clippy::too_many_arguments,
     reason = "caller identity, routed command, mailbox, and negotiated bootstrap context"

@@ -5,18 +5,11 @@ use phux_protocol::wire::decode::frame_request_id;
 use phux_protocol::wire::frame::{CommandResult, DetachReason, ErrorCode, FrameKind, TYPE_COMMAND};
 use tracing::{debug, warn};
 
-// Refusing a well-framed client frame that is newer than this build, in place, without closing.
-//
-// Protocol 1.x (`docs/protocol.md` "Compatibility"): after HELLO, a frame
-// whose type, tag, enum value, presence byte, or JSON operation or field
-// this build does not know is answered `Unsupported` and the connection
-// keeps reading. Nothing in it is applied. Structurally malformed bytes
-// (truncation, bad UTF-8, oversize counts) still close.
-//
-// The refusal precedes the frame guard: it reads no server state, so it
-// tells a scoped grant only which values this build does not know (what
-// `HELLO_OK`'s feature bits already say) and echoes the request id the
-// client sent.
+// Refusing a well-framed client frame newer than this build, in place: after
+// HELLO, an unknown type, tag, enum value, or JSON field is answered
+// `Unsupported` and nothing in it is applied (`docs/protocol.md`
+// "Compatibility"); malformed bytes still close. It reads no server state,
+// so it may precede the frame guard.
 
 /// A frame that did not decode. After HELLO, one a newer 1.x client may
 /// send is refused in place; anything else is malformed and closes the

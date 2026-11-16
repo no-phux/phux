@@ -60,10 +60,8 @@ pub(super) struct PeerInputs<'a> {
     pub review: &'a ReviewIndex,
 }
 
-/// The session `info` belongs to: its `session` facet, else the session of
-/// the legacy window it sits in. The slice form of
-/// [`phux_client::resource::session_of`], with the same rule, for the
-/// driver's cached graph.
+/// The session `info` belongs to: its `session` facet, else its legacy
+/// window's ([`phux_client::resource::session_of`] for the cached graph).
 pub(in crate::attach) fn resource_session(
     info: &ResourceInfo,
     windows: &[WindowInfo],
@@ -102,10 +100,8 @@ impl<'a> PeerInputs<'a> {
         counts
     }
 
-    /// Whether the cached graph reports each resource's session: some local
-    /// resource carries the `session` facet (ADR-0161 §7), so the server's
-    /// windows are synthesized. The slice form of
-    /// [`phux_client::resource::reports_sessions`].
+    /// Whether the cached graph reports each resource's session (ADR-0161),
+    /// as [`phux_client::resource::reports_sessions`].
     pub(in crate::attach) fn reports_sessions(&self) -> bool {
         self.resources
             .iter()
@@ -162,10 +158,9 @@ fn leaves_with_position(workspace: &ArrangementDoc) -> Vec<(usize, usize, Resour
     out
 }
 
-/// Peer terminals in stable session/window/leaf order. A persisted TUI layout
-/// wins when it has windows; otherwise the ATTACHED/`GET_STATE` graph is the
-/// inventory. Pane ordinals are `Some` only for layout-backed leaves so a
-/// click never fabricates a TUI index from the server graph.
+/// Peer terminals in stable session/window/leaf order, from a persisted
+/// layout when it has windows, else the server graph. Pane ordinals exist
+/// only for layout-backed leaves.
 fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
     if let Some(layout) = persisted_layout(peers, session.id) {
         return leaves_with_position(layout)
@@ -181,10 +176,8 @@ fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
     graph_leaves(peers, session.id)
 }
 
-/// A session's terminals from the server graph, joined by session. A
-/// resource that names its session (an `ORGANIZATION` server) sits in the
-/// first tab under the default tab name; a legacy server's window still
-/// orders the rest and names their tab.
+/// A session's terminals from the server graph. One that names its session
+/// sits in the first tab; a legacy window orders and names the rest.
 fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
     let mut out: Vec<(u16, u32, PeerLeaf)> = peers
         .resources
@@ -230,10 +223,8 @@ pub(super) fn foreign_terminal_ids(peers: &PeerInputs<'_>) -> HashSet<ResourceId
     ids
 }
 
-/// Satellite terminals from the federated resource graph (ADR-0136).
-///
-/// These are not leaves of a local session layout, so [`foreign_terminal_ids`]
-/// would otherwise never subscribe their agent records.
+/// Satellite terminals from the federated graph (ADR-0136), not leaves of a
+/// local layout, so their agent records get subscribed.
 pub(super) fn satellite_terminal_ids<'a>(
     peers: &'a PeerInputs<'_>,
 ) -> impl Iterator<Item = ResourceId> + 'a {
@@ -295,11 +286,8 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
     rows
 }
 
-/// Satellite agents not already open, grouped by agent name then host.
-///
-/// `open` is the attached workspace's leaves, which the agents section
-/// already lists. Order is appended after the local and peer rows so a
-/// state change cannot jump an existing row.
+/// Satellite agents not already open, grouped by agent name then host and
+/// appended so a state change cannot jump an existing row.
 pub(super) fn satellite_agent_rows(
     peers: &PeerInputs<'_>,
     open: &HashSet<ResourceId>,
@@ -339,10 +327,8 @@ pub(super) fn satellite_agent_rows(
     rows
 }
 
-/// Every session, including the current one, with its serving host. A
-/// session with no cached layout still gets a row with zero counts and the
-/// quiet dot ("nothing known"). Satellite sessions come from the host
-/// inventory, their agent counts explicitly unknown.
+/// Every session, current included, with its serving host. One with no
+/// cached layout gets zero counts; satellite counts are unknown.
 pub(super) fn session_roster(
     peers: &PeerInputs<'_>,
     local: &[AgentEntry],
@@ -475,14 +461,9 @@ pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize
         .collect()
 }
 
-/// ADR-0140: one segment per other machine, in provider order. A session
-/// row commits `switch-host`, which re-attaches this terminal there; an
-/// unreachable machine keeps its segment with an unselectable placeholder
-/// so "mini is down" is visible rather than a machine silently missing.
-///
-/// Agent counts are not known across machines (the provider lists
-/// sessions, not panes), so every count is zero and the dot is the quiet
-/// rung, the same "nothing known" reading a not-yet-swept peer gets.
+/// ADR-0140: one segment per other machine, in provider order; a session
+/// row commits `switch-host`. An unreachable machine keeps its segment with
+/// a placeholder. Agent counts are unknown across machines, so all are zero.
 fn machine_roster<'a>(
     hosts: &[&'a phux_core::host_list::HostJson],
 ) -> Vec<(
@@ -1206,11 +1187,8 @@ mod tests {
         );
     }
 
-    /// A session linked into a project by name (`phux project link`), here
-    /// or on another machine, joins the group of that project's git
-    /// sessions; the link rides the session's `project.link` attribute. A
-    /// recipe's free-text `project` label naming something else leaves a
-    /// git session in its repository's group.
+    /// A session linked into a project by name joins that project's group,
+    /// here or elsewhere; a free-text `project` label does not move it.
     #[test]
     fn a_linked_session_joins_its_project_group_across_machines() {
         use phux_core::host_list::HostKind;

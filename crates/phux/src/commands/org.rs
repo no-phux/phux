@@ -136,15 +136,6 @@ pub(crate) fn run_set_project(
         "project unlink"
     };
     run_on_server(server, verb, json, async |_, conn| {
-        if org::supported(conn) && !org::session_project_supported(conn) {
-            return Refusal::new(
-                codes::SERVER_TOO_OLD,
-                format!("{verb}: the server predates project links (SESSION_SET_PROJECT)"),
-                "upgrade the server (`phux upgrade`)",
-                2,
-            )
-            .emit(json);
-        }
         let inventory = match records(conn, verb).await {
             Ok(inventory) => inventory,
             Err(failure) => return failure.emit(json),
@@ -428,9 +419,6 @@ pub(crate) fn classify_dest(dest: &str, socket: Option<&std::path::Path>) -> Mov
         let Ok(mut conn) = Connection::connect(&socket_path).await else {
             return MoveDest::Pane;
         };
-        if !org::supported(&conn) {
-            return MoveDest::Pane;
-        }
         let Ok(inventory) = org::fetch(&mut conn, OrgFilter::All, 1).await else {
             return MoveDest::Pane;
         };

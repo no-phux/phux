@@ -1016,7 +1016,50 @@ mod tests {
     }
 
     fn add(repo: &str, title: &str) -> AddObjective {
-        add_op(repo, title, OperationId::generate().expect("id"))
+        add_op(repo, title, fresh())
+    }
+
+    fn fresh() -> OperationId {
+        OperationId::generate().expect("id")
+    }
+
+    fn state(alias: &Alias, state: ObjectiveState, expected_revision: u64) -> StateEdit {
+        StateEdit {
+            alias: alias.clone(),
+            state,
+            expected_revision,
+            operation_id: fresh(),
+            actor: "tester".to_owned(),
+            event_kind: None,
+        }
+    }
+
+    fn revision(alias: &Alias, expected_revision: u64) -> RevisionEdit {
+        RevisionEdit {
+            alias: alias.clone(),
+            expected_revision,
+            operation_id: fresh(),
+            actor: "tester".to_owned(),
+        }
+    }
+
+    fn retitle(alias: &Alias, title: &str, expected_revision: u64) -> EditObjective {
+        EditObjective {
+            alias: alias.clone(),
+            title: Some(title.to_owned()),
+            description: None,
+            expected_revision,
+            operation_id: fresh(),
+            actor: "tester".to_owned(),
+        }
+    }
+
+    fn active(store: &Store) -> Vec<super::Objective> {
+        let filter = ListFilter {
+            repo: None,
+            archived: false,
+        };
+        store.list(&filter).expect("list")
     }
 
     fn catalog(conn: &rusqlite::Connection) -> Vec<String> {
@@ -1108,7 +1151,7 @@ mod tests {
                     alias: added.objective.alias,
                     state: ObjectiveState::Failed,
                     expected_revision: added.objective.revision,
-                    operation_id: OperationId::generate().expect("id"),
+                    operation_id: fresh(),
                     actor: "tester".to_owned(),
                     event_kind: Some("failed".to_owned()),
                 })
@@ -1182,7 +1225,7 @@ mod tests {
     #[test]
     fn replaying_an_operation_id_is_a_no_op_and_a_different_body_conflicts() {
         let (_dir, mut store) = open();
-        let operation_id = OperationId::generate().expect("id");
+        let operation_id = fresh();
         let first = store.add(add_op("phux", "one", operation_id)).expect("add");
         assert!(!first.idempotent_replay);
         let replay = store
@@ -1200,16 +1243,7 @@ mod tests {
         }
         let second = store.add(add("phux", "two")).expect("second");
         assert_eq!(second.objective.alias.display(), "phux/2");
-        assert_eq!(
-            store
-                .list(&ListFilter {
-                    repo: None,
-                    archived: false,
-                })
-                .expect("list")
-                .len(),
-            2
-        );
+        assert_eq!(active(&store).len(), 2);
     }
 
     #[test]
@@ -1217,26 +1251,10 @@ mod tests {
         let (_dir, mut store) = open();
         let added = store.add(add("phux", "one")).expect("add");
         let alias = added.objective.alias;
-        let edited = store
-            .edit(EditObjective {
-                alias: alias.clone(),
-                title: Some("renamed".to_owned()),
-                description: None,
-                expected_revision: 1,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-            })
-            .expect("edit");
+        let edited = store.edit(retitle(&alias, "renamed", 1)).expect("edit");
         assert_eq!(edited.objective.revision, 2);
         assert_eq!(edited.objective.title, "renamed");
-        match store.edit(EditObjective {
-            alias: alias.clone(),
-            title: Some("nope".to_owned()),
-            description: None,
-            expected_revision: 1,
-            operation_id: OperationId::generate().expect("id"),
-            actor: "tester".to_owned(),
-        }) {
+        match store.edit(retitle(&alias, "nope", 1)) {
             Err(Error::RevisionConflict {
                 expected: 1,
                 actual: 2,
@@ -1255,14 +1273,7 @@ mod tests {
         let added = store.add(add("phux", "one")).expect("add");
         let alias = added.objective.alias;
         let working = store
-            .record_state(StateEdit {
-                alias: alias.clone(),
-                state: ObjectiveState::Working,
-                expected_revision: 1,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-                event_kind: None,
-            })
+            .record_state(state(&alias, ObjectiveState::Working, 1))
             .expect("state");
         assert_eq!(working.objective.state, ObjectiveState::Working);
         let raised = store
@@ -1271,7 +1282,7 @@ mod tests {
                 kind: SignalKind::CredentialLost,
                 body: "grant is gone".to_owned(),
                 expected_revision: 2,
-                operation_id: OperationId::generate().expect("id"),
+                operation_id: fresh(),
                 actor: "tester".to_owned(),
             })
             .expect("signal");
@@ -1282,14 +1293,11 @@ mod tests {
         assert_eq!(signals[0].kind, SignalKind::CredentialLost);
         assert!(signals[0].resolved_at.is_none());
         let again = store
-            .record_state(StateEdit {
-                alias: alias.clone(),
-                state: ObjectiveState::Working,
-                expected_revision: raised.objective.revision,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-                event_kind: None,
-            })
+            .record_state(state(
+                &alias,
+                ObjectiveState::Working,
+                raised.objective.revision,
+            ))
             .expect("state again");
         assert_eq!(again.objective.state, ObjectiveState::NeedsYou);
         assert_eq!(
@@ -1303,33 +1311,11 @@ mod tests {
         let (_dir, mut store) = open();
         let added = store.add(add("phux", "one")).expect("add");
         let alias = added.objective.alias;
-        let archived = store
-            .archive(RevisionEdit {
-                alias: alias.clone(),
-                expected_revision: 1,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-            })
-            .expect("archive");
+        let archived = store.archive(revision(&alias, 1)).expect("archive");
         assert!(archived.objective.archived);
         assert_eq!(archived.objective.revision, 2);
-        assert!(
-            store
-                .list(&ListFilter {
-                    repo: None,
-                    archived: false,
-                })
-                .expect("active")
-                .is_empty()
-        );
-        let restored = store
-            .restore(RevisionEdit {
-                alias,
-                expected_revision: 2,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-            })
-            .expect("restore");
+        assert!(active(&store).is_empty());
+        let restored = store.restore(revision(&alias, 2)).expect("restore");
         assert!(!restored.objective.archived);
         assert_eq!(restored.objective.revision, 3);
     }
@@ -1417,12 +1403,7 @@ mod tests {
             "child failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let tasks = store
-            .list(&ListFilter {
-                repo: None,
-                archived: false,
-            })
-            .expect("list");
+        let tasks = active(&store);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "kept");
     }
@@ -1443,7 +1424,7 @@ mod tests {
                     alias: alias.clone(),
                     state,
                     expected_revision: revision,
-                    operation_id: OperationId::generate().expect("id"),
+                    operation_id: fresh(),
                     actor: "keeper".to_owned(),
                     event_kind: None,
                 })

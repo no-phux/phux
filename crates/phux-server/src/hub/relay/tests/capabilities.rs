@@ -60,12 +60,7 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
             .iter()
             .map(|&feature| ServerFeatureExtSet::with(&[feature])),
     ) {
-        let mut session = RelaySession::new_negotiated(
-            host(),
-            BootstrapLimits::default(),
-            BootstrapProfile::SynthesizedVtRaw,
-            ServerFeatureSet::with(ServerFeature::ALL),
-        );
+        let mut session = negotiated(ServerFeature::ALL);
         session.set_satellite_features_ext(ext);
         for (command, needed) in &commands {
             assert_eq!(
@@ -81,19 +76,11 @@ fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
 /// refuses otherwise. A spawn without it still relays.
 #[test]
 fn hub_forwards_retain_secs_only_to_a_satellite_that_honors_it() {
-    let mut capable = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::RetainOnExit]),
-    );
+    let mut capable = negotiated(&[ServerFeature::RetainOnExit]);
+    let retained =
+        || phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600));
     let (reply, _rx) = oneshot::channel();
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(
-            phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600)),
-        ));
-    }
+    let request = spawn_with(reply, retained());
     let wire = capable
         .handle_request_checked(request)
         .expect("relayed to a satellite that honors retain_secs");
@@ -108,14 +95,10 @@ fn hub_forwards_retain_secs_only_to_a_satellite_that_honors_it() {
 
     let mut older = RelaySession::new(host(), BootstrapLimits::default());
     let (reply, mut rx) = oneshot::channel();
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(
-            phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600)),
-        ));
-    }
     assert!(
-        older.handle_request_checked(request).is_none(),
+        older
+            .handle_request_checked(spawn_with(reply, retained()))
+            .is_none(),
         "the satellite never sees the retained spawn"
     );
     assert!(older.pending_spawns.is_empty());
@@ -139,14 +122,11 @@ fn hub_refuses_a_keyed_satellite_spawn_when_the_satellite_lacks_the_bit() {
     let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (reply, mut rx) = oneshot::channel();
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(
-            phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key),
-        ));
-    }
+    let keyed = phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key);
     assert!(
-        session.handle_request_checked(request).is_none(),
+        session
+            .handle_request_checked(spawn_with(reply, keyed))
+            .is_none(),
         "the satellite never sees the keyed spawn"
     );
     assert!(session.pending_spawns.is_empty());
@@ -177,12 +157,7 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
         operation_id: None,
     };
     let mut older = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let wire = older.handle_request_checked(RelayRequest::Command {
-        command: command.clone(),
-        reply,
-        subscribe: None,
-    });
+    let (wire, mut rx) = send_command(&mut older, command.clone());
     assert!(wire.is_none(), "an older satellite never sees the tag");
     assert!(older.pending.is_empty());
     assert!(matches!(
@@ -193,42 +168,30 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
         }
     ));
 
-    let mut current = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(&[ServerFeature::ConditionalKill]),
-    );
-    let (reply, _rx) = oneshot::channel();
-    let wire = current
-        .handle_request_checked(RelayRequest::Command {
-            command: command.clone(),
-            reply,
-            subscribe: None,
-        })
-        .expect("relayed to a satellite that evaluates it");
-    let FrameKind::Command {
-        command: relayed, ..
-    } = decode(&wire)
-    else {
-        panic!("expected COMMAND on the wire");
-    };
+    let mut current = negotiated(&[ServerFeature::ConditionalKill]);
+    let relayed = forwarded(send_command(&mut current, command.clone()).0);
     assert_eq!(relayed, command, "the precondition crosses unchanged");
 }
 
 // --- keyed operations and the incarnation fence (L1 §9.1) -----------
+
+fn spawn_with(
+    reply: oneshot::Sender<SpawnResult>,
+    resource: phux_protocol::wire::frame::SpawnResource,
+) -> RelayRequest {
+    let mut request = spawn_request(reply);
+    if let RelayRequest::Spawn { spawn, .. } = &mut request {
+        spawn.resource = Some(Box::new(resource));
+    }
+    request
+}
 
 pub(super) fn keyed_session(
     features: &[ServerFeature],
     incarnation: [u8; 16],
     fence: &crate::hub::operation_fence::OperationFence,
 ) -> RelaySession {
-    let mut session = RelaySession::new_negotiated(
-        host(),
-        BootstrapLimits::default(),
-        BootstrapProfile::SynthesizedVtRaw,
-        ServerFeatureSet::with(features),
-    );
+    let mut session = negotiated(features);
     session.set_incarnation(Some(incarnation));
     session.set_operation_fence(fence.clone());
     session
@@ -272,143 +235,63 @@ pub(super) fn forwarded(wire: Option<Vec<u8>>) -> Command {
     command
 }
 
-/// A `GET_FILE` reaches only a satellite that advertises `FILE_DOWNLOAD`;
-/// an older satellite is refused `UNSUPPORTED_SATELLITE_ROUTE` and never
+/// `GET_FILE`, `SERVICE_HTTP_*` and `CHECKOUT` (on a satellite Terminal,
+/// with the id made local) reach only a satellite that advertises their
+/// bit; an older one is refused `UNSUPPORTED_SATELLITE_ROUTE` and never
 /// sees the unknown tag.
 #[test]
-fn hub_refuses_get_file_to_a_satellite_without_file_download() {
-    let get_file = || Command::GetFile {
-        host: None,
-        path: "/tmp/deck.pptx".to_owned(),
-        offset: 0,
-        max_bytes: 1,
-    };
-    let mut older = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let wire = older.handle_request_checked(RelayRequest::Command {
-        command: get_file(),
-        reply,
-        subscribe: None,
-    });
-    assert!(wire.is_none(), "an older satellite never sees GET_FILE");
-    assert!(matches!(
-        rx.try_recv().expect("typed refusal"),
-        CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            ref message,
-        } if message.contains("lacks FILE_DOWNLOAD")
-    ));
-    assert!(older.pending.is_empty());
-
-    let mut newer = RelaySession::new(host(), BootstrapLimits::default());
-    newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::FileDownload]));
-    let (reply, _rx) = oneshot::channel();
-    let wire = newer.handle_request_checked(RelayRequest::Command {
-        command: get_file(),
-        reply,
-        subscribe: None,
-    });
-    assert!(
-        matches!(forwarded(wire), Command::GetFile { host: None, .. }),
-        "a capable satellite receives the read with no host"
-    );
-}
-
-/// `SERVICE_HTTP_*` reaches only a satellite that advertises
-/// `HOST_SERVICE_HTTP`; an older one is refused and never sees the tag.
-#[test]
-fn hub_refuses_service_http_to_a_satellite_without_the_bit() {
-    let read = || Command::ServiceHttpRead {
-        exchange: 7,
-        max_bytes: 1,
-    };
-    let mut older = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let wire = older.handle_request_checked(RelayRequest::Command {
-        command: read(),
-        reply,
-        subscribe: None,
-    });
-    assert!(
-        wire.is_none(),
-        "an older satellite never sees SERVICE_HTTP_READ"
-    );
-    assert!(matches!(
-        rx.try_recv().expect("typed refusal"),
-        CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            ref message,
-        } if message.contains("lacks HOST_SERVICE_HTTP")
-    ));
-
-    let mut newer = RelaySession::new(host(), BootstrapLimits::default());
-    newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[
-        ServerFeatureExt::HostServiceHttp,
-    ]));
-    let (reply, _rx) = oneshot::channel();
-    let wire = newer.handle_request_checked(RelayRequest::Command {
-        command: read(),
-        reply,
-        subscribe: None,
-    });
-    assert!(matches!(
-        forwarded(wire),
-        Command::ServiceHttpRead { exchange: 7, .. }
-    ));
-}
-
-/// `CHECKOUT` on a satellite Terminal routes to that satellite with the
-/// id made local, and reaches only a satellite that advertises
-/// `CHECKOUT`; an older one is refused and never sees the unknown tag.
-#[test]
-fn hub_relays_checkout_only_to_a_satellite_that_advertises_it() {
+fn hub_refuses_extended_commands_to_a_satellite_without_their_bit() {
     let request = phux_protocol::checkout::CheckoutRequest::Diff {
         path: "src/main.rs".to_owned(),
         area: phux_protocol::checkout::CheckoutArea::Staged,
     };
-    let (target, local) = route_to_satellite(&Command::Checkout {
+    let (target, checkout) = route_to_satellite(&Command::Checkout {
         terminal_id: ResourceId::satellite(host(), 9),
         request: request.clone(),
     })
     .expect("CHECKOUT routes to its satellite");
     assert_eq!(target, host());
     assert_eq!(
-        local,
+        checkout,
         Command::Checkout {
             terminal_id: ResourceId::local(9),
             request,
         }
     );
+    let get_file = Command::GetFile {
+        host: None,
+        path: "/tmp/deck.pptx".to_owned(),
+        offset: 0,
+        max_bytes: 1,
+    };
+    let read = Command::ServiceHttpRead {
+        exchange: 7,
+        max_bytes: 1,
+    };
+    for (command, bit, name) in [
+        (get_file, ServerFeatureExt::FileDownload, "FILE_DOWNLOAD"),
+        (read, ServerFeatureExt::HostServiceHttp, "HOST_SERVICE_HTTP"),
+        (checkout, ServerFeatureExt::Checkout, "CHECKOUT"),
+    ] {
+        let mut older = RelaySession::new(host(), BootstrapLimits::default());
+        let (wire, mut rx) = send_command(&mut older, command.clone());
+        assert!(wire.is_none(), "an older satellite never sees {command:?}");
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                ref message,
+            } if message.contains(&format!("lacks {name}"))
+        ));
+        assert!(older.pending.is_empty());
 
-    let mut older = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let wire = older.handle_request_checked(RelayRequest::Command {
-        command: local.clone(),
-        reply,
-        subscribe: None,
-    });
-    assert!(wire.is_none(), "an older satellite never sees CHECKOUT");
-    assert!(matches!(
-        rx.try_recv().expect("typed refusal"),
-        CommandResult::Error {
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            ref message,
-        } if message.contains("lacks CHECKOUT")
-    ));
-    assert!(older.pending.is_empty());
-
-    let mut newer = RelaySession::new(host(), BootstrapLimits::default());
-    newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
-    let (reply, _rx) = oneshot::channel();
-    let wire = newer.handle_request_checked(RelayRequest::Command {
-        command: local,
-        reply,
-        subscribe: None,
-    });
-    assert!(matches!(
-        forwarded(wire),
-        Command::Checkout { terminal_id, .. } if terminal_id == ResourceId::local(9)
-    ));
+        let mut newer = RelaySession::new(host(), BootstrapLimits::default());
+        newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[bit]));
+        assert_eq!(
+            forwarded(send_command(&mut newer, command.clone()).0),
+            command
+        );
+    }
 }
 
 #[test]
@@ -466,15 +349,8 @@ fn hub_refuses_keyed_ops_to_a_satellite_without_the_bit_with_unsupported_satelli
         terminal_id: ResourceId::local(9),
         operation_id: None,
     };
-    let (reply, _rx) = oneshot::channel();
     assert!(
-        older
-            .handle_request_checked(RelayRequest::Command {
-                command: unkeyed,
-                reply,
-                subscribe: None,
-            })
-            .is_some(),
+        send_command(&mut older, unkeyed).0.is_some(),
         "an unkeyed kill still relays to an older satellite"
     );
 }
@@ -528,14 +404,8 @@ fn hub_relays_a_host_named_mirror_without_its_host() {
     assert_eq!(named.as_deref(), Some("powerhouse-1"));
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     session.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Mirrors]));
-    let (reply, _rx) = oneshot::channel();
-    let wire = session.handle_request_checked(RelayRequest::Command {
-        command,
-        reply,
-        subscribe: None,
-    });
     assert!(matches!(
-        forwarded(wire),
+        forwarded(send_command(&mut session, command).0),
         Command::Mirror { host: None, op: phux_protocol::wire::frame::MirrorOp::Start { ref target, jpeg: true } }
             if target == "display:DP-1"
     ));

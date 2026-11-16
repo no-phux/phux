@@ -25,6 +25,17 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
     match command {
         Command::DescribeApi => enc.write_u8(crate::wire::frame::COMMAND_TAG_DESCRIBE_API),
         Command::PrivacyStatus => enc.write_u8(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS),
+        Command::Credentials { op } => {
+            enc.write_u8(crate::wire::frame::COMMAND_TAG_CREDENTIALS);
+            #[allow(
+                clippy::expect_used,
+                reason = "credential DTOs contain only infallible JSON strings, vectors and enum tags"
+            )]
+            let bytes = zeroize::Zeroizing::new(
+                serde_json::to_vec(op).expect("credential DTO serialization"),
+            );
+            enc.write_bytes(&bytes);
+        }
         Command::HostChecklist => enc.write_u8(crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST),
         Command::NativeAgent { request } => {
             enc.write_u8(crate::wire::frame::COMMAND_TAG_NATIVE_AGENT);
@@ -92,9 +103,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             events,
         } => {
             enc.write_u8(COMMAND_TAG_APPLY_INPUT);
-            for byte in operation_id.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(operation_id.as_bytes());
             encode_terminal_id(terminal_id, enc);
             enc.write_u16_be(u16::try_from(events.len()).unwrap_or(u16::MAX));
             for event in events {
@@ -166,9 +175,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             terminal_id,
         } => {
             enc.write_u8(COMMAND_TAG_TRANSCRIBE);
-            for byte in upload_id.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(upload_id.as_bytes());
             encode_terminal_id(terminal_id, enc);
         }
         Command::AcquireInput {
@@ -205,18 +212,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             sha256,
         } => {
             enc.write_u8(COMMAND_TAG_PUT_FILE);
-            for byte in upload_id.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(upload_id.as_bytes());
             encode_terminal_id(terminal_id, enc);
             enc.write_str(extension);
             enc.write_u64_be(*offset);
             enc.write_bytes(data);
             enc.write_u8(u8::from(*final_chunk));
             enc.write_option(sha256.as_ref(), |e, digest| {
-                for byte in digest {
-                    e.write_u8(*byte);
-                }
+                e.write_raw(digest);
             });
         }
         Command::GetFile {
@@ -352,9 +355,7 @@ pub(super) fn encode_input_event_body(event: &InputEvent, enc: &mut Encoder<'_>)
 /// newer build appends after it stays unambiguous.
 pub(super) fn encode_optional_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
     enc.write_option(key, |e, key| {
-        for byte in key.as_bytes() {
-            e.write_u8(*byte);
-        }
+        e.write_raw(key.as_bytes());
     });
 }
 

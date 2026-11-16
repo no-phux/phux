@@ -43,6 +43,16 @@ impl Peer {
             .unwrap();
     }
 
+    async fn prompt(&self, id: u64, text: &str) {
+        let text = text.into();
+        self.command(id, NativeIntent::Prompt { text }).await;
+    }
+
+    async fn interrupt(&self, id: u64, turn_id: &str) {
+        let turn_id = turn_id.into();
+        self.command(id, NativeIntent::Interrupt { turn_id }).await;
+    }
+
     async fn answer(&self, id: u64, question_id: &str, response: Value) {
         self.command(
             id,
@@ -143,12 +153,7 @@ async fn run_peer(spec: HostSpec, test: impl AsyncFnOnce(Peer)) -> sdk::Result<(
     tokio::time::timeout(Duration::from_secs(5), async {
         let (host, peer) = tokio::io::duplex(64 * 1024);
         let (incoming, outgoing) = tokio::io::split(host);
-        let callback = Arc::new(Callback {
-            sink: crate::session::tests::sink(),
-            provider: spec.provider.clone(),
-            waiting: Mutex::new(BTreeMap::new()),
-            rows: Mutex::new(Rows::default()),
-        });
+        let callback = Arc::new(Callback::new(crate::session::tests::sink(), &spec.provider));
         let (commands, mut receive) = mpsc::channel(16);
         let (shutdown, mut stopped) = watch::channel(false);
         let driver = client_builder(callback.clone()).connect_with(
@@ -178,13 +183,7 @@ async fn run_peer(spec: HostSpec, test: impl AsyncFnOnce(Peer)) -> sdk::Result<(
 async fn v1_startup_callbacks_and_turn_receipts() {
     run_peer(spec(None), async |mut peer| {
         // Commands are serviced even while initialize/session-new is pending.
-        peer.command(
-            1,
-            NativeIntent::Prompt {
-                text: "too early".into(),
-            },
-        )
-        .await;
+        peer.prompt(1, "too early").await;
         peer.receipt(1, NativeDisposition::Refused).await;
         peer.initialize(false).await;
         let new_session = peer.recv().await;
@@ -210,13 +209,7 @@ async fn v1_startup_callbacks_and_turn_receipts() {
         })
         .await;
 
-        peer.command(
-            4,
-            NativeIntent::Prompt {
-                text: "hello".into(),
-            },
-        )
-        .await;
+        peer.prompt(4, "hello").await;
         let prompt = peer.recv().await;
         assert_eq!(prompt["method"], "session/prompt");
         assert_eq!(
@@ -225,31 +218,13 @@ async fn v1_startup_callbacks_and_turn_receipts() {
         );
         peer.receipt(4, NativeDisposition::Queued).await;
         assert_eq!(peer.callback.sink.view().turn_id.as_deref(), Some("acp:4"));
-        peer.command(
-            5,
-            NativeIntent::Prompt {
-                text: "overlap".into(),
-            },
-        )
-        .await;
+        peer.prompt(5, "overlap").await;
         peer.receipt(5, NativeDisposition::Refused).await;
-        peer.command(
-            6,
-            NativeIntent::Interrupt {
-                turn_id: "stale".into(),
-            },
-        )
-        .await;
+        peer.interrupt(6, "stale").await;
         peer.receipt(6, NativeDisposition::Refused).await;
         peer.permission("cancel-permission", "session").await;
         peer.question("acp-question:2").await;
-        peer.command(
-            7,
-            NativeIntent::Interrupt {
-                turn_id: "acp:4".into(),
-            },
-        )
-        .await;
+        peer.interrupt(7, "acp:4").await;
         let messages = [peer.recv().await, peer.recv().await];
         let cancel = messages
             .iter()

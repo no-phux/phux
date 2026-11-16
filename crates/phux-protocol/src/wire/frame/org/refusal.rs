@@ -152,9 +152,7 @@ pub(in crate::wire) fn encode_refusal(refusal: &Refusal, enc: &mut Encoder<'_>) 
                 REFUSAL_STORE_FAILURE
             }
             Refusal::Unknown { tag, body: raw } => {
-                for byte in raw {
-                    e.write_u8(*byte);
-                }
+                e.write_raw(raw);
                 *tag
             }
         }

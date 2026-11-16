@@ -9,8 +9,7 @@
     reason = "the shared server harness panics on a failed wait"
 )]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::thread;

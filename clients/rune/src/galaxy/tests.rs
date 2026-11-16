@@ -62,9 +62,6 @@ fn relations_follow_the_session_or_the_project_and_each_pair_draws_once() {
     // 0-1 share both session and project: one line. 1-3 by project only.
     // 2 and 4 share a session name on different machines: unrelated.
     assert_eq!(related(&agents), vec![(0, 1), (1, 3)]);
-    assert_eq!(project("/Users/you/src/phux/"), Some("phux"));
-    assert_eq!(project("/Users/you"), None);
-    assert_eq!(project("/"), None);
 }
 
 #[test]

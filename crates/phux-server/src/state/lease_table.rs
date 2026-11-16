@@ -28,7 +28,7 @@ pub(crate) struct SatelliteLease {
 }
 
 /// The local and hub-side input-lease ledgers.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct LeaseTable {
     /// Per-pane lease: only the holder's input reaches the PTY (others are
     /// dropped but still acked). Absent means `Open`.
@@ -75,29 +75,7 @@ struct ExpiryEntry {
     abort: Option<tokio::task::AbortHandle>,
 }
 
-impl Default for LeaseTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl LeaseTable {
-    /// Build an empty ledger pair — every pane starts `Open`.
-    #[must_use]
-    pub(super) fn new() -> Self {
-        Self {
-            input: HashMap::new(),
-            epochs: HashMap::new(),
-            satellite: BTreeMap::new(),
-            satellite_proxy_attaches: HashSet::new(),
-            expiry: HashMap::new(),
-            next_expiry_generation: 0,
-            expiry_task_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            satellite_acquire_pending: HashSet::new(),
-            satellite_last_mirrored_seq: HashMap::new(),
-        }
-    }
-
     // -- satellite proxy attach registrations -----------------------------
 
     /// Whether `client` holds a proxied attach over `(host, terminal)`.

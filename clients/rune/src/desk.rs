@@ -1,20 +1,19 @@
-//! The window's state: one runtime client, the terminal it shows, and the
-//! user's commands against them.
+//! The window's composition root and its persistent UI/platform state.
 //!
 //! The runtime does the terminal (replica, reconnect, acknowledged input,
-//! history, selection); this owns only which terminal is on screen, its
-//! size, and turning Rune events into runtime calls.
+//! history, selection). `connection` owns one client's workspace and request
+//! namespace; replacing it leaves window preferences and platform services alone.
 
-use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_runtime::control::{ProjectionFence, Status, Topology};
+use phux_client_core::layout::SplitDir;
+use phux_client_runtime::ViewId;
+use phux_client_runtime::control::ProjectionFence;
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, ViewId};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
+use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
@@ -22,8 +21,9 @@ use crate::launch::Resolved;
 
 mod attach;
 pub(crate) mod bare;
-pub mod changes;
+mod changes;
 mod clipboard_read;
+pub mod connection;
 mod copy_mode;
 mod events;
 mod find;
@@ -61,6 +61,7 @@ mod sessions;
 mod settings;
 mod shown;
 mod splits;
+pub mod surfaces;
 mod tabs;
 pub mod updates;
 mod worktree;
@@ -103,20 +104,7 @@ pub struct Shown {
 }
 
 pub struct Desk {
-    pub client: Option<Arc<Client>>,
-    /// Why there is no client, or the last failure the user should see.
-    pub error: Option<String>,
-    pub status: Status,
-    pub topology: Option<Topology>,
-    pub server: Option<String>,
-    pub shown: Option<Shown>,
-    pub resources: resources::Resources,
-    /// The terminal the user asked for, and since when, until its view opens.
-    pub wanted: Option<(ResourceId, Instant)>,
-    /// A session this window created: show its terminal once it is selected.
-    pending_session: Option<String>,
-    /// The connection incarnation the shown view belongs to.
-    epoch: u64,
+    pub connection: connection::Connection,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
     /// What the user was last told, until it expires or they dismiss it. A
@@ -130,20 +118,11 @@ pub struct Desk {
     pub palette_mode: crate::palette::Mode,
     /// The theme a live preview stands in for, restored unless one is chosen.
     theme_before: Option<Option<&'static crate::theme::Theme>>,
-    /// The path search the palette shows, while it lists paths.
-    pub paths: Option<palette::PathSearch>,
-    /// Each pane's grid origin in window points, from its last layout.
-    origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
     /// The window's width in points, from the root's last layout; 0 until then.
     pub window_w: f32,
     /// The sidebar shown over the preference in a window too narrow for it.
     pub sidebar_peek: bool,
-    /// Find in the focused pane's history, while open.
-    pub find: Option<find::Find>,
-    pub find_query: rune::TextEdit,
-    /// Keyboard copy mode, while on.
-    pub copy_mode: Option<copy_mode::CopyMode>,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
     /// Everything waiting on you, and the system's view of it.
@@ -160,6 +139,8 @@ pub struct Desk {
     pub pitlane: pitlane::PitLane,
     /// The fleet as beehives, while open.
     pub hive: hive::Hive,
+    /// Mutually exclusive fleet scene; scene state itself may be retained.
+    pub playground: Option<surfaces::Playground>,
     /// The other machines, watched while the galaxy or the reef is open.
     pub(crate) fleet: fleet::Fleet,
     pub settings: settings::Settings,
@@ -170,16 +151,9 @@ pub struct Desk {
     pub onboarding: onboarding::Onboarding,
     /// What's new, and whether its bell is lit.
     pub news: news::News,
-    /// The focused terminal's checkout, while its changes are open.
-    pub changes: changes::Changes,
-    /// One command in a floating terminal, while it runs.
-    pub popup: popup::Popup,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
-    pub tabs: tabs::Tabs,
-    /// A tab or session drag, and the session order the server keeps.
-    pub reorder: reorder::Reorder,
-    /// Session disclosure is a window preference, independent of selection.
+    /// Session disclosure belongs to this window, independent of selection.
     pub sidebar_collapsed: HashSet<SessionKey>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
@@ -187,24 +161,15 @@ pub struct Desk {
     /// How this run started, for moving between machines.
     launch: Resolved,
     waker: Option<Waker>,
-    /// Image uploads on their way, and the terminal each is for.
-    uploads: Vec<(u64, ResourceId)>,
-    /// User pastes the server hasn't answered yet.
-    pastes: HashSet<u64>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
     pub activities: crate::activity::Activities,
-    /// The input method's composition at the terminal cursor.
-    pub preedit: Option<String>,
     /// The blink phase a blinking cursor shows now, and when typing last
     /// restarted it (app clock seconds).
     pub blink_on: bool,
     blink_since: f64,
     clock: f64,
-    /// Spawns this window sent, to show the terminal when it lands.
-    pending_spawns: Vec<u32>,
-    receipts: events::Receipts,
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
@@ -218,59 +183,15 @@ pub struct Desk {
     pub scale: Cell<f32>,
     /// The system appearance as the last view build saw it; `None` before.
     pub system_dark: Cell<Option<bool>>,
-    /// Each pane's grid area in points, from its last layout.
-    areas: HashMap<ResourceId, [f32; 2]>,
-    /// The size this window last asked the server for, per terminal.
-    fitted: HashMap<ResourceId, Fitted>,
-    /// What the terminal area shows: the session's split tree, or the
-    /// focused pane alone.
-    pub layout: Option<LayoutNode>,
-    /// Views of the panes on screen besides the focused one.
-    pub others: HashMap<ResourceId, Option<ViewId>>,
-    /// The pane shown alone, by this window's choice.
-    pub zoomed: Option<ResourceId>,
-    /// A divider drag's split and ratio, previewed until release.
-    pub(crate) dragging: Option<(SplitPath, f32)>,
-    /// Spawned splits and tabs waiting for the session's arrangement: the
-    /// new terminal, where it goes, and since when.
-    unplaced_splits: Vec<splits::Unplaced>,
-    /// Arrangement writes this window made, to report a refusal.
-    layout_ops: HashSet<OperationId>,
-    /// Spawns that become splits (the pane split and the direction) or, with
-    /// `None`, tabs.
-    pending_splits: HashMap<u32, (Option<SessionKey>, Placement)>,
-    /// The pane the wheel last moved, owning `wheel_rows`.
-    wheel_pane: Option<ResourceId>,
-    /// The pane whose program took the last press, and that press as it last
-    /// moved, until its release.
-    mouse_capture: Option<(ResourceId, mouse::Press)>,
-    /// The cell the last reported pointer event was in.
-    mouse_cell: Option<(u16, u16)>,
     /// The window title last set.
     window_title: String,
-    /// Each split's size in points, for turning a divider drag into a ratio.
-    split_sizes: HashMap<SplitPath, [f32; 2]>,
-    /// Arrangements already asked for, so a missing one is fetched once.
-    fetched: HashSet<ArrangementKey>,
     pub focused: bool,
-    gesture: u64,
-    wheel_rows: f32,
-    sessions_seq: u32,
-    /// The fenced frame the last view build painted, for the drawn receipt.
-    pub painted: RefCell<Option<Painted>>,
-    /// The terminal last told it has the window's focus.
-    focus_told: Option<ResourceId>,
-    /// The arrangement write in flight for a split or tab. One at a time:
-    /// each write's base is the document the last one made.
-    split_write: Option<splits::SplitWrite>,
     /// The phone form's state, when this window is one.
     pub phone: Option<phone::Phone>,
     /// The bare window: one pane, the terminal UI in it, no chrome.
     pub bare: Option<bare::Bare>,
     /// The quick terminal's own part, when this window is it.
     pub quick: Option<quick::Panel>,
-    /// The main window's move request, until its server receipt settles.
-    quick_move: Option<quick::Transfer>,
     /// The quick terminal's chord, which the main window registers.
     pub quick_chord: quick::Chord,
     pub native: Option<crate::mobile::Platform>,
@@ -290,6 +211,14 @@ impl Desk {
     fn open(resolved: &Resolved, machine: Option<String>) -> Self {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
+        Self::with_preferences(resolved, machine, prefs)
+    }
+
+    pub(crate) fn with_preferences(
+        resolved: &Resolved,
+        machine: Option<String>,
+        prefs: rune::prefs::Prefs,
+    ) -> Self {
         let (file, file_error) = settings::load_file();
         let key_problems = crate::keys::bind(&file.keys);
         phux_client_runtime::session_order::set_recent_first(file.recent_first.unwrap_or(false));
@@ -308,16 +237,7 @@ impl Desk {
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let settings = settings::Settings::load(&prefs).over(&file);
         let mut desk = Self {
-            client: None,
-            error: None,
-            status: Status::Idle,
-            topology: None,
-            server: None,
-            shown: None,
-            resources: resources::Resources::default(),
-            wanted: None,
-            pending_session: None,
-            epoch: 0,
+            connection: connection::Connection::default(),
             pending: None,
             notice: None,
             palette_open: false,
@@ -325,14 +245,9 @@ impl Desk {
             palette_picked: 0,
             palette_mode: crate::palette::Mode::All,
             theme_before: None,
-            paths: None,
-            origins: HashMap::new(),
             sidebar_open,
             window_w: 0.0,
             sidebar_peek: false,
-            find: None,
-            copy_mode: None,
-            find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
             inbox: inbox::Inbox::default(),
             galaxy: galaxy::Galaxy::default(),
@@ -341,32 +256,24 @@ impl Desk {
             kitchen: kitchen::Kitchen::default(),
             pitlane: pitlane::PitLane::default(),
             hive: hive::Hive::default(),
+            playground: None,
             fleet: fleet::Fleet::default(),
             settings,
             settings_open: false,
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
-            changes: changes::Changes::default(),
-            popup: popup::Popup::default(),
             settings_ui: settings::SettingsUi::default(),
-            tabs: tabs::Tabs::default(),
-            reorder: reorder::Reorder::default(),
             sidebar_collapsed: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
             launch: resolved.clone(),
             waker: None,
-            uploads: Vec::new(),
-            pastes: HashSet::new(),
             prefs,
-            preedit: None,
             activities: crate::activity::Activities::default(),
             blink_on: true,
             blink_since: 0.0,
             clock: 0.0,
-            pending_spawns: Vec::new(),
-            receipts: events::Receipts::default(),
             generation: 0,
             font_size,
             font_due: !font_family.is_empty(),
@@ -374,32 +281,11 @@ impl Desk {
             font_epoch: rune::text::font_epoch(),
             scale: Cell::new(2.0),
             system_dark: Cell::new(None),
-            areas: HashMap::new(),
-            fitted: HashMap::new(),
-            layout: None,
-            others: HashMap::new(),
-            zoomed: None,
-            dragging: None,
-            pending_splits: HashMap::new(),
-            unplaced_splits: Vec::new(),
-            layout_ops: HashSet::new(),
-            wheel_pane: None,
-            mouse_capture: None,
-            mouse_cell: None,
             window_title: String::new(),
-            split_sizes: HashMap::new(),
-            fetched: HashSet::new(),
             focused: true,
-            gesture: 0,
-            wheel_rows: 0.0,
-            sessions_seq: 0,
-            painted: RefCell::new(None),
-            focus_told: None,
-            split_write: None,
             phone: None,
             bare: None,
             quick: None,
-            quick_move: None,
             quick_chord: quick::Chord::default(),
             native: None,
             file,
@@ -430,7 +316,7 @@ impl Desk {
             | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.expire_notice(tx);
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return updated | self.tend_link(tx);
         };
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
@@ -455,12 +341,7 @@ impl Desk {
         changed |= self.take_changes(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
-        changed |= self.tick_galaxy(tx);
-        changed |= self.tick_reef(tx);
-        changed |= self.tick_pitch(tx);
-        changed |= self.tick_kitchen(tx);
-        changed |= self.tick_pitlane(tx);
-        changed |= self.tick_hive(tx);
+        changed |= self.tick_playground(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         changed |= self.phone_touch_tick(tx);
@@ -470,5 +351,26 @@ impl Desk {
         self.fit();
         self.wake_phone_fit(tx);
         changed | self.blink(&client, tx) | self.tend_link(tx)
+    }
+}
+
+/// A topology of just `sessions` and `panes`.
+#[cfg(test)]
+pub fn topology(
+    sessions: Vec<phux_client_runtime::control::SessionDescriptor>,
+    panes: Vec<phux_client_runtime::control::PaneDescriptor>,
+) -> phux_client_runtime::control::Topology {
+    phux_client_runtime::control::Topology {
+        sessions,
+        resources: Vec::new(),
+        panes,
+        agent_sessions: Vec::new(),
+        documents: Vec::new(),
+        satellite_sessions: Vec::new(),
+        focused_session: 0,
+        focused_pane: ResourceId::local(0),
+        authority: None,
+        inbox: None,
+        handles: phux_client_core::layout::wire::HandleMap::new(),
     }
 }

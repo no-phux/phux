@@ -98,7 +98,7 @@ pub(super) fn refusal_for(frame: &FrameKind, request_id: u32) -> Option<Refusal>
 /// `terminal not found`), derived from the variant name so codes a newer
 /// protocol adds render too.
 #[must_use]
-pub fn error_code_label(code: ErrorCode) -> String {
+fn error_code_label(code: ErrorCode) -> String {
     let name = format!("{code:?}");
     let mut label = String::with_capacity(name.len() + 4);
     for (i, ch) in name.chars().enumerate() {

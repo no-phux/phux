@@ -25,11 +25,9 @@ impl super::SessionLoop {
         .await
     }
 
-    /// Refresh each peer session's arrangement (for the picker's one-step
-    /// rows and the live roster), then the peer agent records, serving host,
-    /// and host inventory. With a peer reader (an `ORGANIZATION` server) the
-    /// records are read off the loop once the burst settles; otherwise each
-    /// peer's legacy layout key is fetched and subscribed, fire-and-forget.
+    /// Refresh peer arrangements (read off the loop with a peer reader, else
+    /// each legacy layout key), then peer agent records, serving host, and
+    /// host inventory.
     pub(super) async fn sweep_peer_layouts(
         &mut self,
         conn: &mut Connection,
@@ -55,7 +53,7 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if !self.whoami_supported || self.peers.serving_host_attempted {
+        if self.peers.serving_host_attempted {
             return Ok(());
         }
         self.peers.serving_host_attempted = true;
@@ -86,12 +84,12 @@ impl super::SessionLoop {
     }
 
     /// Ask for the federation host inventory (one `GET_STATE`). Skipped
-    /// without the feature or while one is already in flight.
+    /// while one is already in flight.
     pub(super) async fn request_host_inventory(
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if !self.host_sessions_supported || self.peers.hosts_pending.is_some() {
+        if self.peers.hosts_pending.is_some() {
             return Ok(());
         }
         let request_id = self.take_request_id();
@@ -154,10 +152,8 @@ impl super::SessionLoop {
         std::mem::take(&mut self.peers.held_unreachable)
     }
 
-    /// True when a snapshot carries windows or resources not yet adopted.
-    /// Empty lists are not a change (inventory replies often omit the graph).
-    /// Windows count only when the resources do not name their sessions: an
-    /// `ORGANIZATION` server's windows are synthesized from the same graph.
+    /// Whether a snapshot carries windows or resources not yet adopted
+    /// (windows only when resources do not name their sessions).
     pub(super) fn snapshot_graph_changed(
         &self,
         snapshot: &phux_protocol::wire::info::SessionSnapshot,

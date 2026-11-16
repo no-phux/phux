@@ -1,3 +1,8 @@
+#![allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+
 use std::cell::RefCell;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -243,10 +248,6 @@ fn default_lookup_target(default_name: &str) -> AttachTarget {
 
 /// Drive one attach attempt against `socket_path` with `target`, picking
 /// the predict-enabled entry point iff the user opted in.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 pub(crate) async fn run_attach_once(
     dial: &Dial,
     target: AttachTarget,
@@ -257,10 +258,6 @@ pub(crate) async fn run_attach_once(
 
 /// [`run_attach_once`] with an optional live recorder and an optional
 /// status-bar notice (the reconnect loop's "re-attached" message).
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 pub(crate) async fn run_attach_once_rec(
     dial: &Dial,
     target: AttachTarget,
@@ -275,10 +272,6 @@ pub(crate) async fn run_attach_once_rec(
     attach::run_dial(dial, target, predict_cfg, rec, initial_notice, input_replay).await
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
 async fn run_attach_connection_rec(
     connection: Connection,
     dial: &Dial,
@@ -300,14 +293,11 @@ async fn run_attach_connection_rec(
     .await
 }
 
-/// Attach to the user's default session via `Last`; if an older server
-/// refuses it, make exactly one lookup-only retry by name (never
-/// `CreateIfMissing`).
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub(crate) async fn attach_default_with_fallback(
+/// Attach to the user's default session via `Last` (over `connection` when
+/// one is already open); if an older server refuses it, make exactly one
+/// lookup-only retry by name (never `CreateIfMissing`).
+async fn attach_default_with_fallback(
+    connection: Option<Connection>,
     dial: &Dial,
     default_name: &str,
     predict_cfg: PredictiveConfig,
@@ -315,17 +305,32 @@ pub(crate) async fn attach_default_with_fallback(
     initial_notice: Option<Notice>,
     input_replay: Option<&ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
-    match run_attach_once_rec(
-        dial,
-        AttachTarget::Last,
-        predict_cfg,
-        rec.map(Rc::clone),
-        initial_notice.clone(),
-        input_replay.map(Rc::clone),
-    )
-    .await
-    {
-        Ok(end) => Ok(end),
+    let first = match connection {
+        Some(connection) => {
+            Box::pin(run_attach_connection_rec(
+                connection,
+                dial,
+                AttachTarget::Last,
+                predict_cfg,
+                rec.map(Rc::clone),
+                initial_notice.clone(),
+                input_replay.map(Rc::clone),
+            ))
+            .await
+        }
+        None => {
+            run_attach_once_rec(
+                dial,
+                AttachTarget::Last,
+                predict_cfg,
+                rec.map(Rc::clone),
+                initial_notice.clone(),
+                input_replay.map(Rc::clone),
+            )
+            .await
+        }
+    };
+    match first {
         // A live old server will not grow a session if asked again.
         Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
         Err(AttachError::Refused(message)) => {
@@ -342,52 +347,7 @@ pub(crate) async fn attach_default_with_fallback(
             )
             .await
         }
-        Err(err) => Err(err),
-    }
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-async fn attach_default_with_connection_fallback(
-    connection: Connection,
-    dial: &Dial,
-    default_name: &str,
-    predict_cfg: PredictiveConfig,
-    rec: Option<&RecorderHandle>,
-    initial_notice: Option<Notice>,
-    input_replay: Option<&ReplayHandle>,
-) -> Result<AttachEnd, AttachError> {
-    match Box::pin(run_attach_connection_rec(
-        connection,
-        dial,
-        AttachTarget::Last,
-        predict_cfg,
-        rec.map(Rc::clone),
-        initial_notice.clone(),
-        input_replay.map(Rc::clone),
-    ))
-    .await
-    {
-        Ok(end) => Ok(end),
-        // A live old server will not grow a session if asked again.
-        Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
-        Err(AttachError::Refused(message)) => {
-            warn!(
-                "server could not resolve the last session ({message}); trying existing `{default_name}`"
-            );
-            run_attach_once_rec(
-                dial,
-                default_lookup_target(default_name),
-                predict_cfg,
-                rec.map(Rc::clone),
-                initial_notice,
-                input_replay.map(Rc::clone),
-            )
-            .await
-        }
-        Err(err) => Err(err),
+        other => other,
     }
 }
 
@@ -401,59 +361,48 @@ struct AttachAttempt<'a> {
 }
 
 impl AttachAttempt<'_> {
-    #[allow(
-        clippy::future_not_send,
-        reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-    )]
     async fn run(
         &self,
         connection: Option<Box<Connection>>,
         initial_notice: Option<Notice>,
     ) -> Result<AttachEnd, AttachError> {
-        match (connection, self.default_name) {
-            (Some(connection), Some(name)) => {
-                Box::pin(attach_default_with_connection_fallback(
-                    *connection,
-                    self.dial,
-                    name,
-                    self.predict_cfg,
-                    self.recorder,
-                    initial_notice,
-                    self.input_replay,
-                ))
-                .await
-            }
-            (Some(connection), None) => {
+        if let Some(name) = self.default_name {
+            return Box::pin(attach_default_with_fallback(
+                connection.map(|connection| *connection),
+                self.dial,
+                name,
+                self.predict_cfg,
+                self.recorder,
+                initial_notice,
+                self.input_replay,
+            ))
+            .await;
+        }
+        let (recorder, replay) = (
+            self.recorder.map(Rc::clone),
+            self.input_replay.map(Rc::clone),
+        );
+        match connection {
+            Some(connection) => {
                 Box::pin(run_attach_connection_rec(
                     *connection,
                     self.dial,
                     self.target.clone(),
                     self.predict_cfg,
-                    self.recorder.map(Rc::clone),
+                    recorder,
                     initial_notice,
-                    self.input_replay.map(Rc::clone),
+                    replay,
                 ))
                 .await
             }
-            (None, Some(name)) => {
-                Box::pin(attach_default_with_fallback(
-                    self.dial,
-                    name,
-                    self.predict_cfg,
-                    self.recorder,
-                    initial_notice,
-                    self.input_replay,
-                ))
-                .await
-            }
-            (None, None) => {
+            None => {
                 Box::pin(run_attach_once_rec(
                     self.dial,
                     self.target.clone(),
                     self.predict_cfg,
-                    self.recorder.map(Rc::clone),
+                    recorder,
                     initial_notice,
-                    self.input_replay.map(Rc::clone),
+                    replay,
                 ))
                 .await
             }
@@ -1459,25 +1408,11 @@ mod tests {
         let ws_localhost = ws_dial("ws://localhost:8787");
         let ws_remote = ws_dial("wss://example.invalid:8787");
 
-        assert!(
-            !dial_leaves_the_machine(&uds),
-            "UDS never leaves the machine"
-        );
-        assert!(
-            !dial_leaves_the_machine(&quic_loopback),
-            "a QUIC dial to loopback is a network transport with no network \
-             between the ends; there is no latency to hide and only a \
-             mispaint to collect"
-        );
-        assert!(
-            !dial_leaves_the_machine(&ws_loopback),
-            "the browser client talking ws://127.0.0.1 to a local server is a \
-             normal way to run phux, not a corner case"
-        );
-        assert!(
-            !dial_leaves_the_machine(&ws_localhost),
-            "`localhost` is loopback by name as well as by address"
-        );
+        // Loopback QUIC/ws (and `localhost` by name) is a network transport
+        // with no network between the ends: no latency to hide, only mispaints.
+        for local in [&uds, &quic_loopback, &ws_loopback, &ws_localhost] {
+            assert!(!dial_leaves_the_machine(local), "{local:?}");
+        }
         assert!(dial_leaves_the_machine(&quic_remote));
         assert!(dial_leaves_the_machine(&ws_remote));
 
@@ -1574,63 +1509,38 @@ mod tests {
         assert!(missing_session_lines("my work")[1].contains("`phux new 'my work'`"));
     }
 
-    /// A detach says nothing; a last-pane death names the exit shape.
+    /// A detach the user chose says nothing; every other ending names its
+    /// cause (phux-l83x), and a last-pane death names the exit shape.
     #[test]
     fn attach_end_explanation_covers_all_shapes() {
-        assert_eq!(
-            AttachEnd::Detached { reason: None }.explanation(),
-            None,
-            "a plain detach needs no words"
-        );
-        assert_eq!(
-            AttachEnd::Detached {
-                reason: Some(DetachReason::Requested),
-            }
-            .explanation(),
-            None,
-            "a detach the user asked for needs no words either"
-        );
-        // phux-l83x: every other reason is an ending the user did not
-        // choose, and before the DETACHED payload existed all of them were
-        // indistinguishable from the quiet case above.
-        assert_eq!(
-            AttachEnd::Detached {
-                reason: Some(DetachReason::ServerShutdown),
-            }
-            .explanation()
-            .as_deref(),
-            Some("phux: detached: the server is shutting down"),
-        );
-        assert_eq!(
-            AttachEnd::Detached {
-                reason: Some(DetachReason::Replaced),
-            }
-            .explanation()
-            .as_deref(),
-            Some("phux: detached: another client took over this attach"),
-        );
-        assert_eq!(
-            AttachEnd::LastPaneClosed {
-                exit_status: Some(0)
-            }
-            .explanation()
-            .as_deref(),
-            Some("phux: session ended: the last pane exited 0"),
-        );
-        assert_eq!(
-            AttachEnd::LastPaneClosed {
-                exit_status: Some(137)
-            }
-            .explanation()
-            .as_deref(),
-            Some("phux: session ended: the last pane exited 137"),
-        );
-        assert_eq!(
-            AttachEnd::LastPaneClosed { exit_status: None }
-                .explanation()
-                .as_deref(),
-            Some("phux: session ended: the last pane was killed"),
-        );
+        let detached = |reason| AttachEnd::Detached { reason };
+        let closed = |exit_status| AttachEnd::LastPaneClosed { exit_status };
+        for (end, expected) in [
+            (detached(None), None),
+            (detached(Some(DetachReason::Requested)), None),
+            (
+                detached(Some(DetachReason::ServerShutdown)),
+                Some("phux: detached: the server is shutting down"),
+            ),
+            (
+                detached(Some(DetachReason::Replaced)),
+                Some("phux: detached: another client took over this attach"),
+            ),
+            (
+                closed(Some(0)),
+                Some("phux: session ended: the last pane exited 0"),
+            ),
+            (
+                closed(Some(137)),
+                Some("phux: session ended: the last pane exited 137"),
+            ),
+            (
+                closed(None),
+                Some("phux: session ended: the last pane was killed"),
+            ),
+        ] {
+            assert_eq!(end.explanation().as_deref(), expected);
+        }
     }
 
     /// The reconnect probe is three-way: missing socket is `SocketGone`, a
@@ -1680,13 +1590,7 @@ mod tests {
             let _held_transport_open = stream;
             std::future::pending::<()>().await;
         });
-        let dial = Dial::Ws(WsDial {
-            url: format!("ws://{addr}"),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-            identity: None,
-        });
+        let dial = ws_dial_to(addr);
         let policy = ReconnectPolicy {
             deadline: Duration::from_millis(300),
             ladder: Ladder::flat(Duration::from_millis(50)),
@@ -1757,13 +1661,7 @@ mod tests {
     }
 
     fn ws_dial_to(addr: std::net::SocketAddr) -> Dial {
-        Dial::Ws(WsDial {
-            url: format!("ws://{addr}"),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-            identity: None,
-        })
+        ws_dial(&format!("ws://{addr}"))
     }
 
     /// ADR-0133: a refused reconnect ends on the first probe with the refusal.
@@ -1890,21 +1788,8 @@ mod tests {
     /// client's own network rather than the server.
     #[test]
     fn remote_lanes_get_backoff_and_a_longer_deadline() {
-        let ws = reconnect_policy(&Dial::Ws(WsDial {
-            url: "wss://example.ts.net:8788".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-            identity: None,
-        }));
-        let quic = reconnect_policy(&Dial::Quic(QuicDial {
-            addr: "127.0.0.1:8788".parse().expect("addr"),
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        }));
+        let ws = reconnect_policy(&ws_dial("wss://example.ts.net:8788"));
+        let quic = reconnect_policy(&quic_dial("127.0.0.1:8788"));
 
         assert_eq!(ws, quic, "the two remote lanes share one policy");
         assert!(
@@ -1929,22 +1814,12 @@ mod tests {
     /// mid-wait.
     #[test]
     fn reconnect_progress_line_rounds_up_and_pins_format() {
-        assert_eq!(
-            reconnect_progress_line(Duration::from_secs(10)),
-            "phux: reconnecting… 10s left (Ctrl-C to give up)"
-        );
-        assert_eq!(
-            reconnect_progress_line(Duration::from_millis(9_100)),
-            "phux: reconnecting… 10s left (Ctrl-C to give up)"
-        );
-        assert_eq!(
-            reconnect_progress_line(Duration::from_millis(200)),
-            "phux: reconnecting… 1s left (Ctrl-C to give up)"
-        );
-        assert_eq!(
-            reconnect_progress_line(Duration::ZERO),
-            "phux: reconnecting… 0s left (Ctrl-C to give up)"
-        );
+        for (left, seconds) in [(10_000, 10), (9_100, 10), (200, 1), (0, 0)] {
+            assert_eq!(
+                reconnect_progress_line(Duration::from_millis(left)),
+                format!("phux: reconnecting… {seconds}s left (Ctrl-C to give up)")
+            );
+        }
     }
 
     /// phux-i0e8.2.3: the two reconnect-window failure shapes are distinct
@@ -2018,25 +1893,25 @@ mod tests {
     #[test]
     fn remote_repair_is_limited_to_early_transport_failures() {
         // A refused credential means a host answered: only a re-pair helps.
-        assert_eq!(
-            remote_repair(&Err(AttachError::Connect("bad credential".to_owned()))),
-            Repair::RePair
-        );
-        // Nobody answered: the server is most likely stopped, so start it.
-        assert_eq!(
-            remote_repair(&Err(AttachError::Unreachable("no route".to_owned()))),
-            Repair::Start
-        );
-
-        assert_eq!(
-            remote_repair(&Err(AttachError::Refused("no such session".to_owned()))),
-            Repair::None
-        );
-        assert_eq!(remote_repair(&Err(AttachError::Disconnected)), Repair::None);
-        assert_eq!(
-            remote_repair(&Ok(AttachEnd::Detached { reason: None })),
-            Repair::None
-        );
+        // Nobody answering means the server is most likely stopped.
+        for (result, repair) in [
+            (
+                Err(AttachError::Connect("bad credential".to_owned())),
+                Repair::RePair,
+            ),
+            (
+                Err(AttachError::Unreachable("no route".to_owned())),
+                Repair::Start,
+            ),
+            (
+                Err(AttachError::Refused("no such session".to_owned())),
+                Repair::None,
+            ),
+            (Err(AttachError::Disconnected), Repair::None),
+            (Ok(AttachEnd::Detached { reason: None }), Repair::None),
+        ] {
+            assert_eq!(remote_repair(&result), repair);
+        }
     }
 
     /// `--quic` targets split on the last `:`, so IPv4 literals, bracketed
@@ -2054,27 +1929,14 @@ mod tests {
             Ok(("myhost.tailnet-name.ts.net", 8788_u16))
         );
 
-        let missing_port = split_host_port("myhost.tailnet-name.ts.net");
-        assert!(
-            missing_port
-                .as_ref()
-                .is_err_and(|err| err.contains("missing a port")),
-            "got {missing_port:?}"
-        );
-        let bad_port = split_host_port("myhost:notaport");
-        assert!(
-            bad_port
-                .as_ref()
-                .is_err_and(|err| err.contains("invalid port")),
-            "got {bad_port:?}"
-        );
-        let missing_host = split_host_port(":8788");
-        assert!(
-            missing_host
-                .as_ref()
-                .is_err_and(|err| err.contains("missing a host")),
-            "got {missing_host:?}"
-        );
+        for (target, reason) in [
+            ("myhost.tailnet-name.ts.net", "missing a port"),
+            ("myhost:notaport", "invalid port"),
+            (":8788", "missing a host"),
+        ] {
+            let err = split_host_port(target).expect_err(target);
+            assert!(err.contains(reason), "{target}: {err}");
+        }
     }
 
     /// A relay route with no CA pinned is refused by the name the caller

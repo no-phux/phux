@@ -9,16 +9,16 @@ use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::Desk;
-use super::galaxy::Star;
+use super::fleet::Agent;
 use crate::galaxy::{self, Kin};
-use crate::reef::{self, Mood, Swimmer};
+use crate::playground::Mood;
+use crate::reef::{self, Swimmer};
 
 /// How often the reef redraws while open: every frame.
 const FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Default)]
 pub struct Reef {
-    pub open: bool,
     pub scene: reef::Reef,
     /// The view's size in points, from its last layout.
     pub viewport: [f32; 2],
@@ -34,18 +34,13 @@ pub struct Reef {
 
 impl Desk {
     pub fn toggle_reef(&mut self) {
-        if self.reef.open {
+        if self.playground == Some(super::surfaces::Playground::Reef) {
             self.close_reef();
             return;
         }
         self.close_inbox();
-        self.close_galaxy();
-        self.close_pitch();
-        self.close_kitchen();
-        self.close_pitlane();
-        self.close_hive();
         self.settings_open = false;
-        self.reef.open = true;
+        self.playground = Some(super::surfaces::Playground::Reef);
         self.reef.last = None;
         self.reef.scene.selected = None;
         if self.reef.caustic.size() == (0, 0) {
@@ -56,12 +51,12 @@ impl Desk {
     }
 
     pub fn close_reef(&mut self) {
-        self.reef.open = false;
+        self.close_playground(super::surfaces::Playground::Reef);
     }
 
     /// Keep the fish in step with the fleet and the scene moving while open.
     pub(super) fn tick_reef(&mut self, tx: &mut Tx) -> bool {
-        if !self.reef.open {
+        if self.playground != Some(super::surfaces::Playground::Reef) {
             return false;
         }
         self.refresh_reef();
@@ -84,13 +79,13 @@ impl Desk {
     /// Machines as reefs in the galaxy's order, every agent it knows of as a
     /// fish; schools are the galaxy's related agents.
     fn refresh_reef(&mut self) {
-        let planets = self.planets();
+        let planets = self.fleet_machines();
         let hosts: Vec<(String, bool)> =
             planets.iter().map(|p| (p.name.clone(), p.known)).collect();
-        let stars: Vec<(usize, &Star)> = planets
+        let stars: Vec<(usize, &Agent)> = planets
             .iter()
             .enumerate()
-            .flat_map(|(at, p)| p.stars.iter().map(move |s| (at, s)))
+            .flat_map(|(at, p)| p.agents.iter().map(move |s| (at, s)))
             .collect();
         let kin: Vec<Kin<'_>> = stars
             .iter()
@@ -196,7 +191,7 @@ impl Desk {
         };
         let id = f.who.id.clone();
         self.close_reef();
-        self.go_to_star(&id);
+        self.go_to_agent(&id);
     }
 }
 

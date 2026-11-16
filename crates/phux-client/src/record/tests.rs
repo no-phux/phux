@@ -122,7 +122,7 @@ fn sent_detach(seen: &[FrameKind]) -> bool {
 /// declares itself a viewer; against an older one it declares nothing.
 #[test]
 fn recorder_attaches_as_viewer_and_still_records() {
-    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+    use phux_protocol::caps::ServerFeatureSet;
     let declared_role = |seen: &[FrameKind]| {
         seen.iter().find_map(|frame| match frame {
             FrameKind::Command {
@@ -132,13 +132,7 @@ fn recorder_attaches_as_viewer_and_still_records() {
             _ => None,
         })
     };
-    let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
-    let viewer = run(
-        attached(80, 24, b"hi")
-            .push(pane_closed(Some(0)))
-            .server_features(roles),
-        None,
-    );
+    let viewer = run(attached(80, 24, b"hi").push(pane_closed(Some(0))), None);
     assert_eq!(
         declared_role(&viewer.seen),
         Some(phux_protocol::wire::frame::RolePolicy::VIEWER)
@@ -148,7 +142,12 @@ fn recorder_attaches_as_viewer_and_still_records() {
         vec![EventCode::Output, EventCode::Exit]
     );
 
-    let older = run(attached(80, 24, b"hi").push(pane_closed(Some(0))), None);
+    let older = run(
+        attached(80, 24, b"hi")
+            .push(pane_closed(Some(0)))
+            .server_features(ServerFeatureSet::new()),
+        None,
+    );
     assert_eq!(declared_role(&older.seen), None, "no bit, no byte");
 }
 

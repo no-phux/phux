@@ -1,15 +1,7 @@
-//! `LIST_DIRECTORY` host query (`docs/protocol.md`): the child directories
-//! of a path on this host, as the server's user.
-//!
-//! The blocking walk runs on tokio's blocking pool under a deadline and a
-//! server-wide in-flight cap, and is bounded by [`MAX_SCANNED_ENTRIES`] and
-//! [`MAX_DIRECTORY_ENTRIES`] (either sets `truncated`). A request naming a
-//! satellite `host` is relayed by a federation hub under server-wide and
-//! per-satellite caps, and refused elsewhere. A client that disconnects
-//! abandons its request and releases its permits.
-//!
-//! Security: nothing here exceeds what a client could learn by spawning a
-//! shell as the same user.
+//! `LIST_DIRECTORY` host query (`docs/protocol.md`): child directories of a
+//! path, as the server's user, walked on the blocking pool under a deadline,
+//! an in-flight cap, and entry bounds. Satellite requests are relayed by a
+//! hub. Nothing here exceeds what a shell as the same user could learn.
 
 use std::collections::BTreeMap;
 use std::io;

@@ -12,9 +12,7 @@ use phux_protocol::input::{
     InputEvent,
     paste::{PasteEvent, PasteTrust},
 };
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnResult, StateScope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
@@ -40,14 +38,7 @@ async fn command(
     command: Command,
     quiet: bool,
 ) -> CommandResult {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     recv_until_deadline(stream, deadline, |_, frame| {
         if quiet {
@@ -129,12 +120,10 @@ async fn explicit_attach(
     pane: &ResourceId,
     request_id: u32,
 ) -> Option<Screen> {
-    send_frame(
+    phux_server_testkit::send_command(
         stream,
-        &FrameKind::Command {
-            request_id,
-            command: Command::attach_terminal(pane.clone(), None),
-        },
+        request_id,
+        Command::attach_terminal(pane.clone(), None),
     )
     .await;
     let mut screen = Some(Screen::new(80, 24).unwrap());
@@ -177,13 +166,13 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
         command(
             control,
             800,
-            Command::RouteInput {
-                terminal_id: pane.clone(),
-                event: InputEvent::Paste(PasteEvent {
+            phux_server_testkit::route_input(
+                pane.clone(),
+                InputEvent::Paste(PasteEvent {
                     data: format!("{marker}\n").into_bytes(),
                     trust: PasteTrust::Trusted,
-                }),
-            },
+                })
+            ),
             false
         )
         .await,
@@ -199,12 +188,7 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
         let result = command(
             control,
             801,
-            Command::GetScreen {
-                terminal_id: pane.clone(),
-                request_scrollback: None,
-                cells: false,
-                format: 0,
-            },
+            phux_server_testkit::get_screen(pane.clone()),
             false,
         )
         .await;
@@ -237,15 +221,7 @@ async fn detach_and_check(
         CommandResult::Ok
     );
     write_and_observe(control, pane, marker).await;
-    command(
-        stream,
-        901,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-        true,
-    )
-    .await;
+    command(stream, 901, phux_server_testkit::get_state(), true).await;
     // Output has positively reached the live terminal. Observe the client
     // mailbox too, including output that a previously scheduled pump queues
     // behind the state reply. No terminal process is killed to create silence.
@@ -268,15 +244,8 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     let seed = match source {
         Source::Session | Source::Spawn => attach_session(&mut stream).await,
         Source::Explicit => {
-            let CommandResult::OkWith(CommandValue::State(state)) = command(
-                &mut control,
-                1,
-                Command::GetState {
-                    scope: StateScope::Server,
-                },
-                false,
-            )
-            .await
+            let CommandResult::OkWith(CommandValue::State(state)) =
+                command(&mut control, 1, phux_server_testkit::get_state(), false).await
             else {
                 panic!("state");
             };
@@ -412,15 +381,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
                 ..
             }
         ));
-        command(
-            &mut stream,
-            2,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-            true,
-        )
-        .await;
+        command(&mut stream, 2, phux_server_testkit::get_state(), true).await;
         drop(stream);
         join_after_shutdown(shutdown, task).await;
     });

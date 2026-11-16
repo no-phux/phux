@@ -1,22 +1,12 @@
-//! Cell-emission gate for the client's pane renderer (`attach::render`).
+//! Cell-emission gate for the pane renderer (`attach::render`), the tightest
+//! loop in the product, over the shared `benchmarks/support.rs` corpora:
 //!
-//! This is the tightest loop in the product: grid cells -> ANSI bytes on
-//! stdout. It measures the two shapes that matter, against the shared
-//! `benchmarks/support.rs` corpora:
+//! * **full-dirty**: every row repainted (`render_at_full`);
+//! * **one-row-dirty**: the steady-state incremental paint (`render_at`);
+//! * **clean**: the most frequent call; must cost zero bytes and flushes.
 //!
-//! * **full-dirty** — every row repainted (`render_at_full`), which is what a
-//!   scroll (`Dirty::Full`) and every `paint_full_frame` pay.
-//! * **one-row-dirty** — the steady-state incremental paint: one row written,
-//!   `render_at` walks the grid and emits only that row.
-//! * **clean** — the most FREQUENT call of the three: a pane that produced no
-//!   output while some other pane, or the chrome, forced a repaint. It must
-//!   cost zero bytes and zero flushes.
-//!
-//! Three numbers per case: wall time per frame (p50/p90 over
-//! `MEASURED_SAMPLES`), bytes emitted per frame, and heap allocations per
-//! frame. The allocation count is the point: the pre-`phux-l96p.2` cell loop
-//! allocated a `Vec<char>` per non-empty cell, so a full-dirty 200x60 frame
-//! cost ~10k malloc/free pairs before a single byte reached the terminal.
+//! Reports time per frame (p50/p90), bytes per frame, and heap allocations
+//! per frame (the cell loop must not allocate).
 //!
 //! Run: `cargo bench -p phux-tui --features testkit --bench render_frame`.
 
@@ -41,20 +31,14 @@ use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_tui::attach::render::{ReplicaWalk, TerminalRenderer};
 use support::{Corpus, MEASURED_SAMPLES, WARMUP_SAMPLES, deterministic_line, percentile};
 
-/// Allocation counter.
-///
-/// A pass-through to the system allocator plus one relaxed increment, so the
-/// timing numbers this binary also reports stay representative (a full
-/// profiler such as `dhat` records backtraces and would dominate them).
+/// Allocation counter: the system allocator plus one relaxed increment, so
+/// the timing numbers stay representative.
 struct CountingAlloc;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every method forwards its arguments unchanged to `System`, which is
-// a correct `GlobalAlloc`; the only added work is a relaxed counter bump that
-// touches no allocator state. The safety contract of each method is therefore
-// exactly `System`'s, and the caller's obligations are passed straight
-// through.
+// SAFETY: every method forwards unchanged to `System`, a correct
+// `GlobalAlloc`; the only added work is a relaxed counter bump.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
@@ -111,10 +95,8 @@ impl Write for CountingSink {
     }
 }
 
-/// Build the corpus grid the renderer walks.
-///
-/// Mirrors `phux-server/benches/server_measure.rs::build_terminal` so both
-/// ends of the wire are measured against the same cells.
+/// Build the corpus grid the renderer walks, as `phux-server`'s
+/// `server_measure.rs::build_terminal` does, so both ends measure one grid.
 fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static> {
     let (cols, rows) = corpus.geometry();
     let mut terminal = {

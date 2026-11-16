@@ -1,19 +1,12 @@
 use std::collections::BTreeMap;
 
 use phux_protocol::ids::{IdempotencyKey, OperationId, ResourceId};
-use phux_protocol::wire::frame::{
-    Command, LaunchSpec, OrgFilter, Refusal, SESSION_CREATE_RESULT_KEY_PREFIX, SessionLifetime,
-};
+use phux_protocol::wire::frame::{Command, LaunchSpec, OrgFilter, Refusal, SessionLifetime};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::ArrangementDoc;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
-
-use super::{
-    ReadBack, created_session_from_result, created_session_id_from_snapshot, read_result,
-    send_create,
-};
 
 /// Why a session create failed.
 #[derive(Debug, thiserror::Error)]
@@ -21,9 +14,6 @@ pub enum CreateSessionError {
     /// Transport or decode failure.
     #[error(transparent)]
     Attach(#[from] AttachError),
-    /// The request document could not be serialized.
-    #[error("failed to serialize create request: {0}")]
-    Encode(#[from] serde_json::Error),
     /// The session was created but its initial headless layout could not be
     /// read, encoded, written, or confirmed.
     #[error("failed to initialize created session layout: {0}")]
@@ -61,108 +51,29 @@ pub struct CreateSessionRequest<'a> {
     /// Encoded `AgentSessionRecord` provenance to restore atomically with
     /// the create.
     pub agent_session: Option<&'a [u8]>,
-    /// Make the create idempotent (ADR-0126): the key becomes the request's
-    /// `request_token`, so a repeat inside the server's horizon answers the
-    /// same result. Check [`keyed_create_supported`] first. Against a server
-    /// that advertises `ORGANIZATION` it is the `SESSION_CREATE` operation
-    /// id.
+    /// Make the create idempotent: the key is the `SESSION_CREATE`
+    /// operation id, so a repeat answers the stored result.
     pub idempotency_key: Option<IdempotencyKey>,
     /// Whether the session outlives its last resource. `phux new NAME` is
-    /// persistent; a bare `phux` session is ephemeral. Only a server that
-    /// advertises `ORGANIZATION` honors ephemeral.
+    /// persistent; a bare `phux` session is ephemeral.
     pub lifetime: SessionLifetime,
     /// Descriptive attributes (`docs/organization.md`), such as the project
-    /// identity (ADR-0168). Only a server that advertises `ORGANIZATION`
-    /// records them.
+    /// identity (ADR-0168).
     pub attrs: &'a [(String, String)],
 }
 
-/// Whether the connected server honors a keyed create.
-///
-/// It advertises `ORGANIZATION`, whose operation ids dedupe, or
-/// `SPAWN_IDEMPOTENCY` (ADR-0126). An older server would treat the repeat as
-/// a second create of a name already in use.
-#[must_use]
-pub fn keyed_create_supported(conn: &Connection) -> bool {
-    crate::org::supported(conn)
-        || conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-            bootstrap
-                .server_features
-                .contains(phux_protocol::caps::ServerFeature::SpawnIdempotency)
-        })
-}
-
-/// The `request_token` for a create: the idempotency key in the UUID shape
-/// the server accepts, or a fresh random one.
-fn request_token(key: Option<IdempotencyKey>) -> String {
-    key.map_or_else(
-        || uuid::Uuid::new_v4().to_string(),
-        |key| uuid::Uuid::from_bytes(*key.as_bytes()).to_string(),
-    )
-}
-
-/// Create a named session without attaching via the `SESSION_CREATE_KEY`
-/// write, then read the seed-pane id back from a nonce-correlated result key.
+/// Create a named session without attaching: one `SESSION_CREATE` whose
+/// launch is the seed pane, its agent-session provenance riding the launch's
+/// restore record (atomic by construction).
 ///
 /// Duplicate-name rejection is the caller's job. Interleaved degradation
 /// notices are appended to `notices`.
 ///
 /// # Errors
 ///
-/// Transport/decode failures, or a request document that fails to encode
-/// (see [`CreateSessionError`]).
+/// Transport/decode failures, or an organization request that failed
+/// outright (see [`CreateSessionError`]).
 pub async fn create_session(
-    conn: &mut Connection,
-    request: &CreateSessionRequest<'_>,
-    notices: &mut Vec<String>,
-) -> Result<CreateOutcome, CreateSessionError> {
-    if crate::org::supported(conn) {
-        return create_by_record(conn, request, notices).await;
-    }
-    let request_token = request_token(request.idempotency_key);
-    let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
-    let create_bytes = serde_json::to_vec(&serde_json::json!({
-        "name": request.name,
-        "command": request.command,
-        "cwd": request.cwd,
-        "env": request.env,
-        "request_token": request_token,
-        "agent_session": request.agent_session,
-    }))?;
-    send_create(conn, create_bytes).await?;
-    let created = match read_result(conn, result_key, notices).await? {
-        ReadBack::Refused(message) => return Ok(CreateOutcome::ReadRefused(message)),
-        ReadBack::Absent => return Ok(CreateOutcome::NotRegistered),
-        ReadBack::Correlated(bytes) => {
-            created_session_from_result(&bytes, request.name, &request_token)
-        }
-    };
-    let Some(created) = created else {
-        return Ok(CreateOutcome::NotRegistered);
-    };
-    let session_id = if let Some(session_id) = created.session_id {
-        session_id
-    } else {
-        let view = crate::state::get_state_on(conn).await?;
-        notices.extend(view.degradation().notices().iter().cloned());
-        let Some(session_id) =
-            created_session_id_from_snapshot(view.snapshot(), request.name, created.terminal_id)
-        else {
-            return Ok(CreateOutcome::NotRegistered);
-        };
-        session_id
-    };
-    let fallback = ArrangementDoc::single(ResourceId::local(created.terminal_id));
-    LayoutOps::new(conn, session_id, 10)
-        .read_or_seed(fallback)
-        .await?;
-    Ok(CreateOutcome::Created(u64::from(created.terminal_id)))
-}
-
-/// [`create_session`] against a server that advertises `ORGANIZATION`: one
-/// `SESSION_CREATE` whose launch is the seed pane, its agent-session
-/// provenance riding the launch's restore record (atomic by construction).
-async fn create_by_record(
     conn: &mut Connection,
     request: &CreateSessionRequest<'_>,
     notices: &mut Vec<String>,

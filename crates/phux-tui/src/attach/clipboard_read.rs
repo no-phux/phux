@@ -1,12 +1,8 @@
-//! OSC 52 clipboard reads (`docs/program-sequences.md#clipboard-osc-52`).
-//!
-//! `defaults.clipboard-read` decides: `deny` drops every read, `allow`
-//! answers, `ask` raises [`ClipboardReadOverlay`] (allow once, allow for this
-//! pane, deny). Only the focused pane of a focused window may read, one read
-//! is in flight at a time, and a pane may prompt at most once per
-//! [`PROMPT_COOLDOWN`]. An allowed read asks the host terminal for its
-//! clipboard with OSC 52, the way writes reach it; its answer goes back to
-//! the asking pane as `CLIPBOARD_REPLY`, only if that pane still has focus.
+//! OSC 52 clipboard reads: `defaults.clipboard-read` denies, allows, or asks
+//! ([`ClipboardReadOverlay`]). Only the focused pane of a focused window may
+//! read, one at a time, prompting at most once per [`PROMPT_COOLDOWN`]; the
+//! host's answer goes back as `CLIPBOARD_REPLY` only if that pane still has
+//! focus.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +20,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 
-use crate::render::overlay::widgets::{Modal, centered_panel};
+use crate::render::overlay::widgets::Modal;
 use crate::render::overlay::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -264,10 +260,7 @@ impl ClipboardReadOverlay {
     }
 
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        let wide = centered_panel(outer, 5, 20, 3, bp);
-        let h = 3.min(outer.height);
-        let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-        Rect::new(wide.x, y, wide.width, h)
+        crate::render::overlay::confirm::lines_modal_area(outer, 1, bp)
     }
 
     fn decide(&self, choice: Choice) -> OverlayCommand {

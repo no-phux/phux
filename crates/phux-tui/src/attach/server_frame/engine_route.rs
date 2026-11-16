@@ -37,10 +37,8 @@ pub(super) struct KernelRoute {
     pub(super) failed: Option<String>,
     /// Notices raised by the kernel's own effects.
     pub(super) notices: Vec<Notice>,
-    /// Per-pane progressive-history health this frame established: `true`
-    /// when the kernel reported history unavailable, `false` when a fresh
-    /// replica published or its cache reported a healthy state. Last word
-    /// per pane wins; panes absent here keep their flag.
+    /// Per-pane progressive-history health this frame established (`true`:
+    /// unavailable). Last word wins; absent panes keep their flag.
     pub(super) history_degraded: HashMap<ResourceId, bool>,
     /// OSC 52 writes from live output (ADR-0158), for the driver's policy.
     pub(super) clipboard_writes: Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
@@ -97,12 +95,9 @@ pub(super) fn attach_agent_sessions<'a>(
         .collect()
 }
 
-/// The panes an ATTACH will bootstrap: the focused session's members,
-/// arranged or not, Terminal-kind only. The snapshot is a whole-server view,
-/// but counting other sessions' panes left `ATTACH_READY` unresolvable
-/// whenever a second session existed. A pane whose session the snapshot
-/// cannot name is excluded, so the failure mode is a late paint rather than
-/// an attach that never completes.
+/// The panes an ATTACH will bootstrap: the focused session's Terminal-kind
+/// members. Counting other sessions' panes left `ATTACH_READY`
+/// unresolvable; an unnamed pane is excluded (a late paint, not a hang).
 pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     session_terminals(
         &snapshot.windows,

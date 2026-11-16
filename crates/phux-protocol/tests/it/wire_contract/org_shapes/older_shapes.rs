@@ -1,14 +1,12 @@
 //! Older shapes stay byte-identical, malformed events stay opaque, and
 //! keys have one text form.
 
-use crate::common::{assert_round_trip, decode, encode};
+use crate::common::{assert_round_trip, decode, decode_state, encode, state_reply};
 use phux_protocol::ids::{
     ClientId, IdempotencyKey, KEY_TEXT_LEN, PrincipalId, ResourceId, ResourceKey, Revision,
     SessionId, SessionKey, WindowId,
 };
-use phux_protocol::wire::frame::{
-    ActorRef, AgentEvent, Command, CommandResult, CommandValue, FrameKind, SessionLifetime,
-};
+use phux_protocol::wire::frame::{ActorRef, AgentEvent, Command, FrameKind, SessionLifetime};
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
     tui_layout_key_session,
@@ -81,18 +79,9 @@ fn session_recency_rides_the_extension_block() {
             )])
     };
     for touched in [Some(41), None] {
-        let frame = FrameKind::CommandResult {
-            request_id: 1,
-            result: CommandResult::OkWith(CommandValue::State(snapshot(touched))),
-        };
+        let frame = state_reply(snapshot(touched));
         assert_round_trip(&frame);
-        let FrameKind::CommandResult {
-            result: CommandResult::OkWith(CommandValue::State(decoded)),
-            ..
-        } = decode(&encode(&frame)).unwrap()
-        else {
-            panic!("state reply");
-        };
+        let decoded = decode_state(&encode(&frame));
         assert_eq!(decoded.sessions[0].touched, touched);
         assert_eq!(decoded.sessions[0].recent_input, None);
     }
@@ -116,10 +105,7 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
                 24,
             )])
     };
-    let state = |snapshot| FrameKind::CommandResult {
-        request_id: 1,
-        result: CommandResult::OkWith(CommandValue::State(snapshot)),
-    };
+    let state = state_reply;
     let legacy = encode(&state(base()));
 
     let key = SessionKey::new([0x5E; 16]).unwrap();
@@ -142,13 +128,7 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     let bytes = encode(&frame);
     assert!(bytes.len() > legacy.len());
     assert_eq!(encode(&state(base())), legacy);
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(decoded)),
-        ..
-    } = decode(&bytes).unwrap()
-    else {
-        panic!("state reply");
-    };
+    let decoded = decode_state(&bytes);
     assert_eq!(decoded.resources[0].session, Some(SessionId::new(1)));
     assert_eq!(
         decoded.sessions[0].lifetime,
@@ -169,13 +149,7 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
     attributed.sessions[0] = attributed.sessions[0].clone().with_attrs(attrs.clone());
     let frame = state(attributed);
     assert_round_trip(&frame);
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(decoded)),
-        ..
-    } = decode(&encode(&frame)).unwrap()
-    else {
-        panic!("state reply");
-    };
+    let decoded = decode_state(&encode(&frame));
     assert_eq!(decoded.sessions[0].attrs, attrs);
     assert_eq!(decoded.sessions[0].key, Some(key));
     assert_eq!(decoded.sessions[0].recent_input, None);
@@ -187,13 +161,7 @@ fn snapshot_session_link_and_lifetime_ride_the_extension_block() {
         .with_recent_input(Some(ResourceId::local(2)));
     let frame = state(recent);
     assert_round_trip(&frame);
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(decoded)),
-        ..
-    } = decode(&encode(&frame)).unwrap()
-    else {
-        panic!("state reply");
-    };
+    let decoded = decode_state(&encode(&frame));
     assert_eq!(decoded.sessions[0].recent_input, Some(ResourceId::local(2)));
     assert_eq!(decoded.sessions[0].lifetime, None);
 

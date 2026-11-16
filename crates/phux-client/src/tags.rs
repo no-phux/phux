@@ -281,11 +281,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_tags_sets_then_confirms_from_the_servers_own_store() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) =
-            crate::testkit::serve_one(dir.path(), crate::testkit::ScriptSpec::new());
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let (_dir, mut conn, server) =
+            crate::testkit::connect_one(crate::testkit::ScriptSpec::new()).await;
         let id = ResourceId::local(7);
         let tags = vec!["build".to_owned(), "ci".to_owned()];
         let (outcome, degradation) = write_tags(&mut conn, 101, &id, &tags)

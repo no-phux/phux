@@ -18,6 +18,12 @@ macro_rules! supervisory_commands {
     /// Gated on
     /// [`ServerFeatureExt::PrivacyStatus`](crate::caps::ServerFeatureExt::PrivacyStatus).
     PrivacyStatus,
+    /// Ephemeral 1Password exchange, gated on `features_ext.CREDENTIALS`.
+    /// Requests always need an explicit approval, including on the owner socket.
+    Credentials {
+        /// Exact operation; secrets have redacted Debug output.
+        op: crate::credentials::CredentialOp,
+    },
     /// What works on this host: agent status, notifications, remote reach,
     /// file transfer, restore after restart, the agent skill, each with a
     /// status, the reason and the fix. Answered `OkWith(Json)` with the

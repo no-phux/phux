@@ -37,6 +37,7 @@ const PLACEMENT_WAIT: Duration = Duration::from_secs(3);
 impl Desk {
     pub(super) fn move_sidebar_resource(&mut self, id: u32, from: SessionKey, to: SessionKey) {
         let Some(client) = self
+            .connection
             .client
             .clone()
             .filter(|c| c.status() == Status::Attached)
@@ -54,11 +55,13 @@ impl Desk {
         match client.move_resource(resource.key, to) {
             Ok(operation) => {
                 let follow = self
+                    .connection
                     .shown
                     .as_ref()
                     .filter(|s| s.resource == live)
                     .filter(|_| {
-                        self.wanted
+                        self.connection
+                            .wanted
                             .as_ref()
                             .is_none_or(|(wanted, _)| *wanted == live)
                     })
@@ -68,7 +71,8 @@ impl Desk {
                     fallback: Arc::new(ArrangementDoc::single(live.clone())),
                     since: Instant::now(),
                 };
-                self.reorder
+                self.connection
+                    .reorder
                     .moves
                     .insert(operation, Move { follow, placement });
             }
@@ -78,13 +82,14 @@ impl Desk {
 
     pub(super) fn move_sidebar_tab(&mut self, id: [u8; 16], to: SessionKey) {
         let Some(client) = self
+            .connection
             .client
             .clone()
             .filter(|c| c.status() == Status::Attached)
         else {
             return;
         };
-        let Some(tab) = self.tabs.list.iter().find(|tab| tab.id == id) else {
+        let Some(tab) = self.connection.tabs.list.iter().find(|tab| tab.id == id) else {
             return;
         };
         let organization = client.organization();
@@ -103,11 +108,13 @@ impl Desk {
             return;
         };
         let mut follow = self
+            .connection
             .shown
             .as_ref()
             .filter(|s| tab.resources.contains(&s.resource))
             .filter(|s| {
-                self.wanted
+                self.connection
+                    .wanted
                     .as_ref()
                     .is_none_or(|(wanted, _)| *wanted == s.resource)
             })
@@ -136,7 +143,7 @@ impl Desk {
             Ok(operations) => {
                 let last = operations.last().copied();
                 for operation in operations {
-                    self.reorder.moves.insert(
+                    self.connection.reorder.moves.insert(
                         operation,
                         Move {
                             follow: if Some(operation) == last {
@@ -158,8 +165,9 @@ impl Desk {
     }
 
     pub(in crate::desk) fn owns_sidebar_move(&self, operation: OperationId) -> bool {
-        self.reorder.moves.contains_key(&operation)
+        self.connection.reorder.moves.contains_key(&operation)
             || self
+                .connection
                 .reorder
                 .placing
                 .as_ref()
@@ -173,6 +181,7 @@ impl Desk {
         outcome: &OrgOutcome,
     ) -> bool {
         if self
+            .connection
             .reorder
             .placing
             .as_ref()
@@ -180,6 +189,7 @@ impl Desk {
         {
             if outcome.succeeded() {
                 let arrangement = self
+                    .connection
                     .reorder
                     .placing
                     .as_ref()
@@ -187,11 +197,11 @@ impl Desk {
                     .arrangement;
                 let _ = client.fetch_arrangement(arrangement);
             } else {
-                self.reorder.placing = None;
+                self.connection.reorder.placing = None;
             }
             return true;
         }
-        let Some(pending) = self.reorder.moves.remove(&operation) else {
+        let Some(pending) = self.connection.reorder.moves.remove(&operation) else {
             return false;
         };
         if !outcome.succeeded() {
@@ -208,35 +218,44 @@ impl Desk {
         });
         let mut placement = pending.placement;
         placement.since = Instant::now();
-        self.reorder.placements.push(placement);
+        self.connection.reorder.placements.push(placement);
         if let Some((live, to)) = pending.follow
-            && self.shown.as_ref().is_some_and(|s| s.resource == live)
             && self
+                .connection
+                .shown
+                .as_ref()
+                .is_some_and(|s| s.resource == live)
+            && self
+                .connection
                 .wanted
                 .as_ref()
                 .is_none_or(|(wanted, _)| *wanted == live)
-            && let Some(session) = self.topology.as_ref().and_then(|t| t.session_keyed(&to))
+            && let Some(session) = self
+                .connection
+                .topology
+                .as_ref()
+                .and_then(|t| t.session_keyed(&to))
         {
             // Keep the selected moved resource visible, but do not steal focus
             // if the person navigated elsewhere while the receipt travelled.
             client.attach_session(AttachTarget::ById(SessionId::new(session.id)));
-            self.zoomed = None;
+            self.connection.zoomed = None;
             self.want(live);
         }
         true
     }
 
     pub(in crate::desk) fn cancel_sidebar_moves(&mut self) -> bool {
-        if self.reorder.moves.is_empty()
-            && self.reorder.placements.is_empty()
-            && self.reorder.placing.is_none()
+        if self.connection.reorder.moves.is_empty()
+            && self.connection.reorder.placements.is_empty()
+            && self.connection.reorder.placing.is_none()
         {
             return false;
         }
-        self.reorder.moves.clear();
-        self.reorder.placements.clear();
-        if let Some(write) = self.reorder.placing.take() {
-            self.layout_ops.remove(&write.operation);
+        self.connection.reorder.moves.clear();
+        self.connection.reorder.placements.clear();
+        if let Some(write) = self.connection.reorder.placing.take() {
+            self.connection.layout_ops.remove(&write.operation);
         }
         self.say(NoticeKind::Error,
             "Resource moves did not settle: the server incarnation could not be verified. Check the server's resources before retrying.");
@@ -246,31 +265,32 @@ impl Desk {
     /// One bounded placement phase after membership settles. Never attaches
     /// an unselected destination and never resubmits a refused write.
     pub(super) fn place_sidebar_moves(&mut self, client: &Client) -> bool {
-        if self.receipts.waiting()
+        if self.connection.receipts.waiting()
             || client.status() != Status::Attached
-            || (self.reorder.placements.is_empty() && self.reorder.placing.is_none())
+            || (self.connection.reorder.placements.is_empty()
+                && self.connection.reorder.placing.is_none())
         {
             return false;
         }
         let organization = client.organization();
-        if let Some(write) = &self.reorder.placing {
+        if let Some(write) = &self.connection.reorder.placing {
             let observed = organization
                 .arrangement_document(&write.session)
                 .is_some_and(|(_, revision, _, _)| revision != write.base);
-            if observed && !self.layout_ops.contains(&write.operation) {
-                self.reorder.placing = None;
+            if observed && !self.connection.layout_ops.contains(&write.operation) {
+                self.connection.reorder.placing = None;
             } else if write.since.elapsed() >= PLACEMENT_WAIT {
-                self.reorder.placing = None;
+                self.connection.reorder.placing = None;
                 self.say(NoticeKind::Error, "Resources moved, but their destination tab layout did not settle. Check the destination before retrying.");
                 return true;
             } else {
                 return false;
             }
         }
-        while !self.reorder.placements.is_empty() {
-            let pending = &self.reorder.placements[0];
+        while !self.connection.reorder.placements.is_empty() {
+            let pending = &self.connection.reorder.placements[0];
             if pending.since.elapsed() >= PLACEMENT_WAIT {
-                self.reorder.placements.remove(0);
+                self.connection.reorder.placements.remove(0);
                 self.say(NoticeKind::Error, "Resources moved, but their destination tab layout could not be loaded. Open them from the sidebar.");
                 return true;
             }
@@ -297,20 +317,20 @@ impl Desk {
                 if let Some(arrangement) = organization
                     .session(&pending.to)
                     .and_then(|s| s.arrangement)
-                    && self.fetched.insert(arrangement)
+                    && self.connection.fetched.insert(arrangement)
                 {
                     let _ = client.fetch_arrangement(arrangement);
                 }
                 return false;
             };
             let changed = merge_placement(&mut document, &pending.fallback, belongs);
-            let pending = self.reorder.placements.remove(0);
+            let pending = self.connection.reorder.placements.remove(0);
             if !changed {
                 continue;
             }
             match self.submit_arrangement(client, pending.to, &document) {
                 Ok(operation) => {
-                    self.reorder.placing = Some(Placing {
+                    self.connection.reorder.placing = Some(Placing {
                         operation,
                         session: pending.to,
                         arrangement,

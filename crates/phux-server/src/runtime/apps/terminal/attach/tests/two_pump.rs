@@ -213,125 +213,123 @@ pub(super) fn live(seq: u64, at: std::time::Instant) -> ResourceOutput {
     reason = "one end-to-end scenario: stale, targeted recovery, then a reflow"
 )]
 async fn a_stale_consumer_resyncs_without_republishing_its_neighbour() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (output, _seed) = tokio::sync::broadcast::channel::<ResourceOutput>(64);
-            let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
-            let mut fresh = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
-            let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
-            let initial = two_pump_initial_generation();
-            let replacement = next_bootstrap_id(initial);
+    crate::runtime::test_support::local(async {
+        let (output, _seed) = tokio::sync::broadcast::channel::<ResourceOutput>(64);
+        let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
+        let mut fresh = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
+        let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
+        let initial = two_pump_initial_generation();
+        let replacement = next_bootstrap_id(initial);
 
-            // Staleness counts from the later of the read and the
-            // generation's publication, so open the pumps and outlive the
-            // budget before sending a backdated chunk.
-            let_pumps_run().await;
-            tokio::time::sleep(
-                crate::runtime::pump::STALE_OUTPUT_BUDGET + std::time::Duration::from_millis(50),
-            )
-            .await;
-            let read_a_second_ago = std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(1))
-                .expect("monotonic clock has run for a second");
-            output
-                .send(live(2, read_a_second_ago))
-                .expect("pumps subscribed");
-
-            let request = resync_request_from(&mut resize_rx, &mut stale).await;
-            assert!(request.resync_only && request.resync_clients);
-            assert_eq!(
-                request.resync_for,
-                Some(ResyncTarget {
-                    owner: 2,
-                    stream_id: two_pump_stream(),
-                    bootstrap_id: initial,
-                }),
-                "the resync names the stale pump, not the pane",
-            );
-
-            let now = std::time::Instant::now();
-            output.send(live(3, now)).expect("pumps subscribed");
-            answer_gap_resync(&output, &request, 3);
-            output.send(live(4, now)).expect("pumps subscribed");
-
-            assert_eq!(
-                frames_seen(&mut fresh, 2).await,
-                vec![
-                    Seen::Output {
-                        generation: initial,
-                        seq: 3
-                    },
-                    Seen::Output {
-                        generation: initial,
-                        seq: 4
-                    },
-                ],
-                "the fresh consumer keeps its generation straight through",
-            );
-            assert_eq!(
-                frames_seen(&mut stale, 5).await,
-                vec![
-                    Seen::Tombstone,
-                    Seen::Begin {
-                        generation: replacement,
-                        base_seq: 3
-                    },
-                    Seen::Chunk,
-                    Seen::Ready {
-                        generation: replacement
-                    },
-                    Seen::Output {
-                        generation: replacement,
-                        seq: 4
-                    },
-                ],
-                "the stale consumer converges onto a fresh generation",
-            );
-            assert_quiet(&mut fresh, "the fresh consumer").await;
-            assert_quiet(&mut stale, "the stale consumer").await;
-            assert!(
-                resize_rx.try_recv().is_err(),
-                "nobody else asked the actor for a resync",
-            );
-
-            // A reflow changes the grid under everyone: still broadcast.
-            output
-                .send(ResourceOutput::Resync {
-                    cols: 100,
-                    rows: 30,
-                    reason: crate::resource::ResyncReason::Resize,
-                    audience: ResyncAudience::Everyone,
-                    base_seq: 4,
-                    bytes: bytes::Bytes::from_static(b"reflowed"),
-                })
-                .expect("pumps subscribed");
-            assert_eq!(
-                frames_seen(&mut fresh, 2).await,
-                vec![
-                    Seen::Tombstone,
-                    Seen::Begin {
-                        generation: replacement,
-                        base_seq: 4
-                    }
-                ],
-            );
-            assert_eq!(
-                frames_seen(&mut stale, 2).await,
-                vec![
-                    Seen::Tombstone,
-                    Seen::Begin {
-                        generation: next_bootstrap_id(replacement),
-                        base_seq: 4
-                    }
-                ],
-            );
-
-            drop(output);
-            for consumer in [fresh, stale] {
-                let fault = consumer.task.await.expect("pump task");
-                assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
-            }
-        })
+        // Staleness counts from the later of the read and the
+        // generation's publication, so open the pumps and outlive the
+        // budget before sending a backdated chunk.
+        let_pumps_run().await;
+        tokio::time::sleep(
+            crate::runtime::pump::STALE_OUTPUT_BUDGET + std::time::Duration::from_millis(50),
+        )
         .await;
+        let read_a_second_ago = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("monotonic clock has run for a second");
+        output
+            .send(live(2, read_a_second_ago))
+            .expect("pumps subscribed");
+
+        let request = resync_request_from(&mut resize_rx, &mut stale).await;
+        assert!(request.resync_only && request.resync_clients);
+        assert_eq!(
+            request.resync_for,
+            Some(ResyncTarget {
+                owner: 2,
+                stream_id: two_pump_stream(),
+                bootstrap_id: initial,
+            }),
+            "the resync names the stale pump, not the pane",
+        );
+
+        let now = std::time::Instant::now();
+        output.send(live(3, now)).expect("pumps subscribed");
+        answer_gap_resync(&output, &request, 3);
+        output.send(live(4, now)).expect("pumps subscribed");
+
+        assert_eq!(
+            frames_seen(&mut fresh, 2).await,
+            vec![
+                Seen::Output {
+                    generation: initial,
+                    seq: 3
+                },
+                Seen::Output {
+                    generation: initial,
+                    seq: 4
+                },
+            ],
+            "the fresh consumer keeps its generation straight through",
+        );
+        assert_eq!(
+            frames_seen(&mut stale, 5).await,
+            vec![
+                Seen::Tombstone,
+                Seen::Begin {
+                    generation: replacement,
+                    base_seq: 3
+                },
+                Seen::Chunk,
+                Seen::Ready {
+                    generation: replacement
+                },
+                Seen::Output {
+                    generation: replacement,
+                    seq: 4
+                },
+            ],
+            "the stale consumer converges onto a fresh generation",
+        );
+        assert_quiet(&mut fresh, "the fresh consumer").await;
+        assert_quiet(&mut stale, "the stale consumer").await;
+        assert!(
+            resize_rx.try_recv().is_err(),
+            "nobody else asked the actor for a resync",
+        );
+
+        // A reflow changes the grid under everyone: still broadcast.
+        output
+            .send(ResourceOutput::Resync {
+                cols: 100,
+                rows: 30,
+                reason: crate::resource::ResyncReason::Resize,
+                audience: ResyncAudience::Everyone,
+                base_seq: 4,
+                bytes: bytes::Bytes::from_static(b"reflowed"),
+            })
+            .expect("pumps subscribed");
+        assert_eq!(
+            frames_seen(&mut fresh, 2).await,
+            vec![
+                Seen::Tombstone,
+                Seen::Begin {
+                    generation: replacement,
+                    base_seq: 4
+                }
+            ],
+        );
+        assert_eq!(
+            frames_seen(&mut stale, 2).await,
+            vec![
+                Seen::Tombstone,
+                Seen::Begin {
+                    generation: next_bootstrap_id(replacement),
+                    base_seq: 4
+                }
+            ],
+        );
+
+        drop(output);
+        for consumer in [fresh, stale] {
+            let fault = consumer.task.await.expect("pump task");
+            assert!(fault.is_none(), "pumps stop cleanly when the pane closes");
+        }
+    })
+    .await;
 }

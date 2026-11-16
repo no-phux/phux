@@ -1,6 +1,6 @@
 //! Settings navigation, persistence and search use the real Rune runtime.
 
-use rune::{Key, KeyEvent, Mods};
+use rune::{Key, KeyEvent};
 
 use super::super::Settings;
 use super::*;
@@ -14,10 +14,7 @@ fn settings_desk() -> Desk {
 }
 
 fn event(key: Key) -> KeyEvent {
-    KeyEvent {
-        key,
-        mods: Mods::default(),
-    }
+    crate::keys::plain(key)
 }
 
 fn click(runtime: &mut Runtime<Desk>, key: &str) {
@@ -229,7 +226,7 @@ fn installed_update_preferences_persist_and_protocol_warnings_survive_search() {
 
 #[test]
 fn config_file_keys_win_and_cannot_be_changed_in_the_app() {
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.file = phux_config_core::RuneCfg {
         copy_on_select: Some(true),
         theme: Some(String::new()),
@@ -256,7 +253,7 @@ fn closing_an_agents_terminal_asks_until_the_setting_is_chosen() {
 
     let (agent, shell) = (ResourceId::local(1), ResourceId::local(2));
     let mut desk = settings_desk();
-    desk.topology = Some(Topology {
+    desk.connection.topology = Some(Topology {
         sessions: Vec::new(),
         resources: Vec::new(),
         panes: Vec::new(),

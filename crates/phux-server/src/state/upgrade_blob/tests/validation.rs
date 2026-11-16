@@ -84,6 +84,15 @@ pub(super) fn blob(
     }
 }
 
+/// Session 1, its window 2, and its no-PTY pane 3.
+pub(super) fn one_pane_blob() -> StateBlob {
+    blob(
+        vec![session(1, vec![2])],
+        vec![window(2, 1, vec![3])],
+        vec![no_pty_pane(3, 2)],
+    )
+}
+
 pub(super) fn session_names(state: &ServerState) -> Vec<String> {
     let mut names: Vec<String> = state
         .registry()
@@ -105,11 +114,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
         .run_until(async {
             let mut state = ServerState::new();
             let _ = state.seed_empty_session("already-here");
-            let handoff = blob(
-                vec![session(1, vec![2])],
-                vec![window(2, 1, vec![3])],
-                vec![no_pty_pane(3, 2)],
-            );
+            let handoff = one_pane_blob();
             validate_upgrade_blob(&handoff).expect("complete topology");
             crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
                 .expect("rebuild");
@@ -145,6 +150,9 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
                 state.org().check_invariants().is_ok(),
                 "the import keeps every invariant"
             );
+            // phux-lv57: a resumed tree has served no client in this
+            // process, so it must not arm last-session self-exit.
+            assert!(!state.has_served_client());
         })
         .await;
 }
@@ -194,32 +202,6 @@ async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
         .await;
 }
 
-/// phux-lv57: a resumed tree has served no client in this process, so
-/// the rebuild must not arm last-session self-exit. Only a client that
-/// attaches (or creates a session) after the re-exec may arm it; until
-/// then a resumed pane's exit leaves the server running.
-#[tokio::test(flavor = "current_thread")]
-async fn rebuild_does_not_arm_last_session_self_exit() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let mut state = ServerState::new();
-            let handoff = blob(
-                vec![session(1, vec![2])],
-                vec![window(2, 1, vec![3])],
-                vec![no_pty_pane(3, 2)],
-            );
-            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
-                .expect("rebuild");
-            assert!(state.session_by_name("main").is_some());
-            assert!(
-                !state.has_served_client(),
-                "a resumed tree must not count as having served clients"
-            );
-        })
-        .await;
-}
-
 /// A session that names a window the blob does not contain fails closed
 /// and leaves the destination state untouched.
 #[tokio::test(flavor = "current_thread")]
@@ -247,22 +229,6 @@ async fn dangling_window_id_does_not_mutate_state() {
         .await;
 }
 
-#[test]
-pub(super) fn duplicate_session_wire_id_is_rejected() {
-    let handoff = blob(
-        vec![session(1, Vec::new()), session(1, Vec::new())],
-        Vec::new(),
-        Vec::new(),
-    );
-    match validate_upgrade_blob(&handoff) {
-        Err(RebuildError::DuplicateId { kind, id }) => {
-            assert_eq!(kind, "session");
-            assert_eq!(id, 1);
-        }
-        other => panic!("expected duplicate session, got {other:?}"),
-    }
-}
-
 pub(super) fn agent_session(wire_id: u32, parent_wire_id: u32) -> AgentSessionBlob {
     AgentSessionBlob {
         wire_id,
@@ -280,22 +246,37 @@ pub(super) fn agent_session(wire_id: u32, parent_wire_id: u32) -> AgentSessionBl
     }
 }
 
-/// Panes and agent sessions share one wire-id space.
+/// Duplicate session ids, an agent session reusing a pane's id (one
+/// wire-id space), and half a PTY pair are refused.
 #[test]
-pub(super) fn an_agent_session_reusing_a_pane_wire_id_is_rejected() {
-    let mut handoff = blob(
-        vec![session(1, vec![2])],
-        vec![window(2, 1, vec![3])],
-        vec![no_pty_pane(3, 2)],
+pub(super) fn malformed_ids_and_pty_pairs_are_rejected() {
+    let duplicate = blob(
+        vec![session(1, Vec::new()), session(1, Vec::new())],
+        Vec::new(),
+        Vec::new(),
     );
-    handoff.agent_sessions = vec![agent_session(3, 3)];
-    match validate_upgrade_blob(&handoff) {
-        Err(RebuildError::DuplicateId { kind, id }) => {
-            assert_eq!(kind, "resource");
-            assert_eq!(id, 3);
-        }
-        other => panic!("expected duplicate resource id, got {other:?}"),
-    }
+    assert!(matches!(
+        validate_upgrade_blob(&duplicate),
+        Err(RebuildError::DuplicateId {
+            kind: "session",
+            id: 1
+        })
+    ));
+    let mut reused = one_pane_blob();
+    reused.agent_sessions = vec![agent_session(3, 3)];
+    assert!(matches!(
+        validate_upgrade_blob(&reused),
+        Err(RebuildError::DuplicateId {
+            kind: "resource",
+            id: 3
+        })
+    ));
+    let mut half_pty = one_pane_blob();
+    half_pty.panes[0].master_fd = Some(11);
+    assert!(matches!(
+        validate_upgrade_blob(&half_pty),
+        Err(RebuildError::InvalidPtyPair { wire_id: 3 })
+    ));
 }
 
 /// A session whose parent pane is not in the blob is dropped; the rest
@@ -306,11 +287,7 @@ async fn an_agent_session_without_its_parent_pane_is_dropped() {
     local
         .run_until(async {
             let mut state = ServerState::new();
-            let mut handoff = blob(
-                vec![session(1, vec![2])],
-                vec![window(2, 1, vec![3])],
-                vec![no_pty_pane(3, 2)],
-            );
+            let mut handoff = one_pane_blob();
             handoff.agent_sessions = vec![agent_session(4, 3), agent_session(5, 99)];
             let watchers =
                 crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut state, &handoff)
@@ -327,19 +304,4 @@ async fn an_agent_session_without_its_parent_pane_is_dropped() {
             );
         })
         .await;
-}
-
-#[test]
-pub(super) fn incomplete_pty_pair_is_rejected() {
-    let mut pane = no_pty_pane(3, 2);
-    pane.master_fd = Some(11);
-    let handoff = blob(
-        vec![session(1, vec![2])],
-        vec![window(2, 1, vec![3])],
-        vec![pane],
-    );
-    match validate_upgrade_blob(&handoff) {
-        Err(RebuildError::InvalidPtyPair { wire_id }) => assert_eq!(wire_id, 3),
-        other => panic!("expected incomplete PTY pair, got {other:?}"),
-    }
 }

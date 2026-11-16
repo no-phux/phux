@@ -114,10 +114,6 @@ impl<L> LayoutNode<L> {
     }
 
     /// Like [`Self::map`], stopping at the first leaf `f` rejects.
-    ///
-    /// # Errors
-    ///
-    /// The first error `f` returns.
     pub fn try_map<M, E>(
         &self,
         f: &mut impl FnMut(&L) -> Result<M, E>,

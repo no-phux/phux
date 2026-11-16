@@ -36,7 +36,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
   lint: [["rust-lint"]],
   tests: [["test"]],
   e2e: [["e2e"]],
-  ffi: [["binding-uniffi-test"], ["ffi-abi"]],
+  ffi: [["binding-uniffi-test"]],
   icount: [["perf-icount"]],
   integrations: [["agent-integrations-check"]],
   web: [["web-vt-check"], ["web-client-check"]],

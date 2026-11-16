@@ -151,13 +151,6 @@ async fn resolve_target_with(
 
 /// Report a `%name` refusal on the shared error contract and return its
 /// exit status.
-///
-/// Every variant is a refusal to guess (ADR-0075 point 3), so each lands on
-/// a distinct code: a miss is `no_such_target` (1); two records or two
-/// sessions sharing the name are `selector_not_single` (2); a withdrawn record on an input verb is
-/// `agent_withdrawn` (2); an index that did not finish is `partial_view` —
-/// exit 3, or 1 when `keep_status` for the verbs whose status is already
-/// spoken for.
 pub(crate) fn report_agent_resolve_error(
     json: bool,
     err: &phux_client::selector::AgentResolveError,
@@ -172,8 +165,6 @@ pub(crate) fn report_agent_resolve_error(
 
 /// The CLI vocabulary's spelling of [`AgentResolveError::code`], so the
 /// codes stay in [`json_err::codes`] (a test pins the two equal).
-///
-/// [`AgentResolveError::code`]: phux_client::selector::AgentResolveError::code
 pub(super) const fn agent_resolve_code(
     err: &phux_client::selector::AgentResolveError,
 ) -> &'static str {
@@ -190,8 +181,6 @@ pub(super) const fn agent_resolve_code(
 
 /// [`AgentResolveError::exit_code`], except a partial index exits 1 under
 /// `keep_status` (the shared single-pane resolver, ADR-0075 point 3).
-///
-/// [`AgentResolveError::exit_code`]: phux_client::selector::AgentResolveError::exit_code
 pub(super) const fn agent_resolve_exit(
     err: &phux_client::selector::AgentResolveError,
     keep_status: bool,

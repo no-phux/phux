@@ -72,7 +72,7 @@ impl Event {
     /// Terminal damage, input delivery, agent metadata, and a session project
     /// tag leave the graph a caller already holds unchanged.
     #[must_use]
-    pub const fn changes_session_graph(&self) -> bool {
+    pub(crate) const fn changes_session_graph(&self) -> bool {
         !matches!(
             self,
             Self::TerminalChanged { .. }

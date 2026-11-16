@@ -11,6 +11,7 @@ use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
+use crate::ui::Cover;
 
 const WIDTH: f32 = 400.0;
 const CARD_W: f32 = 340.0;
@@ -181,6 +182,19 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
             .color(ink.dim)
             .truncate(),
     );
+    if let Some(credential) = &approval.credential {
+        for detail in inbox::credential_details(approval) {
+            card = card.child(text(detail).font(CAPTION).color(ink.text).wrap());
+        }
+        for reference in &credential.request.references {
+            card = card.child(
+                text(reference.clone())
+                    .font(CAPTION.family(Family::SystemMono))
+                    .color(ink.text)
+                    .wrap(),
+            );
+        }
+    }
     for subject in &approval.subjects {
         card = card.child(
             text(subject.clone())
@@ -306,9 +320,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
         .child(foot);
     el().key("inbox-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(Color::BLACK.alpha(0.16))
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())
@@ -326,10 +338,10 @@ pub struct AskCard {
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
 pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
-    if desk.find.is_some() || desk.inbox.open {
+    if desk.connection.find.is_some() || desk.inbox.open {
         return None;
     }
-    let pane = desk.topology.as_ref()?.pane(id)?;
+    let pane = desk.connection.topology.as_ref()?.pane(id)?;
     let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let width = CARD_W.min(area[0] - 20.0);
     if width < 160.0 {

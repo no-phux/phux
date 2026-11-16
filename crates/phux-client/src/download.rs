@@ -10,7 +10,6 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FileChunk, MAX_FILE_UPLOAD_CHUNK,
 };
@@ -87,15 +86,6 @@ pub async fn download_on(
         local_path: request.local_path,
         bytes: 0,
     };
-    if !conn
-        .server_features_ext()
-        .contains(ServerFeatureExt::FileDownload)
-    {
-        return Ok(transfer.refused(
-            None,
-            "the server does not advertise FILE_DOWNLOAD; upgrade phux on that host",
-        ));
-    }
     let part = part_path(&transfer.local_path);
     let file = match OpenOptions::new()
         .write(true)

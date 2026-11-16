@@ -10,6 +10,7 @@ use crate::keys::{self, Shortcut};
 use crate::ui::{icons, pressable};
 
 mod resource;
+use crate::ui::Cover;
 use resource::resource_row;
 
 // One inset and rhythm for the page, cards and their touch rows. Colors and
@@ -23,7 +24,7 @@ const COLUMN_MAX: f32 = 600.0;
 const PAGE_TITLE: TextStyle = TextStyle::new(24.0, 600.0);
 const SESSION_TITLE: TextStyle = TextStyle::new(15.0, 600.0);
 
-pub(super) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
+pub(in crate::ui) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
     let page = desk.phone_page()?;
     let title = match page {
         Page::Sessions => "Sessions",
@@ -60,9 +61,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, top: f32) -> Option<El> {
     Some(
         col()
             .key("phone-navigation-page")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .items_center()
             .pt(top)
             .fill(p.bg)
@@ -181,7 +180,7 @@ fn sessions(desk: &Desk, p: &Ink) -> El {
             .fill(p.bg.alpha(0.82)),
         p,
     );
-    let footer = if desk.client.is_some() {
+    let footer = if desk.connection.client.is_some() {
         footer
     } else {
         footer.inert()
@@ -257,7 +256,11 @@ fn matches(query: &str, fields: &[&str]) -> bool {
 }
 
 fn resource_matches(desk: &Desk, resource: &Addressable, query: &str) -> bool {
-    let pane = desk.topology.as_ref().and_then(|t| t.pane(&resource.id));
+    let pane = desk
+        .connection
+        .topology
+        .as_ref()
+        .and_then(|t| t.pane(&resource.id));
     let cwd = pane
         .and_then(|pane| pane.cwd.as_deref())
         .unwrap_or_default();
@@ -307,7 +310,7 @@ fn session_list(desk: &Desk, p: &Ink) -> El {
 }
 
 fn empty_state(desk: &Desk, query: &str, p: &Ink) -> El {
-    let (title, detail) = if desk.topology.is_none() {
+    let (title, detail) = if desk.connection.topology.is_none() {
         (
             "Loading sessions",
             "Your sessions will appear when connected.",
@@ -510,7 +513,7 @@ fn actions(desk: &Desk, p: &Ink) -> El {
                 | Shortcut::RenameTab
                 | Shortcut::CloseTerminal
         );
-        list = list.child(if needs_pane && desk.shown.is_none() {
+        list = list.child(if needs_pane && desk.connection.shown.is_none() {
             control.inert()
         } else {
             control

@@ -432,14 +432,10 @@ impl Desk {
             let saved = machine.clone().unwrap_or_default();
             let _ = self.prefs.set("machine", &saved);
         }
-        self.left_server();
-        let mut launch = self.launch.clone();
-        launch.session = session;
-        let mut next = Desk::open(&launch, machine.clone());
-        self.carry_into(&mut next);
-        next.machines.current = machine;
-        next.close_machines();
-        *self = next;
+        self.replace_connection(super::link::Replacement::Machine);
+        self.launch.session = session;
+        self.machines.current = machine;
+        self.close_machines();
         self.dial();
     }
 

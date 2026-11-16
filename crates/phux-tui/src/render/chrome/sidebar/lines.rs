@@ -136,11 +136,8 @@ impl SidebarPainter {
         }
     }
 
-    /// A machine segment header (ADR-0140): the host label in the chord
-    /// tone, with `here` flush right on the machine this terminal is
-    /// attached to. A machine that is down says so once, on its placeholder
-    /// row. Host identity comes from the projection and is never inferred
-    /// here.
+    /// A machine segment header (ADR-0140): the host label, with `here` flush
+    /// right on the attached machine.
     pub(super) fn host_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let here = s.switch_host.is_none() && !s.satellite;
         let tag = if here { "here" } else { "" };
@@ -221,12 +218,9 @@ impl SidebarPainter {
         justify(left, right, text_w)
     }
 
-    /// One roster line: the session's dot, name, and a histogram of the
-    /// panes that need a human (`●1 ◆2`) in the same glyphs and colours as
-    /// agent badges. A satellite session paints a dim dot and no counts: its
-    /// metadata is not subscribable here (`docs/protocol.md#commands-events-resources`).
-    /// A quiet dot takes the session's `[[sessions]]` colour; one that needs
-    /// you keeps its state colour.
+    /// One roster line: dot, name, and a histogram of panes that need a
+    /// human (`●1 ◆2`). A satellite session paints a dim dot and no counts; a
+    /// quiet dot takes the session's `[[sessions]]` colour.
     pub(super) fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
         let quiet = s.satellite || s.top_rank() < 3;

@@ -105,7 +105,7 @@ impl Desk {
         let Some(notice) = &self.notice else {
             return false;
         };
-        if notice.kind == NoticeKind::Info && !self.uploads.is_empty() {
+        if notice.kind == NoticeKind::Info && !self.connection.uploads.is_empty() {
             return false;
         }
         let left = notice.expires - self.clock;

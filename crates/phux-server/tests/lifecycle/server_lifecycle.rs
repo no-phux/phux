@@ -125,18 +125,8 @@ fn killing_the_last_pane_self_exits_once_the_client_leaves() {
         let (_tmp, socket, handle) = seeded("read _", None);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let pane = attach(&mut stream, "solo").await.focused_resource;
-        let kill = Command::KillResources {
-            ids: vec![pane],
-            operation_id: None,
-        };
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 2,
-                command: kill,
-            },
-        )
-        .await;
+        let kill = phux_server_testkit::kill_all(vec![pane]);
+        phux_server_testkit::send_command(&mut stream, 2, kill).await;
         // The kill's reply, then leave.
         let _ = recv_typed(&mut stream).await;
         drop(stream);
@@ -164,12 +154,12 @@ fn a_parked_persistent_session_does_not_hold_the_server_up_alone() {
         let (_tmp, socket, handle) = seeded("read _", None);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let pane = attach(&mut stream, "solo").await.focused_resource;
-        let mark = FrameKind::SetMetadata {
-            request_id: 1,
-            scope: Scope::Global,
-            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            value: encode_session_keep_empty("solo", true),
-        };
+        let mark = phux_server_testkit::set_metadata(
+            1,
+            Scope::Global,
+            SESSION_KEEP_EMPTY_KEY,
+            encode_session_keep_empty("solo", true),
+        );
         send_frame(&mut stream, &mark).await;
         // The mark has no reply: confirm it before closing the last pane.
         assert!(
@@ -178,14 +168,7 @@ fn a_parked_persistent_session_does_not_hold_the_server_up_alone() {
                 .keep_empty
         );
         let close = Command::CloseTabResources { ids: vec![pane] };
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 3,
-                command: close,
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut stream, 3, close).await;
         wait_for_state(&mut stream, 10, "the last pane to go", |s| {
             session(s, "solo").is_some_and(|solo| solo.window_count == 0 && solo.keep_empty)
         })

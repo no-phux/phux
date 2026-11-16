@@ -29,10 +29,8 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     assert_eq!(received[1].key, PhysicalKey::X);
 }
 
-/// With the prefix pending under a passthrough popup (which-key or first-use
-/// guidance), the next chord dismisses it AND runs its binding (`C-a d`
-/// detaches); Esc dismisses and cancels the prefix, so a following `d` is a
-/// plain keystroke.
+/// Under a passthrough popup with the prefix pending, the next chord
+/// dismisses it and runs; Esc dismisses and cancels the prefix.
 #[tokio::test]
 async fn passthrough_popups_never_eat_the_pending_chord() {
     for (events, onboarding, detaches) in [
@@ -80,15 +78,7 @@ async fn prefix_chord_matches_with_caps_lock_reported() {
     let cfg = default_cfg();
     let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
     let mut env = Env::new(CtxFixture::default()).with_default_bindings();
-    let leader = InputEvent::Key(KeyEvent {
-        action: KeyAction::Press,
-        key: prefix.key,
-        mods: prefix.modifiers | ModSet::CAPS_LOCK,
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    });
+    let leader = InputEvent::Key(crate::test_util::press_mods(prefix.key, prefix.modifiers | ModSet::CAPS_LOCK));
     let sent = env
         .dispatch(vec![leader, press(PhysicalKey::D, Some("d"))])
         .await;
@@ -215,17 +205,7 @@ async fn copy_mode_search_jumps_between_hits_in_scrollback() {
     assert!(env.fx.overlays.is_active(), "a miss keeps copy-mode open");
 }
 
-fn key_event(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: text.map(ToOwned::to_owned),
-        unshifted_codepoint: None,
-    }
-}
+use crate::test_util::press_text as key_event;
 
 /// Bracketed paste into a prompt or picker fills its text (controls
 /// stripped) without submitting, dismissing, or reaching the pane.

@@ -12,7 +12,7 @@ use std::time::Duration;
 use phux_protocol::ids::{ResourceId, ServerInstance};
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, FrameKind, KillConditions, KillPrecondition,
-    SpawnResource, SpawnResult, StateScope,
+    SpawnResource, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server_testkit::{
@@ -116,10 +116,7 @@ fn get_state_after_any_kill_reply_omits_the_killed_resources() {
         let pane = doomed_session(&mut killer, 1, "doomed").await;
         let before = state(&mut observer, 2).await;
         assert!(find(&before, &pane).is_some() && session(&before, "doomed").is_some());
-        let kill_all = Command::KillResources {
-            ids: vec![pane.clone()],
-            operation_id: None,
-        };
+        let kill_all = phux_server_testkit::kill_all(vec![pane.clone()]);
         assert_eq!(command(&mut killer, 3, kill_all).await, CommandResult::Ok);
         for (stream, request_id) in [(&mut killer, 4), (&mut observer, 5)] {
             let after = state(stream, request_id).await;
@@ -142,10 +139,7 @@ fn get_state_after_any_kill_reply_omits_the_killed_resources() {
         .await;
 
         let (single, _) = doomed_pane(&mut killer, 6).await;
-        let kill_one = Command::KillResource {
-            terminal_id: single.clone(),
-            operation_id: None,
-        };
+        let kill_one = phux_server_testkit::kill(single.clone());
         assert_eq!(command(&mut killer, 7, kill_one).await, CommandResult::Ok);
         assert_gone(&state(&mut observer, 8).await, &single, "KILL_RESOURCE");
 
@@ -196,10 +190,7 @@ fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {
             CommandResult::Ok | CommandResult::OkWith(_)
         ));
 
-        let kill = Command::KillResources {
-            ids: vec![pane.clone()],
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill_all(vec![pane.clone()]);
         assert_eq!(command(&mut killer, 4, kill).await, CommandResult::Ok);
         let after = state(&mut killer, 5).await;
         assert_gone(&after, &pane, "KILL_RESOURCES");
@@ -238,17 +229,8 @@ fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {
              already omits the pane"
         );
 
-        let barrier = Command::GetState {
-            scope: StateScope::Server,
-        };
-        send_frame(
-            &mut watcher,
-            &FrameKind::Command {
-                request_id: 6,
-                command: barrier,
-            },
-        )
-        .await;
+        let barrier = phux_server_testkit::get_state();
+        phux_server_testkit::send_command(&mut watcher, 6, barrier).await;
         wait_frame(&mut watcher, "the GET_STATE barrier", |frame| match frame {
             FrameKind::ResourceClosed {
                 terminal_id,
@@ -286,10 +268,7 @@ fn a_server_stop_reaps_killed_and_live_hangup_proof_panes() {
         let (_live, live_pid) =
             recorded_pane(&mut client, 2, &server.tmp.path().join("live.pid")).await;
 
-        let kill = Command::KillResource {
-            terminal_id: killed,
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(killed);
         assert_eq!(command(&mut client, 3, kill).await, CommandResult::Ok);
         drop(client);
         server.stop().await;

@@ -1,12 +1,8 @@
-//! Plugin manifest `[[sidebar]]` sections in the TUI (ADR-0148).
+//! Plugin `[[sidebar]]` sections (ADR-0148): one row per pane of this session
+//! rendered from the section's `format`, using only state the client already
+//! holds.
 //!
-//! Each section's rows are this session's panes in window/leaf order, each
-//! rendered from the section's `format`. Tokens resolve from state the client
-//! already holds per pane (tab label, OSC title, cwd, last exit code, the
-//! `phux.agent/v1` record), so a section adds no subscription, poll, or wire
-//! surface. A pane contributes a row only when every token the format names
-//! resolves for it: `{agent} {state}` lists agent panes, `{exit}` panes whose
-//! last command reported a code.
+//! A pane contributes a row only when every token resolves.
 
 use std::collections::HashMap;
 

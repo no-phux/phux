@@ -318,13 +318,9 @@ impl AgentSessionActor {
         };
         // The sequence space is claimed before anything is retained: a run
         // that would exhaust `u64` leaves the ring exactly as it was.
-        let Some(first_seq) = self.core.seq().checked_add(1) else {
-            let _ = reply.send(Err(AppendRejection::Overflow(
-                "the session's sequence space is exhausted".to_owned(),
-            )));
-            return;
-        };
-        let Some(last_seq) = first_seq.checked_add(records.len() as u64 - 1) else {
+        let first_seq = self.core.seq().checked_add(1);
+        let last_seq = first_seq.and_then(|first| first.checked_add(records.len() as u64 - 1));
+        let (Some(first_seq), Some(last_seq)) = (first_seq, last_seq) else {
             let _ = reply.send(Err(AppendRejection::Overflow(
                 "the session's sequence space is exhausted".to_owned(),
             )));

@@ -1,20 +1,14 @@
 //! Satellite uplinks: dialing out to a hub (ADR-0182, `docs/remote.md#linking-machines`).
 //!
-//! A server the hub cannot reach joins as a satellite by dialing the hub. On
-//! the hub, `phux host ticket NAME` mints a [`JoinCode`]; on this server,
-//! [`join`] enrolls a key it generates with that code's single-use ticket
-//! over the enrollment ALPN and stores the issued identity owner-only. Each
-//! `[[uplink]]` entry then gets one supervisor ([`Uplinks`]) that keeps a
-//! QUIC connection to the hub under [`SATELLITE_ALPN`], presenting that
-//! identity and pinning the hub's CA. The hub opens the streams. Each one is
-//! an ordinary phux connection, spliced byte for byte to this server's own
-//! owner socket, so the hub holds this server owner's authority, as an
-//! `ssh://` hub does through `phux stdio-bridge`.
-//!
-//! A lost or refused connection is redialed with the hub links' capped
-//! backoff, re-reading the identity files every attempt. The config-reload
-//! doorbell re-reads `[[uplink]]` and starts, stops, or redials exactly the
-//! uplinks that changed.
+//! A server the hub cannot reach joins by dialing it: [`join`] enrolls a
+//! generated key with a [`JoinCode`]'s single-use ticket and stores the issued
+//! identity owner-only. Each `[[uplink]]` entry then gets a supervisor
+//! ([`Uplinks`]) holding a QUIC connection under [`SATELLITE_ALPN`] that pins
+//! the hub's CA. Each stream the hub opens is spliced byte for byte to this
+//! server's owner socket, so the hub holds the owner's authority, as an
+//! `ssh://` hub does. Lost connections redial with backoff, re-reading the
+//! identity each attempt; config reload starts, stops or redials only what
+//! changed.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};

@@ -171,15 +171,7 @@ fn newer_commands() -> Vec<(&'static str, Vec<u8>)> {
         ),
         (
             "GetScreen.format",
-            last(
-                Command::GetScreen {
-                    terminal_id: ResourceId::local(1),
-                    request_scrollback: None,
-                    cells: false,
-                    format: 0,
-                },
-                9,
-            ),
+            last(phux_server_testkit::get_screen(ResourceId::local(1)), 9),
         ),
         ("CheckoutRequest", checkout),
         (

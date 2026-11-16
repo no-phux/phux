@@ -288,9 +288,8 @@ fn detached_without_a_reason_is_the_legacy_empty_body() {
         reason: None,
         message: String::new(),
     };
-    let mut buf = BytesMut::new();
-    unstated.encode(&mut buf);
-    assert_eq!(buf.as_ref(), framed_tlv(0x82, &[]).as_slice());
+    let buf = crate::common::encode(&unstated);
+    assert_eq!(buf.as_slice(), framed_tlv(0x82, &[]).as_slice());
     assert_round_trip(&unstated);
 }
 

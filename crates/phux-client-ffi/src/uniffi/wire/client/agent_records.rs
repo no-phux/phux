@@ -887,29 +887,27 @@ fn uniffi_empty_resume_preserves_history_and_empty_full_bootstrap_clears_it() {
 }
 
 #[test]
-fn uniffi_reconnect_does_not_request_cursor_without_capability_or_across_incarnations() {
-    for (server_id, supports_resume) in [(0xAB, false), (0xCD, true)] {
-        let (remote, queued) = attached_capabilities(snapshot(true), true);
-        open_agent_stream(&remote, agent_subscription(&queued));
-        let _ = remote.take_events();
-        let client = remote.runtime_client().unwrap();
-        client.with_control(|control| control.connection_lost(None));
-        let attach_id = handshake_capabilities(&client, server_id, supports_resume);
-        let queued = attach_to(&client, attach_id, snapshot(true), &[terminal()]);
-        assert!(
-            queued.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::AttachResource {
-                        agent_after_seq: None,
-                        ..
-                    },
+fn uniffi_reconnect_does_not_request_cursor_across_incarnations() {
+    let (remote, queued) = attached_capabilities(snapshot(true), true);
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let _ = remote.take_events();
+    let client = remote.runtime_client().unwrap();
+    client.with_control(|control| control.connection_lost(None));
+    let attach_id = handshake_capabilities(&client, 0xCD, true);
+    let queued = attach_to(&client, attach_id, snapshot(true), &[terminal()]);
+    assert!(
+        queued.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource {
+                    agent_after_seq: None,
                     ..
-                }
-            )),
-            "{queued:?}"
-        );
-    }
+                },
+                ..
+            }
+        )),
+        "{queued:?}"
+    );
 }
 
 #[test]

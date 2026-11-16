@@ -1,10 +1,6 @@
-//! Vi keys for copy-mode, following tmux's `copy-mode-vi` where there is a
-//! choice: `h j k l`, `w b e`, `0 ^ $`, `g G`, `H M L`, `C-u C-d C-b C-f`,
-//! `v V C-v` to select, `y` to copy.
-//!
-//! Word and line-end motions need the row's text, which only the dispatcher's
-//! engine has: the overlay asks with a [`CopyMotionRequest`] and the
-//! dispatcher answers with the target column from
+//! Vi keys for copy mode, following tmux's `copy-mode-vi`. Word and line-end
+//! motions need the row's text, so the overlay asks with a
+//! [`CopyMotionRequest`] and the dispatcher answers via
 //! [`phux_client_core::motion::row_motion_target`].
 
 use phux_protocol::input::key::{KeyEvent, ModSet, PhysicalKey};
@@ -183,20 +179,10 @@ impl CopyModeOverlay {
 mod tests {
     use super::*;
 
-    use phux_protocol::input::key::KeyAction;
-
     use crate::render::overlay::RenderOverlay as _;
 
     fn press(overlay: &mut CopyModeOverlay, key: PhysicalKey, mods: ModSet) -> OverlayCommand {
-        overlay.handle_key(&KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        overlay.handle_key(&crate::test_util::press_mods(key, mods))
     }
 
     fn plain(overlay: &mut CopyModeOverlay, key: PhysicalKey) -> OverlayCommand {

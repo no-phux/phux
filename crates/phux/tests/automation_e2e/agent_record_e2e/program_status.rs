@@ -2,12 +2,9 @@
 /// Nothing else is painted, so the agent record it projects comes from the
 /// report alone (docs/any-program-status.md).
 fn write_reporter(dir: &std::path::Path, name: &str, report: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let path = dir.join(name);
     let script = format!("#!/bin/sh\nprintf '\\033]7501;{report}\\033\\\\'\nsleep 120\n");
-    std::fs::write(&path, script).expect("write reporter");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod reporter");
+    crate::common::write_executable(&path, script);
     path
 }
 

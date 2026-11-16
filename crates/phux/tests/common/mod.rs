@@ -8,6 +8,11 @@
     reason = "test helper API favors uniform lifecycle constructors"
 )]
 #![allow(clippy::print_stderr, reason = "Drop cannot return cleanup failures")]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "shared fail-fast integration-test harness"
+)]
 
 use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
@@ -34,20 +39,11 @@ pub fn wait_until_accepting(socket: &Path) -> bool {
 }
 
 mod ambient;
-#[allow(
-    unused_imports,
-    reason = "re-exported for suites that spawn phux directly; others use ServerGuard"
-)]
-pub use ambient::{
-    NO_UPDATE_CHECK_ENV, NO_UPDATE_CHECK_VALUE, XdgDirs, ambient_phux_keys, disable_update_check,
-    isolated_xdg, phux_cmd,
-};
+#[allow(unused_imports, reason = "not every suite uses every helper")]
+pub use ambient::*;
 
 mod server_guard;
-#[allow(
-    unused_imports,
-    reason = "re-exported for suites that spawn a ServerGuard; other common consumers do not"
-)]
+#[allow(unused_imports, reason = "not every suite spawns a ServerGuard")]
 pub use server_guard::ServerGuard;
 
 /// Owns a directly spawned server until it has actually been reaped.

@@ -269,7 +269,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "phux-config"
-version = "0.152.0"
+version = "0.154.0"
 dependencies = [
  "chrono",
  "nix",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.152.0"
+version = "0.154.0"
 dependencies = [
  "nix",
  "serde",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.152.0"
+version = "0.154.0"
 dependencies = [
  "bitflags",
  "bytes",
@@ -319,6 +319,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -753,6 +754,12 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zlib-rs"

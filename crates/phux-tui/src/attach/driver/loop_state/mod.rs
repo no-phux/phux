@@ -1,15 +1,7 @@
 //! The attached session's long-lived state and the `tokio::select!` step
-//! that drives it.
-//!
-//! The handlers live beside this file: one module per wake-up source
-//! (input, frames, paint, inventory, bootstrap, panes, peers) so this
-//! type is not a single 3k-line impl.
-//!
-//! [`SessionLoop`] owns every local the attach loop carries across iterations.
-//! One named handler per wake-up source turns the `select!` into a dispatch.
-//! Every session-scoped field is rebuilt on each [`SessionLoop::new`], so a
-//! re-attach starts from a clean slate (no stale pane mirror, no
-//! carried-over predict queue).
+//! that drives it, with one handler module per wake-up source beside this
+//! file. Every session-scoped field is rebuilt by [`SessionLoop::new`], so a
+//! re-attach starts clean.
 
 #![allow(
     clippy::future_not_send,
@@ -23,7 +15,6 @@ pub(super) use std::time::Duration;
 pub(super) use phux_client_core::engine::ghostty::GhosttyAdapter;
 pub(super) use phux_client_core::history::HistoryCacheConfig;
 pub(super) use phux_client_core::session::SessionKernel;
-pub(super) use phux_protocol::caps::ServerFeature;
 pub(super) use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 pub(super) use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, Scope,
@@ -89,7 +80,7 @@ pub(super) use super::terminal::{
 pub(super) use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
     emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px,
-    resize_cell_px, view_rects, viewport_resize_frame,
+    resize_cell_px, view_rects,
 };
 
 pub(super) use handover::CarriedPeers;
@@ -157,10 +148,8 @@ pub(super) fn unanswered_spawns(
     windows.chain(splits).collect()
 }
 
-/// Window before a parser-pending bare ESC is taken as the Escape key. The
-/// outer terminal writes a key's full sequence in one burst, so a short window
-/// suffices; it must stay short because modal-editor users pay it on every
-/// Escape (tmux ships `escape-time 0..10` for the same reason).
+/// Window before a pending bare ESC is taken as the Escape key: a key's
+/// sequence arrives in one burst, and modal-editor users pay this per Escape.
 pub(super) const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
 
 /// Safety valve for an application that enters DEC synchronized output and
@@ -250,10 +239,8 @@ pub(super) const fn input_expects_a_reply(event: &phux_protocol::input::InputEve
     }
 }
 
-/// Whether an inbound burst must discharge the pacer's withheld debt before it
-/// parks. `paint_now` covers the case the timer cannot: an admitted burst just
-/// pushed the deadline out, and a saturating `conn.recv()` would starve the
-/// `paint_deadline` arm.
+/// Whether an inbound burst must discharge the pacer's withheld debt before
+/// it parks, since a saturating `conn.recv()` would starve the deadline arm.
 pub(super) const fn burst_settles_debt(paint_now: bool, deadline_passed: bool) -> bool {
     paint_now || deadline_passed
 }
@@ -315,14 +302,8 @@ pub(super) struct SessionLoop {
     arrangement_read_owed: bool,
     /// An input action changed shared layout; write it once the batch ends.
     arrangement_write_owed: bool,
-    /// Whether the server builds a spawned pane at the geometry we name.
-    spawn_initial_size_supported: bool,
-    /// What the `go-to-directory` picker can list on this server.
-    directory_support: crate::attach::directory_picker::DirectorySupport,
-    /// The host path picker: whether the server answers, and the query in flight.
-    path: path_picker::PickerState,
-    /// Whether the server advertised `ACKNOWLEDGED_INPUT` (ADR-0053 journal).
-    acknowledged_input_supported: bool,
+    /// The host path picker's query in flight; other reply ids are stale.
+    pending_path: Option<path_picker::PendingPath>,
     /// ADR-0053 replay journal, shared with the CLI reconnect loop so an
     /// unresolved operation is replayed under its original id. `None` on UDS.
     input_replay:
@@ -365,9 +346,6 @@ pub(super) struct SessionLoop {
     orphan_kills: super::orphans::OrphanKills,
     /// Per-identity review status; survives session switches.
     review: crate::attach::review::ReviewIndex,
-    /// Whether the server supports `KILL_RESOURCE_IF`, used to retry stray
-    /// satellite panes.
-    conditional_kill_supported: bool,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
@@ -388,11 +366,8 @@ pub(super) struct SessionLoop {
     /// provider task stops once this receiver is dropped.
     _hosts_tx: tokio::sync::mpsc::UnboundedSender<Vec<phux_core::host_list::HostJson>>,
     hosts_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<phux_core::host_list::HostJson>>,
-    /// phux-8n4w: bar ticks left to surface a background update check. The
-    /// production entry kicks `attach::update_notice::spawn_background_refresh`
-    /// before the loop; this poll reads its cache for a handful of ticks so a
-    /// check that lands mid-session still reaches the user, without a second
-    /// channel or a network call on the input loop.
+    /// Bar ticks left to read the background update check's cache, so a
+    /// check that lands mid-session still reaches the user.
     update_poll_ticks: u8,
     /// The window-strip painter; caches so an unchanged repaint emits nothing.
     sidebar_painter: SidebarPainter,
@@ -416,11 +391,8 @@ pub(super) struct SessionLoop {
     /// Host per-cell pixel size for `INPUT_MOUSE` pixel scaling, refreshed
     /// with `viewport_dims`.
     cell_px_dims: (u16, u16),
-    /// ADR-0145: the server applies per-pane cell size, so this client casts
-    /// no window-size vote and sizes panes only with `RESIZE_TERMINAL`.
-    sizes_panes_itself: bool,
-    /// The cell size every `RESIZE_TERMINAL` carries (`None` when the server
-    /// does not apply it or the host reports no pixel metrics).
+    /// The cell size every `RESIZE_TERMINAL` carries (ADR-0145; `None` when
+    /// the host reports no pixel metrics).
     resize_cell_px: Option<(u16, u16)>,
     /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
     rename_pending: Option<PendingSessionRename>,
@@ -479,14 +451,6 @@ pub(super) struct SessionLoop {
     project_toggle_request: Option<String>,
     /// A dispatched `agents-filter`, applied after the batch.
     agents_filter_request: Option<crate::render::chrome::sidebar::FilterRequest>,
-    /// phux-c2td.3: did the server advertise
-    /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
-    /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
-    /// older server would answer without a `hosts` list, and the picker's
-    /// ungrouped shape is the honest rendering of "this client cannot know
-    /// what else is out there".
-    host_sessions_supported: bool,
-    whoami_supported: bool,
     /// An action wants a fresher host inventory; drained into one `GET_STATE`.
     host_refresh_request: bool,
     /// When to next ask which down satellites are back; anchored.
@@ -567,7 +531,6 @@ impl SessionLoop {
         if let Some(width) = carried_sidebar.and_then(|carried| carried.width) {
             settings.sidebar.width = width;
         }
-        let server_features = negotiated.server_features;
         let (hosts_tx, hosts_rx) = tokio::sync::mpsc::unbounded_channel();
         let origin = crate::attach::hosts::recorded_origin();
         if origin.is_some() {
@@ -580,15 +543,7 @@ impl SessionLoop {
         overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
-        let sizes_panes_itself = negotiated
-            .server_features_ext
-            .contains(phux_protocol::ServerFeatureExt::ResizeCellPx);
-        let resize_cell_px = current_viewport()
-            .ok()
-            .and_then(|v| resize_cell_px(sizes_panes_itself, &v));
-        let conditional_kill_supported = server_features.contains(ServerFeature::ConditionalKill);
-        let mut orphan_kills = super::orphans::OrphanKills::default();
-        orphan_kills.set_conditional_kill(conditional_kill_supported);
+        let resize_cell_px = current_viewport().ok().and_then(|v| resize_cell_px(&v));
         Ok(Self {
             control_dial: None,
             organization_supported: negotiated
@@ -598,17 +553,9 @@ impl SessionLoop {
             peer_reader: None,
             arrangement_read_owed: false,
             arrangement_write_owed: false,
-            acknowledged_input_supported: server_features
-                .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
             delivery_fence_paint_pending: HashSet::new(),
-            spawn_initial_size_supported: server_features.contains(ServerFeature::SpawnInitialSize),
-            directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
-                server_features,
-            ),
-            path: path_picker::PickerState::new(negotiated.server_features_ext),
-            host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
-            whoami_supported: server_features.contains(ServerFeature::Whoami),
+            pending_path: None,
             host_refresh_request: false,
             satellite_probe_at: None,
             session_picker_dirty: false,
@@ -630,14 +577,13 @@ impl SessionLoop {
             deferred_arrangement_edits: Vec::new(),
             bootstrap_outbound: None,
             next_request_id: 1,
-            orphan_kills,
+            orphan_kills: super::orphans::OrphanKills::default(),
             review: crate::attach::review::ReviewIndex::new(),
-            conditional_kill_supported,
             pending_directory: None,
             vcs: VcsIndex::default(),
             sidebar_painter: settings
                 .sidebar_painter()
-                .with_agent_filter(crate::attach::agent_filter_state::load()),
+                .with_agent_filter(crate::attach::client_state::filter()),
             jobs: Jobs::new(),
             bind_reflow_owed: false,
             _hosts_tx: hosts_tx,
@@ -654,7 +600,6 @@ impl SessionLoop {
             ),
             viewport_dims,
             cell_px_dims,
-            sizes_panes_itself,
             resize_cell_px,
             rename_pending: None,
             rename_notice: None,
@@ -666,7 +611,7 @@ impl SessionLoop {
                     Vec::new()
                 },
                 origin,
-                collapsed_projects: crate::attach::project_collapse::load(),
+                collapsed_projects: crate::attach::client_state::collapsed(),
                 ..PeerWatch::default()
             },
             pick: initial_pick,

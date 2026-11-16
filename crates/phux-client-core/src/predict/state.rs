@@ -1,15 +1,7 @@
-//! Prediction state — the queue of in-flight predictions and the policy
-//! that decides which keystrokes are safe to predict.
-//!
-//! The prediction state is *cursor-anchored*, not *cell-anchored*: each
-//! prediction records the (row, col) at which it expects to paint, plus
-//! the character to paint there. The state machine maintains a small
-//! cursor estimate that walks forward by one column per printable
-//! prediction and backward by one column per backspace prediction, so
-//! consecutive predictions stack into a horizontal run.
-//!
-//! See the module-level docs in [`super`] for the rationale on which key
-//! classes are predicted and why the visual decoration is underline.
+//! Prediction state: the queue of in-flight predictions and the policy for
+//! which keystrokes are safe to predict. Predictions are cursor-anchored: a
+//! cursor estimate walks one column per insert or backspace, so consecutive
+//! predictions stack into a run.
 
 use std::collections::VecDeque;
 
@@ -88,7 +80,7 @@ pub enum PredictionOutcome {
 }
 
 /// The client-side prediction state: [`Self::predict_key`] enqueues on the
-/// keystroke path; [`super::reconcile_terminal_output_per_cell`] confirms
+/// keystroke path; `super::reconcile_terminal_output_per_cell` confirms
 /// or drops on the server-output path.
 #[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools, reason = "four independent latches")]
@@ -214,7 +206,7 @@ impl PredictionState {
 
     /// Re-anchor the cursor estimate from authoritative state and re-arm a
     /// suspended predictor. The tentative lock is untouched: it lifts only
-    /// through [`Self::note_reconcile`].
+    /// through `Self::note_reconcile`.
     pub fn set_cursor(&mut self, row: u16, col: u16) {
         let new_row = row.min(self.rows.saturating_sub(1));
         // The prompt anchor survives a same-row resync; a row change is a
@@ -235,7 +227,7 @@ impl PredictionState {
     /// contradiction turn the state tentative; two
     /// consecutive clean passes (confirms, no contradiction) lift it.
     /// Pending-only passes move neither streak.
-    pub fn note_reconcile(&mut self, stats: ReconcileStats) {
+    pub(crate) fn note_reconcile(&mut self, stats: ReconcileStats) {
         if stats.contradicted > 0 {
             self.contradiction_streak = self.contradiction_streak.saturating_add(1);
             self.clean_confirm_streak = 0;
@@ -264,8 +256,9 @@ impl PredictionState {
     }
 
     /// Whether the tentative display lock is on.
+    #[cfg(test)]
     #[must_use]
-    pub const fn is_tentative(&self) -> bool {
+    pub(crate) const fn is_tentative(&self) -> bool {
         self.tentative
     }
 
@@ -295,7 +288,7 @@ impl PredictionState {
 
     /// Whether the overlay should be presented (ADR-0090): not while
     /// tentative, not on the alternate screen without echo evidence, and
-    /// not once the front guess outlives [`Self::display_ttl_ms`].
+    /// not once the front guess outlives `Self::display_ttl_ms`.
     #[must_use]
     pub fn should_display(&self, now_ms: u64) -> bool {
         let Some(front) = self.pending.front() else {
@@ -313,7 +306,7 @@ impl PredictionState {
     /// Display lifetime derived from twice the smoothed echo RTT, clamped to
     /// the 1-second safety floor and 5-second ghost bound.
     #[must_use]
-    pub fn display_ttl_ms(&self) -> u64 {
+    pub(crate) fn display_ttl_ms(&self) -> u64 {
         self.srtt_ms.map_or(DISPLAY_TTL_MS, |srtt| {
             srtt.saturating_mul(2)
                 .clamp(DISPLAY_TTL_MS, DISPLAY_TTL_CAP_MS)
@@ -358,8 +351,9 @@ impl PredictionState {
     }
 
     /// Current prompt-boundary anchor `(row, col)`, if known.
+    #[cfg(test)]
     #[must_use]
-    pub const fn prompt_boundary(&self) -> Option<(u16, u16)> {
+    pub(crate) const fn prompt_boundary(&self) -> Option<(u16, u16)> {
         self.prompt_boundary
     }
 
@@ -378,7 +372,7 @@ impl PredictionState {
     /// Predicted: exactly one grapheme cluster of width 1 or 2 with no
     /// Ctrl/Alt/Super (Shift is fine); Backspace past column 0; Enter past
     /// column 0 above the last row; bare Ctrl-U with a known prompt
-    /// boundary. Arrows need the grid ([`Self::predict_key_with_grid`]) and
+    /// boundary. Arrows need the grid ([`Self::predict_key_with_grid_at`]) and
     /// are skipped here. Timeless (`now_ms = 0`).
     pub fn predict_key(&mut self, event: &KeyEvent) -> PredictionOutcome {
         self.predict_key_with_grid_at(event, 0, |_, _| None)
@@ -391,14 +385,19 @@ impl PredictionState {
 
     /// [`Self::predict_key`] with a read closure into the authoritative
     /// grid, consulted only for the width of the glyph an arrow steps over.
-    pub fn predict_key_with_grid<F>(&mut self, event: &KeyEvent, read_cell: F) -> PredictionOutcome
+    #[cfg(test)]
+    pub(crate) fn predict_key_with_grid<F>(
+        &mut self,
+        event: &KeyEvent,
+        read_cell: F,
+    ) -> PredictionOutcome
     where
         F: FnMut(u16, u16) -> Option<char>,
     {
         self.predict_key_with_grid_at(event, 0, read_cell)
     }
 
-    /// [`Self::predict_key_with_grid`] with a caller-supplied monotonic
+    /// [`Self::predict_key`] with a grid read and a caller-supplied monotonic
     /// clock.
     pub fn predict_key_with_grid_at<F>(
         &mut self,

@@ -28,16 +28,10 @@ pub(super) fn is_placeholder(text: &str) -> bool {
     text.starts_with(PLACEHOLDER)
 }
 
-/// Whether the outer terminal, judged by its environment, drops an image
-/// from the cells text overwrites (`WezTerm`, Konsole) instead of keeping it
-/// until a clear, so images must be re-sent on every paint.
-///
-/// The environment is all the TUI knows of the terminal (it sends no
-/// `XTVERSION` query), so this misses such a terminal behind tmux or screen
-/// (`TERM_PROGRAM` names the multiplexer), over SSH (neither variable is
-/// forwarded by default), or under a renamed `TERM_PROGRAM`; those fall back
-/// to the timed heal. A variable inherited from an outer session (Konsole
-/// launching another terminal) can also turn it on needlessly.
+/// Whether the outer terminal (judged by `TERM_PROGRAM`/`TERM`) drops images
+/// from overwritten cells (`WezTerm`, Konsole), so images must be re-sent on
+/// every paint. Misses such terminals behind tmux or SSH; those fall back to
+/// the timed heal.
 fn ties_images_to_cells(env: impl Fn(&str) -> Option<String>) -> bool {
     env("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"))
         || env("KONSOLE_VERSION").is_some_and(|version| !version.is_empty())
@@ -90,10 +84,8 @@ impl PaneKitty<'_> {
 }
 
 impl super::TerminalRenderer<'_> {
-    /// The pane left the visible layout (another window, a zoom): it is not
-    /// painted again until it returns, so delete its images from the outer
-    /// terminal, where they would stay over the panes shown there now, and
-    /// record that it holds none.
+    /// The pane left the visible layout: delete its images from the outer
+    /// terminal, where they would cover what is shown now.
     pub(in crate::attach) fn release_kitty(&mut self, out: &mut impl Write) -> io::Result<()> {
         if self.kitty.residency.release(out)? {
             self.front.invalidate_all();
@@ -119,12 +111,9 @@ impl super::TerminalRenderer<'_> {
 }
 
 impl<'alloc> PaneKitty<'alloc> {
-    /// Bring the outer terminal's copy of the pane's kitty graphics up to
-    /// date, emitting only what the residency says it lacks. Returns whether
-    /// a classic placement was written or removed: that moved the cursor and
-    /// drew over cells, so it forgets the front buffer. Unchanged images,
-    /// payload uploads and Unicode-placeholder placements leave cells and
-    /// front alone.
+    /// Bring the outer terminal's kitty graphics up to date, emitting only
+    /// what residency says it lacks. Returns whether a classic placement was
+    /// written or removed, which drew over cells and forgets the front.
     pub(super) fn replay(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,

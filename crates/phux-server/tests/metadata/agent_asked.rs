@@ -10,8 +10,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_until, recv_until_deadline, run_local, send_frame,
-    spawn_server_with_seed_cmd,
+    SpawnedServer, WIRE_RECV_TIMEOUT, recv_until, recv_until_deadline, run_local,
 };
 
 use crate::common::{attach_pane, connect_as, full_caps, gated_seed, subscribe_all};
@@ -34,14 +33,7 @@ async fn asked_before_reply(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<AgentEvent>) {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let mut asked = Vec::new();
     let result = recv_until(stream, |_, frame| match frame {
         FrameKind::CommandResult {
@@ -67,15 +59,13 @@ async fn asked_before_reply(
 fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
         let seed = gated_seed(
             &release,
             "printf '\\033]2;phux-ask[q1]:Deploy to prod??s=Yes|No|Hold\\007'; sleep 60",
         );
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", seed);
-        let (mut stream, _) = connect_as(&socket_path, "agent-asked", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (mut stream, _) = connect_as(&server.socket, "agent-asked", full_caps()).await;
         let pane = attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;
         std::fs::write(&release, b"go").unwrap();
@@ -108,7 +98,7 @@ fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
         );
 
         drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        server.stop().await;
     });
 }
 
@@ -116,12 +106,10 @@ fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
 fn report_asked_emits_asked_and_rejects_an_empty_question() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let mut park = CommandBuilder::new("/bin/sh");
         park.args(["-c", "sleep 600"]);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", park);
-        let (mut stream, _) = connect_as(&socket_path, "agent-asked", full_caps()).await;
+        let server = SpawnedServer::seeded_in(tmp, "demo", park);
+        let (mut stream, _) = connect_as(&server.socket, "agent-asked", full_caps()).await;
         let pane = attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;
 
@@ -158,6 +146,6 @@ fn report_asked_emits_asked_and_rejects_an_empty_question() {
         assert!(message.contains("question"), "{message}");
 
         drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        server.stop().await;
     });
 }

@@ -256,6 +256,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::Mirrors,
         ServerFeatureExt::PrivacyStatus,
         ServerFeatureExt::ClipboardRead,
+        ServerFeatureExt::Credentials,
         ServerFeatureExt::HostChecklist,
         ServerFeatureExt::ForwardTcp,
         ServerFeatureExt::ForwardAgent,
@@ -402,10 +403,6 @@ impl NegotiatedConnection {
     /// subscriptions start at `STREAM_BIND`.
     pub(in crate::runtime) const fn quic_streams(self) -> bool {
         self.server_features.contains(ServerFeature::QuicStreams)
-    }
-
-    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
-        self.server_features.contains(ServerFeature::TerminalReply)
     }
 }
 const fn runtime_server_features() -> ServerFeatureSet {

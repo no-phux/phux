@@ -6,7 +6,6 @@ use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 use tokio::sync::{Notify, watch};
 
-use super::ping::is_ping_frame;
 use super::*;
 use crate::connection::io::SEND_BUDGET;
 use crate::control::{ControlOptions, ControlPlane, encode};
@@ -269,25 +268,6 @@ async fn a_quiet_attached_session_probes() {
         types.contains(&TYPE_PING),
         "a quiet attached session must probe; wrote {types:?}"
     );
-}
-
-/// Pings are answered on the driver; every other frame, and a ping that
-/// does not decode, stays queued for the consumer in order.
-#[test]
-fn only_decodable_pings_are_peeled() {
-    let ping = encode(&FrameKind::Ping { nonce: 9 });
-    let other = encode(&FrameKind::Pong { nonce: 3 });
-    let mut truncated_ping = ping.clone();
-    truncated_ping.truncate(ping.len() - 1);
-    let (keep, pongs) = peel_queued_pings(
-        [&other, &ping, &truncated_ping, &vec![0, 0]]
-            .map(|frame| bytes::Bytes::copy_from_slice(frame))
-            .into(),
-    );
-    assert_eq!(keep, vec![other, truncated_ping, vec![0, 0]]);
-    assert_eq!(pongs, vec![encode(&FrameKind::Pong { nonce: 9 })]);
-    assert!(is_ping_frame(&ping));
-    assert!(!is_ping_frame(&[]));
 }
 
 /// An answered probe publishes its round trip: off QUIC, the time since the

@@ -110,6 +110,9 @@ pub enum DecodeError {
     /// A native request was not valid JSON matching the typed DTO.
     #[error("invalid NATIVE_AGENT JSON payload")]
     InvalidNativeAgentPayload,
+    /// A credential message was malformed or exceeded its bounds.
+    #[error("invalid or oversized credential payload")]
+    InvalidCredentialPayload,
 
     /// A `CHECKOUT` request or answer exceeded its JSON byte bound.
     #[error("CHECKOUT payload exceeds protocol limits")]

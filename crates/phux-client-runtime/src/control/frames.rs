@@ -57,54 +57,6 @@ const fn allowed_before_handshake(frame: &FrameKind) -> bool {
 }
 
 impl ControlPlane {
-    // ----- the queued inbound lane ----------------------------------
-
-    /// Retain one frame for the consumer to feed itself, under
-    /// [`InboundDelivery::Queued`](super::InboundDelivery::Queued).
-    pub fn queue_inbound(&mut self, frame: impl Into<Bytes>) -> Result<(), ControlError> {
-        self.queue_inbound_batch(vec![frame.into()])
-    }
-
-    /// Retain one transport read's frames whole.
-    ///
-    /// The driver stops reading while [`Self::has_inbound_room`] is false,
-    /// so the ceilings are backpressure, not a failure: a batch read while
-    /// there was room always lands, and the queue stays within the
-    /// ceilings plus one read. Queueing past a full queue is a
-    /// protocol-level failure: that caller ignored the backpressure.
-    pub fn queue_inbound_batch(&mut self, frames: Vec<Bytes>) -> Result<(), ControlError> {
-        if !self.has_inbound_room() {
-            return Err(ControlError::Protocol(
-                "inbound frame queue overflowed; the consumer stopped draining".to_owned(),
-            ));
-        }
-        for frame in frames {
-            self.inbound_bytes = self.inbound_bytes.saturating_add(frame.len());
-            self.inbound.push(frame);
-        }
-        Ok(())
-    }
-
-    /// Whether the driver may read another batch for the consumer.
-    #[must_use]
-    pub const fn has_inbound_room(&self) -> bool {
-        self.inbound.len() < super::MAX_QUEUED_INBOUND_FRAMES
-            && self.inbound_bytes < super::MAX_QUEUED_INBOUND_BYTES
-    }
-
-    /// Drain the retained inbound frames.
-    #[must_use]
-    pub fn take_inbound(&mut self) -> Vec<Bytes> {
-        self.inbound_bytes = 0;
-        std::mem::take(&mut self.inbound)
-    }
-
-    /// Whether any retained inbound frame is waiting.
-    #[must_use]
-    pub const fn has_inbound(&self) -> bool {
-        !self.inbound.is_empty()
-    }
-
     // ----- frames in ------------------------------------------------
 
     /// Decode exactly one SPEC section 5 frame under the negotiated limits
@@ -133,23 +85,6 @@ impl ControlPlane {
                     );
                 }
             };
-            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
-        }
-        self.finish_batch(engine_events, deferred_error)
-    }
-
-    /// Feed already-decoded frames in order, applying each contiguous run
-    /// of engine events as one projection batch: one owner-thread round trip
-    /// and one publication per damaged terminal, however many frames the run
-    /// carried. [`Self::feed_bytes_batch`] without the decode, for a binding
-    /// that decodes on its own thread to run per-frame hooks first.
-    pub fn feed_batch(
-        &mut self,
-        frames: impl IntoIterator<Item = FrameKind>,
-    ) -> Result<(), ControlError> {
-        let mut engine_events = Vec::new();
-        let mut deferred_error = None;
-        for frame in frames {
             self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
         }
         self.finish_batch(engine_events, deferred_error)
@@ -379,7 +314,7 @@ impl ControlPlane {
             FrameKind::DirectoryListing { request_id, result } => {
                 if let Some(result) = self.resolve_directory_listing(request_id, result) {
                     // Preserve manually correlated extension traffic for
-                    // projection shims such as the stable C ABI.
+                    // consumers that read raw frames.
                     self.push_event(Event::Frame(Box::new(FrameKind::DirectoryListing {
                         request_id,
                         result,

@@ -4,8 +4,7 @@ use super::{
     ATTACH_READY_DEADLINE, AttachError, AttachTarget, Connection, Duration, FrameKind,
     GhosttyAdapter, HeadlessCompletion, HeadlessSession, HistoryCacheConfig, Instant, Path,
     SessionId, SessionKernel, attach_client_caps, attach_client_name, headless_chrome,
-    request_history_page, request_layout, restart_attach, send_attach_without_size_vote,
-    wait_for_attached,
+    request_history_page, request_layout, restart_attach, send_attach, wait_for_attached,
 };
 
 /// What `phux rec --composited` asks for: where the cast goes, the virtual
@@ -24,17 +23,12 @@ pub struct CompositedCapture<'a> {
     pub max_duration: Option<Duration>,
 }
 
-/// Headless composited capture (`phux rec --composited`).
+/// Headless composited capture (`phux rec --composited`): a non-voting attach
+/// composited into `capture.cast_path` at the caller's virtual grid
+/// ([`crate::attach::record::SessionRecorder::create_virtual`]).
 ///
-/// Attaches with a zero viewport, the same non-voting attach as
-/// [`crate::attach::run_headless_rendered`], and composites into `capture.cast_path` at
-/// the caller's cell grid. The grid is a virtual viewport owned by
-/// [`crate::attach::record::SessionRecorder::create_virtual`]: the size
-/// probe never reads the host terminal, and this function never sends
-/// `VIEWPORT_RESIZE` or a pane resize. Real panes keep the size they had.
-///
-/// Stops on Ctrl-C, `capture.max_duration`, or the server going away.
-/// Whatever was captured is left as a playable cast.
+/// Sends no resize, so real panes keep their size. Stops on Ctrl-C,
+/// `capture.max_duration`, or the server going away, leaving a playable cast.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -62,7 +56,7 @@ pub async fn record_composited(
     );
     // Zero viewport: the server resizes nothing (L1 §9). The cell grid
     // below is local to the compositor.
-    let mut attach_id = send_attach_without_size_vote(&mut conn, target).await?;
+    let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = match wait_for_attached(&mut conn, attach_id).await {
         Ok(frame) => frame,
         Err(err) => {
@@ -96,8 +90,7 @@ pub async fn record_composited(
     if let Err(err) = session.request_agent_records(&mut conn).await {
         return end_composited(conn, &mut recorder, Err(err)).await;
     }
-    let layout_get_request_id = match request_layout(
-        &mut conn,
+    if let Err(err) = request_layout(
         socket,
         &mut session,
         outcome.subscribe_layout,
@@ -105,10 +98,9 @@ pub async fn record_composited(
     )
     .await
     {
-        Ok(id) => id,
-        Err(err) => return end_composited(conn, &mut recorder, Err(err)).await,
-    };
-    let mut completion = HeadlessCompletion::new(layout_get_request_id);
+        return end_composited(conn, &mut recorder, Err(err)).await;
+    }
+    let mut completion = HeadlessCompletion::default();
 
     let started = Instant::now();
     let stop_at = capture
@@ -125,7 +117,6 @@ pub async fn record_composited(
             completion: &mut completion,
             attach_id: &mut attach_id,
             focused_session,
-            layout_get_request_id,
         };
         match link.settle(settle_until).await {
             Ok(()) => {
@@ -147,7 +138,6 @@ pub(super) struct RecordingLink<'a> {
     completion: &'a mut HeadlessCompletion,
     attach_id: &'a mut u32,
     focused_session: Option<SessionId>,
-    layout_get_request_id: Option<u32>,
 }
 
 impl RecordingLink<'_> {
@@ -229,9 +219,7 @@ impl RecordingLink<'_> {
     )]
     async fn absorb(&mut self, frame: FrameKind) -> Result<(), AttachError> {
         self.completion.observe_frame(&frame, *self.attach_id);
-        let outcome =
-            self.session
-                .ingest(frame, self.focused_session, self.layout_get_request_id)?;
+        let outcome = self.session.ingest(frame, self.focused_session, None)?;
         if outcome.resync_required {
             *self.attach_id = restart_attach(
                 self.conn,

@@ -59,7 +59,7 @@ fn publish(client: &Client, seq: u64, payload: &[u8]) {
 
 /// Attached to `main`'s terminal and an accessibility tree, both bootstrapped.
 fn attached_with_tree() -> Client {
-    let client = phux_client_runtime::Runtime::embedded(ControlOptions {
+    let mut client = phux_client_runtime::Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("main".into())),
         viewport: (20, 4),
         ..ControlOptions::default()
@@ -67,26 +67,13 @@ fn attached_with_tree() -> Client {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = client
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    let attach_id = client.queued_attach_id();
     let mut snapshot = snapshot();
     snapshot.resources.push(
         ResourceInfo::resource(tree(), ResourceKind::AccessibilityTree)
             .with_session(Some(SessionId::new(1))),
     );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    client.attached(attach_id, snapshot);
     bootstrap(
         &client,
         terminal(),

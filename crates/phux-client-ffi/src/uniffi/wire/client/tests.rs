@@ -263,8 +263,8 @@ fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
         },
         &mut projected,
     );
-    // Raw extension delivery remains available to the C ABI, but cannot
-    // reintroduce duplicate or stale badge handling in this encoder.
+    // Raw extension delivery cannot reintroduce duplicate or stale badge
+    // handling.
     remote.project_event(
         None,
         Event::Frame(Box::new(FrameKind::MetadataChanged {

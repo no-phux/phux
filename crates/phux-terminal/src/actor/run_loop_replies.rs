@@ -31,7 +31,6 @@ impl TerminalActor {
                 Self::install_default_colors(terminal, req.colors)
             }
             CanonicalTerminal::Plain(None) => Ok(()),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             CanonicalTerminal::Native(_) => {
                 warn!("default palette update deferred while native cuts are active");
                 Ok(())

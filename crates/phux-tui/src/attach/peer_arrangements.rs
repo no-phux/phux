@@ -229,12 +229,9 @@ async fn read_on(
     result.map_err(|err| err.to_string())
 }
 
-/// Read the arrangements of every listed session but `ours`, in handle
-/// space: one `GET_ORGANIZATION` (narrowed to the one session when `only`
-/// names exactly one), then one `ARRANGEMENT_GET` per session. `only`, when
-/// given, limits the reads to those keys. A session with no arrangement, or
-/// one whose read the server refuses, maps to `None`; a session without a
-/// live id is skipped.
+/// Read every listed session's arrangement but `ours`, in handle space: one
+/// `GET_ORGANIZATION`, then one `ARRANGEMENT_GET` per session (limited to
+/// `only` when given). A missing or refused arrangement maps to `None`.
 ///
 /// # Errors
 ///

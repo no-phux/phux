@@ -1,8 +1,21 @@
 //! The session graph and organization records as Swift and Kotlin read
-//! them: mirrors of [`crate::projection::topology`], lowered by `From`.
-//! Keys are full base32 text and group identities 32 hex digits.
+//! them.
+//!
+//! The runtime's [`Topology`] keeps sessions, panes, and agent sessions as
+//! separate lists joined by id, and its organization replica holds the
+//! records behind them. A phone paints a list, so each pane is denormalized
+//! with its session and, when the session's arrangement is held, its group.
+//! Terminal identities are in their [`id`] string form, keys full base32
+//! text, and group identities 32 hex digits. Every field the runtime knows
+//! reaches the binding, including records with no live handle.
 
-use crate::projection::{organization, topology};
+use phux_client_core::layout::{self, ArrangementDoc};
+use phux_client_runtime::control::{OrganizationReplica, Topology};
+use phux_protocol::ResourceId;
+use phux_protocol::ids::{Revision, SessionKey};
+use phux_protocol::wire::frame::{ActivationInfo, Outcome, ResourceRecord};
+
+use crate::projection::{id, topology};
 
 /// How an activation ended.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,13 +30,17 @@ pub enum ActivationOutcome {
     Other,
 }
 
-impl From<topology::ActivationOutcome> for ActivationOutcome {
-    fn from(value: topology::ActivationOutcome) -> Self {
+impl From<Outcome> for ActivationOutcome {
+    fn from(value: Outcome) -> Self {
         match value {
-            topology::ActivationOutcome::Exited(code) => Self::Exited { code },
-            topology::ActivationOutcome::Signaled(signal) => Self::Signaled { signal },
-            topology::ActivationOutcome::Unobserved => Self::Unobserved,
-            topology::ActivationOutcome::Other => Self::Other,
+            Outcome::Exited(code) => Self::Exited { code },
+            Outcome::Signaled(signal) => Self::Signaled { signal },
+            Outcome::Unobserved => Self::Unobserved,
+            #[allow(
+                unreachable_patterns,
+                reason = "Outcome is non_exhaustive across crates"
+            )]
+            _ => Self::Other,
         }
     }
 }
@@ -39,12 +56,12 @@ pub struct ActivationDescriptor {
     pub outcome: Option<ActivationOutcome>,
 }
 
-impl From<topology::Activation> for ActivationDescriptor {
-    fn from(value: topology::Activation) -> Self {
+impl From<&ActivationInfo> for ActivationDescriptor {
+    fn from(info: &ActivationInfo) -> Self {
         Self {
-            id: value.id,
-            state: value.state.to_owned(),
-            outcome: value.outcome.map(Into::into),
+            id: info.id.get(),
+            state: topology::exec_word(info.state).to_owned(),
+            outcome: info.outcome.map(Into::into),
         }
     }
 }
@@ -90,33 +107,6 @@ pub struct SessionProjectDescriptor {
     pub linked_worktree: bool,
 }
 
-impl From<topology::Session> for SessionDescriptor {
-    fn from(value: topology::Session) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-            attached_client_count: value.attached_client_count,
-            created_at_unix_secs: value.created_at_unix_secs,
-            key: value.key,
-            lifetime: value.lifetime.map(str::to_owned),
-            revision: value.revision,
-            member_count: value.member_count,
-            arrangement: value.arrangement,
-            awaiting_organization: value.awaiting_organization,
-            inbox: value.inbox,
-            focused: value.focused,
-            touched: value.touched,
-            project: value.project.map(|project| SessionProjectDescriptor {
-                id: project.id,
-                name: project.name,
-                branch: project.branch,
-                linked_worktree: project.linked_worktree,
-            }),
-            project_link: value.project_link,
-        }
-    }
-}
-
 /// One live terminal, denormalized with its session and, when the session's
 /// arrangement is held, the group that shows it, so Swift needs no joins.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -152,31 +142,6 @@ pub struct PaneDescriptor {
     pub label: String,
 }
 
-impl From<topology::Pane> for PaneDescriptor {
-    fn from(value: topology::Pane) -> Self {
-        Self {
-            terminal_id: value.terminal_id,
-            session_id: value.session_id,
-            session_name: value.session_name,
-            session_key: value.session_key,
-            cols: value.cols,
-            rows: value.rows,
-            title: value.title,
-            cwd: value.cwd,
-            is_focused: value.is_focused,
-            key: value.key,
-            revision: value.revision,
-            name: value.name,
-            activation: value.activation.map(Into::into),
-            group_id: value.group_id,
-            group_index: value.group_index,
-            group_name: value.group_name,
-            foreground: value.foreground,
-            label: value.label,
-        }
-    }
-}
-
 /// One `AgentSession` resource bound to a terminal.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct AgentSessionDescriptor {
@@ -187,14 +152,14 @@ pub struct AgentSessionDescriptor {
     pub state: Option<String>,
 }
 
-impl From<topology::AgentSession> for AgentSessionDescriptor {
-    fn from(value: topology::AgentSession) -> Self {
+impl From<phux_client_runtime::control::AgentSessionDescriptor> for AgentSessionDescriptor {
+    fn from(agent: phux_client_runtime::control::AgentSessionDescriptor) -> Self {
         Self {
-            id: value.id,
-            parent: value.parent,
-            provider: value.provider,
-            native_id: value.native_id,
-            state: value.state,
+            id: id::encode(&agent.id),
+            parent: agent.parent.as_ref().map(id::encode),
+            provider: agent.provider,
+            native_id: agent.native_id,
+            state: agent.state,
         }
     }
 }
@@ -216,19 +181,28 @@ pub struct ResourceRecordDescriptor {
     pub live: Option<String>,
 }
 
-impl From<topology::Record> for ResourceRecordDescriptor {
-    fn from(value: topology::Record) -> Self {
+impl From<&ResourceRecord> for ResourceRecordDescriptor {
+    fn from(record: &ResourceRecord) -> Self {
         Self {
-            key: value.key,
-            session_key: value.session_key,
-            name: value.name,
-            kind: value.kind,
-            on_exit: value.on_exit.to_owned(),
-            activation: value.activation.map(Into::into),
-            revision: value.revision,
-            live: value.live,
+            key: record.key.to_string(),
+            session_key: record.session.to_string(),
+            name: record.name.clone(),
+            kind: topology::kind_word(record.kind),
+            on_exit: topology::exit_policy_word(record.on_exit).to_owned(),
+            activation: record.activation.as_ref().map(Into::into),
+            revision: record.revision.get(),
+            live: record.live.as_ref().map(id::encode),
         }
     }
+}
+
+/// Every resource record the organization replica holds, in record order;
+/// empty until it names an authority.
+pub(crate) fn records(replica: &OrganizationReplica) -> Vec<ResourceRecordDescriptor> {
+    if replica.authority().is_none() {
+        return Vec::new();
+    }
+    replica.resources().iter().map(Into::into).collect()
 }
 
 /// The session graph: sessions, live panes, agent sessions, and every
@@ -248,18 +222,137 @@ pub struct SessionTopology {
     pub inbox: Option<String>,
 }
 
-impl From<topology::SessionGraph> for SessionTopology {
-    fn from(value: topology::SessionGraph) -> Self {
-        Self {
-            sessions: value.sessions.into_iter().map(Into::into).collect(),
-            panes: value.panes.into_iter().map(Into::into).collect(),
-            agent_sessions: value.agent_sessions.into_iter().map(Into::into).collect(),
-            records: value.records.into_iter().map(Into::into).collect(),
-            focused_session: value.focused_session,
-            focused_pane: value.focused_pane,
-            authority: value.authority,
-            inbox: value.inbox,
-        }
+/// Where a terminal sits in an arrangement.
+struct Placement {
+    id: [u8; 16],
+    index: u32,
+    name: String,
+}
+
+fn placement(doc: &ArrangementDoc, terminal: &ResourceId) -> Option<Placement> {
+    doc.groups.iter().enumerate().find_map(|(index, group)| {
+        let tree = group.state.tree.as_ref()?;
+        layout::leaves(tree).contains(terminal).then(|| Placement {
+            id: group.id,
+            index: u32::try_from(index).unwrap_or(u32::MAX),
+            name: group.name.clone(),
+        })
+    })
+}
+
+fn session(
+    session: phux_client_runtime::control::SessionDescriptor,
+    intake: Option<SessionKey>,
+    focused_session: u32,
+) -> SessionDescriptor {
+    SessionDescriptor {
+        id: session.id,
+        name: session.name,
+        attached_client_count: session.attached_client_count,
+        created_at_unix_secs: session.created_at_unix_secs,
+        key: session.key.map(|key| key.to_string()),
+        lifetime: session
+            .lifetime
+            .map(|lifetime| topology::lifetime_word(lifetime).to_owned()),
+        revision: session.revision.map(Revision::get),
+        member_count: session.members,
+        arrangement: session.arrangement.map(|key| key.to_string()),
+        awaiting_organization: session.awaiting_organization,
+        inbox: session.key.is_some() && session.key == intake,
+        focused: session.id == focused_session,
+        touched: session.touched,
+        project: session.project.map(|project| SessionProjectDescriptor {
+            id: project.id,
+            name: project.name,
+            branch: project.branch,
+            linked_worktree: project.linked_worktree,
+        }),
+        project_link: session.project_link,
+    }
+}
+
+/// Flatten one runtime topology snapshot, with the organization replica's
+/// records and arrangements when the binding has them.
+pub(crate) fn session_topology(
+    topology: Topology,
+    organization: Option<&OrganizationReplica>,
+) -> SessionTopology {
+    let intake = topology.intake();
+    let focused_session = topology.focused_session;
+    let arrangement_of = |key: Option<SessionKey>| -> Option<ArrangementDoc> {
+        let (replica, key) = (organization?, key?);
+        replica
+            .arrangement_document(&key)
+            .map(|(_, _, document, _)| document)
+    };
+    let docs: Vec<(u32, Option<SessionKey>, Option<ArrangementDoc>)> = topology
+        .sessions
+        .iter()
+        .map(|session| (session.id, session.key, arrangement_of(session.key)))
+        .collect();
+    let sessions = topology
+        .sessions
+        .into_iter()
+        .map(|descriptor| session(descriptor, intake, focused_session))
+        .collect();
+    let panes = topology
+        .panes
+        .into_iter()
+        .map(|pane| {
+            let held = docs.iter().find(|(id, _, _)| *id == pane.session_id);
+            let session_key = held.and_then(|(_, key, _)| *key);
+            let placed = held
+                .and_then(|(_, _, doc)| doc.as_ref())
+                .and_then(|doc| placement(doc, &pane.terminal_id));
+            let activation = organization
+                .and_then(|replica| replica.resource_by_live(&pane.terminal_id))
+                .and_then(|record| record.activation.as_ref())
+                .map(Into::into)
+                .or_else(|| {
+                    pane.activation
+                        .zip(pane.exec)
+                        .map(|(id, state)| ActivationDescriptor {
+                            id: id.get(),
+                            state: topology::exec_word(state).to_owned(),
+                            outcome: None,
+                        })
+                });
+            let label = pane.label();
+            PaneDescriptor {
+                terminal_id: id::encode(&pane.terminal_id),
+                session_id: pane.session_id,
+                session_name: pane.session_name,
+                session_key: session_key.map(|key| key.to_string()),
+                cols: pane.cols,
+                rows: pane.rows,
+                title: pane.title,
+                cwd: pane.cwd,
+                is_focused: pane.is_focused,
+                key: pane.key.map(|key| key.to_string()),
+                revision: pane.revision.map(Revision::get),
+                name: pane.name,
+                activation,
+                group_id: placed.as_ref().map(|p| topology::group_id_text(&p.id)),
+                group_index: placed.as_ref().map(|p| p.index),
+                group_name: placed.map(|p| p.name),
+                foreground: pane.foreground,
+                label,
+            }
+        })
+        .collect();
+    SessionTopology {
+        sessions,
+        panes,
+        agent_sessions: topology
+            .agent_sessions
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        records: organization.map(records).unwrap_or_default(),
+        focused_session,
+        focused_pane: id::encode(&topology.focused_pane),
+        authority: topology.authority.map(|key| key.to_string()),
+        inbox: intake.map(|key| key.to_string()),
     }
 }
 
@@ -276,24 +369,6 @@ pub struct OrgTargetResult {
     pub message: String,
 }
 
-impl From<organization::TargetResult> for OrgTargetResult {
-    fn from(value: organization::TargetResult) -> Self {
-        use phux_protocol::ids::{ResourceKey, SessionKey};
-        let key = if value.is_session {
-            SessionKey::new(value.key).map(|key| key.to_string())
-        } else {
-            ResourceKey::new(value.key).map(|key| key.to_string())
-        };
-        Self {
-            key: key.unwrap_or_default(),
-            is_session: value.is_session,
-            status: value.status.word().to_owned(),
-            refusal: value.refusal,
-            message: value.message,
-        }
-    }
-}
-
 /// The owner-local Intake: the designated Intake session and every session
 /// awaiting organization, with their member records.
 /// The legacy record and field names preserve existing generated bindings.
@@ -307,3 +382,116 @@ pub struct InboxDescriptor {
 
 /// Preferred Rust spelling; generated bindings retain the legacy record name.
 pub type IntakeDescriptor = InboxDescriptor;
+
+#[cfg(test)]
+mod tests {
+    use super::session_topology;
+    use phux_client_core::layout::wire::HandleMap;
+    use phux_client_runtime::control::{
+        AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology,
+    };
+    use phux_protocol::ResourceId;
+    use phux_protocol::ids::{ActivationId, ResourceKey, Revision, SessionKey};
+    use phux_protocol::wire::frame::{ExecState, SessionLifetime};
+
+    fn session_key() -> SessionKey {
+        SessionKey::new([3; 16]).unwrap()
+    }
+
+    fn topology() -> Topology {
+        Topology {
+            sessions: vec![SessionDescriptor {
+                id: 1,
+                name: "work".to_owned(),
+                attached_client_count: 1,
+                keep_empty: true,
+                created_at_unix_secs: 42,
+                key: Some(session_key()),
+                touched: None,
+                lifetime: Some(SessionLifetime::Persistent),
+                revision: Some(Revision::new(5)),
+                members: 2,
+                arrangement: None,
+                awaiting_organization: true,
+                project: None,
+                project_link: None,
+            }],
+            resources: Vec::new(),
+            panes: vec![PaneDescriptor {
+                terminal_id: ResourceId::satellite("box", 4),
+                session_id: 1,
+                session_name: "work".to_owned(),
+                cols: 80,
+                rows: 24,
+                title: Some("vim".to_owned()),
+                cwd: None,
+                is_focused: true,
+                key: Some(ResourceKey::new([7; 16]).unwrap()),
+                revision: Some(Revision::new(9)),
+                name: Some("editor".to_owned()),
+                activation: Some(ActivationId::new(2)),
+                exec: Some(ExecState::Running),
+                foreground: None,
+            }],
+            agent_sessions: vec![AgentSessionDescriptor {
+                id: ResourceId::local(8),
+                parent: Some(ResourceId::local(7)),
+                provider: Some("claude".to_owned()),
+                native_id: None,
+                state: Some("working".to_owned()),
+            }],
+            documents: Vec::new(),
+            satellite_sessions: Vec::new(),
+            focused_session: 1,
+            focused_pane: ResourceId::local(7),
+            authority: None,
+            inbox: Some(session_key()),
+            handles: HandleMap::new(),
+        }
+    }
+
+    #[test]
+    fn panes_carry_their_session_and_record_context() {
+        let graph = session_topology(topology(), None);
+        let pane = &graph.panes[0];
+        assert_eq!(pane.terminal_id, "satellite:box:4");
+        assert_eq!(pane.session_name, "work");
+        assert_eq!(pane.session_key, Some(session_key().to_string()));
+        assert_eq!((pane.cols, pane.rows), (80, 24));
+        assert_eq!(pane.title.as_deref(), Some("vim"));
+        assert_eq!(pane.name.as_deref(), Some("editor"));
+        assert_eq!(pane.revision, Some(9));
+        let activation = pane.activation.as_ref().unwrap();
+        assert_eq!((activation.id, activation.state.as_str()), (2, "running"));
+        assert!(pane.group_id.is_none(), "no arrangement held");
+        assert!(pane.is_focused);
+    }
+
+    #[test]
+    fn the_focused_pane_is_a_string_identity() {
+        assert_eq!(session_topology(topology(), None).focused_pane, "local:7");
+    }
+
+    #[test]
+    fn sessions_keep_lifetime_keys_counts_and_intake() {
+        let graph = session_topology(topology(), None);
+        let session = &graph.sessions[0];
+        assert_eq!(session.attached_client_count, 1);
+        assert_eq!(session.member_count, 2);
+        assert_eq!(session.lifetime.as_deref(), Some("persistent"));
+        assert_eq!(session.revision, Some(5));
+        assert!(session.awaiting_organization);
+        assert!(session.inbox);
+        assert!(session.focused);
+        assert_eq!(graph.inbox, Some(session_key().to_string()));
+    }
+
+    #[test]
+    fn agent_sessions_are_projected() {
+        let graph = session_topology(topology(), None);
+        assert_eq!(graph.agent_sessions.len(), 1);
+        assert_eq!(graph.agent_sessions[0].id, "local:8");
+        assert_eq!(graph.agent_sessions[0].parent.as_deref(), Some("local:7"));
+        assert_eq!(graph.agent_sessions[0].provider.as_deref(), Some("claude"));
+    }
+}

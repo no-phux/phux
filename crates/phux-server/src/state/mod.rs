@@ -29,6 +29,7 @@ mod conditional_kill;
 mod config;
 mod construct;
 mod controller;
+pub(crate) mod credentials;
 mod cwd;
 mod defaults;
 mod delegations;
@@ -88,7 +89,6 @@ use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
-pub use leases::{LeaseEvidence, LeaseInterval};
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
@@ -239,6 +239,7 @@ pub struct ServerState {
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
     /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
+    pub(crate) credentials: credentials::CredentialBroker,
     /// Each app's own state, which the host holds without knowing its
     /// type; see [`app_slots`].
     app_slots: app_slots::AppSlots,

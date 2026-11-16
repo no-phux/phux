@@ -20,6 +20,8 @@ use crate::machines::LOCAL;
 
 mod path;
 mod replacement;
+mod retry;
+pub(in crate::desk) use replacement::Replacement;
 mod resume;
 mod standing;
 
@@ -155,6 +157,8 @@ impl Link {
         self.home = None;
         self.org_unavailable = None;
         self.creating = false;
+        self.keep = None;
+        self.nudged = None;
     }
 }
 
@@ -186,7 +190,7 @@ impl Desk {
     /// because the updater manages it; a run that can't reach one starts
     /// the updater without it.
     pub fn listen(&mut self, waker: rune::Waker) {
-        self.resources.images = Some(rune::ImageCache::new(waker.clone()));
+        self.connection.resources.images = Some(rune::ImageCache::new(waker.clone()));
         if self.native.is_some() {
             self.watch(waker);
             self.dial();
@@ -214,7 +218,7 @@ impl Desk {
     pub(super) fn watch(&mut self, waker: rune::Waker) {
         self.waker = Some(waker.clone());
         self.inbox.alerts.listen(waker.clone());
-        if let Some(client) = &self.client {
+        if let Some(client) = &self.connection.client {
             client.set_listener(std::sync::Arc::new(Wake(waker)));
             client.watch_approvals();
         }
@@ -223,7 +227,7 @@ impl Desk {
     /// Route a new attempt: a remote dials at once, a named socket too, and
     /// this computer's server is found on a worker first.
     pub(super) fn dial(&mut self) {
-        self.error = None;
+        self.connection.error = None;
         if let Some(target) = self.native.as_ref().map(|n| n.target.clone()) {
             return self.connect(target);
         }
@@ -251,7 +255,7 @@ impl Desk {
             let _ = self.prefs.set("machine", &String::new());
         }
         self.machines.current = None;
-        self.left_server();
+        self.replace_connection(Replacement::Machine);
         self.link.moved = Some(format!("{machine} isn't available, so this is {LOCAL}."));
         self.dial_local();
     }
@@ -261,7 +265,7 @@ impl Desk {
     pub(super) fn left_server(&mut self) {
         self.link.left_server();
         self.pending = None;
-        self.wanted = None;
+        self.connection.wanted = None;
         // Notifications from the machine being left would open nothing here.
         self.inbox.alerts.sync(&[], |_| true, false);
     }
@@ -272,13 +276,13 @@ impl Desk {
         target.ssh_askpass = crate::askpass::program();
         match sessions::connect(target) {
             Ok(client) => {
-                self.client = Some(std::sync::Arc::new(client));
+                self.connection.client = Some(std::sync::Arc::new(client));
                 self.apply_theme();
                 if let Some(waker) = self.waker.clone() {
                     self.watch(waker);
                 }
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => self.connection.error = Some(error),
         }
     }
 
@@ -374,9 +378,9 @@ impl Desk {
             return;
         }
         match found.socket {
-            Err(why) => self.error = Some(why),
+            Err(why) => self.connection.error = Some(why),
             Ok(socket) => {
-                self.error = None;
+                self.connection.error = None;
                 self.reach(socket, moved);
             }
         }
@@ -387,14 +391,18 @@ impl Desk {
     fn reach(&mut self, socket: std::path::PathBuf, moved: bool) {
         self.launch.socket = Ok(socket.clone());
         let keeps = |client: &Client| !moved && !client.status().is_terminal();
-        if let Some(client) = self.client.as_ref().filter(|client| keeps(client)) {
+        if let Some(client) = self
+            .connection
+            .client
+            .as_ref()
+            .filter(|client| keeps(client))
+        {
             return client.nudge();
         }
-        if self.client.is_some() {
-            self.renew();
-        }
         if moved {
-            self.left_server();
+            self.replace_connection(Replacement::Machine);
+        } else if self.connection.client.is_some() {
+            self.renew();
         }
         self.connect(Target::uds(socket));
     }
@@ -419,6 +427,7 @@ impl Desk {
 
     fn attempt(&mut self) {
         let alive = self
+            .connection
             .client
             .as_ref()
             .filter(|client| !client.status().is_terminal());
@@ -435,12 +444,16 @@ impl Desk {
 
     /// Whether the connection is working: anything else waits on this module.
     pub(super) fn link_is_up(&self) -> bool {
-        self.client.is_some() && self.status == Status::Attached && self.link.ended.is_none()
+        self.connection.client.is_some()
+            && self.connection.status == Status::Attached
+            && self.link.ended.is_none()
     }
 
     /// Retrying can't change this answer: someone has to act first.
     fn stuck(&self) -> bool {
-        self.link.incompatible.is_some() || self.status == Status::Closed || self.unpaired()
+        self.link.incompatible.is_some()
+            || self.connection.status == Status::Closed
+            || self.unpaired()
     }
 
     /// A connection opened. Only a server's first replays news: after that
@@ -479,6 +492,7 @@ impl Desk {
         let due = self.link.is_down_for(BANNER_AFTER);
         let warn = due && !std::mem::replace(&mut self.link.warned, due);
         let dead = self
+            .connection
             .client
             .as_ref()
             .is_none_or(|c| c.status().is_terminal());
@@ -492,40 +506,9 @@ impl Desk {
         }
     }
 
-    /// An ended connection: a new one on a widening schedule.
-    fn tend_dead(&mut self, now: Instant, tx: &mut Tx) -> bool {
-        if self.stuck() {
-            return false;
-        }
-        let Some(at) = self.link.retry_at else {
-            let wait = backoff(self.link.tries);
-            self.link.retry_at = Some(now + wait);
-            tx.wake_after(wait);
-            return false;
-        };
-        if now < at {
-            return false;
-        }
-        self.link.retry_at = None;
-        self.link.tries += 1;
-        self.attempt();
-        true
-    }
-
-    /// A live client walking its ladder, whose every step wakes this: a
-    /// local server may need starting.
-    fn tend_dialing(&mut self) {
-        let local = self.machines.current.is_none() && self.launch.can_ensure();
-        let since = self.link.last_ensure.map(|at| at.elapsed());
-        let due = since.is_none_or(|since| since >= ENSURE_EVERY);
-        if local && due && self.link.is_down_for(ENSURE_AFTER) {
-            self.find_server();
-        }
-    }
-
     /// Back at the window: try now, whatever the schedule said.
     pub(super) fn hurry_link(&mut self) {
-        if let Some(client) = &self.client {
+        if let Some(client) = &self.connection.client {
             client.nudge();
         }
         if self.link.retry_at.is_some() {
@@ -541,7 +524,8 @@ impl Desk {
 
     /// Whether the server lists `terminal`.
     pub(super) fn lists(&self, terminal: &phux_protocol::ids::ResourceId) -> bool {
-        self.topology
+        self.connection
+            .topology
             .as_ref()
             .is_some_and(|t| t.panes.iter().any(|p| &p.terminal_id == terminal))
     }

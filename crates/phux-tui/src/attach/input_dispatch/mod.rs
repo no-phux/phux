@@ -1,12 +1,8 @@
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `ArrangementDoc`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
+//! Input dispatcher: parser events to wire frames or layout-action effects,
+//! including the predictive-echo feed and the parked spawns that bridge a
+//! `split-pane` / `new-window` to its `SPAWN_RESOURCE` reply.
 
+pub(in crate::attach) mod approvals;
 mod args;
 mod chrome_drag;
 mod ctx;

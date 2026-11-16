@@ -1,17 +1,9 @@
-//! The action registry: one row per action the TUI dispatches, and the
-//! single declaration of it (ADR-0172).
+//! The action registry (ADR-0172): one [`ActionSpec`] per action the TUI
+//! dispatches, with its description, parameters, [`Palette`] placement, and
+//! handler.
 //!
-//! Each [`ActionSpec`] carries the action's name, its reference-page
-//! description and parameters, its [`Palette`] placement (a titled row with
-//! the args it commits, or the reason it has none), and the handler
-//! `run_action` calls. The palette, the which-key labels, and the generated
-//! `docs/reference/actions.md` all render from [`ACTIONS`].
-//!
-//! The names themselves are config vocabulary and live in phux-config
-//! ([`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES)), which validates
-//! keybindings and hooks without depending on this crate; a test pins
-//! [`ACTIONS`] to that list exactly. Bound chords resolve from the live
-//! [`KeybindingsCfg`] at build time.
+//! The palette, which-key labels, and `docs/reference/actions.md` all render
+//! from [`ACTIONS`].
 
 use std::collections::BTreeMap;
 
@@ -141,10 +133,8 @@ impl ActionSpec {
     }
 }
 
-/// An extra palette row for an action whose one registry row lists only
-/// one of its argument values: the same action under another title, so the
-/// palette offers what which-key already shows (`"` splits below, `%`
-/// splits right).
+/// An extra palette row for an action whose registry row lists one argument
+/// value: the same action under another title (`"` below, `%` right).
 struct PaletteVariant {
     /// The [`ActionSpec::name`] the row commits.
     action: &'static str,
@@ -184,6 +174,39 @@ pub fn find(name: &str) -> Option<&'static ActionSpec> {
     ACTIONS.iter().find(|spec| spec.name == name)
 }
 
+/// A palette row: name, handler, [`Category`], title, and the args it
+/// commits, then the reference page's description and params.
+macro_rules! row {
+    ($name:literal, $run:expr, $category:ident, $title:literal, [$($arg:expr),*],
+     $description:literal, $params:literal) => {
+        ActionSpec {
+            name: $name,
+            description: $description,
+            params: $params,
+            palette: Palette::Row {
+                title: $title,
+                category: Category::$category,
+                args: &[$($arg),*],
+            },
+            run: $run,
+        }
+    };
+}
+
+/// A row the palette omits: name, handler, and why, then the reference
+/// page's description and params.
+macro_rules! hidden {
+    ($name:literal, $run:expr, $reason:literal, $description:literal, $params:literal) => {
+        ActionSpec {
+            name: $name,
+            description: $description,
+            params: $params,
+            palette: Palette::Hidden { reason: $reason },
+            run: $run,
+        }
+    };
+}
+
 mod hidden_rows;
 mod palette_rows;
 
@@ -210,12 +233,9 @@ const fn concat_rows() -> [ActionSpec; PALETTE_ROWS.len() + HIDDEN_ROWS.len()] {
     rows
 }
 
-/// The palette rows.
-///
-/// The [`ACTIONS`] with a [`Palette::Row`] grouped under [`Category`] headers, each row annotated by its
-/// bound chord (nothing without one or without a config: a menu is not a
-/// table), then enabled plugins' actions and panes under a trailing
-/// **Plugin** header.
+/// The palette rows: [`ACTIONS`] with a [`Palette::Row`] under [`Category`]
+/// headers, each annotated by its bound chord, then plugin actions and panes
+/// under a trailing **Plugin** header.
 #[must_use]
 pub fn palette_items(
     keybindings: Option<&KeybindingsCfg>,

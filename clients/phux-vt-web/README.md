@@ -59,9 +59,14 @@ history page with its optional Kitty placements, image payload, or FINISH and
 call `next_checked(rows)`. Image payloads carry zero rows but return image
 progress, not FINISH. A truncated, corrupt,
 or mismatched unit fails closed and leaves the READY terminal intact.
-The freestanding WASM engine does not render Kitty images. It authenticates
-and discards their pixel records while keeping snapshot progress aligned;
-this is snapshot compatibility, not browser graphics-rendering parity.
+The freestanding WASM engine has Kitty graphics disabled: its target has no
+clock support. The Rust driver checks every record's CRC and the complete
+unit's framing before discarding unsupported image pixels and PAGE placements.
+Image units report explicit zero-row progress without calling the engine.
+Up to two HISTORY manifests preceding skipped pixels are retained in fixed
+storage and delivered with the next PAGE or FINISH. The stock decoder reads
+PAGE without graphics lookahead on this target. This is snapshot compatibility,
+not browser graphics-rendering parity; native clients still decode all pixels.
 `tests/fixtures/server-snapshot-v1.bin` is a server capture, regenerated with
 `PHUX_BLESS_WEB_FIXTURE=1 cargo nextest run -p phux-server browser_snapshot_fixture`.
 GHOSTSNP bytes and page splits follow the encoding host's page layout, so that

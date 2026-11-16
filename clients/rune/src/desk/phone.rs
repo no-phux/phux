@@ -221,10 +221,7 @@ impl Desk {
         let Some(phone) = self.phone.as_mut() else {
             return;
         };
-        let event = KeyEvent {
-            key: phone.for_field(soft),
-            mods: Mods::default(),
-        };
+        let event = crate::keys::plain(phone.for_field(soft));
         self.soft_to_field(field, &event, tx);
     }
 
@@ -256,7 +253,7 @@ impl Desk {
             return;
         }
         let edit = match field {
-            Field::Find => &mut self.find_query,
+            Field::Find => &mut self.connection.find_query,
             _ => &mut self.palette_query,
         };
         let before = edit.text.clone();

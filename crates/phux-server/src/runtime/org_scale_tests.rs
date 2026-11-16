@@ -8,9 +8,6 @@
 //! `org_commit` instruction count in `benches/icount.rs`.
 
 #![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
     clippy::print_stderr,
     clippy::too_many_lines,
     reason = "scale test prints its measurements"

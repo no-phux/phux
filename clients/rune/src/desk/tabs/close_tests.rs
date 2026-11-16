@@ -84,10 +84,10 @@ fn fixture() -> (Arc<Client>, Desk) {
     assert_eq!(client.selected_session(), Some(1));
     let mut desk = Desk::new(&Resolved::offline("session close"));
     desk.prefs = rune::prefs::Prefs::memory();
-    desk.client = Some(client.clone());
-    desk.status = Status::Attached;
-    desk.topology = Some(Topology::from_snapshot(&snapshot));
-    for session in &mut desk.topology.as_mut().unwrap().sessions {
+    desk.connection.client = Some(client.clone());
+    desk.connection.status = Status::Attached;
+    desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
+    for session in &mut desk.connection.topology.as_mut().unwrap().sessions {
         session.key = Some(key(session.id as u8));
     }
     let _ = sent(&client);
@@ -110,7 +110,7 @@ fn killed(client: &Client) -> Vec<SessionKey> {
 #[test]
 fn a_nonselected_empty_session_closes_by_key_without_selecting_it() {
     let (client, mut desk) = fixture();
-    desk.topology.as_mut().unwrap().sessions[1].name = "renamed empty".into();
+    desk.connection.topology.as_mut().unwrap().sessions[1].name = "renamed empty".into();
     desk.close_session_key(key(2));
     assert_eq!(
         desk.pending,
@@ -123,7 +123,8 @@ fn a_nonselected_empty_session_closes_by_key_without_selecting_it() {
     assert!(desk.pending.is_none());
     assert!(sent(&client).is_empty(), "cancel leaves the session alone");
     assert!(
-        desk.topology
+        desk.connection
+            .topology
             .as_ref()
             .unwrap()
             .session_keyed(&key(2))
@@ -141,7 +142,7 @@ fn stale_session_controls_do_not_close_a_reused_name_or_handle() {
     let (client, mut desk) = fixture();
     // The same sidebar position, live id and name now belong to a new
     // session. A cached control must not ask about that replacement.
-    desk.topology.as_mut().unwrap().sessions[1].key = Some(key(3));
+    desk.connection.topology.as_mut().unwrap().sessions[1].key = Some(key(3));
     desk.close_session_key(key(2));
     assert!(desk.pending.is_none());
     desk.confirm_pending();
@@ -159,7 +160,7 @@ fn stale_session_controls_do_not_close_a_reused_name_or_handle() {
     // Selection and the target's name can change while confirmation is
     // held; the accepted operation still addresses the original key.
     client.attach_session(AttachTarget::ByName("empty".into()));
-    desk.topology.as_mut().unwrap().sessions[0].name = "renamed".into();
+    desk.connection.topology.as_mut().unwrap().sessions[0].name = "renamed".into();
     let _ = sent(&client);
     desk.confirm_pending();
     assert_eq!(killed(&client), [key(1)]);
@@ -180,7 +181,8 @@ fn closing_selected_empty_sessions_never_recreates_their_home() {
     desk.confirm_pending();
     assert_eq!(killed(&client), [key(2)]);
 
-    desk.topology
+    desk.connection
+        .topology
         .as_mut()
         .unwrap()
         .sessions
@@ -197,7 +199,7 @@ fn closing_selected_empty_sessions_never_recreates_their_home() {
     desk.confirm_pending();
     assert_eq!(killed(&client), [key(1)]);
 
-    desk.topology.as_mut().unwrap().sessions.clear();
+    desk.connection.topology.as_mut().unwrap().sessions.clear();
     assert!(!desk.settle_home(&client));
     assert!(
         sent(&client).is_empty(),

@@ -193,7 +193,6 @@ impl Owner {
                     .map_or(0, |state| state.unread_rows);
                 status
             }),
-            document_revision: self.document_revisions.get(id).copied().unwrap_or(0),
             input_ready: matches!(
                 self.kernel.input_eligibility(id),
                 InputEligibility::Eligible { .. }

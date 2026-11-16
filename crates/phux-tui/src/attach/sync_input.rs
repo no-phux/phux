@@ -1,7 +1,5 @@
-//! Synchronized input: what you type goes to every pane of one tab.
-//!
-//! On for a single tab at a time, named by its group id, so it stops by
-//! itself when you move to another tab and resumes when you come back.
+//! Synchronized input: typing goes to every pane of one tab, named by its
+//! group id, so it pauses when you leave the tab and resumes on return.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -50,6 +50,11 @@ impl<'a> Encoder<'a> {
         self.buf.extend_from_slice(&[value]);
     }
 
+    /// Write `bytes` as they are, with no length prefix.
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
     /// Write a big-endian `u16`.
     pub fn write_u16_be(&mut self, value: u16) {
         self.buf.extend_from_slice(&value.to_be_bytes());

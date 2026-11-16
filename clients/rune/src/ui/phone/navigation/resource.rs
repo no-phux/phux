@@ -9,6 +9,7 @@ use crate::ui::{icons, sidebar};
 pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Ink) -> El {
     let mark = desk.activities.mark(&resource.id);
     let current = desk
+        .connection
         .shown
         .as_ref()
         .is_some_and(|s| s.resource == resource.id);
@@ -93,7 +94,8 @@ fn resource_detail(desk: &Desk, resource: &Addressable, mark: Mark) -> String {
     if !resource.kind.is_terminal() {
         return resource.mirror.to_owned();
     }
-    desk.topology
+    desk.connection
+        .topology
         .as_ref()
         .and_then(|t| t.pane(&resource.id))
         .and_then(|pane| pane.cwd.as_deref())

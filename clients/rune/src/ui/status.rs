@@ -356,8 +356,8 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
 
 /// How the link is, when it isn't simply up: a healthy window says nothing.
 fn link_trouble(desk: &Desk, p: &Ink) -> Option<(&'static str, Color)> {
-    match desk.status {
-        _ if desk.client.is_none() && desk.link_word() != "connecting" => {
+    match desk.connection.status {
+        _ if desk.connection.client.is_none() && desk.link_word() != "connecting" => {
             Some(("not connected", p.dim))
         }
         Status::Attached => None,
@@ -379,12 +379,13 @@ fn place(desk: &Desk, p: &Ink) -> El {
     // The terminal's title grows from nothing into what is left, so a narrow
     // window cuts it before it cuts the session's name.
     // With no terminal on screen the window title is the app's own name.
-    let terminal = (desk.shown.is_some() && title != session && !title.is_empty()).then(|| {
-        el().w(0.0)
-            .grow(1.0)
-            .min_w(0.0)
-            .child(text(title).font(LABEL).color(p.dim).truncate())
-    });
+    let terminal =
+        (desk.connection.shown.is_some() && title != session && !title.is_empty()).then(|| {
+            el().w(0.0)
+                .grow(1.0)
+                .min_w(0.0)
+                .child(text(title).font(LABEL).color(p.dim).truncate())
+        });
     row()
         .gap(7.0)
         .min_w(0.0)
@@ -416,9 +417,10 @@ pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> Option
 /// (`trailing`), and holding what a status line would.
 pub fn title_bar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> El {
     let geometry = desk
+        .connection
         .client
         .as_ref()
-        .zip(desk.shown.as_ref())
+        .zip(desk.connection.shown.as_ref())
         .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
@@ -455,7 +457,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> El {
         .h_full()
         .gap(8.0)
         .items_center()
-        .on_layout(|d: &mut Desk, rect| d.tabs.room = rect[2])
+        .on_layout(|d: &mut Desk, rect| d.connection.tabs.room = rect[2])
         .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
         .child(
             row()

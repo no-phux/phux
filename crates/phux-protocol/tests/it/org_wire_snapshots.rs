@@ -9,7 +9,7 @@
     reason = "fixtures: unwrap a known-good key; helpers stay plain fns"
 )]
 
-use bytes::BytesMut;
+use crate::common::dump_frame;
 use commands::command_fixtures;
 use events::event_fixtures;
 use phux_protocol::ids::{
@@ -22,47 +22,6 @@ use phux_protocol::wire::frame::{
     OrganizationPage, SplitDirection,
 };
 use results::result_fixtures;
-
-/// `xxd`-style dump, the same rendering `frame_wire_snapshots.rs` uses.
-fn hex_dump(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
-        let _ = write!(out, "{:08x} |", chunk_idx * 16);
-        for (i, b) in chunk.iter().enumerate() {
-            if i == 8 {
-                out.push(' ');
-            }
-            let _ = write!(out, " {b:02x}");
-        }
-        for i in 0..16 - chunk.len() {
-            if chunk.len() + i == 8 {
-                out.push(' ');
-            }
-            out.push_str("   ");
-        }
-        out.push_str(" |");
-        for b in chunk {
-            out.push(if (0x20..=0x7e).contains(b) {
-                char::from(*b)
-            } else {
-                '.'
-            });
-        }
-        out.push('\n');
-    }
-    out
-}
-
-fn dump_frame(frame: &FrameKind) -> String {
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, rest) = FrameKind::decode(&buf).unwrap();
-    assert!(rest.is_empty());
-    assert_eq!(&decoded, frame, "the golden frame round-trips");
-    hex_dump(&buf)
-}
 
 #[test]
 fn intake_api_aliases_keep_legacy_wire_bytes() {

@@ -265,7 +265,7 @@ impl EngineHandle {
     /// Draw predictive echo underlined (the default) or as plain text. Takes
     /// effect from the next publication of each terminal.
     #[cfg(feature = "engine")]
-    pub fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
+    pub(crate) fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
         self.request(|reply| Command::Query(Query::PredictionUnderline(underline, reply)))
     }
 
@@ -294,7 +294,11 @@ impl EngineHandle {
 
     /// Owned facts about the current replica.
     #[cfg(feature = "engine")]
-    pub fn replica_info(&self, terminal_id: &ResourceId) -> Result<ReplicaInfo, EngineError> {
+    #[cfg(test)]
+    pub(crate) fn replica_info(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Result<ReplicaInfo, EngineError> {
         self.request(|reply| Command::Query(Query::ReplicaInfo(terminal_id.clone(), reply)))?
     }
 
@@ -322,7 +326,8 @@ impl EngineHandle {
 
     /// Track a document coordinate on the owner thread.
     #[cfg(feature = "engine")]
-    pub fn track_anchor(
+    #[cfg(test)]
+    pub(crate) fn track_anchor(
         &self,
         terminal_id: &ResourceId,
         point: EngineDocumentPoint,
@@ -332,7 +337,12 @@ impl EngineHandle {
 
     /// Release one document anchor.
     #[cfg(feature = "engine")]
-    pub fn release_anchor(&self, terminal_id: &ResourceId, anchor: u64) -> Result<(), EngineError> {
+    #[cfg(test)]
+    pub(crate) fn release_anchor(
+        &self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<(), EngineError> {
         self.request(|reply| {
             Command::Query(Query::ReleaseAnchor(terminal_id.clone(), anchor, reply))
         })?
@@ -425,7 +435,7 @@ impl EngineHandle {
     /// [`Self::search`] returning at most `max_matches` (capped at
     /// [`SEARCH_MATCH_LIMIT`]) and whether a bound hid more.
     #[cfg(feature = "engine")]
-    pub fn search_bounded(
+    pub(crate) fn search_bounded(
         &self,
         terminal_id: &ResourceId,
         query: String,

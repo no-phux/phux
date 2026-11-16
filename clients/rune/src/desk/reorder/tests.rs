@@ -13,12 +13,15 @@ fn resource_drop_routes_live_identity_to_stable_server_membership() {
     let grab = Grab::Resource(7, key(1));
     desk.drag_at(grab, Phase::Down, [50.0, 80.0], false);
     desk.drag_at(grab, Phase::Move, [50.0, 160.0], false);
-    assert_eq!(desk.reorder.target(), Some(Grab::Session(key(2))));
+    assert_eq!(
+        desk.connection.reorder.target(),
+        Some(Grab::Session(key(2)))
+    );
     assert!(outbound(&client).is_empty(), "hover is not a move");
     desk.drag_at(grab, Phase::Up, [50.0, 160.0], false);
     let (_, operation) = move_request(&client);
     assert!(desk.owns_sidebar_move(operation));
-    assert_eq!(desk.reorder.target(), None);
+    assert_eq!(desk.connection.reorder.target(), None);
     assert_eq!(
         client
             .organization()
@@ -48,7 +51,7 @@ fn blank_footer_outside_cancelled_and_same_session_drops_never_move() {
         desk.drag_at(grab, Phase::Up, point, cancelled);
         assert!(outbound(&client).is_empty(), "invalid drop at {point:?}");
         assert!(
-            desk.reorder.held.is_none(),
+            desk.connection.reorder.held.is_none(),
             "release always clears highlight"
         );
     }
@@ -65,7 +68,8 @@ fn hit_testing_uses_full_rectangles_and_clips_rows_to_the_scroll_viewport() {
     assert_eq!(desk.drop_target(grab, [192.0, 160.0]), None);
     assert_eq!(desk.drop_target(grab, [50.0, 175.0]), None);
     // A scrolled-off resource can retain an un-clipped layout rect over the footer.
-    desk.reorder
+    desk.connection
+        .reorder
         .laid_out(Grab::Resource(7, key(1)), [8.0, 200.0, 184.0, 40.0]);
     assert_eq!(
         desk.drop_target(grab, [50.0, 205.0]),
@@ -83,7 +87,8 @@ fn resource_rows_are_session_targets_and_deleted_sessions_are_not() {
         desk.drop_target(Grab::Session(key(2)), [50.0, 80.0]),
         Some(Grab::Session(key(1)))
     );
-    desk.topology
+    desk.connection
+        .topology
         .as_mut()
         .unwrap()
         .sessions
@@ -147,7 +152,7 @@ fn server_refusal_and_uncertain_outcomes_are_visible_without_retry_or_selection_
 fn successful_receipt_refreshes_inventory_and_follows_only_the_still_selected_resource() {
     for navigate_away in [false, true] {
         let (client, mut desk) = connected();
-        desk.shown = Some(crate::desk::Shown {
+        desk.connection.shown = Some(crate::desk::Shown {
             resource: live(7),
             view: None,
         });
@@ -159,7 +164,7 @@ fn successful_receipt_refreshes_inventory_and_follows_only_the_still_selected_re
             "submission does not switch session"
         );
         if navigate_away {
-            desk.shown = Some(crate::desk::Shown {
+            desk.connection.shown = Some(crate::desk::Shown {
                 resource: live(8),
                 view: None,
             });
@@ -205,14 +210,15 @@ fn session_reorder_keeps_the_whole_stored_order_even_over_a_resource_row() {
 fn an_active_tab_dropped_on_a_session_moves_every_member_using_the_batch_contract() {
     let (client, mut desk) = connected();
     let id = [9; 16];
-    desk.tabs.list.push(crate::desk::Tab {
+    desk.connection.tabs.list.push(crate::desk::Tab {
         id,
         name: "split".into(),
         resources: vec![live(7), live(8)],
         active: true,
         locked: false,
     });
-    desk.reorder
+    desk.connection
+        .reorder
         .laid_out(Grab::Tab(id), [210.0, 0.0, 100.0, 30.0]);
     assert_eq!(
         desk.drop_target(Grab::Tab(id), [250.0, 15.0]),
@@ -245,7 +251,7 @@ fn unverified_server_identity_retires_pending_resource_moves() {
 fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
     for before_submission in [false, true] {
         let (client, mut desk) = connected();
-        desk.shown = Some(crate::desk::Shown {
+        desk.connection.shown = Some(crate::desk::Shown {
             resource: live(7),
             view: None,
         });
@@ -268,7 +274,10 @@ fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
             Some(1),
             "pending navigation is already a new selection"
         );
-        assert_eq!(desk.wanted.as_ref().map(|(id, _)| id), Some(&live(8)));
+        assert_eq!(
+            desk.connection.wanted.as_ref().map(|(id, _)| id),
+            Some(&live(8))
+        );
     }
 }
 
@@ -277,7 +286,7 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
     for other in [ResourceId::satellite("elsewhere", 8), live(99)] {
         let (client, mut desk) = connected();
         let id = [9; 16];
-        desk.tabs.list.push(crate::desk::Tab {
+        desk.connection.tabs.list.push(crate::desk::Tab {
             id,
             name: "mixed".into(),
             resources: vec![live(7), other],
@@ -286,7 +295,7 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
         });
         desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
         assert!(outbound(&client).is_empty());
-        assert!(desk.reorder.moves.is_empty());
+        assert!(desk.connection.reorder.moves.is_empty());
     }
 }
 
@@ -294,7 +303,7 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
 fn accepted_resource_move_is_placed_in_an_unselected_destination_arrangement() {
     use phux_client_core::layout::ArrangementDoc;
     let (client, mut desk) = connected();
-    desk.shown = Some(crate::desk::Shown {
+    desk.connection.shown = Some(crate::desk::Shown {
         resource: live(8),
         view: None,
     });
@@ -329,7 +338,7 @@ fn accepted_resource_move_is_placed_in_an_unselected_destination_arrangement() {
         Some(1),
         "placement must not select a background destination"
     );
-    assert_eq!(desk.shown.as_ref().unwrap().resource, live(8));
+    assert_eq!(desk.connection.shown.as_ref().unwrap().resource, live(8));
     assert!(
         !desk.place_sidebar_moves(&client),
         "do not submit another write before its receipt and replica revision"
@@ -354,7 +363,7 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
     );
     install_arrangement(&client, 1, &source, 1);
     let id = source.groups[0].id;
-    desk.tabs.list.push(crate::desk::Tab {
+    desk.connection.tabs.list.push(crate::desk::Tab {
         id,
         name: "paired".into(),
         resources: vec![live(7), live(8)],

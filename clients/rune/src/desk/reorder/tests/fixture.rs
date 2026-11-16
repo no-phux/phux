@@ -143,20 +143,26 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
         client.feed(frame).unwrap();
     }
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let mut desk = Desk::settings_test_fixture();
-    desk.status = Status::Attached;
-    desk.client = Some(client.clone());
-    desk.topology = client.topology();
+    let mut desk = crate::test_support::window();
+    desk.connection.status = Status::Attached;
+    desk.connection.client = Some(client.clone());
+    desk.connection.topology = client.topology();
     desk.sidebar_open = true;
     desk.window_laid_out(1100.0);
-    desk.reorder.sidebar_laid_out([0.0, 40.0, 200.0, 170.0]);
-    desk.reorder
+    desk.connection
+        .reorder
+        .sidebar_laid_out([0.0, 40.0, 200.0, 170.0]);
+    desk.connection
+        .reorder
         .laid_out(Grab::Session(key(1)), [8.0, 40.0, 184.0, 25.0]);
-    desk.reorder
+    desk.connection
+        .reorder
         .laid_out(Grab::Resource(7, key(1)), [8.0, 66.0, 184.0, 30.0]);
-    desk.reorder
+    desk.connection
+        .reorder
         .laid_out(Grab::Resource(8, key(1)), [8.0, 97.0, 184.0, 30.0]);
-    desk.reorder
+    desk.connection
+        .reorder
         .laid_out(Grab::Session(key(2)), [8.0, 150.0, 184.0, 25.0]);
     let _ = client.take_activity();
     outbound(&client);

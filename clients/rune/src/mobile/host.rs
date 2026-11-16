@@ -115,7 +115,7 @@ mod tests {
     fn a_pinch_steps_the_text_size_both_ways() {
         // Its own preferences: a text size is saved as it changes.
         let mut rt = rune::Runtime::new(
-            State::settings_test_fixture(),
+            crate::test_support::settings_window(),
             crate::ui::view,
             (393.0, 852.0),
             rune::Env::new(true, 2.0),

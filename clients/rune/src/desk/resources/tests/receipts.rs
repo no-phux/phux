@@ -52,26 +52,7 @@ fn reattach(client: &Client, server: u8) {
     let records = [record(1, ResourceKind::AccessibilityTree), terminal];
     let attach_id = seed(client, &records).unwrap();
     install_arrangement(client, &records, &doc(LayoutNode::Leaf(id(1))));
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-        ])
-        .with_resources(
-            records
-                .iter()
-                .map(|r| {
-                    ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                        .with_session(Some(SessionId::new(1)))
-                })
-                .collect(),
-        );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    attach_records(client, attach_id, &records);
     publish(client, 2, ResourceKind::Terminal, b"spawned terminal");
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
     outbound(client);
@@ -89,12 +70,11 @@ fn advertise_spawn(client: &Client) {
             record(1, ResourceKind::AccessibilityTree),
             record(2, ResourceKind::Terminal),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        client,
+        request_id,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
 }
 
 fn pending_layout(client: &Client, rt: &mut Runtime<Desk>) -> (OperationId, u32) {
@@ -104,6 +84,7 @@ fn pending_layout(client: &Client, rt: &mut Runtime<Desk>) -> (OperationId, u32)
     step(rt);
     let operation = *rt
         .state
+        .connection
         .layout_ops
         .iter()
         .next()
@@ -141,14 +122,15 @@ fn drain(rt: &mut Runtime<Desk>, client: &Client) {
 }
 
 fn cancelled(rt: &Runtime<Desk>, client: &Client) {
-    assert!(rt.state.pending_splits.is_empty());
-    assert!(rt.state.pending_spawns.is_empty());
-    assert!(rt.state.resources.starting.is_empty());
-    assert!(rt.state.resources.producers.is_empty());
-    assert!(rt.state.layout_ops.is_empty());
+    assert!(rt.state.connection.pending_splits.is_empty());
+    assert!(rt.state.connection.pending_spawns.is_empty());
+    assert!(rt.state.connection.resources.starting.is_empty());
+    assert!(rt.state.connection.resources.producers.is_empty());
+    assert!(rt.state.connection.layout_ops.is_empty());
     assert!(!rt.state.splits_waiting());
     assert!(
         rt.state
+            .connection
             .wanted
             .as_ref()
             .is_none_or(|(target, _)| *target != id(2))
@@ -179,8 +161,14 @@ fn nonreplayable_mirror_failure_before_opened_settles_without_hello() {
     let request = start(&mut rt, &client, true);
     client.with_control(ControlPlane::connection_opened);
     drain(&mut rt, &client);
-    assert!(!rt.state.pending_splits.contains_key(&request));
-    assert!(!rt.state.resources.starting.contains_key(&request));
+    assert!(!rt.state.connection.pending_splits.contains_key(&request));
+    assert!(
+        !rt.state
+            .connection
+            .resources
+            .starting
+            .contains_key(&request)
+    );
     let text = &rt.state.notice.as_ref().unwrap().text;
     assert!(text.contains("Mirror not started"));
     assert!(text.contains("connection replaced"));
@@ -196,19 +184,11 @@ fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
     for server in [1, 2] {
         let (client, mut rt) = home();
         let request = start(&mut rt, &client, false);
-        client
-            .feed(FrameKind::CommandResult {
-                request_id: request,
-                result: CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    message: "spawn denied".to_owned(),
-                },
-            })
-            .unwrap();
+        crate::wire_fixture::refuse(&client, request, ErrorCode::InvalidCommand, "spawn denied");
         client.with_control(ControlPlane::connection_opened);
         reattach(&client, server);
         drain(&mut rt, &client);
-        assert!(rt.state.pending_splits.is_empty());
+        assert!(rt.state.connection.pending_splits.is_empty());
         assert!(!rt.state.splits_waiting());
         assert!(
             rt.state
@@ -231,17 +211,20 @@ fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
             client.with_control(ControlPlane::connection_opened);
             reattach(&client, server);
             drain(&mut rt, &client);
-            assert!(!rt.state.pending_splits.contains_key(&request));
+            assert!(!rt.state.connection.pending_splits.contains_key(&request));
             if server == 2 {
                 cancelled(&rt, &client);
                 continue;
             }
             assert!(
-                rt.state.split_write.is_some(),
+                rt.state.connection.split_write.is_some(),
                 "new tab gets its arrangement write"
             );
-            assert_eq!(rt.state.layout_ops.len(), 1);
-            assert_eq!(rt.state.resources.producers.contains_key(&id(2)), mirror);
+            assert_eq!(rt.state.connection.layout_ops.len(), 1);
+            assert_eq!(
+                rt.state.connection.resources.producers.contains_key(&id(2)),
+                mirror
+            );
             assert!(outbound(&client).iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
@@ -266,15 +249,15 @@ fn old_success_waits_for_fresh_hello_not_the_cached_server_identity() {
             vec![1; 16],
             "runtime caches prior HELLO"
         );
-        assert!(rt.state.pending_splits.contains_key(&request));
-        assert!(rt.state.split_write.is_none());
+        assert!(rt.state.connection.pending_splits.contains_key(&request));
+        assert!(rt.state.connection.split_write.is_none());
         rt.update(|d, _| d.place_pending_splits(&client));
         outbound(&client);
         reattach(&client, server);
         step(&mut rt);
         if server == 1 {
-            assert!(rt.state.split_write.is_some());
-            assert!(!rt.state.pending_splits.contains_key(&request));
+            assert!(rt.state.connection.split_write.is_some());
+            assert!(!rt.state.connection.pending_splits.contains_key(&request));
         } else {
             cancelled(&rt, &client);
         }
@@ -287,15 +270,19 @@ fn plain_terminal_spawn_receipt_cannot_focus_a_reused_handle() {
         let (client, mut rt) = home();
         outbound(&client);
         rt.update(|d, _| d.new_terminal());
-        let request = rt.state.pending_spawns[0];
+        let request = rt.state.connection.pending_spawns[0];
         answer_spawn(&client, request);
         client.with_control(ControlPlane::connection_opened);
         reattach(&client, server);
         drain(&mut rt, &client);
-        assert!(rt.state.pending_spawns.is_empty());
+        assert!(rt.state.connection.pending_spawns.is_empty());
         if server == 1 {
             assert_eq!(
-                rt.state.wanted.as_ref().map(|(id, _)| id.clone()),
+                rt.state
+                    .connection
+                    .wanted
+                    .as_ref()
+                    .map(|(id, _)| id.clone()),
                 Some(id(2))
             );
         } else {
@@ -325,14 +312,14 @@ fn organization_outcomes_before_opened_settle_or_cancel_layout_correlations() {
             reattach(&client, server);
             drain(&mut rt, &client);
             assert!(
-                !rt.state.layout_ops.contains(&operation),
+                !rt.state.connection.layout_ops.contains(&operation),
                 "old outcome is not dropped"
             );
             if server == 2 {
                 cancelled(&rt, &client);
             } else {
                 assert!(
-                    rt.state.split_write.is_some(),
+                    rt.state.connection.split_write.is_some(),
                     "settled write waits for replica revision"
                 );
                 assert!(
@@ -358,6 +345,7 @@ fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity
     reattach(&client, 2); // the UI never observes this server's identity.
     let request = client.spawn_terminal(phux_client_runtime::control::SpawnRequest::default());
     rt.state
+        .connection
         .pending_splits
         .insert(request, (Some(session()), None));
     answer_spawn(&client, request);
@@ -371,22 +359,20 @@ fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity
 fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
     let (client, mut rt) = home();
     let (operation, request_id) = pending_layout(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unknown(65535),
-                message: "unreadable layout reply".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request_id,
+        ErrorCode::Unknown(65535),
+        "unreadable layout reply",
+    );
     client.with_control(ControlPlane::connection_opened);
     reattach(&client, 1);
     drain(&mut rt, &client);
-    assert!(!rt.state.layout_ops.contains(&operation));
-    assert!(rt.state.split_write.is_none());
+    assert!(!rt.state.connection.layout_ops.contains(&operation));
+    assert!(rt.state.connection.split_write.is_none());
     assert!(
         rt.state
+            .connection
             .wanted
             .as_ref()
             .is_none_or(|(target, _)| *target != id(2))
@@ -409,18 +395,15 @@ fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
 fn failed_organization_outcome_settles_before_the_new_hello_without_retrying() {
     let (client, mut rt) = home();
     let (operation, request_id) = pending_layout(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "layout denied before reconnect".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request_id,
+        ErrorCode::InvalidCommand,
+        "layout denied before reconnect",
+    );
     client.with_control(ControlPlane::connection_opened);
     drain(&mut rt, &client);
-    assert!(!rt.state.layout_ops.contains(&operation));
+    assert!(!rt.state.connection.layout_ops.contains(&operation));
     assert!(!rt.state.splits_waiting());
     assert!(
         rt.state

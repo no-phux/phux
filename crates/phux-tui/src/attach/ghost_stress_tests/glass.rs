@@ -4,10 +4,8 @@
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 
-/// Read a terminal's visible grid as one `String` per row (blank cells as
-/// spaces; ASCII-only fixtures, so no wide-glyph spacer handling needed).
-/// Uses its own iterators so reading never disturbs a pane renderer's
-/// incremental dirty state.
+/// A terminal's visible grid, one `String` per row, read with its own
+/// iterators so a renderer's dirty state is untouched.
 pub(super) fn term_grid(term: &GhosttyTerminal<'_, '_>) -> Vec<String> {
     let mut state = RenderState::new().expect("RenderState");
     let mut rows_it = RowIterator::new().expect("RowIterator");

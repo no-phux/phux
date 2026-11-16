@@ -133,7 +133,7 @@ fn selecting_a_channel_persists_without_installing_anything() {
 fn settings_expose_the_local_cli_channel_and_external_ownership() {
     use rune::accesskit::Action as A11yAction;
 
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.updater = updater();
     desk.updater.cli = Some(cli("1.0"));
     desk.settings_category(crate::desk::SettingsCategory::About);
@@ -174,7 +174,7 @@ fn channel_choices_fit_desktop_and_narrow_phone_settings() {
         ((640.0, 480.0), false),
         ((320.0, 568.0), true),
     ] {
-        let mut desk = Desk::settings_test_fixture().with_phone(phone);
+        let mut desk = crate::test_support::settings_window().with_phone(phone);
         desk.updater = updater();
         desk.settings_category(crate::desk::SettingsCategory::About);
         let mut rt = rune::Runtime::new(desk, crate::ui::view, size, rune::Env::new(false, 1.0));

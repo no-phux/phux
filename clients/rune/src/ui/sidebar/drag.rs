@@ -10,7 +10,7 @@ use crate::desk::{Desk, Grab};
 /// Bound sidebar drops to the list's actual scroll viewport, not its footer.
 pub(super) fn region(handle: El) -> El {
     handle.on_layout_tx(|d: &mut Desk, rect, tx| {
-        d.reorder.sidebar_laid_out(rect);
+        d.connection.reorder.sidebar_laid_out(rect);
         tx.live_only();
     })
 }
@@ -25,7 +25,7 @@ pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey, _ink: &
         .help("Open resource · drag to another session")
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
-            d.reorder.laid_out(grab, rect);
+            d.connection.reorder.laid_out(grab, rect);
             tx.live_only();
         })
 }
@@ -38,7 +38,7 @@ pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, ink
     handle
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
-            d.reorder.laid_out(grab, rect);
+            d.connection.reorder.laid_out(grab, rect);
             tx.live_only();
         })
         .border(

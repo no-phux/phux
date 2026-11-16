@@ -18,10 +18,6 @@ pub(crate) use targets::{
 };
 
 /// The verb-scoped `--remote` this command carries, if any.
-///
-/// One accessor for every verb that takes the flag, so the post-parse checks
-/// (a malformed target, the `--socket` collision) cover each of them without
-/// a per-verb list of their own.
 pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
     match command {
         Command::Attach(AttachArgs { remote, .. }) => remote.as_deref(),
@@ -36,6 +32,9 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Upload(UploadArgs { remote, .. })
         | Command::Download(DownloadArgs { remote, .. })
         | Command::Forward(ForwardArgs { remote, .. })
+        | Command::Credentials(CredentialsArgs {
+            action: CredentialsAction::Serve { remote, .. } | CredentialsAction::Run { remote, .. },
+        })
         | Command::Project(ProjectArgs {
             action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
         }) => remote.remote.as_deref(),
@@ -57,6 +56,7 @@ pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod confirm;
 pub(crate) mod coord;
+pub(crate) mod credentials;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod download;
@@ -323,13 +323,6 @@ pub(crate) async fn command_on(
 }
 
 /// Print `degradation`'s notices exactly as [`command_on`] always has.
-///
-/// A `phux-client` function that returns its own `Degradation` (the
-/// `kill`/`detach`/`spawn`/`tags` library homes) uses this instead of
-/// `command_on`'s inline loop, so every verb prints the identical line for
-/// an uncorrelated `ERROR` interleaved ahead of its reply — a hub's
-/// per-satellite unreachability notice — regardless of which path fetched
-/// it.
 pub(crate) fn warn_interleaved_degradation(degradation: &phux_client::state::Degradation) {
     for message in degradation.notices() {
         warn!("partial results — {message}");

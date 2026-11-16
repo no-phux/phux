@@ -1,4 +1,5 @@
 use super::*;
+mod native;
 use phux_client_runtime::engine::{EngineDocumentPoint, Scroll};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{

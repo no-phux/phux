@@ -70,7 +70,7 @@ pub fn held_identity(
 ///
 /// A target that is not QUIC, a refused ticket, or a reply that fails a
 /// check; the wording names the failure, never the ticket.
-pub async fn enroll_target(
+pub(crate) async fn enroll_target(
     target: &Target,
     ticket_hex: &str,
     signer: Arc<dyn DeviceSigner>,
@@ -122,12 +122,12 @@ pub async fn enroll_target(
     })
 }
 
-/// [`enroll_target`] on a runtime of its own, for a binding calling from a
+/// `enroll_target` on a runtime of its own, for a binding calling from a
 /// thread it owns. Blocks for at most the dial timeout.
 ///
 /// # Errors
 ///
-/// As [`enroll_target`], or no runtime.
+/// As `enroll_target`, or no runtime.
 pub fn enroll_target_blocking(
     target: &Target,
     ticket_hex: &str,

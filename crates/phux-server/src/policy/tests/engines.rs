@@ -2,31 +2,7 @@
 // Engines and posture.
 // -----------------------------------------------------------------------------
 
-/// A peer on `transport` running as the serving user.
-fn peer(transport: TransportType) -> PeerIdentity {
-    PeerIdentity {
-        uid: nix::unistd::geteuid().as_raw(),
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport,
-        source_addr: None,
-    }
-}
-
-fn credential(id: &str, scopes: &[&str]) -> AuthenticatedCredential {
-    AuthenticatedCredential {
-        id: id.to_owned(),
-        principal: id.to_owned(),
-        scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
-        issued_at: Utc::now(),
-        expires_at: None,
-        generation: 1,
-        registry_instance: None,
-        subject: None,
-        managed: None,
-    }
-}
+use crate::test_support::{credential, peer};
 
 /// A registry file holding one credential with `scopes`.
 fn enrolled(scopes: &[&str]) -> (tempfile::TempDir, std::path::PathBuf, String) {

@@ -7,12 +7,12 @@ mod activity;
 mod addressable;
 mod alerts;
 mod askpass;
-mod changes;
 mod connect;
 mod creature;
 mod desk;
 mod diag;
 mod dock;
+mod features;
 mod galaxy;
 mod grid;
 mod handoff;
@@ -32,6 +32,7 @@ mod paths;
 mod perf;
 mod pitch;
 mod pitlane;
+mod playground;
 mod quick_look;
 mod reef;
 #[cfg(any(target_os = "linux", test))]
@@ -45,6 +46,11 @@ mod system_settings;
 mod theme;
 mod ui;
 mod updates;
+#[cfg(test)]
+mod wire_fixture;
+
+#[cfg(test)]
+mod test_support;
 
 use desk::Desk;
 use rune::{AppSpec, Chrome};
