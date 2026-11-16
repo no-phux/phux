@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
@@ -31,19 +31,7 @@ esac
     )
 }
 
-pub(super) async fn assert_argv(
-    adapter: &CliAdapter,
-    log: &Path,
-    name: &str,
-    args: Value,
-    expected: &[&str],
-) -> Value {
-    let result = call_with_adapter(name, &args, adapter)
-        .await
-        .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-    assert_eq!(fake::logged(log), expected, "{name}");
-    result
-}
+pub(super) use fake::assert_argv;
 
 /// Every agent verb is its own tool: none carries an `action`
 /// discriminant, and the read and write shapes never merge.

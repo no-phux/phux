@@ -147,23 +147,12 @@ async fn run_trace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolErro
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::cli_adapter::fake;
-
-    /// A fake `phux` that prints `stdout` and `stderr` verbatim and exits
-    /// `code`.
-    fn scripted_cli(stdout: &str, stderr: &str, code: i32) -> (TempDir, CliAdapter, PathBuf) {
-        let made = fake::cli(&format!(
-            "cat '{{dir}}/stdout'\ncat '{{dir}}/stderr' >&2\nexit {code}\n"
-        ));
-        std::fs::write(made.0.path().join("stdout"), stdout).unwrap();
-        std::fs::write(made.0.path().join("stderr"), stderr).unwrap();
-        made
-    }
 
     fn server_report() -> Value {
         json!({
@@ -188,26 +177,12 @@ mod tests {
         })
     }
 
-    async fn assert_argv(
-        adapter: &CliAdapter,
-        log: &Path,
-        name: &str,
-        args: Value,
-        expected: &[&str],
-    ) -> Value {
-        let result = call_with_adapter(name, &args, adapter)
-            .await
-            .unwrap_or_else(|err| panic!("{name} {args} failed: {err:?}"));
-        assert_eq!(fake::logged(log), expected, "{name} {args}");
-        result
-    }
-
     /// `phux_perf` runs the canonical argv and returns the report unchanged,
     /// and the document satisfies the published schema.
     #[tokio::test]
     async fn perf_executes_canonical_argv() {
         let report = server_report();
-        let (_temp, adapter, log) = scripted_cli(&format!("{report}\n"), "", 0);
+        let (_temp, adapter, log) = fake::scripted(&format!("{report}\n"), "", 0);
         for (args, expected) in [
             (json!({}), &["perf", "--json"][..]),
             (
@@ -215,7 +190,7 @@ mod tests {
                 &["perf", "--json", "--socket", "/sock"][..],
             ),
         ] {
-            let result = assert_argv(&adapter, &log, "phux_perf", args, expected).await;
+            let result = fake::assert_argv(&adapter, &log, "phux_perf", args, expected).await;
             assert_eq!(result, report, "the report passes through unchanged");
             crate::contract_tests::validate_output("phux_perf", &result);
         }
@@ -226,7 +201,7 @@ mod tests {
     async fn trace_executes_canonical_argv() {
         let server = json!({ "path": "/state/trace.json", "events": 12, "dropped": 0,
                              "duration_ms": 5001 });
-        let (_temp, adapter, log) = scripted_cli(&format!("{server}\n"), "", 0);
+        let (_temp, adapter, log) = fake::scripted(&format!("{server}\n"), "", 0);
         for (args, expected) in [
             (
                 json!({}),
@@ -249,7 +224,7 @@ mod tests {
                 &["perf", "trace", "--seconds", "60", "--json"][..],
             ),
         ] {
-            let result = assert_argv(&adapter, &log, "phux_perf_trace", args, expected).await;
+            let result = fake::assert_argv(&adapter, &log, "phux_perf_trace", args, expected).await;
             assert_eq!(result, server);
             crate::contract_tests::validate_output("phux_perf_trace", &result);
         }
@@ -259,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_reports_the_cli_error_contract() {
         let contract = r#"{"schema_version":1,"error":{"code":"no_server","message":"no phux server is serving /run"}}"#;
-        let (_temp, adapter, _log) = scripted_cli("", &format!("{contract}\n"), 1);
+        let (_temp, adapter, _log) = fake::scripted("", &format!("{contract}\n"), 1);
         for name in ["phux_perf", "phux_perf_trace"] {
             let err = call_with_adapter(name, &json!({}), &adapter)
                 .await

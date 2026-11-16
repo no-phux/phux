@@ -461,22 +461,9 @@ fn reject_present(args: &Value, keys: &[&str]) -> Result<(), ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use crate::cli_adapter::fake;
     use crate::tools::call_with_adapter;
-
-    async fn assert_argv(
-        adapter: &CliAdapter,
-        log: &Path,
-        name: &str,
-        args: Value,
-        expected: &[&str],
-    ) {
-        call_with_adapter(name, &args, adapter).await.unwrap();
-        assert_eq!(fake::logged(log), expected, "{name}");
-    }
 
     #[tokio::test]
     async fn dispatch_validation_blocks_malformed_residue_calls_before_execution() {
@@ -511,7 +498,7 @@ mod tests {
     async fn residue_handlers_execute_the_exact_canonical_argv() {
         let (_temp, adapter, log) = fake::cli("printf '{}\\n'\n");
 
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_launch",
@@ -526,7 +513,7 @@ mod tests {
             ],
         )
         .await;
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_project_inspect",
@@ -534,7 +521,7 @@ mod tests {
             &["project", "inspect", "/repo", "--json"],
         )
         .await;
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_archive",

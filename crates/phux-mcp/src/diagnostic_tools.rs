@@ -180,7 +180,7 @@ async fn run_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use phux_protocol::wire::frame::{ServingUser, WhoamiRecord};
     use tempfile::TempDir;
@@ -200,17 +200,6 @@ mod tests {
 esac
 "#,
         )
-    }
-
-    /// A fake `phux` that prints `stdout` and `stderr` verbatim and exits
-    /// `code`.
-    fn scripted_cli(stdout: &str, stderr: &str, code: i32) -> (TempDir, CliAdapter, PathBuf) {
-        let made = fake::cli(&format!(
-            "cat '{{dir}}/stdout'\ncat '{{dir}}/stderr' >&2\nexit {code}\n"
-        ));
-        std::fs::write(made.0.path().join("stdout"), stdout).unwrap();
-        std::fs::write(made.0.path().join("stderr"), stderr).unwrap();
-        made
     }
 
     fn bearer_record() -> WhoamiRecord {
@@ -255,20 +244,6 @@ esac
         assert_eq!(result, raw, "the record must pass through unchanged");
         let record: WhoamiRecord = serde_json::from_value(result).unwrap();
         assert_eq!(record, bearer_record());
-    }
-
-    async fn assert_argv(
-        adapter: &CliAdapter,
-        log: &Path,
-        name: &str,
-        args: Value,
-        expected: &[&str],
-    ) -> Value {
-        let result = call_with_adapter(name, &args, adapter)
-            .await
-            .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-        assert_eq!(fake::logged(log), expected, "{name}");
-        result
     }
 
     /// The descriptions carry the rules that make results readable: a
@@ -320,7 +295,7 @@ esac
     async fn each_tool_executes_canonical_argv_and_keeps_the_document() {
         let (_temp, adapter, log) = fake_cli();
 
-        let status = assert_argv(
+        let status = fake::assert_argv(
             &adapter,
             &log,
             "phux_status",
@@ -335,7 +310,7 @@ esac
         );
         assert_eq!(status["error"]["code"], json!("no_server"));
 
-        let doctor = assert_argv(
+        let doctor = fake::assert_argv(
             &adapter,
             &log,
             "phux_doctor",
@@ -355,7 +330,7 @@ esac
     /// caller gets that contract line, not a malformed-JSON complaint.
     #[tokio::test]
     async fn a_document_less_failure_reports_the_cli_error_contract() {
-        let (_temp, adapter, _log) = scripted_cli(
+        let (_temp, adapter, _log) = fake::scripted(
             "",
             "{\"schema_version\":1,\"error\":{\"code\":\"server_disconnected\"}}\n",
             1,

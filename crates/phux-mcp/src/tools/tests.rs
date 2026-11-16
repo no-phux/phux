@@ -63,95 +63,83 @@ mod tests {
 
     #[tokio::test]
     async fn added_tool_dispatch_routes_to_strict_validation() {
-        let kill_error = dispatch("phux_kill", &json!({ "target": "@1" }))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            kill_error.0, "phux_kill is destructive; pass `confirm: true`",
-            "kill must reject before discovering or starting the CLI",
-        );
-        let detach_error = dispatch("phux_detach", &json!({})).await.unwrap_err();
-        assert_eq!(
-            detach_error.0,
-            "phux_detach is destructive; pass `confirm: true`"
-        );
-        assert!(
-            dispatch("phux_detach", &json!({ "confirm": false }))
-                .await
-                .unwrap_err()
-                .0
-                .contains("confirm: true"),
-        );
-        assert!(
-            dispatch(
+        // `Some(message)` pins the refusal text exactly; `None` only requires
+        // a refusal. Each case is refused before the CLI is discovered.
+        let cases: [(&str, Value, Option<&str>); 14] = [
+            (
+                "phux_kill",
+                json!({ "target": "@1" }),
+                Some("phux_kill is destructive; pass `confirm: true`"),
+            ),
+            (
                 "phux_detach",
-                &json!({ "confirm": true, "session": "work", "target": "@1" })
-            )
-            .await
-            .is_err(),
-            "phux_detach has no `target` — it addresses a session, not a pane",
-        );
-        assert!(dispatch("phux_launch", &json!({})).await.is_err());
-        let paste_error = dispatch("phux_paste", &json!({ "target": "@1" }))
-            .await
-            .unwrap_err();
-        assert_eq!(paste_error.0, "missing required argument `text`");
-        assert!(
-            dispatch(
+                json!({}),
+                Some("phux_detach is destructive; pass `confirm: true`"),
+            ),
+            (
+                "phux_detach",
+                json!({ "confirm": false }),
+                Some("phux_detach is destructive; pass `confirm: true`"),
+            ),
+            // No `target`: detach addresses a session, not a pane.
+            (
+                "phux_detach",
+                json!({ "confirm": true, "session": "work", "target": "@1" }),
+                None,
+            ),
+            ("phux_launch", json!({}), None),
+            (
                 "phux_paste",
-                &json!({ "target": "@1", "text": "x", "keys": ["a"] })
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            dispatch("phux_signal", &json!({ "target": "@1", "signal": "kill" }))
-                .await
-                .is_err()
-        );
-        assert!(
-            dispatch("phux_insert_pane", &json!({ "target": "@1" }))
-                .await
-                .is_err()
-        );
-        assert!(
-            dispatch("phux_workspace", &json!({ "action": "delete" }))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            dispatch("phux_agent", &json!({ "action": "list" }))
-                .await
-                .unwrap_err()
-                .0,
-            "unknown tool: phux_agent",
-        );
-        assert_eq!(
-            dispatch("phux_agent_set", &json!({ "target": "@1" }))
-                .await
-                .unwrap_err()
-                .0,
-            "missing required argument `name`",
-        );
-        assert_eq!(
-            dispatch("phux_agent_wait", &json!({ "until": ["unknown"] }))
-                .await
-                .unwrap_err()
-                .0,
-            "`until` must contain only: idle, working, blocked, done (got \"unknown\"; \
-             'unknown' is a departure, not a waitable state)",
-        );
-        assert_eq!(
-            dispatch(
+                json!({ "target": "@1" }),
+                Some("missing required argument `text`"),
+            ),
+            (
+                "phux_paste",
+                json!({ "target": "@1", "text": "x", "keys": ["a"] }),
+                None,
+            ),
+            (
+                "phux_signal",
+                json!({ "target": "@1", "signal": "kill" }),
+                None,
+            ),
+            ("phux_insert_pane", json!({ "target": "@1" }), None),
+            ("phux_workspace", json!({ "action": "delete" }), None),
+            (
+                "phux_agent",
+                json!({ "action": "list" }),
+                Some("unknown tool: phux_agent"),
+            ),
+            (
+                "phux_agent_set",
+                json!({ "target": "@1" }),
+                Some("missing required argument `name`"),
+            ),
+            (
+                "phux_agent_wait",
+                json!({ "until": ["unknown"] }),
+                Some(
+                    "`until` must contain only: idle, working, blocked, done (got \"unknown\"; \
+                     'unknown' is a departure, not a waitable state)",
+                ),
+            ),
+            (
                 "phux_snapshot",
-                &json!({ "target": "@1", "unwrap": true, "cells": true })
-            )
-            .await
-            .unwrap_err()
-            .0,
-            "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
-             coordinates and do not survive the join",
-        );
+                json!({ "target": "@1", "unwrap": true, "cells": true }),
+                Some(
+                    "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
+                     coordinates and do not survive the join",
+                ),
+            ),
+        ];
+        for (tool, args, expected) in cases {
+            let error = dispatch(tool, &args)
+                .await
+                .expect_err(&format!("{tool} {args} must be refused"));
+            if let Some(expected) = expected {
+                assert_eq!(error.0, expected, "{tool} {args}");
+            }
+        }
     }
 
     /// `agent_state` items carry the CLI's `phux watch --json` line shape.
@@ -257,13 +245,8 @@ mod tests {
         let whole = whole_fleet();
         let socket = std::path::Path::new("unused-for-non-tag-selectors");
 
-        assert_eq!(
-            resolve_one(socket, &selector::parse("work").unwrap(), &whole)
-                .await
-                .unwrap(),
-            ResourceId::local(100),
-        );
         for (raw, expected) in [
+            ("work", ResourceId::local(100)),
             ("work:1", ResourceId::local(101)),
             ("work:editor", ResourceId::local(101)),
             ("work:1.1", ResourceId::local(102)),
@@ -275,6 +258,7 @@ mod tests {
                     .await
                     .unwrap(),
                 expected,
+                "{raw}",
             );
         }
         assert_eq!(
@@ -283,17 +267,13 @@ mod tests {
                 .unwrap(),
             ResourceId::local(100),
         );
-        // Misses error.
-        assert!(
-            resolve_one(socket, &selector::parse("ghost").unwrap(), &whole)
-                .await
-                .is_err()
-        );
-        assert!(
-            resolve_one(socket, &selector::parse("@999").unwrap(), &whole)
-                .await
-                .is_err()
-        );
+        for miss in ["ghost", "@999"] {
+            let selector = selector::parse(miss).unwrap();
+            assert!(
+                resolve_one(socket, &selector, &whole).await.is_err(),
+                "{miss} must miss"
+            );
+        }
     }
 
     /// A miss against a hub that could not reach a satellite must not be
@@ -323,21 +303,42 @@ mod tests {
         );
     }
 
+    /// One scripted connection on a fresh socket; the handle yields the frames
+    /// the client sent.
+    fn serve(
+        spec: ScriptSpec,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        tokio::task::JoinHandle<Vec<FrameKind>>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mcp.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        (dir, socket, server)
+    }
+
+    /// Detach through the MCP tool against a server acking `count` clients.
+    async fn detach(count: u64, mut args: Value) -> (Value, Vec<FrameKind>) {
+        let (_dir, socket, server) = serve(ScriptSpec::new().detach_result(count));
+        args["confirm"] = json!(true);
+        args["socket"] = json!(socket.to_string_lossy());
+        let result = dispatch("phux_detach", &args).await.unwrap();
+        (result, server.await.unwrap())
+    }
+
     /// `#tag` resolution fetches the tag index, then prefers the focused pane.
     #[tokio::test]
     async fn resolve_one_fetches_tag_fixture() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("mcp-tag.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let spec = ScriptSpec::new().metadata(|scope, key| {
+        let (_dir, socket, server) = serve(ScriptSpec::new().metadata(|scope, key| {
             assert_eq!(key, RESOURCE_TAGS_KEY);
             let Scope::Resource(terminal_id) = scope else {
                 panic!("tag lookup must be terminal-scoped, got {scope:?}");
             };
             matches!(terminal_id.local_id(), Some(100 | 200))
                 .then(|| serde_json::to_vec(&vec!["build"]).unwrap())
-        });
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        }));
 
         let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &whole_fleet())
             .await
@@ -367,23 +368,10 @@ mod tests {
     /// the server acked, not an echo of the input.
     #[tokio::test]
     async fn phux_detach_reports_the_server_acked_count() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("mcp-detach.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let spec = ScriptSpec::new().detach_result(2);
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-
-        let result = dispatch(
-            "phux_detach",
-            &json!({ "session": "work", "confirm": true, "socket": socket.to_string_lossy() }),
-        )
-        .await
-        .unwrap();
+        let (result, seen) = detach(2, json!({ "session": "work" })).await;
         assert_eq!(result["schema_version"], json!(1));
         assert_eq!(result["detached"], json!(2));
         assert_eq!(result["session"], json!("work"));
-
-        let seen = server.await.unwrap();
         assert!(
             matches!(seen.first(), Some(FrameKind::Hello { .. })),
             "the client must negotiate before DETACH_CLIENTS; got {seen:?}"
@@ -404,26 +392,13 @@ mod tests {
     /// present-and-null `session` in the result.
     #[tokio::test]
     async fn phux_detach_omits_session_for_a_server_wide_call() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("mcp-detach-all.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let spec = ScriptSpec::new().detach_result(0);
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-
-        let result = dispatch(
-            "phux_detach",
-            &json!({ "confirm": true, "socket": socket.to_string_lossy() }),
-        )
-        .await
-        .unwrap();
+        let (result, seen) = detach(0, json!({})).await;
         assert_eq!(
             result["detached"],
             json!(0),
             "0 detached is success, not a miss"
         );
         assert!(result["session"].is_null());
-
-        let seen = server.await.unwrap();
         assert!(
             matches!(
                 seen.get(1),

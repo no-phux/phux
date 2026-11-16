@@ -441,6 +441,21 @@ pub(crate) mod fake {
         (temp, CliAdapter::new(executable), log)
     }
 
+    /// A fake `phux` that prints `stdout` and `stderr` verbatim and exits
+    /// `code`.
+    pub(crate) fn scripted(
+        stdout: &str,
+        stderr: &str,
+        code: i32,
+    ) -> (TempDir, CliAdapter, PathBuf) {
+        let made = cli(&format!(
+            "cat '{{dir}}/stdout'\ncat '{{dir}}/stderr' >&2\nexit {code}\n"
+        ));
+        std::fs::write(made.0.path().join("stdout"), stdout).unwrap();
+        std::fs::write(made.0.path().join("stderr"), stderr).unwrap();
+        made
+    }
+
     /// The argv the fake CLI logged on its last run.
     pub(crate) fn logged(log: &Path) -> Vec<String> {
         std::fs::read_to_string(log)
@@ -448,6 +463,22 @@ pub(crate) mod fake {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Run the CLI-backed tool `name` through `adapter` and assert it
+    /// executed exactly `expected`; returns the tool's document.
+    pub(crate) async fn assert_argv(
+        adapter: &CliAdapter,
+        log: &Path,
+        name: &str,
+        args: serde_json::Value,
+        expected: &[&str],
+    ) -> serde_json::Value {
+        let result = crate::tools::call_with_adapter(name, &args, adapter)
+            .await
+            .unwrap_or_else(|err| panic!("{name} {args} failed: {err:?}"));
+        assert_eq!(logged(log), expected, "{name} {args}");
+        result
     }
 }
 
