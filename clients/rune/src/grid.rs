@@ -26,6 +26,7 @@ use crate::perf;
 use crate::theme::Selection;
 
 mod glyphs;
+mod images;
 mod missing;
 
 /// Inter, which replacing Rune's built-in fonts has to name again, and a
@@ -423,6 +424,10 @@ fn build(
         .fill(list.background)
         // A row that moves lands at once: output never slides or fades.
         .instant_changes();
+    let (under, over) = images::layers(frame, metrics);
+    if let Some(under) = under {
+        grid = grid.child(under);
+    }
     // Rows are named by what they show, so a scrolled row keeps its subtree;
     // equal rows are told apart by their order.
     let mut seen: HashMap<u64, u16> = HashMap::new();
@@ -432,6 +437,9 @@ fn build(
         let id = format!("r{version:x}-{twin}");
         *twin += 1;
         grid = grid.child(memo(id, version, || row_el(&list, row, metrics)));
+    }
+    if let Some(over) = over {
+        grid = grid.child(over);
     }
     grid
 }
