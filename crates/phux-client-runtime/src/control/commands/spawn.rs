@@ -5,7 +5,15 @@ mod tests;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SpawnResource;
 
+use phux_client_core::org_ops::OrgOutcome;
+use phux_protocol::caps::ServerFeatureExt;
+use phux_protocol::ids::{ResourceKind, SessionId};
+use phux_protocol::wire::frame::{Command, CreatePlacement, ExitPolicy, LaunchMode, LaunchSpec};
+
+use super::super::org_plane::{mint_operation, outcome_sentence};
 use super::super::{ControlPlane, Event, FrameKind, GroupId, Pending, SpawnRequest, Status};
+
+const NO_SESSION_HOST: &str = "selected session has no confirmed live resource to host the new terminal, and the server cannot create one in it directly; refresh or open a terminal in that session first";
 
 impl ControlPlane {
     /// Spawn a terminal (`SPAWN_RESOURCE`); the reply is
@@ -28,19 +36,14 @@ impl ControlPlane {
         // A foreign session is addressed by an explicit member of any kind.
         // Never omit the owner and accidentally execute in the home session.
         let target_session = request.session_id.or(self.selected_session);
-        let owner_terminal = match target_session
-            .filter(|session| Some(*session) != self.attached_session)
-        {
-            Some(session) => {
-                let Some(owner) = self.spawn_session_owner(session) else {
-                    self.push_event(Event::TerminalSpawned {
-                        request_id, terminal_id: None,
-                        error: Some("selected session has no confirmed live resource to host the new terminal; refresh or open a terminal in that session first".to_owned()),
-                    });
-                    return request_id;
-                };
-                Some(owner)
+        let foreign = target_session.filter(|session| Some(*session) != self.attached_session);
+        let owner_terminal = foreign.map(|session| (session, self.spawn_session_owner(session)));
+        let owner_terminal = match owner_terminal {
+            Some((session, None)) => {
+                self.spawn_without_owner(request_id, session, request, allow_replay);
+                return request_id;
             }
+            Some((_, owner)) => owner,
             None => None,
         };
         let keyed = allow_replay && self.status == Status::Attached;
@@ -92,5 +95,109 @@ impl ControlPlane {
             })
             .flatten();
         member.or_else(|| self.topology.as_ref()?.first_pane_of(session).cloned())
+    }
+}
+
+impl ControlPlane {
+    /// A foreign session with no live member to address it through: create
+    /// the terminal by the session's key, or settle the spawn as refused.
+    /// A once-only spawn is never journaled, since the journal resends it.
+    fn spawn_without_owner(
+        &mut self,
+        request_id: u32,
+        session: u32,
+        request: SpawnRequest,
+        allow_replay: bool,
+    ) {
+        if allow_replay && self.create_in_session(request_id, session, request) {
+            return;
+        }
+        self.push_event(Event::TerminalSpawned {
+            request_id,
+            terminal_id: None,
+            error: Some(NO_SESSION_HOST.to_owned()),
+        });
+    }
+
+    /// Create a terminal in `session` by its organization key
+    /// (`RESOURCE_CREATE` placed in a new group), for a session with no live
+    /// member a `SPAWN_RESOURCE` could name as owner. The operation journal
+    /// resends it under the same id, so a reconnect never starts two. Returns
+    /// false when the replica or server cannot take it.
+    fn create_in_session(&mut self, request_id: u32, session: u32, request: SpawnRequest) -> bool {
+        let placed = self
+            .server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::CreatePlacement));
+        if !placed || !self.organization_supported() || !self.organization.is_live() {
+            return false;
+        }
+        let Some(key) = self
+            .organization
+            .session_by_live(SessionId::new(session))
+            .map(|record| record.key)
+        else {
+            return false;
+        };
+        let mut launch = LaunchSpec::new(request.command.unwrap_or_default()).with_cwd(request.cwd);
+        launch.env = request.env.unwrap_or_default();
+        let command = Command::ResourceCreate {
+            operation: mint_operation(),
+            session: key,
+            kind: ResourceKind::Terminal,
+            launch: Some(Box::new(launch)),
+            name: None,
+            on_exit: ExitPolicy::Remove,
+            launch_mode: LaunchMode::Immediate,
+            placement: Some(Box::new(CreatePlacement::NewGroup)),
+        };
+        let Ok(operation) = self.journal_org_operation(command) else {
+            return false;
+        };
+        self.org.spawns.push((operation, request_id));
+        self.flush_org_journal();
+        true
+    }
+
+    /// Settle a [`Self::create_in_session`] spawn as
+    /// [`Event::TerminalSpawned`]; false for any other operation.
+    pub(in crate::control) fn resolve_session_spawn(
+        &mut self,
+        report: &phux_client_core::org_ops::OrgReport,
+    ) -> bool {
+        let Some(position) = self
+            .org
+            .spawns
+            .iter()
+            .position(|(operation, _)| *operation == report.operation)
+        else {
+            return false;
+        };
+        let (_, request_id) = self.org.spawns.remove(position);
+        let receipt = match &report.outcome {
+            OrgOutcome::Committed(receipt) => receipt.target.as_ref(),
+            _ => None,
+        };
+        let terminal_id = receipt.map(|target| target.resource.clone());
+        let error = match &report.outcome {
+            _ if terminal_id.is_some() => None,
+            OrgOutcome::Committed(_) => Some("the server created no live terminal".to_owned()),
+            outcome => Some(outcome_sentence(outcome)),
+        };
+        if let Some(id) = &terminal_id {
+            // Unlike SPAWN_RESOURCE, a create does not pump output to its
+            // requester: subscribe as an attach would.
+            let _ = self.attach_terminal(id);
+        }
+        self.push_event(Event::TerminalSpawned {
+            request_id,
+            terminal_id: terminal_id.clone(),
+            error,
+        });
+        if terminal_id.is_some() && self.handshake_ready && self.options.automatic_lifecycle {
+            self.fence_topology_read();
+            self.queue_refresh_topology();
+        }
+        true
     }
 }
