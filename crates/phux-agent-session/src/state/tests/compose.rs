@@ -7,6 +7,17 @@ use phux_agent_rules::rules::{ManifestSpec, RuleSet};
 
 // --- compose ----------------------------------------------------------
 
+/// `compose`, decoded back into the record it wrote.
+fn composed(
+    existing: Option<&[u8]>,
+    kind: &str,
+    name: &str,
+    state: &str,
+    ownership: super::super::IdentityOwnership,
+) -> AgentRecordJson {
+    AgentRecordJson::decode(&compose(existing, kind, name, state, ownership)).expect("decodes")
+}
+
 #[test]
 fn compose_from_nothing_writes_the_detector_view() {
     let bytes = compose(None, "claude", "claude", "working", DETECTOR);
@@ -21,8 +32,7 @@ fn compose_from_nothing_writes_the_detector_view() {
 #[test]
 fn compose_preserves_an_identity_only_name_without_ownership_bits() {
     let existing = br#"{"name":"reviewer","session":"fleet-7"}"#;
-    let bytes = compose(Some(existing), "claude", "claude", "blocked", DETECTOR);
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "blocked", DETECTOR);
     assert_eq!(
         got.name, "reviewer",
         "the human's name survives a stale arbiter"
@@ -40,8 +50,7 @@ fn compose_preserves_an_identity_only_name_without_ownership_bits() {
 #[test]
 fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
     let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
-    let bytes = compose(Some(existing), "claude", "claude", "working", DETECTOR);
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "working", DETECTOR);
     assert_eq!(got.kind.as_deref(), Some("my-agent"));
     assert_eq!(got.name, "reviewer");
     assert_eq!(got.state, "working");
@@ -51,14 +60,7 @@ fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
 #[test]
 fn compose_preserves_an_identity_only_declaration() {
     let existing = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-    let bytes = compose(
-        Some(existing),
-        "claude",
-        "claude",
-        "blocked",
-        ownership_after(existing),
-    );
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "blocked", ownership_after(existing));
     assert_eq!(got.name, "reviewer", "the human's name survives");
     assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
     assert_eq!(got.state, "blocked", "the detector supplies only `state`");
@@ -67,14 +69,7 @@ fn compose_preserves_an_identity_only_declaration() {
 #[test]
 fn compose_preserves_a_declared_attention() {
     let existing = br#"{"name":"a","attention":"high"}"#;
-    let bytes = compose(
-        Some(existing),
-        "claude",
-        "claude",
-        "idle",
-        ownership_after(existing),
-    );
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "idle", ownership_after(existing));
     assert_eq!(got.attention.as_deref(), Some("high"));
     assert_eq!(got.state, "idle");
 }
@@ -82,14 +77,7 @@ fn compose_preserves_a_declared_attention() {
 #[test]
 fn compose_fills_a_missing_name_and_kind() {
     let existing = br#"{"name":"","session":"s"}"#;
-    let bytes = compose(
-        Some(existing),
-        "claude",
-        "claude",
-        "idle",
-        ownership_after(existing),
-    );
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "idle", ownership_after(existing));
     assert_eq!(
         got.name, "claude",
         "an empty stored name is not an owned one: L3 §3.7 requires a non-empty `name`",
@@ -102,8 +90,7 @@ fn compose_fills_a_missing_name_and_kind() {
 #[test]
 fn compose_reasserts_a_kind_the_detector_authored() {
     let existing = br#"{"name":"claude","kind":"claude","state":"working"}"#;
-    let bytes = compose(Some(existing), "codex", "codex", "idle", DETECTOR);
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "codex", "codex", "idle", DETECTOR);
     assert_eq!(
         got.kind.as_deref(),
         Some("codex"),
@@ -119,8 +106,7 @@ fn compose_preserves_an_explicitly_set_kind() {
     let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
     let owned = ownership_after(existing);
     assert!(owned.kind, "the writer supplied a kind");
-    let bytes = compose(Some(existing), "claude", "claude", "working", owned);
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(existing), "claude", "claude", "working", owned);
     assert_eq!(got.kind.as_deref(), Some("my-agent"));
     assert_eq!(got.name, "reviewer");
     assert_eq!(got.state, "working");
@@ -129,8 +115,7 @@ fn compose_preserves_an_explicitly_set_kind() {
 /// Garbage in the store does not block a clean write.
 #[test]
 fn compose_over_malformed_bytes_starts_fresh() {
-    let bytes = compose(Some(b"}{ nonsense"), "claude", "claude", "idle", DETECTOR);
-    let got = AgentRecordJson::decode(&bytes).expect("decodes");
+    let got = composed(Some(b"}{ nonsense"), "claude", "claude", "idle", DETECTOR);
     assert_eq!(got.name, "claude");
     assert_eq!(got.state, "idle");
 }
@@ -157,74 +142,68 @@ fn detectable() -> RuleSet {
     set
 }
 
-/// A declared `kind: claude` pane now running codex is contradicted.
+/// A declared kind is contradicted only when the detector could have derived
+/// it and the pane now runs another; everything else fails open.
 #[test]
-fn a_declared_kind_the_pane_no_longer_runs_is_contradicted() {
-    let stored = br#"{"name":"claude","kind":"claude","state":"working"}"#;
-    assert!(explicit_kind_is_contradicted(
-        Some(stored),
-        "codex",
-        &detectable()
-    ));
-}
-
-/// An open-vocabulary kind is never contradicted.
-#[test]
-fn an_open_vocabulary_kind_the_detector_cannot_derive_is_never_contradicted() {
-    let stored = br#"{"name":"reviewer","kind":"my-agent"}"#;
-    assert!(
-        !explicit_kind_is_contradicted(Some(stored), "claude", &detectable()),
-        "a label the detector could never have produced is not a claim it can falsify",
-    );
-}
-
-#[test]
-fn a_kind_the_pane_actually_runs_is_not_contradicted() {
-    let stored = br#"{"name":"claude","kind":"claude","state":"idle"}"#;
+fn an_explicit_kind_is_contradicted_only_by_a_derivable_other_kind() {
     let rules = detectable();
-    assert!(!explicit_kind_is_contradicted(
-        Some(stored),
-        "claude",
-        &rules
-    ));
-    assert!(
-        !explicit_kind_is_contradicted(Some(br#"{"name":"c","kind":"Claude"}"#), "claude", &rules),
-        "the same kind in another case is the same kind",
-    );
-}
-
-/// Nothing to contradict (no record, no or empty kind, bad bytes):
-/// fail open.
-#[test]
-fn a_record_without_a_usable_kind_contradicts_nothing() {
-    let rules = detectable();
-    assert!(!explicit_kind_is_contradicted(None, "codex", &rules));
-    assert!(!explicit_kind_is_contradicted(
-        Some(br#"{"name":"x"}"#),
-        "codex",
-        &rules
-    ));
-    assert!(!explicit_kind_is_contradicted(
-        Some(br#"{"name":"x","kind":""}"#),
-        "codex",
-        &rules
-    ));
-    assert!(!explicit_kind_is_contradicted(
-        Some(b"}{ nonsense"),
-        "codex",
-        &rules
-    ));
-}
-
-/// With no manifests loaded nothing can be contradicted.
-#[test]
-fn an_empty_rule_set_contradicts_nothing() {
-    let stored = br#"{"name":"claude","kind":"claude"}"#;
-    assert!(!explicit_kind_is_contradicted(
-        Some(stored),
-        "codex",
-        &RuleSet::default()
-    ));
+    let empty = RuleSet::default();
+    let cases: [(&str, Option<&[u8]>, &str, &RuleSet, bool); 9] = [
+        (
+            "declared claude, now running codex",
+            Some(br#"{"name":"claude","kind":"claude","state":"working"}"#),
+            "codex",
+            &rules,
+            true,
+        ),
+        // A label the detector could never have produced is not a claim it
+        // can falsify.
+        (
+            "open-vocabulary kind",
+            Some(br#"{"name":"reviewer","kind":"my-agent"}"#),
+            "claude",
+            &rules,
+            false,
+        ),
+        (
+            "the kind the pane runs",
+            Some(br#"{"name":"claude","kind":"claude","state":"idle"}"#),
+            "claude",
+            &rules,
+            false,
+        ),
+        (
+            "the same kind in another case",
+            Some(br#"{"name":"c","kind":"Claude"}"#),
+            "claude",
+            &rules,
+            false,
+        ),
+        ("no record", None, "codex", &rules, false),
+        ("no kind", Some(br#"{"name":"x"}"#), "codex", &rules, false),
+        (
+            "empty kind",
+            Some(br#"{"name":"x","kind":""}"#),
+            "codex",
+            &rules,
+            false,
+        ),
+        ("bad bytes", Some(b"}{ nonsense"), "codex", &rules, false),
+        (
+            "no manifests loaded",
+            Some(br#"{"name":"claude","kind":"claude"}"#),
+            "codex",
+            &empty,
+            false,
+        ),
+    ];
+    for (label, stored, running, rules, contradicted) in cases {
+        assert_eq!(
+            explicit_kind_is_contradicted(stored, running, rules),
+            contradicted,
+            "{label}"
+        );
+    }
 }
 
 // --- withdraw_state ----------------------------------------------------
