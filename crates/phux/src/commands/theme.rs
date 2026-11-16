@@ -160,12 +160,18 @@ fn set(
         (None, None) => unreachable!("checked above"),
     };
     let config_path = config_loader::config_path();
-    let edit = |key: &str, edit: Edit| {
-        phux_config::settings::write_edit(&config_path, &format!("theme.{key}"), edit)
-            .map_err(|err| err.to_string())
-    };
-    edit(unset_key, Edit::Unset)?;
-    edit(set_key, Edit::Set(toml::Value::String(value)))?;
+    // One transaction: the other theme key is cleared and this one set
+    // together, so a refused or racing write never leaves neither.
+    let unset_key = format!("theme.{unset_key}");
+    let set_key = format!("theme.{set_key}");
+    phux_config::settings::write_edits(
+        &config_path,
+        vec![
+            (unset_key.as_str(), Edit::Unset),
+            (set_key.as_str(), Edit::Set(toml::Value::String(value))),
+        ],
+    )
+    .map_err(|err| err.to_string())?;
     outln!("theme = {label}");
 
     // Repaint attached clients; no server is not a failure of `set`.
