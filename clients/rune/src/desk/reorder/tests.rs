@@ -152,10 +152,7 @@ fn server_refusal_and_uncertain_outcomes_are_visible_without_retry_or_selection_
 fn successful_receipt_refreshes_inventory_and_follows_only_the_still_selected_resource() {
     for navigate_away in [false, true] {
         let (client, mut desk) = connected();
-        desk.connection.shown = Some(crate::desk::Shown {
-            resource: live(7),
-            view: None,
-        });
+        desk.connection.shown = shown(7);
         desk.drag_at(Grab::Resource(7, key(1)), Phase::Up, [50.0, 160.0], false);
         let (request, operation) = move_request(&client);
         assert_eq!(
@@ -164,17 +161,9 @@ fn successful_receipt_refreshes_inventory_and_follows_only_the_still_selected_re
             "submission does not switch session"
         );
         if navigate_away {
-            desk.connection.shown = Some(crate::desk::Shown {
-                resource: live(8),
-                view: None,
-            });
+            desk.connection.shown = shown(8);
         }
-        reply(
-            &client,
-            &mut desk,
-            request,
-            CommandResult::Accepted { operation },
-        );
+        accept(&client, &mut desk, request, operation);
         assert_eq!(
             client.selected_session(),
             Some(if navigate_away { 1 } else { 2 })
@@ -210,13 +199,7 @@ fn session_reorder_keeps_the_whole_stored_order_even_over_a_resource_row() {
 fn an_active_tab_dropped_on_a_session_moves_every_member_using_the_batch_contract() {
     let (client, mut desk) = connected();
     let id = [9; 16];
-    desk.connection.tabs.list.push(crate::desk::Tab {
-        id,
-        name: "split".into(),
-        resources: vec![live(7), live(8)],
-        active: true,
-        locked: false,
-    });
+    push_tab(&mut desk, id, "split", vec![live(7), live(8)]);
     desk.connection
         .reorder
         .laid_out(Grab::Tab(id), [210.0, 0.0, 100.0, 30.0]);
@@ -251,10 +234,7 @@ fn unverified_server_identity_retires_pending_resource_moves() {
 fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
     for before_submission in [false, true] {
         let (client, mut desk) = connected();
-        desk.connection.shown = Some(crate::desk::Shown {
-            resource: live(7),
-            view: None,
-        });
+        desk.connection.shown = shown(7);
         if before_submission {
             desk.want(live(8));
         }
@@ -263,12 +243,7 @@ fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
         if !before_submission {
             desk.want(live(8));
         }
-        reply(
-            &client,
-            &mut desk,
-            request,
-            CommandResult::Accepted { operation },
-        );
+        accept(&client, &mut desk, request, operation);
         assert_eq!(
             client.selected_session(),
             Some(1),
@@ -286,13 +261,7 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
     for other in [ResourceId::satellite("elsewhere", 8), live(99)] {
         let (client, mut desk) = connected();
         let id = [9; 16];
-        desk.connection.tabs.list.push(crate::desk::Tab {
-            id,
-            name: "mixed".into(),
-            resources: vec![live(7), other],
-            active: true,
-            locked: false,
-        });
+        push_tab(&mut desk, id, "mixed", vec![live(7), other]);
         desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
         assert!(outbound(&client).is_empty());
         assert!(desk.connection.reorder.moves.is_empty());
@@ -303,18 +272,10 @@ fn satellite_or_missing_tab_members_cannot_be_silently_omitted_from_a_tab_drop()
 fn accepted_resource_move_is_placed_in_an_unselected_destination_arrangement() {
     use phux_client_core::layout::ArrangementDoc;
     let (client, mut desk) = connected();
-    desk.connection.shown = Some(crate::desk::Shown {
-        resource: live(8),
-        view: None,
-    });
+    desk.connection.shown = shown(8);
     desk.drag_at(Grab::Resource(7, key(1)), Phase::Up, [50.0, 160.0], false);
     let (request, operation) = move_request(&client);
-    reply(
-        &client,
-        &mut desk,
-        request,
-        CommandResult::Accepted { operation },
-    );
+    accept(&client, &mut desk, request, operation);
     assert!(
         !desk.place_sidebar_moves(&client),
         "wait for authoritative destination membership"
@@ -363,13 +324,7 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
     );
     install_arrangement(&client, 1, &source, 1);
     let id = source.groups[0].id;
-    desk.connection.tabs.list.push(crate::desk::Tab {
-        id,
-        name: "paired".into(),
-        resources: vec![live(7), live(8)],
-        active: true,
-        locked: false,
-    });
+    push_tab(&mut desk, id, "paired", vec![live(7), live(8)]);
     outbound(&client);
     desk.drag_at(Grab::Tab(id), Phase::Up, [50.0, 160.0], false);
     let (request, operation) = outbound(&client)
@@ -382,12 +337,7 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
             _ => None,
         })
         .unwrap();
-    reply(
-        &client,
-        &mut desk,
-        request,
-        CommandResult::Accepted { operation },
-    );
+    accept(&client, &mut desk, request, operation);
     advertise_membership(&client, 2);
     install_arrangement(&client, 2, &ArrangementDoc::default(), 1);
     outbound(&client);
@@ -397,6 +347,35 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
     assert_eq!(written.groups[0].id, id);
     assert_eq!(written.groups[0].name, "paired");
     assert_eq!(written.groups[0].state.tree, source.groups[0].state.tree);
+}
+
+/// Accept move `operation`, the reply to `request`.
+fn accept(
+    client: &Client,
+    desk: &mut Desk,
+    request: u32,
+    operation: phux_protocol::ids::OperationId,
+) {
+    reply(client, desk, request, CommandResult::Accepted { operation });
+}
+
+/// `@n` on screen, without a view.
+fn shown(n: u32) -> Option<crate::desk::Shown> {
+    Some(crate::desk::Shown {
+        resource: live(n),
+        view: None,
+    })
+}
+
+/// Add an active, unlocked tab `id` of `resources`.
+fn push_tab(desk: &mut Desk, id: [u8; 16], name: &str, resources: Vec<ResourceId>) {
+    desk.connection.tabs.list.push(crate::desk::Tab {
+        id,
+        name: name.into(),
+        resources,
+        active: true,
+        locked: false,
+    });
 }
 
 fn written_arrangement(client: &Client) -> phux_client_core::layout::ArrangementDoc {
