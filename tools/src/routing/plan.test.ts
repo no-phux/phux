@@ -77,6 +77,22 @@ test("coverage is the pull-request lane set on either event", () => {
   expect(plan(c, "pull_request", options).coverage).toBe("guards,lint,tests,e2e");
 });
 
+test("a flat docs change selects docs catalog on pull_request, merge_group, and push", () => {
+  // ci-plan passes the diff flag through on every event. The trigger does not
+  // gate it: merge_group uses main's lane policy, and the job still runs.
+  const docs = classifier.classify(["docs/page.md"]);
+  const scope = scopeOf(["docs/page.md"]);
+  for (const event of ["pull_request", "merge_group", "push"] as const) {
+    for (const selected of [true, false]) {
+      const output = planOutputs(
+        plan(docs, triggerFor(event), { scope, docsCatalog: selected }),
+        docs,
+      );
+      expect([event, selected, output["docs_catalog"]]).toEqual([event, selected, selected]);
+    }
+  }
+});
+
 test("docs catalog is selected only for a flat page add, rename, or delete", () => {
   const docs = classifier.classify(["docs/development.md"]);
   const scope = scopeOf(["docs/development.md"]);
