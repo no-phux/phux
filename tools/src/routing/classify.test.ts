@@ -296,6 +296,17 @@ test("UniFFI qualification skips only known unrelated crate inputs", () => {
   ]);
 });
 
+test("the instruction-count guard runs on the crates its scenarios measure", () => {
+  expectField("perfIcountNeeded", [
+    [["crates/phux-vt/src/render_pool.rs"], true],
+    [["crates/phux-vt/src/snapshot.rs"], true],
+    [["crates/phux-protocol/src/lib.rs"], true],
+    [["crates/phux-client-core/src/lib.rs"], true],
+    [["crates/phux-tui/src/lib.rs"], false],
+    [["docs/development.md"], false],
+  ]);
+});
+
 test("the mobile FFI artifacts rebuild on their crate closure only", () => {
   expectField("mobileFfiNeeded", [
     [[], true],
