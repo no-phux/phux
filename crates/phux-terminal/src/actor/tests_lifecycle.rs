@@ -408,6 +408,23 @@ async fn run_native_server_kernel_flow(
     (status, pages, authenticated_rows)
 }
 
+/// Ask the actor behind `handle` for its process handoff.
+#[allow(
+    clippy::future_not_send,
+    reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
+)]
+async fn request_upgrade(handle: &ResourceHandle) -> phux_terminal_api::handoff::ProcessHandoff {
+    let (reply, rx) = oneshot::channel();
+    handle
+        .terminal()
+        .expect("terminal facet")
+        .upgrade
+        .send(UpgradeHandleRequest { reply })
+        .await
+        .expect("send upgrade request");
+    rx.await.expect("upgrade reply")
+}
+
 /// A full-budget native bootstrap request at the default limits.
 fn native_request(
     owner: u64,

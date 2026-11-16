@@ -92,15 +92,7 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
         );
 
         // The adopted child is live and wired into the actor.
-        let (reply, rx) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("terminal facet")
-            .upgrade
-            .send(UpgradeHandleRequest { reply })
-            .await
-            .expect("send upgrade");
-        let h = rx.await.expect("upgrade reply");
+        let h = request_upgrade(&handle).await;
         assert_eq!(h.child_pid, Some(pid));
         assert!(h.master_fd.is_some());
 
