@@ -43,6 +43,8 @@ mod images;
 #[cfg(feature = "engine")]
 mod render;
 #[cfg(feature = "engine")]
+mod sync_output;
+#[cfg(feature = "engine")]
 mod views;
 #[cfg(feature = "engine")]
 use views::{Presentation, View};
@@ -100,6 +102,8 @@ pub(super) struct Owner {
     /// Whether predictive echo is drawn underlined.
     #[cfg(feature = "engine")]
     prediction_underline: bool,
+    #[cfg(feature = "engine")]
+    sync_output: HashMap<ResourceId, sync_output::Hold>,
 }
 
 impl Drop for Owner {
@@ -143,6 +147,8 @@ impl Owner {
             next_document_revision: 1,
             #[cfg(feature = "engine")]
             prediction_underline: true,
+            #[cfg(feature = "engine")]
+            sync_output: HashMap::new(),
         }
     }
 
@@ -179,6 +185,7 @@ impl Owner {
         self.visible.clear();
         #[cfg(feature = "engine")]
         {
+            self.sync_output.clear();
             for view in self.views.keys() {
                 self.publication.remove_view(*view);
             }
@@ -254,6 +261,7 @@ impl Owner {
         self.visible.remove(id);
         #[cfg(feature = "engine")]
         {
+            self.sync_output.remove(id);
             self.closed.remove(id);
             self.pending_releases.remove(id);
             self.projectors.remove(id);
