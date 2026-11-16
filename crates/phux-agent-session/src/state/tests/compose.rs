@@ -60,7 +60,13 @@ fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
 #[test]
 fn compose_preserves_an_identity_only_declaration() {
     let existing = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-    let got = composed(Some(existing), "claude", "claude", "blocked", ownership_after(existing));
+    let got = composed(
+        Some(existing),
+        "claude",
+        "claude",
+        "blocked",
+        ownership_after(existing),
+    );
     assert_eq!(got.name, "reviewer", "the human's name survives");
     assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
     assert_eq!(got.state, "blocked", "the detector supplies only `state`");
@@ -69,7 +75,13 @@ fn compose_preserves_an_identity_only_declaration() {
 #[test]
 fn compose_preserves_a_declared_attention() {
     let existing = br#"{"name":"a","attention":"high"}"#;
-    let got = composed(Some(existing), "claude", "claude", "idle", ownership_after(existing));
+    let got = composed(
+        Some(existing),
+        "claude",
+        "claude",
+        "idle",
+        ownership_after(existing),
+    );
     assert_eq!(got.attention.as_deref(), Some("high"));
     assert_eq!(got.state, "idle");
 }
@@ -77,7 +89,13 @@ fn compose_preserves_a_declared_attention() {
 #[test]
 fn compose_fills_a_missing_name_and_kind() {
     let existing = br#"{"name":"","session":"s"}"#;
-    let got = composed(Some(existing), "claude", "claude", "idle", ownership_after(existing));
+    let got = composed(
+        Some(existing),
+        "claude",
+        "claude",
+        "idle",
+        ownership_after(existing),
+    );
     assert_eq!(
         got.name, "claude",
         "an empty stored name is not an owned one: L3 §3.7 requires a non-empty `name`",

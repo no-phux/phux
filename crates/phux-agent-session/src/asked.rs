@@ -170,6 +170,22 @@ mod tests {
 
     use super::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum Step {
+        Entered,
+        Updated,
+        Ignored,
+    }
+
+    /// Report `id`/`question` from `source` on the default terminal.
+    fn report(detector: &mut AskedDetector, source: AskedSource, id: &str, question: &str) -> Step {
+        match detector.report(ResourceId::default(), source, payload(id, question)) {
+            AskedTransition::Entered(_) => Step::Entered,
+            AskedTransition::Updated(_) => Step::Updated,
+            AskedTransition::Ignored => Step::Ignored,
+        }
+    }
+
     fn payload(id: &str, question: &str) -> AskedPayload {
         AskedPayload {
             id: id.to_owned(),
@@ -185,32 +201,28 @@ mod tests {
     fn each_rung_outranks_the_one_below_it() {
         let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Scrape, payload("s", "Continue?")),
-            AskedTransition::Entered(_)
-        ));
-        assert!(
-            matches!(
-                detector.report(terminal, AskedSource::Sentinel, payload("t", "Deploy?")),
-                AskedTransition::Updated(_)
-            ),
+        assert_eq!(
+            report(&mut detector, AskedSource::Scrape, "s", "Continue?"),
+            Step::Entered
+        );
+        assert_eq!(
+            report(&mut detector, AskedSource::Sentinel, "t", "Deploy?"),
+            Step::Updated,
             "an explicit sentinel outranks passive screen evidence"
         );
         assert_eq!(
-            detector.report(terminal, AskedSource::Scrape, payload("s2", "Continue?")),
-            AskedTransition::Ignored,
+            report(&mut detector, AskedSource::Scrape, "s2", "Continue?"),
+            Step::Ignored,
             "and the scrape cannot take the pane back"
         );
-        assert!(
-            matches!(
-                detector.report(terminal, AskedSource::Hook, payload("h", "Approve?")),
-                AskedTransition::Updated(_)
-            ),
+        assert_eq!(
+            report(&mut detector, AskedSource::Hook, "h", "Approve?"),
+            Step::Updated,
             "a hook outranks the sentinel"
         );
         assert_eq!(
-            detector.report(terminal, AskedSource::Sentinel, payload("t2", "Deploy?")),
-            AskedTransition::Ignored,
+            report(&mut detector, AskedSource::Sentinel, "t2", "Deploy?"),
+            Step::Ignored,
             "and the sentinel cannot take the pane back"
         );
         assert_eq!(detector.current(terminal).unwrap().id, "h");
@@ -221,19 +233,19 @@ mod tests {
     fn a_re_asserted_sentinel_is_silent_and_a_changed_one_is_not() {
         let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
-            AskedTransition::Entered(_)
-        ));
         assert_eq!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
-            AskedTransition::Ignored,
+            report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
+            Step::Entered
+        );
+        assert_eq!(
+            report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
+            Step::Ignored,
             "the identical marker again is one ask, not two"
         );
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q2", "Ship it?")),
-            AskedTransition::Updated(_)
-        ));
+        assert_eq!(
+            report(&mut detector, AskedSource::Sentinel, "q2", "Ship it?"),
+            Step::Updated
+        );
         assert_eq!(detector.current(terminal).unwrap().id, "q2");
     }
 
@@ -242,14 +254,14 @@ mod tests {
     fn the_same_ask_from_sentinel_then_hook_fires_once() {
         let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
-            AskedTransition::Entered(_)
-        ));
         assert_eq!(
-            detector.report(terminal, AskedSource::Hook, payload("q1", "Deploy?")),
-            AskedTransition::Ignored,
-            "the hook is vouching for the ask already on the wire, not a new one",
+            report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
+            Step::Entered
+        );
+        assert_eq!(
+            report(&mut detector, AskedSource::Hook, "q1", "Deploy?"),
+            Step::Ignored,
+            "the hook is vouching for the ask already on the wire, not a new one"
         );
         assert_eq!(
             detector.retract(terminal, AskedSource::Sentinel),
@@ -269,10 +281,10 @@ mod tests {
     fn a_sentinel_that_clears_and_returns_fires_again() {
         let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
-            AskedTransition::Entered(_)
-        ));
+        assert_eq!(
+            report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
+            Step::Entered
+        );
         assert_eq!(
             detector
                 .retract(terminal, AskedSource::Sentinel)
@@ -281,10 +293,10 @@ mod tests {
             "q1"
         );
         assert!(detector.current(terminal).is_none());
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Sentinel, payload("q1", "Deploy?")),
-            AskedTransition::Entered(_)
-        ));
+        assert_eq!(
+            report(&mut detector, AskedSource::Sentinel, "q1", "Deploy?"),
+            Step::Entered
+        );
     }
 
     #[test]
@@ -304,21 +316,19 @@ mod tests {
         let terminal = ResourceId::default();
         let mut detector = AskedDetector::default();
 
-        assert!(matches!(
-            detector.report(terminal, AskedSource::Hook, payload("h", "Approve?")),
-            AskedTransition::Entered(_)
-        ));
-        assert!(
-            matches!(
-                detector.report(terminal, AskedSource::Stream, payload("s", "Deploy?")),
-                AskedTransition::Updated(_)
-            ),
-            "a record on the agent's own stream outranks its hook call",
+        assert_eq!(
+            report(&mut detector, AskedSource::Hook, "h", "Approve?"),
+            Step::Entered
         );
         assert_eq!(
-            detector.report(terminal, AskedSource::Hook, payload("h2", "Approve?")),
-            AskedTransition::Ignored,
-            "and cannot be displaced from below",
+            report(&mut detector, AskedSource::Stream, "s", "Deploy?"),
+            Step::Updated,
+            "a record on the agent's own stream outranks its hook call"
+        );
+        assert_eq!(
+            report(&mut detector, AskedSource::Hook, "h2", "Approve?"),
+            Step::Ignored,
+            "and cannot be displaced from below"
         );
         assert_eq!(
             detector.retract(terminal, AskedSource::Hook),
