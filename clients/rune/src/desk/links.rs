@@ -44,7 +44,35 @@ pub struct Pointer {
 impl Desk {
     fn link_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Link> {
         let (frame, col, row) = self.cell_at(terminal, x, y)?;
-        links::at(&frame, col, row)
+        links::at(&frame, col, row).or_else(|| self.file_at(terminal, &frame, col, row))
+    }
+
+    /// A path to an existing file, as compilers and agents print them. Only
+    /// a pane on this machine: another machine's path could name a local
+    /// file that merely shares it.
+    fn file_at(
+        &self,
+        terminal: &ResourceId,
+        frame: &GridFrame,
+        col: u16,
+        row: u16,
+    ) -> Option<Link> {
+        if self.remote(terminal) {
+            return None;
+        }
+        let mut link = links::word_at(frame, col, row)?;
+        // A bare word could be any file in the cwd; a path has a slash.
+        if !link.url.contains('/') || link.url.contains("://") {
+            return None;
+        }
+        let cwd = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.pane(terminal)?.cwd.clone());
+        let path = crate::quick_look::resolve(&link.url, cwd.as_deref().map(std::path::Path::new))?;
+        link.url = url::Url::from_file_path(path).ok()?.to_string();
+        Some(link)
     }
 
     /// The cell the pointer last moved over: its pane, frame and cell.
