@@ -11,8 +11,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, RESOURCE_AGENT_KEY,
-    RESOURCE_PROGRAM_STATUS_KEY, RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
+    Command, CommandResult, FrameKind, RESOURCE_AGENT_KEY, RESOURCE_PROGRAM_STATUS_KEY,
+    RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
 };
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::state::RetainPolicy;
@@ -200,6 +200,13 @@ impl Pane {
 
     async fn record(&mut self, id: &str) -> Value {
         self.get(&record_key(id)).await.expect("record must exist")
+    }
+
+    /// No record exists under any of `ids`.
+    async fn assert_absent(&mut self, ids: &[&str]) {
+        for id in ids {
+            assert_eq!(self.get(&record_key(id)).await, None, "record {id:?}");
+        }
     }
 
     async fn summary(&mut self) -> Value {

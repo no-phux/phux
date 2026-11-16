@@ -24,7 +24,7 @@ fn feature_reply_precedes_device_attributes_and_does_not_create_a_record() {
         );
         assert!(da.ends_with(b"c"));
         assert_eq!(pane.get(RESOURCE_PROGRAM_STATUS_KEY).await, None);
-        assert_eq!(pane.get(&record_key("")).await, None);
+        pane.assert_absent(&[""]).await;
         pane.stop().await;
     });
 }
@@ -91,9 +91,8 @@ fn hierarchy_replacement_inheritance_and_subtree_clear_are_visible_in_l3() {
         );
         pane.stage(3).await;
         pane.assert_ids(&["", "build.other"]).await;
-        assert_eq!(pane.get(&record_key("build")).await, None);
-        assert_eq!(pane.get(&record_key("build/test")).await, None);
-        assert_eq!(pane.get(&record_key("orphan/leaf")).await, None);
+        pane.assert_absent(&["build", "build/test", "orphan/leaf"])
+            .await;
         // Ancestor app changes may have queued earlier updates; consume through
         // the deletion instead of asserting an incidental number of broadcasts.
         loop {
@@ -108,8 +107,7 @@ fn hierarchy_replacement_inheritance_and_subtree_clear_are_visible_in_l3() {
         pane.release(4).await;
         pane.wait_value(RESOURCE_PROGRAM_STATUS_KEY, Option::is_none)
             .await;
-        assert_eq!(pane.get(&record_key("")).await, None);
-        assert_eq!(pane.get(&record_key("build.other")).await, None);
+        pane.assert_absent(&["", "build.other"]).await;
         drop(watcher);
         pane.stop().await;
     });

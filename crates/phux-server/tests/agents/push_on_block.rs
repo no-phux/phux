@@ -27,32 +27,11 @@ const PUSH_DEADLINE: Duration = Duration::from_secs(60);
 /// A fake `claude` that waits for `go`, then paints the permission dialog
 /// the `claude` rules match, then idles.
 fn write_gated_agent(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join("claude");
-    let rule = "\\342\\224\\200".repeat(20);
-    let script = format!(
-        "#!/bin/sh\n\
-         while [ ! -f '{go}' ]; do sleep 0.1; done\n\
-         printf '\\033[2J\\033[H'\n\
-         echo 'some transcript output above the live chrome'\n\
-         echo ''\n\
-         printf '{rule}\\n'\n\
-         echo ' Bash command'\n\
-         echo ''\n\
-         echo '   touch /tmp/probe.txt'\n\
-         echo ''\n\
-         echo ' Do you want to proceed?'\n\
-         printf ' \\342\\235\\257 1. Yes\\n'\n\
-         echo '   2. Yes, and always allow access'\n\
-         echo '   3. No'\n\
-         echo ''\n\
-         echo ' Esc to cancel'\n\
-         sleep 60\n",
-        go = dir.join("go").display(),
+    let gate = format!(
+        "while [ ! -f '{}' ]; do sleep 0.1; done",
+        dir.join("go").display()
     );
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
+    crate::fake_agent::write_dialog_agent(dir, &gate, "sleep 60")
 }
 
 /// A loopback gateway: every JSON body posted to it, answered 202.
