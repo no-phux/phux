@@ -131,6 +131,16 @@ fn bool_arg(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
+/// Read an optional boolean that defaults to `false`; any other type,
+/// `null` included, is an error naming `key`.
+pub(crate) fn strict_bool_arg(args: &Value, key: &str) -> Result<bool, ToolError> {
+    match args.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(ToolError::new(format!("`{key}` must be a boolean"))),
+    }
+}
+
 /// Read a required array-of-strings argument.
 fn string_array(args: &Value, key: &str) -> Result<Vec<String>, ToolError> {
     optional_string_array(args, key)?

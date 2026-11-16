@@ -14,7 +14,9 @@ use phux_protocol::wire::frame::{Committed, OrgFilter, ResourceRecord, SessionRe
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, ToolSpec, parse_selector, socket_arg, strict_object};
+use crate::tools::{
+    ToolError, ToolSpec, parse_selector, socket_arg, strict_bool_arg, strict_object,
+};
 
 /// The organization tools, in catalog order.
 pub(crate) const SPECS: &[ToolSpec] = &[
@@ -99,18 +101,10 @@ fn organize_args(args: &Value) -> Result<OrganizeArgs, ToolError> {
     };
     Ok(OrganizeArgs {
         session: crate::cli_adapter::bounded_string(args, "session", false)?,
-        apply: bool_arg(args, "apply")?,
-        offline: bool_arg(args, "offline")?,
+        apply: strict_bool_arg(args, "apply")?,
+        offline: strict_bool_arg(args, "offline")?,
         min_confidence,
     })
-}
-
-fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
-    match args.get(name) {
-        None => Ok(false),
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(ToolError::new(format!("`{name}` must be a boolean"))),
-    }
 }
 
 /// `phux_organize`: what `phux organize --json` prints.

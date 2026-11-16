@@ -179,14 +179,6 @@ fn timeout_secs(args: &Value, default: u64) -> Result<u64, ToolError> {
     crate::tools::bounded_timeout_secs(args, Some(default))
 }
 
-fn bool_arg(args: &Value, key: &str) -> Result<bool, ToolError> {
-    args.get(key).map_or(Ok(false), |value| {
-        value
-            .as_bool()
-            .ok_or_else(|| ToolError::new(format!("`{key}` must be a boolean")))
-    })
-}
-
 /// Append the optional `target` positional behind `--`, so a selector
 /// starting with `-` is never parsed as a flag.
 fn push_target(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
