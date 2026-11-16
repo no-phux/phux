@@ -146,13 +146,13 @@ fn an_unknown_tombstone_reason_still_retires_the_generation() {
 }
 
 fn satellite_leaf(entry: u8) -> ArrangementNode {
-    ArrangementNode::Leaf(EntryRef {
-        entry: [entry; 16],
-        target: EntryTarget::Satellite {
+    ArrangementNode::Leaf(EntryRef::new(
+        [entry; 16],
+        EntryTarget::Satellite {
             host: SatelliteHost::new("zzzz"),
             id: 1,
         },
-    })
+    ))
 }
 
 /// An unknown entry-target tag deep inside an arrangement reply settles the

@@ -236,6 +236,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 arrangement,
                 expected: rev,
                 document: ArrangementDoc::default(),
+                slot_tabs: false,
             },
             &C_ARRANGEMENT_REPLACE,
         ),

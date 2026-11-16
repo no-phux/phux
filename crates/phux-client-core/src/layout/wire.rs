@@ -270,10 +270,10 @@ fn node_to_wire(
                     id: *id,
                 },
             };
-            let entry = EntryRef {
-                entry: binding.entry(handle).unwrap_or_else(identity::fresh_id),
+            let entry = EntryRef::new(
+                binding.entry(handle).unwrap_or_else(identity::fresh_id),
                 target,
-            };
+            );
             Ok(WireNode::Leaf(unique_entry(entry, used)))
         }
         LayoutNode::Split {
@@ -396,10 +396,7 @@ mod tests {
     }
 
     fn entry(n: u8, target: EntryTarget) -> EntryRef {
-        EntryRef {
-            entry: [0xe0 | n; 16],
-            target,
-        }
+        EntryRef::new([0xe0 | n; 16], target)
     }
 
     fn member(n: u8) -> WireNode {

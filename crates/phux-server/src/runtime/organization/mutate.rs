@@ -20,6 +20,7 @@ const fn arrangement_save_fields(op: &Op) -> Option<(phux_core::ArrangementOwner
             owner,
             expected,
             groups,
+            ..
         } => Some((*owner, expected.get(), groups.len())),
         _ => None,
     }

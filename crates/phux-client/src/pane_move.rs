@@ -980,10 +980,7 @@ mod tests {
                 groups: vec![ArrangementGroup::new(
                     [3; 16],
                     None,
-                    ArrangementNode::Leaf(EntryRef {
-                        entry: [4; 16],
-                        target: EntryTarget::Member(b),
-                    }),
+                    ArrangementNode::Leaf(EntryRef::new([4; 16], EntryTarget::Member(b))),
                 )],
             },
         );

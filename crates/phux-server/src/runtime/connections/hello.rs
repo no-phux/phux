@@ -247,6 +247,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
         ServerFeatureExt::TabLock,
+        ServerFeatureExt::SlotTabs,
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,

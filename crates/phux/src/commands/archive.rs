@@ -940,10 +940,10 @@ fn imported_arrangement(windows: &[WorkspaceWindow], keys: &[Vec<ResourceKey>]) 
 }
 
 fn wire_leaf(key: ResourceKey) -> ArrangementNode {
-    ArrangementNode::Leaf(EntryRef {
-        entry: phux_client::layout::fresh_id(),
-        target: EntryTarget::Member(key),
-    })
+    ArrangementNode::Leaf(EntryRef::new(
+        phux_client::layout::fresh_id(),
+        EntryTarget::Member(key),
+    ))
 }
 
 /// [`layout_node_from_archive`] in key space.
@@ -1797,10 +1797,7 @@ mod tests {
         use super::*;
 
         fn member(key: ResourceKey, n: u8) -> ArrangementNode {
-            ArrangementNode::Leaf(EntryRef {
-                entry: [n; 16],
-                target: EntryTarget::Member(key),
-            })
+            ArrangementNode::Leaf(EntryRef::new([n; 16], EntryTarget::Member(key)))
         }
 
         /// A session with two shells, `a` arranged alone in group "main".

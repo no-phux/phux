@@ -211,10 +211,7 @@ fn deferred_edit_fixture(
                 groups: vec![ArrangementGroup { locked: false,
                     id: [7; 16],
                     name: Some("stored".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(shell),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
                 }],
             },
         );

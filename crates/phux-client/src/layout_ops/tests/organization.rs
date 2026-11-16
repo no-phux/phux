@@ -9,10 +9,7 @@ use super::*;
 use crate::testkit::{OrgFixture, serve_one};
 
 fn member(key: ResourceKey, n: u8) -> ArrangementNode {
-    ArrangementNode::Leaf(EntryRef {
-        entry: [n; 16],
-        target: EntryTarget::Member(key),
-    })
+    ArrangementNode::Leaf(EntryRef::new([n; 16], EntryTarget::Member(key)))
 }
 
 /// A session with two shells, `a` arranged alone in one group.

@@ -199,6 +199,7 @@ pub(super) fn org_command() -> impl Strategy<Value = Command> {
                 arrangement,
                 expected,
                 document,
+                slot_tabs: false,
             }
         ),
         (op(), arrangement_key(), any::<[u8; 16]>(), any::<bool>()).prop_map(

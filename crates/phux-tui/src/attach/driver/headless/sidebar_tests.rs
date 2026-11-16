@@ -75,10 +75,7 @@ async fn headless_layout_is_the_arrangement_record() {
                 locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
-                tree: ArrangementNode::Leaf(EntryRef {
-                    entry: [1; 16],
-                    target: EntryTarget::Member(shell),
-                }),
+                tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
             }],
         },
     );

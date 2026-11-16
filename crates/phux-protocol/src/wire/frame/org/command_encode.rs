@@ -239,11 +239,15 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             arrangement,
             expected,
             document,
+            slot_tabs,
         } => {
             write_operation(enc, operation);
             write_u64(enc, field::org::EXPECTED, expected.get());
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             write_document(enc, document);
+            if *slot_tabs {
+                write_u8(enc, field::org::SLOT_TABS, 1);
+            }
         }
         Command::ArrangementLock {
             operation,

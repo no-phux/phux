@@ -90,6 +90,7 @@ pub(super) fn moving_out_prunes_the_source_arrangement() {
             name: None,
             tree,
         }],
+        slot_tabs: false,
     })
     .expect("arrangement");
     let ak = h.session(a).arrangement.expect("linked");
@@ -129,6 +130,7 @@ pub(super) fn undoing_a_move_restores_the_source_placement() {
         owner: ArrangementOwner::Session(a),
         expected: Revision::FIRST,
         groups: groups.clone(),
+        slot_tabs: false,
     })
     .expect("arrangement");
     let ak = h.session(a).arrangement.expect("linked");
@@ -366,6 +368,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(theirs, 1)],
+            slot_tabs: false,
         }),
         Err(Refusal::InvalidArgument {
             field: "groups",
@@ -377,6 +380,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(mine, 1), group(mine, 1)],
+            slot_tabs: false,
         }),
         Err(Refusal::InvalidArgument { .. })
     ));
@@ -385,6 +389,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::FIRST,
             groups: vec![group(mine, 1)],
+            slot_tabs: false,
         })
         .err(),
         Some(Refusal::Conflict {
@@ -396,6 +401,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(mine, 1)],
+            slot_tabs: false,
         })
         .expect("create");
     let Reply::Ok { created, revision } = applied.reply else {
@@ -407,6 +413,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
         owner,
         expected: Revision::FIRST,
         groups: vec![],
+        slot_tabs: false,
     })
     .expect("replace");
     assert!(matches!(
@@ -414,6 +421,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner: ArrangementOwner::Workspace(phux_core::WorkspaceKey::from_bytes([1; 16])),
             expected: Revision::ZERO,
             groups: vec![],
+            slot_tabs: false,
         }),
         Err(Refusal::Unsupported { .. })
     ));
@@ -463,6 +471,7 @@ pub(super) fn a_locked_tab_refuses_close_until_unlocked_but_not_a_session_kill()
         owner,
         expected: Revision::FIRST,
         groups: vec![tab(5, 1, r1), tab(6, 2, r2)],
+        slot_tabs: false,
     })
     .expect("arrangement");
     let lock = |locked| Op::ArrangementLock {
@@ -486,6 +495,7 @@ pub(super) fn a_locked_tab_refuses_close_until_unlocked_but_not_a_session_kill()
         owner,
         expected: current,
         groups,
+        slot_tabs: false,
     };
     assert!(
         refused(&mut h, replace(vec![tab(6, 2, r2)])),
