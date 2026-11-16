@@ -32,9 +32,6 @@ pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_PREFIX_BYTES;
 pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_PREFIX_CHUNKS;
 /// Frames a native bootstrap spends beyond its chunks: one BEGIN and one READY.
 pub(crate) const NATIVE_BOOTSTRAP_FRAMING_FRAMES: usize = 2;
-/// Frame budget of a full native bootstrap: every prefix chunk plus framing.
-#[cfg(test)]
-pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES;
 
 pub use phux_terminal_api::native_state::NativeStateError;
 

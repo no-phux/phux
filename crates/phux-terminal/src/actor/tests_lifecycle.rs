@@ -281,16 +281,12 @@ async fn run_native_server_kernel_flow(
         .terminal()
         .expect("terminal facet")
         .native_bootstrap
-        .send(NativeBootstrapRequest {
-            owner: 71,
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            limits,
-            max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-            max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+        .send(native_request(
+            71,
+            terminal_id.clone(),
+            (stream_id, bootstrap_id),
             reply,
-        })
+        ))
         .await
         .expect("bootstrap request");
     let capture = captured
@@ -412,6 +408,22 @@ async fn run_native_server_kernel_flow(
     (status, pages, authenticated_rows)
 }
 
+/// A full-budget native bootstrap request at the default limits.
+fn native_request(
+    owner: u64,
+    terminal_id: phux_protocol::ids::ResourceId,
+    (stream_id, bootstrap_id): (
+        phux_protocol::ids::StreamId,
+        phux_protocol::ids::BootstrapId,
+    ),
+    reply: oneshot::Sender<
+        Result<NativeBootstrapReply, phux_terminal_api::native_state::NativeStateError>,
+    >,
+) -> NativeBootstrapRequest {
+    let limits = phux_protocol::caps::BootstrapLimits::default();
+    NativeBootstrapRequest::full_budget(owner, terminal_id, stream_id, bootstrap_id, limits, reply)
+}
+
 /// Two native pumps from one client on one pane do not invalidate each
 /// other.
 fn capture_native_for_pump(
@@ -421,16 +433,12 @@ fn capture_native_for_pump(
     bootstrap_id: phux_protocol::ids::BootstrapId,
 ) -> NativeBootstrapReply {
     let (reply, mut response) = oneshot::channel();
-    actor.handle_native_bootstrap(NativeBootstrapRequest {
+    actor.handle_native_bootstrap(native_request(
         owner,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id,
-        bootstrap_id,
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+        phux_protocol::ids::ResourceId::local(1),
+        (stream_id, bootstrap_id),
         reply,
-    });
+    ));
     for _ in 0..64 {
         match response.try_recv() {
             Ok(result) => return result.expect("native capture"),

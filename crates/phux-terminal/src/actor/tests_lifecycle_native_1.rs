@@ -235,16 +235,12 @@ async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
         attached.await.expect("attach reply").expect("attach");
 
         let (capture_reply, captured) = oneshot::channel();
-        actor.start_native_bootstrap(NativeBootstrapRequest {
-            owner: 41,
-            terminal_id: phux_protocol::ids::ResourceId::local(1),
-            stream_id,
-            bootstrap_id,
-            limits: phux_protocol::caps::BootstrapLimits::default(),
-            max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-            max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-            reply: capture_reply,
-        });
+        actor.start_native_bootstrap(native_request(
+            41,
+            phux_protocol::ids::ResourceId::local(1),
+            (stream_id, bootstrap_id),
+            capture_reply,
+        ));
         handle
             .terminal()
             .expect("terminal facet")
