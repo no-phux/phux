@@ -107,6 +107,20 @@ impl Drop for ServerProcess {
     }
 }
 
+/// `phux --socket SOCKET ARGS...` with the idle backstop set, so a daemon
+/// it auto-spawns and a test fails to reap cannot outlive the run. The
+/// socket goes ahead of the verb: anything after a `--` is a seed's argv.
+pub fn backstopped(socket: &Path, args: &[&str]) -> Out {
+    let (key, value) = AutoSpawnedServer::IDLE_BACKSTOP;
+    Out::of(
+        ambient::phux_cmd(crate::runner::phux_bin())
+            .arg("--socket")
+            .arg(socket)
+            .args(args)
+            .env(key, value),
+    )
+}
+
 /// Tracks a daemonized auto-spawn. Drop reaps a live socket even when the
 /// PID was never captured (phux-e4qx).
 pub struct AutoSpawnedServer {

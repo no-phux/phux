@@ -247,6 +247,15 @@ impl Out {
         })
     }
 
+    /// The `--json` failure document: stdout must be empty and stderr one
+    /// JSON line.
+    pub fn json_error(&self) -> serde_json::Value {
+        assert!(self.stdout.is_empty(), "{self:?}");
+        let stderr = &self.stderr;
+        serde_json::from_str(stderr.trim())
+            .unwrap_or_else(|err| panic!("stderr is not one JSON line ({err}): {stderr}"))
+    }
+
     /// Drop the heap report an `--all-features` build's dhat profiler prints
     /// to stderr on exit: a build diagnostic, not CLI output.
     pub fn without_dhat(mut self) -> Self {

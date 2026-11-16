@@ -12,31 +12,13 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use crate::common::{self, Out};
+use crate::common;
 
 use std::path::Path;
 
-fn phux(args: &[&str], socket: &Path) -> Out {
-    let (key, value) = common::AutoSpawnedServer::IDLE_BACKSTOP;
-    Out::of(
-        common::phux_cmd(crate::runner::phux_bin())
-            .args(args)
-            .arg("--socket")
-            .arg(socket)
-            .env(key, value),
-    )
-}
-
-fn json_error(out: &Out) -> serde_json::Value {
-    assert!(out.stdout.is_empty(), "{out:?}");
-    let stderr = &out.stderr;
-    serde_json::from_str(stderr.trim())
-        .unwrap_or_else(|err| panic!("stderr is not one JSON line ({err}): {stderr}"))
-}
-
 /// Each session's `project_link` in `phux ls --json`.
 fn links(socket: &Path) -> Vec<(String, serde_json::Value)> {
-    let doc = phux(&["ls", "--json"], socket).json();
+    let doc = common::backstopped(socket, &["ls", "--json"]).json();
     doc["sessions"]
         .as_array()
         .expect("sessions array")
@@ -54,14 +36,15 @@ fn links(socket: &Path) -> Vec<(String, serde_json::Value)> {
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn project_link_sets_trims_reports_and_clears_the_link() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
-    let created = phux(&["new", "--json", "-s", "work"], &socket).json();
+    let socket = &dir.path().join("phux.sock");
+    let created = common::backstopped(socket, &["new", "--json", "-s", "work"]).json();
     let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let pane = format!("@{}", created["terminal_id"].as_u64().expect("seed pane"));
-    assert!(phux(&["new", "--empty", "--json", "-s", "notes"], &socket).success());
+    assert!(common::backstopped(socket, &["new", "--empty", "--json", "-s", "notes"]).success());
 
-    let linked = phux(&["project", "link", "notes", "  phux ", "--json"], &socket).json();
+    let linked =
+        common::backstopped(socket, &["project", "link", "notes", "  phux ", "--json"]).json();
     assert_eq!(linked["schema_version"], 1, "{linked}");
     assert_eq!(linked["verb"], "project link", "{linked}");
     assert_eq!(linked["session"], "notes", "{linked}");
@@ -69,29 +52,29 @@ fn project_link_sets_trims_reports_and_clears_the_link() {
     assert!(linked["key"].as_str().is_some_and(|k| k.starts_with('^')));
     assert!(linked["revision"].as_u64().is_some(), "{linked}");
     assert_eq!(
-        links(&socket),
+        links(socket),
         [
             ("notes".to_owned(), serde_json::json!("phux")),
             ("work".to_owned(), serde_json::Value::Null),
         ]
     );
 
-    let missing = phux(&["project", "link", "gone", "phux", "--json"], &socket);
+    let missing = common::backstopped(socket, &["project", "link", "gone", "phux", "--json"]);
     assert_eq!(missing.code, 1, "{missing:?}");
-    assert_eq!(json_error(&missing)["error"]["code"], "no_such_target");
+    assert_eq!(missing.json_error()["error"]["code"], "no_such_target");
 
-    let on_pane = phux(&["project", "link", &pane, "phux", "--json"], &socket);
+    let on_pane = common::backstopped(socket, &["project", "link", &pane, "phux", "--json"]);
     assert_eq!(on_pane.code, 1, "{on_pane:?}");
-    assert_eq!(json_error(&on_pane)["error"]["code"], "wrong_resource_kind");
+    assert_eq!(on_pane.json_error()["error"]["code"], "wrong_resource_kind");
 
-    let blank = phux(&["project", "link", "notes", " ", "--json"], &socket);
+    let blank = common::backstopped(socket, &["project", "link", "notes", " ", "--json"]);
     assert_eq!(blank.code, 2, "{blank:?}");
-    assert_eq!(json_error(&blank)["error"]["code"], "invalid_argument");
+    assert_eq!(blank.json_error()["error"]["code"], "invalid_argument");
 
-    let unlinked = phux(&["project", "unlink", "notes", "--json"], &socket).json();
+    let unlinked = common::backstopped(socket, &["project", "unlink", "notes", "--json"]).json();
     assert_eq!(unlinked["verb"], "project unlink", "{unlinked}");
     assert_eq!(unlinked["project"], serde_json::Value::Null, "{unlinked}");
-    assert!(links(&socket).iter().all(|(_, link)| link.is_null()));
+    assert!(links(socket).iter().all(|(_, link)| link.is_null()));
 
     drop(server);
     drop(dir);
