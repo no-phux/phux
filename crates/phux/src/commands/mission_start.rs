@@ -9,10 +9,13 @@ use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use phux_mission::{DEFAULT_MAX_AGENTS, DEFAULT_RULES, StartDocument};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::OrgFilter;
 use phux_server::runtime::default_socket_path;
+use phux_work::mission::{
+    DEFAULT_MAX_AGENTS, DEFAULT_RULES, StartDocument, TaskPaths, brief_argv, brief_markdown,
+    build_env, default_target_dir, parse_agent, tab_title, task_paths,
+};
 use phux_work::{
     Alias, Client, LaunchQueued, Objective, OpenRun, OperationId, StartApplied, StartBinding,
     StartPlan, StartRequest,
@@ -101,11 +104,11 @@ fn start_task(
             "pass --agent KIND[/MODEL] or set [mission] agent",
         );
     };
-    let (kind, model) = match phux_mission::parse_agent(&agent_text) {
+    let (kind, model) = match parse_agent(&agent_text) {
         Ok(parsed) => parsed,
         Err(err) => return mission::report(json, &err),
     };
-    let paths = phux_mission::task_paths(
+    let paths = task_paths(
         &state_dir,
         &objective.repo,
         objective.alias.number,
@@ -162,7 +165,7 @@ struct Place<'a> {
     objective: &'a Objective,
     root: &'a Path,
     settings: &'a Settings,
-    paths: phux_mission::TaskPaths,
+    paths: TaskPaths,
     kind: String,
     model: Option<String>,
     socket: Option<PathBuf>,
@@ -223,7 +226,7 @@ struct Prepared<'a> {
     root: &'a Path,
     objective: &'a Objective,
     settings: &'a Settings,
-    paths: &'a phux_mission::TaskPaths,
+    paths: &'a TaskPaths,
     kind: &'a str,
     model: Option<&'a str>,
     socket: &'a Path,
@@ -242,7 +245,7 @@ fn prepare_worker(place: &Prepared<'_>) -> Result<StartBinding, PrepareError> {
             place.settings.target_dir.display()
         ))
     })?;
-    let brief = phux_mission::brief_markdown(
+    let brief = brief_markdown(
         place.objective.alias.number,
         &place.objective.alias.display(),
         &place.objective.repo,
@@ -312,7 +315,7 @@ pub(crate) fn promote_queued(
     }
     let state_dir = phux_config::instance::state_dir();
     let settings = load_settings(&root, &state_dir)?;
-    let mut paths = phux_mission::task_paths(
+    let mut paths = task_paths(
         &state_dir,
         &objective.repo,
         objective.alias.number,
@@ -376,21 +379,21 @@ fn worker_binding(
     socket: &Path,
     session: &str,
     kind: &str,
-    paths: &phux_mission::TaskPaths,
+    paths: &TaskPaths,
     model: Option<&str>,
     target_dir: &Path,
     sccache: Option<&str>,
     objective: &Objective,
 ) -> Result<StartBinding, String> {
     let credential = mint_credential(socket, session)?;
-    let title = phux_mission::tab_title(objective.alias.number, &objective.title);
+    let title = tab_title(objective.alias.number, &objective.title);
     let launched = super::launch::launch_in_session(&super::launch::SessionLaunch {
         kind: kind.to_owned(),
-        extra: phux_mission::brief_argv(kind, &paths.brief, model),
+        extra: brief_argv(kind, &paths.brief, model),
         cwd: paths.worktree.clone(),
         socket: socket.to_path_buf(),
         session: session.to_owned(),
-        env: phux_mission::build_env(target_dir, sccache),
+        env: build_env(target_dir, sccache),
         credential_socket: Some(credential),
     })?;
     let session_key = rename_worker(socket, session, launched.terminal_id, &title)?;
@@ -499,7 +502,7 @@ struct Settings {
 fn load_settings(repo: &Path, state_dir: &Path) -> Result<Settings, String> {
     let mut settings = Settings {
         max_agents: DEFAULT_MAX_AGENTS,
-        target_dir: phux_mission::default_target_dir(state_dir),
+        target_dir: default_target_dir(state_dir),
         sccache: None,
         agent: None,
         rules: DEFAULT_RULES.to_owned(),

@@ -3,7 +3,7 @@
 //! No I/O. The keeper applies the result; replaying the same observation
 //! writes nothing because the operation id is derived from the inputs.
 
-use phux_work::{ObjectiveState, OpaqueId, OperationId};
+use crate::{ObjectiveState, OpaqueId, OperationId};
 
 /// What the agent record said, collapsed to the states this projection uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +171,7 @@ mod tests {
     use super::{
         AgentReport, ProjectionInput, RunPhase, TerminalFact, observation_operation, project,
     };
-    use phux_work::{ObjectiveState, OpaqueId, OperationId};
+    use crate::{ObjectiveState, OpaqueId, OperationId};
 
     fn input(current: ObjectiveState) -> ProjectionInput {
         ProjectionInput {

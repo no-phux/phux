@@ -1,12 +1,9 @@
 //! Mission control: the task vocabulary people and agents see, composed over
-//! the work store in `phux-work`.
+//! the work store.
 //!
-//! This crate owns the `phux.mission/v1` documents. It never opens the
-//! store; it renders what a [`phux_work::Client`] returns. The board, Lead,
+//! This module owns the `phux.mission/v1` documents. It never opens the
+//! store; it renders what a [`crate::Client`] returns. The board, Lead,
 //! and `start` land here.
-
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
 
 mod json;
 mod start;

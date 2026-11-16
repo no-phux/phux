@@ -8,7 +8,9 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_mission::{ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb};
+use phux_work::mission::{
+    ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb,
+};
 use phux_work::{
     AddObjective, Alias, Client, EditObjective, Endpoint, KeeperExit, Launcher, ListFilter,
     OperationId, RevisionEdit,

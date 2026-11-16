@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use phux_work::{Applied, Objective};
+use crate::{Applied, Objective};
 
 /// Schema name carried on every mission JSON document.
 pub const SCHEMA: &str = "phux.mission/v1";
@@ -222,7 +222,7 @@ pub struct StartDocument {
 impl StartDocument {
     /// Build the `start` document.
     #[must_use]
-    pub fn from_applied(applied: &phux_work::StartApplied) -> Self {
+    pub fn from_applied(applied: &crate::StartApplied) -> Self {
         Self {
             schema: SCHEMA,
             schema_version: SCHEMA_VERSION,

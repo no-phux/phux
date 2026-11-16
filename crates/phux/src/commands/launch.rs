@@ -275,7 +275,7 @@ const fn working_directory_slug(dir: LaunchWorkingDirectory) -> &'static str {
 
 /// Resolved launch placed into an existing session.
 pub(crate) struct SessionLaunch {
-    /// Agent kind. Template ids are tried from [`phux_mission::integration_ids`].
+    /// Agent kind. Template ids are tried from [`phux_work::mission::integration_ids`].
     pub kind: String,
     /// Brief argv, appended to the template.
     pub extra: Vec<String>,
@@ -304,7 +304,7 @@ pub(crate) fn launch_in_session(plan: &SessionLaunch) -> Result<LaunchedPane, St
     let config_path = config_loader::config_path();
     let mut resolved = None;
     let mut last_err = None;
-    for id in phux_mission::integration_ids(&plan.kind) {
+    for id in phux_work::mission::integration_ids(&plan.kind) {
         match phux_plugin::resolve_launch(
             &config_path,
             id,

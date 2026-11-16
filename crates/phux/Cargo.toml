@@ -73,7 +73,6 @@ phux-config.workspace = true
 phux-resource.workspace = true
 # `phux mission`: the mission documents, and the work store's keeper and
 # client. A client composition; no server or protocol type is involved.
-phux-mission.workspace = true
 phux-work.workspace = true
 phux-plugin.workspace = true
 # `phux agent usage`: the plan-usage collector. Its own crate so nothing in the

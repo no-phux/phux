@@ -2960,7 +2960,6 @@ dependencies = [
  "phux-core",
  "phux-dial",
  "phux-frozen",
- "phux-mission",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
@@ -3257,14 +3256,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "phux-mission"
-version = "0.154.0"
-dependencies = [
- "phux-work",
- "serde",
 ]
 
 [[package]]

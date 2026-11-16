@@ -75,12 +75,11 @@ Cargo manifests define the actual edges.
 | `phux-crash` | fatal-signal handler that restores the terminal before re-raising |
 | `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
 | `quictun` | blind QUIC relay; knows nothing about phux |
-| `phux-work` | SQLite work store with a single-writer keeper process |
+| `phux-work` | SQLite work store with a single-writer keeper process, and the `phux.mission/v1` mission documents over it |
 | `phux-config` | the TUI `config.toml` schema, loader, widget contract |
 | `phux-dial` | outbound QUIC and WebSocket dialing: TLS pinning, bearer token |
 | `phux-client-core` | sans-IO session kernel, engine adapter, layout, multi-pane, predictive echo; no tokio, no ratatui, compiles to wasm |
 | `phux-record` | asciicast codec, VT replay, GIF/APNG export |
-| `phux-mission` | mission documents over the work store |
 | `phux-plugin` | plugin action runtime contracts |
 | `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
 | `phux-frozen` | test support: frozen fixtures that hold persisted formats to what released images wrote |

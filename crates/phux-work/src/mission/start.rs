@@ -140,13 +140,13 @@ pub fn brief_markdown(
 /// # Errors
 ///
 /// The kind or model is empty or uses a character a launch id cannot carry.
-pub fn parse_agent(text: &str) -> Result<(String, Option<String>), phux_work::Error> {
+pub fn parse_agent(text: &str) -> Result<(String, Option<String>), crate::Error> {
     let (kind, model) = match text.split_once('/') {
         Some((kind, model)) => (kind, Some(model)),
         None => (text, None),
     };
     if !token_ok(kind, 64) || model.is_some_and(|model| !token_ok(model, 128)) {
-        return Err(phux_work::Error::InvalidText {
+        return Err(crate::Error::InvalidText {
             field: "agent".to_owned(),
             reason: "must look like KIND or KIND/MODEL (letters, digits, `.`, `_`, `-`)".to_owned(),
         });
