@@ -25,26 +25,15 @@ fn run_with_config(config: Option<&str>, args: &[&str]) -> (i32, String, String)
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(config_dir.join("config.toml"), config).expect("write config");
     }
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+    let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
+    cmd.env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
         .env("PHUX_PROFILE", "default")
         // A path that does not exist: any ssh attempt fails the run loudly
         // instead of silently reaching a real host.
         .env("PHUX_SSH", dir.path().join("no-such-ssh"))
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    let stderr = String::from_utf8_lossy(&out.stderr)
-        .lines()
-        .filter(|line| !line.starts_with("dhat: "))
-        .collect::<Vec<_>>()
-        .join("\n");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr,
-    )
+        .args(args);
+    crate::common::Out::of(&mut cmd).without_dhat().into_parts()
 }
 
 /// Each session verb that takes `--remote`, in a spelling that would

@@ -79,12 +79,7 @@ pub fn mission(
 ) -> (i32, String, String) {
     let mut cmd = guard.cmd(args);
     cmd.current_dir(repo).envs(env.iter().copied());
-    let output = cmd.output().expect("phux");
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
+    crate::common::Out::of(&mut cmd).into_parts()
 }
 
 pub fn assert_valid(value: &Value) {
