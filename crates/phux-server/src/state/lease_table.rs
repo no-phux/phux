@@ -16,7 +16,7 @@ use super::client::ClientId;
 
 /// The local input-lease ledger.
 #[derive(Debug, Default)]
-pub(super) struct LeaseTable {
+pub(crate) struct LeaseTable {
     /// Per-pane lease: only the holder's input reaches the PTY (others are
     /// dropped but still acked). Absent means `Open`.
     input: HashMap<ResourceId, ClientId>,
@@ -32,7 +32,8 @@ pub(super) struct LeaseTable {
     /// Source of expiry generations; never reset, so each is unique.
     next_expiry_generation: u64,
     /// Live timer-task count, for the regression test that re-arms do not
-    /// accumulate tasks (cheap enough to keep ungated).
+    /// accumulate tasks.
+    #[cfg(test)]
     expiry_task_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -50,15 +51,16 @@ struct ExpiryEntry {
 impl LeaseTable {
     // -- local pane leases ----------------------------------------------
 
-    /// The lease holder for `terminal`, or `None` when `Open`.
+    /// The client currently holding `terminal`'s input lease, or `None` when
+    /// the pane is `Open`.
     #[must_use]
-    pub(super) fn holder(&self, terminal: ResourceId) -> Option<ClientId> {
+    pub(crate) fn holder(&self, terminal: ResourceId) -> Option<ClientId> {
         self.input.get(&terminal).copied()
     }
 
     /// Whether another client's lease blocks `client`'s input.
     #[must_use]
-    pub(super) fn blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
+    pub(crate) fn blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.input
             .get(&terminal)
             .is_some_and(|holder| *holder != client)
@@ -104,9 +106,10 @@ impl LeaseTable {
         *epoch = epoch.saturating_add(1);
     }
 
-    /// Every pane whose input lease `client` currently holds.
+    /// Every pane whose input lease `client` currently holds (for disconnect
+    /// broadcasts).
     #[must_use]
-    pub(super) fn held_by(&self, client: ClientId) -> Vec<ResourceId> {
+    pub(crate) fn held_by(&self, client: ClientId) -> Vec<ResourceId> {
         self.input
             .iter()
             .filter_map(|(pane, holder)| (*holder == client).then_some(*pane))
@@ -156,7 +159,7 @@ impl LeaseTable {
 
     /// Whether `generation` is still current (checked by a woken timer).
     #[must_use]
-    pub(super) fn expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
+    pub(crate) fn expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
         self.expiry
             .get(&terminal)
             .is_some_and(|e| e.generation == generation)
@@ -169,9 +172,10 @@ impl LeaseTable {
         self.expiry.remove(&terminal);
     }
 
-    /// A clone of the live-timer-task counter.
+    /// A clone of the live TTL-timer-task counter.
+    #[cfg(test)]
     #[must_use]
-    pub(super) fn expiry_task_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    pub(crate) fn expiry_task_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         std::sync::Arc::clone(&self.expiry_task_counter)
     }
 

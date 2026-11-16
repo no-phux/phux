@@ -183,6 +183,6 @@ fn detach_releases_local_and_satellite_leases_together() {
 
     state.detach(AGENT);
 
-    assert_eq!(state.input_lease_holder(pane), None);
+    assert_eq!(state.leases().holder(pane), None);
     assert_eq!(state.federation().satellite_lease_holder(&host, 9), None);
 }

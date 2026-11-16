@@ -339,7 +339,7 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
             connection.attach(attach_id).await;
             assert_eq!(prefix(&mut connection, 1, attach_id).await,
                 [BootstrapStreamProfile::AccessibilityTreeJsonV1]);
-            assert!(state.with(|s| s.input_lease_holder(core).is_none()));
+            assert!(state.with(|s| s.leases().holder(core).is_none()));
             assert!(state.with(|s| s.viewport_terminals(connection.client).is_empty()));
             assert!(state.with(|s| s.resolve_terminal_geometry(core, Some(ViewportInfo::new(123, 45))).is_none()));
             assert!(state.with(|s| s.resolve_terminal_cell_px(core).is_none()));
@@ -428,14 +428,14 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
             request_id: 70, result: phux_protocol::wire::frame::CommandResult::Ok
         }));
         for core in [agent, tree, surface] {
-            assert!(state.with(|s| s.input_lease_holder(core).is_none()));
+            assert!(state.with(|s| s.leases().holder(core).is_none()));
         }
         assert_eq!(
             state.with(|s| s.viewport_terminals(connection.client)),
             [parent]
         );
         assert_eq!(
-            state.with(|s| s.input_lease_holder(parent)),
+            state.with(|s| s.leases().holder(parent)),
             Some(connection.client)
         );
         connection.finish().await;
@@ -467,7 +467,7 @@ async fn mixed_without_terminal_profile_refuses_before_subscription_or_geometry(
                     .contains(&connection.client)
             );
             assert_eq!(s.registry().terminal(parent).unwrap().dims, before);
-            assert!(s.input_lease_holder(parent).is_none());
+            assert!(s.leases().holder(parent).is_none());
         });
         connection.send(FrameKind::Ping { nonce: 9 }).await;
         assert!(matches!(

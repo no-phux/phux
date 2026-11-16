@@ -145,7 +145,7 @@ fn retain_exited_pane(
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
-    let input_holder = s.input_lease_holder(pane).map(crate::runtime::wire_client);
+    let input_holder = s.leases().holder(pane).map(crate::runtime::wire_client);
     let exited = AgentEvent::TerminalControl {
         lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
         exit_status: exit.status,

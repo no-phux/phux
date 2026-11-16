@@ -166,7 +166,7 @@ impl ServerState {
             } else {
                 phux_protocol::wire::frame::ResourceLifecycle::Running
             };
-            let input_holder = self.input_lease_holder(pid).map(|holder| {
+            let input_holder = self.leases().holder(pid).map(|holder| {
                 phux_protocol::ids::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX))
             });
             let viewers = self

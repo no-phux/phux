@@ -159,32 +159,32 @@ fn input_lease_blocks_non_holders_until_released_or_detached() {
     let (_sid, pid) = s.seed_session("default");
     let a = s.clients_mut().new_client_id();
     let b = s.clients_mut().new_client_id();
-    assert_eq!(s.input_lease_holder(pid), None);
-    assert!(!s.input_blocked(pid, a), "an Open pane blocks no one");
+    assert_eq!(s.leases().holder(pid), None);
+    assert!(!s.leases().blocked(pid, a), "an Open pane blocks no one");
 
     assert_eq!(s.set_input_lease(pid, a), None);
-    assert!(!s.input_blocked(pid, a) && s.input_blocked(pid, b));
+    assert!(!s.leases().blocked(pid, a) && s.leases().blocked(pid, b));
     assert_eq!(
         s.set_input_lease(pid, b),
         Some(a),
         "a seize returns the prior holder"
     );
-    assert!(s.input_blocked(pid, a));
+    assert!(s.leases().blocked(pid, a));
 
     assert!(!s.release_input_lease(pid, a), "only the holder releases");
     assert!(s.release_input_lease(pid, b));
     assert!(!s.release_input_lease(pid, b), "double release is a no-op");
-    assert_eq!(s.input_lease_holder(pid), None);
+    assert_eq!(s.leases().holder(pid), None);
 
     s.set_input_lease(pid, a);
-    assert_eq!(s.leases_held_by(a), vec![pid]);
+    assert_eq!(s.leases().held_by(a), vec![pid]);
     s.detach(a);
     assert_eq!(
-        s.input_lease_holder(pid),
+        s.leases().holder(pid),
         None,
         "a disconnect never strands the wheel"
     );
-    assert!(s.leases_held_by(a).is_empty());
+    assert!(s.leases().held_by(a).is_empty());
 }
 
 #[test]

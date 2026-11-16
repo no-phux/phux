@@ -95,7 +95,7 @@ fn announce_lease_releases(
     client_id: ClientId,
     actor: Option<phux_protocol::ids::ClientId>,
 ) {
-    for pane in s.leases_held_by(client_id) {
+    for pane in s.leases().held_by(client_id) {
         let Some(lease) = s
             .resources()
             .handle(pane)

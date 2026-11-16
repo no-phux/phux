@@ -167,7 +167,7 @@ async fn local_focus_activity_case(leased: bool, retained: bool, authorized: boo
                 (120, 48)
             };
             assert_eq!(s.registry().terminal(pane).unwrap().dims, expected);
-            assert_eq!(s.input_lease_holder(pane), leased.then_some(DESKTOP));
+            assert_eq!(s.leases().holder(pane), leased.then_some(DESKTOP));
         });
         let delivered = authorized && !leased && !retained;
         assert_eq!(

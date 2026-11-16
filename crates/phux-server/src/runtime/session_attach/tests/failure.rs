@@ -32,7 +32,7 @@ async fn oversized_document_rolls_back_every_kind_before_attached() {
                         .subscribers_for(core)
                         .contains(&connection.client)
                 );
-                assert!(s.input_lease_holder(core).is_none());
+                assert!(s.leases().holder(core).is_none());
             }
         });
         assert!(

@@ -74,5 +74,5 @@ pub(in crate::runtime) fn attached_input_allowed(
     if !s.resources().subscribers_for(resource).contains(&client) {
         return false;
     }
-    !s.input_blocked(resource, client)
+    !s.leases().blocked(resource, client)
 }

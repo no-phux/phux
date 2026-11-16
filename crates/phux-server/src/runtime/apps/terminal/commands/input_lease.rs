@@ -19,7 +19,7 @@ pub(crate) async fn handle_acquire_input(
 ) -> CommandResult {
     let granted = state.with_mut(|s| {
         let (core, handle) = terminal_handle(s, terminal_id)?;
-        let prior = s.input_lease_holder(core);
+        let prior = s.leases().holder(core);
         if mode == InputMode::Cooperative
             && let Some(holder) = prior
             && holder != client_id
@@ -88,13 +88,13 @@ pub(in crate::runtime) fn spawn_input_lease_expiry(
 ) {
     let task_state = state.clone();
     #[cfg(test)]
-    let counter = state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+    let counter = state.with(|s| s.leases().expiry_task_counter());
     let join = tokio::task::spawn_local(async move {
         #[cfg(test)]
         let _live = LiveExpiryTaskGuard::new(counter);
         tokio::time::sleep(std::time::Duration::from_millis(u64::from(ttl_ms))).await;
         let expired = task_state.with_mut(|s| {
-            if !s.input_lease_expiry_is_current(terminal, generation) {
+            if !s.leases().expiry_is_current(terminal, generation) {
                 return None;
             }
             // Not `refresh_input_lease_expiry`, which would abort this task.

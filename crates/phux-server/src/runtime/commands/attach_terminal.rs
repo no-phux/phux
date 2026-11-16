@@ -69,7 +69,7 @@ pub(super) async fn handle_attach_terminal(
                     s.clients_mut().mark_viewer(client_id, terminal_id, true);
                 }
                 let released = s.undo_attach_takeover(client_id, core, effects);
-                (released, s.input_lease_holder(core))
+                (released, s.leases().holder(core))
             });
             let lease = handle.companion::<crate::resource::companions::Leasable>();
             if restore
@@ -181,7 +181,7 @@ pub(crate) fn subscribe_attach_terminal(
             handle,
             effects,
             was_viewer,
-            holder: s.input_lease_holder(core),
+            holder: s.leases().holder(core),
         })
     })
 }

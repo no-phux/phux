@@ -2,20 +2,15 @@ use phux_core::ids::ResourceId;
 use phux_protocol::ids::LeaseEpoch;
 use phux_protocol::wire::frame::AgentEvent;
 
-use super::{ClientId, ServerState};
+use super::{ClientId, LeaseTable, ServerState};
 
 impl ServerState {
-    /// The client currently holding `pane`'s input lease (ADR-0033), or
-    /// `None` if the pane is `Open`.
+    /// The local input-lease ledger (ADR-0033), read-only: every lease
+    /// change journals `LeaseChanged`, so grants and releases stay on
+    /// `ServerState`.
     #[must_use]
-    pub fn input_lease_holder(&self, terminal: ResourceId) -> Option<ClientId> {
-        self.leases.holder(terminal)
-    }
-
-    /// Whether another client's lease blocks `client`'s input (ADR-0033).
-    #[must_use]
-    pub fn input_blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
-        self.leases.blocked(terminal, client)
+    pub(crate) const fn leases(&self) -> &LeaseTable {
+        &self.leases
     }
 
     /// Grant `pane`'s input lease to `client` (ADR-0033), returning the prior
@@ -133,12 +128,6 @@ impl ServerState {
         let _ = self.record_and_fanout(record);
     }
 
-    /// Every pane whose lease `client` holds (for disconnect broadcasts).
-    #[must_use]
-    pub fn leases_held_by(&self, client: ClientId) -> Vec<ResourceId> {
-        self.leases.held_by(client)
-    }
-
     /// Invalidate `terminal`'s expiry generation and, when `scheduled`, mint
     /// a fresh one for a new timer. Called in the same lock scope as the
     /// lease change.
@@ -148,12 +137,6 @@ impl ServerState {
         scheduled: bool,
     ) -> Option<u64> {
         self.leases.refresh_expiry(terminal, scheduled)
-    }
-
-    /// Whether `generation` is still current (checked by a woken timer).
-    #[must_use]
-    pub fn input_lease_expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
-        self.leases.expiry_is_current(terminal, generation)
     }
 
     /// Store the spawned timer's abort handle if still current; `false`
@@ -171,14 +154,6 @@ impl ServerState {
     /// Clear expiry tracking without aborting (the timer's own firing).
     pub fn clear_input_lease_expiry(&mut self, terminal: ResourceId) {
         self.leases.clear_expiry(terminal);
-    }
-
-    /// A clone of the live TTL-timer counter (tests).
-    #[must_use]
-    pub fn input_lease_expiry_task_counter(
-        &self,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-        self.leases.expiry_task_counter()
     }
 }
 

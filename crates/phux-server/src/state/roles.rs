@@ -129,7 +129,7 @@ impl ServerState {
     /// lease keeps it untouched, and a non-human caller leaves a human's
     /// lease alone (ADR-0163 §6) and attaches without it.
     fn seize_for_attach(&mut self, client: ClientId, core: ResourceId) -> Option<ControlAction> {
-        let prior = self.input_lease_holder(core);
+        let prior = self.leases().holder(core);
         if prior == Some(client) || self.lease_protected_from(core, client) {
             return None;
         }

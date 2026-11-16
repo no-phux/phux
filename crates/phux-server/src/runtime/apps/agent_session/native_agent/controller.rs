@@ -360,7 +360,7 @@ fn native_input_blocked(
     answer_requires_human: bool,
 ) -> bool {
     s.connection_revoked(client)
-        || s.input_blocked(core_parent, client)
+        || s.leases().blocked(core_parent, client)
         || s.clients().is_viewer(client, parent)
         || s.clients().is_viewer(client, agent)
         || (answer_requires_human

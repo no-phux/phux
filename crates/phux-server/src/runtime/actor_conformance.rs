@@ -133,7 +133,7 @@ impl Fixture {
     }
 
     fn lease_holder(&self) -> Option<ClientId> {
-        self.state.with(|s| s.input_lease_holder(self.alpha_core))
+        self.state.with(|s| s.leases().holder(self.alpha_core))
     }
 }
 

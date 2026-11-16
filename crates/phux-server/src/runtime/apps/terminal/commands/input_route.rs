@@ -55,7 +55,7 @@ pub(crate) fn with_route_input_destination<R>(
         if s.retained().exit(pane).is_some() {
             return Err(exited_input_refusal());
         }
-        if s.input_blocked(pane, client_id) {
+        if s.leases().blocked(pane, client_id) {
             debug!(
                 ?client_id,
                 ?terminal_id,

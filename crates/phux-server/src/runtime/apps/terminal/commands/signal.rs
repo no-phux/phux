@@ -20,9 +20,9 @@ pub(crate) async fn handle_signal_terminal(
     let resolved = state.with(|s| {
         let resolved = s.resolve_resource(terminal_id).into_owned();
         let holder = match &resolved {
-            ResolvedOwned::Local(local) => s
-                .input_lease_holder(local.id)
-                .map(crate::runtime::wire_client),
+            ResolvedOwned::Local(local) => {
+                s.leases().holder(local.id).map(crate::runtime::wire_client)
+            }
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => None,
         };
         (resolved, holder)
