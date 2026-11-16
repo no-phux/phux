@@ -145,25 +145,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hello_ok_accepts_matching_patch_and_native_features() {
-        assert_eq!(
-            validate_hello_ok(
-                &matching_native_offer(),
-                PROTOCOL_VERSION.major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
-                native_selection(),
-                BootstrapLimits::default(),
-            ),
-            Ok(())
-        );
+    /// Validate a native `HELLO_OK` for the matching offer at `(major, minor, patch)`.
+    fn native_at(major: u16, minor: u16, patch: u16) -> Result<(), HelloOkError> {
+        validate_hello_ok(
+            &matching_native_offer(),
+            major,
+            minor,
+            patch,
+            native_selection(),
+            BootstrapLimits::default(),
+        )
+    }
+
+    /// Validate a `HELLO_OK` at the client's own protocol version.
+    fn current(
+        offered: &ClientCapabilities,
+        profile: BootstrapProfile,
+        limits: BootstrapLimits,
+    ) -> Result<(), HelloOkError> {
+        let v = PROTOCOL_VERSION;
+        validate_hello_ok(offered, v.major, v.minor, v.patch, profile, limits)
     }
 
     #[test]
     fn hello_ok_accepts_older_and_newer_minor_and_patch() {
         let v = PROTOCOL_VERSION;
         let same_line = [
+            (v.minor, v.patch),
             (v.minor, v.patch.wrapping_add(1)),
             (v.minor, v.patch.wrapping_sub(1)),
             (v.minor.wrapping_add(1), 0),
@@ -171,14 +179,7 @@ mod tests {
         ];
         for (minor, patch) in same_line {
             assert_eq!(
-                validate_hello_ok(
-                    &matching_native_offer(),
-                    v.major,
-                    minor,
-                    patch,
-                    native_selection(),
-                    BootstrapLimits::default(),
-                ),
+                native_at(v.major, minor, patch),
                 Ok(()),
                 "{}.{minor}.{patch} is on the client's major line",
                 v.major
@@ -188,19 +189,9 @@ mod tests {
 
     #[test]
     fn hello_ok_refuses_protocol_major_mismatch() {
-        for major in [
-            PROTOCOL_VERSION.major.wrapping_add(1),
-            PROTOCOL_VERSION.major.wrapping_sub(1),
-        ] {
-            let err = validate_hello_ok(
-                &matching_native_offer(),
-                major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
-                native_selection(),
-                BootstrapLimits::default(),
-            )
-            .expect_err("major mismatch must refuse");
+        let v = PROTOCOL_VERSION;
+        for major in [v.major.wrapping_add(1), v.major.wrapping_sub(1)] {
+            let err = native_at(major, v.minor, v.patch).expect_err("major mismatch must refuse");
             assert!(
                 matches!(err, HelloOkError::UnsupportedProtocol { major: m, .. } if m == major),
                 "got {err:?}"
@@ -208,37 +199,20 @@ mod tests {
         }
     }
 
+    /// A selection the client never offered (profile, features, or limits) is refused.
     #[test]
-    fn hello_ok_refuses_native_profile_when_required_features_are_missing() {
-        let offered = ClientCapabilities::new().with_bootstrap(
-            BootstrapCapabilities::new()
-                .with_profiles(BootstrapProfileSet::with(&[
-                    BootstrapProfileKind::NativeState,
-                ]))
-                .with_native_codecs(EngineCodecSet::with(&[EngineCodec::LibghosttySnapshotV1]))
-                .with_native_features(EngineFeatureSet::with(&[EngineFeature::Continuation])),
-        );
-        let err = validate_hello_ok(
-            &offered,
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-            native_selection(),
-            BootstrapLimits::default(),
-        )
-        .expect_err("missing native features must refuse");
-        assert!(
-            matches!(
-                err,
-                HelloOkError::UnadvertisedProfile(BootstrapProfile::NativeState { .. })
-            ),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn hello_ok_profile_must_have_been_offered() {
-        let offered = ClientCapabilities::new().with_bootstrap(
+    fn hello_ok_refuses_a_selection_outside_the_offer() {
+        let native_offer = |features| {
+            ClientCapabilities::new().with_bootstrap(
+                BootstrapCapabilities::new()
+                    .with_profiles(BootstrapProfileSet::with(&[
+                        BootstrapProfileKind::NativeState,
+                    ]))
+                    .with_native_codecs(EngineCodecSet::with(&[EngineCodec::LibghosttySnapshotV1]))
+                    .with_native_features(features),
+            )
+        };
+        let raw_only = ClientCapabilities::new().with_bootstrap(
             BootstrapCapabilities::new()
                 .with_profiles(BootstrapProfileSet::with(&[
                     BootstrapProfileKind::SynthesizedVtRaw,
@@ -250,33 +224,46 @@ mod tests {
             codec: EngineCodec::LibghosttyCheckpointV2,
             features: EngineFeatureSet::required_native(),
         };
-        assert!(matches!(
-            validate_hello_ok(
-                &offered,
-                PROTOCOL_VERSION.major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
-                malicious,
-                BootstrapLimits::default(),
-            ),
-            Err(HelloOkError::UnadvertisedProfile(_))
-        ));
-    }
-
-    #[test]
-    fn hello_ok_limits_must_not_exceed_the_offer() {
-        let offered = ClientCapabilities::new();
         let excessive = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).expect("valid limits");
-        assert!(matches!(
-            validate_hello_ok(
-                &offered,
-                PROTOCOL_VERSION.major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
+        let defaults = BootstrapLimits::default();
+        type Refusal = fn(&HelloOkError) -> bool;
+        let cases: [(
+            &str,
+            ClientCapabilities,
+            BootstrapProfile,
+            BootstrapLimits,
+            Refusal,
+        ); 3] = [
+            (
+                "native features missing",
+                native_offer(EngineFeatureSet::with(&[EngineFeature::Continuation])),
+                native_selection(),
+                defaults,
+                |err| {
+                    matches!(
+                        err,
+                        HelloOkError::UnadvertisedProfile(BootstrapProfile::NativeState { .. })
+                    )
+                },
+            ),
+            (
+                "profile never offered",
+                raw_only,
+                malicious,
+                defaults,
+                |err| matches!(err, HelloOkError::UnadvertisedProfile(_)),
+            ),
+            (
+                "limits exceed the offer",
+                ClientCapabilities::new(),
                 BootstrapProfile::SynthesizedVtRaw,
                 excessive,
+                |err| matches!(err, HelloOkError::LimitsOutsideOffer { .. }),
             ),
-            Err(HelloOkError::LimitsOutsideOffer { .. })
-        ));
+        ];
+        for (label, offered, profile, limits, refusal) in cases {
+            let err = current(&offered, profile, limits).expect_err(label);
+            assert!(refusal(&err), "{label}: got {err:?}");
+        }
     }
 }

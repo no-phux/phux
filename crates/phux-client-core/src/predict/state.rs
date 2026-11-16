@@ -1052,47 +1052,52 @@ mod tests {
         assert_eq!(s.cursor_col, 79);
     }
 
+    /// An arrow over a known grid cell moves the predicted cursor by that
+    /// cell's width and queues one cursor prediction landing there.
     #[test]
-    fn arrow_left_over_known_cell_advances_predict_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 5);
-        // Cell at (0, 4) is 'a' (width 1).
-        let ev = key_named(PhysicalKey::ArrowLeft, ModSet::empty());
-        let outcome =
-            s.predict_key_with_grid(&ev, |r, c| if (r, c) == (0, 4) { Some('a') } else { None });
-        assert_eq!(outcome, PredictionOutcome::Predicted);
-        assert_eq!(s.cursor(), (0, 4));
-        let p = s.pending().next().expect("one prediction");
-        assert_eq!(p.kind, PredictionKind::CursorLeft);
-        assert_eq!(p.col, 4);
-        assert_eq!(p.row, 0);
-    }
-
-    #[test]
-    fn arrow_right_over_known_cell_advances_predict_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 3);
-        let ev = key_named(PhysicalKey::ArrowRight, ModSet::empty());
-        let outcome =
-            s.predict_key_with_grid(&ev, |r, c| if (r, c) == (0, 3) { Some('x') } else { None });
-        assert_eq!(outcome, PredictionOutcome::Predicted);
-        assert_eq!(s.cursor(), (0, 4));
-        let p = s.pending().next().expect("one prediction");
-        assert_eq!(p.kind, PredictionKind::CursorRight);
-        assert_eq!(p.col, 4);
-    }
-
-    #[test]
-    fn arrow_right_over_wide_grapheme_advances_by_two() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 3);
-        let ev = key_named(PhysicalKey::ArrowRight, ModSet::empty());
-        let outcome =
-            s.predict_key_with_grid(&ev, |r, c| if (r, c) == (0, 3) { Some('中') } else { None });
-        assert_eq!(outcome, PredictionOutcome::Predicted);
-        assert_eq!(s.cursor(), (0, 5));
-        let p = s.pending().next().expect("one prediction");
-        assert_eq!(p.col, 5);
+    fn arrows_over_known_cells_advance_the_predict_cursor() {
+        for (label, key, start_col, glyph, kind, end_col) in [
+            (
+                "left over 'a'",
+                PhysicalKey::ArrowLeft,
+                5,
+                'a',
+                PredictionKind::CursorLeft,
+                4,
+            ),
+            (
+                "right over 'x'",
+                PhysicalKey::ArrowRight,
+                3,
+                'x',
+                PredictionKind::CursorRight,
+                4,
+            ),
+            (
+                "right over wide",
+                PhysicalKey::ArrowRight,
+                3,
+                '中',
+                PredictionKind::CursorRight,
+                5,
+            ),
+        ] {
+            let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+            s.set_cursor(0, start_col);
+            // The cell the arrow crosses: left of the cursor, or under it.
+            let cell = if kind == PredictionKind::CursorLeft {
+                start_col - 1
+            } else {
+                start_col
+            };
+            let ev = key_named(key, ModSet::empty());
+            let outcome =
+                s.predict_key_with_grid(&ev, |r, c| ((r, c) == (0, cell)).then_some(glyph));
+            assert_eq!(outcome, PredictionOutcome::Predicted, "{label}");
+            assert_eq!(s.cursor(), (0, end_col), "{label}");
+            let p = s.pending().next().expect("one prediction");
+            assert_eq!((p.kind, p.row, p.col), (kind, 0, end_col), "{label}");
+        }
     }
 
     // ---- phux-pxaj (reshaped by ADR-0090): adaptive tentative display -
