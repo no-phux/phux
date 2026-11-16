@@ -501,4 +501,16 @@ mod frozen {
     fn enrollment_tickets() {
         phux_frozen::json::<super::TicketFile>("enrollment-tickets").check();
     }
+
+    /// The exact bytes a ticket commit writes: pretty JSON and one trailing
+    /// newline, pinned against the newest frozen image.
+    #[test]
+    fn enrollment_tickets_commit_bytes() {
+        let golden = include_bytes!("../../tests/fixtures/frozen/enrollment-tickets/0001.json");
+        let file: super::TicketFile = serde_json::from_slice(golden).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(super::TICKETS_FILE);
+        super::store::with_lock(&path, |held| super::commit(&path, &file, held)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), golden);
+    }
 }
