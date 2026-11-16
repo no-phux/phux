@@ -10,6 +10,10 @@ use super::{
     ReplicaPrompt, Scroll, SearchResults, SelectionGestureEvent, SelectionGestureResult, views,
 };
 pub(super) enum Query {
+    #[cfg(feature = "engine")]
+    SyncOutputDeadline(Sender<Option<std::time::Instant>>),
+    #[cfg(feature = "engine")]
+    ExpireSyncOutput(std::time::Instant, Sender<Vec<ResourceId>>),
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),

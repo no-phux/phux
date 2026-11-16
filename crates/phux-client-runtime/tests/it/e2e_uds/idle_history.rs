@@ -112,6 +112,76 @@ async fn clear_prefetch(socket: &mut UnixStream, terminal: &ResourceId) {
 }
 
 #[test]
+fn synchronized_output_watchdog_publishes_and_wakes_an_idle_driver() {
+    struct FrameWake {
+        publication: Arc<phux_client_runtime::publication::Publication>,
+        terminal: ResourceId,
+        after: u64,
+        seen: std::sync::atomic::AtomicBool,
+    }
+    impl Listener for FrameWake {
+        fn on_activity(&self) {
+            if self
+                .publication
+                .generation(&self.terminal)
+                .is_some_and(|g| g > self.after)
+            {
+                self.seen.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("sync.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let client = Runtime::connect(Target::uds(&path), options()).unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let terminal = ResourceId::local(1);
+        bootstrap(&mut socket, &terminal).await;
+        clear_prefetch(&mut socket, &terminal).await;
+        wait_for_status(&client, Status::Attached).await;
+        let committed = client.acquire(&terminal).unwrap();
+        let wakes = Arc::new(FrameWake {
+            publication: Arc::clone(client.publication()),
+            terminal: terminal.clone(),
+            after: committed.generation,
+            seen: std::sync::atomic::AtomicBool::new(false),
+        });
+        client.set_listener(wakes.clone());
+        let _ = client.take_events();
+        send_frame(
+            &mut socket,
+            &FrameKind::ResourceOutput {
+                terminal_id: terminal.clone(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq: 1,
+                bytes: b"\x1b[?2026h\x1b[2J\x1b[Hwaiting".to_vec().into(),
+            },
+        )
+        .await;
+        wait_for_event(&client, "held output", |event| {
+            matches!(event, Event::TerminalChanged { .. }).then_some(())
+        })
+        .await;
+        assert!(Arc::ptr_eq(&committed, &client.acquire(&terminal).unwrap()));
+        // No input, local projection command, end marker, or server traffic:
+        // only the driver's deadline can release and announce this frame.
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            wait_until("watchdog wake", || wakes.seen.load(Ordering::SeqCst)),
+        )
+        .await
+        .expect("idle watchdog must wake the listener");
+        assert_eq!(client.acquire(&terminal).unwrap().text(), "waiting");
+        assert!(client.take_events().iter().any(|event| {
+            matches!(event, Event::TerminalChanged { terminal_id } if terminal_id == &terminal)
+        }));
+        client.close();
+    });
+}
+
+#[test]
 fn view_scroll_and_pin_wake_an_idle_connected_driver_for_history() {
     run_local(async {
         for pin in [false, true] {

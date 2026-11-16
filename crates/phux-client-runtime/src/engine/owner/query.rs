@@ -68,6 +68,13 @@ impl Owner {
     #[cfg(feature = "engine")]
     fn query_presentation(&mut self, query: Query) -> Option<Query> {
         match query {
+            Query::SyncOutputDeadline(reply) => {
+                let _ = reply.send(self.sync_output_deadline());
+            }
+            Query::ExpireSyncOutput(now, reply) => {
+                let expired = self.expire_sync_output(now);
+                let _ = reply.send(expired);
+            }
             Query::Scroll(id, scroll, reply) => {
                 let _ = reply.send(self.scroll(&id, scroll));
             }

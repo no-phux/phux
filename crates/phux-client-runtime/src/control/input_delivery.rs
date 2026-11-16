@@ -69,6 +69,10 @@ impl ControlPlane {
             self.next_input_deadline(),
             self.next_upload_deadline(),
             self.next_org_deadline(),
+            #[cfg(feature = "engine")]
+            self.engine
+                .as_ref()
+                .and_then(super::EngineHandle::sync_output_deadline),
         ]
         .into_iter()
         .flatten()
@@ -81,7 +85,27 @@ impl ControlPlane {
         let input = self.expire_inputs();
         let uploads = self.expire_uploads();
         let organization = self.expire_org();
-        input || uploads || organization
+        #[cfg(feature = "engine")]
+        let synchronized = self.expire_sync_output();
+        #[cfg(not(feature = "engine"))]
+        let synchronized = false;
+        input || uploads || organization || synchronized
+    }
+
+    #[cfg(feature = "engine")]
+    fn expire_sync_output(&mut self) -> bool {
+        let expired = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.expire_sync_output(Instant::now()))
+            .unwrap_or_default();
+        let changed = !expired.is_empty();
+        for id in expired {
+            if !self.damaged.contains(&id) {
+                self.damaged.push(id);
+            }
+        }
+        changed
     }
 
     /// Resolve every acknowledged input past the retry horizon. Returns
