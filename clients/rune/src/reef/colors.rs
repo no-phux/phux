@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The scene's palette, day and night, from the prototype.
 
 use super::{Rgb, mix};

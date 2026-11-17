@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! What moves on the pitch, painted as the prototype: players, balls,
 //! pigeons, confetti and the stands' passing light. Rune shapes are flat,
 //! so a radial glow is stacked discs and the crowd's wave is strips.

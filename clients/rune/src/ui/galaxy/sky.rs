@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The galaxy's drawing, in world points carried to the screen by the camera:
 //! the bezel with its ticks, arcs, radar sweep and ping, the wireframe core
 //! and planets, the agents' state nodes, beams with pulses flowing outward,

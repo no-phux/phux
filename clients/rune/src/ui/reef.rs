@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The reef: the fleet as an aquarium, each machine a reef with its buoy,
 //! every machine's agents it can reach as fish of their harness's species
 //! acting out their state. A press on a fish selects it and the camera follows it
@@ -8,11 +9,12 @@
 //! in one canvas, the caustics as a scrolling tile, the rest in another,
 //! then labels, the fish's press targets and the readout.
 
-use rune::{Cx, El, canvas, col, el, row, text};
+use rune::{Cx, El, canvas, el};
 
+use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels::{Label, pill};
 use super::playground::pen::Pen;
-use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::playground::Mood;
@@ -32,6 +34,7 @@ impl Pen {
 }
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    let t: &Tokens = &p.tokens;
     desk.reef.night.set(p.bg.luminance() < 0.5);
     desk.reef.still.set(cx.is_reduced_motion());
     let r = &desk.reef.scene;
@@ -55,7 +58,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.reef_laid_out(rect[2], rect[3]));
     if r.zones.is_empty() {
-        return root.child(readout(r, waiting, p));
+        return root.child(foot(r, waiting, t));
     }
     let pal = r.pal();
 
@@ -132,9 +135,9 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             .h_full()
             .on_press(Desk::reef_deselect),
     )
-    .children(labels.iter().map(|l| pill(l, to(l.at), r.w)))
+    .children(labels.iter().map(|l| pill(t, l, to(l.at), r.w)))
     .children(targets)
-    .child(readout(r, waiting, p))
+    .child(foot(r, waiting, t))
 }
 
 /// The prototype's two scrolling layers of caustic light on the sand, cut
@@ -176,83 +179,34 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
         .collect()
 }
 
-fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
-    let working = r
-        .fish
-        .iter()
+/// The readout's counts and the picked fish's card.
+fn foot(r: &Reef, waiting: usize, t: &Tokens) -> El {
+    let working = (r.fish.iter())
         .filter(|f| f.who.mood == Mood::Working)
         .count();
-    let picked = r.selected_fish().map(|f| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            f.who.name,
-            f.who.mood.word(),
-            r.zone_of(f).host
-        );
+    let picked = r.selected_fish().map(|f| Picked {
+        name: f.who.name.clone(),
+        mood: f.who.mood,
+        host: r.zone_of(f).host.clone(),
         // Its form and work, when its machine publishes agent stats.
-        let card = f.who.work.map(|w| {
+        card: f.who.work.map(|w| {
             let form = creature::form_name(f.tier, f.who.species.form);
             format!("Form: {form} · Work: {}", creature::work_line(&w))
-        });
-        pressable("reef-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", f.who.name))
-            .on_press(Desk::open_fish)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        }),
+        open: Desk::open_fish,
     });
-    // Along the foot once laid out, clear of the buoys' labels on the surface.
-    let y = if r.h > 0.0 {
-        r.h - 44.0
-    } else {
-        TITLEBAR_H + 4.0
-    };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        r.zones.len(),
-                        r.fish.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("reef-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::reef_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "reef-close",
-            p,
-            Desk::close_reef,
-        ))
+    hud::readout(
+        t,
+        Readout {
+            key: "reef",
+            h: r.h,
+            hosts: r.zones.len(),
+            agents: r.fish.len(),
+            working,
+            waiting,
+            next: Desk::reef_next_waiting,
+            close: Desk::close_reef,
+            picked,
+        },
+    )
 }

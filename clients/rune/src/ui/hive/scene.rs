@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! What moves over the hive's backdrop, in the prototype's draw order:
 //! swaying flowers, the bees' own cells filling and capping, light through
 //! the honey, dance and light trails, the bees with their auras, sleepy z's

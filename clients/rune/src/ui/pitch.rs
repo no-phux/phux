@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pitch: the fleet as football training, each machine a squad in its
 //! own share of the pitch, every agent a player in its harness's kit acting
 //! out its state. A press on a player selects it; a press on the selected
@@ -9,24 +10,25 @@
 //! players and balls by depth, confetti, and the shell's overlays: shirt
 //! numbers, the selection ring, name pills, press targets and the readout.
 
-use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::playground::hud::{self, Picked, Readout};
+use super::playground::labels;
 use super::playground::pen::{Pen, rgba};
-use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
+use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
-use crate::pitch::{AMBER, MINT, Mood, Pitch, Pt, RANKS, mix};
+use crate::pitch::{MINT, Mood, Pitch, Pt, RANKS, mix};
 
 mod players;
 
 use players::Spot;
 
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
-const PILL: TextStyle = TextStyle::new(11.0, 500.0).mono();
 const BOARD: TextStyle = TextStyle::new(10.5, 600.0).mono();
 const BENCH: TextStyle = TextStyle::new(9.5, 500.0).mono();
 
 pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+    let t: &Tokens = &p.tokens;
     desk.pitch.night.set(p.bg.luminance() < 0.5);
     desk.pitch.still.set(cx.is_reduced_motion());
     let r = &desk.pitch.scene;
@@ -50,7 +52,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.pitch_laid_out(rect[2], rect[3]));
     if r.zones.is_empty() {
-        return root.child(readout(r, waiting, p));
+        return root.child(foot(r, waiting, t));
     }
     let full = |e: El| e.absolute(0.0, 0.0).w_full().h_full();
     let ground = [(r.nt < 0.99, 1.0), (r.nt > 0.01, r.nt)]
@@ -146,12 +148,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             .on_press(move |desk: &mut Desk| desk.pitch_press(press.clone()))
             .on_hover_change(move |desk: &mut Desk, on, _| desk.pitch_hover(hover.clone(), on))
     });
-    let pills = pills(r, &spots);
+    let pills = pills(r, &spots, t);
 
     root.children(ground)
         .children(clouds)
         .child(full(canvas(air.into_shape()).key("pitch-air")))
-        .children(r.zones.iter().enumerate().map(|(i, _)| board(r, i)))
+        .children(r.zones.iter().enumerate().map(|(i, _)| board(r, i, t)))
         .children((0..r.zones.len()).filter_map(|i| bench(r, i)))
         .child(full(canvas(play.into_shape()).key("pitch-play")).on_press(Desk::pitch_deselect))
         .children(numbers)
@@ -159,12 +161,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .children(dozing(r, &spots))
         .children(pills)
         .children(targets)
-        .child(readout(r, waiting, p))
+        .child(foot(r, waiting, t))
 }
 
 /// Name pills over players that need you, are selected or hovered: the
 /// lowest first, each nudged up past the ones already placed.
-fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)]) -> Vec<El> {
+fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)], t: &Tokens) -> Vec<El> {
     let mut shown: Vec<(&crate::pitch::Player, &Spot)> = spots
         .iter()
         .filter(|(q, _)| {
@@ -176,18 +178,17 @@ fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)]) -> Vec<El> {
         .collect();
     shown.sort_by(|a, b| b.1.at[1].total_cmp(&a.1.at[1]));
     let mut placed: Vec<[f32; 3]> = Vec::new();
-    let h = 19.0;
+    let h = labels::tag_h(t);
     shown
         .into_iter()
         .map(|(q, s)| {
-            let amber = q.who.mood == Mood::Waiting;
-            let label = if amber {
-                format!("{} · needs you", q.who.name)
+            let needs_you = q.who.mood == Mood::Waiting;
+            let label = if needs_you {
+                format!("{} · {}", q.who.name, Mood::Waiting.word())
             } else {
                 q.who.name.clone()
             };
-            // Monospace: a character is 0.6 of the size across.
-            let w = label.chars().count() as f32 * 6.6 + 14.0;
+            let w = labels::tag_w(t, label.chars().count(), needs_you);
             let x = (s.at[0] - w / 2.0).clamp(6.0, (r.w - w - 6.0).max(6.0));
             // Up past the pills already placed, as the prototype; where the
             // view's top runs out, down instead.
@@ -204,29 +205,15 @@ fn pills(r: &Pitch, spots: &[(&crate::pitch::Player, Spot)]) -> Vec<El> {
                 .find(|y| free(*y))
                 .unwrap_or(base);
             placed.push([x, y, w]);
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
+            labels::name_tag(t, label, needs_you)
                 .key(format!("pitch-pill-{:?}", q.who.id))
                 .absolute(x, y - h / 2.0)
-                .h(h)
-                .px(7.0)
-                .radius(h / 2.0)
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(PILL).color(ink))
         })
         .collect()
 }
 
 /// A squad's board on the pitch: its machine, its players and how many need you.
-fn board(r: &Pitch, i: usize) -> El {
+fn board(r: &Pitch, i: usize, t: &Tokens) -> El {
     let z = &r.zones[i];
     let at = if r.portrait {
         r.to_s(z.z0 + 13.0 * r.k, r.sp / 2.0)
@@ -263,17 +250,7 @@ fn board(r: &Pitch, i: usize) -> El {
                     rgba([12.0, 18.0, 28.0], 1.0),
                 ))
                 .child(text(label).font(BOARD).color(rgba(ink, 1.0)))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(
-                            text(waiting.to_string())
-                                .font(BOARD)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .children((waiting > 0).then(|| labels::count(t, waiting, 15.0))),
         )
 }
 
@@ -350,81 +327,37 @@ fn dozing<'a>(
         })
 }
 
-fn readout(r: &Pitch, waiting: usize, p: &Ink) -> El {
-    let working = r
-        .players
-        .iter()
+/// The readout's counts and the picked player's card.
+fn foot(r: &Pitch, waiting: usize, t: &Tokens) -> El {
+    let working = (r.players.iter())
         .filter(|q| q.who.mood == Mood::Working)
         .count();
-    let picked = r.selected_player().map(|q| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            q.who.name,
-            q.who.mood.word(),
-            r.zone_of(q).host
-        );
+    let picked = r.selected_player().map(|q| Picked {
+        name: q.who.name.clone(),
+        mood: q.who.mood,
+        host: r.zone_of(q).host.clone(),
         // Its rank and work, when its machine publishes agent stats.
-        let card = q.who.work.map(|w| {
+        card: q.who.work.map(|w| {
             format!(
                 "Rank: {} · Work: {}",
                 RANKS[q.tier.min(4)],
                 creature::work_line(&w)
             )
-        });
-        pressable("pitch-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", q.who.name))
-            .on_press(Desk::open_player)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        }),
+        open: Desk::open_player,
     });
-    let y = if r.h > 0.0 { r.h - 44.0 } else { 42.0 };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        r.zones.len(),
-                        r.players.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("pitch-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::pitch_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "pitch-close",
-            p,
-            Desk::close_pitch,
-        ))
+    hud::readout(
+        t,
+        Readout {
+            key: "pitch",
+            h: r.h,
+            hosts: r.zones.len(),
+            agents: r.players.len(),
+            working,
+            waiting,
+            next: Desk::pitch_next_waiting,
+            close: Desk::close_pitch,
+            picked,
+        },
+    )
 }

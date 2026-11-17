@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The reef: the fleet as an aquarium. Each machine is a reef across an even
 //! share of the width, each agent a fish of its harness's species that acts
 //! out its state: working fish school, one that needs you rises to the

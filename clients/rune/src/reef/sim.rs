@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The reef in motion: the prototype's `step`, the camera, and keeping the
 //! fish in step with the fleet.
 

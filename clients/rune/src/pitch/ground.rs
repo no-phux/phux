@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pitch's still background, the prototype's `render`: the stands and
 //! their crowd, the ground, the markings, each squad's cones and dugout, and
 //! the floodlights. Painted once per layout, day and night apart, with

@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The hive in motion: the prototype's per-frame motion, the camera, and
 //! keeping the bees in step with the fleet.
 

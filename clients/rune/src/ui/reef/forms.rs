@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The exotic forms an agent grows into at tier 3, one per harness, as the
 //! prototype's `lionfish`, `manta`, `seahorse`, `cuttlefish` and `octopus`:
 //! drawn in the fish's own frame, nose at +x, in its species' colours. A

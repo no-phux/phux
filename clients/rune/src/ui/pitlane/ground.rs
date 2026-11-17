@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The grounds, the prototype's `render`, drawn once per layout by day and
 //! by night: grass, the lake, the grandstand and its crowd, the circuit with
 //! its run-off, kerbs and rubber, the pit lane and its garages, parc fermé,

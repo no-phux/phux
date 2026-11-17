@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pitch in motion: the prototype's `think`, `ballStep`, separation,
 //! pigeons and confetti, at a fixed step, and keeping the players in step
 //! with the fleet.

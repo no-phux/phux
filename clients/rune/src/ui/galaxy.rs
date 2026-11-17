@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The galaxy command center: the fleet as a core inside a ticked bezel with
 //! a radar sweep, each machine a wireframe planet on one orbit, and the
 //! connected machine's agents as state nodes on rings round it. Beams carry
@@ -11,8 +12,9 @@ mod sky;
 use rune::{Color, Cx, El, LineCap, Shape, TextStyle, canvas, col, el, row, text};
 
 use self::sky::{Grown, Sky, State};
+use super::playground::hud;
 use super::sidebar::mark_color;
-use super::{Ink, TITLEBAR_H, overlay, pressable};
+use super::{Ink, TITLEBAR_H, pressable};
 use crate::activity::Mark;
 use crate::creature;
 use crate::desk::Desk;
@@ -38,7 +40,8 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .flat_map(|planet| &planet.agents)
         .filter(|star| star.mark.needs_you())
         .count();
-    let needs = p.marks.alert;
+    // Needs-you's tone: the galaxy's one status colour of its own.
+    let needs = hud::needs_you_ink(&p.tokens);
     let light = if waiting > 0 { needs } else { p.accent };
     let ground_light = crate::theme::on_fill(p.bg) != Color::WHITE;
 
@@ -279,13 +282,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                         .color(needs),
                 )
         }))
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "galaxy-close",
-            p,
-            Desk::close_galaxy,
-        ));
+        .child(hud::close(&p.tokens, "galaxy", Desk::close_galaxy));
 
     el().key("galaxy")
         .cover()

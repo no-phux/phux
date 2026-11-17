@@ -1,3 +1,5 @@
+// style-literals: illustration (the scenes' shared palette; their chrome
+// draws from the tokens in `ui::playground`)
 //! Deterministic support and agent vocabulary shared by playground scenes.
 //! Scene-specific geometry and simulation stay with each scene.
 
@@ -27,6 +29,18 @@ impl Mood {
         }
     }
 
+    /// The status ladder state the mood draws as in chrome: its mark,
+    /// word and tone (§1.3).
+    pub const fn state(self) -> phux_design::State {
+        match self {
+            Mood::Working => phux_design::State::Working,
+            Mood::Waiting => phux_design::State::NeedsYou,
+            Mood::Done => phux_design::State::Done,
+            Mood::Idle => phux_design::State::Idle,
+        }
+    }
+
+    /// The scene's own hue for the mood: illustration, not chrome.
     pub fn color(self) -> Rgb {
         match self {
             Mood::Working => [89.0, 212.0, 255.0],
@@ -36,13 +50,9 @@ impl Mood {
         }
     }
 
+    /// The vocabulary's word for the mood.
     pub fn word(self) -> &'static str {
-        match self {
-            Mood::Working => "working",
-            Mood::Waiting => "needs you",
-            Mood::Done => "done",
-            Mood::Idle => "idle",
-        }
+        self.state().word().unwrap_or_default()
     }
 }
 
