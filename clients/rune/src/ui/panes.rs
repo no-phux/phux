@@ -5,19 +5,22 @@ use std::time::Instant;
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Phase, PointerButton, Transition, col, el, row};
+use rune::{Color, Cx, El, Key, Phase, PointerButton, Transition, col, el, row};
 
 use super::status::placeholder;
-use super::{CARD_GAP, CARD_RADIUS, Ink, PAD, overlay};
+use super::tokens::Tier;
+use super::{Ink, PAD, Paint, Tokens, overlay};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
 use crate::ui::Cover;
 use crate::{grid, perf};
 
-/// The gutter between two cards, all of it the divider's hit area.
-pub(crate) const DIVIDER: f32 = CARD_GAP;
+/// The gutter between two cards, all of it the divider's hit area: the
+/// card gap token, which the split math reads too.
+pub(crate) const DIVIDER: f32 = phux_design::tokens::SPACE.card_gap;
 
 pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
+    let t: &Tokens = ink.as_ref();
     desk.scale.set(cx.env().scale);
     desk.connection.painted.replace(None);
     let area = el()
@@ -35,7 +38,7 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         if desk.phone.is_some() {
             return area.child(waiting);
         }
-        return area.child(card(waiting, ink.bg, Lit::Resting, ink));
+        return area.child(card(waiting, t.roles.layer.ground.paint(), Lit::Resting, t));
     };
     if let Some(phone) = &desk.phone {
         return super::spatial::view(desk, phone, ink, area);
@@ -43,7 +46,7 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     let several = matches!(tree, LayoutNode::Split { .. });
     let floor = pane_floor(desk, &tree);
     area.child(node(desk, &tree, &mut Vec::new(), several, floor, ink))
-        .children(perf::hud(ink.dim))
+        .children(perf::hud(t.roles.text.dim.paint()))
 }
 
 /// The fewest cells a pane is squeezed to while its window has room: a
@@ -135,7 +138,7 @@ fn node(
         .min_w(0.0)
         .min_h(0.0)
         .child(share(el().w_full().h_full().child(first), ratio, left))
-        .child(divider(here, horizontal, ratio, ink))
+        .child(divider(here, horizontal, ratio, ink.as_ref()))
         .child(share(
             el().w_full().h_full().child(second),
             1.0 - ratio,
@@ -143,29 +146,50 @@ fn node(
         ))
 }
 
-/// A divider: the clear gutter between two cards, with a grip that shows
-/// under the pointer. Drag to move it, live, and the new ratio is written on
-/// release.
-fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
-    const GRIP: (f32, f32) = (3.0, 36.0);
-    let grip = if horizontal {
-        el().size(GRIP.0, GRIP.1)
-    } else {
-        el().size(GRIP.1, GRIP.0)
+/// A divider: the clear gutter between two cards, with a grip in
+/// `border.strong` that turns to the machine's colour under the pointer.
+/// Drag it to move it, live, and the new ratio is written on release; or
+/// focus it and step it with the arrows along its axis.
+fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
+    let s = &t.space;
+    let (across, along) = (s.s1, s.s10);
+    let grip = || {
+        let grip = if horizontal {
+            el().size(across, along)
+        } else {
+            el().size(along, across)
+        };
+        grip.radius(t.radius.full).inert()
     };
     let host = if horizontal {
         el().w(DIVIDER).h_full()
     } else {
         el().w_full().h(DIVIDER)
     };
+    let stepped = path.clone();
     host.key(format!("divider-{path:?}"))
         .center()
+        .role("separator")
+        .label(if horizontal {
+            "Resize the panes side by side"
+        } else {
+            "Resize the panes above and below"
+        })
+        .range_value(f64::from(ratio), 0.0, 1.0)
+        .focusable(true)
         .cursor(if horizontal {
             rune::Cursor::ResizeColumn
         } else {
             rune::Cursor::ResizeRow
         })
         .hover_group()
+        .on_key(move |d: &mut Desk, event, _| {
+            let Some(step) = step_of(&event.key, horizontal) else {
+                return false;
+            };
+            d.drag_divider(stepped.clone(), ratio + step, true);
+            true
+        })
         .on_drag(move |d: &mut Desk, drag, _| {
             if drag.phase == Phase::Down {
                 // The ratio at the press, kept for the whole gesture.
@@ -179,12 +203,30 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
                 drag.phase == Phase::Up,
             );
         })
+        .child(grip().fill(t.roles.border.strong.paint()))
         .child(
-            grip.radius(GRIP.0 / 2.0)
-                .fill(ink.host)
-                .group_opacity(0.0, 0.85)
-                .inert(),
+            el().cover()
+                .center()
+                .inert()
+                .child(reveal(grip().fill(t.host))),
         )
+}
+
+/// Shown only while the pointer is on the nearest hover group.
+fn reveal(e: El) -> El {
+    let (rest, hover) = (0.0, 1.0);
+    e.group_opacity(rest, hover)
+}
+
+/// How far one arrow press moves a divider, as a share of its split, and
+/// which way: Left and Up shrink the first side, Right and Down grow it.
+fn step_of(key: &Key, horizontal: bool) -> Option<f32> {
+    let step = 0.05;
+    match (key, horizontal) {
+        (Key::Left, true) | (Key::Up, false) => Some(-step),
+        (Key::Right, true) | (Key::Down, false) => Some(step),
+        _ => None,
+    }
 }
 
 /// How a card is lit: the keyboard's, among several, glows in the window's
@@ -195,49 +237,52 @@ pub(super) enum Lit {
     Focused,
 }
 
-/// A floating glass card around `content`: rounded, lifted off the window by
-/// its shadow, and edged with a top-lit hairline rim. `content` is clipped to
-/// the corners; the rim draws over it and never takes the pointer.
-pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+/// A floating card around `content` (§1.7): `radius.lg`, on the raised
+/// tier at rest, lifted to floating with the machine's glow in place of
+/// its second drop when it has the keyboard, and edged with a top-lit
+/// hairline rim. `content` is clipped to the corners; the rim draws over
+/// it and never takes the pointer.
+pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &impl AsRef<Tokens>) -> El {
+    let t = ink.as_ref();
+    let r = t.radius.lg;
     let (top, bottom) = match lit {
-        Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
-        Lit::Focused => (ink.host.alpha(0.8), ink.host.alpha(0.35)),
+        Lit::Resting => (t.roles.border.strong, t.roles.border.muted),
+        Lit::Focused => (t.roles.border.strong, t.roles.border.base),
+    };
+    let top = match lit {
+        Lit::Resting => top.paint(),
+        Lit::Focused => t.host,
     };
     let lifted = el()
         .w_full()
         .h_full()
-        .radius(CARD_RADIUS)
+        .radius(r)
         .continuous_corners()
-        .fill(ground)
-        .shadow(1.0, 3.0, ink.shade)
-        .shadow(10.0, 30.0, ink.shade);
+        .fill(ground);
     let lifted = match lit {
-        Lit::Resting => lifted,
-        Lit::Focused => lifted.shadow(0.0, 22.0, ink.host.alpha(0.22)),
+        Lit::Resting => t.elevate(lifted, Tier::Raised),
+        Lit::Focused => t.elevate_glowing(lifted, Tier::Floating, t.host),
     };
     lifted
-        .child(
-            content
-                .radius(CARD_RADIUS)
-                .continuous_corners()
-                .clip_rounded(CARD_RADIUS),
-        )
+        .child(content.radius(r).continuous_corners().clip_rounded(r))
         .child(
             el().cover()
-                .radius(CARD_RADIUS)
+                .radius(r)
                 .continuous_corners()
-                // A faint sheen from the top, as light catches glass.
-                .gradient(ink.text.alpha(0.035), Color::TRANSPARENT)
-                .border_gradient(1.0, top, bottom)
+                .border_gradient(t.space.hairline, top, bottom.paint())
                 .inert(),
         )
 }
 
 /// A pane's card, keyed by its terminal so it keeps its place as the tree
-/// changes, and eased in when it opens.
-fn float(id: &ResourceId, card: El) -> El {
+/// changes: it enters from the enter scale on the list spring and fades
+/// out (§1.8).
+fn float(id: &ResourceId, card: El, t: &Tokens) -> El {
     card.key(format!("pane-{id}"))
-        .transition(Transition::scale(0.98).combined(Transition::opacity()))
+        .transition(Transition::asymmetric(
+            Transition::scale(t.motion.enter_scale).springs(t.motion.list),
+            Transition::opacity(),
+        ))
 }
 
 pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
@@ -252,15 +297,19 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
         } else {
             Lit::Resting
         };
+        let t: &Tokens = ink.as_ref();
+        let ground = t.roles.layer.ground.paint();
         return float(
             id,
-            card(super::documents::view(desk, id, ink), ink.bg, lit, ink),
+            card(super::documents::view(desk, id, ink), ground, lit, t),
+            t,
         );
     }
     terminal_pane(desk, id, several, ink)
 }
 
 fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
+    let t: &Tokens = ink.as_ref();
     let focused = desk.keyboard().is_some_and(|(has, _)| has == id);
     let view = desk.view_of(id);
     perf::RENDERS.incr();
@@ -287,11 +336,13 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         });
     let Some((frame, view)) = frame else {
         perf::ACQUIRE_REJECTED.incr();
-        let opening = host
-            .fill(ink.bg)
-            .center()
-            .child(rune::text("Opening…").font(super::CAPTION).color(ink.dim));
-        return float(id, framed(desk, opening, ink.bg, Lit::Resting, ink));
+        let ground = t.roles.layer.ground.paint();
+        let opening = host.fill(ground).center().child(
+            rune::text("Opening…")
+                .font(t.ty.caption)
+                .color(t.roles.text.dim.paint()),
+        );
+        return float(id, framed(desk, opening, ground, Lit::Resting, t), t);
     };
     if focused {
         // The exact frame this build paints, for the drawn receipt.
@@ -314,18 +365,21 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::history(desk, id, &frame, area, ink))
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
-        // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()));
-    float(id, framed(desk, host, ground, lit, ink))
+        // Panes without the keyboard sit back a little, under the scrim.
+        .children(
+            (several && !focused)
+                .then(|| el().cover().fill(t.roles.layer.scrim.paint()).inert()),
+        );
+    float(id, framed(desk, host, ground, lit, t), t)
 }
 
 /// A pane as a card, or bare on a phone, where the terminal runs edge to edge
 /// under the controls.
-fn framed(desk: &Desk, content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+fn framed(desk: &Desk, content: El, ground: Color, lit: Lit, t: &Tokens) -> El {
     if desk.phone.is_some() {
         return content.fill(ground);
     }
-    card(content, ground, lit, ink)
+    card(content, ground, lit, t)
 }
 
 fn terminal_layer(
@@ -336,6 +390,7 @@ fn terminal_layer(
     editing: bool,
     ink: &Ink,
 ) -> El {
+    let t: &Tokens = ink.as_ref();
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
     let mut layer = el()
@@ -352,7 +407,7 @@ fn terminal_layer(
             frame,
             desk.connection.preedit.as_deref(),
             &metrics,
-            (ink.text, ink.raised),
+            (t.roles.text.text.paint(), t.roles.layer.raised.paint()),
             desk.settings.option_as_meta,
         ));
     }
@@ -483,5 +538,17 @@ mod tests {
             [200.0 + DIVIDER, 80.0 + DIVIDER]
         );
         assert_eq!(least(&tree, [0.0; 2]), [DIVIDER, DIVIDER], "gutters alone");
+    }
+
+    #[test]
+    fn a_divider_steps_along_its_own_axis() {
+        assert!(step_of(&Key::Right, true).is_some_and(|s| s > 0.0));
+        assert!(step_of(&Key::Left, true).is_some_and(|s| s < 0.0));
+        assert!(step_of(&Key::Down, false).is_some_and(|s| s > 0.0));
+        assert!(step_of(&Key::Up, false).is_some_and(|s| s < 0.0));
+        // Across its axis an arrow is the window's, not the divider's.
+        assert_eq!(step_of(&Key::Up, true), None);
+        assert_eq!(step_of(&Key::Right, false), None);
+        assert_eq!(step_of(&Key::Enter, true), None);
     }
 }

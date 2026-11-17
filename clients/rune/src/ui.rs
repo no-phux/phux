@@ -42,7 +42,6 @@ pub(crate) use overlay::key_hint;
 mod pair;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod palette;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod panes;
 pub(crate) use panes::DIVIDER;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
@@ -64,13 +63,10 @@ mod reef;
 pub(crate) mod rows;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod settings;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod sidebar;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod spatial;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod status;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod tabs;
 #[allow(dead_code, reason = "adopted by the converting lanes")]
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
@@ -100,16 +96,13 @@ pub(crate) const TITLEBAR_H: f32 = phux_design::tokens::SPACE.titlebar_h;
 /// Space between the terminal area's edge and its grid: the terminal's
 /// own inset, not chrome spacing.
 pub(crate) const PAD: f32 = 10.0;
-/// The gap around and between the terminal cards, and how round they are.
+/// The gap around and between the terminal cards.
 const CARD_GAP: f32 = phux_design::tokens::SPACE.card_gap;
-const CARD_RADIUS: f32 = phux_design::tokens::RADIUS.lg;
 /// How far a frosted surface blurs what it floats over, in points.
 const FROST: f32 = phux_design::tokens::MATERIAL.glass.blur.floating;
 pub(crate) const LABEL: TextStyle = tokens::LABEL;
 pub(crate) const LABEL_STRONG: TextStyle = tokens::LABEL_STRONG;
 pub(crate) const CAPTION: TextStyle = tokens::CAPTION;
-/// A sidebar row's name.
-pub(crate) const NAME: TextStyle = tokens::NAME;
 
 pub(crate) struct Ink {
     pub(crate) bg: Color,
@@ -125,6 +118,7 @@ pub(crate) struct Ink {
     pub(crate) accent: Color,
     /// The window's machine colour: what marks this window, its sessions and
     /// its terminals. The accent until a window knows its machine.
+    #[allow(dead_code, reason = "converted views read `Tokens::host`")]
     pub(crate) host: Color,
     /// Text and marks on an accent fill.
     pub(crate) on_accent: Color,
