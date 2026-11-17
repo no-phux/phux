@@ -49,6 +49,13 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
             ),
             keyed("Allow once", "Allow once (Return)"),
         ),
+        Pending::ClipboardWrite(terminal, text) => (
+            format!(
+                "{terminal} wants to set your clipboard ({} characters).",
+                text.chars().count()
+            ),
+            keyed("Allow", "Allow (Return)"),
+        ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
             keyed("End session", "End session (Return)"),

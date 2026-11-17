@@ -125,13 +125,8 @@ impl Desk {
                     | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
-            // OSC 52 only from the terminal on screen, while the window has
-            // focus; never retained for later.
-            Event::ClipboardWrite { terminal_id, text }
-                if self.terminal_has_keyboard(&terminal_id) =>
-            {
-                tx.copy(text.0);
-                false
+            Event::ClipboardWrite { terminal_id, text } => {
+                self.clipboard_write(terminal_id, text.0, tx)
             }
             Event::ClipboardRead {
                 terminal_id,

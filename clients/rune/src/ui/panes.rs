@@ -11,7 +11,7 @@ use super::status::placeholder;
 use super::tokens::Tier;
 use super::{PAD, Paint, Tokens, overlay};
 use crate::desk::mouse::Press;
-use crate::desk::{Desk, SplitPath};
+use crate::desk::{Desk, Grab, SplitPath};
 use crate::ui::Cover;
 use crate::{grid, perf};
 use phux_design::tokens::SPACE;
@@ -357,6 +357,9 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
     } else {
         Lit::Resting
     };
+    let joining = id
+        .local_id()
+        .is_some_and(|n| desk.connection.reorder.target() == Some(Grab::Pane(n)));
     let host = terminal_input(host.fill(ground), desk, id)
         .child(grid_layer)
         .children(overlay::history(desk, id, &frame, area, ink))
@@ -367,7 +370,13 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .children(
             (several && !focused)
                 .then(|| el().cover().fill(t.roles.layer.scrim.paint()).inert()),
-        );
+        )
+        // Outlined while a dragged terminal would join its slot as a tab.
+        .children(joining.then(|| {
+            el().cover()
+                .border(t.space.focus_ring.width, t.roles.accent.accent.paint())
+                .inert()
+        }));
     float(id, framed(desk, host, ground, lit, t), t)
 }
 

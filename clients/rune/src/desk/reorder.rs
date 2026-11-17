@@ -1,14 +1,16 @@
-//! Drag tabs and sessions within their server order, or move local resources
-//! between sessions. Only laid-out handles accept a drop; the server owns
+//! Drag tabs and sessions within their server order, move local resources
+//! between sessions, or drop one on a pane of its session to make it a tab of
+//! that pane's slot. Only laid-out handles accept a drop; the server owns
 //! every resulting order and membership change.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
+use phux_client_core::layout::leaves;
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SessionDescriptor;
 use phux_client_runtime::session_order::{self, SESSION_ORDER_KEY};
-use phux_protocol::ids::{OperationId, SessionKey};
+use phux_protocol::ids::{OperationId, ResourceId, SessionKey};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use rune::{Drag, Phase};
 
@@ -24,6 +26,8 @@ pub enum Grab {
     /// Local live handle and its session when the gesture started.
     Resource(u32, SessionKey),
     Session(SessionKey),
+    /// A terminal pane of the shown layout, as a slot a resource can join.
+    Pane(u32),
 }
 
 #[derive(Default)]
@@ -104,7 +108,7 @@ impl Desk {
         self.drag_at(grab, drag.phase, drag.window_point(), drag.cancelled());
     }
 
-    fn drag_at(&mut self, grab: Grab, phase: Phase, point: [f32; 2], cancelled: bool) {
+    pub(super) fn drag_at(&mut self, grab: Grab, phase: Phase, point: [f32; 2], cancelled: bool) {
         self.connection.reorder.held = None;
         if phase == Phase::Down || cancelled {
             return;
@@ -123,11 +127,12 @@ impl Desk {
                 self.move_sidebar_resource(id, from, to);
             }
             (Grab::Tab(id), Some(Grab::Session(to))) => self.move_sidebar_tab(id, to),
+            (Grab::Resource(id, _), Some(Grab::Pane(to))) => self.join_slot(id, to),
             _ => {}
         }
     }
 
-    fn drop_target(&self, held: Grab, point: [f32; 2]) -> Option<Grab> {
+    pub(super) fn drop_target(&self, held: Grab, point: [f32; 2]) -> Option<Grab> {
         // Tabs retain their strip's own reorder targets.
         if matches!(held, Grab::Tab(_)) {
             for tab in &self.connection.tabs.list {
@@ -142,6 +147,11 @@ impl Desk {
                     return Some(grab);
                 }
             }
+        }
+        if let Grab::Resource(id, session) = held
+            && let Some(pane) = self.slot_drop(id, session, point)
+        {
+            return Some(Grab::Pane(pane));
         }
         if !self.sidebar_shown()
             || !self
@@ -200,8 +210,48 @@ impl Desk {
         None
     }
 
+    /// The pane under `point` the resource `id` would join as a slot tab:
+    /// one the shown layout places, of the same session, on a server that
+    /// keeps slot tabs.
+    fn slot_drop(&self, id: u32, session: SessionKey, point: [f32; 2]) -> Option<u32> {
+        let client = self.connection.client.as_ref()?;
+        let selected = client.selected_session()?;
+        let topology = self.connection.topology.as_ref()?;
+        let shown = topology.sessions.iter().find(|s| s.id == selected)?;
+        if shown.key != Some(session) || !client.slot_tabs_supported() {
+            return None;
+        }
+        let under = |pane: &ResourceId| {
+            let [x, y] = *self.connection.origins.get(pane)?;
+            let [w, h] = *self.connection.areas.get(pane)?;
+            contains([x, y, w, h], point)
+                .then(|| pane.local_id())
+                .flatten()
+        };
+        leaves(self.connection.layout.as_ref()?)
+            .iter()
+            .find_map(under)
+            .filter(|pane| *pane != id)
+    }
+
+    /// Make the resource `id` a tab of the slot showing `to`.
+    fn join_slot(&mut self, id: u32, to: u32) {
+        let Some(client) = self.connection.client.clone() else {
+            return;
+        };
+        let Some((session, mut doc)) = self.arrangement(&client) else {
+            return;
+        };
+        if doc
+            .add_tab(&ResourceId::local(id), &ResourceId::local(to))
+            .is_ok()
+        {
+            self.write_arrangement(&client, session, &doc, "Not added as a tab");
+        }
+    }
+
     fn resource_in_session(&self, id: u32, key: SessionKey, session: u32) -> bool {
-        let live = phux_protocol::ids::ResourceId::local(id);
+        let live = ResourceId::local(id);
         self.connection
             .resources
             .entries
