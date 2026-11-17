@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "phux-design"
-version = "0.156.0"
+version = "0.157.0"
 
 [[package]]
 name = "phux-perf"
