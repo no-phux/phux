@@ -41,3 +41,4 @@ fn create(name: &str, lifetime: SessionLifetime, resource: Option<NewResource>) 
 mod execution;
 mod organization;
 mod sessions;
+mod stacks;

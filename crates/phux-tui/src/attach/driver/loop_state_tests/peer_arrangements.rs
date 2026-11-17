@@ -24,6 +24,7 @@ async fn peer_sweep_reads_arrangement_records_over_the_link() {
                     target: EntryTarget::Member(shell),
                 }),
             }],
+            stacks: false,
         },
     );
     let our_id = fixture.live_session(&ours).unwrap();

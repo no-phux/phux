@@ -39,6 +39,7 @@ async fn listing_counts_windows_from_each_arrangement_with_one_inventory() {
         tabbed,
         WireDoc {
             groups: vec![group(1, a), group(2, b)],
+            stacks: false,
         },
     );
     let headless = fixture.session("headless", SessionLifetime::Persistent);

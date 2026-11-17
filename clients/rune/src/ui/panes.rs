@@ -54,7 +54,7 @@ const MIN_CELLS: [f32; 2] = [20.0, 4.0];
 /// The least room `tree` takes along each axis when every pane has `leaf`.
 fn least(tree: &LayoutNode, leaf: [f32; 2]) -> [f32; 2] {
     match tree {
-        LayoutNode::Leaf(_) => leaf,
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } => leaf,
         LayoutNode::Split {
             dir, left, right, ..
         } => {
@@ -103,6 +103,13 @@ fn node(
 ) -> El {
     let (dir, ratio, left, right) = match tree {
         LayoutNode::Leaf(id) => return pane(desk, id, several, ink),
+        LayoutNode::Stack { .. } => {
+            let shown = phux_client_core::layout::shown_leaves(tree);
+            return match shown.first() {
+                Some(id) => pane(desk, id, several, ink),
+                None => el(),
+            };
+        }
         LayoutNode::Split {
             dir,
             ratio,

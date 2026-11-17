@@ -216,6 +216,7 @@ fn deferred_edit_fixture(
                         target: EntryTarget::Member(shell),
                     }),
                 }],
+                stacks: false,
             },
         );
     }

@@ -1,4 +1,6 @@
 //! Resources: extracted from the shared module.
+use crate::arrangement::EntryRef;
+
 use super::{
     Activation, ActivationId, Arrangement, ArrangementKey, ArrangementOwner, Created, Effect,
     Event, ExecState, ExitPolicy, FreshKeys, Group, LaunchSpec, Out, Outcome, ProcIdentity,
@@ -141,6 +143,7 @@ pub(super) fn arrangement_replace(
     owner: ArrangementOwner,
     expected: Revision,
     groups: &[Group],
+    stacks: bool,
 ) -> Result<Out, Refusal> {
     let ArrangementOwner::Session(session) = owner else {
         return Err(Refusal::Unsupported {
@@ -155,8 +158,13 @@ pub(super) fn arrangement_replace(
     if current != expected {
         return Err(Refusal::Conflict { current });
     }
-    validate_groups(groups, &s.members).map_err(|e| Refusal::invalid("groups", e.to_string()))?;
-    let groups = carry_locks(existing.and_then(|k| tx.arrangement(k)), groups)?;
+    let current = existing.and_then(|k| tx.arrangement(k));
+    let groups = match current {
+        Some(current) if !stacks => carry_stacks(current, groups),
+        _ => groups.to_vec(),
+    };
+    validate_groups(&groups, &s.members).map_err(|e| Refusal::invalid("groups", e.to_string()))?;
+    let groups = carry_locks(current, &groups)?;
     let (key, revision, created) = if let Some(key) = existing {
         let a = tx.arrangement_mut(key).ok_or(Refusal::NotFound)?;
         a.groups = groups;
@@ -220,6 +228,49 @@ fn carry_locks(current: Option<&Arrangement>, groups: &[Group]) -> Result<Vec<Gr
             ..g.clone()
         })
         .collect())
+}
+
+/// A replacement from a writer that doesn't know stacks, with each current
+/// stack rebuilt where its shown entry still stands as a plain leaf. Hidden
+/// entries the writer placed elsewhere stay where it put them. Entries match
+/// by id or by what they show: the legacy layout key mints fresh ids.
+fn carry_stacks(current: &Arrangement, groups: &[Group]) -> Vec<Group> {
+    let stacks: Vec<(usize, &Vec<EntryRef>)> = current
+        .groups
+        .iter()
+        .flat_map(|g| g.tree.stacks())
+        .collect();
+    if stacks.is_empty() {
+        return groups.to_vec();
+    }
+    let leaves: Vec<&EntryRef> = groups.iter().flat_map(|g| g.tree.leaves()).collect();
+    let same = |a: &EntryRef, b: &EntryRef| a.entry == b.entry || a.target == b.target;
+    let placed = |e: &EntryRef| leaves.iter().any(|l| same(l, e));
+    groups
+        .iter()
+        .map(|g| Group {
+            tree: g.tree.restack(&mut |leaf: &EntryRef| {
+                let (active, entries) = stacks
+                    .iter()
+                    .find(|(active, entries)| same(&entries[*active], leaf))?;
+                let shown = &entries[*active];
+                let kept: Vec<EntryRef> = entries
+                    .iter()
+                    .filter(|e| e.entry == shown.entry || !placed(e))
+                    .map(|e| {
+                        if e.entry == shown.entry {
+                            leaf.clone()
+                        } else {
+                            e.clone()
+                        }
+                    })
+                    .collect();
+                let at = kept.iter().position(|e| e == leaf)?;
+                crate::arrangement::stack(at, kept)
+            }),
+            ..g.clone()
+        })
+        .collect()
 }
 
 /// The refusal a close of a locked tab gets.

@@ -87,6 +87,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 31)]
     SwapPane(SwapPaneArgs),
 
+    #[usage(help_heading = "Panes", display_order = 32)]
+    Stack(StackArgs),
+
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize(ResizeArgs),
 

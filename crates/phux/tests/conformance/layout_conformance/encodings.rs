@@ -49,6 +49,7 @@ pub(super) fn project_core(node: &CoreNode) -> Shape {
             first: Box::new(project_core(left)),
             second: Box::new(project_core(right)),
         },
+        CoreNode::Stack { .. } => panic!("the corpus has no stacks"),
     }
 }
 
@@ -98,6 +99,7 @@ pub(super) fn project_l3(node: &L3Node) -> Shape {
             first: Box::new(project_l3(left)),
             second: Box::new(project_l3(right)),
         },
+        L3Node::Stack { .. } => panic!("the corpus has no stacks"),
     }
 }
 

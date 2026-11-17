@@ -58,6 +58,25 @@ pub enum LayoutMutation {
         /// Existing pane to remove.
         target: ResourceId,
     },
+    /// Take `source` out of its slot and stack it onto `target`'s, shown.
+    Stack {
+        /// Existing pane to stack.
+        source: ResourceId,
+        /// Existing pane whose slot takes it.
+        target: ResourceId,
+    },
+    /// Take `pane` out of its stack and split it beside the stack.
+    Unstack {
+        /// A stacked pane.
+        pane: ResourceId,
+        /// Split axis.
+        dir: SplitDir,
+    },
+    /// Show `pane` in its stack and focus it.
+    Reveal {
+        /// A stacked pane.
+        pane: ResourceId,
+    },
 }
 
 /// Why [`apply_mutation`] refused.
@@ -78,6 +97,9 @@ pub enum MutationError {
     /// Closing the final pane would produce an unencodable empty workspace.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,
+    /// The pane isn't in a stack.
+    #[error("pane is not stacked: {0:?}")]
+    NotStacked(ResourceId),
 }
 
 /// Apply one mutation without doing I/O.
@@ -111,7 +133,75 @@ pub fn apply_mutation(
         } => apply_move(workspace, source, target, *dir, *ratio),
         LayoutMutation::Swap { first, second } => apply_swap(workspace, first, second),
         LayoutMutation::Close { target } => apply_close(workspace, target),
+        LayoutMutation::Stack { source, target } => apply_stack(workspace, source, target),
+        LayoutMutation::Unstack { pane, dir } => apply_unstack(workspace, pane, *dir),
+        LayoutMutation::Reveal { pane } => apply_reveal(workspace, pane),
     }
+}
+
+/// Move `source` out of its slot and onto `target`'s stack, shown and
+/// focused.
+fn apply_stack(
+    workspace: &mut ArrangementDoc,
+    source: &ResourceId,
+    target: &ResourceId,
+) -> Result<(), MutationError> {
+    if source == target {
+        return Err(MutationError::SamePane);
+    }
+    let source_index = require_window(workspace, source)?;
+    let target_index = require_window(workspace, target)?;
+    let tree = window_tree(workspace, source_index, source)?;
+    if super::stack_of(tree, source).is_some_and(|(_, panes)| panes.contains(target)) {
+        // Already together: just show it.
+        return apply_reveal(workspace, source);
+    }
+    let vacated = kill_pane(tree, source)?;
+    if source_index == target_index && vacated.is_none() {
+        return Err(MutationError::LastPane);
+    }
+    workspace.groups[source_index].state.tree = vacated;
+    repair_focus(&mut workspace.groups[source_index].state);
+    let tree = window_tree(workspace, target_index, target)?;
+    workspace.groups[target_index].state.tree = Some(super::stack::push(tree, target, source));
+    workspace.groups[target_index].state.focus = Some(source.clone());
+    workspace.active = target_index;
+    workspace.prune_empty_groups();
+    Ok(())
+}
+
+/// Split `pane` out of its stack, beside it; the stack keeps showing what it
+/// showed, or the pane after `pane`.
+fn apply_unstack(
+    workspace: &mut ArrangementDoc,
+    pane: &ResourceId,
+    dir: SplitDir,
+) -> Result<(), MutationError> {
+    let index = require_window(workspace, pane)?;
+    let tree = window_tree(workspace, index, pane)?;
+    let (_, panes) =
+        super::stack_of(tree, pane).ok_or_else(|| MutationError::NotStacked(pane.clone()))?;
+    let Some(anchor) = panes.iter().find(|p| *p != pane).cloned() else {
+        return Err(MutationError::NotStacked(pane.clone()));
+    };
+    let collapsed = kill_pane(tree, pane)?.ok_or(MutationError::LastPane)?;
+    workspace.groups[index].state.tree = Some(split_at(&collapsed, &anchor, pane, dir, 0.5)?);
+    workspace.groups[index].state.focus = Some(pane.clone());
+    workspace.active = index;
+    Ok(())
+}
+
+/// Show `pane` in its stack and focus it.
+fn apply_reveal(workspace: &mut ArrangementDoc, pane: &ResourceId) -> Result<(), MutationError> {
+    let index = require_window(workspace, pane)?;
+    let tree = window_tree(workspace, index, pane)?;
+    if super::stack_of(tree, pane).is_none() {
+        return Err(MutationError::NotStacked(pane.clone()));
+    }
+    workspace.groups[index].state.tree = Some(super::reveal(tree, pane));
+    workspace.groups[index].state.focus = Some(pane.clone());
+    workspace.active = index;
+    Ok(())
 }
 
 /// The tree of `workspace.windows[index]`, blaming `blame` when the window
@@ -305,6 +395,21 @@ fn swap_leaves(node: &LayoutNode, first: &ResourceId, second: &ResourceId) -> La
             ratio: *ratio,
             left: Box::new(swap_leaves(left, first, second)),
             right: Box::new(swap_leaves(right, first, second)),
+        },
+        LayoutNode::Stack { active, panes } => LayoutNode::Stack {
+            active: *active,
+            panes: panes
+                .iter()
+                .map(|id| {
+                    if id == first {
+                        second.clone()
+                    } else if id == second {
+                        first.clone()
+                    } else {
+                        id.clone()
+                    }
+                })
+                .collect(),
         },
     }
 }

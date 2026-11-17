@@ -41,6 +41,14 @@ pub enum LayoutNode {
         /// Right (for [`SplitDir::Horizontal`]) or bottom (for [`SplitDir::Vertical`]) child.
         right: Box<Self>,
     },
+    /// Two or more panes sharing one slot, in strip order; only `active` is
+    /// shown and tiled, the others keep running at its size.
+    Stack {
+        /// Index into `panes` of the shown one.
+        active: usize,
+        /// The stacked panes, at least two.
+        panes: Vec<ResourceId>,
+    },
 }
 
 /// Cardinal direction for [`focus_direction`].
@@ -193,6 +201,8 @@ impl Group {
 
 mod identity;
 pub mod legacy;
+mod stack;
+pub use stack::{reveal, shown_leaves, stack_of, stacked};
 mod projection;
 pub mod wire;
 

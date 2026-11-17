@@ -32,6 +32,19 @@ ending the session. A natural exit is not a close, so it isn't refused. The
 flag is stored in the arrangement record, so it survives a hot upgrade, and on
 the wire it is a trailing byte of the group record that older peers skip.
 
+One slot of a tree may be a **stack**: two or more entries sharing the
+slot's rectangle, in strip order, one of them shown. Every entry of a stack
+is arranged, so moving or removing its resource prunes it from the stack, and
+a stack left with one entry becomes that entry's leaf. A server that keeps
+stacks advertises `features_ext.STACKED_PANES`; a client MUST see the bit
+before writing one. On the wire a stack is the leaf of its shown entry with
+the stack trailing in the same node record, so an older peer reads the shown
+entry alone. A writer that knows stacks sets a flag after the last group; a
+replacement without it gets each current stack rebuilt around its shown entry
+wherever that entry still stands as a plain leaf, keeping any hidden entry
+the writer placed somewhere else where it put it. Stacks are stored in the
+arrangement record, so they survive a restart and a hot upgrade.
+
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
 invariants; [arrangement validation](../crates/phux-core/src/arrangement.rs)
 owns tree validity. Expected revisions, operation ids and live activation

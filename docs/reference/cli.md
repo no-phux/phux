@@ -52,6 +52,7 @@ Panes:
   swap-pane     Swap two panes in a layout
   terminal      Create and place terminals; inspect API and receipts
   resource      Inspect a resource or wait for its process to exit
+  stack         Stack panes in one layout slot
 
 Agents:
   agent         See and drive the agents running in panes
@@ -6978,6 +6979,38 @@ Flags:
 
 Global flags:
       --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux stack`
+
+```text
+Stack panes in one layout slot
+
+`--into OTHER` takes PANE out of its slot and stacks it onto OTHER's, shown; the
+slot keeps its size and the hidden panes keep running. `--show` shows PANE in
+its stack, and `--out` splits it back out beside the stack. Both panes must be
+in one session.
+
+Usage: phux stack [FLAGS] <PANE>
+
+Arguments:
+  <PANE>  The pane to stack, show, or take out.
+
+Flags:
+      --into <OTHER>      Stack PANE onto this pane's slot.
+      --show              Show PANE in its stack.
+      --out               Split PANE out beside its stack.
+      --split <SPLIT>     With `--out`, the divider: `vertical` places PANE
+                          beside the stack, `horizontal` below it.
+                          [possible values: horizontal, h, vertical, v]
+                          (default: vertical)
+      --projection <KEY>  Named projection to edit instead of the shared
+                          default; at most one may be given.
+      --json              Emit a schema-versioned JSON result or error.
+  -h, --help              Print help
+
+Global flags:
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux status`

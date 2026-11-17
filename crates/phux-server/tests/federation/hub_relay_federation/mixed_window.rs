@@ -178,6 +178,7 @@ fn mixed_window(local: EntryTarget, a: &ResourceId, b: &ResourceId) -> Arrangeme
             name: Some("mixed".to_owned()),
             tree,
         }],
+        stacks: true,
     }
 }
 

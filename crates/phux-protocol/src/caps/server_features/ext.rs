@@ -98,6 +98,11 @@ pub enum ServerFeatureExt {
     /// agent (`docs/forwarding.md#ssh-agent`). Advertised only with
     /// `[forward] agent = true`.
     ForwardAgent = 0x0400_0000,
+    /// The server keeps stacks in arrangement documents
+    /// (`docs/organization.md`): one slot holding several entries, one
+    /// shown. A client MUST see the bit before writing a stack; a server
+    /// without it would keep only each stack's shown entry.
+    StackedPanes = 0x0800_0000,
 }
 
 impl ServerFeatureExt {
@@ -130,6 +135,7 @@ impl ServerFeatureExt {
         Self::Credentials,
         Self::ForwardTcp,
         Self::ForwardAgent,
+        Self::StackedPanes,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -163,6 +169,7 @@ impl ServerFeatureExt {
             Self::Credentials => "CREDENTIALS",
             Self::ForwardTcp => "FORWARD_TCP",
             Self::ForwardAgent => "FORWARD_AGENT",
+            Self::StackedPanes => "STACKED_PANES",
         }
     }
 

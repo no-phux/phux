@@ -87,6 +87,7 @@ impl ServerState {
                 owner: ArrangementOwner::Session(record.key),
                 expected,
                 groups,
+                stacks: false,
             },
             actor,
         )
@@ -104,6 +105,18 @@ impl ServerState {
     ) -> Option<phux_core::LayoutNode<EntryRef>> {
         use phux_core::FreshKeys as _;
         Some(match node {
+            LayoutNode::Stack { active, panes } => {
+                let entries = panes
+                    .iter()
+                    .filter_map(|p| {
+                        match self.core_tree(&LayoutNode::Leaf(p.clone()), members, fresh) {
+                            Some(phux_core::LayoutNode::Leaf(entry)) => Some(entry),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                return phux_core::arrangement::stack(*active, entries);
+            }
             LayoutNode::Leaf(id) => {
                 let target = match id {
                     WireResourceId::Local { .. } => {
@@ -189,6 +202,17 @@ impl ServerState {
     /// An entry tree as a client layout tree over live wire ids.
     fn client_tree(&mut self, node: &phux_core::LayoutNode<EntryRef>) -> Option<LayoutNode> {
         Some(match node {
+            phux_core::LayoutNode::Stack { active, entries } => {
+                let panes = entries
+                    .iter()
+                    .filter_map(|e| self.client_tree(&phux_core::LayoutNode::Leaf(e.clone())))
+                    .filter_map(|n| match n {
+                        LayoutNode::Leaf(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect();
+                return phux_client_core::layout::stacked(*active, panes);
+            }
             phux_core::LayoutNode::Leaf(entry) => LayoutNode::Leaf(match &entry.target {
                 EntryTarget::Member(key) => {
                     let id = self.registry().resource_id(key)?;

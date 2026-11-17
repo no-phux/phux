@@ -3,6 +3,7 @@
 mod codec_and_tree;
 mod groups;
 mod properties;
+mod stacks;
 
 use std::collections::HashSet;
 

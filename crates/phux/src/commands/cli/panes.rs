@@ -187,6 +187,38 @@ pub(crate) struct SwapPaneArgs {
     pub(crate) json: bool,
 }
 
+/// Stack panes in one layout slot
+///
+/// `--into OTHER` takes PANE out of its slot and stacks it onto OTHER's,
+/// shown; the slot keeps its size and the hidden panes keep running.
+/// `--show` shows PANE in its stack, and `--out` splits it back out beside
+/// the stack. Both panes must be in one session.
+#[derive(Debug, Args)]
+pub(crate) struct StackArgs {
+    /// The pane to stack, show, or take out.
+    pub(crate) pane: String,
+    /// Stack PANE onto this pane's slot.
+    #[usage(long, value_name = "OTHER")]
+    pub(crate) into: Option<String>,
+    /// Show PANE in its stack.
+    #[usage(long)]
+    pub(crate) show: bool,
+    /// Split PANE out beside its stack.
+    #[usage(long)]
+    pub(crate) out: bool,
+    /// With `--out`, the divider: `vertical` places PANE beside the stack,
+    /// `horizontal` below it.
+    #[usage(long, value_enum, default = "vertical")]
+    pub(crate) split: SpawnSplit,
+    /// Named projection to edit instead of the shared default; at most one
+    /// may be given.
+    #[usage(long, value_name = "KEY")]
+    pub(crate) projection: Vec<String>,
+    /// Emit a schema-versioned JSON result or error.
+    #[usage(long)]
+    pub(crate) json: bool,
+}
+
 /// Set a pane's grid size, with no TTY.
 #[derive(Debug, Args)]
 #[usage(

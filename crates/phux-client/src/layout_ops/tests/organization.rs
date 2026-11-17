@@ -30,6 +30,7 @@ fn arranged() -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
                 name: Some("main".to_owned()),
                 tree: member(a, 1),
             }],
+            stacks: false,
         },
     );
     (fixture, work, a, b)
@@ -117,7 +118,13 @@ async fn an_empty_arrangement_is_seeded_by_compare_and_swap() {
     let mut fixture = OrgFixture::new();
     let work = fixture.session("work", SessionLifetime::Persistent);
     let a = fixture.shell(work);
-    fixture.arrangement(work, WireDoc { groups: Vec::new() });
+    fixture.arrangement(
+        work,
+        WireDoc {
+            groups: Vec::new(),
+            stacks: false,
+        },
+    );
     let session = fixture.live_session(&work).unwrap();
     let pane = fixture.live(&a).unwrap();
     let (mut conn, server, _dir) = connect(fixture).await;
@@ -196,7 +203,13 @@ async fn a_seed_pane_that_already_ended_is_not_placed() {
     let mut fixture = OrgFixture::new();
     let work = fixture.session("work", SessionLifetime::Persistent);
     let failed = fixture.resource(work, Some(ExecState::Failed));
-    fixture.arrangement(work, WireDoc { groups: Vec::new() });
+    fixture.arrangement(
+        work,
+        WireDoc {
+            groups: Vec::new(),
+            stacks: false,
+        },
+    );
     let session = fixture.live_session(&work).unwrap();
     assert!(fixture.live(&failed).is_none());
     let (mut conn, server, _dir) = connect(fixture).await;
@@ -219,7 +232,13 @@ async fn a_refused_seed_is_retried_against_a_fresh_read() {
     let mut fixture = OrgFixture::new();
     let work = fixture.session("work", SessionLifetime::Persistent);
     let a = fixture.shell(work);
-    fixture.arrangement(work, WireDoc { groups: Vec::new() });
+    fixture.arrangement(
+        work,
+        WireDoc {
+            groups: Vec::new(),
+            stacks: false,
+        },
+    );
     let session = fixture.live_session(&work).unwrap();
     let pane = fixture.live(&a).unwrap();
     let fixture = fixture.refuse_next(

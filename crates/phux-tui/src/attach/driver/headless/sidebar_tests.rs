@@ -80,6 +80,7 @@ async fn headless_layout_is_the_arrangement_record() {
                     target: EntryTarget::Member(shell),
                 }),
             }],
+            stacks: false,
         },
     );
     let session_id = fixture.live_session(&work).expect("live session");

@@ -103,6 +103,12 @@ pub(super) fn layout_error(err: LayoutOpsError) -> SpatialError {
             2,
         ),
         LayoutOpsError::SamePane => same_pane_error(),
+        LayoutOpsError::NotStacked(_) => SpatialRefusal::new(
+            codes::NOT_STACKED,
+            "the pane is not in a stack",
+            "stack it first with `phux stack PANE --into OTHER`",
+            2,
+        ),
         LayoutOpsError::InvalidProjectionKey(_) => SpatialRefusal::new(
             codes::PROJECTION_INVALID,
             err.to_string(),

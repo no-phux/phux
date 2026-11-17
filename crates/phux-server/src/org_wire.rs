@@ -353,18 +353,40 @@ pub fn owner(o: phux_core::ArrangementOwner) -> Option<frame::ArrangementOwner> 
     }
 }
 
+fn entry(entry: &phux_core::EntryRef) -> Option<frame::EntryRef> {
+    Some(frame::EntryRef {
+        entry: entry.entry,
+        target: match &entry.target {
+            phux_core::EntryTarget::Member(k) => frame::EntryTarget::Member(resource_key(*k)?),
+            phux_core::EntryTarget::Satellite { host, id } => frame::EntryTarget::Satellite {
+                host: wire::SatelliteHost::new(host.clone()),
+                id: *id,
+            },
+        },
+    })
+}
+
+fn core_entry(entry: &frame::EntryRef) -> Option<phux_core::EntryRef> {
+    Some(phux_core::EntryRef {
+        entry: entry.entry,
+        target: match &entry.target {
+            frame::EntryTarget::Member(k) => phux_core::EntryTarget::Member(core_resource_key(k)),
+            frame::EntryTarget::Satellite { host, id } => phux_core::EntryTarget::Satellite {
+                host: host.as_str().to_owned(),
+                id: *id,
+            },
+            _ => return None,
+        },
+    })
+}
+
 fn node(n: &phux_core::LayoutNode<phux_core::EntryRef>) -> Option<frame::ArrangementNode> {
     Some(match n {
-        phux_core::LayoutNode::Leaf(entry) => frame::ArrangementNode::Leaf(frame::EntryRef {
-            entry: entry.entry,
-            target: match &entry.target {
-                phux_core::EntryTarget::Member(k) => frame::EntryTarget::Member(resource_key(*k)?),
-                phux_core::EntryTarget::Satellite { host, id } => frame::EntryTarget::Satellite {
-                    host: wire::SatelliteHost::new(host.clone()),
-                    id: *id,
-                },
-            },
-        }),
+        phux_core::LayoutNode::Leaf(e) => frame::ArrangementNode::Leaf(entry(e)?),
+        phux_core::LayoutNode::Stack { active, entries } => frame::ArrangementNode::Stack {
+            active: u16::try_from(*active).ok()?,
+            entries: entries.iter().map(entry).collect::<Option<_>>()?,
+        },
         phux_core::LayoutNode::Split {
             dir,
             ratio,
@@ -384,19 +406,11 @@ fn node(n: &phux_core::LayoutNode<phux_core::EntryRef>) -> Option<frame::Arrange
 
 fn core_node(n: &frame::ArrangementNode) -> Option<phux_core::LayoutNode<phux_core::EntryRef>> {
     Some(match n {
-        frame::ArrangementNode::Leaf(entry) => phux_core::LayoutNode::Leaf(phux_core::EntryRef {
-            entry: entry.entry,
-            target: match &entry.target {
-                frame::EntryTarget::Member(k) => {
-                    phux_core::EntryTarget::Member(core_resource_key(k))
-                }
-                frame::EntryTarget::Satellite { host, id } => phux_core::EntryTarget::Satellite {
-                    host: host.as_str().to_owned(),
-                    id: *id,
-                },
-                _ => return None,
-            },
-        }),
+        frame::ArrangementNode::Leaf(e) => phux_core::LayoutNode::Leaf(core_entry(e)?),
+        frame::ArrangementNode::Stack { active, entries } => phux_core::LayoutNode::Stack {
+            active: usize::from(*active),
+            entries: entries.iter().map(core_entry).collect::<Option<_>>()?,
+        },
         frame::ArrangementNode::Split {
             dir,
             ratio,
@@ -430,6 +444,7 @@ pub fn document(groups: &[phux_core::Group]) -> frame::ArrangementDoc {
                 })
             })
             .collect(),
+        stacks: true,
     }
 }
 

@@ -53,6 +53,11 @@ pub fn rects(tree: &LayoutNode) -> Vec<(ResourceId, Rect)> {
 fn walk(tree: &LayoutNode, bounds: Rect, out: &mut Vec<(ResourceId, Rect)>) {
     match tree {
         LayoutNode::Leaf(id) => out.push((id.clone(), bounds)),
+        LayoutNode::Stack { .. } => out.extend(
+            phux_client_core::layout::shown_leaves(tree)
+                .into_iter()
+                .map(|id| (id, bounds)),
+        ),
         LayoutNode::Split {
             dir,
             ratio,

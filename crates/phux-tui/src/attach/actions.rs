@@ -212,12 +212,7 @@ impl AxisResize<'_> {
 }
 
 fn tree_contains(node: &LayoutNode, target: &ResourceId) -> bool {
-    match node {
-        LayoutNode::Leaf(p) => p == target,
-        LayoutNode::Split { left, right, .. } => {
-            tree_contains(left, target) || tree_contains(right, target)
-        }
-    }
+    layout::leaves(node).contains(target)
 }
 
 /// Clamp a ratio strictly inside `(0, 1)`; `split_at` rejects the bounds.

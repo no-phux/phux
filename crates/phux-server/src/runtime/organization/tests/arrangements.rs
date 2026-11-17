@@ -43,6 +43,7 @@ fn arrangements_read_and_replace_by_revision() {
                     },
                 ),
             }],
+            stacks: true,
         };
         let replace = |n, expected| Command::ArrangementReplace {
             operation: op(n),

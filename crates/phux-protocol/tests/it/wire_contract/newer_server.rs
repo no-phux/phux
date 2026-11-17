@@ -175,6 +175,7 @@ fn an_unknown_enum_inside_an_arrangement_reply_settles_the_request() {
                     second: Box::new(satellite_leaf(0xE2)),
                 },
             }],
+            stacks: false,
         },
     );
     let mut bytes = encode(&FrameKind::CommandResult {

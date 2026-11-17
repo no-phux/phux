@@ -134,6 +134,12 @@ impl From<&LayoutNode> for CborLayoutNode {
     fn from(value: &LayoutNode) -> Self {
         match value {
             LayoutNode::Leaf(pane) => Self::Leaf { pane: pane.into() },
+            // The legacy key predates stacks: it keeps the shown pane, and
+            // the server rebuilds the stack around it.
+            LayoutNode::Stack { active, panes } => Self::Leaf {
+                pane: crate::layout::stack::shown(*active, panes)
+                    .map_or(CborResourceId::Local { id: 0 }, Into::into),
+            },
             LayoutNode::Split {
                 dir,
                 ratio,

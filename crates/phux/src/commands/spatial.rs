@@ -119,6 +119,47 @@ pub(crate) fn run_swap_pane(
     )
 }
 
+/// `phux stack PANE`: onto `--into`'s slot, shown in its stack (`--show`),
+/// or split back out (`--out`); exactly one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one per flag, as the other verbs"
+)]
+pub(crate) fn run_stack(
+    pane: &str,
+    into: Option<String>,
+    show: bool,
+    out: bool,
+    direction: Direction,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let pane = pane.to_owned();
+    let operation = match (into, show, out) {
+        (Some(into), false, false) => SpatialOp::Stack {
+            source: pane,
+            into,
+            projection,
+        },
+        (None, true, false) => SpatialOp::Reveal { pane, projection },
+        (None, false, true) => SpatialOp::Unstack {
+            pane,
+            direction,
+            projection,
+        },
+        _ => {
+            let err = CliError::new(
+                "invalid_arguments",
+                "pass exactly one of --into OTHER, --show, or --out",
+                "`phux stack PANE --into OTHER` stacks PANE onto OTHER's slot",
+            );
+            return json_err::emit(json, &err, 2);
+        }
+    };
+    run(operation, json, socket)
+}
+
 fn run(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {

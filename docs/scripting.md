@@ -96,6 +96,12 @@ Existing-pane edits (`insert-pane` and `mv`) instead name the divider:
 existing spellings are retained for compatibility; check the command's help
 rather than transferring a split direction between the two command groups.
 
+`phux stack PANE --into OTHER` stacks PANE in OTHER's place in the layout:
+the place keeps its size, PANE is shown, and OTHER keeps running behind it.
+`phux stack PANE --show` shows a stacked pane, and `phux stack PANE --out`
+splits it back out beside its stack. Moving a stacked pane to another
+session with `phux mv` takes it out of the stack.
+
 A pane normally disappears when its process exits. `--retain` keeps it
 around for `phux resource show` and `phux resource wait` until the time runs
 out or you `phux kill` it. Write `--retain=SECS` when a command follows, so

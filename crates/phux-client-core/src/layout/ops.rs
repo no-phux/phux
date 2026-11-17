@@ -94,7 +94,7 @@ fn set_ratio_inner(node: &LayoutNode, steps: &[NodeStep], ratio: f32) -> Option<
         },
         // Ran off a leaf (or hit a leaf at the path tip) — the path no
         // longer names a split in this tree.
-        LayoutNode::Leaf(_) => None,
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } => None,
     }
 }
 
@@ -112,7 +112,14 @@ fn split_inner(
             left: Box::new(LayoutNode::Leaf(target.clone())),
             right: Box::new(LayoutNode::Leaf(new_pane.clone())),
         },
-        LayoutNode::Leaf(p) => LayoutNode::Leaf(p.clone()),
+        // A stacked pane splits its whole slot.
+        LayoutNode::Stack { panes, .. } if panes.contains(target) => LayoutNode::Split {
+            dir,
+            ratio,
+            left: Box::new(node.clone()),
+            right: Box::new(LayoutNode::Leaf(new_pane.clone())),
+        },
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } => node.clone(),
         LayoutNode::Split {
             dir: sd,
             ratio: r,
@@ -150,7 +157,7 @@ pub fn kill_pane(
     match tree {
         LayoutNode::Leaf(p) if p == target => Ok(None),
         LayoutNode::Leaf(_) => Err(LayoutError::PaneNotInLayout(target.clone())),
-        LayoutNode::Split { .. } => {
+        LayoutNode::Split { .. } | LayoutNode::Stack { .. } => {
             let (new_root, found) = collapse(tree, target);
             if found {
                 Ok(Some(new_root))
@@ -164,6 +171,10 @@ pub fn kill_pane(
 fn collapse(node: &LayoutNode, target: &ResourceId) -> (LayoutNode, bool) {
     match node {
         LayoutNode::Leaf(p) => (LayoutNode::Leaf(p.clone()), false),
+        LayoutNode::Stack { panes, .. } if panes.contains(target) => {
+            (super::stack::without(node, target), true)
+        }
+        LayoutNode::Stack { .. } => (node.clone(), false),
         LayoutNode::Split {
             dir,
             ratio,
@@ -221,7 +232,7 @@ pub fn focus_direction(
         let (split_dir, came_from) = path[i];
         if matches_to_sibling(split_dir, dir, came_from) {
             let sibling = sibling_at_depth(tree, &path, i)?;
-            return Some(descend_to_leaf(sibling, dir, &path[i + 1..]));
+            return descend_to_leaf(sibling, dir, &path[i + 1..]);
         }
     }
     None
@@ -231,10 +242,12 @@ fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
         LayoutNode::Split { left, right, .. } => contains(left, target) || contains(right, target),
+        LayoutNode::Stack { panes, .. } => panes.contains(target),
     }
 }
 
-/// Every leaf of `node` in left-to-right depth-first order.
+/// Every leaf of `node` in left-to-right depth-first order, a stack's
+/// hidden panes included; [`super::shown_leaves`] skips them.
 #[must_use]
 pub fn leaves(node: &LayoutNode) -> Vec<ResourceId> {
     let mut out = Vec::new();
@@ -249,6 +262,7 @@ fn collect_leaves(node: &LayoutNode, out: &mut Vec<ResourceId>) {
             collect_leaves(left, out);
             collect_leaves(right, out);
         }
+        LayoutNode::Stack { panes, .. } => out.extend(panes.iter().cloned()),
     }
 }
 
@@ -273,6 +287,7 @@ fn record_path(
 ) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
+        LayoutNode::Stack { panes, .. } => panes.contains(target),
         LayoutNode::Split {
             dir: sd,
             left,
@@ -333,7 +348,7 @@ fn descend_to_leaf(
     node: &LayoutNode,
     dir: Direction,
     suffix: &[(SplitDir, ChildSide)],
-) -> ResourceId {
+) -> Option<ResourceId> {
     let perp = perpendicular_axis(dir);
     let hints: Vec<ChildSide> = suffix
         .iter()
@@ -343,7 +358,10 @@ fn descend_to_leaf(
     let mut cur = node;
     loop {
         match cur {
-            LayoutNode::Leaf(p) => return p.clone(),
+            LayoutNode::Leaf(p) => return Some(p.clone()),
+            LayoutNode::Stack { active, panes } => {
+                return super::stack::shown(*active, panes).cloned();
+            }
             LayoutNode::Split {
                 dir: sd,
                 left,

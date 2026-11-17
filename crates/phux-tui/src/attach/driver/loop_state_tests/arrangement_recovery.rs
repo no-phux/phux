@@ -66,6 +66,7 @@ async fn a_failed_first_arrangement_read_never_overwrites_the_stored_record() {
                     target: EntryTarget::Member(shell),
                 }),
             }],
+            stacks: false,
         },
     );
     let our_id = fixture.live_session(&ours).unwrap();

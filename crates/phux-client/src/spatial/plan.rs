@@ -74,7 +74,9 @@ impl SpatialOp {
     pub(super) const fn ratio(&self) -> Option<f32> {
         match self {
             Self::Insert { ratio, .. } | Self::Move { ratio, .. } => Some(*ratio),
-            Self::Swap { .. } => None,
+            Self::Swap { .. } | Self::Stack { .. } | Self::Unstack { .. } | Self::Reveal { .. } => {
+                None
+            }
         }
     }
 
@@ -103,6 +105,8 @@ impl SpatialOp {
                 vec![("source", source), ("target", target)]
             }
             Self::Swap { first, second, .. } => vec![("first", first), ("second", second)],
+            Self::Stack { source, into, .. } => vec![("source", source), ("into", into)],
+            Self::Unstack { pane, .. } | Self::Reveal { pane, .. } => vec![("pane", pane)],
         }
     }
 }
@@ -165,9 +169,22 @@ pub(super) async fn build_plan(
     }
 
     let session = same_session(snapshot, &terminals)?;
+    if let [pane] = terminals.as_slice() {
+        return one_pane_plan(session, pane, operation);
+    }
     let [first, second] = terminals.as_slice() else {
         return Err(internal_error("spatial operation argument mismatch"));
     };
+    two_pane_plan(session, first, second, operation)
+}
+
+/// The plan for an edit of two panes in one session.
+fn two_pane_plan(
+    session: SessionId,
+    first: &ResourceId,
+    second: &ResourceId,
+    operation: SpatialOp,
+) -> Result<PlanKind, SpatialRefusal> {
     let (projection, mutation, document, summary) = match operation {
         SpatialOp::Insert {
             direction,
@@ -242,6 +259,71 @@ pub(super) async fn build_plan(
             }),
             format!("swapped @{} and @{}", local_id(first), local_id(second)),
         ),
+        SpatialOp::Stack { projection, .. } => (
+            projection,
+            LayoutMutation::Stack {
+                source: first.clone(),
+                target: second.clone(),
+            },
+            json!({
+                "schema_version": JSON_SCHEMA_VERSION,
+                "operation": "stack",
+                "session_id": session.get(),
+                "source_terminal_id": local_id(first),
+                "into_terminal_id": local_id(second),
+            }),
+            format!("stacked @{} with @{}", local_id(first), local_id(second)),
+        ),
+        SpatialOp::Unstack { .. } | SpatialOp::Reveal { .. } => {
+            return Err(internal_error("spatial operation argument mismatch"));
+        }
+    };
+    Ok(PlanKind::Local(Plan {
+        session,
+        mutation,
+        projection_key: resolve_local_projection(&projection, session)?,
+        outcome: SpatialOutcome { document, summary },
+    }))
+}
+
+/// The plan for an edit of one pane: `unstack` or `stack-show`.
+fn one_pane_plan(
+    session: SessionId,
+    pane: &ResourceId,
+    operation: SpatialOp,
+) -> Result<PlanKind, SpatialRefusal> {
+    let (projection, mutation, document, summary) = match operation {
+        SpatialOp::Unstack {
+            direction,
+            projection,
+            ..
+        } => (
+            projection,
+            LayoutMutation::Unstack {
+                pane: pane.clone(),
+                dir: direction.wire(),
+            },
+            json!({
+                "schema_version": JSON_SCHEMA_VERSION,
+                "operation": "unstack",
+                "session_id": session.get(),
+                "terminal_id": local_id(pane),
+                "direction": direction.as_str(),
+            }),
+            format!("unstacked @{} ({})", local_id(pane), direction.as_str()),
+        ),
+        SpatialOp::Reveal { projection, .. } => (
+            projection,
+            LayoutMutation::Reveal { pane: pane.clone() },
+            json!({
+                "schema_version": JSON_SCHEMA_VERSION,
+                "operation": "stack-show",
+                "session_id": session.get(),
+                "terminal_id": local_id(pane),
+            }),
+            format!("showing @{} in its stack", local_id(pane)),
+        ),
+        _ => return Err(internal_error("spatial operation argument mismatch")),
     };
     Ok(PlanKind::Local(Plan {
         session,

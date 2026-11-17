@@ -228,6 +228,15 @@ pub enum ArrangementNode {
         /// Right or bottom child.
         second: Box<Self>,
     },
+    /// Two or more entries in one slot, in strip order, showing `active`
+    /// (`features_ext.STACKED_PANES`). Written as a leaf for the shown
+    /// entry with the stack after it, so an older peer reads the shown entry.
+    Stack {
+        /// Index into `entries` of the shown one.
+        active: u16,
+        /// The entries, at least two.
+        entries: Vec<EntryRef>,
+    },
 }
 
 /// One group of an arrangement (a tab): a name and one split tree.
@@ -264,6 +273,9 @@ impl ArrangementGroup {
 pub struct ArrangementDoc {
     /// The groups, in display order.
     pub groups: Vec<ArrangementGroup>,
+    /// The writer knows stacks: a trailing flag after the groups. A server
+    /// rebuilds the stacks a writer without it could not see.
+    pub stacks: bool,
 }
 
 impl ArrangementDoc {

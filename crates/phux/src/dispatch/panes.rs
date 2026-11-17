@@ -164,6 +164,28 @@ pub(super) fn swap_pane(args: commands::SwapPaneArgs, socket: Option<PathBuf>) -
     commands::spatial::run_swap_pane(&first, &second, projection, json, socket)
 }
 
+pub(super) fn stack(args: commands::StackArgs, socket: Option<PathBuf>) -> ExitCode {
+    let commands::StackArgs {
+        pane,
+        into,
+        show,
+        out,
+        split,
+        projection,
+        json,
+    } = args;
+    commands::spatial::run_stack(
+        &pane,
+        into,
+        show,
+        out,
+        split.into(),
+        projection,
+        json,
+        socket,
+    )
+}
+
 pub(super) fn signal(args: commands::SignalArgs, socket: Option<PathBuf>) -> ExitCode {
     let commands::SignalArgs {
         target,

@@ -409,6 +409,24 @@ fn prune_node(
             EntryTarget::Member(key) if key == *resource => None,
             _ => Some(ArrangementNode::Leaf(entry)),
         },
+        ArrangementNode::Stack { active, entries } => {
+            let gone = |e: &phux_protocol::wire::frame::EntryRef| matches!(e.target, EntryTarget::Member(key) if key == *resource);
+            let before = entries
+                .iter()
+                .take(usize::from(active))
+                .filter(|e| gone(e))
+                .count();
+            let mut kept: Vec<_> = entries.into_iter().filter(|e| !gone(e)).collect();
+            match kept.len() {
+                0 => None,
+                1 => kept.pop().map(ArrangementNode::Leaf),
+                n => Some(ArrangementNode::Stack {
+                    active: u16::try_from(usize::from(active).saturating_sub(before).min(n - 1))
+                        .unwrap_or(0),
+                    entries: kept,
+                }),
+            }
+        }
         ArrangementNode::Split {
             dir,
             ratio,

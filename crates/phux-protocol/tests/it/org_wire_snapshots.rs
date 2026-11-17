@@ -97,6 +97,7 @@ fn document() -> ArrangementDoc {
                 })),
             },
         }],
+        stacks: false,
     }
 }
 fn holder() -> ActorRef {

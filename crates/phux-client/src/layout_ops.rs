@@ -56,6 +56,7 @@ impl From<MutationError> for LayoutOpsError {
             MutationError::DuplicatePane(id) => Self::DuplicatePane(id),
             MutationError::SamePane => Self::SamePane,
             MutationError::LastPane => Self::LastPane,
+            MutationError::NotStacked(id) => Self::NotStacked(id),
         }
     }
 }
@@ -135,6 +136,9 @@ pub enum LayoutOpsError {
     /// Closing the final pane would produce an unencodable empty workspace.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,
+    /// The pane isn't in a stack.
+    #[error("pane is not stacked: {0:?}")]
+    NotStacked(ResourceId),
     /// The server rejected a correlated request.
     #[error("server refused layout request: {0}")]
     Refused(String),

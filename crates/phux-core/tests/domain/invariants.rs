@@ -361,6 +361,7 @@ impl World {
                         owner: ArrangementOwner::Session(s),
                         expected,
                         groups,
+                        stacks: false,
                     },
                 )
             }

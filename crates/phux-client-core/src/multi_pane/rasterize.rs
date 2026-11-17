@@ -93,6 +93,13 @@ fn walk_layout_at(
         LayoutNode::Leaf(p) => {
             rects.insert(p.clone(), bounds);
         }
+        // Only the shown pane is tiled; the hidden ones take its size from
+        // whoever sizes them.
+        LayoutNode::Stack { active, panes } => {
+            if let Some(p) = panes.get(*active) {
+                rects.insert(p.clone(), bounds);
+            }
+        }
         LayoutNode::Split {
             dir,
             ratio,
@@ -456,7 +463,7 @@ pub(super) const MIN_LEAF_ROWS: u16 = 1;
 /// The smallest `(cols, rows)` giving every leaf of `node` its minimum.
 pub(super) fn min_dims(node: &LayoutNode) -> (u16, u16) {
     match node {
-        LayoutNode::Leaf(_) => (MIN_LEAF_COLS, MIN_LEAF_ROWS),
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } => (MIN_LEAF_COLS, MIN_LEAF_ROWS),
         LayoutNode::Split {
             dir, left, right, ..
         } => {

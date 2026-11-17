@@ -194,7 +194,7 @@ async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
                 phux_core::LayoutNode::Split { ratio, .. } => {
                     assert!(*ratio > 0.0 && *ratio < 1.0, "ratio {ratio}");
                 }
-                other @ phux_core::LayoutNode::Leaf(_) => {
+                other @ (phux_core::LayoutNode::Leaf(_) | phux_core::LayoutNode::Stack { .. }) => {
                     panic!("expected the split, got {other:?}")
                 }
             }

@@ -257,6 +257,7 @@ pub(super) fn translate(
                     owner,
                     expected: rev(expected),
                     groups,
+                    stacks: document.stacks,
                 }),
             };
             (ow::core_operation(&operation), op)

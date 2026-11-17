@@ -30,6 +30,7 @@ fn arrange(
                         [8; 16], resource,
                     )),
                 }],
+                stacks: false,
             },
             &phux_core::Actor::owner(),
         )

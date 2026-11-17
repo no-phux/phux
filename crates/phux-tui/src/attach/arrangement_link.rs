@@ -175,6 +175,7 @@ mod tests {
                         target: EntryTarget::Member(a),
                     }),
                 }],
+                stacks: false,
             },
         );
         let session = fixture.live_session(&work).unwrap();
@@ -249,6 +250,7 @@ mod tests {
                         target: EntryTarget::Member(pane),
                     }),
                 }],
+                stacks: false,
             },
         );
         let fixture = fixture.inject_conflicts(phux_client::org::MAX_CAS_ATTEMPTS);

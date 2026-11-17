@@ -28,7 +28,7 @@ A build from a phux checkout runs a separate server, with its own socket and sta
 
 ## Sessions, tabs, and panes
 
-A **pane** is usually one terminal: one program (usually your shell) and its screen. A pane can also show a document instead ([Resources](#resources)). A **tab** holds one or more panes, split side by side or stacked. A **session** is a named workspace that holds tabs, usually one per project.
+A **pane** is usually one terminal: one program (usually your shell) and its screen. A pane can also show a document instead ([Resources](#resources)). A **tab** holds one or more panes, split side by side or one above the other. One place in a tab can also hold a **stack**: several panes sharing it, one shown at a time, the others still running behind it (`phux stack`). A **session** is a named workspace that holds tabs, usually one per project.
 
 ```sh
 phux new api      # a session named "api"

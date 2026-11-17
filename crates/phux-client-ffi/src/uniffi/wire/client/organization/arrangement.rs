@@ -152,6 +152,14 @@ fn flatten(node: &LayoutNode, nodes: &mut Vec<ArrangementNodeDescriptor>) -> u32
         LayoutNode::Leaf(id) => nodes.push(ArrangementNodeDescriptor::Leaf {
             terminal_id: id::encode(id),
         }),
+        // The phone has no stack strip yet: it shows what the stack shows.
+        LayoutNode::Stack { .. } => {
+            for id in phux_client_core::layout::shown_leaves(node) {
+                nodes.push(ArrangementNodeDescriptor::Leaf {
+                    terminal_id: id::encode(&id),
+                });
+            }
+        }
         LayoutNode::Split {
             dir,
             ratio,
@@ -207,8 +215,8 @@ enum Retune {
 /// Set the ratio of the split `remaining` nodes into `node`'s preorder.
 fn retune(node: &mut LayoutNode, remaining: u32, ratio: f32) -> Retune {
     match node {
-        LayoutNode::Leaf(_) if remaining == 0 => Retune::NotASplit,
-        LayoutNode::Leaf(_) => Retune::Ahead(remaining - 1),
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } if remaining == 0 => Retune::NotASplit,
+        LayoutNode::Leaf(_) | LayoutNode::Stack { .. } => Retune::Ahead(remaining - 1),
         LayoutNode::Split { ratio: held, .. } if remaining == 0 => {
             *held = ratio;
             Retune::Done
@@ -267,6 +275,7 @@ fn mutation_error(error: MutationError) -> WireError {
         | MutationError::ForeignTarget(_) => "foreign_target",
         MutationError::DuplicatePane(_) => "duplicate_pane",
         MutationError::SamePane => "same_pane",
+        MutationError::NotStacked(_) => "not_stacked",
     })
 }
 

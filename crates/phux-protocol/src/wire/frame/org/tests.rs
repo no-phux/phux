@@ -25,6 +25,7 @@ fn split_doc() -> ArrangementDoc {
                 second: leaf(2),
             },
         }],
+        stacks: false,
     }
 }
 
@@ -73,4 +74,44 @@ fn bytes_a_newer_peer_appends_to_a_document_are_skipped() {
     let node = group + 4 + 16 + 1 + 4 + 3;
     let grown_node = grow(&bytes, node, Some(group), &[0xEE; 2]);
     assert_eq!(decode_arrangement_doc(&grown_node), Ok(doc));
+}
+
+#[test]
+fn a_stack_is_its_shown_leaf_with_the_stack_after_it() {
+    let entry = |byte| EntryRef {
+        entry: [byte; 16],
+        target: EntryTarget::Member(ResourceKey::new([byte; 16]).expect("non-zero key")),
+    };
+    let doc = |tree| ArrangementDoc {
+        groups: vec![ArrangementGroup::new([9; 16], None, tree)],
+        stacks: true,
+    };
+    let stacked = doc(ArrangementNode::Stack {
+        active: 1,
+        entries: vec![entry(1), entry(2)],
+    });
+    let bytes = encoded(&stacked);
+    assert_eq!(decode_arrangement_doc(&bytes), Ok(stacked));
+
+    // What an older peer reads: the leaf record grown by the stack, which
+    // it skips, so it sees the shown entry.
+    let shown = doc(ArrangementNode::Leaf(entry(2)));
+    let (group, node) = (2, 2 + 4 + 16 + 1);
+    let mut trailer = vec![0x01, 0x00, 0x01, 0x00, 0x02];
+    for byte in [1, 2] {
+        trailer.extend([byte; 16]);
+        trailer.push(0x00);
+        trailer.extend([byte; 16]);
+    }
+    assert_eq!(bytes, grow(&encoded(&shown), node, Some(group), &trailer));
+
+    // A stack whose shown entry isn't the leaf in front of it is refused.
+    // `active`'s low byte: before the count and two 33-byte entries, and
+    // the document's trailing flag.
+    let mut lying = bytes.clone();
+    lying[bytes.len() - 1 - 2 * 33 - 2 - 1] = 0;
+    assert_eq!(
+        decode_arrangement_doc(&lying),
+        Err(DecodeError::InvalidArrangement)
+    );
 }

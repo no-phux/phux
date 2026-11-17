@@ -267,6 +267,10 @@ pub enum Op {
         expected: Revision,
         /// The new document.
         groups: Vec<Group>,
+        /// The writer knows stacks. One that doesn't saw each stack as its
+        /// shown entry, so the current stacks are rebuilt around those.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stacks: bool,
     },
     /// Lock or unlock one group of an owner's arrangement. Last writer
     /// wins.

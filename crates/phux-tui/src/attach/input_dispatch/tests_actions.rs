@@ -501,10 +501,11 @@ async fn apply_effects_flips_sidebar_enabled_state() {
 }
 
 fn root_ratio(workspace: &ArrangementDoc) -> f32 {
-    match workspace.active_group().unwrap().tree.as_ref().unwrap() {
-        LayoutNode::Split { ratio, .. } => *ratio,
-        other @ LayoutNode::Leaf(_) => panic!("expected root Split, got {other:?}"),
-    }
+    let tree = workspace.active_group().unwrap().tree.as_ref().unwrap();
+    let LayoutNode::Split { ratio, .. } = tree else {
+        panic!("expected root Split, got {tree:?}")
+    };
+    *ratio
 }
 
 /// `resize-pane` moves the ratio by amount/axis-cells and broadcasts; missing

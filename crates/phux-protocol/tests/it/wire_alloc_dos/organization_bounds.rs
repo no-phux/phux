@@ -65,6 +65,7 @@ fn replace(groups: u32) -> Command {
                     tree: leaf(i),
                 })
                 .collect(),
+            stacks: false,
         },
     }
 }

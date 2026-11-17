@@ -1,5 +1,6 @@
 //! Existing-pane layout edits over the shared L3 workspace envelope:
-//! `insert-pane`, `move-pane`, `swap-pane` (ADR-0049, ADR-0056, ADR-0129).
+//! `insert-pane`, `move-pane`, `swap-pane` (ADR-0049, ADR-0056, ADR-0129),
+//! and stacks: `stack`, `unstack`, `stack-show`.
 //!
 //! Shared by the CLI verbs and the MCP tools, so both return the same
 //! document and refusal codes. These edits never spawn a Terminal, every
@@ -66,6 +67,10 @@ pub mod codes {
     pub const PROJECTION_INVALID: &str = "projection_invalid";
     /// The wrong number of `projection` keys for the edit.
     pub const PROJECTION_ARITY: &str = "projection_arity";
+    /// The pane isn't in a stack.
+    pub const NOT_STACKED: &str = "not_stacked";
+    /// The server can't keep stacks (`features_ext.STACKED_PANES`).
+    pub const STACKS_UNSUPPORTED: &str = "stacks_unsupported";
     /// A defect in this module.
     pub const INTERNAL_ERROR: &str = "internal_error";
     /// A transport failure after the edit began.
@@ -142,6 +147,40 @@ pub enum SpatialOp {
         /// Named projection keys (ADR-0129); at most one.
         projection: Vec<String>,
     },
+    /// Take `source` out of its slot and stack it onto `into`'s, shown.
+    Stack {
+        /// The pane to stack.
+        source: String,
+        /// The pane whose slot takes it.
+        into: String,
+        /// Named projection keys (ADR-0129); at most one.
+        projection: Vec<String>,
+    },
+    /// Split a stacked pane out beside its stack.
+    Unstack {
+        /// The stacked pane.
+        pane: String,
+        /// Divider direction.
+        direction: Direction,
+        /// Named projection keys (ADR-0129); at most one.
+        projection: Vec<String>,
+    },
+    /// Show a stacked pane in its stack.
+    Reveal {
+        /// The stacked pane.
+        pane: String,
+        /// Named projection keys (ADR-0129); at most one.
+        projection: Vec<String>,
+    },
+}
+
+impl SpatialOp {
+    const fn writes_stacks(&self) -> bool {
+        matches!(
+            self,
+            Self::Stack { .. } | Self::Unstack { .. } | Self::Reveal { .. }
+        )
+    }
 }
 
 /// A completed edit: the `--json` document and the one-line human summary.
@@ -244,6 +283,15 @@ pub async fn run(
     let mut conn = Connection::connect(socket)
         .await
         .map_err(SpatialError::Transport)?;
+    if operation.writes_stacks() && !stacks_supported(&conn) {
+        return Err(SpatialRefusal::new(
+            codes::STACKS_UNSUPPORTED,
+            "this server can't keep stacked panes",
+            "upgrade the server (`phux upgrade`), then try again",
+            2,
+        )
+        .into());
+    }
     let snapshot = read_snapshot(&mut conn, 0, notices)
         .await
         .map_err(SpatialError::Transport)?;
@@ -254,6 +302,17 @@ pub async fn run(
     };
     drop(conn);
     result
+}
+
+/// Whether the server keeps stacks: one without the bit would keep only each
+/// stack's shown pane.
+#[must_use]
+pub fn stacks_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features_ext
+            .contains(phux_protocol::caps::ServerFeatureExt::StackedPanes)
+    })
 }
 
 /// Apply a same-session plan through the shared `LayoutOps` CAS.

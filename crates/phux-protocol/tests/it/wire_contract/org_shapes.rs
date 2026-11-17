@@ -179,7 +179,10 @@ fn document() -> impl Strategy<Value = ArrangementDoc> {
             }),
         0..3,
     )
-    .prop_map(|groups| ArrangementDoc { groups })
+    .prop_map(|groups| ArrangementDoc {
+        groups,
+        stacks: false,
+    })
 }
 fn owner() -> impl Strategy<Value = ArrangementOwner> {
     prop_oneof![

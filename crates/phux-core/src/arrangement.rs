@@ -1,5 +1,6 @@
 //! [`Arrangement`]: a shared layout document over resources, and the binary
-//! split tree ([`LayoutNode`]) each of its groups holds.
+//! split tree ([`LayoutNode`]) each of its groups holds. A slot of the tree
+//! may hold a stack of entries, one shown.
 //!
 //! An arrangement is presentation, never membership: it names resources
 //! through [`EntryRef`] leaves and a session's arrangement may name only
@@ -16,248 +17,8 @@ use thiserror::Error;
 
 use crate::keys::{ArrangementKey, FreshKeys, ResourceKey, Revision, SessionKey, WorkspaceKey};
 
-/// A node in a binary split tree whose leaves are `L`.
-///
-/// A `Leaf` holds one `L`; a `Split` divides its rectangle between two
-/// children along [`SplitDir`] at `ratio` (the left or top child gets
-/// `ratio` of the parent's dimension along the split axis).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LayoutNode<L> {
-    /// A single view: the recursion base.
-    Leaf(L),
-    /// An interior node that splits its rectangle in two.
-    Split {
-        /// The axis the split is taken along.
-        dir: SplitDir,
-        /// Fraction of the parent dimension given to `left`, in the open
-        /// interval `(0.0, 1.0)` (ADR-0012). [`LayoutNode::split`] and
-        /// [`LayoutNode::validate_ratios`] enforce it; the type does not.
-        ratio: f32,
-        /// Left (for [`SplitDir::Horizontal`]) or top child.
-        left: Box<Self>,
-        /// Right (for [`SplitDir::Horizontal`]) or bottom child.
-        right: Box<Self>,
-    },
-}
-
-/// Axis along which a [`LayoutNode::Split`] divides its rectangle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SplitDir {
-    /// Side by side (a vertical bar between left and right).
-    Horizontal,
-    /// Stacked (a horizontal bar between top and bottom).
-    Vertical,
-}
-
-/// Errors from editing a [`LayoutNode`] tree.
-#[derive(Debug, Clone, Copy, PartialEq, Error)]
-pub enum LayoutError<L> {
-    /// The target leaf is not in the tree.
-    #[error("leaf not in layout: {0:?}")]
-    PaneNotInLayout(L),
-    /// A split ratio is NaN or outside the open interval `(0.0, 1.0)`.
-    #[error("invalid split ratio: {0}")]
-    InvalidRatio(f32),
-}
-
-/// Check that `ratio` lies in the open interval `(0.0, 1.0)`.
-///
-/// # Errors
-///
-/// [`LayoutError::InvalidRatio`] for NaN or an out-of-range value.
-pub fn validate_ratio<L: std::fmt::Debug>(ratio: f32) -> Result<(), LayoutError<L>> {
-    if ratio.is_nan() || ratio <= 0.0 || ratio >= 1.0 {
-        Err(LayoutError::InvalidRatio(ratio))
-    } else {
-        Ok(())
-    }
-}
-
-impl<L> LayoutNode<L> {
-    /// Borrow every leaf in left-to-right (depth-first) order.
-    #[must_use]
-    pub fn leaves(&self) -> Vec<&L> {
-        let mut out = Vec::new();
-        self.collect_leaves(&mut out);
-        out
-    }
-
-    fn collect_leaves<'a>(&'a self, out: &mut Vec<&'a L>) {
-        match self {
-            Self::Leaf(l) => out.push(l),
-            Self::Split { left, right, .. } => {
-                left.collect_leaves(out);
-                right.collect_leaves(out);
-            }
-        }
-    }
-
-    /// The same tree shape with every leaf passed through `f`.
-    #[must_use]
-    pub fn map<M>(&self, f: &mut impl FnMut(&L) -> M) -> LayoutNode<M> {
-        match self {
-            Self::Leaf(l) => LayoutNode::Leaf(f(l)),
-            Self::Split {
-                dir,
-                ratio,
-                left,
-                right,
-            } => LayoutNode::Split {
-                dir: *dir,
-                ratio: *ratio,
-                left: Box::new(left.map(f)),
-                right: Box::new(right.map(f)),
-            },
-        }
-    }
-
-    /// Like [`Self::map`], stopping at the first leaf `f` rejects.
-    pub fn try_map<M, E>(
-        &self,
-        f: &mut impl FnMut(&L) -> Result<M, E>,
-    ) -> Result<LayoutNode<M>, E> {
-        Ok(match self {
-            Self::Leaf(l) => LayoutNode::Leaf(f(l)?),
-            Self::Split {
-                dir,
-                ratio,
-                left,
-                right,
-            } => LayoutNode::Split {
-                dir: *dir,
-                ratio: *ratio,
-                left: Box::new(left.try_map(f)?),
-                right: Box::new(right.try_map(f)?),
-            },
-        })
-    }
-
-    /// Check every split ratio in the tree.
-    ///
-    /// # Errors
-    ///
-    /// [`LayoutError::InvalidRatio`] for the first bad ratio.
-    pub fn validate_ratios(&self) -> Result<(), LayoutError<L>>
-    where
-        L: std::fmt::Debug,
-    {
-        match self {
-            Self::Leaf(_) => Ok(()),
-            Self::Split {
-                ratio, left, right, ..
-            } => {
-                validate_ratio(*ratio)?;
-                left.validate_ratios()?;
-                right.validate_ratios()
-            }
-        }
-    }
-}
-
-impl<L: PartialEq> LayoutNode<L> {
-    /// Whether this subtree holds a leaf equal to `target`.
-    #[must_use]
-    pub fn contains(&self, target: &L) -> bool {
-        match self {
-            Self::Leaf(l) => l == target,
-            Self::Split { left, right, .. } => left.contains(target) || right.contains(target),
-        }
-    }
-}
-
-impl<L: PartialEq + Clone + std::fmt::Debug> LayoutNode<L> {
-    /// Split the leaf for `target` into a [`LayoutNode::Split`] whose left
-    /// keeps `target` and whose right is a new leaf for `new_leaf`.
-    ///
-    /// # Errors
-    ///
-    /// * [`LayoutError::InvalidRatio`] if `ratio` is NaN or outside `(0, 1)`.
-    /// * [`LayoutError::PaneNotInLayout`] if `target` is not present.
-    ///
-    /// The tree is unchanged on error.
-    pub fn split(
-        &mut self,
-        target: &L,
-        new_leaf: L,
-        dir: SplitDir,
-        ratio: f32,
-    ) -> Result<(), LayoutError<L>> {
-        validate_ratio(ratio)?;
-        if !self.contains(target) {
-            return Err(LayoutError::PaneNotInLayout(target.clone()));
-        }
-        self.split_at(target, new_leaf, dir, ratio);
-        Ok(())
-    }
-
-    fn split_at(&mut self, target: &L, new_leaf: L, dir: SplitDir, ratio: f32) {
-        match self {
-            Self::Leaf(l) if l == target => {
-                let kept = l.clone();
-                *self = Self::Split {
-                    dir,
-                    ratio,
-                    left: Box::new(Self::Leaf(kept)),
-                    right: Box::new(Self::Leaf(new_leaf)),
-                };
-            }
-            Self::Leaf(_) => {}
-            Self::Split { left, right, .. } => {
-                if left.contains(target) {
-                    left.split_at(target, new_leaf, dir, ratio);
-                } else {
-                    right.split_at(target, new_leaf, dir, ratio);
-                }
-            }
-        }
-    }
-}
-
-/// Remove the leaf for `target` from `tree`, collapsing its parent split so
-/// the sibling takes the parent's place. Removing the only leaf leaves
-/// `None`.
-///
-/// # Errors
-///
-/// [`LayoutError::PaneNotInLayout`] if `target` is not present; `tree` is
-/// unchanged.
-pub fn remove<L: PartialEq + Clone + std::fmt::Debug>(
-    tree: &mut Option<LayoutNode<L>>,
-    target: &L,
-) -> Result<(), LayoutError<L>> {
-    let found = tree.as_ref().is_some_and(|t| t.contains(target));
-    if !found {
-        return Err(LayoutError::PaneNotInLayout(target.clone()));
-    }
-    *tree = tree.take().and_then(|t| collapse(t, &|l| l == target));
-    Ok(())
-}
-
-/// Remove every leaf matching `drop`, collapsing splits as [`remove`] does.
-/// Returns `None` when no leaf survives.
-#[must_use]
-pub fn collapse<L>(node: LayoutNode<L>, drop: &impl Fn(&L) -> bool) -> Option<LayoutNode<L>> {
-    match node {
-        LayoutNode::Leaf(l) => (!drop(&l)).then_some(LayoutNode::Leaf(l)),
-        LayoutNode::Split {
-            dir,
-            ratio,
-            left,
-            right,
-        } => match (collapse(*left, drop), collapse(*right, drop)) {
-            (Some(l), Some(r)) => Some(LayoutNode::Split {
-                dir,
-                ratio,
-                left: Box::new(l),
-                right: Box::new(r),
-            }),
-            (Some(only), None) | (None, Some(only)) => Some(only),
-            (None, None) => None,
-        },
-    }
-}
+mod tree;
+pub use tree::*;
 
 /// A leaf of a persisted arrangement: a stable entry id pointing at what the
 /// entry shows. Entry ids are random 16 bytes minted by whoever creates the
@@ -391,6 +152,9 @@ pub enum ArrangementError {
     /// A split ratio is NaN or outside `(0.0, 1.0)`.
     #[error("invalid split ratio: {0}")]
     InvalidRatio(f32),
+    /// A stack has fewer than two entries or shows one past its end.
+    #[error("invalid stack")]
+    InvalidStack,
 }
 
 impl Arrangement {
@@ -506,6 +270,7 @@ pub fn validate_groups<'a>(
         }
         group.tree.validate_ratios().map_err(|e| match e {
             LayoutError::InvalidRatio(r) => ArrangementError::InvalidRatio(r),
+            LayoutError::InvalidStack => ArrangementError::InvalidStack,
             LayoutError::PaneNotInLayout(_) => ArrangementError::InvalidRatio(f32::NAN),
         })?;
         for leaf in group.tree.leaves() {

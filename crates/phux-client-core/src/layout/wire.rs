@@ -41,6 +41,8 @@ struct Unplaced {
     group: [u8; 16],
     /// The entry.
     entry: EntryRef,
+    /// A placed entry of the stack it sat in, to rejoin.
+    stack: Option<[u8; 16]>,
 }
 
 /// A whole group the client document could not show: none of its entries has
@@ -111,9 +113,10 @@ pub fn from_protocol(doc: &WireDoc, map: &HandleMap) -> (ArrangementDoc, EntryBi
             Some(tree) => {
                 binding
                     .unplaced
-                    .extend(unplaced.into_iter().map(|entry| Unplaced {
+                    .extend(unplaced.into_iter().map(|(entry, stack)| Unplaced {
                         group: group.id,
                         entry,
+                        stack,
                     }));
                 let focus = leaves(&tree).into_iter().next();
                 let name = group
@@ -161,7 +164,10 @@ pub fn to_protocol(
         let mut node = node_to_wire(tree, map, binding, &mut used_entries)?;
         for unplaced in binding.unplaced.iter().filter(|u| u.group == group.id) {
             let entry = unique_entry(unplaced.entry.clone(), &mut used_entries);
-            node = append_leaf(node, entry);
+            node = match unplaced.stack {
+                Some(anchor) => restack(node, anchor, entry),
+                None => append_leaf(node, entry),
+            };
         }
         groups.push(WireGroup {
             id: group.id,
@@ -197,38 +203,49 @@ pub fn to_protocol(
         let at = hidden.index.min(groups.len());
         groups.insert(at, hidden.group.clone());
     }
-    Ok(WireDoc { groups })
+    Ok(WireDoc {
+        groups,
+        stacks: true,
+    })
 }
 
 fn node_from_wire(
     node: &WireNode,
     map: &HandleMap,
     entries: &mut HashMap<ResourceId, [u8; 16]>,
-    unplaced: &mut Vec<EntryRef>,
+    unplaced: &mut Vec<(EntryRef, Option<[u8; 16]>)>,
 ) -> Option<LayoutNode> {
     match node {
         WireNode::Leaf(entry) => {
-            let handle = match &entry.target {
-                EntryTarget::Member(key) => map.handle(key).cloned(),
-                EntryTarget::Satellite { host, id } => Some(ResourceId::Satellite {
-                    host: host.clone(),
-                    id: *id,
-                }),
-                // A target kind this build does not know cannot be shown;
-                // keep it for the write-back.
-                _ => None,
-            };
-            match handle {
-                Some(handle) if !entries.contains_key(&handle) => {
-                    entries.insert(handle.clone(), entry.entry);
-                    Some(LayoutNode::Leaf(handle))
-                }
-                // A second entry for one handle cannot be shown twice.
-                _ => {
-                    unplaced.push(entry.clone());
-                    None
+            let handle = handle_from_wire(entry, map, entries);
+            if handle.is_none() {
+                unplaced.push((entry.clone(), None));
+            }
+            handle.map(LayoutNode::Leaf)
+        }
+        WireNode::Stack {
+            active,
+            entries: stacked,
+        } => {
+            let mut panes = Vec::new();
+            let mut shown = 0;
+            let mut missing = Vec::new();
+            for (at, entry) in stacked.iter().enumerate() {
+                match handle_from_wire(entry, map, entries) {
+                    Some(handle) => {
+                        if at <= usize::from(*active) {
+                            shown = panes.len();
+                        }
+                        panes.push(handle);
+                    }
+                    None => missing.push(entry.clone()),
                 }
             }
+            // What can't be shown rejoins the stack on write-back, beside a
+            // placed entry of it, or below the group when none was placed.
+            let anchor = panes.first().and_then(|p| entries.get(p)).copied();
+            unplaced.extend(missing.into_iter().map(|entry| (entry, anchor)));
+            super::stacked(shown, panes)
         }
         WireNode::Split {
             dir,
@@ -252,6 +269,32 @@ fn node_from_wire(
     }
 }
 
+/// The live handle a stored entry shows, recorded in `entries`; `None` for
+/// one with no live handle, of a kind this build doesn't know, or naming a
+/// handle an earlier entry already shows.
+fn handle_from_wire(
+    entry: &EntryRef,
+    map: &HandleMap,
+    entries: &mut HashMap<ResourceId, [u8; 16]>,
+) -> Option<ResourceId> {
+    let handle = match &entry.target {
+        EntryTarget::Member(key) => map.handle(key).cloned(),
+        EntryTarget::Satellite { host, id } => Some(ResourceId::Satellite {
+            host: host.clone(),
+            id: *id,
+        }),
+        // A target kind this build does not know cannot be shown; keep it
+        // for the write-back.
+        _ => None,
+    }?;
+    // A second entry for one handle cannot be shown twice.
+    if entries.contains_key(&handle) {
+        return None;
+    }
+    entries.insert(handle.clone(), entry.entry);
+    Some(handle)
+}
+
 fn node_to_wire(
     node: &LayoutNode,
     map: &HandleMap,
@@ -259,23 +302,14 @@ fn node_to_wire(
     used: &mut HashSet<[u8; 16]>,
 ) -> Result<WireNode, WireError> {
     match node {
-        LayoutNode::Leaf(handle) => {
-            let target = match handle {
-                ResourceId::Local { .. } => EntryTarget::Member(
-                    map.key(handle)
-                        .ok_or_else(|| WireError::UnknownHandle(handle.clone()))?,
-                ),
-                ResourceId::Satellite { host, id } => EntryTarget::Satellite {
-                    host: host.clone(),
-                    id: *id,
-                },
-            };
-            let entry = EntryRef {
-                entry: binding.entry(handle).unwrap_or_else(identity::fresh_id),
-                target,
-            };
-            Ok(WireNode::Leaf(unique_entry(entry, used)))
-        }
+        LayoutNode::Leaf(handle) => Ok(WireNode::Leaf(entry_to_wire(handle, map, binding, used)?)),
+        LayoutNode::Stack { active, panes } => Ok(WireNode::Stack {
+            active: u16::try_from(*active).unwrap_or(0),
+            entries: panes
+                .iter()
+                .map(|handle| entry_to_wire(handle, map, binding, used))
+                .collect::<Result<_, _>>()?,
+        }),
         LayoutNode::Split {
             dir,
             ratio,
@@ -287,6 +321,59 @@ fn node_to_wire(
             first: Box::new(node_to_wire(left, map, binding, used)?),
             second: Box::new(node_to_wire(right, map, binding, used)?),
         }),
+    }
+}
+
+fn entry_to_wire(
+    handle: &ResourceId,
+    map: &HandleMap,
+    binding: &EntryBinding,
+    used: &mut HashSet<[u8; 16]>,
+) -> Result<EntryRef, WireError> {
+    let target = match handle {
+        ResourceId::Local { .. } => EntryTarget::Member(
+            map.key(handle)
+                .ok_or_else(|| WireError::UnknownHandle(handle.clone()))?,
+        ),
+        ResourceId::Satellite { host, id } => EntryTarget::Satellite {
+            host: host.clone(),
+            id: *id,
+        },
+    };
+    let entry = EntryRef {
+        entry: binding.entry(handle).unwrap_or_else(identity::fresh_id),
+        target,
+    };
+    Ok(unique_entry(entry, used))
+}
+
+/// `tree` with `entry` added to the slot holding `anchor`, behind what it
+/// shows; split below the tree when `anchor` is gone.
+fn restack(tree: WireNode, anchor: [u8; 16], entry: EntryRef) -> WireNode {
+    fn go(node: &mut WireNode, anchor: [u8; 16], entry: &EntryRef) -> bool {
+        match node {
+            WireNode::Leaf(leaf) if leaf.entry == anchor => {
+                *node = WireNode::Stack {
+                    active: 0,
+                    entries: vec![leaf.clone(), entry.clone()],
+                };
+                true
+            }
+            WireNode::Stack { entries, .. } if entries.iter().any(|e| e.entry == anchor) => {
+                entries.push(entry.clone());
+                true
+            }
+            WireNode::Split { first, second, .. } => {
+                go(first, anchor, entry) || go(second, anchor, entry)
+            }
+            _ => false,
+        }
+    }
+    let mut tree = tree;
+    if go(&mut tree, anchor, &entry) {
+        tree
+    } else {
+        append_leaf(tree, entry)
     }
 }
 
@@ -341,6 +428,7 @@ pub fn wire_leaves(node: &WireNode) -> Vec<EntryRef> {
 fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
     match node {
         WireNode::Leaf(entry) => out.push(entry.clone()),
+        WireNode::Stack { entries, .. } => out.extend(entries.iter().cloned()),
         WireNode::Split { first, second, .. } => {
             collect_wire_leaves(first, out);
             collect_wire_leaves(second, out);
@@ -350,243 +438,4 @@ fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-mod tests {
-    use super::*;
-    use crate::layout::split_at;
-    use phux_protocol::ids::{ResourceKey, SatelliteHost};
-
-    /// The keys of every stored member entry that has no live handle.
-    fn unplaced_keys(binding: &EntryBinding) -> Vec<ResourceKey> {
-        let mut keys: Vec<ResourceKey> = binding
-            .unplaced
-            .iter()
-            .filter_map(|unplaced| member_key(&unplaced.entry))
-            .collect();
-        for hidden in &binding.hidden {
-            keys.extend(
-                wire_leaves(&hidden.group.tree)
-                    .iter()
-                    .filter_map(member_key),
-            );
-        }
-        keys
-    }
-
-    const fn member_key(entry: &EntryRef) -> Option<ResourceKey> {
-        match &entry.target {
-            EntryTarget::Member(key) => Some(*key),
-            _ => None,
-        }
-    }
-
-    /// The member keys of group `group_index` of a stored document, in
-    /// depth-first leaf order: what `name:N.M` addresses.
-    fn group_member_keys(doc: &WireDoc, group_index: usize) -> Option<Vec<EntryTarget>> {
-        let group = doc.groups.get(group_index)?;
-        Some(
-            wire_leaves(&group.tree)
-                .into_iter()
-                .map(|entry| entry.target)
-                .collect(),
-        )
-    }
-
-    fn key(n: u8) -> ResourceKey {
-        ResourceKey::new([n; 16]).unwrap()
-    }
-
-    fn entry(n: u8, target: EntryTarget) -> EntryRef {
-        EntryRef {
-            entry: [0xe0 | n; 16],
-            target,
-        }
-    }
-
-    fn member(n: u8) -> WireNode {
-        WireNode::Leaf(entry(n, EntryTarget::Member(key(n))))
-    }
-
-    fn split(first: WireNode, second: WireNode) -> WireNode {
-        WireNode::Split {
-            dir: SplitDirection::Horizontal,
-            ratio: 0.4,
-            first: Box::new(first),
-            second: Box::new(second),
-        }
-    }
-
-    fn map(pairs: &[(u8, u32)]) -> HandleMap {
-        HandleMap::from_pairs(
-            pairs
-                .iter()
-                .map(|(k, h)| (key(*k), Some(ResourceId::local(*h)))),
-        )
-    }
-
-    fn satellite() -> WireNode {
-        WireNode::Leaf(entry(
-            9,
-            EntryTarget::Satellite {
-                host: SatelliteHost::new("edge"),
-                id: 4,
-            },
-        ))
-    }
-
-    fn doc() -> WireDoc {
-        WireDoc {
-            groups: vec![
-                WireGroup {
-                    locked: false,
-                    id: [1; 16],
-                    name: Some("editor".to_owned()),
-                    tree: split(member(1), split(member(2), satellite())),
-                },
-                WireGroup {
-                    locked: false,
-                    id: [2; 16],
-                    name: None,
-                    tree: member(3),
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn a_resolved_document_round_trips_byte_for_byte() {
-        let stored = doc();
-        let handles = map(&[(1, 11), (2, 12), (3, 13)]);
-        let (client, binding) = from_protocol(&stored, &handles);
-        assert_eq!(client.groups.len(), 2);
-        assert_eq!(client.groups[0].id, [1; 16]);
-        assert_eq!(client.groups[1].name, "2", "an unnamed group is numbered");
-        assert_eq!(
-            leaves(client.groups[0].state.tree.as_ref().unwrap()),
-            vec![
-                ResourceId::local(11),
-                ResourceId::local(12),
-                ResourceId::satellite("edge", 4)
-            ]
-        );
-        let mut written = to_protocol(&client, &handles, &binding).unwrap();
-        // The client named group 2 "2"; everything else is identical.
-        written.groups[1].name = None;
-        assert_eq!(written, stored);
-    }
-
-    #[test]
-    fn unresolved_members_are_kept_and_restored_on_write() {
-        let stored = doc();
-        // Key 2 has no live handle; group 2's only member neither.
-        let handles = map(&[(1, 11)]);
-        let (client, binding) = from_protocol(&stored, &handles);
-        assert_eq!(
-            client.groups.len(),
-            1,
-            "a group with nothing to show is hidden"
-        );
-        assert_eq!(
-            leaves(client.groups[0].state.tree.as_ref().unwrap()),
-            vec![ResourceId::local(11), ResourceId::satellite("edge", 4)]
-        );
-        assert_eq!(binding.unplaced_count(), 2);
-        assert_eq!(unplaced_keys(&binding), vec![key(2), key(3)]);
-
-        let written = to_protocol(&client, &handles, &binding).unwrap();
-        assert_eq!(written.groups.len(), 2);
-        assert_eq!(written.groups[1], stored.groups[1], "hidden group returns");
-        let targets: Vec<EntryTarget> = wire_leaves(&written.groups[0].tree)
-            .into_iter()
-            .map(|e| e.target)
-            .collect();
-        assert!(targets.contains(&EntryTarget::Member(key(2))));
-        assert!(targets.contains(&EntryTarget::Member(key(1))));
-    }
-
-    #[test]
-    fn edits_keep_entry_ids_and_mint_fresh_ones_for_new_leaves() {
-        let stored = doc();
-        let mut handles = map(&[(1, 11), (2, 12), (3, 13)]);
-        let (mut client, binding) = from_protocol(&stored, &handles);
-        handles.insert(key(4), ResourceId::local(14));
-        let tree = client.groups[1].state.tree.take().unwrap();
-        client.groups[1].state.tree = Some(
-            split_at(
-                &tree,
-                &ResourceId::local(13),
-                &ResourceId::local(14),
-                SplitDir::Vertical,
-                0.5,
-            )
-            .unwrap(),
-        );
-        let written = to_protocol(&client, &handles, &binding).unwrap();
-        let entries = wire_leaves(&written.groups[1].tree);
-        assert_eq!(entries[0], entry(3, EntryTarget::Member(key(3))));
-        assert_eq!(entries[1].target, EntryTarget::Member(key(4)));
-        assert_ne!(entries[1].entry, [0; 16]);
-        let all: Vec<[u8; 16]> = written
-            .groups
-            .iter()
-            .flat_map(|g| wire_leaves(&g.tree))
-            .map(|e| e.entry)
-            .collect();
-        let unique: HashSet<_> = all.iter().collect();
-        assert_eq!(unique.len(), all.len(), "entry ids stay unique");
-    }
-
-    #[test]
-    fn an_unknown_local_handle_is_refused_and_ratios_are_clamped() {
-        let client = ArrangementDoc::single(ResourceId::local(99));
-        assert_eq!(
-            to_protocol(&client, &HandleMap::new(), &EntryBinding::default()),
-            Err(WireError::UnknownHandle(ResourceId::local(99)))
-        );
-        let handles = map(&[(1, 1), (2, 2)]);
-        let mut client = ArrangementDoc::single(ResourceId::local(1));
-        client.groups[0].state.tree = Some(LayoutNode::Split {
-            dir: SplitDir::Horizontal,
-            ratio: 1.0,
-            left: Box::new(LayoutNode::Leaf(ResourceId::local(1))),
-            right: Box::new(LayoutNode::Leaf(ResourceId::local(2))),
-        });
-        let written = to_protocol(&client, &handles, &EntryBinding::default()).unwrap();
-        let WireNode::Split { ratio, .. } = written.groups[0].tree else {
-            panic!("split")
-        };
-        assert!(ratio > 0.0 && ratio < 1.0);
-    }
-
-    #[test]
-    fn removing_a_group_with_unplaced_entries_keeps_them_under_its_id() {
-        let stored = doc();
-        let handles = map(&[(1, 11), (3, 13)]);
-        let (mut client, binding) = from_protocol(&stored, &handles);
-        client.groups.remove(0);
-        let written = to_protocol(&client, &handles, &binding).unwrap();
-        let orphan = written
-            .groups
-            .iter()
-            .find(|g| g.id == [1; 16])
-            .expect("orphaned entries keep their group id");
-        assert_eq!(
-            wire_leaves(&orphan.tree)[0].target,
-            EntryTarget::Member(key(2))
-        );
-    }
-
-    #[test]
-    fn handle_map_pairs_both_ways_and_replaces_stale_pairs() {
-        let mut handles = map(&[(1, 11)]);
-        assert_eq!(handles.key(&ResourceId::local(11)), Some(key(1)));
-        handles.insert(key(1), ResourceId::local(21));
-        assert_eq!(handles.key(&ResourceId::local(11)), None);
-        assert_eq!(handles.handle(&key(1)), Some(&ResourceId::local(21)));
-        handles.remove_key(&key(1));
-        assert!(handles.is_empty());
-        assert_eq!(
-            group_member_keys(&doc(), 0).unwrap()[1],
-            EntryTarget::Member(key(2))
-        );
-    }
-}
+mod tests;
