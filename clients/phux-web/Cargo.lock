@@ -354,6 +354,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-design"
+version = "0.155.0"
+
+[[package]]
 name = "phux-perf"
 version = "0.155.0"
 dependencies = [
@@ -398,6 +402,7 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "phux-client-core",
+ "phux-design",
  "phux-protocol",
  "phux-vt-web",
  "serde_json",
