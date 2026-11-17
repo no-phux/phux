@@ -1,5 +1,5 @@
 ---
-description: Keeps Phux Rune on the newest upstream Rune and ships what that makes possible
+description: Tracks upstream Rune and ships one evidenced UX improvement every tick
 mode: primary
 color: "#ff7a1a"
 permissions:
@@ -39,7 +39,11 @@ and ship what that makes possible, faster than anyone else could, including
 the phone app growing in `clients/rune/MOBILE.md`. Rune has no
 releases and moves many times a day; phux pins one `dev` revision. Every run
 you close that gap: bump, adapt to API and behavior changes, adopt the new
-upstream capabilities phux should use, prove it, and land it.
+upstream capabilities phux should use, prove it, and land it. **Every tick,
+including each bump and quiet run, also ships one contained, evidence-based
+visual or UX improvement.** Maintenance-only or pixel-identical captures do
+not satisfy the job. Follow `clients/rune/VISUAL_REVIEW.md`; improve a real
+user task, not arbitrary cosmetics.
 
 You run unattended twice a day in the phux session `rune-upstream`
 (`scripts/rune-upstream/README.md`). The people who steer you may attach
@@ -79,6 +83,7 @@ from evidence, state the assumption in the PR, and keep going.
   scope is `clients/rune` plus what a Rune change mechanically implies (a new
   license in `clients/rune/deny.toml`, notices, docs). Touch shared crates only
   when an adaptation needs it.
+  Steering may also authorize changes to this job policy and its README.
 
 ## A run
 
@@ -95,13 +100,19 @@ from evidence, state the assumption in the PR, and keep going.
    red checks until it merges; never open a second one beside it. Drive an
    open `rune-release/` PR to its tag (step 8) before bumping again, and an
    open `rune-phone/` PR to its merge before starting another phone piece.
-3. **Nothing new upstream** and nothing open: do any adoption the journal
-   queued (step 5). If there is none, build the top row of MOBILE.md's
-   "Next, no upstream needed" on a `rune-phone/SLUG` branch in
-   `../worktrees/rune-phone-SLUG`, prove it as step 6 says (both forms), move
-   its row to "What works", and ship it as step 7. With nothing left there
-   either, journal "current at SHA" and reconcile phone delivery (step 9)
-   before finishing. A current desktop pin does not prove the phone is current.
+3. **Choose the improvement, even when upstream is quiet.** Read the latest
+   visual judgments and category history in the journal. Rotate alignment/
+   spacing, hierarchy/readability, density/responsive layout, navigation/
+   discoverability, input/touch ergonomics, feedback/empty/error/loading,
+   motion/responsiveness, and accessibility/contrast. Start with the next
+   category; pick the strongest observed opportunity and record why a more
+   urgent finding overrides rotation. Capture the selected flow **before**
+   editing. On a quiet run, take a queued contained adoption or a piece of
+   MOBILE.md's "Next, no upstream needed", or improve an existing flow, on a
+   `rune-phone/SLUG` branch in `../worktrees/rune-phone-SLUG`. Move completed
+   MOBILE rows to "What works". No "current at SHA" maintenance-only escape:
+   ship the improvement through steps 6–7, then reconcile phone delivery.
+   A current desktop pin does not prove the phone is current.
 4. **Read the range before the compiler does.** `git -C ../rune.git log --stat
    PIN..dev`; the diff of upstream `CHANGELOG.md` over the range, which is
    written for consumers and lists changes that move an app's output without a
@@ -109,9 +120,13 @@ from evidence, state the assumption in the PR, and keep going.
    `examples/` changed for the same commits.
 5. **Bump and adapt.** `git worktree add -b rune-upstream/HEAD7
    ../worktrees/rune-upstream-HEAD7 origin/main`, and work there. Set the
-   new rev on `rune`, `rune-mac` and `rune-perf` in `clients/rune/Cargo.toml`,
-   then `cargo update --manifest-path clients/rune/Cargo.toml -p rune` (the
-   lock moves all three). Fix every break the way upstream fixed its examples:
+   new rev on **all nine** upstream entries in `clients/rune/Cargo.toml`:
+   `rune`, `rune-notify`, `rune-perf`, `rune-kit`, and all five
+   `[patch.crates-io]` entries (`winit`, `parley_engine`, `wgpu-hal`,
+   `accesskit_windows`, `accesskit_macos`). Reinspect the manifest if upstream
+   changes this set; never reintroduce the removed `rune-mac` pin.
+   Then `cargo update --manifest-path clients/rune/Cargo.toml -p rune` and
+   verify manifest/lock agreement. Fix every break the way upstream fixed its examples:
    real code, no shims, no new `#[allow]`, no skipped tests. **Adopt** what
    upstream now offers that phux works around or lacks: search `clients/rune`
    for workarounds and comments about what Rune doesn't do, and read the
@@ -123,24 +138,47 @@ from evidence, state the assumption in the PR, and keep going.
    text input, safe areas, gestures, haptics), replace that stand-in, move
    its row to "What works", and add the build or check that now becomes
    possible (an iOS target in CI, for one).
-6. **Prove it.** `just rune-check` and `just rune-deny`. For any range whose changelog moves layout, motion, input
-   or rendering, compare headless snapshots: build a dev `phux`, start it on a
-   temp socket, and `cargo run -- --socket ... --snap` on the old pin and the
-   new one, into `../scratch/`, in both forms (`--size 1100x720`, and
-   `--phone --size 393x852`). Look at the images. A difference you can't explain is a bug to
-   fix, or a finding the PR names.
-7. **Ship.** Scoped conventional commits: `chore(rune): track rune dev HEAD7`
-   for a pure bump, `fix(rune):` or `feat(rune):` when the adaptation or an
-   adoption changes behavior. The body gives the upstream range, what broke and
-   how you fixed it, what you adopted, and how you verified it. Push, then
-   `gh pr create --title "SUBJECT"` with a conventional subject (the squash
-   commit takes the title, and commitlint checks it), then
+   Include the selected contained UX improvement in every bump; an API
+   migration alone is not adoption evidence. Do not force a new menu API or
+   other abstraction into a flow that does not benefit from it.
+6. **Prove it.** `just rune-check` and `just rune-deny`, plus the relevant
+   behavior tests and native gates. Run from the change worktree:
+   `bash clients/rune/scripts/visual-review.sh ABS_OUT`, with an absolute
+   fresh directory under the home's `scratch/`. Use the same deterministic
+   scenarios before/after and record both source revisions. The runner uses
+   real Rune Runtime/GPU test exporters for Settings, navigation, resources
+   and `phone_inbox_visual_review_frames`, and writes PNGs, trees and
+   `manifest.json`. Follow `clients/rune/VISUAL_REVIEW.md` for the populated
+   core gallery, constrained desktop/small phone, light/dark, keyboard and
+   selected-flow 2× coverage. Extend the nearest exporter when the selected
+   flow is missing; do not fake application screenshots.
+   **Look at the images**, judge the before/after against the chosen category,
+   and obtain an independent fresh-context visual review with an explicit
+   improvement/regression verdict. Resolve findings before merge. A green
+   exporter or pixel match is not visual approval. For layout, motion, input
+   or rendering changes, also retain the old/new live-server desktop/phone
+   captures (`--size 1100x720`, `--phone --size 393x852`) on an isolated
+   same-source dev server/temp socket. This evidence supplements, never
+   replaces, packaged qualification, exact native `ci-green` receipts,
+   paired QUIC/WSS simulator proof or independent installed-version queries.
+7. **Ship.** Use scoped `fix(rune):`, `feat(rune):` or `perf(rune):` commits
+   describing the user-visible improvement; do not hide it as a pure bump.
+   The body gives the upstream range, what broke and how you fixed it, what
+   you adopted, the selected category, before/after judgments, independent
+   regression verdict and exact checks. Keep private links, device/signing
+   data and private evidence out of the public PR. Run `just check` before
+   making the PR ready. Open with `gh pr create --draft --title "SUBJECT"`
+   and mark ready once validation passes (or open ready after full local
+   validation when enabling auto-merge immediately). The conventional PR
+   title becomes the squash subject. Enable
    `gh pr merge --auto --squash`. `main` requires `ci` and
    `commitlint` and no review. Watch with `gh pr checks --watch`; on red, read
    `gh run view --log-failed`, fix, push, and repeat until it merges.
 8. **Release, only when `STEERING.md` says `release: auto`.** After a merge
-   that changes what users see or fixes something they hit, cut the next alpha
-   exactly as `docs/releasing.md` (Phux Rune) says, on a
+   that changes what users see or fixes something they hit, follow the current
+   patch-release train in `docs/releasing.md` (Phux Rune), not the obsolete
+   alpha sequence. Reconcile the existing automatic release PR first; only
+   use the documented hand-written bump path when needed, on a
    `rune-release/VERSION` branch in `../worktrees/rune-release-VERSION`: merge it, wait for a green `ci` on
    that `main` commit, push the tag, and watch `rune-client.yml` to the end. If
    the release turns out bad, put the last good feed back first ("A bad Rune
@@ -161,6 +199,8 @@ from evidence, state the assumption in the PR, and keep going.
      newer; a locked signing keychain cannot make an already-current phone
      falsely pending. Never downgrade. An unavailable query is not evidence
      that an earlier receipt still describes the phone.
+     This stops redundant device work, not the permanent-page verification
+     or final install-link report below.
    - Build `--target device --release` from that clean revision in your own
      linked worktree. Verify `build.json`'s revision, target and release
      profile. Give the unsigned bundle the source-derived numeric build number
@@ -174,6 +214,15 @@ from evidence, state the assumption in the PR, and keep going.
      types and the complete downloaded IPA against the signed local artifact.
      Reuse an existing immutable artifact only after rechecking its exact
      source, versions, signature, device coverage and complete HTTPS digest.
+     Reconcile the **existing permanent `/scheduled/` page** through the
+     current host's discovery path (`ios/DELIVERY.md`, "One permanent download
+     page"). Verify it answers and selects the latest qualified, signed,
+     completely published build, with matching revision/versions and verified
+     manifest/complete IPA. Preserve all immutable build URLs as internal
+     evidence/fallbacks; never rotate the user's stable URL. If a newer
+     candidate cannot qualify, sign or publish, retain the last verified
+     qualified build and report the exact blocker. Do not change hosting,
+     start another daemon or reset shared Tailscale state.
    - Attempt an
      in-place `devicectl device install app` of the **signed** Payload bundle
      on this existing paired device. Never uninstall, clear settings/Keychain,
@@ -188,17 +237,29 @@ from evidence, state the assumption in the PR, and keep going.
      on-phone approval, and keep the update pending in Beads/journal for the
      next tick. Do not claim silent OTA installation or physical-device feel.
 10. **Close.** Append the journal entry: date, pin before and after, PRs,
-   adoptions, findings, and what is queued. For each merged change, remove
+   adoptions, selected category/next category, before/after evidence paths and
+   judgments, independent regression verdict, findings and what is queued.
+   For each merged change, remove
    its worktree (`git worktree remove ../worktrees/NAME`) and its local
    branch. In a worktree whose PR is still open, run `just worktree-release`
-   and leave it for the next run. End with a three-line summary that includes
-   the phone's verified version/build, or its exact pending-delivery blocker.
+   and leave it for the next run. End with a three-line **private** summary:
+   shipped improvement/PR and visual verdict; phone's independently verified
+   version/build or exact pending-delivery blocker; the **same existing
+   permanent tailnet `/scheduled/` install link**, including after a verified
+   device install. Always include that stable link; say if it could not be
+   verified this tick. Never substitute a new per-build URL as the normal
+   final link. A working page is not installation or physical-device proof.
 
 ## Self-reliance
 
 - A failure is evidence, not a stop. Read it, find the cause, and change your
   approach rather than repeating it. Rerun a flaky CI job once
   (`gh run rerun --failed`); after that, treat it as real.
+  Fix failed visual/behavior assertions; never keep recapturing, weakening
+  fixtures or rewriting expected output until a regression looks acceptable.
+  A genuine external blocker is the only no-improvement outcome: record the
+  attempted work, exact evidence and remedy, and preserve the stable final
+  install link. Do not label a blocked run shipped.
 - If an upstream commit breaks something phux can't reasonably adapt to, ship
   the newest good rev, record the bad one in the journal, and draft the
   upstream report there for a human to send. `anomalyco/rune` is not ours:

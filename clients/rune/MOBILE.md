@@ -51,6 +51,7 @@ desktop one, so every CI build and release proves it draws a session.
 | Keyboard: letters, digits and symbols, shift, delete, space, return; types into the terminal, keeps focus while editing palette/find/Settings search fields, and answers the confirm bar | `src/ui/phone.rs`, `src/desk/phone.rs` |
 | Phone viewport changes wait for 120 ms of grid stability before resizing the PTY, avoiding intermediate keyboard/sheet sizes. Layout, hit testing and input stay immediate; first fits and desktop resizing do not wait | `src/desk/phone/refit.rs`, `src/desk/frame.rs`, `ios/bridge/src/host.rs` |
 | Type into rename, machine setup and inbox reply sheets with the drawn keyboard, including 320×568 previews. Sheets reserve keyboard/accessory space; synchronous field edits and stale-question checks keep input out of the terminal behind them. Native UIKit editing uses the same field handlers | `src/desk/native_input/`, `src/desk/phone/runtime/sheets.rs`, `src/ui/phone.rs` |
+| Phone Inbox: readable questions on neutral cards, full-width wrapping typed/ACP answers and plain approval controls with 44-point touch targets; the active typed reply stays above the keyboard while questions scroll. An explicit Close replaces desktop-only escape hints and uses the existing dismissal semantics. Inline questions scroll independently of terminal gestures. Populated, scrolled and keyboard-reduced frames cover light/dark and small phones | `src/ui/inbox.rs`, `src/ui/questions.rs`, `src/ui/inbox/tests.rs`, `VISUAL_REVIEW.md` |
 | The command palette as a sheet over the terminal, above the keyboard; paths open there too. A phone lists what it reaches for first (New Tab, Paste, Find, sessions, splits, text size, Settings, Change Computer), leaves out desktop-only commands, and shows touch-height rows without chords | `src/palette/phone.rs`, `src/ui/palette.rs` |
 | Settings: grouped category drill-down, readable phone-sized controls, current values and bottom search. Overflow fades only hidden edges; keyboard-revealed controls stay clear. Search brings up its own keyboard; Done/Hide preserves the query and the terminal's keyboard preference. Theme selection uses the existing live-preview palette and returns to Settings | `src/ui/settings.rs`, `src/ui/settings/`, `src/desk/settings.rs` |
 | Machines, the inbox and the reconnect banner, narrowed to a phone's width | `src/ui.rs` (`Sheet`), `src/ui/inbox.rs`, `src/ui/status.rs` |
@@ -77,4 +78,4 @@ pad cancellation. The terminal's hold remains selection, not a context menu.
 
 | Piece | Today |
 | --- | --- |
-| Phone sheets for machines and the inbox | The desktop's, narrowed |
+| Phone machine sheet | The desktop's, narrowed; Inbox has its own phone presentation |
