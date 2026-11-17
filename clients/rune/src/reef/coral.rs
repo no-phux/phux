@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! A reef's coral, seeded from its host's name in the prototype's rng
 //! order, and the caustic tile the sand's light is drawn with.
 

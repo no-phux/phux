@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The room, painted once per layout as the prototype's `paintBg`: the
 //! tiled floor, the back wall, and each line's mats, counters, stations,
 //! drain, pass and break corner. Gradients are bands.

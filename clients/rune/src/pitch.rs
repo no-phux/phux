@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pitch: the fleet as football training. Each machine is a squad
 //! training in its own share of the pitch, in the galaxy's machine order;
 //! each agent a player in its harness's kit acting out its state: working

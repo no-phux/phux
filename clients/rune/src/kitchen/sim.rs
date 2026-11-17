@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The kitchen in motion: chefs walking to their goals, what the stations
 //! throw into the air, and keeping the chefs in step with the fleet. The
 //! prototype's `Math.random` is a seeded rng here, so a frame is the same

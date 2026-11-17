@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The kitchen: the fleet as a restaurant line. Each machine runs a line
 //! across an even share of the width, each agent a chef in its harness's
 //! colours acting out its state: a working chef cooks at a station, one that

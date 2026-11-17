@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The galaxy's geometry: the fleet as a core, each machine a planet on one
 //! orbit round it, and each agent on a ring round its machine. Pure, in world
 //! points, so the view, the camera and the tests read one source. Only a

@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pit lane: the fleet as a race circuit. Each machine is a team garage
 //! on the pit lane, each agent a car in its harness's livery acting out its
 //! state: a working car laps the circuit, one that needs you boxes at its
