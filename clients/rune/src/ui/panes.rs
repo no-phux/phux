@@ -10,7 +10,7 @@ use rune::{Color, Cx, El, Phase, PointerButton, Transition, col, el, row};
 use super::status::placeholder;
 use super::{CARD_GAP, CARD_RADIUS, Ink, PAD, overlay};
 use crate::desk::mouse::Press;
-use crate::desk::{Desk, SplitPath};
+use crate::desk::{Desk, Grab, SplitPath};
 use crate::ui::Cover;
 use crate::{grid, perf};
 
@@ -309,6 +309,9 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     } else {
         Lit::Resting
     };
+    let joining = id
+        .local_id()
+        .is_some_and(|n| desk.connection.reorder.target() == Some(Grab::Pane(n)));
     let host = terminal_input(host.fill(ground), desk, id)
         .child(grid_layer)
         .children(overlay::history(desk, id, &frame, area, ink))
@@ -316,7 +319,9 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(question.map(|card| card.content))
         .children(tab_badge(desk, id, ink))
         // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()));
+        .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()))
+        // Outlined while a dragged terminal would join its slot as a tab.
+        .children(joining.then(|| el().cover().border(2.0, ink.accent).inert()));
     float(id, framed(desk, host, ground, lit, ink))
 }
 

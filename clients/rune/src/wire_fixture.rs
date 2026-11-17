@@ -19,7 +19,7 @@ pub fn outbound(client: &Client) -> Vec<FrameKind> {
         .collect()
 }
 
-/// Server `server`'s hello, with the organization feature when `organized`.
+/// Server `server`'s hello, with the organization features when `organized`.
 pub fn hello(server: u8, organized: bool) -> FrameKind {
     let caps = ServerCapabilities::new();
     FrameKind::HelloOk {
@@ -27,7 +27,10 @@ pub fn hello(server: u8, organized: bool) -> FrameKind {
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: if organized {
-            caps.with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            caps.with_features_ext(ServerFeatureExtSet::with(&[
+                ServerFeatureExt::Organization,
+                ServerFeatureExt::SlotTabs,
+            ]))
         } else {
             caps
         },
