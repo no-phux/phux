@@ -1,9 +1,9 @@
 //! `[defaults]` and `[limits]`: pane defaults, history and journal budgets,
 //! and the ceilings the server enforces.
 
-pub use phux_config_core::{ClipboardRead, ClipboardWrite};
 use phux_config_core::limits::DEFAULT_HISTORY_LINES;
 pub use phux_config_core::limits::{DEFAULT_HISTORY_BYTES, MAX_HISTORY_BYTES, ScrollbackLimits};
+pub use phux_config_core::{ClipboardRead, ClipboardWrite};
 use serde::{Deserialize, Serialize};
 
 /// `[defaults]` table. See `docs/reference/config.md` for shipped values.
