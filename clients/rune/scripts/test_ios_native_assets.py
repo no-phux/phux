@@ -34,6 +34,7 @@ class NativeAssetTests(unittest.TestCase):
                 def actool(command, env, output, name, timeout=120, stdout_only=False):
                     self.assertEqual(command[command.index("--platform") + 1], platform)
                     self.assertEqual(command[command.index("--app-icon") + 1], "AppIcon")
+                    self.assertEqual(command[command.index("--accent-color") + 1], "AccentColor")
                     devices = [command[at + 1] for at, arg in enumerate(command) if arg == "--target-device"]
                     self.assertEqual(devices, ["iphone"])
                     (app / "Assets.car").touch()
@@ -44,6 +45,12 @@ class NativeAssetTests(unittest.TestCase):
                 catalog = out / "Assets.xcassets"
                 self.assertEqual((catalog / "AppIcon.appiconset/AppIcon.png").read_bytes(),
                                  (build.IOS / "AppIcon.png").read_bytes())
+                accent = json.loads((catalog / "AccentColor.colorset/Contents.json").read_text())
+                self.assertEqual(accent, json.loads(
+                    (build.IOS / "Assets/AccentColor.colorset/Contents.json").read_text()),
+                    "the brand's colourset, unchanged")
+                appearances = [c.get("appearances", []) for c in accent["colors"]]
+                self.assertIn([{"appearance": "contrast", "value": "high"}], appearances)
                 colour = json.loads((catalog / "LaunchGround.colorset/Contents.json").read_text())
                 self.assertEqual(colour["colors"][0]["color"]["components"],
                                  {"red": "0x09", "green": "0x0A", "blue": "0x0C", "alpha": "1.000"})

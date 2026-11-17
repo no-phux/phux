@@ -67,6 +67,16 @@ impl Tiers {
         }
     }
 
+    /// No shadows at all: forced colours drop them (§1.11).
+    pub(crate) fn none(roles: &Roles) -> Self {
+        Self {
+            raised: Vec::new(),
+            floating: Vec::new(),
+            overlay: Vec::new(),
+            ..Self::new(roles)
+        }
+    }
+
     pub(crate) fn of(&self, tier: Tier) -> &[Shadow] {
         match tier {
             Tier::Flat => &[],

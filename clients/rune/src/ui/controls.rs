@@ -1,44 +1,57 @@
 //! The chrome's shared controls under their long-standing names: sheets,
-//! presses, keycaps, tooltips. Views call these; Lane A re-implements them
-//! on tokens.
+//! presses, keycaps, tooltips, buttons. Each takes anything that holds the
+//! window's [`Tokens`] (`Ink` during the lanes, `Tokens` after) and is
+//! built only from tokens and the kit.
 
-use rune::{Color, El, TextStyle, Transition, col, el, row, text};
+use rune::{El, Transition, col, el, row, text};
+use rune_kit::{IconButton, IconButtonVariant, Keybind};
 
-use super::{CAPTION, Ink, LABEL_STRONG, icons, overlay};
+use super::tokens::{Paint, Tier, Tokens};
 use crate::desk::Desk;
 
-/// A modal sheet: scrim, header with a close button, scrolling body, footer.
+/// A modal sheet (§4.1.3 OWN): scrim, header with a close button,
+/// scrolling body, footer. Kit `Dialog` cannot hold its top offset, footer
+/// rule or scrolling body, so phux keeps its own on tokens, with Rune's
+/// `.modal` for the focus trap and its return.
 pub(crate) struct Sheet {
     pub(crate) key: &'static str,
     pub(crate) title: &'static str,
     pub(crate) width: f32,
     /// Where the sheet sits when the window has room for that.
     pub(crate) top: f32,
-    /// How dark the scrim is.
+    /// Unused: every modal draws the one `layer.scrim` (§1.2). Kept until
+    /// the lanes stop setting it.
+    #[allow(dead_code, reason = "the lanes still set it")]
     pub(crate) scrim: f32,
     pub(crate) close: fn(&mut Desk),
 }
 
-#[allow(clippy::disallowed_methods)] // converted in the values commit
+/// The tallest a sheet grows before its body scrolls.
+const MAX_H: f32 = 620.0;
+
 impl Sheet {
     /// `body` scrolls when the window can't hold it; the header and `foot`
     /// always show, down to the smallest window.
-    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Ink) -> El {
-        const MARGIN: f32 = 16.0;
-        const MAX_H: f32 = 620.0;
-        let line = || rune::rule(1.0, p.separator).w_full();
+    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &impl AsRef<Tokens>) -> El {
+        let t = p.as_ref();
+        let s = &t.space;
+        let line = || rune::rule(s.hairline, t.roles.border.base.paint()).w_full();
         let header = row()
             .w_full()
-            .h(44.0)
-            .pl(18.0)
-            .pr(10.0)
-            .gap(10.0)
+            .h(s.row_h + s.s4)
+            .pl(s.sheet_pad)
+            .pr(s.s2)
+            .gap(s.s2)
             .items_center()
-            .child(text(self.title).font(LABEL_STRONG).color(p.text))
+            .child(
+                text(self.title)
+                    .font(t.ty.title)
+                    .color(t.roles.text.text.paint()),
+            )
             .child(el().grow(1.0))
             .children(aside)
-            .child(overlay::icon_button(
-                &icons::CLOSE,
+            .child(icon_press(
+                &super::icons::CLOSE,
                 "Close",
                 format!("{}-close", self.key),
                 p,
@@ -52,12 +65,14 @@ impl Sheet {
             .max_h(MAX_H)
             .shrink()
             .min_h(0.0)
-            .radius(12.0)
-            .clip_rounded(12.0)
-            .fill(p.raised)
-            .border(1.0, p.separator)
-            .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-            .transition(Transition::scale(0.97).combined(Transition::opacity()))
+            .radius(t.radius.lg)
+            .clip_rounded(t.radius.lg)
+            .fill(t.roles.layer.raised.paint())
+            // Exits fade; entries scale up from `enter_scale` (§1.8).
+            .transition(Transition::asymmetric(
+                Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
+                Transition::opacity(),
+            ))
             .child(header)
             .child(line().key("sheet-header-rule"))
             .child(
@@ -71,44 +86,38 @@ impl Sheet {
                     .child(body),
             )
             .child(line().key("sheet-footer-rule"))
-            .child(el().w_full().px(14.0).py(10.0).child(foot));
+            .child(el().w_full().px(s.card_inset).py(s.s2).child(foot));
+        let panel = t.elevate(panel, Tier::Overlay);
         col()
             .key(format!("{}-scrim", self.key))
             .cover()
-            .py(MARGIN)
-            .px(MARGIN)
+            .py(s.s4)
+            .px(s.s4)
             .items_center()
-            .fill(Color::BLACK.alpha(self.scrim))
+            .fill(t.roles.layer.scrim.paint())
             .transition(Transition::opacity())
             .modal(true, self.close)
             .label(self.title)
-            .child(el().grow(1.0).max_h(self.top - MARGIN))
+            .child(el().grow(1.0).max_h(self.top - s.s4))
             .child(panel)
     }
 }
 
-/// A quiet square button around an icon; `name` is what a screen reader
-/// says for it.
+/// A quiet square button around an icon (kit `IconButton`, ghost); `name`
+/// is what a screen reader says for it.
 pub(crate) fn icon_press(
     glyph: &'static rune::Icon,
     name: &'static str,
     key: impl Into<String>,
-    p: &Ink,
+    p: &impl AsRef<Tokens>,
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
-    pressable(key, p)
-        .size(26.0, 26.0)
-        .radius(7.0)
-        .center()
+    IconButton::new(glyph)
+        .variant(IconButtonVariant::Ghost)
         .label(name)
         .on_press(press)
-        .child(
-            rune::icon(glyph, 16.0)
-                .color(p.dim)
-                .group_color(p.text)
-                .a11y_hidden(),
-        )
-        .hover_group()
+        .build(&p.as_ref().kit)
+        .key(key)
 }
 
 /// Covering the whole of its parent, over what came before it.
@@ -122,36 +131,26 @@ impl Cover for El {
     }
 }
 
-/// Something to press: a wash under the pointer that deepens while held, and
-/// the pointer. Key errors name the caller, not this.
+/// Something to press: the hover wash under the pointer, the press wash in
+/// its place while held (§1.10), and the pointer. Key errors name the
+/// caller, not this.
 #[track_caller]
-pub(crate) fn pressable(key: impl Into<String>, p: &Ink) -> El {
-    el().key(key)
-        .hover(p.hover)
-        .press(p.hover)
+pub(crate) fn pressable(key: impl Into<String>, p: &impl AsRef<Tokens>) -> El {
+    p.as_ref()
+        .kit
+        .interactive(el().key(key))
         .cursor(rune::Cursor::Pointer)
 }
 
-/// Where you are in the chrome: a row or tab lifted a shade off its ground,
-/// lit from the top as the terminal cards are.
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) fn lifted(el: El, p: &Ink) -> El {
-    el.fill(p.current)
-        .border_gradient(1.0, p.text.alpha(0.14), p.text.alpha(0.03))
+/// The selected row or tab: §1.10's one treatment.
+pub(crate) fn lifted(el: El, p: &impl AsRef<Tokens>) -> El {
+    super::rows::lifted(el, p.as_ref())
 }
 
-/// A key as the chrome draws one, wherever it names a chord.
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) fn keycap(key: impl Into<String>, p: &Ink) -> El {
-    const KEY: TextStyle = TextStyle::new(10.5, 600.0);
-    el().h(16.0)
-        .min_w(16.0)
-        .px(4.0)
-        .radius(4.0)
-        .center()
-        .fill(p.text.alpha(0.07))
-        .border_gradient(1.0, p.text.alpha(0.2), p.text.alpha(0.1))
-        .child(text(key).font(KEY).color(p.dim).a11y_hidden())
+/// A key as the chrome draws one, wherever it names a chord (kit `Keybind`).
+pub(crate) fn keycap(key: impl Into<String>, p: &impl AsRef<Tokens>) -> El {
+    let key: String = key.into();
+    Keybind::new(&[key]).build(&p.as_ref().kit).a11y_hidden()
 }
 
 /// A tooltip for `el`: what pressing it does, and the chord that does the
@@ -161,15 +160,27 @@ pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcu
     el.help(words).help_keys(keys)
 }
 
-pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
+/// A secondary action in a row of them: the control outline, label type.
+pub(crate) fn button(
+    label: &'static str,
+    key: &'static str,
+    p: &impl AsRef<Tokens>,
+    press: fn(&mut Desk),
+) -> El {
+    let t = p.as_ref();
     pressable(key, p)
         .grow(1.0)
-        .py(6.0)
-        .radius(6.0)
+        .min_h(t.space.pointer_min)
+        .py(t.space.s1)
+        .radius(t.radius.sm)
         .center()
-        .border(1.0, p.separator)
+        .border(t.space.hairline, t.roles.border.control.paint())
         .on_press(press)
-        .child(text(label).font(CAPTION).color(p.text))
+        .child(
+            text(label)
+                .font(t.ty.caption)
+                .color(t.roles.text.text.paint()),
+        )
 }
 
 /// `on_drag` for a surface floating over panes. Taking the press stops it,

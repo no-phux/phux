@@ -14,7 +14,6 @@ use crate::theme::{Marks, Selection, Theme};
 // The lanes adopt these as they convert; until then only tests read some.
 #[allow(dead_code, reason = "adopted by the converting lanes")]
 mod badge;
-#[allow(clippy::disallowed_methods)] // converted in the values commit
 mod controls;
 pub(crate) use controls::{
     Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, tip,
@@ -79,7 +78,7 @@ pub(crate) mod tokens;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod updates;
 
-pub(crate) use tokens::Tokens;
+pub(crate) use tokens::{Paint, Tokens};
 
 #[cfg(test)]
 mod gallery_tests;
@@ -92,26 +91,25 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
 } else {
     "Ctrl+Shift+"
 };
-pub(crate) const SIDEBAR_W: f32 = 236.0;
+// Lane-period names for token values, so unconverted views keep compiling;
+// converted views read `Tokens` (`t.space`, `t.radius`, `t.ty`) instead.
+pub(crate) const SIDEBAR_W: f32 = phux_design::tokens::SPACE.sidebar_w;
 /// The band the macOS traffic lights sit in when they draw over content,
 /// and the titlebar Rune frames on Linux where the compositor draws none.
-pub(crate) const TITLEBAR_H: f32 = 38.0;
-/// Space between the terminal area's edge and its grid.
+pub(crate) const TITLEBAR_H: f32 = phux_design::tokens::SPACE.titlebar_h;
+/// Space between the terminal area's edge and its grid: the terminal's
+/// own inset, not chrome spacing.
 pub(crate) const PAD: f32 = 10.0;
 /// The gap around and between the terminal cards, and how round they are.
-const CARD_GAP: f32 = 8.0;
-const CARD_RADIUS: f32 = 12.0;
+const CARD_GAP: f32 = phux_design::tokens::SPACE.card_gap;
+const CARD_RADIUS: f32 = phux_design::tokens::RADIUS.lg;
 /// How far a frosted surface blurs what it floats over, in points.
-const FROST: f32 = 18.0;
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
+const FROST: f32 = phux_design::tokens::MATERIAL.glass.blur.floating;
+pub(crate) const LABEL: TextStyle = tokens::LABEL;
+pub(crate) const LABEL_STRONG: TextStyle = tokens::LABEL_STRONG;
+pub(crate) const CAPTION: TextStyle = tokens::CAPTION;
 /// A sidebar row's name.
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-pub(crate) const NAME: TextStyle = TextStyle::new(12.5, 500.0);
+pub(crate) const NAME: TextStyle = tokens::NAME;
 
 pub(crate) struct Ink {
     pub(crate) bg: Color,
@@ -145,10 +143,12 @@ pub(crate) struct Ink {
 
 /// The ink for a theme, or the system appearance with none: the lane-period
 /// shim over [`Tokens`]. Equal arguments share one cached `Tokens`.
-fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
+/// The system accent no longer colours the chrome: the house look has its
+/// own, and a theme names one.
+fn ink(dark: bool, _accent: Color, theme: Option<&Theme>) -> Ink {
     Tokens::resolve(&tokens::Inputs {
         theme: theme.copied(),
-        ..tokens::Inputs::system(dark, accent)
+        ..tokens::Inputs::system(dark)
     })
     .ink()
 }
@@ -175,20 +175,35 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     rune_kit::root(base, KIT_LAYER.with_borrow_mut(std::mem::take))
 }
 
+/// What every run of the view sets on `cx`, the phone's included (§4.1.1).
+fn wire(t: &Tokens, cx: &mut Cx<Desk>) {
+    let text = t.roles.text.text.paint();
+    // Native fields inherit a readable caret and selection in light themes too.
+    cx.foreground(text);
+    // On Linux, where Rune draws the window's own frame (GNOME), its caption
+    // buttons take the theme's ink.
+    cx.caption_color(text);
+    let ring = t.space.focus_ring;
+    cx.focus_ring(ring.width, ring.offset, t.roles.border.focus.paint());
+    cx.help_look(tooltip(t));
+    cx.titlebar_height(t.space.titlebar_h);
+}
+
 fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let dark = crate::theme::system_dark(cx.system_dark());
     desk.follow_appearance(dark);
+    let t = Tokens::for_window(desk, cx);
+    wire(&t, cx);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
-    let p = Tokens::for_window(desk, cx).ink();
-    // Native fields inherit a readable caret and selection in light themes too.
-    cx.foreground(p.text);
-    cx.help_look(tooltip(&p, dark));
+    // `cx.web_focus()` (every pressable a Tab stop, §1.10) waits for the
+    // lanes that own focus: with it, Enter no longer blurs Settings search
+    // and the update card's action joins Tab order (DEVELOP.md, "Kit
+    // deviations"). Rows and controls built here are focusable already.
+    let p = t.ink();
     // `titlebar_inset` is the traffic lights' width; zero when the system
-    // draws its own titlebar. On Linux, where Rune draws the window's own
-    // frame (GNOME), its caption buttons take the theme's ink and their room.
-    cx.caption_color(p.text);
+    // draws its own titlebar.
     let insets = cx.chrome_insets();
     let lights = cx.titlebar_inset().max(insets.leading);
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
@@ -244,47 +259,54 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
-    let root = chrome_ground(el().w_full().h_full(), desk.glass(), p.sidebar)
+    let root = ground(el().w_full().h_full(), desk.glass(), &t)
         .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
         .child(main);
     floating(root, desk, &p, band, cx)
 }
 
-/// How much of the theme tint full glass still keeps, so text stays readable.
-const GLASS_TINT_FLOOR: f32 = 0.18;
-
-/// The window's ground: solid `tint`, or at `glass` above 0 the system's
-/// Liquid Glass under that tint, thinned as glass rises. The material replaces
-/// a node's own fill, so the tint is its first child.
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
-    if glass <= 0.0 {
-        return root.fill(tint);
-    }
-    let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
-    root.system_material(rune::SystemMaterial::Glass)
-        .child(el().cover().fill(tint.alpha(alpha)).inert())
+/// The window's ground: the sidebar layer, or at `glass` above 0 the
+/// system's Liquid Glass under that layer as a tint, thinned as glass rises
+/// down to the verified floor (§1.9). The material replaces a node's own
+/// fill, so the tint is its first child. Increased contrast, reduce
+/// transparency and forced colours draw it opaque.
+fn ground(root: El, glass: f32, t: &Tokens) -> El {
+    glassed(
+        root,
+        t.roles.layer.sidebar.paint(),
+        t.glass_tint_alpha(glass),
+    )
 }
 
-/// A tooltip in the chrome's own colours, its chord in keycaps, on every
-/// platform: quick to follow the pointer along a row of buttons.
-#[allow(clippy::disallowed_methods)] // converted in the values commit
-fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
-    rune::HelpLook::system(dark)
-        .fill(p.raised)
-        .ink(p.text)
-        .ring(1.0, p.text.alpha(0.14))
-        .radius(7.0)
-        .padding(8.0, 5.0)
-        .font(TextStyle::new(11.5, 500.0).lh(16.0))
-        .keycaps(
-            p.text.alpha(0.09),
-            p.dim,
-            TextStyle::new(10.5, 600.0).lh(11.0),
-            false,
-        )
-        .skip_delay(0.4)
-        .fade(0.12, 0.08, 0.96)
+fn glassed(root: El, tint: Color, alpha: f32) -> El {
+    if alpha >= 1.0 {
+        return root.fill(tint);
+    }
+    root.system_material(rune::SystemMaterial::Glass)
+        .child(el().cover().fill(Color { a: alpha, ..tint }).inert())
+}
+
+/// The lane-period form of [`ground`] for a view that has a tint but not
+/// yet `Tokens`: the stricter of the house floors, so it never thins below
+/// what `verify` allows in either mode.
+fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
+    let min = phux_design::tokens::MATERIAL.glass.tint_min;
+    let floor = min.dark.max(min.light);
+    let alpha = if glass > 0.0 {
+        1.0 - glass.clamp(0.0, 1.0) * (1.0 - floor)
+    } else {
+        1.0
+    };
+    glassed(root, tint, alpha)
+}
+
+/// The kit's tooltip on the overlay layer at the menu radius, its chord in
+/// keycaps, on every platform (§4.1.3).
+fn tooltip(t: &Tokens) -> rune::HelpLook {
+    rune_kit::TooltipStyle::from_kit(&t.kit, rune_kit::TooltipAppearance::Compact)
+        .radius(t.radius.md)
+        .fill(t.roles.layer.overlay.paint())
+        .help_look()
 }
 
 /// What floats over the window: banners, cards, sheets and menus.

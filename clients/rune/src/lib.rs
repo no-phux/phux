@@ -15,7 +15,8 @@ mod diag;
 mod dock;
 mod features;
 mod galaxy;
-#[allow(clippy::disallowed_methods)] // unconverted grid fills
+#[allow(clippy::disallowed_methods)]
+// terminal content: SGR faint and underlines are the VT's, not chrome
 mod grid;
 mod handoff;
 mod hive;

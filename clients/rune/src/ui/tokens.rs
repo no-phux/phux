@@ -71,6 +71,19 @@ pub(crate) struct Type {
     pub(crate) mono: TextStyle,
 }
 
+/// A role at its desktop size and `weight`, for the lane-period constants
+/// (`ui::LABEL`, `ui::CAPTION`, …) that cannot follow the text scale.
+const fn fixed(role: tok::TypeRole, weight: f32) -> TextStyle {
+    TextStyle::new(role.size, weight)
+        .lh(role.line_height)
+        .tracking(role.tracking_em * role.size)
+}
+
+pub(crate) const LABEL: TextStyle = fixed(tok::TYPE.role.label, 400.0);
+pub(crate) const LABEL_STRONG: TextStyle = fixed(tok::TYPE.role.label, 600.0);
+pub(crate) const CAPTION: TextStyle = fixed(tok::TYPE.role.caption, 500.0);
+pub(crate) const NAME: TextStyle = fixed(tok::TYPE.role.label, 500.0);
+
 /// The chrome's mono face (bundled in `grid::FONTS`).
 pub(crate) const MONO: Family = Family::Named("Paper Mono");
 
@@ -197,8 +210,8 @@ pub(crate) struct Inputs {
     pub(crate) theme: Option<Theme>,
     /// The system appearance, which picks the house mode with no theme.
     pub(crate) dark: bool,
-    /// The system accent, which only the legacy ink reads.
-    pub(crate) accent: Color,
+    /// The system's forced colours (Windows contrast themes), when on.
+    pub(crate) forced: Option<forced::Forced>,
     /// The window's machine colour, `0xRRGGBB`, before easing.
     pub(crate) host: Option<u32>,
     /// `Settings.glass`, 0 to 1.
@@ -210,11 +223,11 @@ pub(crate) struct Inputs {
 
 impl Inputs {
     /// The inputs a window has with no theme, glass or host.
-    pub(crate) const fn system(dark: bool, accent: Color) -> Self {
+    pub(crate) const fn system(dark: bool) -> Self {
         Self {
             theme: None,
             dark,
-            accent,
+            forced: None,
             host: None,
             glass: 0.0,
             type_scale: 1.0,
@@ -244,12 +257,14 @@ pub(crate) struct Tokens {
     pub(crate) glass: f32,
     pub(crate) increased_contrast: bool,
     pub(crate) reduce_transparency: bool,
+    /// The system's forced colours drew every role (§1.11).
+    pub(crate) forced: bool,
     /// Changes whenever anything a memo reads here does.
     pub(crate) version: u64,
-    legacy: legacy::Values,
 }
 
-mod legacy;
+mod forced;
+mod ink;
 
 impl AsRef<Self> for Tokens {
     fn as_ref(&self) -> &Self {
@@ -277,7 +292,7 @@ pub(crate) fn theme_input(t: &Theme) -> phux_design::Theme {
         ansi: t.ansi.map(Rgb8::hex),
         cursor: Some(Rgb8::hex(t.cursor)),
         accent: Some(Rgb8::hex(t.accent)),
-        selection_bg: None,
+        selection_bg: t.selection.map(Rgb8::hex),
         dark: Some(t.dark),
     }
 }
@@ -286,6 +301,11 @@ pub(crate) fn theme_input(t: &Theme) -> phux_design::Theme {
 /// (or the house terminal picked as a theme), else the theme derived.
 /// Under increased contrast, the same solved for its higher floors.
 fn roles_for(inputs: &Inputs) -> Roles {
+    let roles = solved(inputs);
+    inputs.forced.map_or(roles, |f| f.roles(&roles))
+}
+
+fn solved(inputs: &Inputs) -> Roles {
     let mode = mode_of(inputs);
     let params = phux_design::Params::house();
     let theme = inputs
@@ -329,12 +349,17 @@ impl Tokens {
         let scale = inputs.type_scale;
         let ty = Type::new(scale);
         let motion = MotionPairs::house();
-        let tiers = Tiers::new(&roles);
+        let forced = inputs.forced.is_some();
+        // Forced colours drop every shadow (§1.11).
+        let tiers = if forced {
+            Tiers::none(&roles)
+        } else {
+            Tiers::new(&roles)
+        };
         let kit = kit::build(&roles, &tiers, &motion, scale);
         let host = inputs
             .host
             .map_or_else(|| roles.accent.accent.paint(), |rgb| ease_host(rgb, &roles));
-        let legacy = legacy::Values::new(inputs);
         let mut t = Self {
             kit,
             status: StatusInk::new(&roles),
@@ -348,10 +373,10 @@ impl Tokens {
             host,
             type_scale: scale,
             glass: inputs.glass,
-            increased_contrast: inputs.increased_contrast,
+            increased_contrast: inputs.increased_contrast || forced,
             reduce_transparency: inputs.reduce_transparency,
+            forced,
             version: 0,
-            legacy,
         };
         t.version = t.fingerprint();
         t
@@ -371,8 +396,12 @@ impl Tokens {
         self.motion.hash_into(&mut h);
         self.host.hash(&mut h);
         [self.type_scale, self.glass].map(f32::to_bits).hash(&mut h);
-        (self.increased_contrast, self.reduce_transparency).hash(&mut h);
-        self.legacy.hash_into(&mut h);
+        (
+            self.increased_contrast,
+            self.reduce_transparency,
+            self.forced,
+        )
+            .hash(&mut h);
         h.finish()
     }
 
@@ -406,27 +435,28 @@ impl Tokens {
             host: Some(crate::host_color::entry(desk.machines.label()).0),
             glass: desk.glass(),
             increased_contrast: cx.system_increased_contrast(),
+            forced: cx.system_contrast().map(forced::Forced::from),
             reduce_transparency: overrides::reduce_transparency(),
             type_scale: overrides::type_scale(),
-            ..Inputs::system(dark, cx.accent())
+            ..Inputs::system(dark)
         })
     }
 
     /// The phone's tokens for a terminal ground (§4.1.5): the selected
     /// theme when its mode matches the ground's, else the house look in
     /// the ground's mode.
-    pub(crate) fn for_ground(ground: Color, accent: Color, theme: Option<&Theme>) -> Rc<Self> {
+    pub(crate) fn for_ground(ground: Color, theme: Option<&Theme>) -> Rc<Self> {
         let dark = crate::theme::on_fill(ground) == Color::WHITE;
         Self::resolve(&Inputs {
             theme: theme.filter(|t| t.dark == dark).copied(),
-            ..Inputs::system(dark, accent)
+            ..Inputs::system(dark)
         })
     }
 
     /// The lane-period shim: the `Ink` views still read, filled from these
     /// tokens. Deleted with `Ink`.
     pub(crate) fn ink(self: &Rc<Self>) -> Ink {
-        self.legacy.ink(Rc::clone(self))
+        ink::of(Rc::clone(self))
     }
 
     /// `e` lifted to `tier`: its shadow layers, rings already coloured.
@@ -456,7 +486,19 @@ impl Tokens {
     /// Glass may draw: off under increased contrast and reduce
     /// transparency (§1.9).
     pub(crate) const fn glass_allowed(&self) -> bool {
-        !self.increased_contrast && !self.reduce_transparency
+        !self.increased_contrast && !self.reduce_transparency && !self.forced
+    }
+
+    /// The glass tint's alpha for the `Settings.glass` fraction `g`:
+    /// `1 − g·(1 − tint_min)`, so full glass stops at the verified floor
+    /// (§1.9). Opaque when glass may not draw.
+    pub(crate) fn glass_tint_alpha(&self, g: f32) -> f32 {
+        if !self.glass_allowed() || g <= 0.0 {
+            return 1.0;
+        }
+        let min = tok::MATERIAL.glass.tint_min;
+        let floor = if self.dark() { min.dark } else { min.light };
+        1.0 - g.clamp(0.0, 1.0) * (1.0 - floor)
     }
 }
 

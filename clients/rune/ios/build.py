@@ -120,8 +120,10 @@ process.stdout.write(renderNotices(crates, read, 'Phux Rune'));
 
 
 def compile_assets(app, env, out, simulator):
-    """The home-screen icon, and a launch colour matching the terminal so a
-    light-mode phone does not flash white before the first frame."""
+    """The home-screen icon, a launch colour matching the terminal so a
+    light-mode phone does not flash white before the first frame, and the
+    house accent (phux-brand's AccentColor, with its dark and increased-
+    contrast appearances) that UIKit tints with."""
     catalog = out / "Assets.xcassets"
     if catalog.exists():
         shutil.rmtree(catalog)  # Our derived catalog, never a source tree.
@@ -137,10 +139,12 @@ def compile_assets(app, env, out, simulator):
     components = dict(zip(("red", "green", "blue"), LAUNCH_GROUND), alpha="1.000")
     (ground / "Contents.json").write_text(json.dumps({"info": info, "colors": [{
         "idiom": "universal", "color": {"color-space": "srgb", "components": components}}]}))
+    # Synced from phux-brand (brand.config.json); never edited here.
+    shutil.copytree(IOS / "Assets/AccentColor.colorset", catalog / "AccentColor.colorset")
     partial = out / "assets-info.plist"
     run(["/usr/bin/xcrun", "actool", catalog, "--compile", app, "--platform",
          "iphonesimulator" if simulator else "iphoneos", "--minimum-deployment-target", MIN_IOS,
-         "--target-device", "iphone", "--app-icon", "AppIcon",
+         "--target-device", "iphone", "--app-icon", "AppIcon", "--accent-color", "AccentColor",
          "--output-partial-info-plist", partial, "--errors", "--warnings"],
         env, out, "assets", timeout=300)
     icons = plistlib.loads(partial.read_bytes())

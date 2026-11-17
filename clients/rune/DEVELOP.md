@@ -142,7 +142,7 @@ do about a bad release.
 | `inbox` | what is waiting on you, most urgent first |
 | `alerts`, `dock` | system notifications, their clicks, and the Dock count |
 | `handoff` | the pane in front as an `NSUserActivity` (`sh.phux.pane`) the phone app continues; advertised only from the signed bundle |
-| `theme` | built-in terminal palettes and the chrome drawn from them |
+| `theme` | terminal themes: the shared catalog, Ghostty and Omarchy adapters, the desktop appearance |
 | `palette` | palette items and fuzzy ranking |
 | `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
@@ -174,3 +174,62 @@ Keep feature state transitions with the feature, with small `Desk` adapters
 for window effects. Pure presentation and the Rune view remain separate
 responsibilities inside that module. Shared chrome belongs in `ui`; test
 fixtures belong in `test_support`, not a benchmark or another feature.
+
+## Design tokens
+
+The chrome draws only from `ui::tokens::Tokens`, built per appearance from
+phux-brand's tokens through `phux_design` ([design language](../../docs/design-language.md)).
+`Tokens::for_window` gives the window's (the chosen theme derived, or the
+house look in the system appearance; the increased-contrast variant and
+forced colours when the system asks); `Tokens::for_ground` gives the phone's,
+from the terminal's own ground. Memos key on `tokens.version`, never on a
+theme id: Omarchy swaps palettes under one id.
+
+- Colours are roles (`t.roles.layer.raised`, `t.roles.status.needs_you_wash`),
+  painted with `Paint::paint`. Translucent roles carry their alpha.
+- Type is `t.ty.{micro,caption,label,body,lead,title,display,mono}`; space,
+  radius and icon sizes are `t.space`, `t.radius`, `t.icon`; springs are
+  `t.motion` pairs; shadows are `t.elevate(e, Tier::…)`.
+- Status is `t.status.state(phux_design::State::…)`: ink, companions,
+  vector mark and word. `ui::badge::{mark, tone_badge}` draw it.
+- phux's own rows are `ui::rows::Row`, with a forced `State` for the
+  gallery; kit components take `&t.kit`.
+- Kit overlays mount above the window through `ui::kit_overlay`, and their
+  open state is a `Surface` (`Menu`, `Select`, `Toasts`).
+
+`Ink` stays, filled from the tokens and carrying them (`p.tokens`), until
+every view has converted; Lane A's last commit deletes it.
+
+Two guards keep raw styling out. `clippy.toml` disallows the raw calls
+(`El::shadow`, `TextStyle::new`, `Color::alpha`, …); unconverted modules
+carry an outer `#[allow(clippy::disallowed_methods)]` on their `mod` item,
+which goes when the module converts. `scripts/style_literals.py` counts raw
+literals per file against `scripts/style_literals.baseline.json`; a count
+may fall and never rise. Owner paths (`src/ui/tokens*`, `src/theme*`) and
+the scene art are exempt. `just rune-gallery DIR` paints every snapshot
+suite, the design fixture included, blended in sRGB as the app is.
+
+### Kit deviations
+
+rune-kit is adopted where its look fits the schema. Where it does not, the
+difference is accepted and listed here, or phux keeps its own component.
+The gallery's states page paints each, so a kit bump is reviewed.
+
+| Deviation | Why it stands | Upstream candidate |
+| --- | --- | --- |
+| Literal kit radii: compact `Menu` 6, `Dialog` 6, `SegmentedControl` 6 and a fixed 28 height, `Toast` 8/4, `Select` 4/6, `Keybind` 2, radio 8/3, `Card` rule 2, `TabStrip` 6, tooltip 4, compact `Badge` 2, `SidebarRow` badge 8, switch tracks | Accepted where adopted; the tooltip takes `.radius(t.radius.md)`; `Dialog` and phone pills are phux's own | kit geometry reads `k.radius` |
+| Kit `md` means "control", so `kit.radius = {xs, xs, sm, md, lg}` and `Card`, `Popover` and standard `Menu` panels draw at `radius.sm` | Accepted | separate control and surface radii |
+| `SegmentedControl` focus ring (2, 1) against the tokens' offset 2 | Accepted | kit rings read `cx.focus_ring` |
+| Kit controls draw disabled with `layer_opacity` 0.4–0.5 | Accepted for kit controls; phux's own use faint ink | kit disabled through `text_faint` |
+| `Dialog` and `Menu` enter on `k.motion.overlay` with no scale | Accepted; phux's own surfaces scale from `motion.enter_scale` | an overlay enter-scale token |
+| `TabStrip` (active treatment, fixed 28 row, `MORPH` lift, accent busy dot, no done word, internal keys) | Tabs are phux's own | selected-treatment and status hooks, `TabWords::done`, a height setting |
+| `List` is label-only at 14/500 | Rows are phux's own (`ui::rows`) | a row builder with details and spans |
+| `Badge` fills are fixed and it is a live region | `ui::badge::tone_badge` | `Badge::tone` and `.live(false)` |
+| `Dialog` has a fixed height, no footer or scrolling body | `ui::Sheet` is phux's own, on Rune's `.modal` | a footer slot, top offset and scroll body |
+| English kit strings (`SidebarHeader` "N items", `SidebarRow` state words) | Row descriptions are overridden; "N items" stands | kit `Words` |
+| No spacing scale in the kit; `INDENT` 16 is a constant | Kit settings are set from `t.space` | kit `Space` tokens |
+| `SplitView`'s 48 pt band and opaque root | Not adopted | `band_height`, a ground-fill option |
+| No kit slider | Settings' glass slider is phux's own | a kit `Slider` |
+| No reduce-transparency, low-power or layout-direction API on `Cx` | Reduce transparency reaches tokens through `tokens::overrides` until `Desk` reads the platform; the `ar` gallery page shows the script, not mirrored chrome | `cx.reduced_transparency()`, `cx.low_power()`, a layout direction |
+| `SystemMaterial` has no iOS implementation | Phone glass is `backdrop_blur` only | `SystemMaterial` on iOS |
+| `cx.web_focus()` (every pressable a Tab stop) | Not yet on: with it, Enter no longer blurs Settings search and the update card's action joins Tab order; the lanes that own those switch it on with their focus changes | — |

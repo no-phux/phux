@@ -10,7 +10,8 @@ use rune::{Color, El, el};
 use serde_json::Value;
 
 use crate::machines::LOCAL;
-use crate::theme::{color, contrast, mix, on_fill};
+use crate::theme::{contrast, on_fill};
+use crate::ui::Paint;
 
 /// What the registry last said: each host's `0xRRGGBB` and whether an
 /// override chose it. This machine is keyed by its short host name.
@@ -93,25 +94,28 @@ pub fn channels(name: &str) -> [f32; 3] {
 
 /// `name`'s colour moved toward white or black just far enough to read at
 /// 3:1 on `ground`, at most 50% (olive on Windows 98 silver needs ~45%);
-/// the hue stays.
+/// the hue stays (§1.2 identity: `host_bar`, `host_ease_max`).
 pub fn on(name: &str, ground: Color) -> Color {
     eased(entry(name).0, ground)
 }
 
 /// The palette colour `rgb`, eased the same way.
 pub fn eased(rgb: u32, ground: Color) -> Color {
+    use phux_design::tokens::IDENTITY;
     let end = if on_fill(ground) == Color::WHITE {
-        0xff_ffff
+        phux_design::Rgb8::WHITE
     } else {
-        0
+        phux_design::Rgb8::BLACK
     };
-    let step = |s: u8| mix(rgb, end, f32::from(s) / 100.0);
-    color(
-        (0..=50)
-            .map(step)
-            .find(|c| contrast(color(*c), ground) >= 3.0)
-            .unwrap_or_else(|| step(50)),
-    )
+    let max = f64::from(IDENTITY.host_ease_max);
+    let step = |s: u8| {
+        phux_design::solve::mix(phux_design::Rgb8::hex(rgb), end, max * f64::from(s) / 50.0)
+    };
+    (0..=50)
+        .map(step)
+        .find(|c| contrast(c.paint(), ground) >= IDENTITY.host_bar)
+        .unwrap_or_else(|| step(50))
+        .paint()
 }
 
 /// A short bar in `color` down the selected row's leading edge: the fill
@@ -166,6 +170,7 @@ pub fn swatch(index: usize, ground: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::color;
     use serde_json::json;
 
     #[test]
@@ -193,6 +198,29 @@ mod tests {
         assert!(!entry("box-a").1);
         pick(LOCAL, "copper");
         assert_eq!(entry(LOCAL), (0xC9_926B, true));
+    }
+
+    #[test]
+    fn the_shared_palette_is_the_brand_identity_palette() {
+        let brand = phux_design::tokens::IDENTITY.host_palette;
+        assert_eq!(brand.len(), PALETTE.len());
+        for ((id, rgb), b) in PALETTE.iter().zip(brand) {
+            assert_eq!((*id, *rgb), (b.id, b.color.rgb().to_u32()));
+        }
+    }
+
+    #[test]
+    fn every_swatch_reads_on_the_house_layers() {
+        use phux_design::{Mode, Roles};
+        for mode in [Mode::Dark, Mode::Light] {
+            let r = Roles::house(mode);
+            for ground in [r.layer.ground, r.layer.sidebar, r.layer.raised] {
+                for (i, (id, _)) in PALETTE.iter().enumerate() {
+                    let got = contrast(swatch(i, ground.paint()), ground.paint());
+                    assert!(got >= 3.0, "{id} on {ground}: {got}");
+                }
+            }
+        }
     }
 
     #[test]

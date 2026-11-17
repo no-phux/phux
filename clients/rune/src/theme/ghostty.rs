@@ -6,7 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::{LATTE, MOCHA, THEMES, Theme, color};
+use super::builtin::required;
+use super::{Theme, color};
 
 /// The config's colours as a theme, read once per launch. `None` without a
 /// config, or one that names no background and foreground.
@@ -104,7 +105,12 @@ pub fn parse(text: &str) -> Option<Theme> {
     }
     let (background, foreground) = (background?, foreground?);
     let dark = color(background).luminance() < 0.4;
-    let mut ansi = THEMES[if dark { MOCHA } else { LATTE }].ansi;
+    let mut ansi = required(if dark {
+        "catppuccin-mocha"
+    } else {
+        "catppuccin-latte"
+    })
+    .ansi;
     for (slot, found) in ansi.iter_mut().zip(palette) {
         if let Some(colour) = found {
             *slot = colour;
@@ -120,6 +126,7 @@ pub fn parse(text: &str) -> Option<Theme> {
         cursor: cursor.unwrap_or(foreground),
         // The blue slot: a cursor is often the foreground, which no wash reads on.
         accent: ansi[4],
+        selection: None,
     })
 }
 
@@ -193,7 +200,7 @@ font-size = 14
         assert_eq!(theme.foreground, 0xc0caf5);
         assert_eq!(theme.cursor, 0xffffff);
         assert_eq!(theme.ansi[1], 0xf7768e);
-        assert_eq!(theme.ansi[2], THEMES[MOCHA].ansi[2]);
+        assert_eq!(theme.ansi[2], required("catppuccin-mocha").ansi[2]);
         assert_eq!(theme.accent, 0x7aa2f7);
         assert!(theme.dark);
         assert_eq!(theme.id, "ghostty");
@@ -203,7 +210,7 @@ font-size = 14
     fn a_light_background_reads_as_light_and_needs_both_colours() {
         let light = parse("background = #fdf6e3\nforeground = #586e75").expect("a theme");
         assert!(!light.dark);
-        assert_eq!(light.ansi, THEMES[LATTE].ansi);
+        assert_eq!(light.ansi, required("catppuccin-latte").ansi);
         assert_eq!(light.cursor, light.foreground);
         assert_eq!(parse("background = #000000"), None);
         assert_eq!(parse("background = #000000\nforeground = blue"), None);
