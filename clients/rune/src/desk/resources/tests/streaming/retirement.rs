@@ -1,12 +1,50 @@
 //! Cache-wide admission survives arbitrary document/window turnover. The
 //! decoder workers are real; a test-only waker barrier keeps them occupied
 //! while new PNG jobs and identities arrive, without relying on decode timing.
+//!
+//! Rune's decoder workers are one process-wide pool, and these tests block
+//! every worker on purpose. Each therefore runs [`alone`], in a child copy of
+//! this test binary, so no image test beside it in this process starves.
 use super::*;
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex};
+
+/// Names the one test a child process runs; set only in that child.
+const ALONE: &str = "RUNE_RETIREMENT_ALONE";
+/// Printed by the child once the test body returned, so a filter that
+/// matched no test cannot pass with nothing run.
+const DONE: &str = "retirement body completed:";
+
+/// Run the test `name` (its function name in this module) in a child copy of
+/// this binary that runs nothing else, or run `body` when this process is
+/// that child. Call it before any fixture touches the decoder pool.
+fn alone(name: &str, body: fn()) {
+    if std::env::var_os(ALONE).is_some_and(|test| test == name) {
+        body();
+        println!("{DONE} {name}");
+        return;
+    }
+    let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
+    let binary = std::env::current_exe().expect("the test binary");
+    let output = std::process::Command::new(binary)
+        .args(["--exact", &format!("{module}::{name}"), "--nocapture"])
+        .arg("--test-threads=1")
+        .env(ALONE, name)
+        .output()
+        .expect("the child test runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{name} failed alone:\n{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("{DONE} {name}")),
+        "the child ran no {module}::{name}: {stdout}"
+    );
+}
 
 struct Release {
     blocked: Arc<(Mutex<bool>, Condvar)>,
-    _exclusive: MutexGuard<'static, ()>,
 }
 
 impl Drop for Release {
@@ -16,12 +54,9 @@ impl Drop for Release {
     }
 }
 
+/// Block every decoder worker until the returned [`Release`] drops. Only
+/// called inside [`alone`]: the workers are process-wide, not per cache.
 fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<()>) {
-    // Rune's workers are process-wide, not per cache. Two fixtures warming
-    // concurrently can each block some workers and wait forever for the rest.
-    // Serialize only the pool-blocking section, until Release wakes its workers.
-    static EXCLUSIVE: Mutex<()> = Mutex::new(());
-    let exclusive = EXCLUSIVE.lock().unwrap_or_else(|error| error.into_inner());
     let blocked = Arc::new((Mutex::new(false), Condvar::new()));
     let barrier = Arc::clone(&blocked);
     let (tx, wake) = mpsc::channel();
@@ -30,10 +65,7 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
         let guard = barrier.0.lock().unwrap();
         drop(barrier.1.wait_while(guard, |released| !*released).unwrap());
     })));
-    let release = Release {
-        blocked,
-        _exclusive: exclusive,
-    }; // releases workers even if an assertion panics, before unlocking EXCLUSIVE.
+    let release = Release { blocked }; // releases workers even if an assertion panics.
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(surface::MAX_DECODES);
@@ -56,6 +88,13 @@ fn busy_cache(rt: &mut Runtime<Desk>, base: &[u8]) -> (Release, mpsc::Receiver<(
 
 #[test]
 fn decoded_after_scene_build_is_not_yet_render_eligible() {
+    alone(
+        "decoded_after_scene_build_is_not_yet_render_eligible",
+        decoded_after_scene_build,
+    );
+}
+
+fn decoded_after_scene_build() {
     let base = png(0);
     let (client, mut rt, _, _) = live();
     let (release, wake) = busy_cache(&mut rt, &base);
@@ -275,15 +314,27 @@ fn run_case(mode: &str, latest: &str) {
 
 #[test]
 fn repeated_identity_retirement_cannot_reopen_the_same_cache_backlog() {
-    for mode in ["epoch", "key", "activation", "renew"] {
-        for latest in ["valid", "invalid", "newer"] {
-            run_case(mode, latest);
-        }
-    }
+    alone(
+        "repeated_identity_retirement_cannot_reopen_the_same_cache_backlog",
+        || {
+            for mode in ["epoch", "key", "activation", "renew"] {
+                for latest in ["valid", "invalid", "newer"] {
+                    run_case(mode, latest);
+                }
+            }
+        },
+    );
 }
 
 #[test]
 fn waiting_surface_gets_a_freed_slot_before_busy_surfaces_restart() {
+    alone(
+        "waiting_surface_gets_a_freed_slot_before_busy_surfaces_restart",
+        waiting_surface_gets_a_freed_slot,
+    );
+}
+
+fn waiting_surface_gets_a_freed_slot() {
     let base = png(0);
     let (_, mut rt, _, _) = live();
     let (release, wake) = busy_cache(&mut rt, &base);
