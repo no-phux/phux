@@ -185,7 +185,9 @@ session (or `--session NAME`). It never creates a session on its own.
   selection, on device-pixel cells. Each pane follows its own size. Programs
   that track the mouse get it; the wheel scrolls history, or sends arrows in
   full-screen programs that keep DEC 1007 on (a setting turns that off).
-  Input methods compose at the cursor.
+  Input methods compose at the cursor. Kitty images draw over their cells
+  (under the text for a negative z), placeholders included, with one upload
+  per image or frame.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
@@ -263,6 +265,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
 | ⌘← / ⌘→ | Previous / next terminal in the session |
+| ⌘⇧← / ⌘⇧→ | Previous / next tab in the split |
 | ⌘↑ / ⌘↓ | Previous / next session |
 | ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
@@ -284,7 +287,7 @@ each line; the window asks first (Return pastes, Esc cancels).
 ## Known gaps
 
 - One window, and the server has no call to rename a single terminal.
-- No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
+- The only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the

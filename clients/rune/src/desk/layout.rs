@@ -81,7 +81,10 @@ impl Desk {
         };
         self.place_pending_splits(client);
         let listed = self.listed_resources();
-        let arrangement = self.arrangement(client);
+        let arrangement = self.arrangement(client).map(|(key, mut doc)| {
+            self.choose_slot_tabs(&mut doc, &shown);
+            (key, doc)
+        });
         let context = arrangement
             .as_ref()
             .and_then(|(session, doc)| Some((*session, doc.groups.get(doc.active)?.id)));
@@ -128,7 +131,18 @@ impl Desk {
     /// Open views for the active layout (the full phone group), closing the
     /// ones that left it. Retaining a view does not make its pane seen.
     fn sync_views(&mut self, client: &Client) -> bool {
-        let wanted: Vec<ResourceId> = self.navigation_tree().map(leaves).unwrap_or_default();
+        let mut wanted: Vec<ResourceId> = self.navigation_tree().map(leaves).unwrap_or_default();
+        // A slot's hidden tabs keep views: attached, sized, ready to show.
+        let hidden: Vec<ResourceId> = (self.connection.slots.iter())
+            .filter(|slot| wanted.contains(slot.showing()))
+            .flat_map(|slot| {
+                slot.strip
+                    .iter()
+                    .filter(|tab| *tab != slot.showing())
+                    .cloned()
+            })
+            .collect();
+        wanted.extend(hidden);
         let shown = self.connection.shown.as_ref().map(|s| s.resource.clone());
         let mut changed = false;
         self.connection.others.retain(|id, view| {
@@ -156,6 +170,51 @@ impl Desk {
             }
         }
         changed
+    }
+
+    /// Show each slot's tab this window chose, the keyboard's above all, and
+    /// keep the slots for sizing and badging their tabs.
+    fn choose_slot_tabs(&mut self, doc: &mut ArrangementDoc, shown: &ResourceId) {
+        let choice = &mut self.connection.slot_choice;
+        if let Some(slot) = doc.slot_of(shown) {
+            choice.retain(|tab| !slot.strip.contains(tab));
+            choice.push(shown.clone());
+        }
+        choice.retain(|tab| doc.slot_of(tab).is_some());
+        for tab in choice.iter() {
+            doc.show_tab(tab);
+        }
+        self.connection.slots.clone_from(&doc.slots);
+    }
+
+    /// Show the next tab of the focused pane's slot, `step` places on.
+    pub fn cycle_slot_tab(&mut self, step: isize) {
+        let Some(shown) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
+            return;
+        };
+        let Some(slot) = self
+            .connection
+            .slots
+            .iter()
+            .find(|s| s.strip.contains(&shown))
+        else {
+            return;
+        };
+        let at = slot.strip.iter().position(|tab| *tab == shown).unwrap_or(0);
+        let len = isize::try_from(slot.strip.len()).unwrap_or(1);
+        let next = isize::try_from(at).unwrap_or(0) + step;
+        let next = slot.strip[usize::try_from(next.rem_euclid(len)).unwrap_or(0)].clone();
+        self.focus_pane(&next);
+    }
+
+    /// The area a hidden slot tab takes: its slot's, wherever it shows.
+    pub(super) fn slot_area(&self, terminal: &ResourceId) -> Option<[f32; 2]> {
+        let slot = self
+            .connection
+            .slots
+            .iter()
+            .find(|s| s.strip.contains(terminal))?;
+        self.connection.areas.get(slot.showing()).copied()
     }
 
     /// Move the keyboard to a pane in the active layout, keeping its view.

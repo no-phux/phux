@@ -80,6 +80,9 @@ pub struct ImageData {
 /// One image destination in viewport cell coordinates.
 #[derive(Debug, Clone)]
 pub struct ImagePlacement {
+    /// The terminal's Kitty image id: stable while its content changes (an
+    /// animation's frames), so a client can reuse one texture for it.
+    pub image_id: u32,
     /// Shared decoded content; identity changes only when content changes.
     pub image: Arc<ImageData>,
     /// Left edge, including fractional pixel offset.

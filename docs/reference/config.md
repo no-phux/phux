@@ -278,6 +278,11 @@ which-key-delay-ms = 400
 ";" = "previous-pane"
 "=" = "last-pane"
 
+# Tabs inside one split (`phux slot add` makes them): } and { show the
+# focused slot's next or previous tab, in this client only.
+"}" = "next-slot-tab"
+"{" = "previous-slot-tab"
+
 # Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"
 

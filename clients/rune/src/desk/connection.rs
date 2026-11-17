@@ -39,7 +39,7 @@ pub struct Connection {
     /// A path search on the focused pane's host.
     pub paths: Option<palette::PathSearch>,
     /// Grid origins in window points, from the last layout.
-    pub(super) origins: HashMap<ResourceId, [f32; 2]>,
+    pub(crate) origins: HashMap<ResourceId, [f32; 2]>,
     /// Find in the focused pane's leased history.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
@@ -58,6 +58,10 @@ pub struct Connection {
     pub(super) receipts: events::Receipts,
     /// Grid areas in window points, from the last layout.
     pub(super) areas: HashMap<ResourceId, [f32; 2]>,
+    /// The shown group's slot tabs, as this window shows them.
+    pub slots: Vec<phux_client_core::layout::Slot>,
+    /// The tab this window chose in each slot: which tab shows is its own.
+    pub(super) slot_choice: Vec<ResourceId>,
     /// The last proposed cells and device-pixel cell size per terminal.
     pub(super) fitted: HashMap<ResourceId, Fitted>,
     /// The active session's split tree, or the focused pane alone.
@@ -119,6 +123,8 @@ impl Default for Connection {
             pending_spawns: Vec::new(),
             receipts: events::Receipts::default(),
             areas: HashMap::new(),
+            slots: Vec::new(),
+            slot_choice: Vec::new(),
             fitted: HashMap::new(),
             layout: None,
             others: HashMap::new(),

@@ -488,25 +488,49 @@ pub(super) fn to_json(items: &[Item]) -> serde_json::Value {
 
 /// The human section `phux doctor` ends with.
 pub(super) fn render_human(items: &[Item], color: bool) -> String {
+    render_doc(&to_json(items), "What works here", color, &|command| {
+        format!("fix: {command}")
+    })
+}
+
+/// A `checklist` document as text under `heading`, each fix command line
+/// shown through `fix`; a remote host's document reads the same as ours.
+pub(super) fn render_doc(
+    doc: &serde_json::Value,
+    heading: &str,
+    color: bool,
+    fix: &dyn Fn(&str) -> String,
+) -> String {
     use std::fmt::Write as _;
 
-    let width = items.iter().map(|item| item.title.len()).max().unwrap_or(0);
-    let mut out = String::from("\nWhat works here\n");
-    for item in items {
-        let severity = match item.verdict {
-            Verdict::Ok => crate::output::Severity::Ok,
-            Verdict::Off => crate::output::Severity::Error,
-            Verdict::Waiting | Verdict::Unknown => crate::output::Severity::Warn,
+    let rows = doc["items"].as_array().map_or(&[][..], Vec::as_slice);
+    let text = |row: &serde_json::Value, key| row[key].as_str().unwrap_or_default().to_owned();
+    let width = rows
+        .iter()
+        .map(|row| text(row, "title").len())
+        .max()
+        .unwrap_or(0);
+    let mut out = format!("\n{heading}\n");
+    for row in rows {
+        let severity = match row["status"].as_str() {
+            Some("ok") => crate::output::Severity::Ok,
+            Some("off") => crate::output::Severity::Error,
+            _ => crate::output::Severity::Warn,
         };
         let padding = 5 - severity.label().len();
         let line = crate::output::human_line(
             severity,
-            format_args!("{:padding$}{:<width$} {}", "", item.title, item.reason),
+            format_args!(
+                "{:padding$}{:<width$} {}",
+                "",
+                text(row, "title"),
+                text(row, "reason")
+            ),
             color,
         );
         let _ = writeln!(out, "{line}");
-        for command in item.fix_command.iter().flat_map(|c| c.lines()) {
-            let _ = writeln!(out, "  fix: {command}");
+        for command in text(row, "fix_command").lines() {
+            let _ = writeln!(out, "  {}", fix(command));
         }
     }
     out

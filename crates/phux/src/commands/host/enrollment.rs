@@ -321,17 +321,28 @@ pub(super) fn report_registered(
             };
             let attach_cmd = format!("phux attach {name}");
             let ls_cmd = format!("phux ls --remote {name}");
+            let doctor_cmd = format!("phux doctor --remote {name}");
             let host_ls_cmd = "phux host ls";
-            // One column for the three rows, sized to the longest command,
-            // so a long host name never runs into its description.
-            let col = [attach_cmd.len(), ls_cmd.len(), host_ls_cmd.len()]
+            // One column for the rows, sized to the longest command, so a
+            // long host name never runs into its description.
+            let col = [attach_cmd.len(), ls_cmd.len(), doctor_cmd.len()]
                 .into_iter()
                 .max()
                 .unwrap_or(0)
                 + 2;
             outln!("  {attach_cmd:<col$}{transport}");
             outln!("  {ls_cmd:<col$}list its sessions");
+            outln!("  {doctor_cmd:<col$}what works there");
             outln!("  {host_ls_cmd:<col$}every registered machine");
+            // An ssh:// entry carries only an interactive attach.
+            if !row.endpoint.starts_with("ssh://")
+                && let Some(lines) = crate::commands::doctor::other_host::missing_agents(name)
+            {
+                outln!();
+                for line in lines {
+                    outln!("{line}");
+                }
+            }
         }
         HostRole::Satellite => report_local_hub(hub, reload.as_ref()),
     }

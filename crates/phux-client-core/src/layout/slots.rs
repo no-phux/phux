@@ -78,6 +78,18 @@ impl ArrangementDoc {
         true
     }
 
+    /// Show again, in this document read fresh from the server, each tab
+    /// `local` showed instead of its slot's default: which tab shows is the
+    /// client's own and survives a re-read.
+    pub fn keep_shown(&mut self, local: &Self) {
+        for slot in local.slots.iter().filter(|slot| slot.shown != slot.default) {
+            let pane = slot.showing().clone();
+            if self.slot_of(&pane).is_some() {
+                self.show_tab(&pane);
+            }
+        }
+    }
+
     /// Show the tab `delta` places from the one showing in `pane`'s slot,
     /// wrapping; the tab now shown.
     pub fn cycle_tab(&mut self, pane: &ResourceId, delta: isize) -> Option<ResourceId> {
@@ -279,6 +291,18 @@ mod tests {
         doc.close_pane(&id(2)).unwrap();
         assert_eq!(shown(&doc), [id(1), id(4)]);
         assert!(doc.slots.is_empty());
+    }
+
+    /// A re-read from the server shows each stored default; the tab this
+    /// client chose is shown again over it.
+    #[test]
+    fn the_tab_a_client_shows_survives_a_re_read() {
+        let (mut local, _) = read();
+        local.cycle_tab(&id(3), 1);
+        let (mut fresh, _) = read();
+        assert_eq!(shown(&fresh), [id(1), id(3)]);
+        fresh.keep_shown(&local);
+        assert_eq!(shown(&fresh), [id(1), id(4)]);
     }
 
     #[test]

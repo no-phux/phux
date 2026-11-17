@@ -16,6 +16,7 @@ mod agents;
 mod audit;
 mod checklist;
 mod credentials;
+pub(crate) mod other_host;
 mod permissions;
 mod remote;
 mod remote_cert;
@@ -497,8 +498,11 @@ pub(crate) fn run(
     args: crate::commands::DoctorArgs,
     socket: Option<std::path::PathBuf>,
 ) -> ExitCode {
-    let crate::commands::DoctorArgs { json } = args;
-    run_doctor(json, socket)
+    let crate::commands::DoctorArgs { json, remote } = args;
+    match remote.remote {
+        Some(_) => other_host::run(json, remote.with_socket(socket)),
+        None => run_doctor(json, socket),
+    }
 }
 
 #[cfg(test)]

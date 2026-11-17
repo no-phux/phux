@@ -126,6 +126,8 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(TERMINAL, PreviousTab),
         item!(TERMINAL, NextTerminal),
         item!(TERMINAL, PreviousTerminal),
+        item!(TERMINAL, NextSlotTab),
+        item!(TERMINAL, PreviousSlotTab),
         item!(TERMINAL, NextTerminalInSession),
         item!(TERMINAL, PreviousTerminalInSession),
         item!(TERMINAL, PromptUp),

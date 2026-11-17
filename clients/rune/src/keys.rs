@@ -56,6 +56,8 @@ pub enum Shortcut {
     CloseTab,
     NextTab,
     PreviousTab,
+    NextSlotTab,
+    PreviousSlotTab,
     FocusLeft,
     FocusRight,
     FocusUp,

@@ -65,6 +65,8 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 
 | Keys | Does | Action |
 |---|---|---|
+| <kbd>}</kbd> | Next split tab | `next-slot-tab` |
+| <kbd>{</kbd> | Previous split tab | `previous-slot-tab` |
 | <kbd>T</kbd> | New worktree… | `new-worktree` |
 | <kbd>:</kbd> <kbd>?</kbd> <kbd>Space</kbd> | Command palette | `command-palette` |
 | <kbd>A</kbd> | Agents | `agent-fleet` |
