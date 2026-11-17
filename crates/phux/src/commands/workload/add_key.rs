@@ -6,7 +6,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_server::workload::{
     self, ClientMaterial, MAX_MATERIAL_BYTES, PreparedEnrollment, WorkloadError, WorkloadPaths,
 };
@@ -52,7 +52,7 @@ pub(super) fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, Cl
     }
     let material = read_material(args.file.as_deref())?;
     check_cert_out(&material, &args.issued)?;
-    let expires_at = Utc::now().timestamp().saturating_add(args.expires_in);
+    let expires_at = Timestamp::now().as_second().saturating_add(args.expires_in);
     let prepared = workload::prepare_enrollment(paths, &material, expires_at)
         .map_err(|error| cli_error(&error))?;
     let written = write_issued(&prepared, args.issued.file())?;

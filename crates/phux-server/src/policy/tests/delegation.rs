@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_protocol::kinds::{Requirement, Verb, Verbs, frame_rule};
 use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
@@ -31,7 +31,7 @@ fn delegate(
     world.state.set_connection_grant(LAUNCHER, launcher_grant);
     world
         .state
-        .mint_delegation(LAUNCHER, world.alpha_session, request, Utc::now())
+        .mint_delegation(LAUNCHER, world.alpha_session, request, Timestamp::now())
 }
 
 /// The grant an agent the owner launched on `alpha` connects with.
@@ -44,7 +44,7 @@ fn agent(world: &mut World) -> ConnectionGrant {
     .expect("the owner may delegate the agent default");
     world
         .state
-        .delegated_grant(&credential.id, Utc::now())
+        .delegated_grant(&credential.id, Timestamp::now())
         .expect("a fresh credential admits")
 }
 
@@ -68,12 +68,12 @@ fn a_delegated_agent_is_a_credential_acting_for_the_owner() {
     assert_eq!(credential.on_behalf_of, PrincipalId::Owner);
     let grant = world
         .state
-        .delegated_grant(&credential.id, Utc::now())
+        .delegated_grant(&credential.id, Timestamp::now())
         .unwrap();
     assert_eq!(grant.principal(), &credential.principal());
     assert_eq!(grant.kind(), phux_core::actor::PrincipalKind::Agent);
     assert_eq!(grant.on_behalf_of(), Some(&PrincipalId::Owner));
-    assert!(grant.expires_at.is_some_and(|at| at > Utc::now()));
+    assert!(grant.expires_at.is_some_and(|at| at > Timestamp::now()));
 }
 
 /// Every row the agent's grant admits needs only agent verbs; in
@@ -306,10 +306,11 @@ fn a_lifetime_is_clamped_and_a_lapsed_launcher_mints_nothing() {
     .unwrap();
     assert!(
         long.expires_at
-            <= Utc::now() + chrono::Duration::from_std(crate::delegation::MAX_LIFETIME).unwrap()
+            <= Timestamp::now()
+                + jiff::SignedDuration::try_from(crate::delegation::MAX_LIFETIME).unwrap()
     );
     let mut lapsed = scoped(&["*@global"]);
-    lapsed.expires_at = Some(Utc::now() - chrono::Duration::seconds(1));
+    lapsed.expires_at = Some(Timestamp::now() - jiff::SignedDuration::from_secs(1));
     assert_eq!(
         delegate(&mut world, lapsed, DelegationRequest::default()),
         Err(DelegationError::NoLauncherGrant)
@@ -325,14 +326,14 @@ fn a_withdrawn_or_expired_credential_admits_nothing() {
         DelegationRequest::default(),
     )
     .unwrap();
-    let later = credential.expires_at + chrono::Duration::seconds(1);
+    let later = credential.expires_at + jiff::SignedDuration::from_secs(1);
     assert!(world.state.delegated_grant(&credential.id, later).is_none());
 
     world.state.set_connection_grant(
         ClientId(60),
         world
             .state
-            .delegated_grant(&credential.id, Utc::now())
+            .delegated_grant(&credential.id, Timestamp::now())
             .unwrap(),
     );
     assert_eq!(
@@ -343,7 +344,7 @@ fn a_withdrawn_or_expired_credential_admits_nothing() {
     assert!(
         world
             .state
-            .delegated_grant(&credential.id, Utc::now())
+            .delegated_grant(&credential.id, Timestamp::now())
             .is_none()
     );
 }

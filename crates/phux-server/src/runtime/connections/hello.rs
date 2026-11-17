@@ -307,7 +307,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
     // socket acts as that credential, never as the owner the socket's uid
     // would otherwise make it.
     if let Some(id) = crate::runtime::delegation::delegated_credential(&peer, credential.as_ref()) {
-        let grant = state.with(|s| s.delegated_grant(id, chrono::Utc::now()));
+        let grant = state.with(|s| s.delegated_grant(id, jiff::Timestamp::now()));
         let Some(grant) = grant else {
             warn!(
                 ?client_id,

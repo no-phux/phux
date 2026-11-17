@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::fs;
 use std::path::Path;
 
-use chrono::{Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 
 use crate::secure_file::{WriteFault, fault, with_lock};
 

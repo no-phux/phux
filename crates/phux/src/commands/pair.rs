@@ -855,18 +855,13 @@ impl Lifetime {
     /// A printed link, or any mint meant for a phone, is single use (#2398);
     /// `--expires`, `--reusable`, and a plain `--json` mint (`phux host add`)
     /// keep a bearer any holder may use.
-    fn first_use_by(
-        self,
-        expires: bool,
-        json: bool,
-        door: &Door,
-    ) -> Option<chrono::DateTime<chrono::Utc>> {
+    fn first_use_by(self, expires: bool, json: bool, door: &Door) -> Option<jiff::Timestamp> {
         let enroll = matches!(
             door,
             Door::Listener { enroll: true } | Door::Relay { enroll: true, .. }
         );
         (!self.reusable && !expires && (!json || enroll))
-            .then(|| chrono::Utc::now() + chrono::Duration::seconds(LINK_SECONDS))
+            .then(|| jiff::Timestamp::now() + jiff::SignedDuration::from_secs(LINK_SECONDS))
     }
 }
 
@@ -932,11 +927,11 @@ struct LinkOutput<'a> {
     /// Off-camera file that receives the bearer. Never printed.
     secret_file: Option<&'a Path>,
     /// Absolute credential expiry, when `--expires` was set.
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<jiff::Timestamp>,
     /// The duration the operator typed (`15m`), for the expiry line.
     expires_label: Option<&'a str>,
     /// Single-use link: unused by then, the bearer stops working.
-    first_use_by: Option<chrono::DateTime<chrono::Utc>>,
+    first_use_by: Option<jiff::Timestamp>,
     /// `--no-enroll`.
     no_enroll: bool,
 }
@@ -1302,10 +1297,12 @@ fn print_enrollment_ticket(
         SecretSurface::File => "in the secret file, not printed",
         SecretSurface::QrAndFile => "in the QR and the secret file, not printed as text",
     };
-    let when = chrono::DateTime::from_timestamp(ticket.expires_at, 0).map_or_else(
-        || format!("unix {}", ticket.expires_at),
-        |stamp| stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    );
+    let when = jiff::Timestamp::from_second(ticket.expires_at)
+        .ok()
+        .map_or_else(
+            || format!("unix {}", ticket.expires_at),
+            |stamp| format!("{stamp:.0}"),
+        );
     outln!(
         "Enrollment ticket {} ({where_held}; single use):",
         ticket.id
@@ -1397,8 +1394,8 @@ fn prepare_secret_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn format_rfc3339(stamp: chrono::DateTime<chrono::Utc>) -> String {
-    stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+fn format_rfc3339(stamp: jiff::Timestamp) -> String {
+    format!("{stamp:.0}")
 }
 
 /// The fields a human mint may show. `token` is written only to the secret
@@ -1410,9 +1407,9 @@ struct HumanSecret<'a> {
     token: &'a str,
     fingerprint: Option<&'a str>,
     link: Option<&'a str>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<jiff::Timestamp>,
     expires_label: Option<&'a str>,
-    first_use_by: Option<chrono::DateTime<chrono::Utc>>,
+    first_use_by: Option<jiff::Timestamp>,
     qr: bool,
     /// Render the QR beneath the text link (never with `hide_bearer`).
     default_qr: bool,

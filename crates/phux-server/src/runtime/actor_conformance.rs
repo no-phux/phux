@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_protocol::ids::{ResourceId as WireResourceId, ServerInstance};
 use phux_protocol::policy::TransportType;
@@ -118,7 +118,7 @@ impl Fixture {
                     launcher.client,
                     self.alpha_session,
                     DelegationRequest::default(),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
             })
             .unwrap()

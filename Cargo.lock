@@ -2943,11 +2943,11 @@ dependencies = [
  "base64 0.23.1",
  "blake2",
  "bytes",
- "chrono",
  "core-foundation",
  "core-graphics",
  "dhat",
  "futures-util",
+ "jiff",
  "jsonschema",
  "libc",
  "libghostty-vt",
@@ -3155,8 +3155,8 @@ dependencies = [
 name = "phux-config"
 version = "0.157.0"
 dependencies = [
- "chrono",
  "insta",
+ "jiff",
  "phux-config-core",
  "phux-protocol",
  "serde",
@@ -3339,7 +3339,6 @@ version = "0.157.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
- "chrono",
  "console-subscriber",
  "futures-util",
  "getrandom 0.4.3",
@@ -3350,6 +3349,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "iai-callgrind",
+ "jiff",
  "libc",
  "nix 0.31.3",
  "phux-agent-rules",
@@ -3476,8 +3476,8 @@ version = "0.157.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
- "chrono",
  "insta",
+ "jiff",
  "libghostty-vt",
  "phux-client",
  "phux-client-core",
@@ -3513,8 +3513,8 @@ name = "phux-usage"
 version = "0.157.0"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "hex",
+ "jiff",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3546,8 +3546,8 @@ dependencies = [
 name = "phux-work"
 version = "0.157.0"
 dependencies = [
- "chrono",
  "getrandom 0.4.3",
+ "jiff",
  "phux-frozen",
  "rusqlite",
  "rustix",

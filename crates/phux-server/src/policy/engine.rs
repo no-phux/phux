@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use chrono::DateTime;
+use jiff::Timestamp;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use tracing::debug;
 
@@ -176,7 +176,7 @@ fn scoped_grant(
     grant.registry_generation = snapshot.generation();
     grant.expires_at = record
         .expires_at
-        .and_then(|seconds| DateTime::from_timestamp(seconds, 0));
+        .and_then(|seconds| Timestamp::from_second(seconds).ok());
     Ok(grant)
 }
 

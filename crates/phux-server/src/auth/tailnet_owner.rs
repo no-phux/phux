@@ -45,7 +45,7 @@ fn credential(login: &str) -> AuthenticatedCredential {
         id: format!("{ID_PREFIX}{login}"),
         principal: TAILNET_OWNER_PRINCIPAL.to_owned(),
         scopes: Vec::new(),
-        issued_at: chrono::Utc::now(),
+        issued_at: jiff::Timestamp::now(),
         expires_at: None,
         generation: 0,
         registry_instance: None,

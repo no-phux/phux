@@ -689,7 +689,7 @@ pub(crate) fn lock_path(db: &Path) -> PathBuf {
 }
 
 pub(crate) fn timestamp() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    format!("{:.0}", jiff::Timestamp::now())
 }
 
 pub(crate) fn digest(kind: &str, body: &serde_json::Value) -> Result<String, Error> {

@@ -46,12 +46,14 @@ fn enrollment_progress_severity_follows_typed_outcomes() {
 /// A self-signed certificate valid until `days` from now (day
 /// granularity), written as PEM to `path`.
 pub(super) fn certificate_until(path: &Path, days: i64) {
-    use chrono::Datelike as _;
     let key = rcgen::KeyPair::generate().expect("key");
     let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).expect("params");
-    let at = chrono::Utc::now() + chrono::Duration::days(days);
-    let narrow = |value: u32| u8::try_from(value).expect("fits");
-    params.not_after = rcgen::date_time_ymd(at.year(), narrow(at.month()), narrow(at.day()));
+    let at = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24 * days))
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date();
+    let narrow = |value: i8| u8::try_from(value).expect("fits");
+    params.not_after =
+        rcgen::date_time_ymd(i32::from(at.year()), narrow(at.month()), narrow(at.day()));
     let pem = params.self_signed(&key).expect("self-signed").pem();
     std::fs::write(path, pem).expect("write certificate");
 }
@@ -62,7 +64,7 @@ pub(super) fn certificate_until(path: &Path, days: i64) {
 #[test]
 fn renewal_is_due_inside_the_window_expired_or_unreadable() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let path = |name: &str| dir.path().join(name);
     certificate_until(&path("long.pem"), 60);
     certificate_until(&path("edge.pem"), 16);
@@ -103,7 +105,7 @@ fn renewal_is_due_inside_the_window_expired_or_unreadable() {
 #[test]
 fn a_short_lived_certificate_warns_only_when_expired() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let issue = |name: &str, from: i64, until: i64| {
         let key = rcgen::KeyPair::generate().expect("key");
         let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).expect("params");

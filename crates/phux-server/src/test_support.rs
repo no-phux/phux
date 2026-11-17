@@ -25,7 +25,7 @@ pub(crate) fn credential(id: &str, scopes: &[&str]) -> crate::auth::Authenticate
         id: id.to_owned(),
         principal: id.to_owned(),
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
-        issued_at: chrono::Utc::now(),
+        issued_at: jiff::Timestamp::now(),
         expires_at: None,
         generation: 1,
         registry_instance: None,

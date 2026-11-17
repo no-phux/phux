@@ -145,7 +145,7 @@ pub(super) fn run(
                         else {
                             continue;
                         };
-                        let at = chrono::Local::now().format("%H:%M:%S").to_string();
+                        let at = jiff::Zoned::now().strftime("%H:%M:%S").to_string();
                         notices.insert(0, Notice { at, app, summary, body });
                         notices.truncate(keep);
                         break;

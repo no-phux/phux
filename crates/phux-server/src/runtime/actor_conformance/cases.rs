@@ -36,7 +36,7 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
         assert!(std::path::Path::new(&minted.socket_path).exists());
         let lifetime_ms = minted
             .expires_at_ms
-            .saturating_sub(u64::try_from(Utc::now().timestamp_millis()).unwrap());
+            .saturating_sub(u64::try_from(Timestamp::now().as_millisecond()).unwrap());
         assert!(lifetime_ms <= 600_000, "{lifetime_ms}");
         assert_eq!(
             human.command(2, delegate).await,
@@ -188,7 +188,7 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
             .with_mut(|s| s.delete_emptied_sessions(&[beta], &phux_core::Actor::owner()));
         assert_eq!(deleted, vec!["beta".to_owned()]);
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert!(
             fx.state
                 .with(|s| s.delegations().live(&on_beta.credential.id, now).is_none()),

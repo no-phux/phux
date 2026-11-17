@@ -213,9 +213,9 @@ pub(crate) fn renewal_due(cert: &Path, now: i64) -> Option<String> {
 
 /// `YYYY-MM-DD` in UTC, or the raw seconds when out of range.
 pub(crate) fn calendar_date(seconds: i64) -> String {
-    chrono::DateTime::from_timestamp(seconds, 0).map_or_else(
+    jiff::Timestamp::from_second(seconds).ok().map_or_else(
         || seconds.to_string(),
-        |at| at.format("%Y-%m-%d").to_string(),
+        |at| at.strftime("%Y-%m-%d").to_string(),
     )
 }
 

@@ -100,7 +100,7 @@ impl AuditLog {
         let mut record = AuditRecord {
             v: SCHEMA_VERSION,
             seq: self.next_seq,
-            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ts: format!("{:.3}", jiff::Timestamp::now()),
             host: self.host.clone(),
             kind: entry.kind,
             actor: entry.actor,

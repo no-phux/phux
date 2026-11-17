@@ -28,7 +28,7 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     let tailnet_owner = tailnet_owner_mode();
     if json {
         let credentials: Vec<serde_json::Value> = rows
@@ -36,12 +36,12 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
             .map(|row| {
                 serde_json::json!({
                     "id": row.id,
-                    "issued_at": row.issued_at.to_rfc3339(),
-                    "last_seen": row.last_seen.map(|t| t.to_rfc3339()),
+                    "issued_at": rfc3339(row.issued_at),
+                    "last_seen": row.last_seen.map(rfc3339),
                     "revoked": row.revoked,
                     "generation": row.generation,
-                    "expires_at": row.expires_at.map(|t| t.to_rfc3339()),
-                    "link_expires_at": row.first_use_by.map(|t| t.to_rfc3339()),
+                    "expires_at": row.expires_at.map(rfc3339),
+                    "link_expires_at": row.first_use_by.map(rfc3339),
                     "status": status(row, now).0,
                 })
             })
@@ -69,14 +69,14 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
         "STATUS"
     );
     for row in rows {
-        let minted = row.issued_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        let minted = row.issued_at.strftime("%Y-%m-%d %H:%M:%S").to_string();
         let seen = row.last_seen.map_or_else(
             || "never".to_owned(),
-            |t| t.format("%Y-%m-%d %H:%M:%S").to_string(),
+            |t| t.strftime("%Y-%m-%d %H:%M:%S").to_string(),
         );
         let (status, until) = status(&row, now);
         let until = until.map_or_else(String::new, |t| {
-            format!(" (until {})", t.format("%Y-%m-%d %H:%M:%S"))
+            format!(" (until {})", t.strftime("%Y-%m-%d %H:%M:%S"))
         });
         outln!(
             "{:<36}  {:<20}  {:<20}  {status}{until}",
@@ -91,6 +91,20 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
 /// Whether `[policy] tailnet-owner` is on in this machine's config: the
 /// owner's own tailnet devices need no credential from this list. An
 /// unreadable config reads as off; `phux doctor` reports it.
+/// `at` as `pair ls --json` has always written it: fraction digits in whole
+/// groups of three (none, milli, micro or nano) and a `+00:00` offset.
+fn rfc3339(at: jiff::Timestamp) -> String {
+    let digits = match at.subsec_nanosecond() {
+        0 => 0,
+        nanos if nanos % 1_000_000 == 0 => 3,
+        nanos if nanos % 1_000 == 0 => 6,
+        _ => 9,
+    };
+    let text = format!("{at:.digits$}");
+    text.strip_suffix('Z')
+        .map_or_else(|| text.clone(), |stamp| format!("{stamp}+00:00"))
+}
+
 fn tailnet_owner_mode() -> bool {
     phux_config::loader::load_from(&phux_config::loader::config_path())
         .is_ok_and(|config| config.policy.tailnet_owner)
@@ -100,8 +114,8 @@ fn tailnet_owner_mode() -> bool {
 /// instant it stops working when one is set (#2398).
 fn status(
     row: &phux_server::auth::CredentialSummary,
-    now: chrono::DateTime<chrono::Utc>,
-) -> (&'static str, Option<chrono::DateTime<chrono::Utc>>) {
+    now: jiff::Timestamp,
+) -> (&'static str, Option<jiff::Timestamp>) {
     let until = match (row.first_use_by, row.expires_at) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -167,7 +181,7 @@ fn run_pair_rotate(
     overlap_seconds: i64,
     json: bool,
 ) -> ExitCode {
-    let overlap = chrono::Duration::seconds(overlap_seconds);
+    let overlap = jiff::SignedDuration::from_secs(overlap_seconds);
     let rotated = match phux_server::auth::rotate_credential(tokens, credential_id, overlap) {
         Ok(rotated) => rotated,
         Err(error) => {
@@ -247,9 +261,9 @@ fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) ->
 }
 
 /// Parse `--expires`: same spellings as `--unused-for`, capped at 30 days.
-pub(super) fn parse_expires(raw: &str) -> Result<chrono::Duration, String> {
+pub(super) fn parse_expires(raw: &str) -> Result<jiff::SignedDuration, String> {
     let duration = parse_duration(raw, "--expires")?;
-    let max = chrono::Duration::days(30);
+    let max = jiff::SignedDuration::from_hours(720);
     if duration > max {
         return Err("--expires must be at most 30 days".to_owned());
     }
@@ -257,11 +271,11 @@ pub(super) fn parse_expires(raw: &str) -> Result<chrono::Duration, String> {
 }
 
 /// Parse `--unused-for`: `30d`, `24h`, `90m`, `45s`, or a bare number of seconds.
-fn parse_unused_for(raw: &str) -> Result<chrono::Duration, String> {
+fn parse_unused_for(raw: &str) -> Result<jiff::SignedDuration, String> {
     parse_duration(raw, "--unused-for")
 }
 
-fn parse_duration(raw: &str, flag: &str) -> Result<chrono::Duration, String> {
+fn parse_duration(raw: &str, flag: &str) -> Result<jiff::SignedDuration, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(format!("{flag} needs a duration (e.g. 30d, 24h, 90m, 45s)"));
@@ -286,17 +300,35 @@ fn parse_duration(raw: &str, flag: &str) -> Result<chrono::Duration, String> {
             return Err(format!("invalid {flag} unit in {raw:?}; use s, m, h, or d"));
         }
     };
-    Ok(chrono::Duration::seconds(seconds))
+    Ok(jiff::SignedDuration::from_secs(seconds))
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
+    use jiff::{SignedDuration, Timestamp};
     use phux_server::auth::CredentialSummary;
 
     #[test]
+    fn json_timestamps_read_as_chrono_wrote_them() {
+        let at = |nanos| Timestamp::new(1_800_000_000, nanos).unwrap();
+        assert_eq!(super::rfc3339(at(0)), "2027-01-15T08:00:00+00:00");
+        assert_eq!(
+            super::rfc3339(at(500_000_000)),
+            "2027-01-15T08:00:00.500+00:00"
+        );
+        assert_eq!(
+            super::rfc3339(at(123_456_000)),
+            "2027-01-15T08:00:00.123456+00:00"
+        );
+        assert_eq!(
+            super::rfc3339(at(123_456_789)),
+            "2027-01-15T08:00:00.123456789+00:00"
+        );
+    }
+
+    #[test]
     fn ls_names_unused_expired_and_revoked_links() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let row = CredentialSummary {
             id: "a".to_owned(),
             issued_at: now,
@@ -304,10 +336,10 @@ mod tests {
             revoked: false,
             generation: 1,
             expires_at: None,
-            first_use_by: Some(now + Duration::minutes(10)),
+            first_use_by: Some(now + SignedDuration::from_mins(10)),
         };
         assert_eq!(super::status(&row, now), ("unused", row.first_use_by));
-        let later = now + Duration::minutes(11);
+        let later = now + SignedDuration::from_mins(11);
         assert_eq!(super::status(&row, later).0, "expired");
         let paired = CredentialSummary {
             last_seen: Some(now),

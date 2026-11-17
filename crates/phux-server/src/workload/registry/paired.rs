@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use super::{PairedDeviceRepair, WorkloadRegistry};
 use crate::secure_file;
@@ -42,7 +42,7 @@ impl WorkloadRegistry {
                 .iter_mut()
                 .find(|credential| credential.id == id)
                 .ok_or_else(|| WorkloadError::NotFound(id.to_owned()))?;
-            let updated = repair_ceiling(credential, Utc::now().timestamp())?;
+            let updated = repair_ceiling(credential, Timestamp::now().as_second())?;
             if updated {
                 registry.commit(path, held)?;
             }
@@ -76,7 +76,7 @@ impl WorkloadRegistry {
                 return Ok(None);
             }
             let mut registry = Self::load(path)?;
-            let now = Utc::now().timestamp();
+            let now = Timestamp::now().as_second();
             let full = [
                 parse_ceiling(&[PAIRED_DEVICE_SCOPE.to_owned()])?,
                 parse_ceiling(&[LEGACY_PAIRED_DEVICE_SCOPE.to_owned()])?,

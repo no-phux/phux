@@ -1,6 +1,6 @@
 //! Credential records, summaries, and the identities an admission carries.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use phux_protocol::policy::PeerIdentity;
@@ -34,18 +34,18 @@ pub(super) struct CredentialRecord {
     pub(super) verifier: String,
     pub(super) principal: String,
     pub(super) scopes: Vec<String>,
-    pub(super) issued_at: DateTime<Utc>,
-    pub(super) expires_at: Option<DateTime<Utc>>,
-    pub(super) revoked_at: Option<DateTime<Utc>>,
+    pub(super) issued_at: Timestamp,
+    pub(super) expires_at: Option<Timestamp>,
+    pub(super) revoked_at: Option<Timestamp>,
     pub(super) generation: u64,
     /// Last successful authentication of this generation; `None` if never
     /// used (or an older store).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) last_seen: Option<DateTime<Utc>>,
+    pub(super) last_seen: Option<Timestamp>,
     /// A single-use pairing link's deadline: unused by then, the credential
     /// is expired. The first admission clears it on every generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) first_use_by: Option<DateTime<Utc>>,
+    pub(super) first_use_by: Option<Timestamp>,
 }
 
 /// One credential as listed by `phux pair ls`: identity, mint time, last
@@ -55,17 +55,17 @@ pub struct CredentialSummary {
     /// Stable credential identifier shared by its rotated generations.
     pub id: String,
     /// Earliest `issued_at` across generations (when the credential was minted).
-    pub issued_at: DateTime<Utc>,
+    pub issued_at: Timestamp,
     /// Latest `last_seen` across generations, when any authentication recorded one.
-    pub last_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<Timestamp>,
     /// True when every generation carries a `revoked_at`.
     pub revoked: bool,
     /// Highest generation number currently on disk for this id.
     pub generation: u64,
     /// The newest generation's absolute expiry, if any.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     /// Still unused single-use link: admission fails after this instant.
-    pub first_use_by: Option<DateTime<Utc>>,
+    pub first_use_by: Option<Timestamp>,
 }
 
 /// Outcome of [`prune_unused`]: which credential ids were revoked.
@@ -96,9 +96,9 @@ pub struct AuthenticatedCredential {
     /// Declared authorization scopes; enforcement belongs to the caller.
     pub scopes: Vec<String>,
     /// Time this generation was issued.
-    pub issued_at: DateTime<Utc>,
+    pub issued_at: Timestamp,
     /// Optional time after which new authentication fails.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     /// Monotonic generation within the credential identifier. For a workload
     /// credential, the generation of the registry snapshot that admitted it.
     pub generation: u64,
@@ -205,7 +205,7 @@ pub enum Standing {
     /// Admissible, until `expires_at` when set.
     Active {
         /// When the generation stops being admissible.
-        expires_at: Option<DateTime<Utc>>,
+        expires_at: Option<Timestamp>,
     },
     /// Revoked, or absent from a store that loaded cleanly and holds
     /// credentials.
@@ -268,5 +268,19 @@ mod frozen {
         crate::secure_file::with_lock(&path, |held| crate::auth::commit(&path, &file, held))
             .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), golden);
+    }
+
+    /// A store written before the move to jiff, with chrono's fraction
+    /// digits and a `+00:00` offset, loads with the same instants.
+    #[test]
+    fn remote_tokens_with_chrono_fractions_load() {
+        let golden = include_str!("../../tests/fixtures/frozen/remote-tokens/0002.json")
+            .replace("2026-10-01T12:00:00Z", "2026-10-01T12:00:00.500Z")
+            .replace("2026-10-02T12:00:00Z", "2026-10-02T12:00:00.123456+00:00");
+        let file: super::CredentialFile = serde_json::from_str(&golden).unwrap();
+        let record = &file.credentials[0];
+        let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
+        assert_eq!(record.issued_at, at("2026-10-01T12:00:00.5Z"));
+        assert_eq!(record.last_seen, Some(at("2026-10-02T12:00:00.123456Z")));
     }
 }

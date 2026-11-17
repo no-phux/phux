@@ -40,7 +40,7 @@ fn fixture() -> Fixture {
 }
 
 fn in_an_hour() -> i64 {
-    Utc::now().timestamp() + 3600
+    Timestamp::now().as_second() + 3600
 }
 
 fn scopes(list: &[&str]) -> Vec<String> {
@@ -248,7 +248,7 @@ fn enrollment_refuses_a_bad_request_scope_expiry_or_missing_authority() {
         Err(WorkloadError::Material(MaterialError::InvalidRequest))
     ));
 
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     for expiry in [now - 1, now, now + MAX_EXPIRY_SECONDS + 60] {
         assert!(matches!(
             prepare_enrollment(&fx.paths, &request(), expiry),

@@ -152,7 +152,7 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
             },
             credential: Some(crate::auth::AuthenticatedCredential {
                 principal: "device:cockpit".to_owned(),
-                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                expires_at: Some(jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1)),
                 generation: 7,
                 ..crate::test_support::credential(
                     "credential-id",

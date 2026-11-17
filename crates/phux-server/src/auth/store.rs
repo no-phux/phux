@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -62,13 +62,13 @@ impl TokenStore {
     /// Authenticate a bearer secret at the current wall-clock time.
     #[must_use]
     pub fn authenticate(&self, presented: &[u8]) -> Option<AuthenticatedCredential> {
-        self.authenticate_at(presented, Utc::now())
+        self.authenticate_at(presented, Timestamp::now())
     }
 
     pub(super) fn authenticate_at(
         &self,
         presented: &[u8],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Option<AuthenticatedCredential> {
         if presented.len() != TOKEN_LEN {
             return None;
@@ -109,7 +109,7 @@ impl TokenStore {
 
     /// The standing of credential `id` at `generation`: absent or revoked
     /// is [`Standing::Revoked`].
-    pub(crate) fn standing_at(&self, id: &str, generation: u64, now: DateTime<Utc>) -> Standing {
+    pub(crate) fn standing_at(&self, id: &str, generation: u64, now: Timestamp) -> Standing {
         let Some(record) = self
             .file
             .credentials

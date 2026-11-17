@@ -154,7 +154,7 @@ pub fn rotate_authority(
     paths: &WorkloadPaths,
     server: Option<ServerPair<'_>>,
 ) -> Result<Rotation, WorkloadError> {
-    let stamp = chrono::Utc::now().timestamp();
+    let stamp = jiff::Timestamp::now().as_second();
     let suffix = format!("retired-{stamp}");
     secure_file::with_lock(&paths.ca_key, |held| {
         let (old_certificate, old_pem) = load_authority_certificate(&paths.ca_cert)?;

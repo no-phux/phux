@@ -114,7 +114,7 @@ qrcode = { version = "0.14", default-features = false }
 # Only phux-tui links ratatui, for chrome; phux emits pane VT itself.
 # Recheck Paragraph::line_count on upgrades: its feature is semver-exempt.
 ratatui = { version = "0.30", default-features = false, features = ["std", "underline-color", "unstable-rendered-line-info"] }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+jiff = { version = "0.2.38", features = ["serde"] }
 # Agent restoration needs a provider-native session ID before spawn.
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }

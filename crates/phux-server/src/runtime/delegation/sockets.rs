@@ -5,7 +5,7 @@ use std::io;
 use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::policy::TransportType;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -52,7 +52,7 @@ pub(in crate::runtime) fn carry_delegations(
     state: &SharedState,
     mut blob: StateBlob,
 ) -> io::Result<(StateBlob, Vec<OwnedFd>)> {
-    let carried = state.with(|s| s.delegations().carried(Utc::now()));
+    let carried = state.with(|s| s.delegations().carried(Timestamp::now()));
     let mut owned = Vec::with_capacity(carried.len());
     blob.delegations = Vec::with_capacity(carried.len());
     for delegation in carried {
@@ -69,7 +69,7 @@ pub(in crate::runtime) fn carry_delegations(
             verbs: credential.verbs.bits(),
             on_behalf_of: credential.on_behalf_of,
             delegator: credential.delegator,
-            expires_at_ms: credential.expires_at.timestamp_millis(),
+            expires_at_ms: credential.expires_at.as_millisecond(),
             listener_fd: std::os::fd::AsRawFd::as_raw_fd(&duplicate),
             operations: delegation.operations,
         });
@@ -99,7 +99,7 @@ pub(in crate::runtime) fn resume_delegations(
         let before = pending.len();
         let mut unresolved = Vec::new();
         for blob in pending {
-            match state.with_mut(|s| s.restore_delegation(blob, Utc::now())) {
+            match state.with_mut(|s| s.restore_delegation(blob, Timestamp::now())) {
                 Ok(credential) => {
                     if serve_carried(state, blob, credential, input_lane, root_token) {
                         restored += 1;
@@ -191,7 +191,7 @@ pub(in crate::runtime) fn sweep_stale_sockets(state: &SharedState) {
         (
             s.config().server_socket_path().map(Path::to_path_buf),
             s.delegations()
-                .carried(Utc::now())
+                .carried(Timestamp::now())
                 .into_iter()
                 .map(|carried| carried.socket_path)
                 .collect::<Vec<_>>(),
@@ -266,9 +266,9 @@ pub(super) fn spawn_listener(
         inner: listener,
         credential: stamp(&credential),
     };
-    let lifetime = (credential.expires_at - Utc::now())
-        .to_std()
-        .unwrap_or_default();
+    let lifetime =
+        std::time::Duration::try_from(credential.expires_at.duration_since(Timestamp::now()))
+            .unwrap_or_default();
     tokio::task::spawn_local(async move {
         let expiry = tokio::time::sleep(lifetime);
         let accept = crate::runtime::connections::accept_loop(
