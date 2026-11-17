@@ -1,9 +1,1 @@
-{
-  "index.html": 20,
-  "src/canvas.rs": 2,
-  "src/client.rs": 1,
-  "src/client/app.rs": 1,
-  "src/client/documents.rs": 3,
-  "src/client/paint.rs": 1,
-  "src/lib.rs": 1
-}
+{}

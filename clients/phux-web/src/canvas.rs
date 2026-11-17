@@ -82,15 +82,28 @@ pub fn publish_metrics(canvas: &HtmlCanvasElement, metrics: &Metrics) -> Result<
     canvas.set_attribute("data-phux-cell-height", &metrics.cell_h.to_string())
 }
 
-/// Draw a one-logical-pixel neutral boundary, without changing pane geometry.
-/// The focused pane differs only in luminance, not border thickness.
+/// Draw a one-logical-pixel neutral boundary, without changing pane geometry,
+/// in the house look's borders ([`paint_pane_border_in`]).
 pub fn paint_pane_border(
     ctx: &CanvasRenderingContext2d,
     metrics: &Metrics,
     rect: &crate::PaneRect,
     active: bool,
 ) {
-    ctx.set_stroke_style_str(if active { "#5b5b65" } else { "#27272d" });
+    paint_pane_border_in(ctx, metrics, rect, active, &crate::ink::house());
+}
+
+/// Draw a one-logical-pixel neutral boundary in `roles`: `border.strong`
+/// around the focused pane, `border.muted` around the rest, composited over
+/// the ground. The focused pane differs only in luminance, not thickness.
+pub fn paint_pane_border_in(
+    ctx: &CanvasRenderingContext2d,
+    metrics: &Metrics,
+    rect: &crate::PaneRect,
+    active: bool,
+    roles: &phux_design::Roles,
+) {
+    ctx.set_stroke_style_str(&crate::ink::pane_border(roles, active));
     ctx.set_line_width(1.0);
     ctx.stroke_rect(
         f64::from(rect.x) * metrics.cell_w + 0.5,

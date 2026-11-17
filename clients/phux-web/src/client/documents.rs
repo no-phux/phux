@@ -3,7 +3,10 @@
 //! blob URL, or one line. Text only ever goes in as text content, never
 //! markup, so a document cannot inject HTML into the page.
 
+use std::sync::LazyLock;
+
 use phux_client_core::document_view::DocumentContent;
+use phux_design::tokens;
 use phux_protocol::ids::ResourceId;
 
 use super::*;
@@ -12,10 +15,27 @@ use crate::session::WebDocument;
 /// DOM id of the element that holds the document tiles, beside the canvas.
 pub const DOCUMENTS_CONTAINER_ID: &str = "phux-documents";
 
-const TILE_STYLE: &str = "position:fixed;box-sizing:border-box;overflow:auto;margin:0;\
-    padding:6px;display:flex;flex-direction:column;gap:4px;background:#0b0b0d;\
-    color:#d4d4d8;font:12px/1.4 ui-monospace,Menlo,monospace;";
-const CAPTION_STYLE: &str = "opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+/// A tile sits on the terminal's ground, in its text, in the mono caption
+/// role; the page's `phux-tokens.css` wins over the house fallbacks.
+static TILE_STYLE: LazyLock<String> = LazyLock::new(|| {
+    let house = crate::ink::house();
+    format!(
+        "position:fixed;box-sizing:border-box;overflow:auto;margin:0;padding:{};\
+         display:flex;flex-direction:column;gap:{};background:{};color:{};font:{};",
+        crate::ink::px("space-s2", tokens::SPACE.s2),
+        crate::ink::px("space-s1", tokens::SPACE.s1),
+        crate::ink::color("layer-ground", house.layer.ground),
+        crate::ink::color("text-text", house.text.text),
+        crate::ink::mono_font("caption", &tokens::TYPE.role.caption),
+    )
+});
+/// The caption is secondary copy: `text.dim`, never dimmed by opacity.
+static CAPTION_STYLE: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "color:{};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
+        crate::ink::color("text-dim", crate::ink::house().text.dim)
+    )
+});
 const TEXT_STYLE: &str = "margin:0;white-space:pre;font:inherit;";
 const IMAGE_STYLE: &str = "flex:1;min-height:0;max-width:100%;object-fit:contain;";
 
@@ -43,12 +63,15 @@ impl App {
             let Some(tile) = tile(&container, &page, id) else {
                 continue;
             };
+            // Client-rect coordinates are physical: the `inset` shorthand
+            // places the tile at (top, left) over its pane.
             let _ = tile.set_attribute(
                 "style",
                 &format!(
-                    "{TILE_STYLE}left:{}px;top:{}px;width:{}px;height:{}px;",
-                    canvas.left() + f64::from(pane.x) * css_w,
+                    "{}inset:{}px auto auto {}px;width:{}px;height:{}px;",
+                    *TILE_STYLE,
                     canvas.top() + f64::from(pane.y) * css_h,
+                    canvas.left() + f64::from(pane.x) * css_w,
                     f64::from(pane.cols) * css_w,
                     f64::from(pane.rows) * css_h,
                 ),
@@ -128,7 +151,7 @@ fn draw(page: &web_sys::Document, tile: &web_sys::Element, document: &WebDocumen
     tile.set_text_content(None);
     let _ = tile.set_attribute("data-kind", document.kind.as_str());
     let caption = document.caption();
-    let _ = append(page, tile, "div", CAPTION_STYLE, &caption);
+    let _ = append(page, tile, "div", &CAPTION_STYLE, &caption);
     if let Some(line) = document.notice() {
         let _ = append(page, tile, "div", "", &line);
         return;

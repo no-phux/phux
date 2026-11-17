@@ -7,7 +7,10 @@ impl App {
         if !self.session.render_visible() {
             return false;
         }
-        let grid = self.session.grid();
+        crate::ink::set_more_contrast(prefers("(prefers-contrast: more)"));
+        let mut grid = self.session.grid();
+        crate::ink::adopt_house_palette(&mut grid, self.engine_palette);
+        let roles = crate::ink::roles_of(&grid);
         let marks = self.search_marks(grid.cols, grid.rows);
         let (cols, rows, panes) = self.pane_geometry();
         let geometry = crate::canvas::CanvasGeometry::new(
@@ -20,7 +23,7 @@ impl App {
             return false;
         }
         self.canvas_geometry.set(geometry);
-        self.paint_backdrop(&geometry);
+        self.paint_backdrop(&geometry, &roles);
         let focused = self.session.focused_pane();
         let mut cursor_rows = Vec::with_capacity(panes.len());
         for (id, rect) in &panes {
@@ -29,11 +32,11 @@ impl App {
                 cursor_rows.push((id.clone(), row));
             }
             if panes.len() > 1 {
-                self.paint_pane_border(rect, active);
+                self.paint_pane_border(rect, active, &roles);
             }
         }
         if self.bell_showing() {
-            self.ctx.set_fill_style_str(BELL_FLASH_FILL);
+            self.ctx.set_fill_style_str(&crate::ink::bell_wash(&roles));
             self.ctx
                 .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
@@ -46,12 +49,13 @@ impl App {
         true
     }
 
-    fn paint_backdrop(&self, geometry: &crate::canvas::CanvasGeometry) {
+    /// `layer.ground` behind the panes, which is the terminal background.
+    fn paint_backdrop(&self, geometry: &crate::canvas::CanvasGeometry, roles: &phux_design::Roles) {
         if self.glass_mode.get() {
             self.ctx
                 .clear_rect(0.0, 0.0, geometry.width, geometry.height);
         } else {
-            self.ctx.set_fill_style_str("#0b0b0d");
+            self.ctx.set_fill_style_str(&crate::ink::ground(roles));
             self.ctx
                 .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
@@ -81,7 +85,8 @@ impl App {
             );
             Some(grid.cursor_row)
         } else if let Some(terminal) = self.session.pane_terminal(id) {
-            let grid = terminal.grid();
+            let mut grid = terminal.grid();
+            crate::ink::adopt_house_palette(&mut grid, self.engine_palette);
             render(
                 &self.ctx,
                 &grid,
@@ -111,17 +116,21 @@ impl App {
         self.ctx.clip();
     }
 
-    pub(super) fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
+    pub(super) fn paint_pane_border(
+        &self,
+        rect: &crate::PaneRect,
+        active: bool,
+        roles: &phux_design::Roles,
+    ) {
         if self.glass_mode.get() || self.session.pane_rects().len() <= 1 {
             return;
         }
-        crate::canvas::paint_pane_border(&self.ctx, &self.metrics, rect, active);
+        crate::canvas::paint_pane_border_in(&self.ctx, &self.metrics, rect, active, roles);
     }
 
-    /// Whether the visual bell is on screen now.
+    /// Whether the visual bell's wash is on screen now.
     pub(super) fn bell_showing(&self) -> bool {
-        monotonic_now_ms()
-            .is_ok_and(|now| now - self.bell_started_ms.get() < f64::from(BELL_FLASH_MS))
+        monotonic_now_ms().is_ok_and(|now| self.bell.get().washing(now))
     }
 
     /// The highlights of the open search's matches on screen, re-running

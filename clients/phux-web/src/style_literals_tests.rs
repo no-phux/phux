@@ -71,14 +71,15 @@ fn hex_colors(text: &str) -> usize {
         .count()
 }
 
-/// `rgb(` and `rgba(`, not inside a longer word.
+/// `rgb(` and `rgba(`, not inside a longer word and not a method call
+/// (`colour.rgb()` reads a token).
 fn rgb_functions(text: &str) -> usize {
     let bytes = text.as_bytes();
     ["rgb(", "rgba("]
         .iter()
         .map(|needle| {
             text.match_indices(needle)
-                .filter(|(i, _)| *i == 0 || !is_word(bytes[i - 1]))
+                .filter(|(i, _)| *i == 0 || !is_word(bytes[i - 1]) && bytes[i - 1] != b'.')
                 .count()
         })
         .sum()
@@ -124,7 +125,9 @@ fn no_file_gains_a_raw_style_literal() {
         let found = literals(&read_file_sync(&format!("{ROOT}/{path}"), "utf8"));
         let allowed = baseline.get(&path).copied().unwrap_or(0);
         if found > allowed {
-            over.push(format!("{path}: {found} raw style literals, baseline {allowed}"));
+            over.push(format!(
+                "{path}: {found} raw style literals, baseline {allowed}"
+            ));
         }
     }
     assert!(
@@ -146,7 +149,10 @@ fn the_baseline_names_only_files_that_exist() {
 fn the_patterns_match_what_the_spec_names() {
     assert_eq!(hex_colors("color: #0b0b0f; x: #FFF; #E8E5DF14"), 3);
     assert_eq!(hex_colors("#phux-agent-badges #[derive] #123456789"), 0);
-    assert_eq!(rgb_functions("rgba(0,0,0,.5) rgb(1 2 3) torgb("), 2);
+    assert_eq!(
+        rgb_functions("rgba(0,0,0,.5) rgb(1 2 3) torgb( ink.rgb()"),
+        2
+    );
     assert_eq!(
         physical_properties("padding-left: 8px; left:0; right : 1px; inset-inline-start: 0"),
         3

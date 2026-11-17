@@ -1,7 +1,7 @@
 //! DPR regression tests in a real browser; no server or production socket.
 
 use phux_vt_web::Vt;
-use phux_web::canvas::{CanvasGeometry, paint_pane_border, publish_metrics};
+use phux_web::canvas::{CanvasGeometry, paint_pane_border, paint_pane_border_in, publish_metrics};
 use phux_web::{Metrics, Overlay, PaneRect, render, render_cursor_row};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -136,8 +136,17 @@ async fn cursor_row_and_translated_pane_render_in_logical_coordinates() {
     assert_eq!(pixel(&ctx, 3, 3), vec![0, 0, 0, 0]);
 }
 
+/// A border role composited over the ground, as an opaque pixel.
+fn border_pixel(c: phux_design::Rgba8) -> Vec<u8> {
+    assert!(c.is_opaque(), "flat forms are opaque");
+    vec![c.r, c.g, c.b, 255]
+}
+
 #[wasm_bindgen_test]
 fn pane_borders_are_one_logical_pixel_and_neutral() {
+    let flat = phux_web::ink::house()
+        .flat(phux_design::Layer::Ground)
+        .border;
     let (canvas, ctx) = canvas();
     let metrics = metrics();
     CanvasGeometry::new(&metrics, 4, 2, 2.0)
@@ -149,12 +158,44 @@ fn pane_borders_are_one_logical_pixel_and_neutral() {
         cols: 4,
         rows: 2,
     };
+    // The focused pane: `border.strong`; the rest: `border.muted`.
     paint_pane_border(&ctx, &metrics, &rect, true);
-    assert_eq!(pixel(&ctx, 20, 0), vec![91, 91, 101, 255]);
-    assert_eq!(pixel(&ctx, 20, 1), vec![91, 91, 101, 255]);
+    assert_eq!(pixel(&ctx, 20, 0), border_pixel(flat.strong));
+    assert_eq!(pixel(&ctx, 20, 1), border_pixel(flat.strong));
     assert_eq!(pixel(&ctx, 20, 2), vec![0, 0, 0, 0]);
     paint_pane_border(&ctx, &metrics, &rect, false);
-    assert_eq!(pixel(&ctx, 20, 0), vec![39, 39, 45, 255]);
+    assert_eq!(pixel(&ctx, 20, 0), border_pixel(flat.muted));
+    assert_ne!(flat.strong, flat.muted, "focus differs in luminance");
+}
+
+#[wasm_bindgen_test]
+fn pane_borders_follow_a_derived_palette() {
+    let (canvas, ctx) = canvas();
+    let metrics = metrics();
+    CanvasGeometry::new(&metrics, 4, 2, 1.0)
+        .prepare(&canvas, &ctx)
+        .unwrap();
+    let rect = PaneRect {
+        x: 0,
+        y: 0,
+        cols: 4,
+        rows: 2,
+    };
+    let light = phux_web::ink::roles_for(
+        phux_vt_web::Rgb {
+            r: 253,
+            g: 246,
+            b: 227,
+        },
+        phux_vt_web::Rgb {
+            r: 101,
+            g: 123,
+            b: 131,
+        },
+    );
+    paint_pane_border_in(&ctx, &metrics, &rect, true, &light);
+    let strong = light.flat(phux_design::Layer::Ground).border.strong;
+    assert_eq!(pixel(&ctx, 10, 0), border_pixel(strong));
 }
 
 #[wasm_bindgen_test]

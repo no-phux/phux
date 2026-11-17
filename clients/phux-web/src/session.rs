@@ -165,6 +165,16 @@ pub struct AgentBadge {
     pub state: String,
 }
 
+/// How a pane's process ended, from its exit event: what makes an agent's
+/// badge `failed` (a nonzero code or a signal) rather than `done`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneExit {
+    /// The process exit code, when it exited on its own.
+    pub code: Option<i32>,
+    /// The terminating signal, when one killed it.
+    pub signal: Option<i32>,
+}
+
 /// The result of handling one incoming frame.
 #[derive(Default)]
 pub struct Outcome {
@@ -216,6 +226,8 @@ pub struct Connection {
     cell_px: Option<(u16, u16)>,
     focused_terminal: Option<ResourceId>,
     terminal_order: Vec<ResourceId>,
+    /// How each exited terminal ended, for its agents' badges.
+    exits: HashMap<ResourceId, PaneExit>,
     /// Document resources: read-only tiles after the terminals.
     documents: HashMap<ResourceId, WebDocument>,
     document_order: Vec<ResourceId>,
@@ -288,6 +300,7 @@ impl Connection {
             cell_px: None,
             focused_terminal: None,
             terminal_order: Vec::new(),
+            exits: HashMap::new(),
             documents: HashMap::new(),
             document_order: Vec::new(),
             bootstrap_limits: None,
@@ -410,6 +423,12 @@ impl Connection {
             .collect();
         badges.sort_by(|left, right| left.id.cmp(&right.id));
         badges
+    }
+
+    /// How `terminal_id`'s process ended, once its exit event arrived.
+    #[must_use]
+    pub fn pane_exit(&self, terminal_id: &ResourceId) -> Option<PaneExit> {
+        self.exits.get(terminal_id).copied()
     }
 
     /// Whether the kernel knows `terminal_id` as an `AgentSession` resource.
