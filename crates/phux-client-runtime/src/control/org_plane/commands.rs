@@ -295,6 +295,8 @@ impl ControlPlane {
     /// Replace `session`'s arrangement with a handle-space `document`, at the
     /// revision the replica holds (compare-and-swap: a `CONFLICT` outcome
     /// means re-read and redo).
+    /// A server that advertises `SLOT_TABS` takes the document's slot tabs
+    /// as written; an older one keeps its own.
     ///
     /// # Errors
     ///
@@ -315,7 +317,7 @@ impl ControlPlane {
             arrangement: key,
             expected: revision,
             document: wire,
-            slot_tabs: false,
+            slot_tabs: self.slot_tabs_supported(),
         })?)
     }
 

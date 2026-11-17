@@ -34,6 +34,11 @@ impl Desk {
             .find(|s| s.id == selected)?;
         let key = session.key?;
         if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
+            // Edits land on what this window shows: its tabs, not the
+            // stored defaults, which the write keeps.
+            for tab in &self.connection.slot_choice {
+                doc.show_tab(tab);
+            }
             let shown = self.connection.shown.as_ref().map(|s| &s.resource);
             super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));

@@ -1,7 +1,11 @@
 //! Tabs inside one split (slot tabs): the window's own keys show the next
-//! tab, its hidden tabs keep their views, and nothing is written.
+//! tab, its hidden tabs keep their views, and nothing is written. A terminal
+//! dropped on a pane joins its slot, and that is written.
 use super::*;
+use crate::desk::Grab;
 use phux_client_core::layout::Slot;
+use phux_protocol::wire::frame::ArrangementNode;
+use rune::Phase;
 
 /// Pane 1 beside a slot of 2 (its default) and 3.
 fn slotted() -> ArrangementDoc {
@@ -78,4 +82,43 @@ fn command_shift_arrows_walk_a_splits_tabs() {
         shortcut(&Key::Left, mods, None),
         Some(Shortcut::PreviousSlotTab)
     );
+}
+
+#[test]
+fn a_terminal_dropped_on_a_pane_joins_its_slot() {
+    let (client, mut rt) = fixture(&terminals(), &doc(split(1, 2)));
+    outbound(&client);
+    let [x, y] = rt.state.connection.origins[&id(2)];
+    let over = [x + 10.0, y + 10.0];
+    let onto_itself = Grab::Resource(2, session());
+    assert_eq!(rt.state.drop_target(onto_itself, over), None);
+
+    let grab = Grab::Resource(3, session());
+    rt.update(|d, _| d.drag_at(grab, Phase::Move, over, false));
+    assert_eq!(rt.state.connection.reorder.target(), Some(Grab::Pane(2)));
+    rt.update(|d, _| d.drag_at(grab, Phase::Up, over, false));
+    let (document, slot_tabs) = outbound(&client)
+        .into_iter()
+        .find_map(|frame| match frame {
+            FrameKind::Command {
+                command:
+                    Command::ArrangementReplace {
+                        document,
+                        slot_tabs,
+                        ..
+                    },
+                ..
+            } => Some((document, slot_tabs)),
+            _ => None,
+        })
+        .expect("the slot is written");
+    assert!(slot_tabs, "a server that keeps tabs takes them as written");
+    let ArrangementNode::Split { second, .. } = &document.groups[0].tree else {
+        panic!("still one split: {document:?}");
+    };
+    let ArrangementNode::Leaf(slot) = second.as_ref() else {
+        panic!("pane 2 is still a leaf");
+    };
+    assert_eq!(slot.tabs.len(), 1, "terminal 3 is its tab");
+    assert_eq!(slot.shown_at, 0, "pane 2 stays the default");
 }
