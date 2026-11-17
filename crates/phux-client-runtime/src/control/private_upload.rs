@@ -1,12 +1,13 @@
 //! Private images belong to one observed execution on one live connection.
 //! Ordinary file transfers deliberately retain their reconnect replay policy.
 
+use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{
     ActivationId, AuthorityId, ResourceId, ResourceKey, ServerInstance, SessionKey,
 };
 use phux_protocol::wire::frame::ExecState;
 
-use super::{ControlPlane, FrameKind, PasteEvent, PasteTrust, ServerFeature, Status};
+use super::{ControlPlane, FrameKind, PasteEvent, PasteTrust, Status};
 
 /// An opaque, connection-bound destination for a user-selected private image.
 ///
@@ -62,9 +63,12 @@ impl ControlPlane {
     fn private_upload_connection_verified(&self, terminal: &ResourceId) -> bool {
         terminal.host().is_none()
             && self.status == Status::Attached
-            && self.accepts_inbound(self.connection_epoch)
+            && self.live_connection_epoch == Some(self.connection_epoch)
             && self.organization.is_live()
-            && self.server_has(ServerFeature::FileUpload)
+            && self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has(ServerFeature::FileUpload))
     }
     /// Check under the same control lock as admission and the outbound drain.
     #[must_use]

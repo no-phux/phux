@@ -45,10 +45,10 @@ fn create(name: String, attrs: usize) -> Command {
 fn leaf(i: u32) -> ArrangementNode {
     let mut key = [7; 16];
     key[..4].copy_from_slice(&i.to_be_bytes());
-    ArrangementNode::Leaf(EntryRef {
-        entry: key,
-        target: EntryTarget::Member(ResourceKey::new(key).unwrap()),
-    })
+    ArrangementNode::Leaf(EntryRef::new(
+        key,
+        EntryTarget::Member(ResourceKey::new(key).unwrap()),
+    ))
 }
 
 fn replace(groups: u32) -> Command {
@@ -66,6 +66,7 @@ fn replace(groups: u32) -> Command {
                 })
                 .collect(),
         },
+        slot_tabs: false,
     }
 }
 

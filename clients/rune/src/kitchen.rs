@@ -11,7 +11,7 @@
 use phux_protocol::ids::ResourceId;
 
 use crate::creature::Work;
-use crate::reef::{Mood, Pt, Rng, Species, hash};
+use crate::playground::{Mood, Pt, Rng, Species, hash};
 
 mod sim;
 pub use sim::{Part, PartKind};

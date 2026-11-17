@@ -387,10 +387,8 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             code,
             message,
         } => error_frame_outcome(ctx, request_id, code, message),
-        // A request-correlated reply that reached the dispatcher instead of
-        // its awaiter (`Connection::request` returns interleaved frames
-        // here). Inert, never terminal: L1 §5 requires clients to tolerate
-        // replies interleaved with other traffic.
+        // A correlated reply that reached the dispatcher instead of its
+        // awaiter: inert (L1 §5 tolerates interleaved replies).
         FrameKind::CommandResult { request_id, result } => {
             command_result_outcome(ctx, request_id, result)
         }
@@ -405,10 +403,8 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
     }
 }
 
-/// A frame no arm takes. A server-direction frame is dropped: a newer server
-/// on the same major may send a reply or notice this client never asked
-/// for, and ignoring it is safe. A duplicate `HELLO_OK` or a client-direction
-/// frame is a peer fault no version skew explains, and stays fatal.
+/// A frame no arm takes. A server-direction frame (a newer server's) is
+/// dropped; a duplicate `HELLO_OK` or a client-direction frame is fatal.
 fn unexpected_frame_outcome(frame: &FrameKind) -> Result<FrameOutcome, AttachError> {
     if !is_ignorable_server_frame(frame) {
         return Err(unexpected_frame(frame));

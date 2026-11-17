@@ -1,8 +1,6 @@
-//! ADR-0158 delivery: what an OSC 52 write from a pane's live output does in
-//! this client. Only the focused pane may write; `defaults.clipboard-write`
-//! then sets the host clipboard (`allow`), asks first (`ask`), or drops it
-//! (`deny`). The text never reaches a log. Reads follow
-//! `defaults.clipboard-read` ([`crate::attach::clipboard_read`]).
+//! ADR-0158: an OSC 52 write from a pane's output. Only the focused pane may
+//! write; `defaults.clipboard-write` allows, asks, or denies. The text never
+//! reaches a log.
 
 use std::time::Instant;
 
@@ -29,7 +27,7 @@ impl super::super::SessionLoop {
                 ClipboardWrite::Ask => {
                     let source = crate::attach::server_frame::pane_label(&pane);
                     self.overlays.push(Box::new(
-                        crate::render::overlay::ClipboardConfirmOverlay::new(
+                        crate::render::overlay::ConfirmOverlay::clipboard(
                             &source,
                             text,
                             &self.settings.theme,

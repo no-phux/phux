@@ -11,10 +11,6 @@ use std::time::Duration;
 
 impl Client {
     /// Send a message. See [`crate::Store::send_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn send_mail(&self, request: SendMail) -> Result<Sent, Error> {
         match self.call(Request::SendMail(request))? {
             Response::Sent(sent) => Ok(sent),
@@ -23,10 +19,6 @@ impl Client {
     }
 
     /// A reader's mail. See [`crate::Store::read_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn read_mail(&self, request: ReadMail) -> Result<Vec<Mail>, Error> {
         match self.call(Request::ReadMail(request))? {
             Response::Mail(mail) => Ok(mail),
@@ -49,10 +41,6 @@ impl Client {
     /// Take the reader's undelivered mail, waiting up to the request's
     /// timeout for some to arrive. The keeper holds the request open; an
     /// empty result means the deadline passed. See [`crate::Store::take_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn wait_mail(&self, request: WaitMail) -> Result<Vec<Mail>, Error> {
         self.wait_mail_bound(request, None)
     }
@@ -89,10 +77,6 @@ impl Client {
 
     /// Return taken mail to the reader's undelivered mail. See
     /// [`crate::Store::release_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn release_mail(&self, request: ReleaseMail) -> Result<u64, Error> {
         match self.call(Request::ReleaseMail(request))? {
             Response::Released(count) => Ok(count),
@@ -101,10 +85,6 @@ impl Client {
     }
 
     /// Acquire a new lease. See [`crate::Store::take_claim`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn take_claim(&self, request: TakeClaim) -> Result<ClaimOutcome, Error> {
         match self.call(Request::TakeClaim(request))? {
             Response::ClaimOutcome(outcome) => Ok(outcome),
@@ -125,10 +105,6 @@ impl Client {
     }
 
     /// Release claims. See [`crate::Store::release_claim`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn release_claim(&self, request: ReleaseClaim) -> Result<u64, Error> {
         match self.call(Request::ReleaseClaim(request))? {
             Response::Released(count) => Ok(count),
@@ -137,10 +113,6 @@ impl Client {
     }
 
     /// Live claims. See [`crate::Store::claims`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
     pub fn claims(&self, filter: ClaimFilter) -> Result<Vec<Claim>, Error> {
         match self.call(Request::Claims(filter))? {
             Response::Claims(claims) => Ok(claims),

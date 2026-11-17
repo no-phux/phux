@@ -1,9 +1,6 @@
-//! Carrying every kind across a graceful upgrade (ADR-0032) through its app.
-//!
-//! At the cut each app chooses its resources, cuts them from their engines,
-//! and writes its part of the blob; on resume each rebuilds that part. The
-//! host iterates [`APPS`] and names no kind. The blob's fields are a frozen
-//! format, so an app writes only the fields its kind already owns.
+//! Carrying every kind across a graceful upgrade (ADR-0032) through its app:
+//! each app cuts and writes its part of the blob, then rebuilds it on resume.
+//! The blob is a frozen format, so an app writes only fields its kind owns.
 
 use std::os::fd::RawFd;
 use std::time::Duration;

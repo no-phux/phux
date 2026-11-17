@@ -89,7 +89,12 @@ impl TerminalActor {
             trace!("input snapshot skipped: canonical terminal is on loan");
             return;
         };
-        match InputEncoderSnapshot::capture(terminal, self.cell_px) {
+        match InputEncoderSnapshot::capture(
+            terminal,
+            self.cell_px,
+            &mut self.key_enc.borrow_mut(),
+            &mut self.mouse_enc.borrow_mut(),
+        ) {
             Ok(snapshot) => {
                 self.input_snapshot_tx.send_if_modified(|current| {
                     let changed = *current != snapshot;

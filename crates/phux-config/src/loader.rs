@@ -9,10 +9,6 @@ pub use phux_config_core::loader::config_path;
 use crate::{Config, ConfigError, parse_with_defaults};
 
 /// Load the config from [`config_path`].
-///
-/// # Errors
-///
-/// See [`load_from`].
 pub fn load() -> Result<Config, ConfigError> {
     load_from(&config_path())
 }

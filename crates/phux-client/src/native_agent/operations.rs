@@ -6,7 +6,6 @@ mod tests;
 use std::collections::HashMap;
 use std::path::Path;
 
-use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::{
     NativeCommand, NativeCommandResult, NativeDisposition, NativeRequest, NativeRequestPayload,
@@ -80,7 +79,7 @@ pub async fn fetch_launch_recipes(
             .request_metadata(
                 request_id,
                 Scope::Resource(resource.id.clone()),
-                "phux.native-launch/v1".to_owned(),
+                phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY.to_owned(),
             )
             .await
             .map_err(ClientError::Transport)?
@@ -145,17 +144,6 @@ async fn request_receipt(
     operation_id: u64,
     request: Command,
 ) -> Result<NativeCommandResult, AttachError> {
-    if !connection.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features_ext
-            .contains(ServerFeatureExt::NativeAgent)
-    }) {
-        return Ok(NativeCommandResult {
-            operation_id,
-            disposition: NativeDisposition::Refused,
-            detail: Some("The executing host does not support native SDK commands; upgrade phux. Nothing was submitted.".into()),
-        });
-    }
     connection
         .send(&FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::local(id)),

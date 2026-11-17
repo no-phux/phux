@@ -1,7 +1,7 @@
 // Workflows use free public compute and spend the shared cache budget only
 // from main.
 import { expect, test } from "bun:test";
-import { list, str, table, type Table } from "../lib/value.ts";
+import { str, table, type Table } from "../lib/value.ts";
 import {
   action,
   actionNames,
@@ -32,6 +32,13 @@ const CACHE_WRITERS = new Set([
   "jdx/mr-boxington-action",
 ]);
 
+test("the docs catalog job is a short ubuntu-latest run", () => {
+  const lane = job(workflow("ci.yml"), "docs-catalog");
+  expect(str(lane["runs-on"])).toBe("ubuntu-latest");
+  expect(lane["timeout-minutes"]).toBe(5);
+  expect(Number(lane["timeout-minutes"])).toBeLessThan(10);
+});
+
 test("all runner selectors are standard public capacity", () => {
   for (const name of workflowNames()) {
     const body = workflowText(name);
@@ -44,10 +51,13 @@ test("all runner selectors are standard public capacity", () => {
 
 test("Rune qualifies and releases on macOS and Linux", () => {
   const rune = workflow("rune-build.yml");
-  const matrix = table(table(job(rune, "build")["strategy"])["matrix"]);
-  const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
-  expect(runners).toContain("ubuntu-24.04");
-  expect(runners).not.toContain("macos-26");
+  const x86 = job(rune, "linux-x86_64");
+  const arm = job(rune, "linux-aarch64");
+  expect(str(x86["runs-on"])).toBe("ubuntu-24.04");
+  expect(str(arm["runs-on"])).toBe("ubuntu-24.04-arm");
+  expect(str(x86["name"])).toBe("linux-x86_64");
+  expect(str(arm["name"])).toBe("linux-aarch64");
+  expect(str(arm["if"])).toContain("inputs.qualify");
   expect(str(job(rune, "macos")["runs-on"])).toBe("macos-26");
   expect(str(job(rune, "macos")["if"])).toContain("inputs.hosts == 'macos'");
 });

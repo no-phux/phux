@@ -1,17 +1,25 @@
 use super::*;
 
+/// A consumer-side replica, blank like the primed acked reference.
+fn mirror_terminal() -> GhosttyTerminal<'static, 'static> {
+    let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
+    terminal
+        .set_scrollback_max_lines(Some(100))
+        .expect("mirror");
+    terminal
+}
+
+fn canonical_viewport(actor: &TerminalActor) -> Vec<String> {
+    let canonical = actor.terminal.borrow();
+    render_viewport(canonical.try_terminal().expect("no capture in flight"))
+}
+
 // ---- phux-v45.8 / ADR-0042: loss-tolerant (advance-on-ack) state sync ----
 
 /// A loss-tolerant reference advances on ack, not emit.
 #[test]
 fn loss_tolerant_reference_advances_only_on_ack() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
 
     actor.vt_write_for_test(b"hello");
@@ -71,24 +79,12 @@ fn loss_tolerant_reference_advances_only_on_ack() {
 /// the acked reference and alone converges the mirror.
 #[test]
 fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
 
     // Mirror starts at the same point the acked reference was primed to
     // (an empty grid) — what the consumer's TERMINAL_SNAPSHOT establishes.
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Content A → delta 1. SIMULATE A DROP: do not apply it, do not ack.
     actor.vt_write_for_test(b"AAAA");
@@ -105,13 +101,7 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     // Apply ONLY delta 2 (delta 1 was lost).
     mirror.vt_write(&delivered[0].1);
 
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -127,21 +117,9 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
 /// still converges.
 #[test]
 fn loss_tolerant_incremental_after_ack_converges() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Round 1: content, deliver + ack.
     actor.vt_write_for_test(b"row-one");
@@ -160,13 +138,7 @@ fn loss_tolerant_incremental_after_ack_converges() {
     mirror.vt_write(&f2[0].1);
     actor.on_frame_ack(client, f2[0].0);
 
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -179,21 +151,9 @@ fn loss_tolerant_incremental_after_ack_converges() {
 /// A retransmit heals a lost final frame on an idle terminal.
 #[test]
 fn loss_tolerant_retransmits_lost_frame_when_idle() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
     actor.enable_loss_tolerance_for_test(client);
-    let mut mirror = {
-        let mut terminal = GhosttyTerminal::new(20, 5).expect("mirror");
-        terminal
-            .set_scrollback_max_lines(Some(100))
-            .expect("mirror");
-        terminal
-    };
+    let mut mirror = mirror_terminal();
 
     // Content → delta. Simulate a drop: discard it, never ack.
     actor.vt_write_for_test(b"lonely");
@@ -215,13 +175,7 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
     // The retransmit (re-diffed against the acked reference) converges the
     // mirror that never saw the original frame.
     mirror.vt_write(&retransmit[0].1);
-    let canonical_grid = render_viewport(
-        actor
-            .terminal
-            .borrow()
-            .try_terminal()
-            .expect("no capture in flight"),
-    );
+    let canonical_grid = canonical_viewport(&actor);
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -233,13 +187,7 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
 /// Without loss tolerance there are no pending refs; emit-once as before.
 #[test]
 fn emit_once_default_keeps_no_pending_refs() {
-    let bundle = TerminalActor::new(20, 5).expect("new");
-    let mut actor = bundle.actor;
-    let client = ClientId(1);
-    let (tx, mut rx) = dummy_outbound();
-    actor
-        .register_consumer(client, tx, 11, true)
-        .expect("register");
+    let (mut actor, client, mut rx) = actor_with_consumer(true);
     // NB: loss-tolerance NOT enabled.
     actor.vt_write_for_test(b"content");
     actor.tick_emit();

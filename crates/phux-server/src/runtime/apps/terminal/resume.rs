@@ -74,7 +74,6 @@ pub(super) fn argv(s: &ServerState, launch: &TerminalLaunch) -> Option<Vec<Strin
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use phux_core::{Actor, ExitOutcome, ExitPolicy, LaunchSpec, ResumeToken, TerminalLaunch};
 

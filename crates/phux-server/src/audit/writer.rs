@@ -17,6 +17,9 @@ use super::{
 /// An open log: the live file, the chain head, and the signing key.
 pub struct AuditLog {
     dir: PathBuf,
+    /// The directory, exclusively `flock`ed: one writer per chain. Closing
+    /// it (drop, or exec on upgrade) releases the lock.
+    _lock: File,
     file: File,
     size: u64,
     next_seq: u64,
@@ -47,6 +50,7 @@ impl AuditLog {
             .mode(0o700)
             .create(dir)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        let lock = lock_dir(dir)?;
         let key = load_or_create_key(dir)?;
         let path = dir.join(LOG_FILE);
         let mut file = OpenOptions::new()
@@ -75,6 +79,7 @@ impl AuditLog {
             .unwrap_or_default();
         Ok(Self {
             dir: dir.to_owned(),
+            _lock: lock,
             file,
             size,
             next_seq: last.as_ref().map_or(0, |last| last.seq.saturating_add(1)),
@@ -207,6 +212,34 @@ fn load_or_create_key(dir: &Path) -> io::Result<Ed25519KeyPair> {
         std::fs::write(&pub_path, format!("{public}\n"))?;
     }
     Ok(key)
+}
+
+/// How long [`lock_dir`] waits for another server to let go: long enough for
+/// a restart's old image to finish exiting.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Take the exclusive lock on `dir`. Two servers sharing a state directory
+/// would otherwise both resume from the same head and fork the chain; the
+/// second one runs without an audit log instead.
+fn lock_dir(dir: &Path) -> io::Result<File> {
+    use rustix::fs::{FlockOperation, flock};
+    let handle = File::open(dir)?;
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match flock(&handle, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(handle),
+            Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("{} is in use by another phux server", dir.display()),
+                ));
+            }
+            Err(errno) => return Err(errno.into()),
+        }
+    }
 }
 
 /// The last complete record in `file`, and whether it ends in a torn line.

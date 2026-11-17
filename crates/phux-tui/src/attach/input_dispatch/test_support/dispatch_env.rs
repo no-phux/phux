@@ -115,13 +115,10 @@ pub(super) fn act(
     name: &str,
     args: &[(&str, toml::Value)],
 ) -> phux_config::keybind::ResolvedAction {
-    phux_config::keybind::ResolvedAction {
-        action: name.to_owned(),
-        args: args
+    crate::attach::resolved(name, args
             .iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
-            .collect(),
-    }
+            .collect())
 }
 
 /// Two leaves split side by side at `ratio`, focus on the left.
@@ -143,7 +140,7 @@ pub(super) fn two_pane_workspace_at(ratio: f32) -> ArrangementDoc {
                 focus: Some(tid(1)),
             },
         )],
-        active: 0,
+        active: 0, slots: Vec::new(), 
     }
 }
 

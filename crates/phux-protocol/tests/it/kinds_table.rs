@@ -121,10 +121,7 @@ fn path_query_catalog_requires_its_extended_feature() {
     let method = kinds::method_named("PATH_QUERY").expect("PATH_QUERY");
     assert_eq!(
         method.gate,
-        Some(kinds::FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::PathQuery.mask(),
-            wire_name: ServerFeatureExt::PathQuery.wire_name(),
-        })
+        Some(kinds::FeatureGate::ext(ServerFeatureExt::PathQuery))
     );
     assert!(!method.advertised(
         ServerFeatureSet::with(ServerFeature::ALL),
@@ -153,10 +150,7 @@ fn shared_advertised_predicate_matches_typed_feature_sets() {
         }
     }
     for &feature in ServerFeatureExt::ALL {
-        let gate = kinds::FeatureGate::FeaturesExt {
-            mask: feature.mask(),
-            wire_name: feature.wire_name(),
-        };
+        let gate = kinds::FeatureGate::ext(feature);
         for &advertised in ServerFeatureExt::ALL {
             let features_ext = ServerFeatureExtSet::with(&[advertised]);
             assert_eq!(

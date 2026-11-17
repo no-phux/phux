@@ -1,27 +1,17 @@
 //! The attached session's arrangement record, read and written over a
-//! dedicated control connection when the server advertises `ORGANIZATION`.
+//! dedicated control connection on an `ORGANIZATION` server.
 //!
-//! The attach connection streams pane output, so the correlated
-//! request/response helpers in [`phux_client::layout_ops`] cannot run on it
-//! (they would consume interleaved frames). This link owns a second,
-//! unsubscribed connection on the attach's dial and drives
-//! [`LayoutOps`] over it: `ARRANGEMENT_GET` with key-to-handle translation,
+//! The attach connection streams pane output, so the correlated helpers in
+//! [`phux_client::layout_ops`] run on a second connection: `ARRANGEMENT_GET`,
 //! and `ARRANGEMENT_REPLACE` as a compare-and-swap retried on conflict.
-//! Change notification still arrives on the attach connection as
-//! `ARRANGEMENT_CHANGED`, which asks the driver to read again.
-//!
-//! Peer sessions' arrangements are read off the attach loop by
-//! [`crate::attach::peer_arrangements`].
-//!
-//! Against an older server there is no link and the driver keeps the
-//! legacy `phux.tui.layout/v1` metadata key. Against an `ORGANIZATION` server
-//! the driver never uses that key: a link that cannot connect reports the
-//! failure and connects again on the next operation.
+//! `ARRANGEMENT_CHANGED` still arrives on the attach connection. A link that
+//! cannot connect reports the failure and retries on the next operation; it
+//! never falls back to the legacy layout key.
 
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError};
 use phux_protocol::ids::SessionId;
 
-use crate::attach::{AttachError, Dial, connection::Connection};
+use crate::attach::{Dial, connection::Connection};
 use crate::layout::ArrangementDoc;
 
 /// Request ids one operation may use before the next starts: a read fetches
@@ -50,33 +40,8 @@ impl std::fmt::Debug for ArrangementLink {
 }
 
 impl ArrangementLink {
-    /// Open a link for `session` on `dial`. `Ok(None)` when the server does
-    /// not advertise `ORGANIZATION`: the caller keeps the legacy key.
-    ///
-    /// # Errors
-    ///
-    /// A failed connect or handshake.
-    pub(in crate::attach) async fn open(
-        dial: &Dial,
-        session: SessionId,
-    ) -> Result<Option<Self>, AttachError> {
-        let conn = Connection::connect_dial(dial).await?;
-        if !phux_client::org::supported(&conn) {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            dial: dial.clone(),
-            session,
-            conn: Some(conn),
-            next_request_id: 1,
-            loaded: false,
-        }))
-    }
-
-    /// A link for `session` on `dial` against a server already known to
-    /// advertise `ORGANIZATION`. It connects on first use and reconnects
-    /// after a transport failure, so a dial that fails now never sends the
-    /// caller back to the legacy key.
+    /// A link for `session` on `dial`. It connects on first use and
+    /// reconnects after a transport failure.
     pub(in crate::attach) const fn lazy(dial: Dial, session: SessionId) -> Self {
         Self {
             dial,
@@ -122,9 +87,8 @@ impl ArrangementLink {
         Ok(read)
     }
 
-    /// Replace the session's arrangement with `document`: a compare-and-swap
-    /// against the revision just read, retried on conflict, so the write
-    /// lands whole.
+    /// Replace the session's arrangement with `document` (compare-and-swap
+    /// retried on conflict).
     ///
     /// # Errors
     ///
@@ -183,7 +147,6 @@ mod tests {
     )]
 
     use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
-    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     use phux_protocol::wire::frame::{
         ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
         SessionLifetime,
@@ -207,24 +170,16 @@ mod tests {
                     locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(a),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(a))),
                 }],
             },
         );
         let session = fixture.live_session(&work).unwrap();
         let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
-            .organization(fixture);
+        let spec = ScriptSpec::new().organization(fixture);
         let (socket, _server) = serve_one(dir.path(), spec);
-        let mut link = ArrangementLink::open(&Dial::uds(&socket), session)
-            .await
-            .unwrap()
-            .expect("the server advertises ORGANIZATION");
+        let mut link = ArrangementLink::lazy(Dial::uds(&socket), session);
         let mut document = link.read().await.unwrap().expect("an arrangement");
         assert_eq!(document.groups[0].name, "main");
         let tree = document.groups[0].state.tree.clone().unwrap();
@@ -286,10 +241,7 @@ mod tests {
                     locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(pane),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(pane))),
                 }],
             },
         );
@@ -297,14 +249,9 @@ mod tests {
         let session = fixture.live_session(&work).unwrap();
         let extra_live = fixture.live(&extra).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
-            .organization(fixture);
+        let spec = ScriptSpec::new().organization(fixture);
         let (socket, _server) = serve_one(dir.path(), spec);
-        let mut link = ArrangementLink::open(&Dial::uds(&socket), session)
-            .await
-            .unwrap()
-            .expect("the server advertises ORGANIZATION");
+        let mut link = ArrangementLink::lazy(Dial::uds(&socket), session);
         let mut document = link.read().await.unwrap().expect("an arrangement");
         document.add_group("extra".to_owned(), extra_live);
 
@@ -330,16 +277,5 @@ mod tests {
             log.contains("arrangement save refused") && log.contains("conflict"),
             "{log}"
         );
-    }
-
-    /// Without `ORGANIZATION` there is no link: the driver keeps the key.
-    #[tokio::test]
-    async fn no_link_without_organization() {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, _server) = serve_one(dir.path(), ScriptSpec::new());
-        let link = ArrangementLink::open(&Dial::uds(&socket), SessionId::new(1))
-            .await
-            .unwrap();
-        assert!(link.is_none());
     }
 }

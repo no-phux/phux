@@ -110,10 +110,10 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
         })
         .unwrap();
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let mut desk = Desk::settings_test_fixture();
-    desk.status = Status::Attached;
-    desk.topology = client.topology();
-    desk.client = Some(client.clone());
+    let mut desk = crate::test_support::settings_window();
+    desk.connection.status = Status::Attached;
+    desk.connection.topology = client.topology();
+    desk.connection.client = Some(client.clone());
     let _ = client.take_activity();
     outbound(&client);
     (client, desk)
@@ -128,7 +128,12 @@ pub(super) fn begin(
         terminal(),
         Box::new(move |outcome| finish.send(outcome).unwrap()),
     );
-    let operation = desk.quick_move.as_ref().expect("move queued").operation;
+    let operation = desk
+        .connection
+        .quick_move
+        .as_ref()
+        .expect("move queued")
+        .operation;
     let request = outbound(client)
         .iter()
         .find_map(|frame| match frame {

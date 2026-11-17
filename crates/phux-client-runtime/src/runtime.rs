@@ -4,7 +4,7 @@
 //!
 //! State changes reach the binding two ways: an edge-triggered
 //! [`Listener`] wake (one outstanding wake no matter how many frames land;
-//! [`Client::take_events`] and [`Client::take_inbound`] re-arm it), and the
+//! [`Client::take_events`] re-arms it), and the
 //! owned batch that `take_events` drains. Grid frames are acquired from the
 //! `Publication` table without touching the control plane.
 
@@ -12,7 +12,6 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use bytes::Bytes;
 use phux_protocol::ResourceId;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::KeyEvent;
@@ -416,33 +415,6 @@ impl Client {
             .map_err(PumpError::Control)
     }
 
-    /// Drain the current connection epoch and its retained queued frames
-    /// atomically. Before feeding each frame, check `ControlPlane::accepts_inbound`
-    /// under the same control guard: a transport may end after this drain.
-    /// Re-arms the listener before the snapshot so concurrently queued activity
-    /// cannot be stranded behind its wake.
-    #[must_use]
-    pub fn take_inbound(&self) -> (u64, Vec<Bytes>) {
-        self.inner.wakes.pending.store(false, Ordering::Release);
-        let batch = {
-            let mut control = lock(&self.inner.control);
-            (control.connection_epoch(), control.take_inbound())
-        };
-        // A driver paused on a full queue re-checks for room on this
-        // permit; with nothing outbound its flush is a no-op.
-        self.inner.outbound.notify_one();
-        batch
-    }
-
-    /// Whether a drain would find anything: a retained inbound frame, or an
-    /// event the consumer has not taken. A consumer that polls rather than
-    /// waiting on the listener uses this to skip an empty turn.
-    #[must_use]
-    pub fn poll_pending(&self) -> bool {
-        let control = lock(&self.inner.control);
-        control.has_inbound() || control.has_events()
-    }
-
     /// Take the encoded frames the control plane has queued, for the
     /// embedder to write to its own socket. [`Lane::Embedded`] only; a
     /// connected client's driver drains them instead.
@@ -496,20 +468,6 @@ impl Client {
     pub fn take_events(&self) -> Vec<Event> {
         self.inner.wakes.pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_events()
-    }
-
-    /// Drain events without accepting agent publications, and re-arm the wake.
-    ///
-    /// Each [`Event::AgentPublication`] arc stays journaled until acceptance via
-    /// [`ControlPlane::accept_agent_publication`](crate::control::ControlPlane::accept_agent_publication).
-    /// A newer full cut supersedes prior deliveries without accepting them.
-    /// The C adapter likewise supersedes staged effects, and otherwise accepts
-    /// in `phux_client_effect_clear`, not when a pointer borrow ends. Remaining
-    /// unaccepted allocations replay once the next catalog and attach are ready.
-    #[must_use]
-    pub fn take_events_leased(&self) -> Vec<Event> {
-        self.inner.wakes.pending.store(false, Ordering::Release);
-        lock(&self.inner.control).take_events_leased()
     }
 
     /// Drain every event and sample the status, failure message, topology
@@ -585,37 +543,6 @@ impl Client {
     pub fn resize_viewport(&self, cols: u16, rows: u16) {
         self.inner
             .with(|control| control.resize_viewport(cols, rows));
-    }
-
-    // ----- server-held approvals (ADR-0128) ----------------------------
-
-    /// Project the server's held approvals on every connection; see
-    /// [`ControlPlane::watch_approvals`].
-    pub fn watch_approvals(&self) {
-        self.inner.with(ControlPlane::watch_approvals);
-    }
-
-    /// The pending approvals, oldest first.
-    #[must_use]
-    pub fn approvals(&self) -> Vec<crate::approvals::Approval> {
-        lock(&self.inner.control).approvals()
-    }
-
-    /// Whether the negotiated server holds actions for approval.
-    #[must_use]
-    pub fn approvals_supported(&self) -> bool {
-        lock(&self.inner.control).approvals_supported()
-    }
-
-    /// Decide one held action; see [`ControlPlane::decide_approval`].
-    #[must_use]
-    pub fn decide_approval(
-        &self,
-        id: phux_protocol::ids::ApprovalId,
-        decision: crate::approvals::Decision,
-    ) -> bool {
-        self.inner
-            .with(|control| control.decide_approval(id, decision))
     }
 
     // ----- topology and terminals ------------------------------------
@@ -738,6 +665,7 @@ impl Drop for ControlGuard<'_> {
     }
 }
 
+mod approvals;
 mod commands;
 mod extensions;
 mod input;
@@ -784,7 +712,7 @@ mod wake_tests {
         }
     }
 
-    /// The use-after-free behind `phux_client_free`: retiring the listener
+    /// The use-after-free behind freeing a client: retiring the listener
     /// returns only after a callback already running elsewhere returns, and
     /// no wake reaches the listener afterwards.
     #[test]

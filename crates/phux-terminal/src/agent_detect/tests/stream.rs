@@ -136,6 +136,25 @@ fn a_retracted_stream_hands_the_idle_confirmation_straight_back() {
     assert_eq!(published(&h.tick("IDLE")), DetectedState::Idle);
 }
 
+/// A stream retraction that drops an in-flight idle hold drops its fast
+/// cadence with it; the cadence used to stay `Confirming`.
+#[test]
+fn a_stream_retraction_during_the_idle_hold_drops_the_fast_cadence() {
+    let mut h = Harness::new().past_grace();
+    assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
+    assert_eq!(h.tick("nothing matches"), DetectOutcome::Quiet);
+    assert_eq!(h.detector.interval(), TICK_CONFIRMING, "holding");
+
+    let now = h.now;
+    assert_eq!(h.detector.report_stream_state(None, now), None);
+    assert!(h.detector.pending_idle.is_none(), "the hold is dropped");
+    assert_eq!(
+        h.detector.interval(),
+        TICK_IDENTIFIED,
+        "and the cadence falls back to the settled one",
+    );
+}
+
 /// Confirmed departure still retracts with a live session (`kill -9`
 /// runs no `session_end`).
 #[test]

@@ -117,7 +117,8 @@ impl From<&CertTrust> for Policy {
 pub(super) struct Verifier {
     pub(super) provider: Arc<rustls::crypto::CryptoProvider>,
     pub(super) policy: Policy,
-    /// `Some` for [`TlsClientIdentity::RequirePaired`]: whether this
+    /// `Some` for [`TlsClientIdentity::RequirePaired`] and
+    /// [`TlsClientIdentity::HeldRequirePaired`]: whether this
     /// handshake's `CertificateRequest` has arrived. TLS 1.3 sends it before
     /// the server's Certificate, so it is settled when this verifier runs.
     pub(super) cert_requested: Option<Arc<AtomicBool>>,

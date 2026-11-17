@@ -1,6 +1,6 @@
 //! The Swift/Kotlin checkout vocabulary: one request enum, one answer record,
-//! and the typed records each answer carries. Lowered from
-//! [`crate::projection::checkout`] and the protocol's checkout types.
+//! and the typed records each answer carries. A server refusal and a runtime
+//! failure share one error vocabulary.
 
 use phux_protocol::checkout::{
     CheckoutAnswer, CheckoutArea, CheckoutBranch, CheckoutBranches, CheckoutCheck,
@@ -9,7 +9,10 @@ use phux_protocol::checkout::{
     CheckoutReviewDecision, CheckoutStatus, CheckoutTree, CheckoutTreeEntry,
 };
 
-use crate::projection::checkout;
+use phux_client_runtime::control::{CheckoutFailure, CheckoutOutcome, CheckoutResponse};
+use phux_protocol::checkout::CheckoutRefusalCode;
+
+use crate::projection::id;
 
 /// Which comparison a change is in.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,28 +122,37 @@ pub enum WireCheckoutError {
     Other,
 }
 
-impl From<checkout::CheckoutError> for WireCheckoutError {
-    fn from(value: checkout::CheckoutError) -> Self {
-        use checkout::CheckoutError as E;
-        match value {
-            E::CwdUnknown => Self::CwdUnknown,
-            E::NotARepository => Self::NotARepository,
-            E::InvalidPath => Self::InvalidPath,
-            E::NotFound => Self::NotFound,
-            E::InvalidRequest => Self::InvalidRequest,
-            E::Timeout => Self::Timeout,
-            E::Busy => Self::Busy,
-            E::GitFailed => Self::GitFailed,
-            E::ReadFailed => Self::ReadFailed,
-            E::GhUnavailable => Self::GhUnavailable,
-            E::GhUnauthenticated => Self::GhUnauthenticated,
-            E::NoPullRequest => Self::NoPullRequest,
-            E::GhFailed => Self::GhFailed,
-            E::PermissionDenied => Self::PermissionDenied,
-            E::TerminalNotFound => Self::TerminalNotFound,
-            E::Unsupported => Self::Unsupported,
-            E::Unanswered => Self::Unanswered,
-            E::Other => Self::Other,
+impl From<CheckoutRefusalCode> for WireCheckoutError {
+    fn from(code: CheckoutRefusalCode) -> Self {
+        use CheckoutRefusalCode as C;
+        match code {
+            C::CwdUnknown => Self::CwdUnknown,
+            C::NotARepository => Self::NotARepository,
+            C::InvalidPath => Self::InvalidPath,
+            C::NotFound => Self::NotFound,
+            C::InvalidRequest => Self::InvalidRequest,
+            C::Timeout => Self::Timeout,
+            C::Busy => Self::Busy,
+            C::GitFailed => Self::GitFailed,
+            C::ReadFailed => Self::ReadFailed,
+            C::GhUnavailable => Self::GhUnavailable,
+            C::GhUnauthenticated => Self::GhUnauthenticated,
+            C::NoPullRequest => Self::NoPullRequest,
+            C::GhFailed => Self::GhFailed,
+            C::Unknown => Self::Other,
+        }
+    }
+}
+
+impl From<CheckoutFailure> for WireCheckoutError {
+    fn from(failure: CheckoutFailure) -> Self {
+        match failure {
+            CheckoutFailure::PermissionDenied => Self::PermissionDenied,
+            CheckoutFailure::TerminalNotFound => Self::TerminalNotFound,
+            CheckoutFailure::Unsupported => Self::Unsupported,
+            CheckoutFailure::Busy => Self::Busy,
+            CheckoutFailure::Unanswered => Self::Unanswered,
+            CheckoutFailure::Other => Self::Other,
         }
     }
 }
@@ -153,12 +165,12 @@ pub struct WireCheckoutAnswer {
     pub result: WireCheckoutResult,
 }
 
-impl From<checkout::CheckoutResult> for WireCheckoutAnswer {
-    fn from(value: checkout::CheckoutResult) -> Self {
+impl From<CheckoutResponse> for WireCheckoutAnswer {
+    fn from(value: CheckoutResponse) -> Self {
         Self {
             request_id: value.request_id,
-            terminal_id: value.terminal_id,
-            result: value.reply.into(),
+            terminal_id: id::encode(&value.terminal_id),
+            result: value.outcome.into(),
         }
     }
 }
@@ -195,14 +207,14 @@ pub enum WireCheckoutResult {
     },
 }
 
-impl From<checkout::CheckoutReply> for WireCheckoutResult {
-    fn from(value: checkout::CheckoutReply) -> Self {
+impl From<CheckoutOutcome> for WireCheckoutResult {
+    fn from(value: CheckoutOutcome) -> Self {
         match value {
-            checkout::CheckoutReply::Failed { error, message } => Self::Failed {
-                error: error.into(),
+            CheckoutOutcome::Failed { failure, message } => Self::Failed {
+                error: failure.into(),
                 message,
             },
-            checkout::CheckoutReply::Answer(answer) => match *answer {
+            CheckoutOutcome::Answered(answer) => match *answer {
                 CheckoutAnswer::Status(status) => Self::Status {
                     status: status.into(),
                 },
@@ -216,9 +228,8 @@ impl From<checkout::CheckoutReply> for WireCheckoutResult {
                 CheckoutAnswer::PullRequest(pr) => Self::PullRequest {
                     pull_request: pr.into(),
                 },
-                // The projection folds refusals into `Failed`.
                 CheckoutAnswer::Refused(refusal) => Self::Failed {
-                    error: WireCheckoutError::Other,
+                    error: refusal.code.into(),
                     message: refusal.message,
                 },
             },
@@ -587,76 +598,4 @@ impl From<CheckoutPullRequest> for WireCheckoutPullRequest {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_client_runtime::control::{CheckoutOutcome, CheckoutResponse};
-    use phux_protocol::ResourceId;
-    use phux_protocol::checkout::CheckoutRefusal;
-
-    fn lower(outcome: CheckoutOutcome) -> WireCheckoutAnswer {
-        checkout::result(CheckoutResponse {
-            request_id: 9,
-            terminal_id: ResourceId::local(2),
-            outcome,
-        })
-        .into()
-    }
-
-    #[test]
-    fn answers_lower_to_typed_swift_records() {
-        let status = lower(CheckoutOutcome::Answered(Box::new(CheckoutAnswer::Status(
-            CheckoutStatus {
-                branch: Some("main".to_owned()),
-                ahead: 2,
-                entries: vec![CheckoutEntry {
-                    path: "src/a.rs".to_owned(),
-                    from: None,
-                    area: CheckoutArea::Staged,
-                    code: "M".to_owned(),
-                    added: Some(3),
-                    deleted: Some(1),
-                    binary: false,
-                }],
-                ..CheckoutStatus::default()
-            },
-        ))));
-        assert_eq!(status.request_id, 9);
-        let WireCheckoutResult::Status { status } = status.result else {
-            panic!("status");
-        };
-        assert_eq!(status.branch.as_deref(), Some("main"));
-        assert_eq!(status.ahead, 2);
-        assert_eq!(status.entries[0].area, WireCheckoutArea::Staged);
-        assert_eq!(status.entries[0].added, Some(3));
-
-        let refused = lower(CheckoutOutcome::Answered(Box::new(
-            CheckoutAnswer::Refused(CheckoutRefusal {
-                code: phux_protocol::checkout::CheckoutRefusalCode::GhUnavailable,
-                message: "no gh".to_owned(),
-            }),
-        )));
-        assert_eq!(
-            refused.result,
-            WireCheckoutResult::Failed {
-                error: WireCheckoutError::GhUnavailable,
-                message: "no gh".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn requests_lift_to_the_protocol_request() {
-        let request: CheckoutRequest = WireCheckoutRequest::Read {
-            path: "README.md".to_owned(),
-            max_bytes: 0,
-        }
-        .into();
-        assert_eq!(
-            request,
-            CheckoutRequest::Read {
-                path: "README.md".to_owned(),
-                max_bytes: 0
-            }
-        );
-    }
-}
+mod tests;

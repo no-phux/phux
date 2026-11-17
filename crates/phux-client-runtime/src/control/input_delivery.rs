@@ -3,7 +3,7 @@
 
 use super::{
     ControlPlane, DeliveryOutcome, ErrorCode, Event, INPUT_RETRY_HORIZON, InputEvent, Instant,
-    ReplayDisposition, ReplayReport, ResourceId, ServerFeature, mint_input_operation_id,
+    ReplayDisposition, ReplayReport, ResourceId, mint_input_operation_id,
 };
 use phux_client_core::input_replay::operation_id_hex;
 
@@ -57,18 +57,22 @@ impl ControlPlane {
     /// horizon; `None` while none is queued. The driver sleeps until then
     /// and calls [`Self::expire_inputs`].
     #[must_use]
-    pub fn next_input_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_input_deadline(&self) -> Option<Instant> {
         self.input_deadlines.values().min().copied()
     }
 
     /// Earliest retry-horizon deadline across acknowledged input and durable
     /// uploads.
     #[must_use]
-    pub fn next_operation_deadline(&self) -> Option<Instant> {
+    pub(crate) fn next_operation_deadline(&self) -> Option<Instant> {
         [
             self.next_input_deadline(),
             self.next_upload_deadline(),
             self.next_org_deadline(),
+            #[cfg(feature = "engine")]
+            self.engine
+                .as_ref()
+                .and_then(super::EngineHandle::sync_output_deadline),
         ]
         .into_iter()
         .flatten()
@@ -77,16 +81,36 @@ impl ControlPlane {
 
     /// Resolve every operation past its retry horizon. Returns whether any
     /// lossless receipt was published.
-    pub fn expire_operations(&mut self) -> bool {
+    pub(crate) fn expire_operations(&mut self) -> bool {
         let input = self.expire_inputs();
         let uploads = self.expire_uploads();
         let organization = self.expire_org();
-        input || uploads || organization
+        #[cfg(feature = "engine")]
+        let synchronized = self.expire_sync_output();
+        #[cfg(not(feature = "engine"))]
+        let synchronized = false;
+        input || uploads || organization || synchronized
+    }
+
+    #[cfg(feature = "engine")]
+    fn expire_sync_output(&mut self) -> bool {
+        let expired = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.expire_sync_output(Instant::now()))
+            .unwrap_or_default();
+        let changed = !expired.is_empty();
+        for id in expired {
+            if !self.damaged.contains(&id) {
+                self.damaged.push(id);
+            }
+        }
+        changed
     }
 
     /// Resolve every acknowledged input past the retry horizon. Returns
     /// whether any resolved.
-    pub fn expire_inputs(&mut self) -> bool {
+    pub(crate) fn expire_inputs(&mut self) -> bool {
         let before = self.events.len();
         let now_ms = self.now_ms();
         let mut request_id = self.request_seq;
@@ -153,11 +177,10 @@ impl ControlPlane {
         let Some(server) = &self.server else {
             return;
         };
-        let acknowledged = server.has(ServerFeature::AcknowledgedInput);
         let server_id = server.id.clone();
         let reports = self
             .input_replay
-            .begin_connection_at(Some(&server_id), acknowledged, now_ms);
+            .begin_connection_at(Some(&server_id), true, now_ms);
         self.publish_replay_reports(reports, None);
     }
 

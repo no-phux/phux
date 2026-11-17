@@ -336,6 +336,7 @@ fn spawn_frame() -> FrameKind {
     }
 }
 
+/// Under a named projection the placement is a layout-metadata write.
 #[test]
 fn placed_spawn_verifies_ownership_before_publishing_metadata() {
     let temp = tempfile::TempDir::new().expect("tempdir");
@@ -349,7 +350,7 @@ fn placed_spawn_verifies_ownership_before_publishing_metadata() {
         "@1",
         SpawnSplit::Vertical,
         0.3,
-        None,
+        Some("app.layout/v1/1"),
         None,
         false,
     );

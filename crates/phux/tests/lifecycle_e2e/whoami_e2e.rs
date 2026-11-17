@@ -5,6 +5,7 @@
 //! forced onto the secure path with `PHUX_WS_SECURE=1`, so the `--remote`
 //! dial presents an enrolled certificate and a bearer token minted by `phux
 //! pair`, and the server reports the certificate's credential back.
+//! `phux doctor --remote` rides the same paired dial.
 //!
 //! Hermetic, like `remote_session_verbs_e2e`: private config, state, and
 //! runtime dirs; no ssh and no overlay detection.
@@ -12,111 +13,25 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
-#[path = "../common/paired.rs"]
-mod paired;
+use crate::{common, listeners, paired};
 
 use std::path::Path;
-use std::process::{Child, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
 
 use tempfile::TempDir;
 
-use crate::hermetic::{hermetic_env, prepare_dirs};
+use crate::hermetic::{
+    NO_ENV, Server, await_success, hermetic_env, json_doc, phux, phux_with, prepare_dirs,
+    start_server,
+};
 
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
-
-/// How long a freshly started server has to answer its first `whoami`.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
-
-/// A running `phux server`, killed on drop.
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn phux(dir: &Path, args: &[&str]) -> Output {
-    phux_with(dir, args, b"", &[])
-}
-
-fn phux_with(
-    dir: &Path,
-    args: &[&str],
-    stdin: &[u8],
-    extra: &[(&str, std::path::PathBuf)],
-) -> Output {
-    use std::io::Write as _;
-    let mut child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .envs(extra.iter().cloned())
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("run phux");
-    let _ = child.stdin.take().expect("stdin").write_all(stdin);
-    child.wait_with_output().expect("wait for phux")
-}
 
 /// `[policy] mode = "paired"` in the hermetic config: the only mode that
 /// serves a remote listener (ADR-0179).
 fn paired_policy(dir: &Path) {
     paired::write_paired_policy(&dir.join("config/phux/config.toml"));
-}
-
-/// Start `phux server --socket DIR/s.sock EXTRA...` under the hermetic env.
-fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
-    let child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .envs(env.iter().copied())
-        .arg("server")
-        .arg("--socket")
-        .arg(dir.join("s.sock"))
-        .args(extra)
-        // Backstop only: the Drop kills the server, but a panic that skips it
-        // must not leave a daemon behind for long.
-        .args(["--exit-after-idle", "120"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn phux server");
-    Server(child)
-}
-
-/// Run `phux ARGS` until it succeeds, failing after [`READY_DEADLINE`].
-fn await_success(dir: &Path, args: &[&str]) -> Output {
-    await_success_with(dir, args, &[])
-}
-
-fn await_success_with(dir: &Path, args: &[&str], extra: &[(&str, std::path::PathBuf)]) -> Output {
-    let start = Instant::now();
-    loop {
-        let out = phux_with(dir, args, b"", extra);
-        if out.status.success() {
-            return out;
-        }
-        assert!(
-            start.elapsed() < READY_DEADLINE,
-            "`phux {}` never succeeded: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn json_doc(out: &Output) -> serde_json::Value {
-    serde_json::from_slice(&out.stdout).expect("whoami --json is one JSON document")
 }
 
 /// Over the local socket: the kernel peer uid, no credential, and the same
@@ -133,6 +48,7 @@ fn whoami_reports_the_local_socket_peer() {
     let doc = json_doc(&await_success(
         dir.path(),
         &["--socket", socket, "whoami", "--json"],
+        NO_ENV,
     ));
     assert_eq!(doc["schema_version"], 1, "{doc}");
     assert_eq!(doc["auth_route"], "uds", "{doc}");
@@ -218,7 +134,7 @@ fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
 fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String) {
     prepare_dirs(dir);
     paired_policy(dir);
-    let enrolled = paired::enroll_client(dir, |args, stdin| phux_with(dir, args, stdin, &[]));
+    let enrolled = paired::enroll_client(dir, |args, stdin| phux_with(dir, args, stdin, NO_ENV));
 
     // Start the listener first: `phux pair` mints only against a server
     // with a bound remote listener (ADR-0141), and the server re-reads its
@@ -242,6 +158,7 @@ fn serve_paired_remote(dir: &Path) -> (Server, paired::Enrolled, String, String)
     let paired = json_doc(&await_success(
         dir,
         &["--socket", &socket, "pair", "--json"],
+        NO_ENV,
     ));
     assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
     let token = paired["token"].as_str().expect("token");
@@ -271,7 +188,7 @@ fn whoami_over_remote_reports_the_workload_credential() {
     let (_server, enrolled, _socket, _quic) = serve_paired_remote(dir.path());
 
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
-    let doc = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let doc = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(doc["auth_route"], "bearer-quic", "{doc}");
     assert_eq!(doc["credential_id"], enrolled.credential_id, "{doc}");
     assert!(doc["principal"].is_string(), "{doc}");
@@ -291,7 +208,7 @@ fn a_paired_remote_client_survives_an_upgrade() {
     let dir = TempDir::new().expect("tempdir");
     let (_server, enrolled, socket, quic) = serve_paired_remote(dir.path());
     let whoami = ["whoami", "--remote", REMOTE, "--json"];
-    let before = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let before = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
 
     let upgrade = phux(dir.path(), &["--socket", &socket, "upgrade"]);
     assert!(
@@ -299,7 +216,7 @@ fn a_paired_remote_client_survives_an_upgrade() {
         "upgrade: {}",
         String::from_utf8_lossy(&upgrade.stderr)
     );
-    await_success(dir.path(), &["--socket", &socket, "ls"]);
+    await_success(dir.path(), &["--socket", &socket, "ls"], NO_ENV);
     let after_addr = listeners::bound_listener_addr(
         Path::new(&socket),
         listeners::RemoteListenerTransport::Quic,
@@ -310,7 +227,49 @@ fn a_paired_remote_client_survives_an_upgrade() {
         "the listener kept its address"
     );
 
-    let after = json_doc(&await_success_with(dir.path(), &whoami, &enrolled.env()));
+    let after = json_doc(&await_success(dir.path(), &whoami, &enrolled.env()));
     assert_eq!(after["credential_id"], before["credential_id"], "{after}");
     assert_eq!(after["auth_route"], "bearer-quic", "{after}");
+}
+
+/// `phux doctor --remote` reads the same list over a real paired QUIC dial,
+/// and shows every fix as a command run from here.
+#[test]
+#[ignore = "spawns a real server with a QUIC listener; runs in the e2e lane"]
+fn doctor_remote_shows_the_hosts_checklist() {
+    let dir = TempDir::new().expect("tempdir");
+    let (_server, enrolled, socket, _quic) = serve_paired_remote(dir.path());
+    // Exits 1 when a local check fails; the document is whole either way.
+    let local = json_doc(&phux(
+        dir.path(),
+        &["--socket", &socket, "doctor", "--json"],
+    ));
+    let doc = json_doc(&await_success(
+        dir.path(),
+        &["doctor", "--remote", REMOTE, "--json"],
+        &enrolled.env(),
+    ));
+    assert_eq!(doc["host"], REMOTE, "{doc}");
+    let ids = |doc: &serde_json::Value| {
+        doc["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&doc["checklist"]), ids(&local["checklist"]), "{doc}");
+
+    let prose = await_success(dir.path(), &["doctor", "--remote", REMOTE], &enrolled.env());
+    let text = String::from_utf8_lossy(&prose.stdout);
+    assert!(text.contains(&format!("What works on {REMOTE}")), "{text}");
+    for fix in text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("fix: "))
+    {
+        assert!(
+            fix.starts_with(&format!("phux new --remote '{REMOTE}' -- sh -lc ")),
+            "{text}"
+        );
+    }
 }

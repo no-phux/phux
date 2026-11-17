@@ -11,10 +11,6 @@
 
 use std::cell::{Cell, RefCell};
 
-use tokio::net::UnixListener;
-
-use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
-
 use phux_protocol::wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 
 use super::*;
@@ -308,45 +304,4 @@ async fn a_satellite_target_is_refused_rather_than_downgraded() {
         }
         other => panic!("a satellite target must be refused: {other:?}"),
     }
-}
-
-/// A server without `ACKNOWLEDGED_INPUT` (the scripted server advertises
-/// no features) is refused, not downgraded. The rest of the wire contract
-/// lives in `tests/connection/agent_prompt_wire.rs`.
-#[tokio::test]
-async fn a_server_without_acknowledged_input_is_refused_not_downgraded() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let socket = dir.path().join("phux.sock");
-    let listener = UnixListener::bind(&socket).expect("bind scripted server");
-    tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let spec = ScriptSpec::new()
-                .metadata(|_scope, key| {
-                    (key == RESOURCE_AGENT_KEY).then(|| {
-                        br#"{"name":"reviewer","kind":"claude","state":"working"}"#.to_vec()
-                    })
-                })
-                .end(EndOfScript::ServeUntilDetach);
-            tokio::spawn(async move {
-                ScriptedServer::on_stream(stream, spec).run().await;
-            });
-        }
-    });
-
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x33),
-        &|_record| None,
-        None,
-    )
-    .await;
-    assert!(
-        matches!(
-            outcome,
-            Err(PromptError::Refused(Refusal::NoAcknowledgedInput))
-        ),
-        "an older server must be refused rather than downgraded: {outcome:?}"
-    );
 }

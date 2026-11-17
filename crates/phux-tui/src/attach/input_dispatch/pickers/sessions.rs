@@ -22,10 +22,8 @@ pub(in crate::attach::input_dispatch) struct SessionCounts {
     pub order: Vec<phux_protocol::ids::SessionKey>,
 }
 
-/// Session picker rows, read at a glance (`docs/clients.md#terminal-ui`):
-/// `focused` first (committing it is a silent no-op), then the sessions
-/// with panes that need you, then the stored session order, then name. Each commits
-/// `switch-session { name }`.
+/// Session picker rows: `focused` first, then sessions that need you, then
+/// stored order, then name; each commits `switch-session { name }`.
 pub(in crate::attach::input_dispatch) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -68,10 +66,10 @@ fn attached_session_row(
 ) -> SelectItem {
     let item = SelectItem::new(
         session.name.clone(),
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args: switch_session_args(&session.name, Some(session.id)),
-        },
+        crate::attach::resolved(
+            "switch-session",
+            switch_session_args(&session.name, Some(session.id)),
+        ),
     );
     match counts.needs_you.get(&session.id).copied().unwrap_or(0) {
         0 => item,
@@ -86,12 +84,8 @@ pub(in crate::attach::input_dispatch) const LOCAL_HOST_HEADER: &str = "Local";
 /// inventory or hosts-provider answer lands.
 pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 
-/// The full session-picker rows (host-grouped sessions plus "+ New
-/// session"), one builder for the open and the live refresh.
-///
-/// A project identity or non-empty project tag regroups only the attached
-/// host's sessions. Satellites and other machines stay under their own
-/// headers; another machine's row names its project.
+/// The full session-picker rows, one builder for open and live refresh. A
+/// project regroups only the attached host's sessions.
 pub(in crate::attach) fn session_picker_rows(
     peers: &PeerInputs<'_>,
     workspace: &ArrangementDoc,
@@ -133,12 +127,10 @@ pub(in crate::attach) fn session_picker_rows(
     items
 }
 
-/// Attached-host sessions grouped by project (ADR-0168): a session's
-/// explicit project link, else its identity, else its
-/// `phux.session.project/v1` label. Groups sort by name;
-/// in each, primary checkouts lead and their linked worktrees follow marked
-/// `└`. A group header counts the panes that need you. Sessions in no
-/// project sit under `Sessions`. Each row is an [`attached_session_row`].
+/// Attached-host sessions grouped by project (ADR-0168): link, else
+/// identity, else the project tag. Primary checkouts lead their worktrees
+/// (marked `└`); headers count panes that need you; the rest sit under
+/// `Sessions`.
 fn project_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<SessionId>,
@@ -196,13 +188,10 @@ fn project_grouped_session_items(
     items
 }
 
-/// Session picker rows grouped by host: with no other host exactly
-/// [`session_picker_items`]; otherwise the attached server's sessions under
-/// `here`, then each hub satellite and each other machine under its own
-/// header (kept, marked unreachable, when it could not be listed). A
-/// satellite row commits `switch-session { name, host, id }` (`id` is the
-/// satellite-local session id); a machine row commits `switch-host { host, name }`
-/// (ADR-0140).
+/// Session picker rows grouped by host: the attached server's sessions under
+/// `here`, then each satellite (`switch-session { name, host, id }`) and
+/// other machine (`switch-host`, ADR-0140) under its own header, kept and
+/// marked when unreachable.
 pub(in crate::attach::input_dispatch) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -322,10 +311,7 @@ fn satellite_session_item(
     );
     SelectItem::new(
         session.name.clone(),
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        },
+        crate::attach::resolved("switch-session", args),
     )
     .secondary(details.join(", "))
     .indented()

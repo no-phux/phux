@@ -152,19 +152,29 @@ impl ControlPlane {
         let Some(answer) = self.extensions.service_http.remove(&request_id) else {
             return;
         };
-        if let Err(CommandResult::OkWith(CommandValue::ServiceHttpHead(head))) = answer.send(result)
-        {
-            self.close_abandoned_exchange(head.exchange);
-        }
+        let close = match answer.send(result) {
+            Err(CommandResult::OkWith(CommandValue::ServiceHttpHead(head))) => {
+                Command::ServiceHttpClose {
+                    exchange: head.exchange,
+                }
+            }
+            // A forward whose opener stopped waiting, likewise.
+            Err(CommandResult::OkWith(CommandValue::ForwardOpened(id))) => Command::Forward {
+                op: phux_protocol::forward::ForwardOp::Close { id },
+            },
+            _ => return,
+        };
+        self.close_abandoned(close);
     }
 
-    /// Close an exchange nobody holds; its answer resolves nothing.
-    fn close_abandoned_exchange(&mut self, exchange: u64) {
+    /// Send `close` for an exchange or forward nobody holds; its answer
+    /// resolves nothing.
+    fn close_abandoned(&mut self, command: Command) {
         let request_id = self.next_request_id();
         self.pending.insert(request_id, Pending::ServiceHttp);
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::ServiceHttpClose { exchange },
+            command,
         });
     }
 

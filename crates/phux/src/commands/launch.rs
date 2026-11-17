@@ -17,16 +17,6 @@ mod native;
 /// `phux launch` (phux-ark7, ADR-0042) — resolve a named agent integration
 /// template from an enabled plugin and spawn a pane running its `[launch]`
 /// command.
-///
-/// The launch command typically routes the agent through
-/// `phux-agent-wrap.sh`, so a launched pane self-declares its
-/// `phux.agent/v1` identity (ADR-0040): the server injects
-/// `PHUX_TERMINAL_ID` into the spawned pane, the wrapper reads it to target
-/// its own pane, and writes name + kind at launch (clearing on exit). No
-/// alias, no per-shell config.
-///
-/// `--print` resolves and prints the argv without spawning (a server-free
-/// dry run); `--list` enumerates launchable integrations.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_launch(
     integration: Option<String>,

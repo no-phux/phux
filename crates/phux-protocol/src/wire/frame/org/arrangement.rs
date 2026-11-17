@@ -14,17 +14,17 @@ pub(super) const NODE_SPLIT: u8 = 1;
 /// Write an arrangement document positionally: `u16 group_count`, then per
 /// group a record `id: bytes16 || name: optional<str> || node || [locked:
 /// u8]`, the trailing byte present only when the group is locked; a node is a
-/// record `0x00 || entry: bytes16 || target` or `0x01 || dir: u8 || ratio:
-/// f32 || node || node`; a target is `0x00 || resource: bytes16` (a member)
+/// record `0x00 || entry: bytes16 || target || [shown_at: u16 || u16
+/// tab_count || (entry: bytes16 || target)*]`, the slot tabs present only
+/// when the leaf has some, or `0x01 || dir: u8 || ratio: f32 || node ||
+/// node`; a target is `0x00 || resource: bytes16` (a member)
 /// or `0x01 || host: str || id: u32` (a satellite resource). A record is
 /// `u32` length then body, so groups and nodes can grow at their ends.
 pub(in crate::wire) fn encode_arrangement_doc(doc: &ArrangementDoc, enc: &mut Encoder<'_>) {
     enc.write_u16_be(u16::try_from(doc.groups.len()).unwrap_or(u16::MAX));
     for group in &doc.groups {
         enc.write_record(|enc| {
-            for byte in &group.id {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(&group.id);
             enc.write_option(group.name.as_deref(), Encoder::write_str);
             encode_node(&group.tree, enc);
             if group.locked {
@@ -42,20 +42,12 @@ pub(super) fn encode_node_body(node: &ArrangementNode, enc: &mut Encoder<'_>) {
     match node {
         ArrangementNode::Leaf(entry) => {
             enc.write_u8(NODE_LEAF);
-            for byte in &entry.entry {
-                enc.write_u8(*byte);
-            }
-            match &entry.target {
-                EntryTarget::Member(resource) => {
-                    enc.write_u8(TARGET_MEMBER);
-                    for byte in resource.as_bytes() {
-                        enc.write_u8(*byte);
-                    }
-                }
-                EntryTarget::Satellite { host, id } => {
-                    enc.write_u8(TARGET_SATELLITE);
-                    enc.write_str(host.as_str());
-                    enc.write_u32_be(*id);
+            encode_entry(entry, enc);
+            if !entry.tabs.is_empty() {
+                enc.write_u16_be(entry.shown_at);
+                enc.write_u16_be(u16::try_from(entry.tabs.len()).unwrap_or(u16::MAX));
+                for tab in &entry.tabs {
+                    encode_entry(tab, enc);
                 }
             }
         }
@@ -72,6 +64,46 @@ pub(super) fn encode_node_body(node: &ArrangementNode, enc: &mut Encoder<'_>) {
             encode_node(second, enc);
         }
     }
+}
+
+fn encode_entry(entry: &EntryRef, enc: &mut Encoder<'_>) {
+    enc.write_raw(&entry.entry);
+    match &entry.target {
+        EntryTarget::Member(resource) => {
+            enc.write_u8(TARGET_MEMBER);
+            enc.write_raw(resource.as_bytes());
+        }
+        EntryTarget::Satellite { host, id } => {
+            enc.write_u8(TARGET_SATELLITE);
+            enc.write_str(host.as_str());
+            enc.write_u32_be(*id);
+        }
+    }
+}
+
+fn decode_entry(dec: &mut Decoder<'_>) -> Result<EntryRef, DecodeError> {
+    let entry: [u8; 16] = dec.read_array()?;
+    let target = match dec.read_u8()? {
+        TARGET_MEMBER => {
+            let resource: [u8; 16] = dec.read_array()?;
+            EntryTarget::Member(
+                ResourceKey::new(resource).ok_or(DecodeError::InvalidOrganizationKey)?,
+            )
+        }
+        TARGET_SATELLITE => {
+            let host = dec.read_str()?;
+            if host.is_empty() || host.len() > MAX_ENTRY_HOST_BYTES {
+                return Err(DecodeError::InvalidArrangement);
+            }
+            let host = crate::ids::SatelliteHost::new(host);
+            EntryTarget::Satellite {
+                host,
+                id: dec.read_u32_be()?,
+            }
+        }
+        other => return Err(DecodeError::unknown_enum("EntryTarget", other)),
+    };
+    Ok(EntryRef::new(entry, target))
 }
 
 /// Read an arrangement document, refusing one over
@@ -92,10 +124,7 @@ pub(in crate::wire) fn decode_arrangement_doc(value: &[u8]) -> Result<Arrangemen
 }
 
 pub(super) fn decode_group(dec: &mut Decoder<'_>) -> Result<ArrangementGroup, DecodeError> {
-    let mut id = [0; 16];
-    for byte in &mut id {
-        *byte = dec.read_u8()?;
-    }
+    let id: [u8; 16] = dec.read_array()?;
     let name = dec.read_option("Option<str> tag", |d| {
         bounded_dec_str(d, MAX_ORG_NAME_BYTES)
     })?;
@@ -125,34 +154,20 @@ pub(super) fn decode_node_body(
 ) -> Result<ArrangementNode, DecodeError> {
     match dec.read_u8()? {
         NODE_LEAF => {
-            let mut entry = [0; 16];
-            for byte in &mut entry {
-                *byte = dec.read_u8()?;
+            let mut entry = decode_entry(dec)?;
+            if !dec.at_body_end() {
+                entry.shown_at = dec.read_u16_be()?;
+                let count = usize::from(dec.read_u16_be()?);
+                let mut tabs = dec.bounded_capacity(count);
+                for _ in 0..count {
+                    tabs.push(decode_entry(dec)?);
+                }
+                if usize::from(entry.shown_at) > tabs.len() {
+                    return Err(DecodeError::InvalidArrangement);
+                }
+                entry.tabs = tabs;
             }
-            let target = match dec.read_u8()? {
-                TARGET_MEMBER => {
-                    let mut resource = [0; 16];
-                    for byte in &mut resource {
-                        *byte = dec.read_u8()?;
-                    }
-                    EntryTarget::Member(
-                        ResourceKey::new(resource).ok_or(DecodeError::InvalidOrganizationKey)?,
-                    )
-                }
-                TARGET_SATELLITE => {
-                    let host = dec.read_str()?;
-                    if host.is_empty() || host.len() > MAX_ENTRY_HOST_BYTES {
-                        return Err(DecodeError::InvalidArrangement);
-                    }
-                    let host = crate::ids::SatelliteHost::new(host);
-                    EntryTarget::Satellite {
-                        host,
-                        id: dec.read_u32_be()?,
-                    }
-                }
-                other => return Err(DecodeError::unknown_enum("EntryTarget", other)),
-            };
-            Ok(ArrangementNode::Leaf(EntryRef { entry, target }))
+            Ok(ArrangementNode::Leaf(entry))
         }
         NODE_SPLIT => {
             let raw_dir = dec.read_u8()?;

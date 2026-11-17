@@ -1,15 +1,8 @@
-//! The server's `PHUX_*` process configuration, resolved once.
-//!
-//! The daemon's remote surface (listener addresses, TLS pair, credential
-//! store, workload authority) is configurable through environment variables, and
-//! a running server exports several of them into every pane. Reading them
-//! ad hoc from deep inside the runtime made every in-process server (tests,
-//! embedders) inherit whatever the launching shell carried: run from a
-//! production pane, a test server picked up the operator's certificate and
-//! credential store. So the binary snapshots them here once, at startup
-//! ([`ServerEnv::from_process`]), and the runtime reads only this snapshot.
-//! [`ServerEnv::default`] sets nothing, which makes an in-process server
-//! hermetic unless its builder opts a variable in.
+//! The server's `PHUX_*` process configuration, snapshotted once at startup
+//! ([`ServerEnv::from_process`]). A running server exports several into its
+//! panes, so reading them ad hoc made in-process test servers inherit the
+//! operator's certificate and credential store; [`ServerEnv::default`] sets
+//! nothing, so an in-process server is hermetic unless opted in.
 
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -90,9 +83,9 @@ impl ServerEnv {
             tls_cert,
             tls_key,
             retired_workload_mtls: lookup("PHUX_WORKLOAD_MTLS").is_some(),
-            workload_ca: path("PHUX_WORKLOAD_CA"),
-            workload_ca_key: path("PHUX_WORKLOAD_CA_KEY"),
-            workload_keys: path("PHUX_WORKLOAD_KEYS"),
+            workload_ca: path(crate::workload::WORKLOAD_CA_ENV),
+            workload_ca_key: path(crate::workload::WORKLOAD_CA_KEY_ENV),
+            workload_keys: path(crate::workload::WORKLOAD_KEYS_ENV),
             no_auto_listen: lookup(super::DISABLE_AUTO_LISTEN_ENV).is_some(),
             upload_dir: non_empty("PHUX_UPLOAD_DIR").map(PathBuf::from),
             upload_max_bytes: count(&lookup, "PHUX_UPLOAD_MAX_BYTES"),
@@ -238,9 +231,9 @@ mod tests {
     fn any_named_workload_location_counts_as_configured_authority() {
         assert!(!ServerEnv::default().workload_authority_configured());
         for var in [
-            "PHUX_WORKLOAD_CA",
-            "PHUX_WORKLOAD_CA_KEY",
-            "PHUX_WORKLOAD_KEYS",
+            crate::workload::WORKLOAD_CA_ENV,
+            crate::workload::WORKLOAD_CA_KEY_ENV,
+            crate::workload::WORKLOAD_KEYS_ENV,
         ] {
             let named = ServerEnv::from_lookup(|asked| (asked == var).then(|| "/x".into()));
             assert!(named.workload_authority_configured(), "{var}");

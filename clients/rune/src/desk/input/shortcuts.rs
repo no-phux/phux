@@ -22,6 +22,8 @@ impl Desk {
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),
             Shortcut::PreviousTerminal => self.cycle(-1),
+            Shortcut::NextSlotTab => self.cycle_slot_tab(1),
+            Shortcut::PreviousSlotTab => self.cycle_slot_tab(-1),
             Shortcut::NextTerminalInSession => self.cycle_in_session(1),
             Shortcut::PreviousTerminalInSession => self.cycle_in_session(-1),
             Shortcut::NextSession => self.step_session(1),
@@ -29,6 +31,9 @@ impl Desk {
             Shortcut::ZoomIn => self.zoom(Some(self.font_size + 1.0)),
             Shortcut::ZoomOut => self.zoom(Some(self.font_size - 1.0)),
             Shortcut::ZoomReset => self.zoom(None),
+            Shortcut::InterfaceBigger => self.step_interface_size(1),
+            Shortcut::InterfaceSmaller => self.step_interface_size(-1),
+            Shortcut::InterfaceReset => self.set_interface_size(None),
             Shortcut::ScrollTop => self.scroll(Scroll::Top),
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
             Shortcut::PromptUp => self.scroll(Scroll::Prompt(-1)),
@@ -44,14 +49,17 @@ impl Desk {
             Shortcut::Kitchen => self.toggle_kitchen(),
             Shortcut::PitLane => self.toggle_pitlane(),
             Shortcut::Hive => self.toggle_hive(),
+            Shortcut::Playground => self.open_palette(crate::palette::Mode::Playground),
             Shortcut::Settings => self.toggle_settings(),
             Shortcut::ChangeTheme => self.open_themes(),
             Shortcut::SwitchSession => self.switch_sessions(),
             Shortcut::InsertPath => self.open_paths(),
             Shortcut::Screenshot => self.screenshot(),
+            Shortcut::QuickLook => self.quick_look(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::WhatWorksHere => self.what_works_here(),
             Shortcut::PairPhone => self.open_pairing(),
             Shortcut::RetryConnection => self.reconnect(),
             Shortcut::CopyDiagnostics => {
@@ -86,7 +94,7 @@ impl Desk {
     }
 
     fn active_tab(&self) -> Option<usize> {
-        self.tabs.list.iter().position(|tab| tab.active)
+        self.connection.tabs.list.iter().position(|tab| tab.active)
     }
 
     fn close_active_tab(&mut self) {
@@ -97,7 +105,7 @@ impl Desk {
 
     /// The tab `step` along from the active one, wrapping.
     fn step_tab(&mut self, step: isize) {
-        let count = self.tabs.list.len() as isize;
+        let count = self.connection.tabs.list.len() as isize;
         if let Some(index) = self.active_tab() {
             let next = (index as isize + step).rem_euclid(count) as usize;
             self.select_tab(next);

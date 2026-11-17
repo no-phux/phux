@@ -16,13 +16,13 @@ use phux_protocol::ids::{
 };
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::frame::{
-    ActorRef, AgentEvent, ApprovalOutcome, CloseReason, CommandResult, CommandValue, ControlAction,
-    EventStamp, FrameKind, ResourceLifecycle, Scope, SpawnError, SpawnResource, SpawnResult,
+    ActorRef, AgentEvent, ApprovalOutcome, CloseReason, ControlAction, EventStamp, FrameKind,
+    ResourceLifecycle, Scope, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 use phux_protocol::wire::{DecodeError, frame::TYPE_EVENT};
 
-use crate::common::{assert_round_trip, decode, encode, framed_tlv, tlv_field};
+use crate::common::{assert_round_trip, decode, encode, framed_tlv, state_reply, tlv_field};
 
 /// Split an encoded frame into its type byte and its top-level TLV fields.
 fn fields(bytes: &[u8]) -> (u8, Vec<(u32, Vec<u8>)>) {
@@ -437,13 +437,10 @@ fn resource_spawned_replayed_flag_only_beside_ok() {
 }
 
 fn state(resources: Vec<ResourceInfo>) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id: 1,
-        result: CommandResult::OkWith(CommandValue::State(
-            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
-                .with_resources(resources),
-        )),
-    }
+    state_reply(
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_resources(resources),
+    )
 }
 
 const fn plain(id: u32) -> ResourceInfo {

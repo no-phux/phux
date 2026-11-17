@@ -1,11 +1,6 @@
-//! Atomic loading of explicitly requested workload authentication.
-//!
-//! `[policy] mode = "paired"` is the only way to require it, and there is no
-//! bearer-only alternative outside it (ADR-0179). An error in either half of
-//! the authority must disable the listener.
-//!
-//! The registry is loaded strictly once, at listener build, and then tracked:
-//! every accepted connection consults its current generation, so
+//! Atomic loading of explicitly requested workload authentication
+//! (`[policy] mode = "paired"`, ADR-0179); an error in either half disables
+//! the listener. The registry is loaded once and its generation tracked, so
 //! `phux workload add-key` and `revoke` apply without a restart.
 
 use std::path::Path;

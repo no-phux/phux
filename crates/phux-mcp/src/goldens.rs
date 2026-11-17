@@ -15,9 +15,7 @@ use std::path::PathBuf;
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::layout::{ArrangementDoc, SplitDir};
-use phux_client::layout_ops::{
-    DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, apply_mutation, layout_key,
-};
+use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, apply_mutation};
 use phux_client::snapshot::{ScreenState, SoftWrap};
 use phux_client::testkit::{self, ScriptSpec};
 use phux_protocol::ids::{ResourceId, ResourceKind, SessionId, WindowId};
@@ -111,10 +109,14 @@ fn layout(panes: &[u32]) -> Vec<u8> {
     workspace.encode_cbor().expect("fixture layout encodes")
 }
 
+/// The layout cases name a projection so their layout stays metadata the
+/// scripted server stores; the default layout is the arrangement record.
+const PROJECTION: &str = "app.layout/v1/1";
+
 fn with_layout(spec: ScriptSpec, panes: &[u32]) -> ScriptSpec {
     spec.stored_metadata(
         Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-        &layout_key(WORK),
+        PROJECTION,
         layout(panes),
     )
 }
@@ -189,7 +191,14 @@ const CASES: &[Case] = &[
     Case {
         golden: "spawn_placed",
         tool: "phux_spawn",
-        args: || json!({ "target": "@1", "split": "vertical", "ratio": 0.3 }),
+        args: || {
+            json!({
+                "target": "@1",
+                "split": "vertical",
+                "ratio": 0.3,
+                "projection": PROJECTION,
+            })
+        },
         spec: || {
             ScriptSpec::new()
                 .state(state_with(&[1, 2, 7]))
@@ -230,35 +239,39 @@ const CASES: &[Case] = &[
         golden: "rename",
         tool: "phux_rename",
         args: || json!({ "session": "work", "new_name": "play" }),
-        // The pre-check and the barrier are two `GET_STATE`s on one
-        // connection. The scripted server stores `SET_METADATA` without
-        // rewriting its snapshot, so the barrier answer is the applied name.
         spec: || {
-            let mut applied = state();
-            applied
-                .sessions
-                .first_mut()
-                .expect("state has a session")
-                .name = "play".to_owned();
-            ScriptSpec::new().states([state(), applied])
+            let mut fixture = phux_client::testkit::OrgFixture::new();
+            fixture.session(
+                "work",
+                phux_protocol::wire::frame::SessionLifetime::Persistent,
+            );
+            org_spec(fixture)
         },
     },
     Case {
         golden: "insert_pane",
         tool: "phux_insert_pane",
-        args: || json!({ "target": "@1", "new_pane": "@2", "direction": "vertical", "ratio": 0.3 }),
+        args: || {
+            json!({
+                "target": "@1",
+                "new_pane": "@2",
+                "direction": "vertical",
+                "ratio": 0.3,
+                "projection": [PROJECTION],
+            })
+        },
         spec: || with_layout(ScriptSpec::new().state(state()), &[1]),
     },
     Case {
         golden: "move_pane",
         tool: "phux_move_pane",
-        args: || json!({ "source": "@2", "target": "@1" }),
+        args: || json!({ "source": "@2", "target": "@1", "projection": [PROJECTION] }),
         spec: || with_layout(ScriptSpec::new().state(state()), &[1, 2]),
     },
     Case {
         golden: "swap_pane",
         tool: "phux_swap_pane",
-        args: || json!({ "first": "@1", "second": "@2" }),
+        args: || json!({ "first": "@1", "second": "@2", "projection": [PROJECTION] }),
         spec: || with_layout(ScriptSpec::new().state(state()), &[1, 2]),
     },
     Case {
@@ -302,16 +315,9 @@ fn org_fixture() -> (
     (fixture, done)
 }
 
-/// A scripted server that advertises `ORGANIZATION` and `SESSION_KILL`
-/// over `fixture`.
+/// A scripted server answering from `fixture`.
 fn org_spec(fixture: phux_client::testkit::OrgFixture) -> ScriptSpec {
-    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
-    ScriptSpec::new()
-        .server_features_ext(ServerFeatureExtSet::with(&[
-            ServerFeatureExt::Organization,
-            ServerFeatureExt::SessionKill,
-        ]))
-        .organization(fixture)
+    ScriptSpec::new().organization(fixture)
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -519,29 +525,35 @@ async fn percent_name_reaches_tag_kill_and_spawn_placement() {
     .expect("tag %build");
     assert_eq!(tagged["terminals"][0]["terminal"], "@1");
 
+    // Two panes sharing a name, as an older server stored a kind name.
     let constant = || {
-        agent_spec(&AgentRecord {
+        let record = AgentRecord {
             name: "claude".to_owned(),
             kind: Some("claude".to_owned()),
             state: AgentMetaState::Working,
             ..AgentRecord::default()
-        })
+        };
+        agent_spec(&record).stored_metadata(
+            Scope::Resource(ResourceId::local(2)),
+            RESOURCE_AGENT_KEY,
+            record.encode(),
+        )
     };
     for (tool, args, want) in [
         (
             "phux_kill",
             json!({ "target": "%claude", "confirm": true }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_tag",
             json!({ "action": "ls", "target": "%claude" }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_spawn",
             json!({ "target": "%claude", "split": "vertical" }),
-            "invalid_agent_name",
+            "selector_not_single",
         ),
         (
             "phux_spawn",

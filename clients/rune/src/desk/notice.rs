@@ -3,9 +3,15 @@
 
 use std::time::Duration;
 
+use phux_client_core::note::{Note, NoteLevel};
+use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::Desk;
+use crate::alerts::{Alert, Target};
+
+/// Set once the "New here?" tip has been shown, or onboarding taught its keys.
+pub(super) const TOUR_OFFERED: &str = "tour_offered";
 
 /// What kind of thing a notice says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +72,10 @@ impl Desk {
     /// Shortcuts: Essentials` reopens the list any time.
     pub(crate) fn offer_tour(&mut self) {
         // The tour teaches chords; a phone has the accessory bar instead.
-        if self.phone.is_some() || self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
+        if self.phone.is_some() || self.prefs.get::<bool>(TOUR_OFFERED).unwrap_or(false) {
             return;
         }
-        let _ = self.prefs.set("tour_offered", &true);
+        let _ = self.prefs.set(TOUR_OFFERED, &true);
         self.offer(
             "New here? A few keys do most of the work.",
             "Show me",
@@ -92,6 +98,46 @@ impl Desk {
         }
     }
 
+    /// A program posted a note for its pane (`phux notify`): a toast, and a
+    /// system notification when a `warn` or `error` note's pane is out of
+    /// sight.
+    pub(super) fn note_posted(&mut self, terminal: &ResourceId, note: &Note) -> bool {
+        // The main window speaks for both; the quick terminal would repeat it.
+        if self.quick.is_some() {
+            return false;
+        }
+        let pane = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.pane(terminal));
+        let who = pane.map_or_else(|| terminal.to_string(), crate::palette::pane_label);
+        let session = pane.map(|p| p.session_name.clone()).unwrap_or_default();
+        let text = match &note.body {
+            Some(body) => format!("{who}: {} — {body}", note.title),
+            None => format!("{who}: {}", note.title),
+        };
+        let kind = match note.level {
+            NoteLevel::Error => NoticeKind::Error,
+            NoteLevel::Warn | NoteLevel::Info => NoticeKind::Info,
+        };
+        self.say(kind, text);
+        let seen = self.focused && self.on_screen().contains(terminal);
+        if note.level != NoteLevel::Info && !seen && self.settings.notifications {
+            self.inbox.alerts.post_now(Alert {
+                // One per pane, so a newer note replaces the last.
+                id: format!("{terminal}:note"),
+                title: format!("{who}: {}", note.title),
+                body: note.body.clone().unwrap_or_default(),
+                target: Target::Terminal {
+                    id: terminal.clone(),
+                    session,
+                },
+            });
+        }
+        true
+    }
+
     pub fn dismiss_notice(&mut self) {
         self.notice = None;
     }
@@ -102,7 +148,7 @@ impl Desk {
         let Some(notice) = &self.notice else {
             return false;
         };
-        if notice.kind == NoticeKind::Info && !self.uploads.is_empty() {
+        if notice.kind == NoticeKind::Info && !self.connection.uploads.is_empty() {
             return false;
         }
         let left = notice.expires - self.clock;
@@ -112,5 +158,31 @@ impl Desk {
         }
         self.notice = None;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::launch::Resolved;
+
+    #[test]
+    fn a_note_toasts_naming_its_pane_and_an_error_reads_as_one() {
+        let mut desk = Desk::new(&Resolved::offline("notes"));
+        desk.settings.notifications = false;
+        let note = Note {
+            level: NoteLevel::Error,
+            title: "build failed".to_owned(),
+            body: Some("3 errors".to_owned()),
+            at: 1,
+        };
+        assert!(desk.note_posted(&ResourceId::local(3), &note));
+        let notice = desk.notice.as_ref().expect("a toast");
+        assert_eq!(notice.kind, NoticeKind::Error);
+        assert!(
+            notice.text.ends_with(": build failed — 3 errors"),
+            "{}",
+            notice.text
+        );
     }
 }

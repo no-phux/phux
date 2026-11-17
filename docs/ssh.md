@@ -50,6 +50,46 @@ ssh-agent = "~/.1password/agent.sock"
 `IdentityAgent` wins when both are set. When a key is refused and no agent
 is in reach, the error names these two settings.
 
+## Keys in hardware
+
+Two keys reach a machine: your ssh key, and the key behind the client
+certificate `phux host add` enrolls for direct connections
+([Who can connect](./remote.md#who-can-connect)).
+
+To keep the ssh key in hardware, use an `sk-` key
+(`ssh-keygen -t ed25519-sk`) or an agent that holds its keys in hardware.
+
+The certificate's key is a file in phux's state directory. On a Mac with a
+Secure Enclave, `--hardware-key` keeps it in the enclave instead:
+
+```sh
+phux host add me@mini --hardware-key           # over ssh
+phux host add mini --code LINK --hardware-key  # from a link
+phux host renew mini --hardware-key            # move a key that is a file
+```
+
+The enclave makes the key and signs each connection with it. The key never
+leaves the chip, and the key file holds only a reference that this Mac's
+enclave alone can use. Renewing onto a hardware key deletes the old key
+file after the server has accepted the new certificate; if the renewal
+fails, the old key stays and keeps working. A machine on a hardware key
+stays on one through every renewal. `phux host ls` shows `hardware` or
+`file` in its KEY column, and `client_key_kind` in `--json`. Rune uses
+whichever key the machine has.
+
+What it protects against is the key file being copied off the machine: out
+of a backup, a synced folder, or a disk image, or by a program that reads
+your files. The copy signs nothing on another computer, and a key file
+that was altered is refused.
+
+What it doesn't protect against is a program running as you on this Mac.
+That program can ask the enclave to sign, the way phux does, for as long as
+it runs. No touch or password is asked for, so reconnecting works
+unattended.
+
+On a machine without a Secure Enclave the flag is refused and nothing
+changes. The server sees an ordinary certificate either way.
+
 ## Many connections at once
 
 Connections to one host from the same app wait for a single login and then
@@ -75,6 +115,13 @@ If the host's key changed, phux stops and prints the `ssh-keygen -R` command
 that removes the old one. A reinstall changes the key, and so does someone
 intercepting the connection, so confirm the new key with whoever runs the
 host first. phux never removes or accepts a key for you.
+
+## Forwarding a port
+
+[`phux forward -L`](./forwarding.md) does what `ssh -L` does through the
+phux connection, with no SSH session to keep open.
+[`phux forward --agent`](./forwarding.md#ssh-agent) does what `ssh -A`
+does, asking before each signature.
 
 ## Attaching over SSH
 

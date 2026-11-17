@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use phux_client_runtime::control::{ControlOptions, Event, InboundDelivery, SpawnRequest, Status};
+use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
 use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
@@ -248,34 +248,6 @@ impl Listener for Wakes {
 }
 
 #[test]
-fn taking_inbound_rearms_a_coalesced_wake() {
-    let client = Runtime::embedded(ControlOptions::default());
-    let wakes = Arc::new(Wakes {
-        count: AtomicUsize::new(0),
-    });
-    client.set_listener(wakes.clone());
-    assert_eq!(wakes.count.load(Ordering::SeqCst), 1, "registration wakes");
-    let _ = client.take_events();
-
-    client.with_control(|control| {
-        control.queue_inbound(vec![1]).expect("queue first frame");
-    });
-    client.wake();
-    assert_eq!(wakes.count.load(Ordering::SeqCst), 2, "first frame wakes");
-
-    assert_eq!(client.take_inbound().1, vec![vec![1]], "drain first frame");
-    client.with_control(|control| {
-        control.queue_inbound(vec![2]).expect("queue later frame");
-    });
-    client.wake();
-    assert_eq!(
-        wakes.count.load(Ordering::SeqCst),
-        3,
-        "taking inbound re-armed the coalesced wake"
-    );
-}
-
-#[test]
 fn attaches_spawns_types_and_observes_the_published_frame() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
@@ -467,143 +439,6 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
         client.close();
         proxy.abort();
         drop(controller);
-        drop(shutdown);
-        server.await.unwrap().unwrap();
-    });
-}
-
-/// Feed what a queued-delivery driver retained, as a binding does.
-/// Reports whether a frame was waiting, so a drain can tell progress
-/// from an idle socket.
-fn feed_queued(client: &Client) -> bool {
-    let (epoch, frames) = client.take_inbound();
-    let fed = !frames.is_empty();
-    for frame in frames {
-        client
-            .with_control(|control| {
-                if control.accepts_inbound(epoch) {
-                    control.feed_bytes(&frame)
-                } else {
-                    Ok(())
-                }
-            })
-            .expect("feed a queued frame");
-    }
-    fed
-}
-
-/// Wakes the flood drain. The runtime calls this off its own thread, and
-/// never while a lock is held.
-#[derive(Debug)]
-struct FloodGate {
-    notify: tokio::sync::Notify,
-}
-
-impl Listener for FloodGate {
-    fn on_activity(&self) {
-        self.notify.notify_one();
-    }
-}
-
-/// The flood is done when the terminal exits. [`DEADLINE`] is idle time
-/// since the last inbound batch or event, not a wall clock over the whole
-/// drain: hosted CI can still be delivering `seq`'s output past 20s.
-async fn wait_for_flood_exit(client: &Client) {
-    let gate = Arc::new(FloodGate {
-        notify: tokio::sync::Notify::new(),
-    });
-    client.set_listener(gate.clone());
-    let mut idle = Instant::now();
-    loop {
-        let fed = feed_queued(client);
-        let events = client.take_events();
-        if events
-            .iter()
-            .any(|event| matches!(event, Event::Exited { .. }))
-        {
-            return;
-        }
-        if fed || !events.is_empty() {
-            idle = Instant::now();
-        }
-        // A batch can land between the drain and this check; the listener
-        // wake is edge-triggered, so do not wait while it is already queued.
-        if client.poll_pending() {
-            assert!(
-                idle.elapsed() < DEADLINE,
-                "timed out waiting for the flood to finish arriving"
-            );
-            continue;
-        }
-        let remaining = DEADLINE.saturating_sub(idle.elapsed());
-        assert!(
-            !remaining.is_zero(),
-            "timed out waiting for the flood to finish arriving"
-        );
-        let _ = tokio::time::timeout(remaining, gate.notify.notified()).await;
-    }
-}
-
-/// Stall-epoch asserts must surface Dropped reason: hosted CI only shows
-/// left=2 right=1. Overflow vs send-failed vs peer-closed vs probe-timeout
-/// splits the Soft residual from a server-scope HARD HOLD.
-fn assert_epoch_held(client: &Client, epoch: u64, what: &str) {
-    let after = client.connection_epoch();
-    if after == epoch {
-        return;
-    }
-    let status = client.status();
-    let last_error = client.last_error();
-    let lost: Vec<_> = client
-        .take_events()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::ConnectionLost { message } => Some(message),
-            _ => None,
-        })
-        .collect();
-    panic!(
-        "{what}: epoch {epoch} -> {after}; status={status:?}; last_error={last_error:?}; ConnectionLost={lost:?}"
-    );
-}
-
-#[test]
-fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
-    // Hosted Linux sees the server close the socket during the stall; the
-    // dump on failure names which pump fault cancelled the connection.
-    let _trace = phux_server_testkit::tracing_capture::TracingCapture::install("falls-behind");
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let mut queued = options();
-        queued.control.deliver_inbound = InboundDelivery::Queued;
-        let client = Runtime::connect(Target::uds(&socket), queued).expect("connect");
-        wait_until("attach", || {
-            feed_queued(&client);
-            client.status() == Status::Attached
-        })
-        .await;
-        let epoch = client.connection_epoch();
-
-        let _ = client.spawn_terminal(SpawnRequest {
-            command: Some(vec![
-                "/usr/bin/seq".to_owned(),
-                "1".to_owned(),
-                "200000".to_owned(),
-            ]),
-            ..SpawnRequest::default()
-        });
-        // Stall like a busy UI thread while the terminal floods output:
-        // far more frames than the queue holds, and more than one read.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert_epoch_held(&client, epoch, "a full queue redialed");
-
-        wait_for_flood_exit(&client).await;
-        assert_epoch_held(&client, epoch, "draining redialed");
-        assert_eq!(client.status(), Status::Attached);
-
-        client.close();
         drop(shutdown);
         server.await.unwrap().unwrap();
     });

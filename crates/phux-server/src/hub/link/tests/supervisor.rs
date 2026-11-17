@@ -46,18 +46,13 @@ async fn supervisor_backs_off_exponentially_then_connects() {
                 Err("boom-2".to_owned()),
                 Ok(ScriptConn::open_forever()),
             ]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                loopback_entry(),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(loopback_entry(), transport.clone());
 
             wait_for_status(&statuses, &host, |s| {
                 *s == LinkStatus::Backoff {
@@ -95,18 +90,13 @@ async fn supervisor_redials_after_a_lost_connection_with_reset_backoff() {
                 Ok(closable),
                 Ok(ScriptConn::open_forever()),
             ]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                loopback_entry(),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(loopback_entry(), transport.clone());
 
             wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
 
@@ -149,18 +139,13 @@ async fn supervisor_keeps_backing_off_when_connections_die_young() {
             };
             let transport =
                 ScriptTransport::new(vec![dead(), dead(), dead(), Ok(ScriptConn::open_forever())]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                loopback_entry(),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(loopback_entry(), transport.clone());
 
             for (attempt, retry_in) in [
                 (1, Duration::from_millis(500)),
@@ -221,18 +206,8 @@ async fn refused_link_fails_relay_commands_fast() {
     local
         .run_until(async {
             let transport = ScriptTransport::new(vec![]);
-            let statuses = HubLinkStatuses::default();
-            let host = host();
-            let (relay, relay_rx) = relay_pair(&host);
-            let cancel = CancellationToken::new();
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                entry("quic://devbox:8788", None, None),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised { cancel, relay, .. } =
+                supervise(entry("quic://devbox:8788", None, None), transport.clone());
 
             // Commands through a refused link fail typed, no dial.
             let result =
@@ -264,22 +239,20 @@ async fn supervisor_rereads_the_token_file_every_attempt() {
             let (close_tx, closable) = ScriptConn::closable();
             let transport =
                 ScriptTransport::new(vec![Ok(closable), Ok(ScriptConn::open_forever())]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(
                 entry(
                     "wss://devbox:8787",
                     Some(token_path.to_str().expect("utf8 path")),
                     Some("AB:CD"),
                 ),
                 transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            );
 
             wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
 
@@ -316,18 +289,13 @@ async fn supervisor_tears_down_a_link_whose_keepalive_fails() {
                 Ok(ScriptConn::keepalive_fails("satellite sent nothing")),
                 Ok(ScriptConn::open_forever()),
             ]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                loopback_entry(),
-                transport.clone(),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(loopback_entry(), transport.clone());
 
             wait_for_status(&statuses, &host, |s| {
                 matches!(
@@ -367,18 +335,13 @@ async fn supervisor_stops_on_cancellation() {
     local
         .run_until(async {
             let transport = ScriptTransport::new(vec![Err("boom".to_owned())]);
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            let task = tokio::task::spawn_local(run_link(
-                host.clone(),
-                loopback_entry(),
-                transport,
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task,
+            } = supervise(loopback_entry(), transport);
             wait_for_status(&statuses, &host, |s| {
                 matches!(s, LinkStatus::Backoff { .. })
             })

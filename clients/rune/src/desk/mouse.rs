@@ -48,7 +48,8 @@ const MAX_WHEEL_STEPS: i64 = 100;
 
 impl Desk {
     pub(super) fn mouse_mode(&self, terminal: &ResourceId) -> MouseMode {
-        self.client
+        self.connection
+            .client
             .as_ref()
             .and_then(|c| c.engine())
             .and_then(|e| e.mouse_mode(terminal).ok())
@@ -72,7 +73,7 @@ impl Desk {
             return;
         }
         // The rest of a drag that already ended.
-        if press.phase != Phase::Down && self.gesture == 0 {
+        if press.phase != Phase::Down && self.connection.gesture == 0 {
             return;
         }
         self.track_drag(terminal, press, tx);
@@ -81,7 +82,7 @@ impl Desk {
 
     fn report(&mut self, terminal: &ResourceId, press: &Press) {
         let Press { phase, x, y, .. } = *press;
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let Some(view) = self.view_of(terminal) else {
@@ -94,25 +95,25 @@ impl Desk {
         let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
         let action = match phase {
             Phase::Down => {
-                self.mouse_capture = Some((terminal.clone(), *press));
-                self.mouse_cell = Some((col, row));
+                self.connection.mouse_capture = Some((terminal.clone(), *press));
+                self.connection.mouse_cell = Some((col, row));
                 MouseAction::Press
             }
             Phase::Move => {
-                self.mouse_capture = Some((terminal.clone(), *press));
+                self.connection.mouse_capture = Some((terminal.clone(), *press));
                 // Only motion-tracking programs hear drags, once per cell.
                 let mode = self.mouse_mode(terminal);
                 if !matches!(mode, MouseMode::Button | MouseMode::Any)
-                    || self.mouse_cell == Some((col, row))
+                    || self.connection.mouse_cell == Some((col, row))
                 {
                     return;
                 }
-                self.mouse_cell = Some((col, row));
+                self.connection.mouse_cell = Some((col, row));
                 MouseAction::Motion
             }
             Phase::Up => {
-                self.mouse_capture = None;
-                self.mouse_cell = None;
+                self.connection.mouse_capture = None;
+                self.connection.mouse_cell = None;
                 MouseAction::Release
             }
         };
@@ -130,16 +131,19 @@ impl Desk {
 
     /// The pane whose program holds a press.
     pub(super) fn capture_terminal(&self) -> Option<&ResourceId> {
-        self.mouse_capture.as_ref().map(|(terminal, _)| terminal)
+        self.connection
+            .mouse_capture
+            .as_ref()
+            .map(|(terminal, _)| terminal)
     }
 
     /// Give the program the release Rune won't deliver, where the press last
     /// was. A pane that is gone just forgets it.
     pub(super) fn release_capture(&mut self) {
-        if let Some((terminal, press)) = self.mouse_capture.take() {
+        if let Some((terminal, press)) = self.connection.mouse_capture.take() {
             let phase = Phase::Up;
             self.report(&terminal, &Press { phase, ..press });
-            self.mouse_cell = None;
+            self.connection.mouse_cell = None;
         }
     }
 
@@ -149,12 +153,15 @@ impl Desk {
     pub fn secondary_press(&mut self, terminal: &ResourceId, at: Press, window: PointerPress) {
         self.focus_pane(terminal);
         if self.mouse_mode(terminal) != MouseMode::None && !at.mods.shift {
-            let held = (self.mouse_capture.clone(), self.mouse_cell);
+            let held = (
+                self.connection.mouse_capture.clone(),
+                self.connection.mouse_cell,
+            );
             let phase = Phase::Down;
             self.report(terminal, &Press { phase, ..at });
             let phase = Phase::Up;
             self.report(terminal, &Press { phase, ..at });
-            (self.mouse_capture, self.mouse_cell) = held;
+            (self.connection.mouse_capture, self.connection.mouse_cell) = held;
             return;
         }
         self.pointer.menu = Some(window);
@@ -163,10 +170,10 @@ impl Desk {
     /// The pointer moved with nothing pressed: `MouseMode::Any` programs hear
     /// it, once per cell, while the grid is under it.
     pub(super) fn report_motion(&mut self, terminal: &ResourceId, x: f32, y: f32, mods: Mods) {
-        if mods.shift || self.mouse_capture.is_some() || self.gesture != 0 {
+        if mods.shift || self.connection.mouse_capture.is_some() || self.connection.gesture != 0 {
             return;
         }
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let Some(frame) = self.view_of(terminal).and_then(|v| client.acquire_view(v)) else {
@@ -174,10 +181,10 @@ impl Desk {
         };
         let metrics = self.metrics();
         let cell = metrics.cell_at(x, y, frame.cols, frame.rows);
-        if self.mouse_cell == Some(cell) {
+        if self.connection.mouse_cell == Some(cell) {
             return;
         }
-        self.mouse_cell = Some(cell);
+        self.connection.mouse_cell = Some(cell);
         let inside = x >= 0.0
             && y >= 0.0
             && x < f32::from(frame.cols) * metrics.cell_w
@@ -198,14 +205,15 @@ impl Desk {
 
     /// Nothing is under the pointer any more.
     pub(super) fn forget_mouse_cell(&mut self) {
-        if self.mouse_capture.is_none() {
-            self.mouse_cell = None;
+        if self.connection.mouse_capture.is_none() {
+            self.connection.mouse_cell = None;
         }
     }
 
     /// The surface pixels of the cell under a point in a pane's grid.
     fn surface_point(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<(f64, f64)> {
         let frame = self
+            .connection
             .client
             .as_ref()?
             .acquire_view(self.view_of(terminal)?)?;
@@ -218,19 +226,19 @@ impl Desk {
     /// positive revealing older rows.
     pub fn wheel(&mut self, terminal: &ResourceId, x: f32, y: f32, dy: f32, mods: Mods) {
         // Leftover fractions belong to the pane they came from.
-        if self.wheel_pane.as_ref() != Some(terminal) {
-            self.wheel_pane = Some(terminal.clone());
-            self.wheel_rows = 0.0;
+        if self.connection.wheel_pane.as_ref() != Some(terminal) {
+            self.connection.wheel_pane = Some(terminal.clone());
+            self.connection.wheel_rows = 0.0;
         }
         let cell_h = self.metrics().cell_h;
-        self.wheel_rows += dy / cell_h;
-        let rows = self.wheel_rows.trunc();
+        self.connection.wheel_rows += dy / cell_h;
+        let rows = self.connection.wheel_rows.trunc();
         if rows == 0.0 {
             return;
         }
-        self.wheel_rows -= rows;
+        self.connection.wheel_rows -= rows;
         let steps = (rows as i64).clamp(-MAX_WHEEL_STEPS, MAX_WHEEL_STEPS);
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         if self.mouse_mode(terminal) != MouseMode::None && !mods.shift {
@@ -254,6 +262,15 @@ impl Desk {
             return;
         }
         if client.is_alt_screen(terminal) {
+            // No history to scroll: arrows only when the program keeps DEC
+            // 1007 on and the person hasn't turned them off.
+            let arrows = self.settings.wheel_arrows
+                && client
+                    .engine()
+                    .is_some_and(|engine| engine.alt_scroll(terminal).unwrap_or(true));
+            if !arrows {
+                return;
+            }
             let key = if steps > 0 {
                 PhysicalKey::ArrowUp
             } else {

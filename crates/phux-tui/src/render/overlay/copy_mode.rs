@@ -1,14 +1,9 @@
-//! Copy-mode overlay: keyboard and mouse text selection over the live pane.
+//! Copy-mode overlay: keyboard and mouse selection over the live pane
+//! (ADR-0030).
 //!
-//! Selection is a client-local projection (ADR-0030): the overlay tracks a
-//! pane-local rectangle and on commit the dispatcher resolves it against the
-//! pane's own engine and writes the host clipboard via OSC 52.
-//!
-//! Vi keys move, select (`v`, `V`, `C-v`) and copy (`y`); see the `vi` submodule.
-//!
-//! Search (`/` forward, `?` backward, `n`/`N` repeat) is typed here and run
-//! by the dispatcher against the pane's loaded history; the overlay keeps the
-//! hits in document rows so they stay put while the viewport scrolls.
+//! On commit the dispatcher resolves the pane-local rectangle against the
+//! pane's engine and writes OSC 52. Vi keys live in `vi`. Search hits are kept
+//! in document rows so they stay put while the viewport scrolls.
 
 use phux_protocol::input::key::{KeyEvent, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -70,6 +65,18 @@ impl CellRange {
     }
 }
 
+/// A selection anchor pinned to its terminal cell, so it stays put while
+/// the viewport scrolls under the selection.
+#[derive(Debug, Clone, Copy)]
+struct PinnedAnchor {
+    /// The anchor cell in full-screen coordinates.
+    screen: ScreenSelectionPoint,
+    /// Where the anchor currently appears in the viewport: signed, so a
+    /// wheel-scrolled drag keeps it off screen and only the painted
+    /// highlight clamps.
+    viewport_row: i32,
+}
+
 /// Copy-mode overlay state.
 #[derive(Debug)]
 pub struct CopyModeOverlay {
@@ -89,13 +96,9 @@ pub struct CopyModeOverlay {
     pub pane_rows: u16,
     /// Whether a left-button drag is actively extending the selection.
     selecting_with_mouse: bool,
-    /// The first clicked cell in full-screen coordinates (from the
-    /// dispatcher, which has the engine).
-    mouse_anchor_screen: Option<ScreenSelectionPoint>,
-    /// Where the mouse anchor currently appears in the viewport: signed, so
-    /// a wheel-scrolled drag keeps the anchor off screen and only the painted
-    /// highlight clamps.
-    mouse_anchor_viewport_row: Option<i32>,
+    /// The first clicked cell (from the dispatcher, which has the engine)
+    /// or a keyboard selection's pinned anchor.
+    pinned_anchor: Option<PinnedAnchor>,
     /// The search being typed after `/` or `?` (`true` for `?`).
     search_input: Option<(LineEdit, bool)>,
     /// The last committed search, repeated by `n`/`N`.
@@ -128,8 +131,7 @@ impl CopyModeOverlay {
             pane_cols,
             pane_rows,
             selecting_with_mouse: false,
-            mouse_anchor_screen: None,
-            mouse_anchor_viewport_row: None,
+            pinned_anchor: None,
             search_input: None,
             search: None,
             click_grab: None,
@@ -140,8 +142,10 @@ impl CopyModeOverlay {
 
     /// Record the stable terminal cell under a mouse press.
     pub fn set_mouse_anchor_screen(&mut self, anchor: ScreenSelectionPoint) {
-        self.mouse_anchor_screen = Some(anchor);
-        self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
+        self.pinned_anchor = Some(PinnedAnchor {
+            screen: anchor,
+            viewport_row: i32::from(self.anchor_row),
+        });
     }
 
     /// Make a release without a drag copy `grab` at the pressed cell (the
@@ -179,7 +183,7 @@ impl CopyModeOverlay {
     fn visible_selection_range(&self) -> CellRange {
         let max_row = self.pane_rows.saturating_sub(1);
         // An anchor scrolled off screen selects through the viewport's edge.
-        let (anchor_row, anchor_col) = match self.mouse_anchor_viewport_row {
+        let (anchor_row, anchor_col) = match self.pinned_anchor.map(|pinned| pinned.viewport_row) {
             None => (self.anchor_row, self.anchor_col),
             Some(row) if row < 0 => (0, 0),
             Some(row) if row > i32::from(max_row) => (max_row, self.pane_cols.saturating_sub(1)),
@@ -218,7 +222,7 @@ impl CopyModeOverlay {
         if !self.selecting_with_mouse {
             return;
         }
-        let Some(row) = self.mouse_anchor_viewport_row.as_mut() else {
+        let Some(pinned) = self.pinned_anchor.as_mut() else {
             return;
         };
         let delta = i32::try_from(delta).unwrap_or_else(|_| {
@@ -228,7 +232,7 @@ impl CopyModeOverlay {
                 i32::MAX
             }
         });
-        *row = row.saturating_sub(delta);
+        pinned.viewport_row = pinned.viewport_row.saturating_sub(delta);
     }
 
     /// Move cursor by a delta, clamping to pane bounds, leaving the anchor.
@@ -282,7 +286,7 @@ impl CopyModeOverlay {
     /// cursor, the rectangle keeps the highlight coherent.
     fn copy_request_with(&self, grab: SelectionGrab) -> CopyRequest {
         let range = self.effective_range();
-        let mut anchor = self.mouse_anchor_screen;
+        let mut anchor = self.pinned_anchor.map(|pinned| pinned.screen);
         let mut cursor_col = self.cursor_col;
         // A pinned anchor and the cursor are the two corners; a line
         // selection widens each to its own end of the row.
@@ -291,8 +295,8 @@ impl CopyModeOverlay {
             && let Some(point) = anchor.as_mut()
         {
             let anchor_first = self
-                .mouse_anchor_viewport_row
-                .is_none_or(|row| row <= i32::from(self.cursor_row));
+                .pinned_anchor
+                .is_none_or(|pinned| pinned.viewport_row <= i32::from(self.cursor_row));
             let max_col = self.pane_cols.saturating_sub(1);
             (point.col, cursor_col) = if anchor_first {
                 (0, max_col)
@@ -473,8 +477,8 @@ impl RenderOverlay for CopyModeOverlay {
                 self.set_cursor_from_mouse(mouse);
                 self.anchor_row = self.cursor_row;
                 self.anchor_col = self.cursor_col;
-                if self.mouse_anchor_screen.is_some() {
-                    self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
+                if let Some(pinned) = self.pinned_anchor.as_mut() {
+                    pinned.viewport_row = i32::from(self.anchor_row);
                 }
                 self.selecting_with_mouse = true;
                 OverlayCommand::Stay

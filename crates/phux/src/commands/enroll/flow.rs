@@ -180,7 +180,17 @@ pub(super) fn client_identity_for(
     reused: bool,
     on_event: &mut dyn FnMut(EnrollEvent),
 ) -> (Option<ClientIdentityFiles>, CertificateStatus) {
-    if reused && let Some(previous) = req.previous_identity {
+    // A hardware key was asked for and the held one is a file: replace it.
+    let wants_hardware = req.workload.as_ref().is_some_and(|workload| {
+        workload.hardware_key
+            && !req.previous_identity.is_some_and(|previous| {
+                super::identity::is_hardware_key(Some(&previous.private_key))
+            })
+    });
+    if reused
+        && !wants_hardware
+        && let Some(previous) = req.previous_identity
+    {
         match previous.renewal_due(chrono::Utc::now().timestamp()) {
             None => return (Some(previous.clone()), CertificateStatus::Kept),
             Some(detail) => on_event(EnrollEvent::CertificateRenewalDue { detail }),

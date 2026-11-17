@@ -41,8 +41,8 @@ mod tests {
 
     #[test]
     fn an_echo_ends_the_wait_and_silence_is_bounded() {
-        let (client, rt) = crate::grid::budget::input_fixture();
-        let shown = rt.state.shown.as_ref().unwrap();
+        let (client, rt) = crate::test_support::input_fixture();
+        let shown = rt.state.connection.shown.as_ref().unwrap();
         let (terminal_id, view) = (shown.resource.clone(), shown.view.unwrap());
         let before = client.acquire_view(view).unwrap();
         let start = Instant::now();

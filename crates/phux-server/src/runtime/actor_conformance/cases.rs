@@ -66,14 +66,9 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
             ),
         ] {
             let refused = agent.command(request_id, command).await;
-            assert!(
-                matches!(
-                    refused,
-                    CommandResult::Error {
-                        code: ErrorCode::PermissionDenied,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&refused),
+                Some(ErrorCode::PermissionDenied),
                 "{refused:?}"
             );
         }
@@ -83,14 +78,10 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
             credential_id: minted.credential_id.clone(),
         };
         assert_eq!(human.command(3, revoke.clone()).await, CommandResult::Ok);
-        let deadline = Instant::now() + PATIENCE;
-        while std::path::Path::new(&minted.socket_path).exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the socket file was never removed"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        wait_until("the socket file is removed", || {
+            !std::path::Path::new(&minted.socket_path).exists()
+        })
+        .await;
         assert_eq!(
             human.command(4, revoke).await,
             CommandResult::Ok,
@@ -107,7 +98,7 @@ async fn no_agent_takes_a_paired_devices_lease_and_the_devices_takeover_beats_th
     local(async {
         let fx = Fixture::new();
         let phone = fx.phone().await;
-        phone.attach().await;
+        phone.attach(1).await;
         assert_eq!(
             phone
                 .command(1, acquire(&fx.alpha, InputMode::Cooperative))
@@ -119,16 +110,11 @@ async fn no_agent_takes_a_paired_devices_lease_and_the_devices_takeover_beats_th
         let (delegated, _) = fx.delegated_agent(&owner).await;
         let automation = fx.automation().await;
         for agent in [&delegated, &automation] {
-            agent.attach().await;
+            agent.attach(1).await;
             let seized = agent.command(1, acquire(&fx.alpha, InputMode::Seize)).await;
-            assert!(
-                matches!(
-                    seized,
-                    CommandResult::Error {
-                        code: ErrorCode::InputLeaseHeld,
-                        ..
-                    }
-                ),
+            assert_eq!(
+                error_code(&seized),
+                Some(ErrorCode::InputLeaseHeld),
                 "{seized:?}"
             );
             assert_eq!(fx.lease_holder(), Some(phone.client));
@@ -222,14 +208,10 @@ async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
                 )
             })
             .await;
-        let deadline = Instant::now() + PATIENCE;
-        while on_beta.socket_path.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the socket file was never removed"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        wait_until("the socket file is removed", || {
+            !on_beta.socket_path.exists()
+        })
+        .await;
 
         assert!(
             fx.state
@@ -278,20 +260,16 @@ async fn a_minted_credentials_socket_admits_connections_as_it_until_withdrawn() 
             .await
             .unwrap();
         let principal = delegated.credential.principal();
-        let deadline = Instant::now() + PATIENCE;
-        let agent = loop {
-            let found = fx.state.with(|s| {
+        let agent = || {
+            fx.state.with(|s| {
                 s.watched_connections()
                     .into_iter()
                     .find(|watched| watched.grant.principal() == &principal)
                     .map(|watched| watched.client)
-            });
-            if let Some(client) = found {
-                break client;
-            }
-            assert!(Instant::now() < deadline, "the agent never got its grant");
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            })
         };
+        wait_until("the agent gets its grant", || agent().is_some()).await;
+        let agent = agent().unwrap();
         assert_eq!(
             fx.state.with(|s| s.actor_for(agent)).on_behalf_of,
             Some(PrincipalId::Owner)
@@ -299,14 +277,10 @@ async fn a_minted_credentials_socket_admits_connections_as_it_until_withdrawn() 
 
         assert!(revoke_delegated_agent(&fx.state, &delegated.credential.id));
         assert!(fx.state.with(|s| s.connection_revoked(agent)));
-        let deadline = Instant::now() + PATIENCE;
-        while delegated.socket_path.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the socket file was never removed"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        wait_until("the socket file is removed", || {
+            !delegated.socket_path.exists()
+        })
+        .await;
         assert!(
             tokio::net::UnixStream::connect(&delegated.socket_path)
                 .await

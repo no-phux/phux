@@ -18,7 +18,7 @@
       "unreachable": null
     }
   ],
-  "hosts_complete": false,
+  "hosts_complete": true,
   "resources": [
     {
       "exit": null,

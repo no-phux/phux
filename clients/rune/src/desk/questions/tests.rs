@@ -163,7 +163,7 @@ fn the_gate_sends_only_to_a_connected_answering_view_with_the_same_question() {
 
 fn asking_desk(answers: bool) -> (Desk, ResourceId) {
     let mut desk = Desk::new(&Resolved::offline("not launched"));
-    desk.client = Some(std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+    desk.connection.client = Some(std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
         phux_client_runtime::control::ControlOptions::default(),
     )));
     let (terminal, session) = (ResourceId::local(1), ResourceId::local(2));

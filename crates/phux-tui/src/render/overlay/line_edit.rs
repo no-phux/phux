@@ -1,10 +1,5 @@
-//! A single-line text field with the readline keys a shell user expects:
-//! the shared editor behind the prompt modals and copy-mode search.
-//!
-//! `C-a`/`Home` and `C-e`/`End` jump to the ends, `C-b`/`C-f` and the arrows
-//! move a character, `C-u` and `C-k` kill to the start or end, `C-w` kills
-//! the word before the cursor, `C-h`/Backspace and `C-d`/Delete delete a
-//! character. Text inserts at the cursor.
+//! A single-line text field with readline keys: the editor behind the
+//! prompt modals and copy-mode search.
 
 use phux_protocol::input::key::{KeyEvent, ModSet, PhysicalKey};
 use ratatui::style::{Modifier, Style};
@@ -142,19 +137,7 @@ impl LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::input::key::KeyAction;
-
-    fn key(key: PhysicalKey, mods: ModSet, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::key_event as key;
 
     fn ctrl(k: PhysicalKey) -> KeyEvent {
         key(k, ModSet::CTRL, None)

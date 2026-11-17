@@ -9,21 +9,13 @@ use phux_protocol::ids::{ArrangementKey, OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Command, Committed, SessionLifetime, TerminateMode};
 
 use super::Client;
-use crate::control::{
-    ArrangementSubmitError, ControlPlane, InboxView, IntakeView, OrganizationReplica,
-};
+use crate::control::{ArrangementSubmitError, ControlPlane, IntakeView, OrganizationReplica};
 
 impl Client {
     /// A copy of the organization replica.
     #[must_use]
     pub fn organization(&self) -> OrganizationReplica {
         self.inner.with(|control| control.organization().clone())
-    }
-
-    /// Legacy alias for [`Self::intake`].
-    #[must_use]
-    pub fn inbox(&self) -> InboxView {
-        self.intake()
     }
 
     /// The owner-local Intake, distinct from attention notifications.
@@ -117,15 +109,6 @@ impl Client {
     /// [`SubmitError`].
     pub fn delete_session(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
         self.inner.with(|control| control.delete_session(session))
-    }
-
-    /// Legacy alias for [`Self::intake_resolve`].
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError`].
-    pub fn inbox_resolve(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        self.intake_resolve(session)
     }
 
     /// Clear a session's Intake mark; members and execution remain unchanged.
@@ -226,6 +209,12 @@ impl Client {
     #[must_use]
     pub fn tab_lock_supported(&self) -> bool {
         self.inner.with(|control| control.tab_lock_supported())
+    }
+
+    /// Whether the connected server keeps slot tabs a write carries.
+    #[must_use]
+    pub fn slot_tabs_supported(&self) -> bool {
+        self.inner.with(|control| control.slot_tabs_supported())
     }
 
     /// Replace a session's arrangement with a handle-space document.

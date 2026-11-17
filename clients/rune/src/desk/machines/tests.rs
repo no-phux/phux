@@ -38,10 +38,8 @@ fn desk() -> Desk {
 }
 
 #[test]
-fn this_machine_folds_and_the_others_open() {
+fn other_machine_previews_open_and_close() {
     let mut desk = desk();
-    desk.toggle_host(None);
-    assert!(desk.machines.folded);
     desk.toggle_host(Some("mini".to_owned()));
     assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
     desk.toggle_host(Some("mini".to_owned()));
@@ -170,4 +168,42 @@ fn a_different_host_ticket_offer_can_be_cancelled_without_starting_pairing() {
     assert!(desk.machines.offer.is_none());
     assert!(desk.machines.adding.is_none() && desk.machines.request.is_none());
     assert!(desk.machines.error.is_none() && desk.machines.outcome.is_none());
+}
+
+#[test]
+fn ticked_machines_set_up_one_after_another_and_a_failure_stays_by_its_row() {
+    use ssh::Offered;
+    let mut desk = desk();
+    desk.machines.phux = Some(PathBuf::from("/nonexistent/phux"));
+    desk.machines.ssh.hosts = vec!["a".to_owned(), "b".to_owned()];
+    desk.pick_machine("a");
+    desk.pick_machine("b");
+    desk.set_up_picked();
+    assert!(matches!(
+        desk.machines.offer_state("a"),
+        Offered::Running(_)
+    ));
+    assert_eq!(desk.machines.offer_state("b"), Offered::Waiting);
+    desk.add_ssh_host("b");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !matches!(desk.machines.offer_state("a"), Offered::Failed(_)) {
+        assert!(std::time::Instant::now() < deadline, "the add never ended");
+        desk.pump_machines();
+    }
+    // The failure starts the next one; pressing b again didn't queue it twice.
+    assert!(matches!(
+        desk.machines.offer_state("b"),
+        Offered::Running(_)
+    ));
+    assert!(desk.machines.ssh.picked.is_empty());
+    // Ticking a failed one again clears why, ready to retry.
+    desk.pick_machine("a");
+    assert_eq!(desk.machines.offer_state("a"), Offered::Pick(true));
+}
+
+#[test]
+fn an_add_behind_a_closed_sheet_opens_the_machine_in_the_sidebar() {
+    let mut desk = desk();
+    desk.landed("mini".to_owned());
+    assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
 }

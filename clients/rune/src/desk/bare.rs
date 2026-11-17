@@ -75,13 +75,13 @@ impl Desk {
     }
 
     fn enter_bare(&mut self) {
-        if self.phone.is_some() || self.client.is_none() {
+        if self.phone.is_some() || self.connection.client.is_none() {
             return;
         }
         let Some(origin) = self.selected_session_name() else {
             return self.say(NoticeKind::Info, "Open a session first.");
         };
-        let session = unused_name(self.topology.as_ref(), "tui");
+        let session = unused_name(self.connection.topology.as_ref(), "tui");
         // Rune's CLI is only this computer's.
         let local = self.machines.current.is_none();
         let phux = self.launch.phux.as_ref().filter(|_| local);
@@ -96,15 +96,16 @@ impl Desk {
     /// forgetting it would land the window in it with its chrome.
     fn leave_bare(&mut self) {
         let Some(bare) = &self.bare else { return };
-        if self.pending_session.as_ref() == Some(&bare.session) {
+        if self.connection.pending_session.as_ref() == Some(&bare.session) {
             return;
         }
         let key = self
+            .connection
             .topology
             .as_ref()
             .and_then(|t| t.session_named(&bare.session))
             .and_then(|session| session.key);
-        let (Some(client), Some(key)) = (&self.client, key) else {
+        let (Some(client), Some(key)) = (&self.connection.client, key) else {
             self.bare = None;
             return;
         };
@@ -117,10 +118,10 @@ impl Desk {
     /// Whether the bare window just sent the window home. It ends when its
     /// session does, or when the user switches away from it.
     pub(super) fn settle_bare(&mut self, client: &Client) -> bool {
-        if self.pending_session.is_some() {
+        if self.connection.pending_session.is_some() {
             return false;
         }
-        let (Some(bare), Some(topology)) = (&self.bare, &self.topology) else {
+        let (Some(bare), Some(topology)) = (&self.bare, &self.connection.topology) else {
             return false;
         };
         let selected = client.selected_session();
@@ -174,9 +175,8 @@ mod tests {
 
     #[test]
     fn names_skip_sessions_that_exist() {
-        use phux_client_core::layout::wire::HandleMap;
         use phux_client_runtime::control::SessionDescriptor;
-        use phux_protocol::ids::ResourceId;
+
         let session = |id, name: &str| SessionDescriptor {
             id,
             name: name.to_owned(),
@@ -193,19 +193,8 @@ mod tests {
             project: None,
             project_link: None,
         };
-        let topology = Topology {
-            sessions: vec![session(1, "tui"), session(2, "tui-2")],
-            resources: Vec::new(),
-            panes: Vec::new(),
-            agent_sessions: Vec::new(),
-            documents: Vec::new(),
-            satellite_sessions: Vec::new(),
-            focused_session: 0,
-            focused_pane: ResourceId::local(0),
-            authority: None,
-            inbox: None,
-            handles: HandleMap::new(),
-        };
+        let topology =
+            crate::desk::topology(vec![session(1, "tui"), session(2, "tui-2")], Vec::new());
         assert_eq!(unused_name(None, "tui"), "tui");
         assert_eq!(unused_name(Some(&topology), "tui"), "tui-3");
         assert_eq!(unused_name(Some(&topology), "work"), "work");

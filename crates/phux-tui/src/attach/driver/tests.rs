@@ -39,7 +39,6 @@ use phux_client::agent_meta::{
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
 use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
 use phux_config::widget::WindowInfo;
 
 use super::config_ui::*;
@@ -582,19 +581,12 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
         next_cursor: next.map(bytes::Bytes::from_static),
         payload: bytes::Bytes::new(),
     };
-    let mut completion = HeadlessCompletion::new(Some(1));
+    let mut completion = HeadlessCompletion::default();
     completion.note_history_request(&id, stream_id, bootstrap_id);
     completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
     assert!(
         !completion.is_complete(false),
         "READY may precede history and metadata"
-    );
-    completion.observe_frame(
-        &FrameKind::MetadataValue {
-            request_id: 1,
-            value: None,
-        },
-        7,
     );
     assert!(
         !completion.is_complete(true),
@@ -611,7 +603,7 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
 
     // A page the engine does not follow up (its prefetch window is full)
     // settles the chain even though older history remains on the server.
-    let mut completion = HeadlessCompletion::new(None);
+    let mut completion = HeadlessCompletion::default();
     completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
     completion.note_history_request(&id, stream_id, bootstrap_id);
     completion.observe_frame(&page(b"newest", Some(b"older")), 7);
@@ -639,7 +631,7 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
             required_rows: 1,
         },
     ] {
-        let mut completion = HeadlessCompletion::new(None);
+        let mut completion = HeadlessCompletion::default();
         completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
         completion.note_history_request(&id, stream_id, bootstrap_id);
         completion.observe_frame(&frame, 7);
@@ -1003,10 +995,7 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
     let item = |action: &str| {
         SelectItem::new(
             action,
-            ResolvedAction {
-                action: action.to_owned(),
-                args: std::collections::BTreeMap::new(),
-            },
+            crate::attach::resolved(action, std::collections::BTreeMap::new()),
         )
     };
     let theme = crate::render::Theme::default();
@@ -1017,10 +1006,8 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
     ))
 }
 
-/// Opening the palette must NOT blank the sidebar: the floating-modal base
-/// frame repaints the strip and panes, then centers the modal in the pane
-/// area. Without the painter the strip is blank (the bug's shape, so the
-/// probe cannot false-pass).
+/// Opening the palette must not blank the sidebar: the floating-modal base
+/// frame repaints the strip, then centers the modal in the pane area.
 #[test]
 fn command_palette_keeps_sidebar_visible() {
     let (_, blank) = overlay_frame(palette_overlay(), false);

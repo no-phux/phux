@@ -2,15 +2,13 @@
 //! connection: list and read the `phux.approval/v1/<id>` records, follow the
 //! `approval_requested` / `approval_decided` journal events, and decide one.
 //!
-//! The projection is opt-in ([`ControlPlane::watch_approvals`]) and gated on
-//! `ServerFeature::APPROVALS`: an older server stores a decide key as an
-//! ordinary value, so nothing is sent to one. Every connection re-lists, and
+//! The projection is opt-in ([`ControlPlane::watch_approvals`]). Every
+//! connection re-lists, and
 //! so does a journal or source gap. A decision is never retried; its outcome
 //! is one [`Event::ApprovalDecision`].
 
 use std::collections::HashMap;
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::ApprovalId;
 use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, AgentEvent, ErrorCode, FrameKind, Scope};
 
@@ -60,10 +58,18 @@ impl ControlPlane {
         }
     }
 
+    /// Reconcile pending records on the live connection without repeating a decision.
+    pub fn refresh_approvals(&mut self) {
+        self.approvals.watching = true;
+        if self.handshake_ready {
+            self.list_approvals();
+        }
+    }
+
     /// Whether the negotiated server holds actions for approval.
     #[must_use]
-    pub fn approvals_supported(&self) -> bool {
-        self.handshake_ready && self.server_has(ServerFeature::Approvals)
+    pub const fn approvals_supported(&self) -> bool {
+        self.handshake_ready
     }
 
     /// The pending approvals, oldest first. Empty unless watching.

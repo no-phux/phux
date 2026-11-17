@@ -11,6 +11,7 @@
 mod hub_relay_federation;
 mod hub_runtime;
 mod relay_blind;
+mod relay_common;
 mod relay_e2e;
 mod relay_inner_tls;
 mod tls_server_name;

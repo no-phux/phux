@@ -1,9 +1,70 @@
 //! Client-local focus transition and one-entry MRU bookkeeping. Focus is
-//! consumer-local (ADR-0019): never serialized or sent over the wire.
+//! consumer-local (ADR-0019): never serialized or sent over the wire. The
+//! panes hear about it only as DEC 1004 reports ([`FocusReports`]).
 
 use phux_protocol::ResourceId;
+use phux_protocol::input::focus::FocusEvent;
 
 use crate::layout::{self, ArrangementDoc};
+
+/// What the panes have heard about keyboard focus (DEC 1004). The pane that
+/// takes keys hears focus-in once; the pane it leaves, by a pane, tab or
+/// session switch or the outer window losing focus, hears focus-out. Rune
+/// keeps the same rule (`clients/rune/src/desk/sessions.rs`, `sync_focus`).
+/// The server drops a report for a pane that hasn't turned 1004 on.
+#[derive(Debug)]
+pub(super) struct FocusReports {
+    /// The pane last told it gained focus.
+    told: Option<ResourceId>,
+    /// The outer terminal window's focus. A terminal that never reports
+    /// counts as focused.
+    outer: bool,
+}
+
+impl Default for FocusReports {
+    fn default() -> Self {
+        Self {
+            told: None,
+            outer: true,
+        }
+    }
+}
+
+impl FocusReports {
+    /// Follow the outer terminal window's focus.
+    pub(super) const fn set_outer(&mut self, focused: bool) {
+        self.outer = focused;
+    }
+
+    /// The reports that bring the panes up to date with `keyboard`, the pane
+    /// that takes keys now (`None` when leaving the session): focus-out to
+    /// the pane last told, then focus-in to the new one. A pane `routable`
+    /// refuses hears nothing, and a focus-in it missed is offered again on
+    /// the next call.
+    pub(super) fn owed(
+        &mut self,
+        keyboard: Option<&ResourceId>,
+        routable: impl Fn(&ResourceId) -> bool,
+    ) -> Vec<(ResourceId, FocusEvent)> {
+        let wanted = keyboard.filter(|_| self.outer);
+        if self.told.as_ref() == wanted {
+            return Vec::new();
+        }
+        let mut owed = Vec::with_capacity(2);
+        if let Some(old) = self.told.take()
+            && routable(&old)
+        {
+            owed.push((old, FocusEvent::Lost));
+        }
+        if let Some(new) = wanted
+            && routable(new)
+        {
+            self.told = Some(new.clone());
+            owed.push((new.clone(), FocusEvent::Gained));
+        }
+        owed
+    }
+}
 
 /// Client-local pane focus and the session names this client has attached.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -137,5 +198,36 @@ mod tests {
         workspace.groups.pop();
         history.repair(current.as_ref(), &workspace);
         assert_eq!(history.previous(), None);
+    }
+
+    /// Each move tells the pane left and the pane reached exactly once; the
+    /// outer window and leaving the session count as moves; a pane with no
+    /// route yet is asked again once it has one.
+    #[test]
+    fn focus_reports_follow_every_move_once() {
+        use FocusEvent::{Gained, Lost};
+        let any = |_: &ResourceId| true;
+        let mut reports = FocusReports::default();
+
+        assert_eq!(reports.owed(Some(&tid(1)), any), vec![(tid(1), Gained)]);
+        assert_eq!(reports.owed(Some(&tid(1)), any), vec![]);
+        // Pane, tab or session switch: whatever moved the keyboard.
+        assert_eq!(
+            reports.owed(Some(&tid(2)), any),
+            vec![(tid(1), Lost), (tid(2), Gained)]
+        );
+        // The outer window loses focus, then gets it back.
+        reports.set_outer(false);
+        assert_eq!(reports.owed(Some(&tid(2)), any), vec![(tid(2), Lost)]);
+        assert_eq!(reports.owed(Some(&tid(3)), any), vec![]);
+        reports.set_outer(true);
+        assert_eq!(reports.owed(Some(&tid(3)), any), vec![(tid(3), Gained)]);
+        // Leaving the session.
+        assert_eq!(reports.owed(None, any), vec![(tid(3), Lost)]);
+        assert_eq!(reports.owed(None, any), vec![]);
+
+        // No stream yet: nothing now, focus-in once it can be carried.
+        assert_eq!(reports.owed(Some(&tid(4)), |_| false), vec![]);
+        assert_eq!(reports.owed(Some(&tid(4)), any), vec![(tid(4), Gained)]);
     }
 }

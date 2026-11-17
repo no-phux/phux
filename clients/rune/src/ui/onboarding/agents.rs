@@ -1,6 +1,7 @@
-//! The Agents & permissions step and its grant sheet.
+//! The Agents step (and permissions, on macOS) and its grant sheet.
 
 use super::*;
+use crate::ui::Cover;
 
 /// One of the Agents step's two cards.
 fn card(key: &'static str, glyph: &'static rune::Icon, title: &'static str, p: &Ink) -> El {
@@ -159,8 +160,8 @@ pub(super) fn agents(desk: &Desk, p: &Ink) -> El {
         .gap(18.0)
         .child(heading(
             &icons::PUZZLE,
-            "Agents & permissions",
-            "Give your agents the phux skill, and phux the access they ask for.",
+            words::PROMISE.agents_title,
+            words::PROMISE.agents_lead,
             p,
         ))
         .child(
@@ -280,9 +281,7 @@ pub(super) fn grant_sheet(desk: &Desk, p: &Ink) -> El {
         .children(bundle);
     col()
         .key("grant-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .padding(16.0)
         .center()
         .fill(Color::BLACK.alpha(0.28))

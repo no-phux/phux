@@ -34,33 +34,33 @@ pub static ACQUIRED: Counter = Counter::new();
 /// Projections an acquire pulled from the owner for a deferred presentation.
 pub static CAUGHT_UP: Counter = Counter::new();
 /// Microseconds from command enqueue to owner dequeue; includes scheduling delay.
-pub static OWNER_QUEUE_WAIT: Histogram = Histogram::new();
+pub(crate) static OWNER_QUEUE_WAIT: Histogram = Histogram::new();
 /// Microseconds executing a dequeued command, including replying; excludes idle recv.
-pub static OWNER_EXECUTE: Histogram = Histogram::new();
+pub(crate) static OWNER_EXECUTE: Histogram = Histogram::new();
 /// Microseconds from request channel creation through response/error receipt.
-pub static REQUEST_WALL: Histogram = Histogram::new();
+pub(crate) static REQUEST_WALL: Histogram = Histogram::new();
 /// Microseconds executing an apply batch, including its publications.
-pub static APPLY_EXECUTE: Histogram = Histogram::new();
+pub(crate) static APPLY_EXECUTE: Histogram = Histogram::new();
 /// Events delivered in an apply batch.
-pub static APPLY_EVENTS: Histogram = Histogram::new();
+pub(crate) static APPLY_EVENTS: Histogram = Histogram::new();
 /// Apply events that returned an error, including fatal batch-prefix endings.
-pub static APPLY_ERRORS: Counter = Counter::new();
+pub(crate) static APPLY_ERRORS: Counter = Counter::new();
 /// Microseconds executing a publication catch-up, excluding its request wait.
-pub static CATCH_UP_EXECUTE: Histogram = Histogram::new();
+pub(crate) static CATCH_UP_EXECUTE: Histogram = Histogram::new();
 /// Microseconds projecting one grid, excluding publication.
-pub static PROJECT_GRID: Histogram = Histogram::new();
+pub(crate) static PROJECT_GRID: Histogram = Histogram::new();
 /// Microseconds publishing a projected frame and reclaiming its predecessor.
-pub static PUBLISH_SWAP: Histogram = Histogram::new();
+pub(crate) static PUBLISH_SWAP: Histogram = Histogram::new();
 /// Projections that started from an empty buffer.
 ///
 /// Every frame the presentation retired was still held by a consumer, or
 /// none was retired yet. Steady output under a painter that keeps one frame
 /// leaves it flat.
-pub static BUFFER_FRESH: Counter = Counter::new();
+pub(crate) static BUFFER_FRESH: Counter = Counter::new();
 /// Timed grid projection/publication attempts that failed (setup excluded).
-pub static PROJECT_ERRORS: Counter = Counter::new();
+pub(crate) static PROJECT_ERRORS: Counter = Counter::new();
 /// Command send or synchronous response receive failures (owner stopped).
-pub static REQUEST_ERRORS: Counter = Counter::new();
+pub(crate) static REQUEST_ERRORS: Counter = Counter::new();
 
 /// The runtime's metric table, in render order.
 pub static TABLE: &[Metric] = &[

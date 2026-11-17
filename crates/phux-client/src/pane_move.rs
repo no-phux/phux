@@ -5,11 +5,10 @@
 //! (membership only; the server prunes the source arrangement in the same
 //! transaction), then a compare-and-swap edit of the destination
 //! arrangement, undone by `ORGANIZATION_UNDO` of the move's receipt when the
-//! placement cannot be written. Against an older server: ADR-0056's L1
+//! placement cannot be written. With named projection keys: ADR-0056's L1
 //! re-parent, then destination-first layout publication and source cleanup.
 //! The [`ResourceId`] is never replaced and the process keeps running.
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope, StateScope,
@@ -21,8 +20,7 @@ use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::{ArrangementDoc, LayoutNode, SplitDir, leaves};
 use crate::layout_ops::{
-    DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, layout_key,
-    validate_projection_key,
+    DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, validate_projection_key,
 };
 
 /// A confirmed pane move and the destination topology that won publication.
@@ -57,9 +55,6 @@ pub enum PaneMoveError {
         /// Whether ownership could be restored.
         rollback: &'static str,
     },
-    /// The peer cannot perform ADR-0056 moves.
-    #[error("this server predates cross-session pane moves")]
-    ServerTooOld,
     /// The server refused the ownership move.
     #[error("server refused the pane move: {0}")]
     MoveRefused(String),
@@ -114,9 +109,9 @@ struct CrossMovePlan {
     dir: SplitDir,
     ratio: f32,
     rollback_owner: Option<ResourceId>,
-    /// Named projection keys (ADR-0129); `None` is the default key.
-    destination_key: Option<String>,
-    source_key: Option<String>,
+    /// Named projection keys (ADR-0129).
+    destination_key: String,
+    source_key: String,
 }
 
 /// Move `source` beside `target` on a dedicated control connection,
@@ -177,9 +172,7 @@ pub async fn move_pane(
         });
     }
 
-    let (source_key, destination_key) =
-        resolve_cross_session_projection(projection, source_session, destination_session)?;
-    if crate::org::supported(conn) && projection.is_empty() {
+    if projection.is_empty() {
         return move_by_record(
             conn,
             &source,
@@ -191,13 +184,8 @@ pub async fn move_pane(
         )
         .await;
     }
-    if !conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(ServerFeature::MoveResource)
-    }) {
-        return Err(PaneMoveError::ServerTooOld);
-    }
+    let (source_key, destination_key) =
+        resolve_cross_session_projection(projection, source_session, destination_session)?;
     let plan = CrossMovePlan {
         rollback_owner: sibling_in_session(&snapshot, &source),
         source,
@@ -228,33 +216,28 @@ fn resolve_single_session_projection(
     }
 }
 
-/// `--projection` for a cross-session move: `[]`, or two keys matched to
+/// `--projection` for a cross-session move: two keys matched to
 /// `(source, destination)` by their embedded session ids in either order.
 fn resolve_cross_session_projection(
     projection: &[String],
     source_session: SessionId,
     destination_session: SessionId,
-) -> Result<(Option<String>, Option<String>), PaneMoveError> {
+) -> Result<(String, String), PaneMoveError> {
     let [first, second] = projection else {
-        return if projection.is_empty() {
-            Ok((None, None))
-        } else {
-            Err(PaneMoveError::ProjectionArityMismatch)
-        };
+        return Err(PaneMoveError::ProjectionArityMismatch);
     };
     let first_session = crate::layout::projection_key_session(first);
     let second_session = crate::layout::projection_key_session(second);
     if first_session == Some(source_session) && second_session == Some(destination_session) {
-        return Ok((Some(first.clone()), Some(second.clone())));
+        return Ok((first.clone(), second.clone()));
     }
     if first_session == Some(destination_session) && second_session == Some(source_session) {
-        return Ok((Some(second.clone()), Some(first.clone())));
+        return Ok((second.clone(), first.clone()));
     }
     Err(PaneMoveError::ProjectionArityMismatch)
 }
 
-/// A cross-session move against a server that advertises `ORGANIZATION`:
-/// `RESOURCE_MOVE`, then the destination arrangement edit, undone when the
+/// A cross-session move of the default layout: `RESOURCE_MOVE`, then the destination arrangement edit, undone when the
 /// edit cannot be written.
 async fn move_by_record(
     conn: &mut Connection,
@@ -341,7 +324,7 @@ async fn execute_cross_move(
         .iter()
         .any(|session| session.id == plan.source_session);
 
-    let mut destination_layout = match layout_ops(
+    let mut destination_layout = match LayoutOps::with_key(
         conn,
         plan.destination_session,
         plan.destination_key.clone(),
@@ -484,10 +467,9 @@ async fn read_snapshot(
 async fn delete_layout(
     conn: &mut Connection,
     session: SessionId,
-    key: Option<String>,
+    key: String,
     request_id: u32,
 ) -> Result<(), LayoutOpsError> {
-    let key = key.unwrap_or_else(|| layout_key(session));
     conn.send(&FrameKind::DeleteMetadata {
         request_id,
         scope: Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
@@ -525,7 +507,7 @@ async fn close_source_leaf(
     conn: &mut Connection,
     plan: &CrossMovePlan,
 ) -> Result<(), LayoutOpsError> {
-    let mut layout = layout_ops(conn, plan.source_session, plan.source_key.clone(), 20)?;
+    let mut layout = LayoutOps::with_key(conn, plan.source_session, plan.source_key.clone(), 20)?;
     let workspace = layout
         .mutate(LayoutMutation::Close {
             target: plan.source.clone(),
@@ -611,14 +593,13 @@ fn tree_has_placement(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
     use phux_protocol::ids::WindowId;
     use phux_protocol::wire::frame::{ErrorCode, FrameKind};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     use super::*;
     use crate::layout::{Group, LayoutState};
-    use crate::testkit::{ScriptSpec, serve_one};
+    use crate::testkit::{ScriptSpec, connect_one, serve_one};
 
     fn tid(id: u32) -> ResourceId {
         ResourceId::local(id)
@@ -634,16 +615,13 @@ mod tests {
     }
 
     fn workspace(name: &str, tree: LayoutNode, focus: u32) -> ArrangementDoc {
-        ArrangementDoc {
-            groups: vec![Group::new(
-                name.to_owned(),
-                LayoutState {
-                    tree: Some(tree),
-                    focus: Some(tid(focus)),
-                },
-            )],
-            active: 0,
-        }
+        ArrangementDoc::from_groups(vec![Group::new(
+            name.to_owned(),
+            LayoutState {
+                tree: Some(tree),
+                focus: Some(tid(focus)),
+            },
+        )])
     }
 
     fn snapshot(source_in_destination: bool, source_session_present: bool) -> SessionSnapshot {
@@ -680,19 +658,6 @@ mod tests {
             ])
     }
 
-    async fn serve(
-        spec: ScriptSpec,
-    ) -> (
-        tempfile::TempDir,
-        Connection,
-        tokio::task::JoinHandle<Vec<FrameKind>>,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let (socket, server) = serve_one(dir.path(), spec);
-        let conn = Connection::connect(&socket).await.unwrap();
-        (dir, conn, server)
-    }
-
     /// A move-capable server answering `states` in order, `result` to the
     /// move, with source `origin/{1,2}` and destination `target/3` layouts
     /// stored under `keys` (source, destination).
@@ -704,7 +669,6 @@ mod tests {
     ) -> ScriptSpec {
         let group = Scope::Group(DEFAULT_LAYOUT_GROUP_ID);
         ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states(states)
             .move_result(result)
             .stored_metadata(
@@ -721,8 +685,10 @@ mod tests {
             )
     }
 
-    fn default_keys() -> (String, String) {
-        (layout_key(SessionId::new(1)), layout_key(SessionId::new(2)))
+    /// Named envelopes: the only cross-session moves that write layout
+    /// metadata (the default layout is the arrangement record).
+    fn projection_keys() -> (String, String) {
+        ("src.layout/v1/1".to_owned(), "dst.layout/v1/2".to_owned())
     }
 
     fn spawned_or_moved(seen: &[FrameKind]) -> Vec<(ResourceId, ResourceId)> {
@@ -752,14 +718,15 @@ mod tests {
                 ResourceInfo::new(tid(3), window, 80, 24),
             ]);
         let initial = workspace("main", split(1, 2), 2);
+        let key = "app.layout/v1/1".to_owned();
         let spec = ScriptSpec::new().state(snapshot).stored_metadata(
             Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-            &layout_key(session),
+            &key,
             initial.encode_cbor().unwrap(),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
-        let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6, &[])
+        let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6, &[key])
             .await
             .unwrap();
         assert!(!outcome.cross_session);
@@ -774,16 +741,18 @@ mod tests {
 
     #[tokio::test]
     async fn cross_session_move_reparents_the_same_id_and_cleans_the_source_layout() {
-        let (source_key, destination_key) = default_keys();
+        let (source_key, destination_key) = projection_keys();
         let spec = cross_spec(
             [snapshot(false, true), snapshot(true, true)],
             MoveResult::Ok(tid(1)),
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
 
-        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
+        // Destination-first: keys match by embedded session id, not position.
+        let keys = [destination_key.clone(), source_key.clone()];
+        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &keys)
             .await
             .unwrap();
         assert!(outcome.cross_session);
@@ -811,9 +780,7 @@ mod tests {
         let source_write = seen
             .iter()
             .find_map(|frame| match frame {
-                FrameKind::SetMetadata { key, value, .. }
-                    if key == &layout_key(SessionId::new(1)) =>
-                {
+                FrameKind::SetMetadata { key, value, .. } if key == &source_key => {
                     ArrangementDoc::decode_cbor(value).ok()
                 }
                 _ => None,
@@ -823,19 +790,27 @@ mod tests {
             leaves(source_write.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2)]
         );
+        assert!(
+            !seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if key == &crate::layout::layout_key(SessionId::new(2))
+            )),
+            "the default destination key must never be touched"
+        );
     }
 
     #[tokio::test]
     async fn last_pane_move_reaps_source_layout_instead_of_recreating_a_pane() {
-        let (source_key, destination_key) = default_keys();
+        let (source_key, destination_key) = projection_keys();
         let spec = cross_spec(
             [snapshot(false, true), snapshot(true, false)],
             MoveResult::Ok(tid(1)),
             (&source_key, &destination_key),
             LayoutNode::Leaf(tid(1)),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
-        move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
+        let (_dir, mut conn, server) = connect_one(spec).await;
+        let keys = [source_key.clone(), destination_key];
+        move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &keys)
             .await
             .unwrap();
         drop(conn);
@@ -849,7 +824,6 @@ mod tests {
     #[tokio::test]
     async fn destination_layout_failure_rolls_ownership_back_and_reports_failure() {
         let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
             .states([
                 snapshot(false, true),
                 snapshot(true, true),
@@ -858,8 +832,9 @@ mod tests {
             ])
             .move_result(MoveResult::Ok(tid(1)))
             .refuse_metadata(ErrorCode::PermissionDenied, "layout blocked");
-        let (_dir, mut conn, server) = serve(spec).await;
-        let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
+        let (_dir, mut conn, server) = connect_one(spec).await;
+        let keys: [String; 2] = projection_keys().into();
+        let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &keys)
             .await
             .unwrap_err();
         assert!(
@@ -875,10 +850,8 @@ mod tests {
     /// Naming only one side's projection is refused before any write.
     #[tokio::test]
     async fn cross_session_move_with_one_projection_key_is_refused() {
-        let spec = ScriptSpec::new()
-            .server_features(ServerFeatureSet::with(&[ServerFeature::MoveResource]))
-            .states([snapshot(false, true)]);
-        let (_dir, mut conn, server) = serve(spec).await;
+        let spec = ScriptSpec::new().states([snapshot(false, true)]);
+        let (_dir, mut conn, server) = connect_one(spec).await;
         let error = move_pane(
             &mut conn,
             tid(1),
@@ -896,49 +869,6 @@ mod tests {
             seen.iter()
                 .all(|frame| !matches!(frame, FrameKind::SetMetadata { .. })),
             "an arity refusal must happen before any layout write"
-        );
-    }
-
-    /// Naming both envelopes (in either order) resolves each key to the
-    /// session whose id it embeds and writes there.
-    #[tokio::test]
-    async fn cross_session_move_with_both_projection_keys_writes_the_named_envelopes() {
-        let source_key = "src.layout/v1/1".to_owned();
-        let destination_key = "dst.layout/v1/2".to_owned();
-        let spec = cross_spec(
-            [snapshot(false, true), snapshot(true, true)],
-            MoveResult::Ok(tid(1)),
-            (&source_key, &destination_key),
-            split(1, 2),
-        );
-        let (_dir, mut conn, server) = serve(spec).await;
-
-        // Destination-first: keys match by embedded session id, not position.
-        let outcome = move_pane(
-            &mut conn,
-            tid(1),
-            tid(3),
-            SplitDir::Horizontal,
-            0.5,
-            &[destination_key.clone(), source_key.clone()],
-        )
-        .await
-        .unwrap();
-        assert!(outcome.cross_session);
-        drop(conn);
-
-        let seen = server.await.unwrap();
-        assert!(
-            seen.iter()
-                .any(|frame| matches!(frame, FrameKind::SetMetadata { key, .. } if key == &destination_key)),
-            "the destination write must target the named destination projection"
-        );
-        assert!(
-            !seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::SetMetadata { key, .. } if key == &layout_key(SessionId::new(2))
-            )),
-            "the default destination key must never be touched"
         );
     }
 
@@ -972,10 +902,10 @@ mod tests {
     fn cross_session_projection_resolution_matches_by_embedded_session_id() {
         let source = SessionId::new(1);
         let destination = SessionId::new(2);
-        assert_eq!(
-            resolve_cross_session_projection(&[], source, destination).unwrap(),
-            (None, None)
-        );
+        assert!(matches!(
+            resolve_cross_session_projection(&[], source, destination),
+            Err(PaneMoveError::ProjectionArityMismatch)
+        ));
         assert!(matches!(
             resolve_cross_session_projection(&["a.layout/v1/1".to_owned()], source, destination),
             Err(PaneMoveError::ProjectionArityMismatch)
@@ -994,26 +924,27 @@ mod tests {
             destination,
         )
         .unwrap();
-        assert_eq!(resolved_source.as_deref(), Some("a.layout/v1/1"));
-        assert_eq!(resolved_destination.as_deref(), Some("b.layout/v1/2"));
+        assert_eq!(resolved_source, "a.layout/v1/1");
+        assert_eq!(resolved_destination, "b.layout/v1/2");
     }
 
     #[tokio::test]
     async fn a_scoped_denial_refuses_the_move_instead_of_wedging_it() {
         // An out-of-scope MOVE_RESOURCE is refused with the move's own reply
         // (workload-auth §7); the move must end on it.
-        let (source_key, destination_key) = default_keys();
+        let (source_key, destination_key) = projection_keys();
         let spec = cross_spec(
             [snapshot(false, true), snapshot(true, true)],
             MoveResult::Err(MoveError::MoveFailed("permission denied".to_owned())),
             (&source_key, &destination_key),
             split(1, 2),
         );
-        let (_dir, mut conn, server) = serve(spec).await;
+        let (_dir, mut conn, server) = connect_one(spec).await;
+        let keys = [source_key, destination_key];
 
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[]),
+            move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &keys),
         )
         .await
         .expect("a denied move must return; a timeout here is the wedge itself");
@@ -1026,12 +957,11 @@ mod tests {
         server.await.unwrap();
     }
 
-    /// Under `ORGANIZATION` a cross-session move is a membership move plus a
+    /// A default-layout cross-session move is a membership move plus a
     /// compare-and-swap of the destination arrangement: no `MOVE_RESOURCE`,
     /// no source cleanup write (the server prunes the source arrangement).
     #[tokio::test]
     async fn a_cross_session_move_rides_resource_move_and_the_destination_arrangement() {
-        use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
         use phux_protocol::wire::frame::{
             ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
             SessionLifetime,
@@ -1047,18 +977,13 @@ mod tests {
                 groups: vec![ArrangementGroup::new(
                     [3; 16],
                     None,
-                    ArrangementNode::Leaf(EntryRef {
-                        entry: [4; 16],
-                        target: EntryTarget::Member(b),
-                    }),
+                    ArrangementNode::Leaf(EntryRef::new([4; 16], EntryTarget::Member(b))),
                 )],
             },
         );
         let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
         let dir = tempfile::tempdir().unwrap();
-        let spec = ScriptSpec::new()
-            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
-            .organization(fixture);
+        let spec = ScriptSpec::new().organization(fixture);
         let (socket, server) = serve_one(dir.path(), spec);
         let mut conn = Connection::connect(&socket).await.unwrap();
         let outcome = move_pane(

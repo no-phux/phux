@@ -38,6 +38,10 @@ pub(super) fn build_app(
         rows,
         crate::canvas::device_pixel_ratio(),
     ));
+    // Pointer and wheel input read cells from the canvas's laid-out box
+    // against this geometry, so give the box that size before the first
+    // paint does; the browser's default canvas box would scale every cell.
+    canvas_geometry.get().prepare(&canvas, &ctx)?;
     let mut session = if synthesized_only {
         crate::Connection::new_synthesized_compat(vt, cols, rows)
     } else {
@@ -140,6 +144,7 @@ impl App {
         }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
+        super::approvals::retain_uncertainty(&self.canvas, self.session.approval_status());
         let refused = self.session.is_version_refused();
         if refused {
             mark_incompatible(&self.canvas, message);
@@ -275,21 +280,9 @@ impl App {
                 selected: self.selected_cells(grid.cols),
                 marks: &marks,
             };
-            self.ctx.save();
             let pane = self.focused_rect();
-            let _ = self.ctx.translate(
-                f64::from(pane.x) * self.metrics.cell_w,
-                f64::from(pane.y) * self.metrics.cell_h,
-            );
-            self.ctx.begin_path();
-            self.ctx.rect(
-                0.0,
-                0.0,
-                f64::from(pane.cols) * self.metrics.cell_w,
-                f64::from(pane.rows) * self.metrics.cell_h,
-            );
-            self.ctx.clip();
-            render_cursor_row_appearance(
+            self.clip_to_pane(&pane);
+            render_cursor_row(
                 &self.ctx,
                 grid,
                 &self.metrics,

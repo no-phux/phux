@@ -1,11 +1,8 @@
-//! Status-bar chrome layer.
+//! Status-bar chrome.
 //!
-//! [`phux_config::widget::StatusBar`] composes the widget row;
-//! [`StatusBarPainter`] lays it into a `cols × 1` ratatui buffer and emits
-//! raw VT (CUP + per-cell SGR + grapheme), ending in an SGR reset.
-//! The caller restores the focused pane's cursor afterwards (ADR-0020). The
-//! bar defaults to [`Position::Top`] (`docs/status-bar.md#the-status-bar`); the pane
-//! content rect shifts to match.
+//! [`StatusBarPainter`] lays the composed [`phux_config::widget::StatusBar`]
+//! row into a `cols x 1` buffer and emits raw VT ending in an SGR reset; the
+//! caller restores the pane cursor (ADR-0020). Defaults to [`Position::Top`].
 
 use std::time::SystemTime;
 

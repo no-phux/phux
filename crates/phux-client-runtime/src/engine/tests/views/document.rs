@@ -338,7 +338,7 @@ fn failed_reveal_preserves_the_physical_and_published_viewport() {
 }
 
 #[test]
-fn prompt_jumps_select_all_and_region_text_stay_in_one_view() {
+fn prompt_jumps_and_select_all_stay_in_one_view() {
     let (owner, publication) = owner();
     let terminal = id(131);
     attach(&owner, &terminal, b"");
@@ -376,21 +376,4 @@ fn prompt_jumps_select_all_and_region_text_stay_in_one_view() {
         "$ one\nout1\nout1b\n$ two\nout2\nout2b\n$ three"
     );
     assert!(owner.view_selection_text(b).is_err());
-
-    let region = |region, max| owner.view_region_text_bounded(b, region, max).unwrap();
-    assert_eq!(
-        region(TextRegion::History, 1024),
-        BoundedSelectionText::Text(b"$ one\nout1\nout1b".to_vec())
-    );
-    assert_eq!(
-        region(TextRegion::Screen, 1024),
-        BoundedSelectionText::Text(b"$ one\nout1\nout1b\n$ two\nout2\nout2b\n$ three".to_vec())
-    );
-    assert_eq!(
-        region(TextRegion::Screen, 8),
-        BoundedSelectionText::ByteLimitExceeded
-    );
-    // Reading a region neither selects nor republishes the reading view.
-    assert!(owner.view_selection_text(b).is_err());
-    assert_eq!(publication.view_generation(b), Some(b_generation));
 }

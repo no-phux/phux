@@ -1,20 +1,11 @@
 //! Live revocation (`docs/remote.md#managing-credentials`, ADR-0116).
 //!
-//! The `Watcher` re-judges every connection whose authority someone else can
-//! withdraw (a scoped workload grant, or a grant a pairing-store bearer
-//! admitted) whenever the registry or a token store changes and at each
-//! expiry. `revoke_connection` then runs §7's steps under one state lock:
-//! mark the grant revoked (every guard denies from then on), release its
-//! leases, subscriptions, relay proxies, and queued input, have its writer
-//! drop its queue and send `ERROR { PERMISSION_DENIED }` plus `DETACHED`,
-//! and cancel the connection. Terminals and processes are never killed, and
-//! the owner socket's grant is never watched.
-//!
-//! A revocation is final for a phone, so only real verdicts count: a token
-//! store only when it loaded cleanly and holds credentials, and a broken
-//! (missing, insecure, malformed) registry only after the same broken state
-//! persists for `REGISTRY_GRACE`, so a half-written file cannot revoke every
-//! workload. A transient read is no verdict.
+//! The `Watcher` re-judges every withdrawable grant when the registry or a
+//! token store changes and at each expiry; `revoke_connection` then runs §7
+//! under one lock (mark revoked, release what it held, goodbye, cancel).
+//! Terminals are never killed and the owner socket is never watched. Only
+//! real verdicts count: a token store that loaded cleanly, and a broken
+//! registry only after it stays broken for `REGISTRY_GRACE`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -356,21 +347,11 @@ fn judge_record(
 }
 
 /// Whether some grant of `ceiling` still carries every verb of `clause` on a
-/// selector that contains one of the clause's selectors, whatever the
-/// topology. A clause is the conjunction of its two selectors, so either
-/// one staying covered keeps the clause inside the ceiling. A ceiling that
-/// splits one clause across several grants is judged as not containing it:
-/// the safe direction.
-///
-/// A hold only restricts (ADR-0128): a grant that holds a verb the clause
-/// minted un-held no longer contains it, so adding `?signal` to a live
-/// credential revokes its connections and the reconnect gets the hold.
-/// Removing a hold widens and never revokes.
-///
-/// Control and watching a window or display are never inherited
-/// (`docs/authority.md`): a `resource:` clause carrying `INPUT` or `OBSERVE`
-/// may reach a document no broader grant does, so only the same selector
-/// keeps it.
+/// selector containing one of the clause's selectors. A clause split across
+/// grants is judged not contained (the safe direction). A hold only
+/// restricts (ADR-0128): holding a verb the clause minted un-held revokes.
+/// `INPUT`/`OBSERVE` on a `resource:` clause is kept only by the same
+/// selector (`docs/authority.md`).
 fn contains_clause(ceiling: &TerminalScopeSet, clause: &EffectiveClause) -> bool {
     use phux_protocol::kinds::Verb;
     let controls = clause.verbs.contains(Verb::Input) || clause.verbs.contains(Verb::Observe);

@@ -31,6 +31,7 @@ The home defaults to `rune-upstream` beside the primary checkout:
 | `worktrees/` | One linked worktree per change (`rune-upstream-abc1234`, `rune-release-VERSION`), removed once its PR merges |
 | `opencode.jsonc` | Makes `rune-upstream` the default agent for OpenCode under the home only |
 | `STEERING.md` | Standing orders, read first on every run |
+| `PHONE.json` | Optional private phone-delivery configuration; never committed. An installation order in steering enables the delivery phase |
 | `JOURNAL.md` | The agent's memory between runs, and the first place a `BLOCKED:` line shows up |
 | `rune.git` | A mirror of upstream for reading ranges |
 | `scratch/` | Snapshots and logs a run makes |
@@ -62,6 +63,24 @@ phux tag rm '#rune-upstream-run' hold       # resume
 
 Typing into the live run steers that run. An order that should last, such as
 `release: auto`, goes in `STEERING.md`; tell the run and it writes it there.
+
+## Scheduled iPhone updates
+
+Phone installation is a separate opt-in from desktop releases. With an
+explicit installation order in `STEERING.md`, the agent reconciles the phone
+after merged Rune changes **and on quiet ticks with an update pending**.
+It uses the existing signed ad-hoc distribution path, not TestFlight.
+[Native delivery](../../clients/rune/ios/README.md#scheduled-phone-updates)
+documents the private `PHONE.json` schema, source/build identity and commands.
+
+The agent attempts an in-place install through the already paired device
+and independently checks the installed marketing/build versions. It never
+uninstalls, resets pairing, clears credentials or launches the user's app.
+A signed OTA page remains a fallback when direct device access is unavailable;
+opening its install link and any Apple prompts still require on-phone approval.
+Locked signing access or an unavailable phone is reported as pending, not success.
+The existing production Phux binary/server and shared Tailscale hosting are
+not replaced or reset to deliver an update.
 
 ## Steering from another tailnet
 

@@ -142,14 +142,11 @@ pub(in crate::attach::input_dispatch) fn focused_pane_rect(
 }
 
 /// `SPAWN_RESOURCE.initial_size`: the tile `predict` says the new leaf will
-/// occupy, or `None` (field absent) when unsupported or degenerate.
+/// occupy, or `None` (field absent) when degenerate.
 pub(in crate::attach::input_dispatch) fn spawn_initial_size(
     ctx: &DispatchCtx<'_>,
     predict: impl FnOnce(crate::layout::Rect) -> Option<(u16, u16)>,
 ) -> Option<(u16, u16)> {
-    if !ctx.spawn_initial_size_supported {
-        return None;
-    }
     let content = content_rect(ctx.viewport, ctx.bar, ctx.sidebar);
     // A zero axis means there is nothing to render into; the server reads a
     // zero as "unknown" anyway, so do not spend a field on it.

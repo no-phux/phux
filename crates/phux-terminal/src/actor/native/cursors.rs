@@ -8,7 +8,6 @@
 use super::*;
 
 impl TerminalActor {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn publish_native_control(&self, owner: u64, frame: FrameKind) {
         let _ = self
             .core
@@ -16,7 +15,6 @@ impl TerminalActor {
             .send(ResourceOutput::Control { owner, frame });
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     ///
     /// Returns the pumps it tombstoned, so a reflow that schedules no
     /// everyone-resync can still address one to them (phux-p5bo).
@@ -61,7 +59,6 @@ impl TerminalActor {
         tombstoned
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn invalidate_native_owner(
         &mut self,
         owner: u64,
@@ -91,7 +88,6 @@ impl TerminalActor {
     }
 
     /// Release every native binding owned by a detached client.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn release_native_owner(&mut self, owner: u64) {
         self.cancel_native_history_requests(
             owner,
@@ -112,7 +108,6 @@ impl TerminalActor {
 
     /// Release one pump's binding without touching sibling streams of the
     /// same client.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn release_native_binding(&mut self, key: NativeCursorKey) {
         self.cancel_native_history_requests(
             key.owner,
@@ -123,7 +118,6 @@ impl TerminalActor {
         let _ = self.unbind_native_cursor(key);
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn drop_native_bootstrap_waiters(
         &mut self,
         owner: u64,
@@ -138,7 +132,6 @@ impl TerminalActor {
             .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn unbind_native_cursor(
         &mut self,
         key: NativeCursorKey,
@@ -156,7 +149,6 @@ impl TerminalActor {
         Some(binding)
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn cancel_native_history_requests(
         &mut self,
         owner: u64,
@@ -185,7 +177,6 @@ impl TerminalActor {
         }
     }
 
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::actor) fn expire_native_cursors(&mut self) {
         let cutoff = tokio::time::Instant::now() - NATIVE_HISTORY_TTL;
         let keys: Vec<_> = self

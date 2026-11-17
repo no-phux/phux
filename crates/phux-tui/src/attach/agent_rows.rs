@@ -1,10 +1,5 @@
 //! `AgentSession` resources as the chrome sees them: one row per session,
-//! grouped under the Terminal-kind pane it is bound to.
-//!
-//! The session kernel owns the record stream and the state folded from it;
-//! this module is the plain-data projection the sidebar's attention queue
-//! and the fleet dashboard consume. An `AgentSession` never has a pane slot or
-//! a layout leaf, so its click target is always its parent pane.
+//! grouped under the pane it is bound to, which is always its click target.
 
 use std::collections::HashMap;
 

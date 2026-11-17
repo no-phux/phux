@@ -36,18 +36,12 @@ fn unreachable_reply(request_id: u32, host: &str) -> FrameKind {
 
 /// Strays recorded as a switch would, with no spawns still unanswered.
 fn with_strays(panes: Vec<ResourceId>, now: Instant) -> OrphanKills {
-    with_spawned(
-        panes.into_iter().map(SpawnedPane::unbound).collect(),
-        false,
-        now,
-    )
+    with_spawned(panes.into_iter().map(SpawnedPane::unbound).collect(), now)
 }
 
-/// [`with_strays`] for spawned panes, on a hub with or without
-/// `CONDITIONAL_KILL`.
-fn with_spawned(panes: Vec<SpawnedPane>, conditional_kill: bool, now: Instant) -> OrphanKills {
+/// [`with_strays`] for spawned panes.
+fn with_spawned(panes: Vec<SpawnedPane>, now: Instant) -> OrphanKills {
     let mut kills = OrphanKills::default();
-    kills.set_conditional_kill(conditional_kill);
     kills.park_for_switch(panes, HashSet::new(), now);
     kills
 }
@@ -197,7 +191,7 @@ fn the_record_is_capped_oldest_first_and_deduplicated() {
     let due = panes_of(kills.take_answered(&hosts(&["edge"]), now, now));
     assert_eq!(due, (3..=cap + 2).map(edge).collect::<Vec<_>>());
 
-    let mut kills = with_spawned(Vec::new(), true, now);
+    let mut kills = with_spawned(Vec::new(), now);
     kills.record_unreachable(
         (1..=cap + 1)
             .map(|id| bound(edge(id)).bound().unwrap())
@@ -214,30 +208,19 @@ fn the_record_is_capped_oldest_first_and_deduplicated() {
 fn a_stray_is_due_within_its_ttl_and_forgotten_after() {
     let recorded = Instant::now();
     let second = Duration::from_secs(1);
-    for (pane, conditional, at, due) in [
+    for (pane, at, due) in [
+        (SpawnedPane::unbound(edge(9)), recorded + STRAY_TTL, true),
         (
             SpawnedPane::unbound(edge(9)),
-            false,
-            recorded + STRAY_TTL,
-            true,
-        ),
-        (
-            SpawnedPane::unbound(edge(9)),
-            false,
             recorded + STRAY_TTL + second,
             false,
         ),
-        (bound(edge(9)), true, recorded + STRAY_TTL + second, true),
-        (
-            bound(edge(9)),
-            true,
-            recorded + BOUND_STRAY_TTL + second,
-            false,
-        ),
+        (bound(edge(9)), recorded + STRAY_TTL + second, true),
+        (bound(edge(9)), recorded + BOUND_STRAY_TTL + second, false),
     ] {
-        let mut kills = with_spawned(vec![pane], conditional, recorded);
+        let mut kills = with_spawned(vec![pane.clone()], recorded);
         let got = panes_of(kills.take_answered(&hosts(&["edge"]), at, at));
-        assert_eq!(!got.is_empty(), due, "conditional={conditional}");
+        assert_eq!(!got.is_empty(), due, "{pane:?}");
     }
 }
 
@@ -261,10 +244,8 @@ fn a_failed_kill_is_not_remembered() {
     assert_eq!(waiting(&mut kills, now), Vec::new());
 }
 
-/// Any frame saying a satellite is unreachable forgets that satellite's
-/// unconditional strays and keeps the rest: an uncorrelated notice, a
-/// refused command, a refused spawn. A message naming no satellite forgets
-/// them all; a failure for another reason forgets nothing.
+/// Any frame saying a satellite is unreachable forgets its unconditional
+/// strays; one naming no satellite forgets all; other failures nothing.
 #[test]
 fn an_unreachable_satellite_forgets_its_strays() {
     let now = Instant::now();
@@ -328,11 +309,7 @@ fn unreachable_hosts_forget_their_strays() {
 #[test]
 fn a_conditional_stray_outlives_unreachable_signals() {
     let now = Instant::now();
-    let mut kills = with_spawned(
-        vec![bound(edge(9)), SpawnedPane::unbound(edge(10))],
-        true,
-        now,
-    );
+    let mut kills = with_spawned(vec![bound(edge(9)), SpawnedPane::unbound(edge(10))], now);
     kills.observe(unreachable_reply(3, "edge"));
     kills.observe(FrameKind::Error {
         request_id: None,
@@ -354,10 +331,8 @@ fn a_reissued_id_forgets_the_stray() {
     assert_eq!(waiting(&mut kills, now), vec![edge(3), other(9)]);
 }
 
-/// A session switch remembers the parked panes and the satellite panes
-/// its unanswered spawns turn out to be; the drain settles kill replies,
-/// forgets a satellite it shows unreachable, and clears the old
-/// request-id space.
+/// A switch remembers parked panes and the satellite panes its unanswered
+/// spawns turn out to be, settling kill replies during the drain.
 #[test]
 fn a_switch_remembers_parked_and_drained_spawns() {
     let mut kills = OrphanKills::default();
@@ -399,11 +374,10 @@ fn a_switch_remembers_parked_and_drained_spawns() {
 }
 
 /// A bound switch stray is retried with `KILL_RESOURCE_IF`
-/// carrying its instance token and the attachment condition when the hub
-/// advertises `CONDITIONAL_KILL`, and with today's `KILL_RESOURCE` when it
-/// does not. An unbound one keeps `KILL_RESOURCE` either way.
+/// carrying its instance token and the attachment condition. An unbound one
+/// keeps `KILL_RESOURCE`.
 #[test]
-fn a_switch_stray_is_retried_conditionally_only_when_bound_and_supported() {
+fn a_switch_stray_is_retried_conditionally_only_when_bound() {
     let now = Instant::now();
     let conditional = FrameKind::Command {
         request_id: 1,
@@ -420,17 +394,12 @@ fn a_switch_stray_is_retried_conditionally_only_when_bound_and_supported() {
             operation_id: None,
         },
     };
-    for (pane, supported, expected) in [
-        (bound(edge(9)), true, conditional),
-        (bound(edge(9)), false, plain.clone()),
-        (SpawnedPane::unbound(edge(9)), true, plain),
+    for (pane, expected) in [
+        (bound(edge(9)), conditional),
+        (SpawnedPane::unbound(edge(9)), plain),
     ] {
-        let mut kills = with_spawned(vec![pane.clone()], supported, now);
-        assert_eq!(
-            retries(&mut kills, now),
-            vec![expected],
-            "{pane:?}, supported: {supported}"
-        );
+        let mut kills = with_spawned(vec![pane.clone()], now);
+        assert_eq!(retries(&mut kills, now), vec![expected], "{pane:?}");
     }
 }
 
@@ -440,7 +409,6 @@ fn a_switch_stray_is_retried_conditionally_only_when_bound_and_supported() {
 fn a_drained_bound_spawn_is_retried_conditionally() {
     let now = Instant::now();
     let mut kills = OrphanKills::default();
-    kills.set_conditional_kill(true);
     kills.park_for_switch(Vec::new(), HashSet::from([20]), now);
     kills.observe_switch_drain(
         FrameKind::ResourceSpawned {
@@ -457,19 +425,13 @@ fn a_drained_bound_spawn_is_retried_conditionally() {
     assert_eq!(command, bound(edge(9)).bound().unwrap().kill_command());
 }
 
-/// A pane an unreachable satellite stranded is recorded for
-/// a conditional retry only when the hub advertises `CONDITIONAL_KILL`;
-/// without it nothing is recorded, so neither kill is ever sent.
+/// A pane an unreachable satellite stranded is recorded for a conditional
+/// retry.
 #[test]
-fn unreachable_strays_are_recorded_only_with_the_bit() {
+fn unreachable_strays_are_recorded_for_a_conditional_retry() {
     let now = Instant::now();
     let stranded = || vec![bound(edge(9)).bound().unwrap()];
-
-    let mut kills = with_spawned(Vec::new(), false, now);
-    kills.record_unreachable(stranded(), now);
-    assert_eq!(retries(&mut kills, now), Vec::new(), "no bit, no record");
-
-    let mut kills = with_spawned(Vec::new(), true, now);
+    let mut kills = with_spawned(Vec::new(), now);
     kills.record_unreachable(stranded(), now);
     let (_, command) = only_command(retries(&mut kills, now));
     assert_eq!(command, stranded()[0].kill_command());
@@ -486,7 +448,7 @@ fn a_refused_conditional_kill_forgets_the_stray() {
         ErrorCode::SatelliteUnreachable,
     ] {
         let now = Instant::now();
-        let mut kills = with_spawned(vec![bound(edge(9))], true, now);
+        let mut kills = with_spawned(vec![bound(edge(9))], now);
         let (request_id, _) = only_command(retries(&mut kills, now));
         let refusal = FrameKind::CommandResult {
             request_id,

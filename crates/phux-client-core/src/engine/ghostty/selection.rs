@@ -5,7 +5,7 @@ use super::{
     SnapshotError,
 };
 use crate::engine::BoundedSelectionText;
-use libghostty_vt::terminal::{PointCoordinate, PointSpace};
+use libghostty_vt::point::{Coordinate as PointCoordinate, Space as PointSpace};
 
 /// Maximum conservative cell range sent to the pinned formatter. Includes
 /// whole endpoint rows and one extra row for wide-glyph boundary expansion.

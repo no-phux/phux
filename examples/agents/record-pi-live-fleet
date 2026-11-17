@@ -23,7 +23,9 @@ export PATH
 for name in ${!PHUX_@}; do
   unset "$name"
 done
-export PHUX_SOCKET="$SOCKET"
+# Rust's macOS temp default can differ from mktemp's /tmp fallback. Keep the
+# child and its production-state guard on this same private temporary root.
+export PHUX_SOCKET="$SOCKET" TMPDIR="$RUNTIME_DIR"
 export XDG_CONFIG_HOME="$RUNTIME_DIR/config" XDG_STATE_HOME="$RUNTIME_DIR/state"
 export XDG_DATA_HOME="$RUNTIME_DIR/data" XDG_CACHE_HOME="$RUNTIME_DIR/cache"
 export XDG_RUNTIME_DIR="$RUNTIME_DIR/run" SHELL=/bin/sh PHUX_NO_UPDATE_CHECK=1

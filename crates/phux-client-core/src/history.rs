@@ -78,17 +78,11 @@ impl HistoryCursor {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-
-    /// Whether this opaque cursor is exactly the supplied transport token.
-    #[must_use]
-    pub fn matches_bytes(&self, bytes: &[u8]) -> bool {
-        self.0.as_ref() == bytes
-    }
 }
 
 /// Stable cache identity of one immutable engine history page.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct HistoryPageId {
+pub(crate) struct HistoryPageId {
     cursor: HistoryCursor,
     page_seq: u64,
 }
@@ -124,7 +118,7 @@ impl DocumentAnchorId {
 
 /// A frontend viewport follows live output or a stable engine document anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewportAnchor {
+pub(crate) enum ViewportAnchor {
     /// Follow the live tail.
     Tail,
     /// Keep an engine-tracked document location fixed on screen.
@@ -173,7 +167,7 @@ pub struct HistoryStatus {
 
 /// Classification of an incoming immutable page before engine application.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HistoryPageCheck {
+pub(crate) enum HistoryPageCheck {
     /// This exact cursor has not been applied yet.
     New,
     /// This byte-identical response was already applied.
@@ -281,7 +275,6 @@ pub struct HistoryCache {
     pinned_bytes: usize,
     pinned_materialized_rows: usize,
     viewport: ViewportAnchor,
-    projection_width: u16,
     unread_rows: u64,
     busy_retries: u8,
 }
@@ -289,11 +282,7 @@ pub struct HistoryCache {
 impl HistoryCache {
     /// Start an empty generation at the newest engine cursor.
     #[must_use]
-    pub(crate) fn new(
-        config: HistoryCacheConfig,
-        newest_cursor: Option<HistoryCursor>,
-        projection_width: u16,
-    ) -> Self {
+    pub(crate) fn new(config: HistoryCacheConfig, newest_cursor: Option<HistoryCursor>) -> Self {
         let config = config.normalized();
         let state = if newest_cursor.is_some() {
             HistoryLoadState::Idle
@@ -319,7 +308,6 @@ impl HistoryCache {
             pinned_bytes: 0,
             pinned_materialized_rows: 0,
             viewport: ViewportAnchor::Tail,
-            projection_width: projection_width.max(2),
             unread_rows: 0,
             busy_retries: 0,
         }
@@ -347,19 +335,8 @@ impl HistoryCache {
 
     /// Current viewport anchor.
     #[must_use]
-    pub const fn viewport_anchor(&self) -> ViewportAnchor {
+    pub(crate) const fn viewport_anchor(&self) -> ViewportAnchor {
         self.viewport
-    }
-
-    /// Client-local projection width. This never changes canonical PTY geometry.
-    #[must_use]
-    pub const fn projection_width(&self) -> u16 {
-        self.projection_width
-    }
-
-    /// Record a frontend-local width for the next cooperative adapter projection.
-    pub(crate) fn reproject(&mut self, width: u16) {
-        self.projection_width = width.max(2);
     }
 
     /// Mark the exact next cursor as requested and return it once.
@@ -777,10 +754,6 @@ impl HistoryCache {
             && rows_from_oldest <= self.config.prefetch_rows
     }
 
-    pub(crate) const fn has_continuation(&self) -> bool {
-        self.next_cursor.is_some()
-    }
-
     pub(crate) fn invalidate_cursor(
         &mut self,
         cursor: &HistoryCursor,
@@ -929,7 +902,7 @@ mod tests {
 
     #[test]
     fn duplicate_pages_are_idempotent_and_gaps_are_explicit() {
-        let mut cache = HistoryCache::new(config(32, 32), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(32, 32), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let page = cache
             .accept_page(&cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest")
@@ -946,9 +919,9 @@ mod tests {
     }
 
     #[test]
-    fn two_clients_keep_independent_widths_and_tail_policy() {
-        let mut first = HistoryCache::new(config(64, 64), Some(cursor(1)), 80);
-        let mut second = HistoryCache::new(config(64, 64), Some(cursor(1)), 41);
+    fn two_clients_keep_independent_tail_policy() {
+        let mut first = HistoryCache::new(config(64, 64), Some(cursor(1)));
+        let mut second = HistoryCache::new(config(64, 64), Some(cursor(1)));
         assert_eq!(first.begin_fetch(), Some(cursor(1)));
         assert_eq!(second.begin_fetch(), Some(cursor(1)));
         let page = first
@@ -966,13 +939,11 @@ mod tests {
         assert_eq!(first.status().unread_rows, 3);
         assert_eq!(second.viewport_anchor(), ViewportAnchor::Tail);
         assert_eq!(second.status().unread_rows, 0);
-        assert_eq!(first.projection_width(), 80);
-        assert_eq!(second.projection_width(), 41);
     }
 
     #[test]
     fn invalidation_and_prefetch_are_explicit() {
-        let mut cache = HistoryCache::new(config(64, 64), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(64, 64), Some(cursor(1)));
         assert!(cache.should_prefetch(2));
         cache.mark_pruned();
         assert_eq!(cache.status().state, HistoryLoadState::Pruned);
@@ -983,7 +954,7 @@ mod tests {
 
     #[test]
     fn same_cursor_pages_require_strict_nonzero_sequence() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let first = cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"one")
@@ -1012,7 +983,7 @@ mod tests {
 
     #[test]
     fn declared_page_rows_are_bounded_by_requested_authentication_limit() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 65, b"opaque"),
@@ -1027,7 +998,7 @@ mod tests {
 
     #[test]
     fn tracked_anchor_registrations_are_bounded() {
-        let mut cache = HistoryCache::new(config(64, 1), None, 80);
+        let mut cache = HistoryCache::new(config(64, 1), None);
         cache
             .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
             .unwrap();
@@ -1042,7 +1013,7 @@ mod tests {
 
     #[test]
     fn oversized_page_is_rejected_without_advancing_cursor() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 0, &[0; 65]),
@@ -1059,7 +1030,7 @@ mod tests {
 
     #[test]
     fn empty_anchor_registration_survives_page_eviction() {
-        let mut cache = HistoryCache::new(config(4, 1), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(4, 1), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 0, 0, b"aaaa")
@@ -1082,7 +1053,7 @@ mod tests {
 
     #[test]
     fn consumed_digest_survives_raw_page_eviction() {
-        let mut cache = HistoryCache::new(config(4, 4), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(4, 4), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let first = cache
             .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"aaaa")
@@ -1104,7 +1075,7 @@ mod tests {
 
     #[test]
     fn retry_requires_growth_within_hard_caps() {
-        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)));
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(cache.retry_limits(64, 8), None);
         assert_eq!(cache.retry_limits(80, 8), Some((80, 64)));
@@ -1115,7 +1086,7 @@ mod tests {
 
     #[test]
     fn sustained_budget_eviction_keeps_stable_order_storage_bounded() {
-        let mut cache = HistoryCache::new(config(1, 1), Some(cursor(1)), 80);
+        let mut cache = HistoryCache::new(config(1, 1), Some(cursor(1)));
         for page_seq in 1..=1_000 {
             assert_eq!(cache.begin_fetch(), Some(cursor(1)));
             cache
@@ -1136,7 +1107,7 @@ mod tests {
 
     #[test]
     fn pruned_anchor_falls_back_to_tail_and_releases_registration() {
-        let mut cache = HistoryCache::new(config(64, 1), None, 80);
+        let mut cache = HistoryCache::new(config(64, 1), None);
         let anchor = DocumentAnchorId::from_raw(1);
         cache
             .register_anchor_pages(anchor, std::iter::empty())

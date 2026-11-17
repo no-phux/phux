@@ -8,11 +8,9 @@
 //! awaitable correlated request for every request frame. It attaches to
 //! nothing on its own: what it subscribes to is the caller's business.
 //!
-//! It shares the transport with the reconnecting driver
-//! ([`crate::connection`]): the same establishment, framing, send budgets,
-//! WebSocket liveness, and [`crate::handshake`]. What is its own is what a
-//! request/reply caller needs: correlation, corking, and QUIC per-Terminal
-//! streams.
+//! It shares establishment, framing, and [`crate::handshake`] with the
+//! reconnecting driver ([`crate::connection`]); correlation, corking, and
+//! QUIC per-Terminal streams are its own.
 //!
 //! # The interleave contract
 //!
@@ -24,43 +22,6 @@
 //! never re-sent, so the request methods return them inside [`Reply`]. Raw
 //! [`Session::send`] + [`Session::recv`] is only for a full-duplex loop that
 //! routes every frame kind.
-//!
-//! # Facade mapping
-//!
-//! `phux_client::attach::connection::Connection` is a thin facade over this
-//! type. Each of its methods maps to one call here:
-//!
-//! | `Connection`                         | `Session`                                       |
-//! |--------------------------------------|-------------------------------------------------|
-//! | `connect(socket)`                    | `connect(&Dial::uds(socket), name, control_caps())` |
-//! | `connect_with_hello(socket, n, c)`   | `connect(&Dial::uds(socket), n, c)`             |
-//! | `connect_quic(d)` / `_with_hello`    | `connect(&Dial::Quic(d.clone()), n, c)`         |
-//! | `connect_ws_with_hello(d, n, c)`     | `connect(&Dial::Ws(d.clone()), n, c)`           |
-//! | `connect_dial(d)` / `_with_hello`    | `connect(d, n, c)` (`Dial` is this crate's)     |
-//! | `connect_quic_with_terminal_frame_deadline_for_test` | `connect` + `set_terminal_frame_deadline_for_test` (feature `testing`) |
-//! | `from_stream(stream)`                | `from_stream(stream)`                           |
-//! | `negotiate(n, c)`                    | `negotiate(n, c)`                               |
-//! | `negotiated_bootstrap()`             | `negotiated_bootstrap()`                        |
-//! | `server_id()`                        | `server_id()`                                   |
-//! | `observer_role_policy()`             | `observer_role_policy()`                        |
-//! | `peer_pid()`                         | `peer_pid()`                                    |
-//! | `next_attach_id()`                   | `next_attach_id()`                              |
-//! | `send(f)` / `recv()` / `try_recv()`  | `send(f)` / `recv()` / `try_recv()`             |
-//! | `write_hit_closed_peer()`            | `write_hit_closed_peer()`                       |
-//! | `cork()` / `uncork()`                | `cork()` / `uncork()`                           |
-//! | `request(id, cmd)`                   | `request(id, cmd)`                              |
-//! | `request_metadata(id, scope, key)`   | `request_metadata(id, scope, key)`              |
-//! | `request_metadata_many(first, reads)`| `request_metadata_many(first, reads)`           |
-//! | `request_metadata_keys(id, scope)`   | `request_metadata_keys(id, scope)`              |
-//! | `request_spawn(f)` / `request_move(f)` | `request_spawn(f)` / `request_move(f)`        |
-//! | `multistream_enabled()`              | `multistream_enabled()`                         |
-//! | `can_route_terminal(t)`              | `can_route_terminal(t)`                         |
-//! | `bind_terminal(t)` / `unbind_terminal(t)` / `unbind_all_terminals()` | same names |
-//! | `shutdown()`                         | `shutdown()`                                    |
-//! | `Reply`, `Answer`, `Refusal`, `METADATA_WINDOW` | [`Reply`], [`Answer`], [`Refusal`], [`METADATA_WINDOW`] |
-//! | `NegotiatedBootstrap`                | [`NegotiatedBootstrap`]                         |
-//! | `AttachError` (transport variants)   | [`SessionError`], one variant each, by name     |
-//! | `explain::unexpected_reply`          | [`unexpected_reply`], re-exported                |
 
 use std::collections::VecDeque;
 
@@ -86,7 +47,7 @@ mod reply;
 mod requests;
 
 pub use error::SessionError;
-pub use reply::{Answer, Refusal, Reply, error_code_label, unexpected_reply};
+pub use reply::{Answer, Refusal, Reply, unexpected_reply};
 pub use requests::METADATA_WINDOW;
 
 use framed::decode_frame;
@@ -100,6 +61,9 @@ use {
 
 /// The control-plane offer a verb negotiates by default: L3 metadata and
 /// the default bootstrap profile.
+///
+/// Credential review is opt-in: generic verbs
+/// and automation must not be able to approve an opaque credential request.
 #[must_use]
 pub const fn control_caps() -> ClientCapabilities {
     ClientCapabilities::new()

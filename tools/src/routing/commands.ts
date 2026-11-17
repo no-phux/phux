@@ -112,7 +112,16 @@ export const commands: Record<string, Command> = {
           perfBaseline = true;
         }
       }
-      const p = plan(c, triggerFor(event), { scope, perfBaseline });
+      // Full history fails closed and runs the catalog job. Release metadata
+      // has no flat docs page, so the job stays off.
+      const docsCatalog =
+        detection.kind === "paths" ? detection.docsCatalog : detection.kind !== "release-metadata";
+      const p = plan(c, triggerFor(event), {
+        scope,
+        perfBaseline,
+        runeQualify: event !== "pull_request",
+        docsCatalog,
+      });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =

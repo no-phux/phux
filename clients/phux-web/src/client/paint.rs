@@ -65,25 +65,13 @@ impl App {
         grid: &phux_vt_web::Grid,
         marks: &[Mark],
     ) -> Option<u16> {
-        self.ctx.save();
-        let _ = self.ctx.translate(
-            f64::from(rect.x) * self.metrics.cell_w,
-            f64::from(rect.y) * self.metrics.cell_h,
-        );
-        self.ctx.begin_path();
-        self.ctx.rect(
-            0.0,
-            0.0,
-            f64::from(rect.cols) * self.metrics.cell_w,
-            f64::from(rect.rows) * self.metrics.cell_h,
-        );
-        self.ctx.clip();
+        self.clip_to_pane(rect);
         let cursor_row = if active {
             let overlay = Overlay {
                 selected: self.selected_cells(grid.cols),
                 marks,
             };
-            render_selected_appearance(
+            render(
                 &self.ctx,
                 grid,
                 &self.metrics,
@@ -94,7 +82,7 @@ impl App {
             Some(grid.cursor_row)
         } else if let Some(terminal) = self.session.pane_terminal(id) {
             let grid = terminal.grid();
-            render_selected_appearance(
+            render(
                 &self.ctx,
                 &grid,
                 &self.metrics,
@@ -108,6 +96,19 @@ impl App {
         };
         self.ctx.restore();
         cursor_row
+    }
+
+    /// Save the context, then translate and clip it to `rect`'s cells.
+    pub(super) fn clip_to_pane(&self, rect: &crate::PaneRect) {
+        let (cell_w, cell_h) = (self.metrics.cell_w, self.metrics.cell_h);
+        self.ctx.save();
+        let _ = self
+            .ctx
+            .translate(f64::from(rect.x) * cell_w, f64::from(rect.y) * cell_h);
+        self.ctx.begin_path();
+        let (width, height) = (f64::from(rect.cols) * cell_w, f64::from(rect.rows) * cell_h);
+        self.ctx.rect(0.0, 0.0, width, height);
+        self.ctx.clip();
     }
 
     pub(super) fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
@@ -259,32 +260,21 @@ impl App {
     }
 
     pub(super) fn focused_rect(&self) -> crate::PaneRect {
+        let whole = |(cols, rows)| crate::PaneRect {
+            x: 0,
+            y: 0,
+            cols,
+            rows,
+        };
         if self.session.pane_rects().len() <= 1 {
-            let (cols, rows) = self.session.dims();
-            return crate::PaneRect {
-                x: 0,
-                y: 0,
-                cols,
-                rows,
-            };
+            return whole(self.session.dims());
         }
         let focused = self.session.focused_pane();
         self.session
             .pane_rects()
             .into_iter()
             .find(|(id, _)| Some(id) == focused.as_ref())
-            .map_or_else(
-                || {
-                    let (cols, rows) = self.session.canvas_dims();
-                    crate::PaneRect {
-                        x: 0,
-                        y: 0,
-                        cols,
-                        rows,
-                    }
-                },
-                |(_, rect)| rect,
-            )
+            .map_or_else(|| whole(self.session.canvas_dims()), |(_, rect)| rect)
     }
 
     pub(super) fn focus_changed(&mut self, previous: Option<phux_protocol::ids::ResourceId>) {
@@ -341,33 +331,24 @@ impl App {
         let descriptors = js_sys::Array::new();
         for (id, rect) in panes {
             let pane = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(&pane, &"id".into(), &JsValue::from_str(&id.to_string()));
+            set_js(&pane, "id", id.to_string());
             for (key, value) in [
                 ("x", rect.x),
                 ("y", rect.y),
                 ("cols", rect.cols),
                 ("rows", rect.rows),
             ] {
-                let _ =
-                    js_sys::Reflect::set(&pane, &key.into(), &JsValue::from_f64(f64::from(value)));
+                set_js(&pane, key, value);
             }
-            if let Some((_, row)) = self
-                .painted_cursor_rows
-                .borrow()
-                .iter()
-                .find(|(painted, _)| painted == &id)
-            {
-                let _ = js_sys::Reflect::set(
-                    &pane,
-                    &"cursorRow".into(),
-                    &JsValue::from_f64(f64::from(*row)),
-                );
+            let painted = self.painted_cursor_rows.borrow();
+            if let Some((_, row)) = painted.iter().find(|(painted, _)| painted == &id) {
+                set_js(&pane, "cursorRow", *row);
             }
             descriptors.push(&pane);
         }
-        let _ = js_sys::Reflect::set(&detail, &"panes".into(), &descriptors);
-        let _ = js_sys::Reflect::set(&detail, &"cols".into(), &JsValue::from_f64(f64::from(cols)));
-        let _ = js_sys::Reflect::set(&detail, &"rows".into(), &JsValue::from_f64(f64::from(rows)));
+        set_js(&detail, "panes", descriptors);
+        set_js(&detail, "cols", cols);
+        set_js(&detail, "rows", rows);
         detail
     }
 
@@ -385,39 +366,21 @@ impl App {
             .canvas
             .set_attribute("data-phux-focused-pane", &focused);
         let detail = self.presentation_detail();
-        let _ = js_sys::Reflect::set(&detail, &"count".into(), &JsValue::from_f64(count as f64));
-        let _ = js_sys::Reflect::set(&detail, &"focused".into(), &JsValue::from_str(&focused));
-        let _ = js_sys::Reflect::set(
-            &detail,
-            &"pending".into(),
-            &JsValue::from_bool(self.session.pane_pending()),
-        );
+        set_js(&detail, "count", count as f64);
+        set_js(&detail, "focused", focused);
+        set_js(&detail, "pending", self.session.pane_pending());
         if let Some(error) = self.session.pane_error() {
-            let _ = js_sys::Reflect::set(&detail, &"error".into(), &JsValue::from_str(error));
+            set_js(&detail, "error", error);
         }
-        let init = web_sys::CustomEventInit::new();
-        init.set_bubbles(true);
-        init.set_detail(&detail);
-        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("phux-panes", &init) {
-            let _ = self.canvas.dispatch_event(&event);
-        }
+        dispatch_custom(&self.canvas, "phux-panes", Some(&detail));
     }
 
     /// Announce the on-screen Ctrl latch, so a page's key bar shows it held
     /// or spent: a bubbling `phux-modifiers` event with `{ ctrl }`.
     pub(super) fn publish_modifiers(&self) {
         let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(
-            &detail,
-            &"ctrl".into(),
-            &JsValue::from_bool(self.ctrl_latch.get()),
-        );
-        let init = web_sys::CustomEventInit::new();
-        init.set_bubbles(true);
-        init.set_detail(&detail);
-        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("phux-modifiers", &init) {
-            let _ = self.canvas.dispatch_event(&event);
-        }
+        set_js(&detail, "ctrl", self.ctrl_latch.get());
+        dispatch_custom(&self.canvas, "phux-modifiers", Some(&detail));
     }
 
     /// Mirror a changed program title onto the canvas and announce it, so a
@@ -428,12 +391,7 @@ impl App {
             return;
         }
         let _ = self.canvas.set_attribute(TITLE_ATTRIBUTE, &title);
-        let init = web_sys::CustomEventInit::new();
-        init.set_bubbles(true);
-        init.set_detail(&JsValue::from_str(&title));
-        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(TITLE_EVENT, &init) {
-            let _ = self.canvas.dispatch_event(&event);
-        }
+        dispatch_custom(&self.canvas, TITLE_EVENT, Some(&JsValue::from_str(&title)));
         self.title.replace(title);
     }
 }

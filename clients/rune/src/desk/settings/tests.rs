@@ -262,7 +262,7 @@ fn a_notice_is_announced_and_an_error_at_once() {
 
 #[test]
 fn glass_is_saved_like_the_theme() {
-    let mut desk = Desk::settings_test_fixture();
+    let mut desk = crate::test_support::settings_window();
     desk.prefs = Prefs::memory();
     desk.set_glass(40);
     assert_eq!(super::Settings::load(&desk.prefs).glass, 40);

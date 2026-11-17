@@ -94,11 +94,9 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
     });
 }
 
-/// A client's emulator reply never reaches the PTY (the canonical
-/// terminal already answered), and `focus-changed` fires only for an
-/// authorized focus-gained event.
+/// `focus-changed` fires only for an authorized focus-gained event.
 #[test]
-fn terminal_replies_are_discarded_and_focus_hooks_fire() {
+fn focus_hooks_fire_only_for_authorized_focus_gained() {
     use phux_protocol::input::focus::FocusEvent;
 
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
@@ -107,16 +105,9 @@ fn terminal_replies_are_discarded_and_focus_hooks_fire() {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let mut hooks = capture_hooks(&state);
         let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
-        let mut rx = register_stub(&state, pane);
+        let _rx = register_stub(&state, pane);
         let wire_terminal_id = state.with_mut(|s| s.intern_resource_wire(pane));
         let client_id = attach_client(&state, "focus");
-
-        let reply = bytes::Bytes::from_static(b"\x1b[5;1R");
-        handle_terminal_reply(client_id, &wire_terminal_id, &reply);
-        assert!(
-            rx.encoded_input.try_recv().is_err(),
-            "reply must be discarded"
-        );
 
         let focus = |client, event| {
             handle_terminal_input(

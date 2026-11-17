@@ -187,10 +187,6 @@ fn restore_file(source: &Path, target: &Path, bin_dir: &Path) -> Result<(), Upda
 }
 
 /// Recover any state whose durable commit marker was not published.
-///
-/// Phases run in order: drop an unpublished journal, finish a committed
-/// rollback, roll back an uncommitted install or rollback, then settle a
-/// leftover previous backup.
 pub(super) fn recover_interrupted_transaction(bin_dir: &Path) -> Result<(), UpdateError> {
     clear_incomplete_journal(bin_dir)?;
     finish_committed_rollback(bin_dir)?;

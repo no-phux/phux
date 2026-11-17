@@ -10,10 +10,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
+use crate::{common, listeners};
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

@@ -162,3 +162,26 @@ async fn exact_resource_id_does_not_require_an_inventory_connection() {
     .id;
     assert_eq!(phux_client::selector::format_terminal_id(&id), "host/@7");
 }
+/// No published schema carries an integer-width `format` word (Ajv-based
+/// clients print a warning per word), while a property named `format` stays.
+#[test]
+fn tool_schemas_carry_no_integer_width_formats() {
+    let catalog = crate::tools::catalog();
+    let text = catalog.to_string();
+    for word in [
+        "\"uint32\"",
+        "\"uint64\"",
+        "\"int64\"",
+        "\"uint\"",
+        "\"double\"",
+    ] {
+        assert!(
+            !text.contains(&format!("\"format\":{word}")),
+            "{word} survives"
+        );
+    }
+    assert!(
+        text.contains("\"format\":{"),
+        "a property named format is kept"
+    );
+}

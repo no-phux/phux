@@ -69,6 +69,11 @@ pub(in crate::runtime) fn register_pty_command(
     let wire = s.intern_resource_wire(terminal);
     phux_terminal_api::launch::apply_terminal_id(cmd, &wire);
     phux_terminal_api::launch::apply_server_socket(cmd, s.server_socket_path());
+    // Only with `[forward] agent = true`: otherwise the pane keeps whatever
+    // agent the server's environment names.
+    if let Some(agent) = s.forward_agent().socket() {
+        cmd.env("SSH_AUTH_SOCK", agent);
+    }
     wire
 }
 

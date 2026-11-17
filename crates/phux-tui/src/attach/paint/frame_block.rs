@@ -8,15 +8,10 @@ use crate::attach::render::SyncOutput;
 /// across a half-painted grid on a terminal that ignores mode 2026.
 const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 
-/// One composited frame: a DEC 2026 block that swallows the flushes of
-/// everything painted inside it and ships once, as one write and one flush.
-///
-/// A `Write` wrapper, so each painter keeps the flushes it needs standalone.
-/// The block's depth is taken in [`Self::begin`], before any painter runs,
-/// so the pane renderer's own [`SyncOutput`] nests instead of closing the
-/// frame early. The prologue is buffered and shipped by [`Self::end`] only if
-/// a painter wrote something, so an idle frame costs zero bytes and no
-/// writer-thread wake. The buffer comes from a thread-local pool.
+/// One composited frame: a DEC 2026 block that swallows inner flushes and
+/// ships once. Depth is taken in [`Self::begin`] so the renderer's
+/// [`SyncOutput`] nests; the prologue ships only if a painter wrote, so an
+/// idle frame costs nothing. The buffer comes from a thread-local pool.
 pub(in crate::attach) struct FrameBlock<'a, W: Write> {
     inner: &'a mut W,
     /// The frame's bytes, including the block prologue and epilogue.

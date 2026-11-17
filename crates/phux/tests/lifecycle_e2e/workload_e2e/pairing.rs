@@ -75,7 +75,7 @@ fn pair_enroll_ticket_failure_preserves_credentials_and_output() {
     let first = json_doc(&await_success(
         dir.path(),
         &["--socket", socket_arg, "pair", "--json"],
-        &[],
+        NO_ENV,
     ));
     let old = first["token"].as_str().expect("bearer");
     let tokens = PathBuf::from(first["tokens_path"].as_str().expect("token store"));
@@ -178,7 +178,7 @@ fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
     let paired = json_doc(&await_success(
         dir.path(),
         &["--socket", socket_arg, "pair", "--enroll", "--json"],
-        &[],
+        NO_ENV,
     ));
     let field = |name: &str| paired[name].as_str().unwrap_or_default().to_owned();
     let ticket = field("enrollment_ticket");
@@ -223,7 +223,7 @@ fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
     let whoami = json_doc(&await_success(
         dir.path(),
         &["whoami", "--remote", "mini", "--json"],
-        &[],
+        NO_ENV,
     ));
     let listed = json_doc(&phux(dir.path(), &["workload", "list", "--json"]));
     assert_eq!(

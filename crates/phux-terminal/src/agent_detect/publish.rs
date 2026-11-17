@@ -7,7 +7,7 @@ use std::time::Instant;
 use tracing::trace;
 
 use super::{
-    AgentDetector, Cadence, DetectOutcome, DetectedState, IDLE_CONFIRMATIONS, IDLE_HOLD_CAP,
+    AgentDetector, DetectOutcome, DetectedState, IDLE_CONFIRMATIONS, IDLE_HOLD_CAP, Identified,
     PendingIdle, VACANT_CONFIRMATIONS, identify,
 };
 
@@ -29,12 +29,9 @@ impl AgentDetector {
 
         // Confirmed gone: retract.
         self.identified = None;
-        self.identified_occupant = None;
-        self.identified_at = None;
         self.pending_idle = None;
         self.current = None;
         self.pending_hook = None;
-        self.cadence = Cadence::Unidentified;
         self.vacant_streak = 0;
         // Gate on having had an identity, not on `published`, which may be
         // briefly `None` after any metadata write.
@@ -53,16 +50,14 @@ impl AgentDetector {
     ) -> Option<DetectOutcome> {
         self.vacant_streak = 0;
 
-        let same_kind = self.identified.as_deref() == Some(kind.as_str());
-        // A `None` prior occupant heals silently rather than counting as a
-        // change.
-        let same_occupant = same_kind
-            && self
-                .identified_occupant
-                .is_none_or(|prior| prior.same(occupant));
-        if same_occupant {
+        if let Some(agent) = self.identified.as_mut()
+            && agent.kind == kind
+            // A `None` prior occupant heals silently rather than counting as
+            // a change.
+            && agent.occupant.is_none_or(|prior| prior.same(occupant))
+        {
             // Refresh, but never downgrade a known start time to `None`.
-            self.identified_occupant = Some(match self.identified_occupant {
+            agent.occupant = Some(match agent.occupant {
                 Some(prior) if occupant.started.is_none() => {
                     identify::Occupant::new(occupant.pgid, prior.started)
                 }
@@ -73,15 +68,16 @@ impl AgentDetector {
 
         let replaced = self.identified.is_some();
         trace!(%kind, pgid = occupant.pgid, replaced, "agent-detect: identified");
-        self.identified = Some(kind.clone());
-        self.identified_occupant = Some(occupant);
         // Grace restarts here, including for a same-kind restart.
-        self.identified_at = Some(now);
+        self.identified = Some(Identified {
+            kind: kind.clone(),
+            occupant: Some(occupant),
+            at: now,
+        });
         // A different occupant: nothing previously derived applies.
         self.published = None;
         self.pending_idle = None;
         self.current = None;
-        self.cadence = Cadence::Identified;
 
         // Acquiring an empty pane is not a correction.
         if !replaced {
@@ -102,12 +98,10 @@ impl AgentDetector {
         // the first place: nothing to debounce.
         if visible_idle || !releasing_work {
             self.pending_idle = None;
-            self.cadence = Cadence::Identified;
             return true;
         }
 
-        // Ambiguous: look again, fast.
-        self.cadence = Cadence::Confirming;
+        // Ambiguous: look again, fast (the open hold sets the cadence).
         let pending = self.pending_idle.get_or_insert(PendingIdle {
             confirmations: 0,
             since: now,
@@ -117,7 +111,6 @@ impl AgentDetector {
             || now.duration_since(pending.since) >= IDLE_HOLD_CAP;
         if settled {
             self.pending_idle = None;
-            self.cadence = Cadence::Identified;
         }
         settled
     }
@@ -131,9 +124,11 @@ impl AgentDetector {
     /// Test seam: force an identity without a live PTY.
     #[cfg(test)]
     pub(crate) fn force_identity(&mut self, kind: &str, now: Instant) {
-        self.identified = Some(kind.to_owned());
-        self.identified_at = Some(now);
-        self.cadence = Cadence::Identified;
+        self.identified = Some(Identified {
+            kind: kind.to_owned(),
+            occupant: self.identified.take().and_then(|agent| agent.occupant),
+            at: now,
+        });
         // Push the next identity poll out; there is no PTY to read.
         self.next_identify = now + Duration::from_secs(3600);
     }

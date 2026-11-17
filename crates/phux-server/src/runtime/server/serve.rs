@@ -135,7 +135,7 @@ impl ServerRuntime {
         });
 
         mirror_config_into_state(&self.cfg, &socket_path, &state);
-        install_policy_posture(&state, posture, posture_engine);
+        install_policy_posture(&state, posture, posture_engine, self.cfg.tailnet_owner);
         record_refused_listeners(&state, &refused_listeners);
         let mode_unset = self.cfg.policy_mode.is_none();
 
@@ -184,6 +184,8 @@ impl ServerRuntime {
                 });
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);
+                // Before any pane exists, so each is told the broker socket.
+                crate::runtime::forward::agent::start(&state, &root_token);
                 spawn_connector_supervisors(
                     connector_specs,
                     connector_consumer_tokens.as_ref(),

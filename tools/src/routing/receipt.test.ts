@@ -61,6 +61,20 @@ test("a merge group that validated the exact tree is reused", () => {
   expect(find()).toBe(3);
 });
 
+test("an exact-tree partial PR Linux receipt cannot replace full queue/main qualification", () => {
+  const paths = ["clients/rune/src/main.rs"];
+  const c = new Classifier().classify(paths);
+  const options = { scope: { kind: "diff" as const, paths } };
+  const pr = { ...expected, coverage: plan(c, "pull_request", options).coverage };
+  const full = { ...expected, coverage: plan(c, "push", options).coverage };
+  files["receipt.json"] = JSON.stringify(pr);
+  expect(find(pr)).toBe(3);
+  expect(find(full)).toBeUndefined();
+  run["event"] = "merge_group";
+  files["receipt.json"] = JSON.stringify(full);
+  expect(find(full)).toBe(3);
+});
+
 test("the required ci merge-group caller attests only the exact native child receipt", () => {
   const apple = {
     ...expected,

@@ -149,12 +149,7 @@ fn stub_executables(names: &[&str]) -> PathBuf {
     std::fs::create_dir_all(&dir).expect("stub dir");
     for name in names {
         let path = dir.join(name);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("stub");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        crate::common::write_executable(&path, "#!/bin/sh\nexit 0\n");
     }
     dir
 }

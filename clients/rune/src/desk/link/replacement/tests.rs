@@ -49,3 +49,86 @@ fn replacing_a_machine_keeps_phone_preferences_not_old_panes_or_latches() {
     assert!(phone.tree.is_none());
     assert!(!phone.navigating());
 }
+
+#[test]
+fn replacing_a_runtime_does_not_reload_window_preferences_or_geometry() {
+    for policy in [Replacement::Retry, Replacement::Machine] {
+        let mut desk = crate::test_support::window().with_phone(true);
+        desk.font_size = 19.0;
+        desk.font_family = "test font".into();
+        desk.scale.set(1.5);
+        desk.window_w = 777.0;
+        desk.sidebar_open = false;
+        desk.sidebar_peek = true;
+        desk.settings.glass = 73;
+        let waker: rune::Waker = std::sync::Arc::new(|| {});
+        desk.waker = Some(waker.clone());
+        desk.settings_open = true;
+        desk.settings_ui.query = rune::TextEdit::new("retained search");
+        desk.palette_query = rune::TextEdit::new("retained palette");
+        desk.pending = Some(crate::desk::Pending::Close(
+            phux_protocol::ids::ResourceId::local(1),
+        ));
+        desk.connection.pending_spawns.push(7);
+        desk.connection
+            .uploads
+            .push((8, phux_protocol::ids::ResourceId::local(1), None));
+        desk.connection.pastes.insert(9);
+        desk.connection.preedit = Some("composition".into());
+        desk.replace_connection(policy);
+        assert_eq!(desk.font_size, 19.0);
+        assert_eq!(desk.font_family, "test font");
+        assert_eq!(desk.scale.get(), 1.5);
+        assert_eq!(desk.window_w, 777.0);
+        assert!(!desk.sidebar_open);
+        assert!(desk.sidebar_peek);
+        assert_eq!(desk.settings.glass, 73);
+        assert!(std::sync::Arc::ptr_eq(desk.waker.as_ref().unwrap(), &waker));
+        assert!(desk.connection.pending_spawns.is_empty());
+        assert!(desk.connection.uploads.is_empty());
+        assert!(desk.connection.pastes.is_empty());
+        assert!(desk.connection.preedit.is_none());
+        assert_eq!(desk.settings_open, policy == Replacement::Retry);
+        assert_eq!(desk.pending.is_some(), policy == Replacement::Retry);
+        if policy == Replacement::Retry {
+            assert_eq!(desk.settings_ui.query.text, "retained search");
+            assert_eq!(desk.palette_query.text, "retained palette");
+        } else {
+            assert!(desk.settings_ui.query.text.is_empty());
+            assert!(desk.palette_query.text.is_empty());
+        }
+    }
+}
+
+#[test]
+fn explicit_replacement_releases_old_view_leases_even_if_the_client_survives() {
+    let replica = crate::test_support::terminal::Replica::new(80, 24, 2);
+    let client = replica.client.clone();
+    let mut desk = crate::test_support::window();
+    desk.connection.client = Some(client.clone());
+    desk.connection.shown = Some(crate::desk::Shown {
+        resource: replica.terminal.clone(),
+        view: Some(replica.views[0]),
+    });
+    desk.connection.others.insert(
+        phux_protocol::ids::ResourceId::local(2),
+        Some(replica.views[1]),
+    );
+    let fence = desk.connection.callback_fence().unwrap();
+    desk.replace_connection(Replacement::Retry);
+    for view in replica.views {
+        assert!(
+            client.view_generation(view).is_none(),
+            "old view lease retired"
+        );
+    }
+    assert_eq!(
+        desk.connection.wanted.as_ref().map(|w| &w.0),
+        Some(&replica.terminal)
+    );
+    // Deliberately reuse the very same embedded client: the namespace still
+    // changed and queued callbacks must not regain authority.
+    desk.connection.client = Some(client);
+    assert!(!fence.is_current(&desk.connection));
+    desk.replace_connection(Replacement::Retry);
+}

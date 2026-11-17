@@ -8,6 +8,7 @@
 
 pub mod agent_record;
 pub mod asked;
+pub mod names;
 pub mod parent;
 pub mod session;
 pub mod state;

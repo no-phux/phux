@@ -3,7 +3,7 @@
 use super::{
     AgentEvent, AgentEventRecord, AgentSessionError, AttachError, Command, CommandResult,
     Connection, ErrorCode, FrameKind, LogEnd, LogOptions, LogOutcome, MAX_RECORD_BYTES,
-    REQUEST_ATTACH, REQUEST_DETACH, ResourceId, map_refusal, require_support,
+    REQUEST_ATTACH, REQUEST_DETACH, ResourceId, map_refusal,
 };
 
 /// Read `resource`'s stream as an observer.
@@ -14,7 +14,7 @@ use super::{
 ///
 /// # Errors
 ///
-/// [`AgentSessionError::Unsupported`], the server's refusal of the attach
+/// The server's refusal of the attach
 /// (`WRONG_RESOURCE_KIND` for a Terminal target), a malformed record on the
 /// stream, or transport failure.
 pub async fn log(
@@ -23,7 +23,6 @@ pub async fn log(
     options: LogOptions,
     mut sink: impl FnMut(AgentEventRecord) -> bool,
 ) -> Result<LogOutcome, AgentSessionError> {
-    require_support(conn)?;
     let (result, primed) = conn
         .request(
             REQUEST_ATTACH,

@@ -19,9 +19,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// The bundle's `CFBundleIdentifier`.
-pub const BUNDLE_ID: &str = "sh.phux.server";
-
 /// The bundle's directory name inside a version directory.
 pub const APP_NAME: &str = "phux Server.app";
 

@@ -6,8 +6,8 @@ use std::time::Instant;
 use tracing::trace;
 
 use super::{
-    AgentDetector, AgentReport, Cadence, DetectOutcome, DetectedState, HOOK_IDENTITY_GRACE,
-    regions, startup_grace,
+    AgentDetector, AgentReport, DetectOutcome, DetectedState, HOOK_IDENTITY_GRACE, regions,
+    startup_grace,
 };
 
 impl AgentDetector {
@@ -51,7 +51,7 @@ impl AgentDetector {
         if let Some(outcome) = self.maybe_identify(now, master_fd, pane_child_pid) {
             return outcome;
         }
-        let Some(kind) = self.identified.clone() else {
+        let Some(kind) = self.identified_kind().map(str::to_owned) else {
             return DetectOutcome::Quiet;
         };
 
@@ -66,14 +66,16 @@ impl AgentDetector {
                 state,
             };
             self.pending_idle = None;
-            self.cadence = Cadence::Identified;
             self.current = Some(state);
             self.published = Some(report.clone());
             return DetectOutcome::Publish(report);
         }
 
         // 2. Startup grace, anchored at identification.
-        let anchor = self.identified_at.unwrap_or(self.started);
+        let anchor = self
+            .identified
+            .as_ref()
+            .map_or(self.started, |agent| agent.at);
         if now < anchor + startup_grace() {
             return DetectOutcome::Quiet;
         }
@@ -103,7 +105,6 @@ impl AgentDetector {
                     // `settle_idle`, which this skips) and realign `current`
                     // with the frozen badge so a later skipped scan holds it.
                     self.pending_idle = None;
-                    self.cadence = Cadence::Identified;
                     self.current = self.published.as_ref().map(|r| r.state);
                     trace!(%kind, "agent-detect: screen carries no state; frozen");
                     return DetectOutcome::Quiet;
@@ -127,7 +128,6 @@ impl AgentDetector {
         let publishable = match derived {
             DetectedState::Blocked | DetectedState::Working | DetectedState::Done => {
                 self.pending_idle = None;
-                self.cadence = Cadence::Identified;
                 true
             }
             DetectedState::Idle => self.settle_idle(now, visible_idle),

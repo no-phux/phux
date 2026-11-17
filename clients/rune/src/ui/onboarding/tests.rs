@@ -1,7 +1,7 @@
 //! Every step through the real window, and fixture renders of each.
 
 use rune::accesskit::Action;
-use rune::{Env, Key, KeyEvent, Mods, Runtime};
+use rune::{Env, Key, Runtime};
 
 use super::*;
 use crate::onboarding::{AgentSkill, KEEP_ALIVE, Permissions};
@@ -21,8 +21,8 @@ fn skill(agent: &str, state: &str) -> AgentSkill {
 /// The real window on `step`, as a first run with Claude Code and Codex
 /// found and one permission granted would show it.
 fn window(step: Step) -> Runtime<Desk> {
-    let mut desk = Desk::settings_test_fixture();
-    desk.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+    let mut desk = crate::test_support::settings_window();
+    desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = theme::find("midnight");
     let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
@@ -65,20 +65,7 @@ fn snap(rt: &mut Runtime<Desk>, name: &str) {
     let (w, h) = ((SIZE.0 * SCALE) as u32, (SIZE.1 * SCALE) as u32);
     let gpu = rune::render::Gpu::headless();
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-    let target = rune::render::Offscreen::new(&gpu.device, w, h);
-    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
-    renderer.prepare(
-        &gpu.device,
-        &gpu.queue,
-        &mut rt.text.atlas,
-        &rt.instances,
-        (w, h),
-    );
-    let mut enc = gpu.device.create_command_encoder(&Default::default());
-    renderer.draw(&mut enc, &target.view, [0.0; 4]);
-    target.copy(&mut enc);
-    renderer.submit(&gpu.queue, enc);
-    let pixels = target.read(&gpu.device);
+    let pixels = crate::ui::offscreen(&gpu, &mut renderer, rt, (w, h));
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
     std::fs::create_dir_all(&dir).unwrap();
     rune::render::write_png(&path, w, h, &pixels).unwrap();
@@ -164,7 +151,17 @@ fn every_step_renders_its_parts() {
         assert!(has(&rt, key), "{key}");
     }
     assert_eq!(has(&rt, "onboarding-keep-alive"), KEEP_ALIVE, "Linux only");
+    assert!(has(&rt, "done-agent-claude") && has(&rt, "done-agent-codex"));
+    assert!(!has(&rt, "done-agent-opencode") && !has(&rt, "done-tour"));
     snap(&mut rt, "5-done");
+    let mut rt = window(Step::Done);
+    rt.update(|d, _| d.onboarding.skills = Probe::Ready(Vec::new()));
+    settle(&mut rt);
+    assert!(has(&rt, "done-tour"), "no agent: the tour, not a dead end");
+    snap(&mut rt, "5c-done-no-agent");
+    assert!(rt.accessibility_action("done-tour", Action::Click, None));
+    settle(&mut rt);
+    assert!(!rt.state.onboarding.open && rt.state.palette_open);
     // A fresh window: a second snap's renderer misses glyphs the first uploaded.
     let mut rt = window(Step::Done);
     rt.update(|d, _| d.pairing_fixture());
@@ -198,16 +195,10 @@ fn picks_apply_to_the_window_and_keys_move_on() {
     assert!(rt.accessibility_action("look-auto", Action::Click, None));
     rt.frame(3.5);
     assert_eq!(rt.state.settings.theme, None, "Auto follows the system");
-    rt.key(KeyEvent {
-        key: Key::Enter,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Enter));
     rt.frame(4.0);
     assert_eq!(rt.state.onboarding.step, Step::Agents);
-    rt.key(KeyEvent {
-        key: Key::Escape,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Escape));
     rt.frame(4.5);
     assert_eq!(rt.state.onboarding.step, Step::Look);
 }
@@ -243,10 +234,7 @@ fn the_glass_slider_steps_and_clamps() {
     rt.frame(0.1);
     assert!(rt.accessibility_action("look-glass", Action::Focus, None));
     for key in [Key::Right, Key::Right] {
-        rt.key(KeyEvent {
-            key,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(key));
         rt.frame(0.2);
     }
     assert_eq!(rt.state.settings.glass, 10, "arrows step by 5");
@@ -256,10 +244,7 @@ fn the_glass_slider_steps_and_clamps() {
         Step::Look,
         "arrows don't change step"
     );
-    rt.key(KeyEvent {
-        key: Key::End,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::End));
     rt.frame(0.3);
     assert_eq!(rt.state.settings.glass, 100);
     snap(&mut rt, "2b-look-glass");
@@ -283,4 +268,38 @@ fn skill_shows_installed_with_no_agent_found() {
         !has(&rt, "onboarding-install"),
         "the shared skill is in place"
     );
+}
+
+#[test]
+fn the_machines_step_offers_ssh_and_tailnet_hosts_to_tick() {
+    let mut rt = window(Step::Machines);
+    rt.update(|d, _| {
+        let list = &mut d.machines;
+        list.ssh.hosts = vec!["devbox".to_owned(), "mini".to_owned()];
+        list.peers = vec![crate::machines::Peer {
+            name: "nas".to_owned(),
+            ssh_host: "nas.tail1.ts.net".to_owned(),
+            online: true,
+        }];
+        list.hosts = vec![crate::machines::Host {
+            name: "mini".to_owned(),
+            ssh: Some("mini".to_owned()),
+            ssh_only: false,
+            paused: false,
+        }];
+    });
+    settle(&mut rt);
+    assert!(
+        has(&rt, "onboarding-machine-devbox") && has(&rt, "onboarding-machine-nas.tail1.ts.net")
+    );
+    assert!(!has(&rt, "onboarding-machine-mini"), "already set up");
+    assert!(
+        !has(&rt, "onboarding-machines-set-up"),
+        "nothing ticked yet"
+    );
+    assert!(rt.accessibility_action("onboarding-machine-devbox", Action::Click, None));
+    settle(&mut rt);
+    assert!(rt.state.machines.ssh.picked.contains("devbox"));
+    assert!(has(&rt, "onboarding-machines-set-up"));
+    snap(&mut rt, "4c-machines");
 }

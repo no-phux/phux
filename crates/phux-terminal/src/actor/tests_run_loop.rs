@@ -102,7 +102,7 @@ mod pty_burst_tests {
     use super::{Bytes, join_pty_burst};
 
     /// A lone chunk is forwarded without a copy; a burst joins in order into
-    /// one buffer.
+    /// one buffer, through the instruction-count entry point too.
     #[test]
     fn a_burst_joins_in_order_and_a_lone_chunk_is_not_copied() {
         let first = Bytes::from_static(b"abc");
@@ -110,8 +110,12 @@ mod pty_burst_tests {
         assert_eq!(lone.as_ptr(), first.as_ptr(), "a lone chunk moves through");
 
         let rest = [Bytes::from_static(b"de"), Bytes::from_static(b"fghi")];
-        let joined = join_pty_burst(first, &rest, 9);
+        let joined = join_pty_burst(first.clone(), &rest, 9);
         assert_eq!(&joined[..], b"abcdefghi");
+        assert_eq!(
+            &super::icount_join_pty_burst(vec![first, rest[0].clone()])[..],
+            b"abcde"
+        );
     }
 }
 
@@ -126,6 +130,13 @@ mod resync_debounce_tests {
 
     fn idle() -> ResyncDebounce {
         ResyncDebounce::idle()
+    }
+
+    /// Take the owed resync, which must exist; nothing is owed afterwards.
+    fn owed(debounce: &mut ResyncDebounce) -> (ResyncReason, ResyncAudience) {
+        let owed = debounce.take().expect("a resync is owed");
+        assert!(!debounce.is_owed(), "taking it clears the debt");
+        owed
     }
 
     fn pump(owner: u64) -> ResyncTarget {
@@ -169,7 +180,7 @@ mod resync_debounce_tests {
 
         debounce.arm(gap_for(pump(0)), sleep.as_mut());
         let first_deadline = sleep.deadline();
-        assert!(debounce.pending);
+        assert!(debounce.is_owed());
 
         for round in 0..20_u64 {
             // Faster than the debounce, which is exactly the starving case.
@@ -188,7 +199,7 @@ mod resync_debounce_tests {
             sleep.deadline() <= tokio::time::Instant::now(),
             "the coalesced snapshot must have become due despite the request storm",
         );
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         let expected: Vec<_> = (0..10).map(pump).collect();
         assert_eq!(
@@ -212,7 +223,7 @@ mod resync_debounce_tests {
             first_deadline,
             "including a queued gap request at EOF must not wait another debounce",
         );
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         assert_eq!(
             audience,
@@ -231,7 +242,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(gap_for(pump(2)), sleep.as_mut());
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        let (reason, audience) = debounce.take();
+        let (reason, audience) = owed(&mut debounce);
         assert_eq!(reason, ResyncReason::OutboundGap);
         assert_eq!(
             audience,
@@ -241,7 +252,7 @@ mod resync_debounce_tests {
 
         debounce.arm(gap_for(pump(3)), sleep.as_mut());
         assert_eq!(
-            debounce.take().1,
+            owed(&mut debounce).1,
             ResyncAudience::Only(vec![pump(3)].into())
         );
     }
@@ -257,7 +268,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(resize(), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::Resize, ResyncAudience::Everyone)
         );
 
@@ -265,7 +276,7 @@ mod resync_debounce_tests {
         debounce.arm(resize(), sleep.as_mut());
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::Resize, ResyncAudience::Everyone)
         );
 
@@ -273,7 +284,7 @@ mod resync_debounce_tests {
         debounce.arm(gap_for(pump(1)), sleep.as_mut());
         debounce.arm(gap(), sleep.as_mut());
         assert_eq!(
-            debounce.take(),
+            owed(&mut debounce),
             (ResyncReason::OutboundGap, ResyncAudience::Everyone)
         );
     }
@@ -308,25 +319,6 @@ mod resync_debounce_tests {
         debounce.arm(resize(), sleep.as_mut());
 
         assert!(sleep.deadline() > gap_deadline);
-        assert_eq!(debounce.take().0, ResyncReason::Resize);
-    }
-}
-
-#[cfg(test)]
-mod icount_join_tests {
-    use super::icount_join_pty_burst;
-    use bytes::Bytes;
-
-    #[test]
-    fn a_burst_is_one_payload() {
-        let joined =
-            icount_join_pty_burst(vec![Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]);
-        assert_eq!(joined.as_ref(), b"abcd");
-    }
-
-    #[test]
-    fn a_lone_chunk_is_moved() {
-        let joined = icount_join_pty_burst(vec![Bytes::from_static(b"only")]);
-        assert_eq!(joined.as_ref(), b"only");
+        assert_eq!(owed(&mut debounce).0, ResyncReason::Resize);
     }
 }

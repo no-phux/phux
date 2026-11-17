@@ -1,6 +1,6 @@
 use super::super::{
     AttachTarget, Duration, GhosttyAdapter, HeadlessChrome, HeadlessCompletion, Path,
-    SessionKernel, drain_until_settled, send_attach_without_size_vote, wait_for_attached,
+    SessionKernel, drain_until_settled, send_attach, wait_for_attached,
 };
 use super::*;
 use phux_client_core::session::agent_stream::AgentSessionStatus;
@@ -80,12 +80,10 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
                     .await
                     .unwrap();
             let negotiated = conn.negotiated_bootstrap().unwrap();
-            let mut attach_id = send_attach_without_size_vote(
-                &mut conn,
-                AttachTarget::ByName("headless-agent".into()),
-            )
-            .await
-            .unwrap();
+            let mut attach_id =
+                send_attach(&mut conn, AttachTarget::ByName("headless-agent".into()))
+                    .await
+                    .unwrap();
             let attached = wait_for_attached(&mut conn, attach_id).await.unwrap();
             let kernel =
                 SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
@@ -100,7 +98,7 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
             let focused = outcome.sessions.map(|(_, focused)| focused);
             session.request_agent_records(&mut conn).await.unwrap();
             assert!(!session.agent_metadata_complete());
-            let mut completion = HeadlessCompletion::new(None);
+            let mut completion = HeadlessCompletion::default();
             tokio::time::timeout(
                 Duration::from_secs(10),
                 drain_until_settled(
@@ -109,7 +107,6 @@ async fn headless_snapshot_waits_for_explicit_agent_cut_after_aggregate_ready() 
                     &mut completion,
                     &mut attach_id,
                     focused,
-                    None,
                 ),
             )
             .await

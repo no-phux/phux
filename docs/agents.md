@@ -101,8 +101,7 @@ hooks, reports its state to phux as it changes.
 | Claude Code | `claude plugin marketplace add no-phux/phux`, then `claude plugin install phux@phux` |
 | pi | `pi install npm:@phux/pi` |
 | Oh My Pi | `omp plugin install @phux/omp` |
-| OpenCode 2.2 or newer | `opencode plugin add @phux/opencode` |
-| OpenCode 1.x | Register `phux mcp` ([how](../integrations/opencode-v2/README.md#opencode-1x)). |
+| OpenCode | `opencode plugin add @phux/opencode` on 2.2+, `opencode plugin @phux/opencode` on 1.x ([1.x](../integrations/opencode-v2/README.md#opencode-1x)) |
 | fx | Use the built-in `fx acp` profile ([ACP sessions](./acp.md)); for terminal fx, register `phux mcp` in fx. |
 | Grok | `grok plugin marketplace add no-phux/phux`, then `grok plugin install phux@phux --trust` |
 | Anything that speaks MCP | See [MCP](#mcp). |
@@ -195,11 +194,12 @@ They filter the current inventory; they are not a completion gate.
 
 ## Driving an agent in a pane
 
-Address an agent's pane by `%name` or `@N`. `%` refuses a kind name like
-`opencode`, so name the pane first:
+Address an agent's pane by `%name` or `@N`. Each agent pane is named after
+its kind, unique on the server and kept while it runs: the first OpenCode
+pane is `%opencode`, the next `%opencode-2`. Rename one with
+`phux agent set @3 --name reviewer`:
 
 ```sh
-phux agent set @3 --name reviewer --kind opencode          # once
 phux agent wait --until blocked --timeout 600 %reviewer   # until it needs you
 phux agent prompt %reviewer 'run the tests again'          # hand it one line of work
 phux agent answer --id Q7 --choice 2 %reviewer             # answer its question
@@ -415,7 +415,7 @@ holds ([macOS permissions](./install.md#macos-permissions)).
 
 **Held actions wait for you.** A key enrolled with a held verb such as
 `?signal` waits for `phux approve ID` or `phux deny ID`; `phux approvals`
-lists them. This machine's own socket is never held. See
+lists them. The owner socket skips them, credentials aside. See
 [Held actions](./approvals.md).
 
 ## Complete terminal creation

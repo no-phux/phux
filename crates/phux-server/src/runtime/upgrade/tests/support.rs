@@ -1,5 +1,4 @@
 //! Shared test helpers for the upgrade-orchestration test suite.
-#![allow(clippy::unwrap_used, reason = "tests")]
 
 use phux_agent_session::session::AgentSessionResource as _;
 use std::os::fd::AsRawFd;
@@ -182,14 +181,9 @@ pub(super) fn spawn_agent_session(
     (wire, append)
 }
 
-/// phux-1x9s.3: an agent session under a carried pane crosses the
-/// upgrade under the same wire id with its provenance, state, and record
-/// tail, and the resumed engine continues the same stream bound to the
-/// rebuilt pane. A session under a pane that does not cross live (here a
-/// retained one) is dropped with it.
 /// An old image with a live pane hosting an agent session, and a retained
-/// pane hosting another. Returns the live pane's and its session's wire
-/// ids and the session's append channel.
+/// pane hosting another (phux-1x9s.3). Returns the live pane's and its
+/// session's wire ids and the session's append channel.
 pub(super) fn old_image_with_agent_sessions(
     s: &mut crate::state::ServerState,
 ) -> (

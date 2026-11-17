@@ -1,48 +1,29 @@
-//! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`,
-//! "revoked/expired authority ... while live").
-//!
-//! Every case runs the real client loop (`handle_client`) over a scripted
-//! transport. The workload's grant is minted by the `paired` engine from a
-//! real registry file (or, for expiry, by an engine whose grant lapses in
-//! well under a second). Each case withdraws the grant in the middle of
-//! something and checks the §7 contract: after the revocation nothing but
-//! `ERROR { PERMISSION_DENIED }` and `DETACHED { reason }` reaches the
-//! connection, nothing it sent or queued runs, what it held is released, and
-//! its Terminals, and every other connection, carry on.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests"
-)]
+//! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`).
+//! Each case withdraws the grant mid-operation and checks §7: only
+//! `ERROR { PERMISSION_DENIED }` and `DETACHED { reason }` follow, nothing
+//! queued runs, holdings are released, and other connections carry on.
 
 use std::cell::RefCell;
-use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use bytes::BytesMut;
 use chrono::Utc;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::policy::PeerIdentity;
 use phux_protocol::scope::TerminalScopeSet;
-use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, DetachReason, ErrorCode, FrameKind, InputMode, Scope,
-    ViewportInfo,
-};
-use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, LocalSet};
+use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind, InputMode, Scope};
 use tokio_util::sync::CancellationToken;
 
 use super::revocation::Watcher;
-use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
+use super::test_support::{
+    Connection, PATIENCE, alpha_world, hello, local, owner_peer, spawn_connection, wait_until,
+    workload_identity,
+};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
 use crate::runtime::apps::InputLane;
-use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, ServerState, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
@@ -56,9 +37,6 @@ const TEST_GRACE: Duration = Duration::from_millis(300);
 
 /// The workload's public key, as the registry records it.
 const KEY: &[u8] = b"revocation-conformance-key";
-
-/// How long any one expectation may take before the case fails.
-const PATIENCE: Duration = Duration::from_secs(5);
 
 /// Mints a scoped grant over `set` that expires `ttl` after its HELLO.
 #[derive(Debug)]
@@ -139,19 +117,8 @@ impl Fixture {
         credential_id: String,
         engine: Arc<dyn PolicyEngine>,
     ) -> Self {
-        let state = crate::runtime::test_support::terminal_state();
         let root = CancellationToken::new();
-        let alpha_core = crate::runtime::test_support::seed_session_with_actor(
-            &state,
-            "alpha",
-            phux_config::ScrollbackLimits::default(),
-            &root,
-        )
-        .unwrap();
-        let alpha = state.with_mut(|s| {
-            s.set_policy_engine(engine);
-            s.intern_resource_wire(alpha_core)
-        });
+        let (state, alpha, alpha_core) = alpha_world(engine, &root);
         Self {
             _dir: dir,
             registry,
@@ -175,27 +142,7 @@ impl Fixture {
         let transport = identity.peer.transport;
         self.state
             .with_mut(|s| s.set_connection_identity(client, identity));
-        let (feed, rx) = mpsc::unbounded_channel();
-        let wire = Wire::default();
-        let token = self.root.child_token();
-        let task = tokio::task::spawn_local(handle_client(
-            Feed::silent_on_close(rx),
-            wire.clone(),
-            self.state.clone(),
-            client,
-            token.clone(),
-            self.root.clone(),
-            lane,
-            transport,
-            false,
-        ));
-        Connection {
-            client,
-            feed,
-            wire,
-            token,
-            task,
-        }
+        spawn_connection(&self.state, client, transport, &self.root, lane, false)
     }
 
     /// A workload connection past its HELLO.
@@ -233,81 +180,7 @@ impl Fixture {
     }
 }
 
-/// One scripted connection.
-struct Connection {
-    client: ClientId,
-    feed: mpsc::UnboundedSender<BytesMut>,
-    wire: Wire,
-    token: CancellationToken,
-    task: JoinHandle<io::Result<()>>,
-}
-
 impl Connection {
-    fn send(&self, frame: &FrameKind) {
-        let mut out = BytesMut::new();
-        frame.encode(&mut out);
-        let _ = self.feed.send(out);
-    }
-
-    fn frames(&self) -> Vec<FrameKind> {
-        self.wire.frames.borrow().clone()
-    }
-
-    async fn hello(&self) {
-        self.send(&hello("revocation-conformance"));
-        self.wait_for("HELLO_OK", |frame| {
-            matches!(frame, FrameKind::HelloOk { .. })
-        })
-        .await;
-    }
-
-    async fn attach(&self, attach_id: u32) {
-        self.send(&attach(attach_id));
-        self.wait_for("ATTACHED", |frame| {
-            matches!(frame, FrameKind::Attached { .. })
-        })
-        .await;
-    }
-
-    /// Send `command` and wait for its `Ok`.
-    async fn command_ok(&self, request_id: u32, command: Command) {
-        self.send(&FrameKind::Command {
-            request_id,
-            command,
-        });
-        self.wait_for("COMMAND_RESULT Ok", |frame| {
-            matches!(
-                frame,
-                FrameKind::CommandResult { request_id: id, result: CommandResult::Ok } if *id == request_id
-            )
-        })
-        .await;
-    }
-
-    async fn wait_for(&self, what: &str, found: impl Fn(&FrameKind) -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        while !self.wire.frames.borrow().iter().any(&found) {
-            assert!(
-                Instant::now() < deadline,
-                "no {what} within {PATIENCE:?}: {:?}",
-                self.frames()
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-
-    async fn wait_closed(&self) {
-        let deadline = Instant::now() + PATIENCE;
-        while !self.wire.closed.get() {
-            assert!(
-                Instant::now() < deadline,
-                "the transport never closed: {:?}",
-                self.frames()
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-
     /// §7 steps 3 and 4: the transport closed, and the last two frames on
     /// it are the goodbye. Anything racing the revocation had its chance to
     /// land after it and did not.
@@ -340,19 +213,6 @@ impl Connection {
             "the connection token is cancelled"
         );
     }
-
-    fn is_open(&self) -> bool {
-        !self.wire.closed.get()
-            && !self
-                .frames()
-                .iter()
-                .any(|frame| matches!(frame, FrameKind::Detached { .. }))
-    }
-
-    async fn finish(self) {
-        self.token.cancel();
-        let _ = self.task.await;
-    }
 }
 
 /// Let every ready task run, then a little wall-clock time on top.
@@ -361,14 +221,6 @@ async fn settle() {
         tokio::task::yield_now().await;
     }
     tokio::time::sleep(Duration::from_millis(20)).await;
-}
-
-async fn wait_until(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while !done() {
-        assert!(Instant::now() < deadline, "{what} never held");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
 }
 
 fn strings(scopes: &[&str]) -> Vec<String> {
@@ -401,23 +253,8 @@ fn write_owner_only(path: &Path, bytes: &[u8]) {
     std::fs::rename(&staged, path).unwrap();
 }
 
-fn attach(attach_id: u32) -> FrameKind {
-    FrameKind::Attach {
-        attach_id,
-        target: AttachTarget::ByName("alpha".to_owned()),
-        viewport: ViewportInfo::new(80, 24),
-        request_scrollback: false,
-        scrollback_limit_lines: 0,
-        role_policy: None,
-    }
-}
-
 fn acquire(terminal_id: &WireResourceId) -> Command {
-    Command::AcquireInput {
-        terminal_id: terminal_id.clone(),
-        mode: InputMode::Cooperative,
-        ttl_ms: 0,
-    }
+    super::test_support::acquire(terminal_id, InputMode::Cooperative)
 }
 
 fn subscribe_metadata(key: &str) -> FrameKind {
@@ -425,9 +262,4 @@ fn subscribe_metadata(key: &str) -> FrameKind {
         scope: Scope::Global,
         key: key.to_owned(),
     }
-}
-
-/// Run `case` on a current-thread runtime's `LocalSet`, as the server does.
-async fn local(case: impl std::future::Future<Output = ()>) {
-    LocalSet::new().run_until(case).await;
 }

@@ -1,4 +1,4 @@
-//! The last step: keys worth knowing, then a session.
+//! The last step: an agent to start, keys worth knowing, then a session.
 
 use super::*;
 
@@ -45,6 +45,57 @@ fn keep_alive(desk: &Desk, p: &Ink) -> El {
             Desk::toggle_keep_alive,
             p,
         ))
+}
+
+/// Start an agent found here, so the first run ends with one at work; with
+/// none, the short tour instead of a dead end.
+fn start_agent(desk: &Desk, p: &Ink) -> El {
+    let panel = col()
+        .key("done-agents")
+        .w_full()
+        .max_w(400.0)
+        .padding(14.0)
+        .gap(10.0)
+        .radius(12.0)
+        .items_center()
+        .fill(p.raised.alpha(0.6))
+        .border(1.0, p.separator);
+    let found = match &desk.onboarding.skills {
+        Probe::Asking => return panel.child(note("Looking for agents on this computer…", p)),
+        Probe::Ready(skills) => words::starters(skills),
+        Probe::Unsupported | Probe::Failed(_) => Vec::new(),
+    };
+    if found.is_empty() {
+        return panel
+            .child(note(
+                "No coding agent found on this computer. Install Claude Code, Codex or \
+                 OpenCode and phux runs it here, with its status in the sidebar.",
+                p,
+            ))
+            .child(quiet("done-tour", "Take the short tour", p).on_press(Desk::take_the_tour));
+    }
+    let buttons = found.into_iter().enumerate().map(|(at, id)| {
+        let (fill, ink) = if at == 0 {
+            (p.accent, p.on_accent)
+        } else {
+            (p.current, p.text)
+        };
+        let label = format!("Start {} here", words::agent_name(id));
+        pill(format!("done-agent-{id}"), label, fill, ink, p)
+            .on_press(move |d: &mut Desk| d.start_agent(id))
+    });
+    panel
+        .child(note(
+            "Start an agent in a pane with the phux skill set up. Its status shows in the sidebar.",
+            p,
+        ))
+        .child(
+            row()
+                .gap(8.0)
+                .flex_wrap()
+                .justify_center()
+                .children(buttons),
+        )
 }
 
 pub(super) fn done(desk: &Desk, p: &Ink) -> El {
@@ -100,6 +151,7 @@ pub(super) fn done(desk: &Desk, p: &Ink) -> El {
                 .role("heading")
                 .level(1),
         )
+        .child(start_agent(desk, p))
         .child(
             text("A few keys worth knowing, from your keymap.")
                 .font(LEAD)

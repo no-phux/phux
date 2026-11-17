@@ -1,0 +1,117 @@
+# The signed apt and dnf repositories, and the AUR phux-bin package. Packages
+# stay on their vX.Y.Z releases; the metadata, rebuilt from the newest ones,
+# is the `repodata` release (as channels/ holds the manifests). GitHub Pages
+# would serve the same tree, but the org has Pages creation turned off.
+# release.yml calls this after a CLI release is public; a dispatch rebuilds
+# both from what is published.
+# docs/runbooks/linux-packages.md is the runbook.
+name: packages
+
+on:
+  workflow_call:
+    secrets:
+      PHUX_PACKAGES_GPG_KEY:
+        required: true
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages
+  cancel-in-progress: false
+
+jobs:
+  repositories:
+    name: apt and dnf repositories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends apt-utils createrepo-c
+      - name: Build and sign the repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHUX_PACKAGES_GPG_KEY: ${{ secrets.PHUX_PACKAGES_GPG_KEY }}
+        run: bash scripts/build-package-repo.sh "$RUNNER_TEMP/site"
+      # Data before the signed indexes that name it, then drop what no
+      # index names. Never "latest": the CLI release is.
+      - name: Publish the repodata release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/site/repodata"
+          if ! gh release view repodata >/dev/null 2>&1; then
+            gh release create repodata --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "Package repositories" \
+              --notes "apt and dnf metadata for phux. See docs/install.md#linux-package-repositories."
+          fi
+          gh release upload repodata ./*.xml.gz Packages Packages.gz phux.asc phux.repo --clobber
+          gh release upload repodata repomd.xml repomd.xml.asc Release Release.gpg InRelease --clobber
+          gh release view repodata --json assets --jq '.assets[].name' | while read -r asset; do
+            [[ -f $asset ]] || gh release delete-asset repodata "$asset" --yes
+          done
+
+  # Skipped cleanly until the maintainer creates the AUR account and adds
+  # its key as AUR_SSH_PRIVATE_KEY.
+  aur:
+    name: AUR phux-bin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Write the PKGBUILD for the newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/dist" \
+            --pattern "phux-$tag-*-unknown-linux-gnu.tar.gz.sha256"
+          bash scripts/aur-pkgbuild.sh "$tag" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/aur"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aur-phux-bin
+          path: ${{ runner.temp }}/aur
+          include-hidden-files: true
+          retention-days: 7
+      - name: Push to aur.archlinux.org
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z $AUR_SSH_PRIVATE_KEY ]]; then
+            echo "AUR_SSH_PRIVATE_KEY is not set; not publishing phux-bin to the AUR"
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          # Published at https://aur.archlinux.org (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/phux-bin.git "$RUNNER_TEMP/phux-bin"
+          cp "$RUNNER_TEMP/aur/PKGBUILD" "$RUNNER_TEMP/aur/.SRCINFO" "$RUNNER_TEMP/phux-bin/"
+          cd "$RUNNER_TEMP/phux-bin"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "phux-bin is already at $TAG"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "phux-bin ${TAG#v}"
+          git push origin HEAD:master

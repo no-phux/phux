@@ -52,6 +52,7 @@ mod codec_props;
 mod command_payloads;
 mod commands;
 mod events;
+mod forward;
 mod frame_strategies;
 mod hello_growth;
 mod host_inventory;

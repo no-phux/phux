@@ -218,3 +218,28 @@ fn clear_attention_on_input_clears_once() {
         "unknown pane reports no transition"
     );
 }
+
+/// #2377: an auto-numbered window is named after what its pane runs and
+/// where, and follows the foreground; a user-given name stands.
+#[test]
+fn an_auto_numbered_window_is_named_after_its_foreground() {
+    let id = ResourceId::local(1);
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.cwd = Some("/srv/phux".to_owned());
+    slot.foreground = Some("zsh".to_owned());
+    let mut panes = HashMap::from([(id.clone(), slot)]);
+    let agents = HashMap::new();
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "zsh · phux"
+    );
+    panes.get_mut(&id).unwrap().foreground = Some("npm".to_owned());
+    assert_eq!(
+        display_window_name("1", Some(&id), &panes, &agents),
+        "npm · phux"
+    );
+    assert_eq!(
+        display_window_name("api", Some(&id), &panes, &agents),
+        "api"
+    );
+}

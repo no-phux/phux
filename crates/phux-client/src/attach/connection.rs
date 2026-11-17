@@ -8,6 +8,7 @@
 //! than a variant-for-variant conversion.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 pub use phux_client_runtime::session::{
     Answer, Dial, METADATA_WINDOW, NegotiatedBootstrap, Refusal, Reply,
@@ -42,8 +43,51 @@ pub struct Connection {
     session: Session,
 }
 
-fn default_client_name() -> String {
-    format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
+/// Product token the interactive client sends in `HELLO.client_name`.
+pub const TUI_CLIENT_PRODUCT: &str = "phux-tui";
+
+/// Product token a headless `phux` verb sends (`send-keys`, `paste`, `run`,
+/// and the other one-shot commands).
+pub const CLI_CLIENT_PRODUCT: &str = "phux-cli";
+
+/// Product token a connection opened by the MCP adapter sends.
+pub const MCP_CLIENT_PRODUCT: &str = "phux-mcp";
+
+// One process is one product. Headless verbs use the default below. The
+// interactive client passes [`TUI_CLIENT_PRODUCT`] on its attach connection.
+// The MCP adapter installs [`MCP_CLIENT_PRODUCT`] before it serves, because
+// its tools call [`Connection::connect`] inside this crate.
+static INSTALLED_CLIENT_NAME: Mutex<Option<String>> = Mutex::new(None);
+
+/// `{product}/{version}` for `HELLO.client_name`.
+///
+/// `product` is a token with no `/`. The version is this crate's package
+/// version, which tracks the phux release. Split on the last `/` to separate
+/// them; that is the same parse `phux-client/<version>` used.
+#[must_use]
+pub fn product_client_name(product: &str) -> String {
+    format!("{product}/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Use `name` as `HELLO.client_name` for later [`Connection::connect`] and
+/// [`Connection::connect_dial`] calls in this process. `None` restores
+/// [`CLI_CLIENT_PRODUCT`].
+///
+/// A name passed to [`Connection::connect_with_hello`] is left alone, so the
+/// interactive attach and the recorder keep the names they send.
+pub fn install_client_name(name: Option<String>) {
+    *INSTALLED_CLIENT_NAME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+}
+
+/// The `HELLO.client_name` [`Connection::connect`] and [`Connection::connect_dial`] send.
+pub(crate) fn default_client_name() -> String {
+    INSTALLED_CLIENT_NAME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(|| product_client_name(CLI_CLIENT_PRODUCT))
 }
 
 impl Connection {
@@ -80,20 +124,6 @@ impl Connection {
         Self::connect_dial(&Dial::Quic(dial.clone())).await
     }
 
-    /// Dial QUIC and negotiate with the supplied client profile; a plain
-    /// QUIC link also offers per-Terminal streams (docs/protocol.md#quic-stream-routing).
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_quic_with_hello(
-        dial: &QuicDial,
-        client_name: String,
-        client_caps: ClientCapabilities,
-    ) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(&Dial::Quic(dial.clone()), client_name, client_caps).await
-    }
-
     /// [`Self::connect_quic`] with a short incomplete-Terminal-frame deadline.
     ///
     /// # Errors
@@ -108,19 +138,6 @@ impl Connection {
         conn.session
             .set_terminal_frame_deadline_for_test(terminal_frame_deadline);
         Ok(conn)
-    }
-
-    /// Dial WebSocket and negotiate with the supplied client profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_ws_with_hello(
-        dial: &WsDial,
-        client_name: String,
-        client_caps: ClientCapabilities,
-    ) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(&Dial::Ws(dial.clone()), client_name, client_caps).await
     }
 
     /// Connect over `dial` and negotiate the control-plane profile.
@@ -410,5 +427,31 @@ impl Connection {
         frame: &FrameKind,
     ) -> Result<Reply<Answer<MoveResult>>, AttachError> {
         Ok(self.session.request_move(frame).await?)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, reason = "tests")]
+mod tests {
+    use super::{CLI_CLIENT_PRODUCT, MCP_CLIENT_PRODUCT, TUI_CLIENT_PRODUCT, product_client_name};
+
+    #[test]
+    fn product_client_names_are_name_version_and_distinct() {
+        let version = env!("CARGO_PKG_VERSION");
+        let names = [
+            product_client_name(TUI_CLIENT_PRODUCT),
+            product_client_name(CLI_CLIENT_PRODUCT),
+            product_client_name(MCP_CLIENT_PRODUCT),
+        ];
+        let mut products = std::collections::HashSet::new();
+        for name in &names {
+            let Some((product, ver)) = name.rsplit_once('/') else {
+                panic!("name/version: {name}");
+            };
+            assert_eq!(ver, version, "{name}");
+            assert!(!product.is_empty(), "{name}");
+            assert!(!product.contains('/'), "{name}");
+            assert!(products.insert(product.to_owned()), "duplicate {product}");
+        }
     }
 }

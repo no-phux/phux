@@ -4,9 +4,10 @@ use rune::tok;
 use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 
 use crate::desk::Desk;
+use crate::desk::surfaces::Surface;
+use crate::features::changes;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
-mod changes;
 mod documents;
 mod galaxy;
 mod hive;
@@ -17,6 +18,7 @@ mod machines;
 mod news;
 mod onboarding;
 mod overlay;
+pub(crate) use overlay::key_hint;
 mod pair;
 mod palette;
 mod panes;
@@ -25,6 +27,7 @@ mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
 mod pitch;
 mod pitlane;
+mod playground;
 mod popup;
 mod questions;
 mod reef;
@@ -45,8 +48,9 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
     "Ctrl+Shift+"
 };
 pub(crate) const SIDEBAR_W: f32 = 236.0;
-/// The band the macOS traffic lights sit in when they draw over content.
-const TITLEBAR_H: f32 = 38.0;
+/// The band the macOS traffic lights sit in when they draw over content,
+/// and the titlebar Rune frames on Linux where the compositor draws none.
+pub(crate) const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
 pub(crate) const PAD: f32 = 10.0;
 /// The gap around and between the terminal cards, and how round they are.
@@ -145,24 +149,29 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    desk.follow_appearance(cx.system_dark());
+    let dark = crate::theme::system_dark(cx.system_dark());
+    desk.follow_appearance(dark);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
-    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    cx.zoom(desk.ui_zoom());
+    let p = ink(dark, cx.accent(), desk.settings.theme);
     let p = Ink {
         host: crate::host_color::on(desk.machines.label(), p.sidebar),
         ..p
     };
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
-    cx.help_look(tooltip(&p, cx.system_dark()));
+    cx.help_look(tooltip(&p, dark));
     // `titlebar_inset` is the traffic lights' width; zero when the system
-    // draws its own titlebar.
-    let lights = cx.titlebar_inset();
+    // draws its own titlebar. On Linux, where Rune draws the window's own
+    // frame (GNOME), its caption buttons take the theme's ink and their room.
+    cx.caption_color(p.text);
+    let insets = cx.chrome_insets();
+    let lights = cx.titlebar_inset().max(insets.leading);
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
     if desk.bare.is_some() || desk.quick.is_some() {
-        return bare(desk, &p, lights, band, cx);
+        return bare(desk, &p, lights.max(insets.height), band, cx);
     }
     let main = row()
         .key("main")
@@ -174,7 +183,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .clip_rounded(0.0)
                 .motion(tok::motion::SNAPPY)
-                .child(sidebar::view(desk, &p, TITLEBAR_H)),
+                .child(sidebar::view(desk, &p, TITLEBAR_H, lights)),
         )
         .child(
             col()
@@ -182,7 +191,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .min_w(0.0)
                 .min_h(0.0)
-                .child(status::title_bar(desk, &p, lights))
+                .children(
+                    (!desk.settings.hover_toolbar)
+                        .then(|| status::title_bar(desk, &p, lights, insets.trailing)),
+                )
                 .child(
                     col()
                         .grow(1.0)
@@ -204,15 +216,15 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),
                         ),
-                ),
+                )
+                .children(status::hover_toolbar(desk, &p, lights, insets.trailing)),
         );
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
     // answers to the modal and keeps the terminal asked for.
     let root = chrome_ground(el().w_full().h_full(), desk.glass(), p.sidebar)
         .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
-        .child(main)
-        .child(crate::host_color::edge(desk.machines.label(), p.sidebar));
+        .child(main);
     floating(root, desk, &p, band, cx)
 }
 
@@ -227,13 +239,8 @@ fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
         return root.fill(tint);
     }
     let alpha = 1.0 - glass * (1.0 - GLASS_TINT_FLOOR);
-    root.system_material(rune::SystemMaterial::Glass).child(
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(tint.alpha(alpha))
-            .inert(),
-    )
+    root.system_material(rune::SystemMaterial::Glass)
+        .child(el().cover().fill(tint.alpha(alpha)).inert())
 }
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every
@@ -258,65 +265,43 @@ fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
 
 /// What floats over the window: banners, cards, sheets and menus.
 fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
-    root.children(status::banner(desk, p))
-        .children(updates::card(desk, p, band))
-        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
-        .children(playground(desk, p, cx))
-        .children(desk.settings_open.then(|| settings::view(desk, p)))
-        .children(machines::sheet(desk, p))
-        .children(desk.news.open.then(|| news::view(desk, p)))
-        .children(desk.changes.open.then(|| changes::view(desk, p)))
-        .children(popup::view(desk, p))
-        .children(tabs::rename_sheet(desk, p))
-        .children(desk.palette_open.then(|| palette::view(desk, p, 96.0)))
-        .children(
-            desk.pointer
-                .menu
-                .map(|at| palette::context_menu(desk, at, p)),
-        )
+    let root = root
+        .children(status::banner(desk, p))
+        .children(updates::card(desk, p, band));
+    floating_surfaces(root, desk, p, band, cx)
 }
 
-/// A playground view: whether it is open, how it draws, how it closes.
-type View = (bool, fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
-
-/// The open playground view, if any, with the way out every one of them
-/// shows. A new view is one more row here.
-fn playground(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
-    let views: [View; 6] = [
-        (desk.galaxy.open, galaxy::view, Desk::close_galaxy),
-        (desk.reef.open, reef::view, Desk::close_reef),
-        (desk.pitch.open, pitch::view, Desk::close_pitch),
-        (desk.kitchen.open, kitchen::view, Desk::close_kitchen),
-        (desk.pitlane.open, pitlane::view, Desk::close_pitlane),
-        (desk.hive.open, hive::view, Desk::close_hive),
-    ];
-    let (_, view, close) = views.into_iter().find(|v| v.0)?;
-    // A child of the view: the view is modal, so anything beside it is inert.
-    Some(view(desk, p, cx).child(esc_chip(p, close)))
+/// Paint exactly the ordering that determines keyboard, IME and paste
+/// ownership. The phone places its keyboard after these layers.
+fn floating_surfaces(mut root: El, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> El {
+    for surface in desk.surfaces() {
+        root = root.children(surface_view(surface, desk, p, top, cx));
+    }
+    root
 }
 
-/// A frosted key cap, top right in the titlebar band clear of every view's
-/// own chrome: `esc` closes this. Escape lets go of a pick first; a press
-/// here always closes.
-fn esc_chip(p: &Ink, close: fn(&mut Desk)) -> El {
-    pressable("playground-esc", p)
-        .pin(None, Some(9.0), Some(16.0), None)
-        .h(24.0)
-        .pl(4.0)
-        .pr(9.0)
-        .gap(6.0)
-        .items_center()
-        .radius(8.0)
-        .continuous_corners()
-        .backdrop_blur(FROST)
-        .fill(p.raised.alpha(0.72))
-        .border(1.0, p.text.alpha(0.14))
-        .shadow(4.0, 14.0, p.shade)
-        .hover(p.text.alpha(0.08))
-        .label("Close, Escape")
-        .on_press(close)
-        .child(keycap("esc", p))
-        .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
+fn surface_view(surface: Surface, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> Option<El> {
+    match surface {
+        Surface::PhoneNavigation => phone::navigation::view(desk, p, top),
+        Surface::Inbox => Some(inbox::view(desk, p)),
+        Surface::Playground(_) => playground::open(desk, p, cx),
+        // A phone's Settings is already painted in its stage, not a scrim.
+        Surface::Settings => desk.phone.is_none().then(|| settings::view(desk, p)),
+        Surface::Machines => machines::sheet(desk, p),
+        Surface::News => Some(news::view(desk, p)),
+        Surface::Changes => Some(changes::view(desk, p)),
+        Surface::Popup => popup::view(desk, p),
+        Surface::Rename => tabs::rename_sheet(desk, p),
+        Surface::Palette => Some(palette::view(
+            desk,
+            p,
+            if desk.phone.is_some() { 8.0 } else { 96.0 },
+        )),
+        Surface::ContextMenu => desk
+            .pointer
+            .menu
+            .map(|at| palette::context_menu(desk, at, p)),
+    }
 }
 
 /// The bare window: the pane edge to edge under a band the traffic lights
@@ -337,12 +322,7 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p));
     let main = col().key("main").w_full().h_full().child(band).child(stage);
-    let root = el()
-        .w_full()
-        .h_full()
-        .fill(p.bg)
-        .child(main)
-        .child(crate::host_color::edge(desk.machines.label(), p.bg));
+    let root = el().w_full().h_full().fill(p.bg).child(main);
     floating(root, desk, p, band_h, cx)
 }
 
@@ -412,9 +392,7 @@ impl Sheet {
             .child(el().w_full().px(14.0).py(10.0).child(foot));
         col()
             .key(format!("{}-scrim", self.key))
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
+            .cover()
             .py(MARGIN)
             .px(MARGIN)
             .items_center()
@@ -449,6 +427,17 @@ pub(crate) fn icon_press(
                 .a11y_hidden(),
         )
         .hover_group()
+}
+
+/// Covering the whole of its parent, over what came before it.
+pub(crate) trait Cover {
+    fn cover(self) -> Self;
+}
+
+impl Cover for El {
+    fn cover(self) -> El {
+        self.absolute(0.0, 0.0).w_full().h_full()
+    }
 }
 
 /// Something to press: a wash under the pointer that deepens while held, and
@@ -505,13 +494,19 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+pub use test_support::{element, offscreen};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
 
     #[test]
     fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
         let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
         rt.frame(0.0);

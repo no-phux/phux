@@ -9,6 +9,14 @@ use super::{Desk, NoticeKind};
 use crate::grid;
 use crate::theme::{self, Theme};
 
+/// The interface sizes ⌘⌥+ and ⌘⌥− step through, in percent.
+pub const INTERFACE_SIZES: [u16; 8] = [80, 90, 100, 110, 125, 150, 175, 200];
+
+/// A saved or configured interface size, held to 80–200%; 100% unset.
+pub fn interface_size(size: Option<u16>) -> u16 {
+    size.map_or(100, |s| s.clamp(INTERFACE_SIZES[0], INTERFACE_SIZES[7]))
+}
+
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -72,10 +80,14 @@ pub struct Settings {
     pub notifications: bool,
     pub option_as_meta: bool,
     pub copy_on_select: bool,
+    /// The wheel over a full-screen program sends arrows (DEC 1007 permitting).
+    pub wheel_arrows: bool,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: bool,
     /// How much Liquid Glass shows through the window chrome, 0 to 100.
     pub glass: u8,
+    /// The toolbar hides until the pointer reaches the window's top edge.
+    pub hover_toolbar: bool,
 }
 
 impl Settings {
@@ -90,8 +102,10 @@ impl Settings {
             notifications: prefs.get("notifications").unwrap_or(true),
             option_as_meta: prefs.get("option_as_meta").unwrap_or(false),
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
+            wheel_arrows: prefs.get("wheel_arrows").unwrap_or(true),
             confirm_close: prefs.get("confirm_close").unwrap_or(false),
             glass: prefs.get::<u8>("glass").unwrap_or(0).min(100),
+            hover_toolbar: prefs.get("hover_toolbar").unwrap_or(false),
         }
     }
 
@@ -105,8 +119,10 @@ impl Settings {
             notifications: file.notifications.unwrap_or(self.notifications),
             option_as_meta: file.option_as_meta.unwrap_or(self.option_as_meta),
             copy_on_select: file.copy_on_select.unwrap_or(self.copy_on_select),
+            wheel_arrows: file.wheel_arrows.unwrap_or(self.wheel_arrows),
             confirm_close: file.confirm_close.unwrap_or(self.confirm_close),
             glass: self.glass,
+            hover_toolbar: self.hover_toolbar,
         }
     }
 }
@@ -154,10 +170,12 @@ impl Desk {
             RuneCfg {
                 theme: Some(settings.theme.map_or(String::new(), |t| t.id.to_owned())),
                 font_size: Some(self.font_size),
+                interface_size: Some(self.interface_size),
                 font_family: Some(self.font_family.clone()),
                 notifications: Some(settings.notifications),
                 option_as_meta: Some(settings.option_as_meta),
                 copy_on_select: Some(settings.copy_on_select),
+                wheel_arrows: Some(settings.wheel_arrows),
                 confirm_close: Some(settings.confirm_close),
                 ..RuneCfg::default()
             }
@@ -166,13 +184,34 @@ impl Desk {
         self.say(NoticeKind::Info, "Copied settings as a [rune] table.");
     }
 
+    /// Set the interface size; `None` is 100%. Like `zoom`, a file's
+    /// `interface-size` is only where a window starts.
+    pub fn set_interface_size(&mut self, size: Option<u16>) {
+        self.interface_size = interface_size(size);
+        let _ = self.prefs.set("interface_size", &self.interface_size);
+    }
+
+    /// Move `steps` along `INTERFACE_SIZES` from the current size.
+    pub fn step_interface_size(&mut self, steps: i32) {
+        let mut size = self.interface_size;
+        for _ in 0..steps.unsigned_abs() {
+            let next = if steps > 0 {
+                INTERFACE_SIZES.iter().find(|&&s| s > size)
+            } else {
+                INTERFACE_SIZES.iter().rev().find(|&&s| s < size)
+            };
+            size = next.copied().unwrap_or(size);
+        }
+        self.set_interface_size(Some(size));
+    }
+
     // A file's `font-size` is where each window starts; zooming still works.
     pub fn zoom(&mut self, size: Option<f32>) {
         self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
             s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
         });
         let _ = self.prefs.set("font_size", &self.font_size);
-        self.fitted.clear();
+        self.connection.fitted.clear();
         self.fit();
     }
 
@@ -351,7 +390,7 @@ impl Desk {
     }
 
     fn install_terminal_theme(&self) {
-        if let Some(client) = &self.client {
+        if let Some(client) = &self.connection.client {
             let dark = self.system_dark.get().unwrap_or(true);
             client.set_terminal_theme(
                 self.settings
@@ -415,6 +454,13 @@ impl Desk {
         self.apply_theme();
     }
 
+    pub fn toggle_hover_toolbar(&mut self) {
+        self.settings.hover_toolbar = !self.settings.hover_toolbar;
+        let _ = self
+            .prefs
+            .set("hover_toolbar", &self.settings.hover_toolbar);
+    }
+
     pub fn toggle_notifications(&mut self) {
         if self.file_managed(self.file.notifications.is_some()) {
             return;
@@ -443,6 +489,14 @@ impl Desk {
         let _ = self
             .prefs
             .set("copy_on_select", &self.settings.copy_on_select);
+    }
+
+    pub fn toggle_wheel_arrows(&mut self) {
+        if self.file_managed(self.file.wheel_arrows.is_some()) {
+            return;
+        }
+        self.settings.wheel_arrows = !self.settings.wheel_arrows;
+        let _ = self.prefs.set("wheel_arrows", &self.settings.wheel_arrows);
     }
 
     pub fn toggle_confirm_close(&mut self) {
@@ -482,23 +536,6 @@ impl Desk {
 fn starts_search(event: &KeyEvent) -> bool {
     let chord = event.mods.cmd || event.mods.ctrl || event.mods.alt || event.mods.logo;
     matches!(&event.key, Key::Text(t) if !chord && !t.chars().any(char::is_control))
-}
-
-#[cfg(test)]
-impl Desk {
-    /// An isolated window for UI interaction/render tests, including actions
-    /// that persist preferences. Never let an acceptance render write real prefs.
-    pub(crate) fn settings_test_fixture() -> Self {
-        let resolved = crate::launch::Resolved::offline("settings layout");
-        let mut desk = Self::new(&resolved);
-        desk.prefs = Prefs::memory();
-        desk.settings = Settings::load(&desk.prefs);
-        desk.updater = super::updates::Updater::new(&desk.prefs, &resolved);
-        desk.font_size = grid::DEFAULT_FONT_SIZE;
-        desk.font_family = String::new();
-        desk.settings_open = true;
-        desk
-    }
 }
 
 #[cfg(test)]

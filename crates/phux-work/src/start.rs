@@ -7,7 +7,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::error::Error;
-use crate::id::{Alias, ObjectiveState, OpaqueId, OperationId};
+use crate::id::{Alias, ObjectiveState, OpaqueId, OperationId, RunState};
 use crate::store::{
     Objective, Store, bump, digest, load_alias_conn, load_checked, project_state, timestamp,
     write_objective,
@@ -92,7 +92,7 @@ pub struct StartApplied {
     /// Per-task attempt number, starting at 1.
     pub ordinal: u64,
     /// `running` or `queued`.
-    pub run_state: String,
+    pub run_state: RunState,
     /// `started` or `queued`.
     pub disposition: String,
     /// Set when `disposition` is `queued`.
@@ -115,7 +115,7 @@ pub struct OpenRun {
     /// Run id.
     pub run_id: OpaqueId,
     /// `running` or `queued`.
-    pub run_state: String,
+    pub run_state: RunState,
     /// Per-task attempt number.
     pub ordinal: u64,
     /// Harness kind.
@@ -174,9 +174,9 @@ impl Store {
             &request.worktree_path,
             &request.branch,
         )?;
-        let running = count_runs(&self.conn, "running")?;
+        let running = count_runs(&self.conn, RunState::Running)?;
         if running >= u64::from(request.max_agents) {
-            let queued = count_runs(&self.conn, "queued")?;
+            let queued = count_runs(&self.conn, RunState::Queued)?;
             return Ok(StartPlan::Queue {
                 position: queued.saturating_add(1),
             });
@@ -233,7 +233,7 @@ impl Store {
         }
         let current = load_checked(&tx, &request.alias, request.expected_revision)?;
         refuse_unstartable(&tx, &current, &request.worktree_path, &request.branch)?;
-        let running = count_runs(&tx, "running")?;
+        let running = count_runs(&tx, RunState::Running)?;
         let launching = request.launch.is_some();
         let limit = u64::from(request.max_agents);
         if launching && running >= limit {
@@ -242,7 +242,11 @@ impl Store {
         let now = timestamp();
         let ordinal = next_ordinal(&tx, current.id)?;
         let run_id = OpaqueId::generate()?;
-        let run_state = if launching { "running" } else { "queued" };
+        let run_state = if launching {
+            RunState::Running
+        } else {
+            RunState::Queued
+        };
         let disposition = if launching { "started" } else { "queued" };
         insert_run(
             &tx,
@@ -272,7 +276,7 @@ impl Store {
         let queue_position = if launching {
             None
         } else {
-            Some(count_runs(&tx, "queued")?)
+            Some(count_runs(&tx, RunState::Queued)?)
         };
         let snapshot = StartSnapshot {
             objective: updated,
@@ -280,7 +284,7 @@ impl Store {
             model: request.model,
             run_id,
             ordinal,
-            run_state: run_state.to_owned(),
+            run_state,
             disposition: disposition.to_owned(),
             queue_position,
             binding: request.launch,
@@ -397,7 +401,7 @@ impl Store {
         )? {
             return Err(Error::WorktreeBound { path: taken, alias });
         }
-        let running = count_runs(&tx, "running")?;
+        let running = count_runs(&tx, RunState::Running)?;
         let limit = u64::from(request.max_agents);
         if running >= limit {
             return Err(Error::AtCapacity { running, limit });
@@ -426,7 +430,7 @@ impl Store {
             model,
             run_id,
             ordinal,
-            run_state: "running".to_owned(),
+            run_state: RunState::Running,
             disposition: "started".to_owned(),
             queue_position: None,
             binding: Some(request.launch),
@@ -467,7 +471,7 @@ struct StartSnapshot {
     model: String,
     run_id: OpaqueId,
     ordinal: u64,
-    run_state: String,
+    run_state: RunState,
     disposition: String,
     queue_position: Option<u64>,
     binding: Option<StartBinding>,
@@ -605,10 +609,10 @@ fn has_live_run(conn: &Connection, id: OpaqueId) -> Result<bool, Error> {
     Ok(found.is_some())
 }
 
-fn count_runs(conn: &Connection, state: &str) -> Result<u64, Error> {
+fn count_runs(conn: &Connection, state: RunState) -> Result<u64, Error> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM run WHERE state = ?1 AND ended_at IS NULL",
-        params![state],
+        params![state.as_str()],
         |row| row.get(0),
     )?;
     u64::try_from(count).map_err(|_| Error::Corrupt("run count".to_owned()))
@@ -661,7 +665,7 @@ fn insert_run(
     objective_id: OpaqueId,
     ordinal: u64,
     agent_kind: &str,
-    state: &str,
+    state: RunState,
     now: &str,
 ) -> Result<(), Error> {
     let ordinal = i64::try_from(ordinal).map_err(|_| Error::Corrupt("ordinal".to_owned()))?;
@@ -673,7 +677,7 @@ fn insert_run(
             objective_id.as_slice(),
             ordinal,
             agent_kind,
-            state,
+            state.as_str(),
             now
         ],
     )?;
@@ -736,6 +740,8 @@ fn map_open_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpenRun> {
     let state: String = row.get(3)?;
     let run_id: Vec<u8> = row.get(4)?;
     let run_state: String = row.get(5)?;
+    let run_state = RunState::parse(&run_state)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
     let ordinal: i64 = row.get(6)?;
     let agent_kind: String = row.get(7)?;
     let model: String = row.get(8)?;
@@ -794,325 +800,4 @@ fn insert_binding(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{LaunchQueued, StartBinding, StartPlan, StartRequest};
-    use crate::error::Error;
-    use crate::id::{Alias, ObjectiveState, OperationId};
-    use crate::store::{AddObjective, RevisionEdit, StateEdit, Store};
-
-    fn open() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Store::open(&dir.path().join("work-v1.sqlite")).expect("open");
-        (dir, store)
-    }
-
-    fn add(repo: &str, title: &str) -> AddObjective {
-        AddObjective {
-            repo: repo.to_owned(),
-            title: title.to_owned(),
-            description: String::new(),
-            operation_id: OperationId::generate().expect("id"),
-            actor: "tester".to_owned(),
-        }
-    }
-
-    fn start_req(alias: Alias, op: OperationId, launch: bool) -> StartRequest {
-        let (worktree_path, branch) = paths_for(&alias);
-        StartRequest {
-            launch: launch.then(|| binding_for(&alias, &worktree_path, &branch)),
-            alias,
-            agent_kind: "fake".to_owned(),
-            model: String::new(),
-            max_agents: 1,
-            expected_revision: 1,
-            operation_id: op,
-            actor: "tester".to_owned(),
-            worktree_path,
-            branch,
-            repo_root: "/tmp/repo".to_owned(),
-        }
-    }
-
-    fn paths_for(alias: &Alias) -> (String, String) {
-        (
-            format!("/tmp/{}", alias.display().replace('/', "-")),
-            format!("mission/{}", alias.number),
-        )
-    }
-
-    fn alias_of(alias: &Alias) -> String {
-        alias.display().replace('/', "-")
-    }
-
-    fn binding_for(alias: &Alias, worktree_path: &str, branch: &str) -> StartBinding {
-        StartBinding {
-            session_key: "sessionkey".to_owned(),
-            session: format!("{}-task", alias.number),
-            terminal_id: "7".to_owned(),
-            worktree_path: worktree_path.to_owned(),
-            branch: branch.to_owned(),
-            tab_title: format!("#{} Title", alias.number),
-        }
-    }
-
-    fn admit(store: &mut Store, alias: Alias, op: OperationId) -> super::StartApplied {
-        store
-            .commit_start(start_req(alias, op, true))
-            .expect("start")
-    }
-
-    #[test]
-    fn start_admits_one_runner_then_queues_in_order() {
-        let (_dir, mut store) = open();
-        let first = store.add(add("phux", "Billing page")).expect("add");
-        let second = store.add(add("phux", "Other")).expect("add");
-        let op = OperationId::generate().expect("id");
-        let admitted = admit(&mut store, first.objective.alias.clone(), op);
-        assert!(!admitted.idempotent_replay);
-        assert_eq!(admitted.disposition, "started");
-        assert_eq!(admitted.run_state, "running");
-        assert_eq!(admitted.objective.state, ObjectiveState::Working);
-        assert_eq!(admitted.objective.revision, 2);
-        assert!(admitted.binding.is_some());
-        let replay = store
-            .replay_start(&start_req(first.objective.alias, op, true))
-            .expect("replay");
-        let replay = replay.expect("stored");
-        assert!(replay.idempotent_replay);
-        assert_eq!(replay.run_id, admitted.run_id);
-        assert_eq!(replay.binding, admitted.binding);
-
-        let mut queued_req = start_req(
-            second.objective.alias.clone(),
-            OperationId::generate().expect("id"),
-            false,
-        );
-        queued_req.expected_revision = second.objective.revision;
-        assert_eq!(
-            store.plan_start(&queued_req).expect("plan"),
-            StartPlan::Queue { position: 1 }
-        );
-        let queued = store.commit_start(queued_req).expect("queue");
-        assert_eq!(queued.disposition, "queued");
-        assert_eq!(queued.queue_position, Some(1));
-        assert_eq!(queued.objective.state, ObjectiveState::Queued);
-        assert!(queued.binding.is_none());
-
-        let third = store.add(add("phux", "Third")).expect("add");
-        let mut later = start_req(
-            third.objective.alias,
-            OperationId::generate().expect("id"),
-            false,
-        );
-        later.expected_revision = third.objective.revision;
-        let later = store.commit_start(later).expect("queue 2");
-        assert_eq!(later.queue_position, Some(2));
-    }
-
-    #[test]
-    fn start_refuses_a_stale_revision_a_second_run_and_a_bound_worktree() {
-        let (_dir, mut store) = open();
-        let added = store.add(add("phux", "Billing")).expect("add");
-        let alias = added.objective.alias;
-        let mut stale = start_req(alias.clone(), OperationId::generate().expect("id"), false);
-        stale.expected_revision = 9;
-        assert!(matches!(
-            store.plan_start(&stale),
-            Err(Error::RevisionConflict { expected: 9, .. })
-        ));
-        admit(
-            &mut store,
-            alias.clone(),
-            OperationId::generate().expect("id"),
-        );
-        let mut again = start_req(alias.clone(), OperationId::generate().expect("id"), true);
-        again.expected_revision = 2;
-        let again = store.commit_start(again).expect_err("second run");
-        assert!(matches!(again, Error::AlreadyStarted { .. }));
-        assert_eq!(
-            again.to_string(),
-            format!("{} is already running", alias.display())
-        );
-
-        let other = store.add(add("phux", "Taken")).expect("add");
-        let mut clash = start_req(
-            other.objective.alias,
-            OperationId::generate().expect("id"),
-            false,
-        );
-        clash.expected_revision = 1;
-        clash.worktree_path = format!("/tmp/{}", alias_of(&alias));
-        clash.branch = "somewhere-else".to_owned();
-        assert!(matches!(
-            store.plan_start(&clash),
-            Err(Error::WorktreeBound { .. })
-        ));
-    }
-
-    #[test]
-    fn start_refuses_an_archived_task_and_a_launch_past_the_cap() {
-        let (_dir, mut store) = open();
-        let added = store.add(add("phux", "Old")).expect("add");
-        let alias = added.objective.alias;
-        store
-            .archive(RevisionEdit {
-                alias: alias.clone(),
-                expected_revision: 1,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "tester".to_owned(),
-            })
-            .expect("archive");
-        let mut archived = start_req(alias.clone(), OperationId::generate().expect("id"), false);
-        archived.expected_revision = 2;
-        let archived = store.plan_start(&archived).expect_err("archived");
-        assert!(matches!(archived, Error::NotStartable { .. }));
-        assert_eq!(
-            archived.to_string(),
-            format!("{} is archived; restore it to start it", alias.display())
-        );
-
-        let live = store.add(add("phux", "Live")).expect("add");
-        admit(
-            &mut store,
-            live.objective.alias,
-            OperationId::generate().expect("id"),
-        );
-        let extra = store.add(add("phux", "Extra")).expect("add");
-        let mut over = start_req(
-            extra.objective.alias,
-            OperationId::generate().expect("id"),
-            true,
-        );
-        over.expected_revision = 1;
-        over.worktree_path = "/tmp/extra-worktree".to_owned();
-        over.branch = "mission/extra".to_owned();
-        if let Some(binding) = over.launch.as_mut() {
-            binding.worktree_path.clone_from(&over.worktree_path);
-            binding.branch.clone_from(&over.branch);
-        }
-        let over = store.commit_start(over).expect_err("cap");
-        assert!(matches!(
-            over,
-            Error::AtCapacity {
-                running: 1,
-                limit: 1
-            }
-        ));
-        assert_eq!(over.to_string(), "no agent slot free (1 of 1 running)");
-    }
-
-    #[test]
-    fn a_replayed_start_ignores_a_different_terminal_id() {
-        let (_dir, mut store) = open();
-        let added = store.add(add("phux", "Billing")).expect("add");
-        let op = OperationId::generate().expect("id");
-        let first = admit(&mut store, added.objective.alias.clone(), op);
-        let mut retry = start_req(added.objective.alias, op, true);
-        retry.expected_revision = 1;
-        retry.launch.as_mut().expect("binding").terminal_id = "99".to_owned();
-        let again = store.commit_start(retry).expect("replay");
-        assert!(again.idempotent_replay);
-        assert_eq!(
-            again.binding.as_ref().expect("binding").terminal_id,
-            first.binding.expect("binding").terminal_id
-        );
-    }
-
-    #[test]
-    fn launch_queued_admits_one_runner_and_a_replay_does_not_write() {
-        let (_dir, mut store) = open();
-        let first = store.add(add("phux", "Billing")).expect("add");
-        let second = store.add(add("phux", "Next")).expect("add");
-        admit(
-            &mut store,
-            first.objective.alias.clone(),
-            OperationId::generate().expect("id"),
-        );
-        let mut queued = start_req(
-            second.objective.alias.clone(),
-            OperationId::generate().expect("id"),
-            false,
-        );
-        queued.expected_revision = second.objective.revision;
-        let queued = store.commit_start(queued).expect("queue");
-        let blocked = store.launch_queued(LaunchQueued {
-            alias: second.objective.alias.clone(),
-            expected_revision: queued.objective.revision,
-            operation_id: OperationId::derive_bytes(b"promote"),
-            actor: "keeper".to_owned(),
-            max_agents: 1,
-            launch: binding_for(&second.objective.alias, "/tmp/phux-2", "mission/2"),
-        });
-        assert!(matches!(blocked, Err(Error::AtCapacity { .. })));
-        assert_eq!(
-            store.show(&second.objective.alias).expect("show").state,
-            ObjectiveState::Queued
-        );
-
-        let failed = store
-            .record_state(StateEdit {
-                alias: first.objective.alias.clone(),
-                state: ObjectiveState::Failed,
-                expected_revision: store.show(&first.objective.alias).expect("show").revision,
-                operation_id: OperationId::generate().expect("id"),
-                actor: "keeper".to_owned(),
-                event_kind: Some("failed".to_owned()),
-            })
-            .expect("fail");
-        assert!(failed.objective.state.frees_slot());
-        let open = store.open_runs().expect("open");
-        assert!(open.iter().all(|run| run.alias != first.objective.alias));
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].run_state, "queued");
-
-        let operation_id = OperationId::derive_bytes(b"promote-after");
-        let expected = queued.objective.revision;
-        let launch = binding_for(&second.objective.alias, "/tmp/phux-2", "mission/2");
-        let admitted = store
-            .launch_queued(LaunchQueued {
-                alias: second.objective.alias.clone(),
-                expected_revision: expected,
-                operation_id,
-                actor: "keeper".to_owned(),
-                max_agents: 1,
-                launch: launch.clone(),
-            })
-            .expect("launch");
-        assert!(!admitted.idempotent_replay);
-        assert_eq!(admitted.objective.state, ObjectiveState::Working);
-        assert_eq!(admitted.run_state, "running");
-        assert_eq!(
-            admitted.binding.as_ref().expect("binding").terminal_id,
-            launch.terminal_id
-        );
-        let kinds = store.event_kinds().expect("events");
-        assert_eq!(
-            kinds
-                .iter()
-                .filter(|kind| kind.as_str() == "launched")
-                .count(),
-            1
-        );
-        let replay = store.replay_launch(&operation_id).expect("replay");
-        let replay = replay.expect("stored");
-        assert!(replay.idempotent_replay);
-        assert_eq!(store.event_kinds().expect("events"), kinds);
-        let mut other = launch.clone();
-        other.terminal_id = "99".to_owned();
-        let again = store
-            .launch_queued(LaunchQueued {
-                alias: second.objective.alias,
-                expected_revision: expected,
-                operation_id,
-                actor: "keeper".to_owned(),
-                max_agents: 1,
-                launch: other,
-            })
-            .expect("replay write");
-        assert!(again.idempotent_replay);
-        assert_eq!(
-            again.binding.expect("binding").terminal_id,
-            launch.terminal_id
-        );
-    }
-}
+mod tests;

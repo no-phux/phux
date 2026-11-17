@@ -3,7 +3,6 @@
 //! OSC 1337 escapes, while a control client advertising all of them receives
 //! each verbatim (proving the fixture emitted them).
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet};
 use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 use phux_server::LaunchCommand as CommandBuilder;
@@ -64,17 +63,7 @@ async fn attach_with_caps(
     caps: ClientCapabilities,
 ) -> UnixStream {
     let mut stream = wait_for_raw_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: client_name.to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        },
-    )
-    .await;
+    send_frame(&mut stream, &phux_server_testkit::hello(client_name, caps)).await;
     let (_, hello_ok) = recv_typed(&mut stream).await;
     assert!(
         matches!(hello_ok, FrameKind::HelloOk { .. }),

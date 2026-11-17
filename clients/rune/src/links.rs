@@ -89,6 +89,43 @@ fn runs_on(frame: &GridFrame, row: u16) -> bool {
 
 /// A URL typed into the output, found in the logical line around the cell.
 fn written(frame: &GridFrame, col: u16, row: u16) -> Option<Link> {
+    find(&logical_line(frame, row), row, col)
+}
+
+/// The word under the cell, across soft wraps, without the quotes, brackets
+/// and sentence punctuation around it: a candidate file path, as the `url`.
+pub fn word_at(frame: &GridFrame, col: u16, row: u16) -> Option<Link> {
+    let cells = logical_line(frame, row);
+    let at = cells
+        .iter()
+        .position(|c| c.1 == row && c.2 == col && !c.0.is_whitespace())?;
+    let start = at
+        - cells[..at]
+            .iter()
+            .rev()
+            .take_while(|c| !c.0.is_whitespace())
+            .count();
+    let end = at
+        + cells[at..]
+            .iter()
+            .take_while(|c| !c.0.is_whitespace())
+            .count();
+    let wrap = |c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>');
+    let word = &cells[start..end];
+    let first = word.iter().position(|c| !wrap(c.0))?;
+    let last = word
+        .iter()
+        .rposition(|c| !wrap(c.0) && !matches!(c.0, '.' | ',' | ';' | ':'))?;
+    let word = &word[first..=last];
+    word.iter().any(|c| c.1 == row && c.2 == col).then(|| Link {
+        url: word.iter().map(|c| c.0).collect(),
+        spans: spans(word),
+    })
+}
+
+/// The characters of the line `row` belongs to, as (character, row, column),
+/// following soft wraps up to [`WRAP_ROWS`] either side.
+fn logical_line(frame: &GridFrame, row: u16) -> Vec<(char, u16, u16)> {
     let mut top = row;
     while top > 0 && row - top < WRAP_ROWS && runs_on(frame, top - 1) {
         top -= 1;
@@ -115,7 +152,7 @@ fn written(frame: &GridFrame, col: u16, row: u16) -> Option<Link> {
             }
         }
     }
-    find(&cells, row, col)
+    cells
 }
 
 fn url_char(c: char) -> bool {
@@ -363,6 +400,20 @@ mod tests {
         assert_eq!(at(&f, 2, 0), None);
         let unsafe_link = frame(&["run"], 5, Some(("javascript:x", 0..3)));
         assert_eq!(at(&unsafe_link, 1, 0), None);
+    }
+
+    #[test]
+    fn a_wrapped_path_is_one_word_without_its_punctuation() {
+        let f = frame(
+            &["error at (src/very/lo", "ng/file.rs:120:7). next"],
+            21,
+            None,
+        );
+        let link = word_at(&f, 2, 1).expect("a word");
+        assert_eq!(link.url, "src/very/long/file.rs:120:7");
+        assert_eq!(link.spans, vec![(0, 10, 21), (1, 0, 16)]);
+        assert_eq!(word_at(&f, 6, 0).expect("a word").url, "at");
+        assert_eq!(word_at(&f, 5, 0), None, "a space");
     }
 
     #[test]

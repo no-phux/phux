@@ -1,9 +1,9 @@
 //! Explicit-view requests reuse the default-view operation implementation.
 
 use super::{
-    BoundedSelectionText, Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome,
-    Query, ReplicaInfo, ResourceId, Scroll, SearchMatch, SearchResults, SelectionGestureEvent,
-    SelectionGestureResult, Sender, TextRegion, ViewPresentation,
+    Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome, Query, ReplicaInfo,
+    ResourceId, Scroll, SearchMatch, SearchResults, SelectionGestureEvent, SelectionGestureResult,
+    Sender,
 };
 use crate::ViewId;
 
@@ -69,26 +69,6 @@ impl EngineHandle {
     /// Shared replica facts with this view's unread-history count.
     pub fn view_replica_info(&self, view: ViewId) -> Result<ReplicaInfo, EngineError> {
         self.request_view(view, Query::ReplicaInfo)?
-    }
-
-    /// This view's replica facts and current frame from one owner turn, so
-    /// they agree: a deferred projection is caught up first, and the frame
-    /// is marked read as [`crate::publication::TerminalPublication::acquire`]
-    /// marks it. A painter validating every draw needs this one round trip
-    /// instead of [`Self::view_replica_info`] plus an acquire that may block
-    /// on a second, catch-up, turn.
-    pub fn present_view(&self, view: ViewId) -> Result<ViewPresentation, EngineError> {
-        self.request_view(view, Query::Present)?
-    }
-
-    /// Add predictive text to this view only.
-    pub fn predict_view_text(&self, view: ViewId, text: String) -> Result<bool, EngineError> {
-        self.request_view(view, move |id, reply| Query::PredictText(id, text, reply))?
-    }
-
-    /// Remove predictive text from this view only.
-    pub fn clear_view_predictions(&self, view: ViewId) -> Result<bool, EngineError> {
-        self.request_view(view, Query::ClearPredictions)?
     }
 
     /// Track a coordinate in this view. Handles cannot cross view boundaries.
@@ -193,19 +173,5 @@ impl EngineHandle {
     /// selection, when there is nothing to select.
     pub fn select_all_view(&self, view: ViewId) -> Result<bool, EngineError> {
         self.request_view(view, Query::SelectAll)?
-    }
-
-    /// Format one whole region as plain text, refusing (never truncating)
-    /// output over `max_bytes`. The region is bounded by the loaded history
-    /// budget; it neither changes nor needs this view's selection.
-    pub fn view_region_text_bounded(
-        &self,
-        view: ViewId,
-        region: TextRegion,
-        max_bytes: usize,
-    ) -> Result<BoundedSelectionText, EngineError> {
-        self.request_view(view, move |id, reply| {
-            Query::RegionText(id, region, max_bytes, reply)
-        })?
     }
 }

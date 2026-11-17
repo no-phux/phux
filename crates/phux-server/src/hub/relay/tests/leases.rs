@@ -41,13 +41,11 @@ fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
         (Some(ResourceId::local(9)), scoped_gap, None),
         (None, link_gap, None),
     ] {
-        session
-            .handle_inbound(&encode(&FrameKind::Event {
-                terminal,
-                event,
-                stamp,
-            }))
-            .expect("valid satellite frame");
+        session.feed(&FrameKind::Event {
+            terminal,
+            event,
+            stamp,
+        });
     }
     let delivered: Vec<_> = std::iter::from_fn(|| registry_rx.try_recv().ok())
         .map(|out| match out {
@@ -97,19 +95,17 @@ fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
         );
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         session.set_journal(Some(journal.clone()));
-        session
-            .handle_inbound(&encode(&FrameKind::Event {
-                terminal: Some(ResourceId::local(9)),
-                event: AgentEvent::TerminalControl {
-                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-                    exit_status: None,
-                    input_holder: None,
-                    action,
-                    actor: None,
-                },
-                stamp: None,
-            }))
-            .expect("valid satellite frame");
+        session.feed(&FrameKind::Event {
+            terminal: Some(ResourceId::local(9)),
+            event: AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                exit_status: None,
+                input_holder: None,
+                action,
+                actor: None,
+            },
+            stamp: None,
+        });
         assert_eq!(
             journal.with(|s| s.satellite_lease_holder(&host(), 9)),
             None,
@@ -129,19 +125,17 @@ fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
     });
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     session.set_journal(Some(journal.clone()));
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::TerminalControl {
-                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-                exit_status: None,
-                input_holder: Some(phux_protocol::ids::ClientId::new(99)),
-                action: ControlAction::Seized,
-                actor: None,
-            },
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Event {
+        terminal: Some(ResourceId::local(9)),
+        event: AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: Some(phux_protocol::ids::ClientId::new(99)),
+            action: ControlAction::Seized,
+            actor: None,
+        },
+        stamp: None,
+    });
     assert_eq!(
         journal.with(|s| s.satellite_lease_holder(&host(), 9)),
         Some(holder),
@@ -179,19 +173,17 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     // A's delayed Released arrives.
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     session.set_journal(Some(journal.clone()));
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::TerminalControl {
-                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-                exit_status: None,
-                input_holder: None,
-                action: ControlAction::Released,
-                actor: None,
-            },
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Event {
+        terminal: Some(ResourceId::local(9)),
+        event: AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: None,
+            action: ControlAction::Released,
+            actor: None,
+        },
+        stamp: None,
+    });
 
     assert_eq!(
         journal.with(|s| s.satellite_lease_holder(&host(), 9)),
@@ -200,19 +192,17 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     );
 
     // The mark is consumed; a later Released applies normally.
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::TerminalControl {
-                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
-                exit_status: None,
-                input_holder: None,
-                action: ControlAction::Released,
-                actor: None,
-            },
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Event {
+        terminal: Some(ResourceId::local(9)),
+        event: AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: None,
+            action: ControlAction::Released,
+            actor: None,
+        },
+        stamp: None,
+    });
     assert_eq!(
         journal.with(|s| s.satellite_lease_holder(&host(), 9)),
         None,
@@ -239,17 +229,7 @@ fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_t
         );
         let (out_tx, _out_rx) = mpsc::channel(1);
         let wire = session.handle_request(RelayRequest::Subscribe {
-            subscription: ProxySubscription {
-                resource_kind: None,
-                terminal: 9,
-                client: ClientId(1),
-                out_tx,
-                consumer_cancel: CancellationToken::new(),
-                seq: 1,
-                awaits_snapshot: false,
-                bootstrap_profile: None,
-                bootstrap_limits: None,
-            },
+            subscription: proxy(9, ClientId(1), out_tx),
             forward: FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(9)),
                 after_seq: None,

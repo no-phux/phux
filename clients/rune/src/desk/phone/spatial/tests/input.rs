@@ -40,20 +40,17 @@ fn a_collapsed_focus_can_be_picked_without_nonfinite_runtime_geometry() {
         "opaque siblings must not cover the collapsed focus"
     );
     assert_eq!(
-        rt.state.others.len(),
+        rt.state.connection.others.len(),
         3,
         "fallback retains every group view"
     );
     no_input(&client);
 }
 use phux_protocol::wire::frame::FrameKind;
-use rune::{Key, KeyEvent, Mods};
+use rune::Key;
 
 fn key(rt: &mut rune::Runtime<Desk>, key: Key) {
-    rt.key(KeyEvent {
-        key,
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(key));
     rt.frame(1.0 / 60.0);
 }
 
@@ -80,10 +77,7 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
         d.ime(&rune::Ime::Preedit("composing".into(), None, Vec::new()));
         d.ime(&rune::Ime::Commit("IME sentinel".into()));
         d.key(
-            &KeyEvent {
-                key: Key::Text("direct key sentinel".into()),
-                mods: Mods::default(),
-            },
+            &crate::keys::plain(Key::Text("direct key sentinel".into())),
             tx,
         );
     });
@@ -123,13 +117,13 @@ fn spatial_find_retains_its_editor_and_never_sends_soft_keys_behind_it() {
     settle(&mut rt);
     tap(&mut rt, "phone-cap-116");
     tap(&mut rt, "phone-cap-104");
-    assert!(rt.state.find_query.focused);
-    assert_eq!(rt.state.find_query.text, "th");
+    assert!(rt.state.connection.find_query.focused);
+    assert_eq!(rt.state.connection.find_query.text, "th");
     let before = rt.state.generation;
     tap(&mut rt, "phone-cap-return");
     assert!(rt.state.generation > before);
     tap(&mut rt, "phone-key-Escape");
-    assert!(rt.state.find.is_none());
+    assert!(rt.state.connection.find.is_none());
     no_input(&client);
 }
 
@@ -142,13 +136,13 @@ fn confirmation_inside_spatial_find_keeps_the_query_until_confirmation_closes() 
     });
     settle(&mut rt);
     tap(&mut rt, "phone-cap-116");
-    assert!(rt.state.find_query.text.is_empty());
+    assert!(rt.state.connection.find_query.text.is_empty());
     tap(&mut rt, "phone-key-Escape");
     assert!(rt.state.pending.is_none());
-    assert!(rt.state.find.is_some());
+    assert!(rt.state.connection.find.is_some());
     tap(&mut rt, "phone-cap-104");
-    assert!(rt.state.find_query.focused);
-    assert_eq!(rt.state.find_query.text, "h");
+    assert!(rt.state.connection.find_query.focused);
+    assert_eq!(rt.state.connection.find_query.text, "h");
     no_input(&client);
 }
 
@@ -163,7 +157,7 @@ fn disabled_navigation_surfaces_do_not_pass_mouse_presses_into_programs() {
         tap(&mut rt, key);
         assert_eq!(focus(&rt), id(1));
     }
-    assert!(rt.state.find.is_some());
+    assert!(rt.state.connection.find.is_some());
     no_input(&client);
 }
 
@@ -254,7 +248,7 @@ fn extreme_finite_focus_uses_the_same_full_stage_fallback_for_camera_and_pane() 
             .all(|v| v.is_finite())
     );
     assert!(rt.find(&format!("phone-spatial-pane-{}", id(3))).is_none());
-    assert_eq!(rt.state.others.len(), 3);
+    assert_eq!(rt.state.connection.others.len(), 3);
     assert_eq!(rt.state.phone.as_ref().unwrap().tree.as_ref(), Some(&tiny));
     no_input(&client);
 }

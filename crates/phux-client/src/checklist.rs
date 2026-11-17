@@ -52,12 +52,21 @@ pub async fn host_facts(socket: &std::path::Path) -> Result<HostFacts, AttachErr
 /// Connection failure, a server without `HOST_CHECKLIST`, a refusal, or a
 /// non-JSON answer.
 pub async fn fetch(socket: &std::path::Path) -> Result<serde_json::Value, crate::org::OrgError> {
+    let mut conn = Connection::connect(socket)
+        .await
+        .map_err(crate::org::OrgError::Attach)?;
+    fetch_on(&mut conn).await
+}
+
+/// [`fetch`] over an open connection, local or remote.
+///
+/// # Errors
+///
+/// As [`fetch`], less connecting.
+pub async fn fetch_on(conn: &mut Connection) -> Result<serde_json::Value, crate::org::OrgError> {
     use crate::org::OrgError;
     use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
-    let mut conn = Connection::connect(socket)
-        .await
-        .map_err(OrgError::Attach)?;
     if !conn
         .server_features_ext()
         .contains(ServerFeatureExt::HostChecklist)

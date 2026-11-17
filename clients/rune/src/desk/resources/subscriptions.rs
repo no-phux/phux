@@ -19,7 +19,7 @@ pub(super) enum Subscription {
 
 impl Desk {
     pub(in crate::desk) fn subscribe_document(&mut self, client: &Client, id: &ResourceId) {
-        let Some(document) = self.resources.entries.get_mut(id) else {
+        let Some(document) = self.connection.resources.entries.get_mut(id) else {
             return;
         };
         if client.status() != Status::Attached
@@ -48,6 +48,7 @@ impl Desk {
         result: CommandResult,
     ) -> bool {
         let Some((id, document)) = self
+            .connection
             .resources
             .entries
             .iter_mut()
@@ -62,6 +63,7 @@ impl Desk {
         client.with_control(|control| control.release_terminal(id));
         document.subscription = Subscription::Refused;
         document.invalidate_surface();
+        document.viewer = None;
         document.seq = None;
         let reason = match result {
             CommandResult::Error { message, .. } => message,
@@ -75,18 +77,19 @@ impl Desk {
     }
 
     pub(in crate::desk) fn document_detached(&mut self, id: &ResourceId) -> bool {
-        let Some(document) = self.resources.entries.get_mut(id) else {
+        let Some(document) = self.connection.resources.entries.get_mut(id) else {
             return false;
         };
         document.subscription = Subscription::Unrequested;
         document.invalidate_surface();
+        document.viewer = None;
         document.seq = None;
         document.body = Body::Pending;
         true
     }
 
     pub(in crate::desk) fn retry_document(&mut self, id: &ResourceId) {
-        let Some(document) = self.resources.entries.get_mut(id) else {
+        let Some(document) = self.connection.resources.entries.get_mut(id) else {
             return;
         };
         if document.subscription == Subscription::Refused {

@@ -87,10 +87,7 @@ impl Desk {
 
     pub(super) fn phone_navigation_soft(&mut self, soft: Soft, tx: &mut Tx) {
         let Some(phone) = &mut self.phone else { return };
-        let event = KeyEvent {
-            key: phone.for_field(soft),
-            mods: rune::Mods::default(),
-        };
+        let event = crate::keys::plain(phone.for_field(soft));
         if self.phone_navigation_key(&event) {
             return;
         }

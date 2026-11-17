@@ -51,7 +51,9 @@ jobs:
       web: ${{ steps.plan.outputs.web }}
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
+      rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
+      docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
       unit_mode: ${{ steps.plan.outputs.unit_mode }}
@@ -80,19 +82,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Warning-only pending a maintainer decision after one week (around
-      # Nov 5, 2026). A new or renamed flat docs/*.md missing from
-      # no-phux/website scripts/docs-catalog.ts, or a failed catalog fetch,
-      # prints a warning and exits 0. This step must not fail the guards job
-      # or the ci aggregate, and it is not a required check.
+      # Warning-only: a miss or a failed fetch exits 0 and must not fail guards or ci.
       - name: website docs catalog
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/check-website-docs-catalog.sh
-      # Proves the warning above on every guards run, including docs-only
-      # pull requests. The check stays exit 0; this fixture fails the job
-      # if that contract breaks.
       - name: website docs catalog fixture
         run: bash scripts/check-website-docs-catalog_test.sh
       # The pre-commit size ratchet again, for commits whose hooks never ran.
@@ -263,8 +258,8 @@ jobs:
           PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
         run: nix develop -c just e2e
 
-  # phux-client-ffi with `uniffi` instead of its defaults shares no artifacts
-  # with the unit pool; the C ABI checks link its default staticlib.
+  # phux-client-ffi with the mobile artifact's features shares no artifacts
+  # with the unit pool.
   ffi:
     name: rust ffi
     needs: plan
@@ -281,7 +276,6 @@ jobs:
           cache-lane: uniffi
           build-cache: deps
       - run: nix develop -c just binding-uniffi-test
-      - run: nix develop -c just ffi-abi
 
   # x86_64 callgrind counts: the checked-in baseline is an x86_64 number.
   icount:
@@ -401,7 +395,7 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
-  # Rune's Linux hosts. macOS and the iOS simulator are rune-macos.yml.
+  # PRs check/deny on x86_64. Main/queue also package and launch both Linux hosts.
   rune:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
@@ -409,44 +403,55 @@ jobs:
     with:
       hosts: linux
       ios: false
+      qualify: ${{ needs.plan.outputs.rune_qualify == 'true' }}
 
-  # Keep Apple qualification inside the already-required queue check. Older
-  # queue entries still use their original ci; no ruleset cutover is needed.
-  rune-macos:
+  # Apple proof remains inside the required queue gate.
+  queue-apple:
+    name: queue-apple
     if: github.event_name == 'merge_group'
     uses: ./.github/workflows/rune-macos.yml
+
+  docs-catalog:
+    name: docs catalog
+    needs: plan
+    if: needs.plan.outputs.docs_catalog == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: no-phux/website
+          ref: main
+          path: website
+          sparse-checkout: scripts/docs-catalog.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: website docs catalog
+        run: bun scripts/ci/docs-catalog-new-misses.ts
 
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, rune-macos]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web-vt, web-client, native, rune, queue-apple, docs-catalog]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # A pull request may leave native setup and rust icount unplanned. A
-      # merge group or main push must have run both: a skip is not a pass.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Main and queue require native/icount success.
       - name: plan succeeded; every lane passed or was not needed
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
-        run: |
-          jq -r 'to_entries[] | "\(.value.result)\t\(.key)"' <<<"$RESULTS"
-          event="${EVENT_NAME:-}"
-          jq -e --arg event "$event" '
-            .plan.result == "success" and
-            (
-              [to_entries[] | select(.value.result != "success")]
-              | all(
-                  .value.result == "skipped" and
-                  (
-                    ($event != "push" and $event != "merge_group") or
-                    (.key != "native" and .key != "icount")
-                  )
-                )
-            ) and ($event != "merge_group" or .["rune-macos"].result == "success")
-          ' <<<"$RESULTS" >/dev/null
+        run: bash scripts/ci/ci-aggregate.sh
       - name: write the validation receipt
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:

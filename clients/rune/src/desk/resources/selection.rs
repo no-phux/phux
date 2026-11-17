@@ -5,8 +5,8 @@ use rune::Tx;
 
 impl Desk {
     pub(in crate::desk) fn document_text_key(&self) -> Option<String> {
-        let shown = self.shown.as_ref()?;
-        let document = self.resources.entries.get(&shown.resource)?;
+        let shown = self.connection.shown.as_ref()?;
+        let document = self.connection.resources.entries.get(&shown.resource)?;
         matches!(document.body, Body::Tree(_)).then(|| text_key(&shown.resource))
     }
 

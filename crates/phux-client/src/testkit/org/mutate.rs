@@ -53,10 +53,10 @@ impl OrgFixture {
                         id: self.fresh(),
                         name: None,
                         tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
-                            phux_protocol::wire::frame::EntryRef {
-                                entry: self.fresh(),
-                                target: EntryTarget::Member(resource),
-                            },
+                            phux_protocol::wire::frame::EntryRef::new(
+                                self.fresh(),
+                                EntryTarget::Member(resource),
+                            ),
                         ),
                     });
                 }
@@ -372,6 +372,7 @@ impl OrgFixture {
                 arrangement,
                 expected,
                 document,
+                ..
             } => {
                 let value = self.arrangement_ref(arrangement).ok_or(Refusal::NotFound)?;
                 let (current, owner) = (value.revision, value.owner);

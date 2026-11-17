@@ -82,19 +82,21 @@ impl Desk {
         modal: Modal,
         event: &rune::KeyEvent,
     ) -> bool {
-        match (modal, &event.key) {
-            (Modal::Galaxy, rune::Key::Escape) => self.close_galaxy(),
-            (Modal::Galaxy, rune::Key::Enter) => self.open_picked(),
-            (Modal::Reef, rune::Key::Escape) => self.reef_escape(),
-            (Modal::Reef, rune::Key::Enter) => self.open_fish(),
-            (Modal::Pitch, rune::Key::Escape) => self.pitch_escape(),
-            (Modal::Pitch, rune::Key::Enter) => self.open_player(),
-            (Modal::Kitchen, rune::Key::Escape) => self.kitchen_escape(),
-            (Modal::Kitchen, rune::Key::Enter) => self.open_chef(),
-            (Modal::PitLane, rune::Key::Escape) => self.pitlane_escape(),
-            (Modal::PitLane, rune::Key::Enter) => self.open_car(),
-            (Modal::Hive, rune::Key::Escape) => self.hive_escape(),
-            (Modal::Hive, rune::Key::Enter) => self.open_bee(),
+        type Keys = (Modal, fn(&mut Desk), fn(&mut Desk));
+        let actions: [Keys; 6] = [
+            (Modal::Galaxy, Desk::close_galaxy, Desk::open_picked),
+            (Modal::Reef, Desk::reef_escape, Desk::open_fish),
+            (Modal::Pitch, Desk::pitch_escape, Desk::open_player),
+            (Modal::Kitchen, Desk::kitchen_escape, Desk::open_chef),
+            (Modal::PitLane, Desk::pitlane_escape, Desk::open_car),
+            (Modal::Hive, Desk::hive_escape, Desk::open_bee),
+        ];
+        let Some((_, escape, enter)) = actions.into_iter().find(|a| a.0 == modal) else {
+            return false;
+        };
+        match event.key {
+            rune::Key::Escape => escape(self),
+            rune::Key::Enter => enter(self),
             _ => return false,
         }
         true

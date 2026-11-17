@@ -36,10 +36,10 @@ pub type QuicConnection = (
 
 /// QUIC idle timeout, matched to the server's so a quiet consumer is not
 /// reaped before the keep-alive fires.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Keep-alive interval, well under [`IDLE_TIMEOUT`] to hold NAT bindings.
-const KEEP_ALIVE: Duration = Duration::from_secs(10);
+pub const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 /// QUIC application close code for a refused auth preamble (`AUTH_FAILED`,
 /// `docs/protocol.md#transports`), shared with the server listener and relay.
@@ -64,7 +64,8 @@ pub struct QuicDial {
     /// TLS server name offered in SNI.
     pub server_name: String,
     /// Raw bearer-token bytes for the auth preamble, or `None` for an
-    /// unauthenticated loopback listener (see [`parse_token_hex`]).
+    /// unauthenticated loopback listener (see [`parse_token_hex`]); to a
+    /// routable address `None` sends an empty preamble.
     pub token: Option<Vec<u8>>,
     /// How to trust the server's certificate.
     pub trust: CertTrust,
@@ -236,8 +237,15 @@ async fn dial_inner(
         .await
         .map_err(|err| DialError::Connect(format!("open QUIC stream: {err}")))?;
 
-    if let Some(token) = &d.token {
-        write_preamble(&conn, &mut send, token).await?;
+    // A routable consumer listener always reads a preamble; one with no
+    // token is empty, which only a server admitting the owner's own tailnet devices
+    // accepts (`docs/config.md#tailnet-owner-devices`). Loopback reads none.
+    match &d.token {
+        Some(token) => write_preamble(&conn, &mut send, token).await?,
+        None if alpn == QUIC_ALPN && !d.addr.ip().is_loopback() => {
+            write_preamble(&conn, &mut send, &[]).await?;
+        }
+        None => {}
     }
 
     Ok((endpoint, conn, send, recv))

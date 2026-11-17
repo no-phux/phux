@@ -3,12 +3,13 @@
     reason = "wire records intentionally share the parent UniFFI enum namespace"
 )]
 
-//! The Swift/Kotlin-facing records and their lowering from
-//! [`crate::projection`]. They mirror projected values because the foreign
-//! names are a published surface, and `uniffi` derives may not enter the
-//! binding-neutral layer (ADR-0135); the mirrors are `From` impls only.
+//! The Swift/Kotlin-facing records and their lowering from runtime values.
+//! The foreign names are a published surface; the mirrors are `From` impls.
 
 use super::*;
+use phux_client_runtime::control::{
+    DeliveryOutcome, FileUploadOutcome, FileUploadReceipt, TranscribeOutcome, TranscribeReceipt,
+};
 
 mod agent_state;
 mod document_input;
@@ -18,6 +19,7 @@ mod wire_event;
 
 pub use agent_state::*;
 pub use document_input::*;
+pub(in crate::uniffi::wire) use lowering::lower_event;
 pub use paths::*;
 pub use wire_event::*;
 
@@ -31,13 +33,17 @@ pub enum WireStatus {
     Failed,
 }
 
-impl From<status::Connection> for WireStatus {
-    fn from(value: status::Connection) -> Self {
+impl From<Option<phux_client_runtime::control::Status>> for WireStatus {
+    /// A runtime status, or its absence before a connection exists. Until the
+    /// attach barrier releases there is nothing to paint, so every pre-attach
+    /// state reads `Connecting`; `Idle` is never produced.
+    fn from(value: Option<phux_client_runtime::control::Status>) -> Self {
+        use phux_client_runtime::control::Status;
         match value {
-            status::Connection::Connecting => Self::Connecting,
-            status::Connection::Attached => Self::Attached,
-            status::Connection::Closed => Self::Closed,
-            status::Connection::Failed => Self::Failed,
+            None | Some(Status::Idle | Status::Connecting | Status::Negotiated) => Self::Connecting,
+            Some(Status::Attached) => Self::Attached,
+            Some(Status::Closed) => Self::Closed,
+            Some(Status::Failed) => Self::Failed,
         }
     }
 }
@@ -93,12 +99,12 @@ pub enum WireInputDeliveryOutcome {
     Unknown,
 }
 
-impl From<outcome::Delivery> for WireInputDeliveryOutcome {
-    fn from(value: outcome::Delivery) -> Self {
+impl From<DeliveryOutcome> for WireInputDeliveryOutcome {
+    fn from(value: DeliveryOutcome) -> Self {
         match value {
-            outcome::Delivery::Delivered => Self::Delivered,
-            outcome::Delivery::Refused => Self::Refused,
-            outcome::Delivery::Unknown => Self::Unknown,
+            DeliveryOutcome::Delivered => Self::Delivered,
+            DeliveryOutcome::Refused => Self::Refused,
+            DeliveryOutcome::Unknown => Self::Unknown,
         }
     }
 }
@@ -141,17 +147,6 @@ pub struct WireInputDelivery {
     pub message: String,
 }
 
-impl From<outcome::InputDelivery> for WireInputDelivery {
-    fn from(value: outcome::InputDelivery) -> Self {
-        Self {
-            delivery_id: value.delivery_id,
-            outcome: value.outcome.into(),
-            code: value.code,
-            message: value.message,
-        }
-    }
-}
-
 /// Product-facing outcome of one chunked file upload.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireFileUploadOutcome {
@@ -160,12 +155,12 @@ pub enum WireFileUploadOutcome {
     Unknown,
 }
 
-impl From<outcome::Upload> for WireFileUploadOutcome {
-    fn from(value: outcome::Upload) -> Self {
+impl From<FileUploadOutcome> for WireFileUploadOutcome {
+    fn from(value: FileUploadOutcome) -> Self {
         match value {
-            outcome::Upload::Completed => Self::Completed,
-            outcome::Upload::Refused => Self::Refused,
-            outcome::Upload::Unknown => Self::Unknown,
+            FileUploadOutcome::Completed => Self::Completed,
+            FileUploadOutcome::Refused => Self::Refused,
+            FileUploadOutcome::Unknown => Self::Unknown,
         }
     }
 }
@@ -181,8 +176,8 @@ pub struct WireFileUploadReceipt {
     pub message: String,
 }
 
-impl From<outcome::UploadReceipt> for WireFileUploadReceipt {
-    fn from(value: outcome::UploadReceipt) -> Self {
+impl From<FileUploadReceipt> for WireFileUploadReceipt {
+    fn from(value: FileUploadReceipt) -> Self {
         Self {
             transfer_id: value.transfer_id,
             outcome: value.outcome.into(),
@@ -206,12 +201,12 @@ pub enum WireTranscribeOutcome {
     Unknown,
 }
 
-impl From<outcome::Transcribe> for WireTranscribeOutcome {
-    fn from(value: outcome::Transcribe) -> Self {
+impl From<TranscribeOutcome> for WireTranscribeOutcome {
+    fn from(value: TranscribeOutcome) -> Self {
         match value {
-            outcome::Transcribe::Completed => Self::Completed,
-            outcome::Transcribe::Refused => Self::Refused,
-            outcome::Transcribe::Unknown => Self::Unknown,
+            TranscribeOutcome::Completed => Self::Completed,
+            TranscribeOutcome::Refused => Self::Refused,
+            TranscribeOutcome::Unknown => Self::Unknown,
         }
     }
 }
@@ -229,8 +224,8 @@ pub struct WireTranscribeReceipt {
     pub message: String,
 }
 
-impl From<outcome::TranscribeResult> for WireTranscribeReceipt {
-    fn from(value: outcome::TranscribeResult) -> Self {
+impl From<TranscribeReceipt> for WireTranscribeReceipt {
+    fn from(value: TranscribeReceipt) -> Self {
         Self {
             request_id: value.request_id,
             transfer_id: value.transfer_id,

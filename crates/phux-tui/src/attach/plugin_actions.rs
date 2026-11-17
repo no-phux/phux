@@ -1,11 +1,9 @@
 //! Plugin manifest `[[actions]]` in the TUI, client-local (ADR-0017).
 //!
-//! [`entries_from_manifests`] flattens the load-once manifest snapshot, the
-//! palette lists them under a "Plugin" header, [`merge_plugin_bindings`]
-//! folds their `keys` into the prefix table (user config always wins), and
-//! `plugin_job` runs one through the `phux-plugin` runtime off
-//! the input loop, toasting failures (`failure_toast`). Rows and bindings
-//! both commit [`PLUGIN_ACTION_NAME`], sharing the `run_action` path.
+//! Listed in the palette under "Plugin", their `keys` merged into the prefix
+//! table ([`merge_plugin_bindings`]), and run off the input loop through
+//! `phux-plugin`, toasting failures. Rows and bindings commit
+//! [`PLUGIN_ACTION_NAME`].
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -51,10 +49,10 @@ impl PluginActionEntry {
     /// keybinding or palette row produces, flowing through `run_action`.
     #[must_use]
     pub fn resolved_action(&self) -> ResolvedAction {
-        ResolvedAction {
-            action: PLUGIN_ACTION_NAME.to_owned(),
-            args: plugin_args(&self.plugin_id, &self.action_id),
-        }
+        crate::attach::resolved(
+            PLUGIN_ACTION_NAME,
+            plugin_args(&self.plugin_id, &self.action_id),
+        )
     }
 
     /// The equivalent config-schema [`Action`], for prefix-table merging.
@@ -124,12 +122,8 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
 
 /// Merge plugin `keys` bindings into the prefix table.
 ///
-/// User config always wins: a chord that collides, fails to parse, or is ambiguous with an
-/// existing binding is dropped with a warning (validated by test-building a
-/// [`Resolver`], so a bad plugin binding cannot disable every binding), and
-/// so is a key the config unbound with `"none"`
-/// ([`KeybindingsCfg::unbound`], in any spelling).
-///
+/// User config wins: a colliding, unparsable, ambiguous, or `"none"`-unbound
+/// chord is dropped with a warning (validated against a test [`Resolver`]).
 /// Between plugins, the first in `[[plugins]]` order wins.
 pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEntry]) {
     for entry in entries {
@@ -191,10 +185,8 @@ pub struct PluginRunResult {
     pub result: Result<phux_plugin::PluginActionOutput, String>,
 }
 
-/// One plugin action as a background job (ADR-0172), run through
-/// [`phux_plugin::run_configured_action_logged`] (the `phux config run`
-/// runtime, which also records the run for `phux plugin log`). A failure
-/// finishes with its toast; a success only logs.
+/// One plugin action as a background job (ADR-0172) through
+/// [`phux_plugin::run_configured_action_logged`]; a failure toasts.
 pub(in crate::attach) fn plugin_job(plugin_id: String, action_id: String) -> Job {
     Job::new(
         JobKind::PluginAction,

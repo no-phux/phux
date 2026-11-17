@@ -18,7 +18,7 @@ use std::{
     io::{self, Write},
 };
 
-use libghostty_vt::style::{RgbColor, StyleColor};
+use libghostty_vt::{color::Rgb as RgbColor, style::StyleColor};
 
 use super::write_delete_image;
 

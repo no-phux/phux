@@ -42,7 +42,6 @@ use phux_client::agent_wait::{AgentWaitError, AgentWaitResult, wait_for_agent_st
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
 use phux_client::read::Verb;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
@@ -266,10 +265,8 @@ pub(super) fn start(req: &StartRequest<'_>, socket: Option<PathBuf>) -> ExitCode
 struct Plan {
     /// Canonical detection-manifest kind slug.
     kind: String,
-    /// The one line to type, before the delegated socket is known; checked
-    /// here so every refusal it can raise happens before a round trip.
-    line: String,
-    /// The resolved argv the line runs.
+    /// The resolved argv the line runs; its shell line is checked here so
+    /// every refusal it can raise happens before a round trip.
     argv: Vec<String>,
     /// The environment the line exports.
     env: BTreeMap<String, String>,
@@ -362,11 +359,10 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
     let env = prepared
         .as_ref()
         .map_or_else(BTreeMap::new, |session| session.env.clone());
-    let line = shell_line(argv, &env).map_err(|err| shell_line_refusal(&integration_id, &err))?;
+    shell_line(argv, &env).map_err(|err| shell_line_refusal(&integration_id, &err))?;
 
     Ok(Plan {
         kind,
-        line,
         argv: argv.clone(),
         env,
         resolved_cwd: resolved.cwd.clone(),
@@ -473,10 +469,10 @@ async fn drive(
             return refusal.emit(req.json);
         }
     };
-    let line = match delegated_line(plan, delegation.as_ref()) {
+    let line = match delegated_line(plan, &delegation) {
         Ok(line) => line,
         Err(refusal) => {
-            revoke(&mut conn, delegation.as_ref()).await;
+            revoke(&mut conn, &delegation).await;
             rollback_bind(&mut conn, &terminal, &bound_bytes).await;
             return refusal.emit(req.json);
         }
@@ -486,7 +482,7 @@ async fn drive(
     let typed = submit_line(&line, &mut conn, &terminal, &bound_bytes).await;
     if let Err((refusal, wrote_nothing)) = typed {
         if wrote_nothing {
-            revoke(&mut conn, delegation.as_ref()).await;
+            revoke(&mut conn, &delegation).await;
         }
         return refusal.emit(req.json);
     }
@@ -498,7 +494,7 @@ async fn drive(
 
 /// Resolve the target pane and open the connection that will type into it,
 /// refusing (as an emitted exit code) a satellite pane, a failed
-/// precondition, a server without acknowledged input, or an occupied pane.
+/// precondition, or an occupied pane.
 #[allow(
     clippy::future_not_send,
     reason = "same current-thread CLI future as `drive`"
@@ -523,7 +519,6 @@ async fn open_target(
 
     let no_server = |err| json_err::report_no_server(req.json, &err, socket_path, "agent start");
     let mut conn = Connection::connect(socket_path).await.map_err(no_server)?;
-    acknowledged_input_available(&conn).map_err(|refusal| refusal.emit(req.json))?;
     match recheck_occupant(&mut conn, &terminal).await {
         Ok(()) => Ok((terminal, conn)),
         Err(Ok(refusal)) => Err(refusal.emit(req.json)),
@@ -545,15 +540,11 @@ fn satellite_refusal(terminal: &ResourceId) -> Refusal {
 
 /// Mint the agent's delegated credential on `terminal`'s session
 /// (ADR-0163 §5): `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` there, on
-/// behalf of the caller. `None` from a server without organization records,
-/// which predates delegation; the agent then inherits the shell's socket.
+/// behalf of the caller.
 async fn delegate(
     conn: &mut Connection,
     terminal: &ResourceId,
-) -> Result<Option<phux_client::delegation::Delegation>, Refusal> {
-    if !phux_client::org::supported(conn) {
-        return Ok(None);
-    }
+) -> Result<phux_client::delegation::Delegation, Refusal> {
     let failed = |message: String| {
         Refusal::new(
             codes::DELEGATION_FAILED,
@@ -583,7 +574,6 @@ async fn delegate(
         0,
     )
     .await
-    .map(Some)
     .map_err(|err| {
         failed(format!(
             "could not delegate a credential to the agent: {err}"
@@ -593,10 +583,7 @@ async fn delegate(
 
 /// Withdraw `delegation` after a launch that typed nothing. Best effort: a
 /// credential left behind lapses at its expiry.
-async fn revoke(conn: &mut Connection, delegation: Option<&phux_client::delegation::Delegation>) {
-    let Some(delegation) = delegation else {
-        return;
-    };
+async fn revoke(conn: &mut Connection, delegation: &phux_client::delegation::Delegation) {
     if let Err(err) = phux_client::delegation::revoke_delegation(
         conn,
         DELEGATION_REQUEST_ID.wrapping_add(0x200),
@@ -613,14 +600,11 @@ async fn revoke(conn: &mut Connection, delegation: Option<&phux_client::delegati
 }
 
 /// The line to type: the plan's, exporting `PHUX_SOCKET` as the delegated
-/// credential's socket when there is one.
+/// credential's socket.
 fn delegated_line(
     plan: &Plan,
-    delegation: Option<&phux_client::delegation::Delegation>,
+    delegation: &phux_client::delegation::Delegation,
 ) -> Result<String, Refusal> {
-    let Some(delegation) = delegation else {
-        return Ok(plan.line.clone());
-    };
     let mut env = plan.env.clone();
     env.insert(SOCKET_ENV.to_owned(), delegation.socket_path.clone());
     shell_line(&plan.argv, &env).map_err(|err| shell_line_refusal(&plan.integration_id, &err))
@@ -675,26 +659,6 @@ async fn await_ready(
         Ok(result) => report_timeout(req, plan, terminal, &result),
         Err(err) => wait_refusal(terminal, err).emit(req.json),
     }
-}
-
-/// ADR-0076 point 1: an older server is refused, never downgraded to
-/// fire-and-forget `ROUTE_INPUT`. A launch command is not idempotent at the
-/// receiver, and its only fire-and-forget recovery is the duplicate.
-fn acknowledged_input_available(conn: &Connection) -> Result<(), Refusal> {
-    if conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(ServerFeature::AcknowledgedInput)
-    }) {
-        return Ok(());
-    }
-    Err(Refusal::new(
-        json_err::codes::SERVER_TOO_OLD,
-        "this server does not advertise ACKNOWLEDGED_INPUT, so the launch line cannot be \
-         delivered with a receipt",
-        "upgrade the server (`phux update`), or start the agent by hand in the pane",
-        EXIT_USAGE,
-    ))
 }
 
 /// Re-read the pane's occupant on the connection that is about to write, so

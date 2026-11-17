@@ -142,6 +142,8 @@ pub(in crate::runtime) enum Route {
     Detached,
     /// The connection's service exchanges, which bound their own tasks.
     ServiceHttp,
+    /// The connection's forwards, which bound their own tasks.
+    Forward,
     /// The command handler.
     Handler,
 }
@@ -157,6 +159,9 @@ pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane
     if matches!(
         command,
         Command::Checkout { .. }
+            | Command::Credentials {
+                op: phux_protocol::credentials::CredentialOp::Request(_)
+            }
             | Command::Mirror { .. }
             | Command::SendDocumentInput {
                 intent: phux_protocol::wire::frame::DocumentInput::CopyClipboard { .. }
@@ -169,6 +174,9 @@ pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane
     }
     if crate::runtime::service_http::is_service_http(command) {
         return Route::ServiceHttp;
+    }
+    if crate::runtime::forward::is_forward(command) {
+        return Route::Forward;
     }
     crate::runtime::command_tasks::CommandTasks::retained_bytes(command)
         .map_or(Route::Handler, Route::Bulk)
@@ -192,6 +200,8 @@ pub(super) struct CommandDispatch<'a> {
     pub(super) held_commands: &'a mut JoinSet<()>,
     /// This connection's open service exchanges.
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
+    /// This connection's TCP forwards.
+    pub(super) forwards: &'a crate::runtime::forward::Forwards,
 }
 
 pub(super) enum CommandDispatchOutcome {
@@ -264,6 +274,11 @@ impl CommandDispatch<'_> {
                     command,
                 )
                 .await;
+                return None;
+            }
+            Route::Forward => {
+                crate::runtime::forward::submit(self.context(), self.forwards, request_id, command)
+                    .await;
                 return None;
             }
             Route::Handler => {}

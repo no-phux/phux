@@ -304,6 +304,17 @@ pub enum Event {
         /// Whether background work is running.
         running: bool,
     },
+    /// The latest note a program posted for the terminal (`phux.note/v1`).
+    /// `live` is true for a note posted while subscribed, the only kind a
+    /// client should announce; a read after (re)subscribing is the baseline.
+    Note {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// The note, or `None` when there is none or it can't be shown.
+        note: Option<phux_client_core::note::Note>,
+        /// Posted now, not read back.
+        live: bool,
+    },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
     /// change, re-read after every gap and reconnect.
@@ -378,14 +389,11 @@ pub enum Event {
     },
     /// One committed `AgentSession` publication, in commit order.
     ///
-    /// `publication` is an [`Arc`] the runtime retains until an accepting
-    /// drain (`take_events`) or, after [`take_events_leased`](super::ControlPlane::take_events_leased),
-    /// [`ControlPlane::accept_agent_publication`](super::ControlPlane::accept_agent_publication).
-    /// Acceptance is the consumer taking delivery, not the end of a view
-    /// borrow. A full retained cut supersedes prior same-resource unaccepted
-    /// publications; resume appends keep their prefix. The vector is not copied.
-    /// `stream` on the publication
-    /// is the commit watermark, including an empty publication.
+    /// `publication` is an [`Arc`] the runtime retains until `take_events`
+    /// drains it; an undrained one replays after a transport replacement. A
+    /// full retained cut supersedes prior same-resource undrained
+    /// publications; resume appends keep their prefix. `stream` on the
+    /// publication is the commit watermark, including an empty publication.
     AgentPublication {
         /// The committed batch and its watermark.
         publication: Arc<AgentPublication>,

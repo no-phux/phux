@@ -9,7 +9,8 @@
 //! # Crate features
 //!
 //! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
-//!   [`ids`], [`caps`], [`policy`], and [`Version`], including for browser clients.
+//!   [`ids`], [`caps`], [`policy`], [`snapshot_framing`], and [`Version`],
+//!   including for browser clients.
 //! - **`render-pool`** (off by default): `render_pool`, the libghostty
 //!   render-trio pool. Enables `libghostty-vt` only, with no png, no kitty
 //!   graphics, and no input-atom conversions.
@@ -23,6 +24,9 @@
 #![deny(rustdoc::private_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[macro_use]
+mod macros;
+
 // The codec, input atoms, and policy vocabulary are pure Rust (ADR-0024), so
 // they build for wasm; libghostty conversions sit behind `server`.
 pub mod input;
@@ -31,13 +35,16 @@ pub mod wire;
 pub mod api;
 pub mod caps;
 pub mod checkout;
+pub mod credentials;
 pub mod enroll;
+pub mod forward;
 pub mod ids;
 pub mod kinds;
 pub mod native_agent;
 pub mod policy;
 pub mod scope;
 pub mod service_http;
+pub mod snapshot_framing;
 
 #[cfg(feature = "server")]
 pub mod sgr;

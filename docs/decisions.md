@@ -70,6 +70,21 @@ records explain history; [look them up deliberately](./architecture.md#historica
   the only gate, `INPUT` on the server as for `GET_FILE`, so revoking a
   device revokes its OpenCode access and no service credential reaches it
   ([host services](./host-services.md)).
+- A TCP port is forwarded through the phux connection as commands on the
+  control lane (open, pull, acknowledged write, close), not a new stream
+  type, so every transport carries it unchanged; a stream path waits for a
+  measured need. The server dials only its own loopback unless its
+  `[forward] allow` lists a target, and never resolves a client's name.
+  `INPUT` on the server as for `GET_FILE`: a holder can already run
+  commands there, so loopback-only limits mistakes, not a determined
+  holder ([port forwarding](./forwarding.md)).
+- An ssh-agent is forwarded as brokered messages, not a byte stream: the
+  server parses each request from a pane and passes on only a key listing
+  or a signature, so nothing can add, remove, or lock keys. Both sides opt
+  in (`[forward] agent`, off by default, because turning it on replaces
+  `SSH_AUTH_SOCK` in new panes; `phux forward --agent` on the client), and
+  the client asks its user before each signature, since any process on
+  the server can ask ([ssh-agent forwarding](./forwarding.md#ssh-agent)).
 
 **Public operations**
 
@@ -86,6 +101,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   Missing/expired receipts leave the original outcome unknown; never infer that
   it is safe to start again. Dispatch-time authorization remains authoritative.
 
+- A layout slot holds several terminals as slot tabs on the leaf record, not
+  as a new node kind: the leaf's entry is the default tab and the others are a
+  trailing list that older peers skip, carried over by the server on every
+  replace as locks are. A new kind would make older clients' arrangement
+  reads fail and an older server refuse its store
+  ([slot tabs](./organization.md#slot-tabs)).
+
 **Clients**
 
 - `phux-client-core` is sans-IO and dependency-light so it compiles to wasm.
@@ -98,6 +120,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 - The server derives agent state. A host's lifecycle stream outranks the
   detector; an occupant-bounded declaration outranks both.
+- The server names agent panes. A record whose name is its kind gets a name
+  unique on the server (`opencode`, `opencode-2`) that the pane keeps while
+  its record stays, so `%name` reaches a detected or launched agent with no
+  naming step and never moves to another pane. Chosen names are stored as
+  written; a shared one is ambiguous, never guessed.
 - The ordinary owner socket has full same-UID authority; delegated sockets
   only narrow it. Remote consumer ingress requires scoped mTLS plus bearer
   admission; reverse federation grants the trusted hub satellite-owner

@@ -19,10 +19,7 @@ async fn peer_sweep_reads_arrangement_records_over_the_link() {
             groups: vec![ArrangementGroup { locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
-                tree: ArrangementNode::Leaf(EntryRef {
-                    entry: [1; 16],
-                    target: EntryTarget::Member(shell),
-                }),
+                tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
             }],
         },
     );

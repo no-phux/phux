@@ -106,7 +106,7 @@ impl Images {
             };
             let key = paint_order(placement, id)?;
             let crop = self.sample_source(placement, id)?;
-            output.push((key, project_placement(placement, pixels, cell, crop)?));
+            output.push((key, project_placement(placement, id, pixels, cell, crop)?));
         }
         output.sort_by_key(|(key, _)| *key);
         Ok(output.into_iter().map(|(_, placement)| placement).collect())
@@ -134,12 +134,14 @@ fn cell_pixels(terminal: &Terminal<'_, '_>) -> Result<(f64, f64), libghostty_vt:
 
 fn project_placement(
     placement: &ImageIteration<'_, '_>,
+    image_id: u32,
     image: Arc<ImageData>,
     cell: (f64, f64),
     sample_source: Option<[f64; 4]>,
 ) -> Result<ImagePlacement, libghostty_vt::Error> {
     let source = source_rect(placement)?;
     Ok(ImagePlacement {
+        image_id,
         image,
         col: f64::from(placement.viewport_col()?) + f64::from(placement.cell_offset_x()?) / cell.0,
         row: f64::from(placement.viewport_row()?) + f64::from(placement.cell_offset_y()?) / cell.1,

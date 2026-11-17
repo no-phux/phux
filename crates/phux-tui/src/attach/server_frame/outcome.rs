@@ -26,11 +26,8 @@ pub(in crate::attach) fn project_tag_outcome(value: Option<&[u8]>) -> FrameOutco
     }
 }
 
-/// What one frame did to the stored `phux.session.project/v1` tag.
-///
-/// `Absent` is the default so a frame that never mentions the key leaves the
-/// picker alone. A tombstone or undecodable value is `Cleared`, distinct from
-/// a frame that did not speak.
+/// What one frame did to the stored `phux.session.project/v1` tag. `Absent`
+/// (the default) leaves the picker alone; a tombstone is `Cleared`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::attach) enum ProjectTagFrame {
     /// This frame did not mention the project tag.
@@ -149,6 +146,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// The Terminal a local agent record applied to, even when identical, for
     /// the review index.
     pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
+    /// A note a program posted for a pane, to toast.
+    pub(in crate::attach) note: Option<crate::attach::jobs::Toast>,
     /// ATTACHED's per-pane cwds, for the sidebar branch line.
     pub(in crate::attach) pane_cwds: Vec<(ResourceId, String)>,
     /// The config-reload doorbell rang.

@@ -85,10 +85,13 @@ class AgentExamplesTests(unittest.TestCase):
             pi = Path(directory) / "pi"
             event = {"type": "message_end", "message": {"role": "assistant", "content": [
                 {"type": "text", "text": "CLAUDE_LIVE_FLEET_OK CODEX_LIVE_FLEET_OK LIVE_PI_PHUX_FLEET_OK"}]}}
-            pi.write_text("#!/bin/sh\nprintf '%s\\n' '" + json.dumps(event) + "'\n")
+            pi.write_text("#!/bin/sh\n"
+                          '[ "$XDG_CONFIG_HOME" = "$TMPDIR/config" ] || exit 72\n'
+                          "printf '%s\\n' '" + json.dumps(event) + "'\n")
             pi.chmod(0o755)
             env = dict(os.environ, PHUX_DOGFOOD_REAL_AGENTS="1", HOME=directory,
                        PATH=directory + os.pathsep + os.environ["PATH"])
+            env.pop("TMPDIR", None)
             result = subprocess.run(["bash", str(ROOT / "examples/agents/record-pi-live-fleet")],
                                     env=env, capture_output=True, text=True, timeout=20)
             self.assertNotEqual(result.returncode, 0)

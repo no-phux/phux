@@ -13,10 +13,7 @@ use std::{
     time::Instant,
 };
 
-use libghostty_vt::{
-    kitty::graphics::Graphics,
-    style::{RgbColor, StyleColor},
-};
+use libghostty_vt::{color::Rgb as RgbColor, kitty::graphics::Graphics, style::StyleColor};
 
 use super::{
     KittyReplayError, ReplayPlacement,

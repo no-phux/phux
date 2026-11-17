@@ -5,7 +5,6 @@ use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
 use phux_client::session::{CreateOutcome, CreateSessionError, CreateSessionRequest};
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::SessionLifetime;
 
@@ -101,9 +100,8 @@ pub(crate) async fn create_session_via_metadata(
     // A keyed retry names a session the first attempt already created, so
     // the client-side duplicate check would refuse the very retry the key
     // exists for; the server answers it from its dedupe cache instead.
-    match idempotency_key {
-        Some(_) => refuse_unkeyed_server(&conn, json)?,
-        None => reject_duplicate_session_name(&mut conn, server, name, json).await?,
+    if idempotency_key.is_none() {
+        reject_duplicate_session_name(&mut conn, server, name, json).await?;
     }
 
     // ADR-0168: a session made in a checkout on this machine carries the
@@ -157,10 +155,6 @@ pub(super) fn report_create_session_error(
 ) -> ExitCode {
     match err {
         CreateSessionError::Attach(err) => server.report_unreachable(json, &err, "new"),
-        CreateSessionError::Encode(err) => report_create_failed(
-            json,
-            format!("failed to serialize the create request: {err}"),
-        ),
         CreateSessionError::Org(err) => {
             use crate::commands::json_err::{CliError, codes, emit};
             let error = CliError::new(
@@ -208,18 +202,6 @@ pub(super) async fn reject_duplicate_session_name(
         ));
     }
     Ok(())
-}
-
-/// Refuse a keyed create on a server that would not honor the key: it would
-/// read the retry as a second create of a name already in use.
-pub(super) fn refuse_unkeyed_server(conn: &Connection, json: bool) -> Result<(), ExitCode> {
-    if phux_client::session::keyed_create_supported(conn) {
-        return Ok(());
-    }
-    Err(crate::commands::spawn::unsupported_server(
-        json,
-        ServerFeature::SpawnIdempotency,
-    ))
 }
 
 /// Print every degradation notice a [`phux_client::session`] wire call

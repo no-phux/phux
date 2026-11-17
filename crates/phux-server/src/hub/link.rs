@@ -1,36 +1,21 @@
 //! Hub outbound link supervisor (ADR-0007, ADR-0038).
 //!
 //! Under `phux server --hub` each enabled [`HubEntry`] gets one supervisor
-//! (`run_link`) that dials the satellite and authenticates like a remote
-//! consumer: TLS 1.3 pinned by fingerprint plus the pairing bearer token
-//! (QUIC preamble or WS `Authorization` header), re-read every attempt so
-//! rotation needs no restart.
-//!
-//! `ssh://` spawns the system `ssh` (or `$PHUX_SSH`) running the remote
-//! `phux stdio-bridge`; SSH authenticates the channel, so no token or pin is
-//! used (ADR-0038 addendum). The child runs with `BatchMode=yes` and a
-//! shell-free argv; its exit is the drop signal and its stderr is drained
-//! into a bounded tail.
+//! (`run_link`) that dials the satellite like a remote consumer: QUIC or WS,
+//! TLS 1.3 pinned by fingerprint plus the pairing bearer, re-read every
+//! attempt so rotation needs no restart. `ssh://` runs the remote
+//! `phux stdio-bridge` under `ssh -o BatchMode=yes` with a shell-free argv;
+//! SSH authenticates, its exit is the drop, and its stderr becomes a bounded
+//! tail. `inbound://` (ADR-0182) dials nothing: it waits for the satellite to
+//! dial in and be adopted (`hub::adopt`).
 //!
 //! **Fail closed.** [`plan_link`] refuses a routable endpoint without both a
-//! token file and a pin, and plaintext `ws://` to routable hosts. A refusal
-//! is [`LinkStatus::Refused`] and is never retried.
-//!
-//! Lost links redial with capped exponential backoff; the streak resets only
-//! after `LINK_STABLE_AFTER` of uptime. While up, the supervisor drives the
-//! satellite's `RelaySession`; while down it fails queued requests fast with
-//! `SatelliteUnreachable`.
-//!
-//! `inbound://` (ADR-0182) dials nothing: its supervisor's transport waits
-//! for the satellite to dial in and be adopted (`hub::adopt`), then runs
-//! the same relay session over a stream it opens. The dialing satellite owns
-//! the backoff, so the hub takes the next connection without delay.
-//!
-//! Liveness: QUIC has transport keepalive/idle, SSH uses
-//! `ServerAliveInterval`/`CountMax` derived from the same constants, and WS
-//! pings on `LINK_KEEPALIVE_INTERVAL` and drops after `LINK_IDLE_TIMEOUT` of
-//! silence. Writes are bounded by `LINK_SEND_TIMEOUT`; the keepalive tick
-//! also prunes abandoned relayed commands.
+//! token file and a pin, and plaintext `ws://` to routable hosts; a refusal
+//! ([`LinkStatus::Refused`]) is never retried. Lost links redial with capped
+//! backoff, reset only after `LINK_STABLE_AFTER` of uptime; while down, queued
+//! requests fail fast with `SatelliteUnreachable`. Liveness is bounded by
+//! `LINK_KEEPALIVE_INTERVAL`/`LINK_IDLE_TIMEOUT` on every transport and writes
+//! by `LINK_SEND_TIMEOUT`.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -77,18 +62,19 @@ pub(crate) use session::run_link;
 pub use status::{Backoff, HubLinkStatuses, LinkRefusal, LinkStatus};
 use writer::{LinkWrite, QueuedLinkWrite, drive_link_writer, queue_link_write, send_bounded};
 
-/// First redial delay after a failure or a lost connection.
-const BACKOFF_BASE: Duration = Duration::from_millis(500);
+/// First redial delay after a failure or a lost connection; shared by every
+/// outbound link supervisor (hub links, uplinks, relay connectors).
+pub(crate) const BACKOFF_BASE: Duration = Duration::from_millis(500);
 
 /// Ceiling for the exponential redial delay.
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
+pub(crate) const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
-/// Housekeeping tick (keepalive and pruning), matching the QUIC dialer's
+/// Housekeeping tick (keepalive and pruning), the QUIC dialer's
 /// `keep_alive_interval`.
-const LINK_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const LINK_KEEPALIVE_INTERVAL: Duration = crate::transport::quic::KEEP_ALIVE;
 
-/// Inbound-idle limit for WS links, matching QUIC's `max_idle_timeout`.
-const LINK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Inbound-idle limit for WS links, QUIC's `max_idle_timeout`.
+const LINK_IDLE_TIMEOUT: Duration = crate::transport::quic::IDLE_TIMEOUT;
 
 /// Stall bound on any single write toward the satellite, so a partitioned
 /// peer cannot wedge the supervisor loop.

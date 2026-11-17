@@ -34,24 +34,17 @@ fn followed_own_spawn() -> ControlPlane {
         })
         .unwrap();
     let request_id = plane.refresh_topology().unwrap();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(beta_snapshot())),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(beta_snapshot())),
+    );
     let subscriptions = attach_resources(&mut plane);
     let request_id = subscriptions
         .iter()
         .find(|(_, id)| *id == ResourceId::local(AGENT))
         .unwrap()
         .0;
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     assert!(!plane.attach_session(AttachTarget::ByName("beta".into())));
     let _ = plane.take_events();
     plane

@@ -5,10 +5,10 @@
 
 use std::f32::consts::TAU;
 
-use super::super::reef::pen::{Pen, clip_convex, cubic, quad};
+use super::super::playground::pen::{Pen, clip_convex, cubic, quad};
 use super::{glow_in, hex, hgrad};
 use crate::hive::{Hive, Kind};
-use crate::reef::{Pt, Rgb, Rng, mix};
+use crate::playground::{Pt, Rgb, Rng, mix};
 
 /// The day (`n` false) or night backdrop as a shape spanning the scene.
 pub fn paint(h: &Hive, n: bool) -> rune::Shape {

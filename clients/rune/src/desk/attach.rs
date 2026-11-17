@@ -10,7 +10,6 @@ use phux_protocol::ids::ResourceId;
 use rune::{ClipboardContent, Tx};
 
 use super::{Desk, NoticeKind};
-use crate::keys::Shortcut;
 
 /// `path` as one shell word.
 pub fn quoted(path: &Path) -> String {
@@ -48,8 +47,14 @@ impl Desk {
             return;
         }
         let server = self.link.server;
+        let fence = self.connection.callback_fence();
         tx.read_clipboard(move |desk: &mut Self, content, _| {
-            desk.paste_answered(&terminal, server, content);
+            if fence
+                .as_ref()
+                .is_some_and(|fence| fence.is_current(&desk.connection))
+            {
+                desk.paste_answered(&terminal, server, content);
+            }
         });
     }
 
@@ -59,7 +64,7 @@ impl Desk {
         if !self.pastes_allowed() {
             return self.say(NoticeKind::Error, "Nothing was pasted.");
         }
-        if let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) {
+        if let Some(terminal) = self.connection.shown.as_ref().map(|s| s.resource.clone()) {
             self.paste(&terminal, text);
         }
     }
@@ -86,13 +91,6 @@ impl Desk {
         self.paste_content(terminal, content);
     }
 
-    /// Whether what has the keyboard lets a paste through. A paste is a
-    /// command like any other, and it must not replace a held question.
-    pub(super) fn pastes_allowed(&self) -> bool {
-        self.modal()
-            .is_none_or(|modal| modal.allows(Shortcut::Paste))
-    }
-
     /// A paste of any kind: files, then an image, then text.
     fn paste_content(&mut self, terminal: &ResourceId, content: &ClipboardContent) {
         if self.is_document(terminal) {
@@ -114,11 +112,13 @@ impl Desk {
         if self.is_document(terminal) {
             return;
         }
-        let Some(client) = &self.client else {
+        let Some(client) = &self.connection.client else {
             return;
         };
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
-        self.uploads.push((transfer, terminal.clone(), None));
+        self.connection
+            .uploads
+            .push((transfer, terminal.clone(), None));
         self.say(NoticeKind::Info, "Uploading image…");
     }
 
@@ -141,13 +141,14 @@ impl Desk {
         let finished = !receipts.is_empty();
         for receipt in receipts {
             let Some(at) = self
+                .connection
                 .uploads
                 .iter()
                 .position(|(transfer, _, _)| *transfer == receipt.transfer_id)
             else {
                 continue;
             };
-            let (_, terminal, destination) = self.uploads.remove(at);
+            let (_, terminal, destination) = self.connection.uploads.remove(at);
             match (receipt.outcome, receipt.path) {
                 (FileUploadOutcome::Completed, Some(path)) => {
                     self.end_uploading_notice();
@@ -174,7 +175,7 @@ impl Desk {
 
     /// "Uploading" is over with the last upload. A failure's notice stays.
     fn end_uploading_notice(&mut self) {
-        if self.uploads.is_empty() {
+        if self.connection.uploads.is_empty() {
             self.notice
                 .take_if(|notice| notice.kind == NoticeKind::Info);
         }
@@ -195,10 +196,10 @@ mod tests {
     }
 
     fn on_screen(desk: &mut Desk, terminal: u32) {
-        desk.client = Some(Arc::new(phux_client_runtime::Runtime::embedded(
+        desk.connection.client = Some(Arc::new(phux_client_runtime::Runtime::embedded(
             phux_client_runtime::control::ControlOptions::default(),
         )));
-        desk.shown = Some(crate::desk::Shown {
+        desk.connection.shown = Some(crate::desk::Shown {
             resource: ResourceId::local(terminal),
             view: phux_client_runtime::ViewId::from_raw(1),
         });
@@ -260,22 +261,24 @@ mod tests {
         let mut desk = desk();
         on_screen(&mut desk, 1);
         let server = desk.link.server;
-        desk.find_query = rune::TextEdit::new("find sentinel");
-        desk.find_query.focused = true;
+        desk.connection.find_query = rune::TextEdit::new("find sentinel");
+        desk.connection.find_query.focused = true;
         desk.paste_answered(&ResourceId::local(1), server, &lines());
         assert_eq!(desk.pending, None, "no terminal paste confirmation");
-        assert_eq!(desk.find_query.text, "find sentinel");
+        assert_eq!(desk.connection.find_query.text, "find sentinel");
         assert!(desk.notice.is_some(), "the delayed paste was refused");
     }
 
     #[test]
     fn uploading_stays_until_the_last_upload_ends() {
         let mut desk = desk();
-        desk.uploads.push((2, ResourceId::local(1), None));
+        desk.connection
+            .uploads
+            .push((2, ResourceId::local(1), None));
         desk.say(NoticeKind::Info, "Uploading image…");
         desk.end_uploading_notice();
         assert!(desk.notice.is_some(), "one is still on its way");
-        desk.uploads.clear();
+        desk.connection.uploads.clear();
         desk.end_uploading_notice();
         assert!(desk.notice.is_none());
     }
@@ -316,5 +319,28 @@ mod tests {
     fn several_paths_make_one_line() {
         let paths = [PathBuf::from("/a"), PathBuf::from("/b c")];
         assert_eq!(paths_line(&paths), "/a '/b c'");
+    }
+
+    #[test]
+    fn a_queued_paste_cannot_cross_runtime_replacement_with_the_same_numeric_pane() {
+        let (client, mut rt) = crate::test_support::input_fixture();
+        let board = rune::clipboard::memory();
+        board.set_text("first\nsecond");
+        rt.use_clipboard(&board);
+        rt.frame(0.0);
+        rt.update(|desk, tx| {
+            desk.paste_clipboard(tx);
+            desk.replace_connection(crate::desk::link::Replacement::Retry);
+            desk.connection.client = Some(client.clone());
+            desk.connection.shown = Some(crate::desk::Shown {
+                resource: ResourceId::local(1),
+                view: client.create_view(&ResourceId::local(1)).ok(),
+            });
+        });
+        rt.frame(0.1);
+        assert!(
+            rt.state.pending.is_none(),
+            "old clipboard text has no authority in the new namespace"
+        );
     }
 }

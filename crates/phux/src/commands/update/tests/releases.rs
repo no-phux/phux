@@ -159,7 +159,7 @@ fn an_install_already_on_the_target_release_does_nothing() {
 
     let outcome = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap();
     assert_eq!(outcome.action, Action::UpToDate);
-    assert!(!outcome.plan.update_available);
+    assert!(!outcome.plan.update_available());
     assert!(fake.downloads.borrow().is_empty());
     assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
 }
@@ -250,7 +250,7 @@ fn check_on_next_does_not_download_an_archive() {
     assert_eq!(outcome.action, Action::Checked);
     assert_eq!(outcome.plan.channel, Channel::Next);
     assert_eq!(outcome.plan.latest_sha(), Some(NEXT_SHA));
-    assert!(outcome.plan.update_available);
+    assert!(outcome.plan.update_available());
     assert!(fake.downloads.borrow().is_empty());
     assert_eq!(outcome.document()["channel"], "next");
     assert_eq!(outcome.document()["latest_sha"], NEXT_SHA);
@@ -302,8 +302,8 @@ fn a_next_plan_is_up_to_date_only_on_the_same_sha() {
         .unwrap()
     };
     let current = plan(NEXT_SHA);
-    assert!(!current.update_available && !current.changes_version);
-    assert!(plan(&"a".repeat(40)).update_available);
+    assert!(!current.update_available() && !current.changes_version());
+    assert!(plan(&"a".repeat(40)).update_available());
     assert!(
         plan_for(
             &Build::Stable(version("0.13.0")),
@@ -313,7 +313,7 @@ fn a_next_plan_is_up_to_date_only_on_the_same_sha() {
             None
         )
         .unwrap()
-        .update_available
+        .update_available()
     );
 }
 
@@ -426,7 +426,7 @@ fn an_lts_manifest_is_read_only_when_signed() {
     let outcome = check_lts(&fake).unwrap();
     assert_eq!(outcome.plan.channel, Channel::Lts);
     assert_eq!(outcome.plan.latest_tag(), "v9.9.9");
-    assert!(outcome.plan.update_available);
+    assert!(outcome.plan.update_available());
 
     let stable = run(
         &fake,

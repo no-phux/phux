@@ -62,20 +62,14 @@ impl AgentStateReport {
     }
 
     /// The human view's address column: `%name`, `-` with no record, or why
-    /// the record's name is not `%`-addressable. A detected agent's name is
-    /// its kind (`opencode`), which `%` refuses on purpose, so that case
-    /// prints the command that gives the pane a name of its own.
+    /// the record's name is not `%`-addressable. A name `%` cannot spell, or
+    /// one several panes share, prints the command that names the pane.
     pub(super) fn address_column(&self) -> String {
+        use crate::commands::json_err::codes::{INVALID_AGENT_NAME, SELECTOR_NOT_SINGLE};
         match (&self.address, self.address_refusal) {
             (Some(address), _) => address.clone(),
-            (None, Some(code))
-                if code == crate::commands::json_err::codes::INVALID_AGENT_NAME
-                    && phux_client::selector::is_addressable_agent_name(&self.agent.id) =>
-            {
-                format!(
-                    "(name it: phux agent set {} --name NAME --kind {})",
-                    self.terminal, self.agent.id
-                )
+            (None, Some(code)) if code == INVALID_AGENT_NAME || code == SELECTOR_NOT_SINGLE => {
+                format!("(name it: phux agent set {} --name NAME)", self.terminal)
             }
             (None, Some(code)) => format!("(not %-addressable: {code})"),
             (None, None) => "-".to_owned(),

@@ -5,10 +5,8 @@
 //! The kernel parses every byte here before anything leaves it: frontends receive
 //! [`AgentEventRecord`]s and a derived [`AgentSessionState`], never raw bytes.
 //!
-//! [`AgentPublication`] is the commit of one generation. Its stream field is
-//! the committed cursor, including when `records` is empty. The session kernel
-//! admits the resource and enforces the connection-wide staging budget; this
-//! module owns per-agent staging, validation, commit, and retirement.
+//! [`AgentPublication`] commits one generation; its stream field is the
+//! committed cursor even when `records` is empty.
 
 mod lifecycle;
 
@@ -58,7 +56,7 @@ pub struct AgentPublication {
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 
 /// Default number of retained records per session log.
-pub const DEFAULT_LOG_CAPACITY: usize = 512;
+pub(crate) const DEFAULT_LOG_CAPACITY: usize = 512;
 
 /// The `type` of one record. Open on decode: a newer producer's type is
 /// retained as [`Self::Unknown`] rather than rejected, since the closed set
@@ -143,7 +141,7 @@ pub struct AgentEventRecord {
 impl AgentEventRecord {
     /// A string field of `data`, if present.
     #[must_use]
-    pub fn data_str(&self, field: &str) -> Option<&str> {
+    pub(crate) fn data_str(&self, field: &str) -> Option<&str> {
         self.data.get(field).and_then(Value::as_str)
     }
 

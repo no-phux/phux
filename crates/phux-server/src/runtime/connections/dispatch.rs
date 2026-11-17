@@ -55,6 +55,7 @@ where
     let mut input_receipts = JoinSet::new();
     let mut held_commands = JoinSet::new();
     let service_http = crate::runtime::service_http::Exchanges::default();
+    let forwards = crate::runtime::forward::Forwards::default();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
     let mut lane = input_lane.as_ref().map(InputLane::connect);
@@ -136,6 +137,7 @@ where
             input_receipt_slots: &input_receipt_slots,
             held_commands: &mut held_commands,
             service_http: &service_http,
+            forwards: &forwards,
         };
         if let std::ops::ControlFlow::Break(ending) = dispatch.dispatch(frame).await {
             break 'conn ending;
@@ -146,6 +148,7 @@ where
     crate::runtime::approvals::withdraw(&state, client_id);
     held_commands.shutdown().await;
     crate::runtime::service_http::close_all(&state, &service_http);
+    crate::runtime::forward::close_all(&state, client_id, &forwards);
     input_receipts.shutdown().await;
     command_tasks.shutdown().await;
     plumbing.end(ending, &state, client_id, &root_token).await;
@@ -248,6 +251,7 @@ pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
     pub(super) held_commands: &'a mut JoinSet<()>,
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
+    pub(super) forwards: &'a crate::runtime::forward::Forwards,
 }
 
 pub(crate) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;

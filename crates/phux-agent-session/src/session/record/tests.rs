@@ -155,13 +155,13 @@ fn canonical_record_limit_includes_newline_and_server_fields() {
         "text".to_owned(),
         Value::String("x".repeat(MAX_RECORD_BYTES - overhead)),
     );
-    let line = record
-        .stamp_bounded(u64::MAX, u64::MAX)
-        .expect("exact bound");
+    let stamp =
+        |record: &ValidRecord| stamp_batch(std::slice::from_ref(record), u64::MAX, u64::MAX, 0);
+    let (line, _) = stamp(&record).expect("exact bound");
     assert_eq!(line.len(), MAX_RECORD_BYTES);
     record.data["text"] = Value::String("x".repeat(MAX_RECORD_BYTES - overhead + 1));
     assert_eq!(
-        record.stamp_bounded(u64::MAX, u64::MAX),
+        stamp(&record),
         Err(RecordError::Oversized {
             len: MAX_RECORD_BYTES + 1
         })

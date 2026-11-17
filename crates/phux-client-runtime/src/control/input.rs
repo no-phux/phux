@@ -232,7 +232,7 @@ impl ControlPlane {
     /// connection's shell events report it: `Some(true)` after a start
     /// (OSC 133 C), `Some(false)` after a finish (OSC 133 D) or the shell's
     /// exit, `None` before either. A start that predates the connection is
-    /// `None`; [`crate::Client::command_running`] then reads the replica.
+    /// `None`.
     #[must_use]
     pub fn command_state(&self, terminal_id: &ResourceId) -> Option<bool> {
         self.command_states.get(terminal_id).copied()

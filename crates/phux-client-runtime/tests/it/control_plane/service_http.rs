@@ -33,7 +33,7 @@ fn info() -> ServiceHttpRequest {
 }
 
 /// The value a resolved call holds; panics while it is still pending.
-fn ready<T>(call: impl Future<Output = T>) -> T {
+pub(super) fn ready<T>(call: impl Future<Output = T>) -> T {
     let mut call = pin!(call);
     match call.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(value) => value,
@@ -41,7 +41,7 @@ fn ready<T>(call: impl Future<Output = T>) -> T {
     }
 }
 
-fn sent_request_id(plane: &mut ControlPlane) -> (u32, Command) {
+pub(super) fn sent_request_id(plane: &mut ControlPlane) -> (u32, Command) {
     match decode(&plane.take_outbound()[0]) {
         FrameKind::Command {
             request_id,
@@ -80,12 +80,10 @@ fn open_read_and_close_resolve_their_calls() {
         status: 200,
         headers: vec![("content-type".to_owned(), "application/json".to_owned())],
     };
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::ServiceHttpHead(head.clone())),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::ServiceHttpHead(head.clone())),
+    );
     assert_eq!(ready(open).unwrap(), head);
 
     let read = plane.service_http_read(9, 1024).unwrap();
@@ -101,12 +99,10 @@ fn open_read_and_close_resolve_their_calls() {
         bytes: b"{}".to_vec(),
         end: true,
     };
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::ServiceHttpChunk(chunk.clone())),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::ServiceHttpChunk(chunk.clone())),
+    );
     assert_eq!(ready(read).unwrap(), chunk);
 
     let close = plane.service_http_close(9).unwrap();
@@ -180,23 +176,16 @@ fn a_dropped_open_closes_the_exchange_it_was_answered_with() {
         status: 200,
         headers: Vec::new(),
     };
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::ServiceHttpHead(head)),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::ServiceHttpHead(head)),
+    );
     let (close_id, command) = sent_request_id(&mut plane);
     assert!(matches!(
         command,
         Command::ServiceHttpClose { exchange: 42 }
     ));
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: close_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(close_id, CommandResult::Ok);
     assert!(
         plane.take_outbound().is_empty(),
         "the close's answer resolves nothing"

@@ -211,7 +211,8 @@ impl<'a> Decoder<'a> {
         Ok(slice)
     }
 
-    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+    /// Read `N` raw bytes.
+    pub(crate) fn read_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         self.take(N)?
             .try_into()
             .map_err(|_| DecodeError::UnexpectedEof)
@@ -224,32 +225,32 @@ impl<'a> Decoder<'a> {
 
     /// Read a big-endian `u16`.
     pub fn read_u16_be(&mut self) -> Result<u16, DecodeError> {
-        self.take_array().map(u16::from_be_bytes)
+        self.read_array().map(u16::from_be_bytes)
     }
 
     /// Read a big-endian `u32`.
     pub fn read_u32_be(&mut self) -> Result<u32, DecodeError> {
-        self.take_array().map(u32::from_be_bytes)
+        self.read_array().map(u32::from_be_bytes)
     }
 
     /// Read a big-endian `u64`.
     pub fn read_u64_be(&mut self) -> Result<u64, DecodeError> {
-        self.take_array().map(u64::from_be_bytes)
+        self.read_array().map(u64::from_be_bytes)
     }
 
     /// Read a big-endian two's-complement `i64`.
     pub fn read_i64_be(&mut self) -> Result<i64, DecodeError> {
-        self.take_array().map(i64::from_be_bytes)
+        self.read_array().map(i64::from_be_bytes)
     }
 
     /// Read a big-endian IEEE-754 `f32`, bit for bit (NaNs preserved).
     pub fn read_f32_be(&mut self) -> Result<f32, DecodeError> {
-        self.take_array().map(f32::from_be_bytes)
+        self.read_array().map(f32::from_be_bytes)
     }
 
     /// Read a big-endian IEEE-754 `f64`, bit for bit (NaNs preserved).
     pub fn read_f64_be(&mut self) -> Result<f64, DecodeError> {
-        self.take_array().map(f64::from_be_bytes)
+        self.read_array().map(f64::from_be_bytes)
     }
 
     /// Read a bool byte: `0` is `false` and `1` is `true`. Any other value is

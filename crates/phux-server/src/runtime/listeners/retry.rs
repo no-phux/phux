@@ -31,6 +31,22 @@ pub(super) fn probe_bind(transport: RemoteListenerTransport, addr: SocketAddr) -
     }
 }
 
+/// Capped exponential backoff: 1s, 2s, 4s, ... up to [`MAX_DELAY`].
+pub(super) struct Backoff(Duration);
+
+impl Backoff {
+    pub(super) const fn new() -> Self {
+        Self(FIRST_DELAY)
+    }
+
+    /// The next delay to wait.
+    pub(super) fn next_delay(&mut self) -> Duration {
+        let delay = self.0;
+        self.0 = (delay * 2).min(MAX_DELAY);
+        delay
+    }
+}
+
 /// How [`retry_until_bindable`] ended.
 #[derive(Debug)]
 pub(super) enum Retried {
@@ -54,13 +70,12 @@ pub(super) async fn retry_until_bindable(
 ) -> Retried {
     let mut last = first;
     let mut in_use_since = (first == ErrorKind::AddrInUse).then(Instant::now);
-    let mut delay = FIRST_DELAY;
+    let mut backoff = Backoff::new();
     loop {
         tokio::select! {
             () = token.cancelled() => return Retried::Cancelled,
-            () = tokio::time::sleep(delay) => {}
+            () = tokio::time::sleep(backoff.next_delay()) => {}
         }
-        delay = (delay * 2).min(MAX_DELAY);
         let err = match probe() {
             Ok(()) => return Retried::Bindable,
             Err(err) => err,

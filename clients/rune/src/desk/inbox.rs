@@ -54,7 +54,7 @@ pub struct Inbox {
 impl Desk {
     pub fn inbox_items(&self) -> Vec<Item> {
         let mut items = inbox::items(
-            self.topology.as_ref(),
+            self.connection.topology.as_ref(),
             &self.activities,
             &self.inbox.approvals,
         );
@@ -191,7 +191,9 @@ impl Desk {
     /// Type `text` as the answer to `question`. The runtime refuses a stale
     /// question, so a reply can't land on whatever the agent moved on to.
     pub fn answer(&mut self, terminal: &ResourceId, question: &str, text: &str) {
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         if self.inbox.answers.values().any(|t| t == terminal) {
             return;
         }
@@ -211,10 +213,10 @@ impl Desk {
 
     /// Show what needs a person most, or the next after the shown one.
     pub fn jump_to_attention(&mut self) {
-        let Some(topology) = &self.topology else {
+        let Some(topology) = &self.connection.topology else {
             return;
         };
-        let shown = self.shown.as_ref().map(|s| &s.resource);
+        let shown = self.connection.shown.as_ref().map(|s| &s.resource);
         let next = inbox::next_jump(&topology.panes, &self.activities, shown)
             .map(|p| (p.terminal_id.clone(), p.session_name.clone()));
         if let Some((terminal, session)) = next {
@@ -224,7 +226,9 @@ impl Desk {
 
     /// Send one decision. Never retried: the event reports how it ended.
     pub fn decide(&mut self, id: &str, decision: Decision) {
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         let Some(id) = ApprovalId::parse(id) else {
             return;
         };
@@ -251,7 +255,9 @@ impl Desk {
             | Event::StatusChanged(_) => {
                 let lost = matches!(event, Event::StatusChanged(s) if *s != Status::Attached);
                 let unknown = lost && self.inbox.questions.disconnected();
-                self.inbox.questions.refresh(client, self.topology.as_ref());
+                self.inbox
+                    .questions
+                    .refresh(client, self.connection.topology.as_ref());
                 unknown | !matches!(event, Event::TopologyChanged | Event::StatusChanged(_))
             }
             Event::ApprovalsChanged => {
@@ -292,7 +298,7 @@ impl Desk {
 
     fn alert_inputs(&self) -> AlertInputs {
         let mut listed = DefaultHasher::new();
-        for pane in self.topology.iter().flat_map(|t| t.panes.iter()) {
+        for pane in self.connection.topology.iter().flat_map(|t| t.panes.iter()) {
             (&pane.terminal_id, &pane.session_name, &pane.title).hash(&mut listed);
             (&pane.name, &pane.cwd).hash(&mut listed);
         }
@@ -312,11 +318,11 @@ impl Desk {
     /// Once a reconnect has attached, its list is the truth. Commands it left
     /// in doubt wait for a replica, and only what's on screen has one.
     fn relist(&mut self) -> bool {
-        if self.status != Status::Attached {
+        if self.connection.status != Status::Attached {
             return false;
         }
         let mut changed = false;
-        if let (true, Some(topology)) = (self.inbox.relist, &self.topology) {
+        if let (true, Some(topology)) = (self.inbox.relist, &self.connection.topology) {
             let listed: Vec<ResourceId> = topology
                 .panes
                 .iter()
@@ -332,7 +338,7 @@ impl Desk {
     }
 
     fn prove_commands(&mut self) -> bool {
-        let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) else {
+        let Some(engine) = self.connection.client.as_ref().and_then(|c| c.engine()) else {
             return false;
         };
         let on_screen = self.on_screen();

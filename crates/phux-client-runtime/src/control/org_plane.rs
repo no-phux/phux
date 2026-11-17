@@ -8,22 +8,23 @@
 //! [`OrgOutcome::NotSent`], and `close_terminals` keeps its legacy
 //! `CLOSE_TAB_RESOURCES` path.
 
-use std::collections::{HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
+use std::time::Instant;
 
-use phux_client_core::layout::ArrangementDoc as HandleDoc;
-use phux_client_core::layout::wire::{WireError, to_protocol};
 use phux_client_core::org_ops::{
-    ORG_JOURNAL_MAX_OPS, ORG_RETRY_HORIZON_MS, OrgJournal, OrgOutcome, OrgReport,
-    OrganizationCommand, SubmitError, live_target,
+    ORG_JOURNAL_MAX_OPS, OrgJournal, OrgOutcome, OrgReport, OrganizationCommand, SubmitError,
 };
-use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::{ArrangementKey, AuthorityId, OperationId, ResourceKey, SessionKey};
+use phux_protocol::ids::{ArrangementKey, OperationId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, Committed, FrameKind, MAX_ORG_BATCH,
-    MoveItem, OrgFilter, Refusal, SessionLifetime, TerminateMode,
+    AgentEvent, Command, CommandResult, CommandValue, FrameKind, OrgFilter, Refusal,
 };
+
+mod bulk;
+mod commands;
+
+use bulk::{BulkMove, BulkPhase};
+pub use commands::ArrangementSubmitError;
 
 use super::organization::ReplicaAction;
 use super::{ControlPlane, Event, Pending, Topology};
@@ -36,27 +37,6 @@ pub(super) struct CloseBatch {
     errors: Vec<String>,
 }
 
-/// Only the current chunk enters the retry journal. Later payloads are built
-/// after a post-receipt inventory read, never by changing a retry's payload.
-#[derive(Debug)]
-struct BulkMove {
-    authority: AuthorityId,
-    to: SessionKey,
-    remaining: VecDeque<(OperationId, Vec<ResourceKey>)>,
-    phase: BulkPhase,
-    /// Bounds inventory waits; an attempted command keeps the journal's
-    /// independent receipt/retry semantics rather than being called not sent.
-    deadline: Instant,
-}
-
-#[derive(Debug)]
-enum BulkPhase {
-    Submitted(OperationId),
-    NeedsSeed,
-    Seeding,
-    Ready,
-}
-
 /// The lane's per-plane state.
 #[derive(Debug, Default)]
 pub(super) struct OrgLane {
@@ -65,6 +45,9 @@ pub(super) struct OrgLane {
     /// may go out.
     pub(super) ready: bool,
     pub(super) closes: Vec<CloseBatch>,
+    /// Terminals created by session key for a spawn request whose session
+    /// had no live member to address: operation to spawn request id.
+    pub(super) spawns: Vec<(OperationId, u32)>,
     moves: Vec<BulkMove>,
     deferred: usize,
     seed_has_cursor: bool,
@@ -87,6 +70,16 @@ impl ControlPlane {
         self.server
             .as_ref()
             .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
+    }
+
+    /// Whether the connected server advertises `SLOT_TABS`, so an
+    /// arrangement write carries slot tabs instead of the server keeping its
+    /// own (`docs/organization.md#slot-tabs`).
+    #[must_use]
+    pub fn slot_tabs_supported(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::SlotTabs))
     }
 
     /// Whether the connected server advertises `SESSION_PROJECT`, so
@@ -342,7 +335,10 @@ impl ControlPlane {
 
     /// All producers use this gate: deferred chunks reserve real journal
     /// slots, and an exact retry of an already journaled operation needs none.
-    fn journal_org_operation(&mut self, command: Command) -> Result<OperationId, SubmitError> {
+    pub(super) fn journal_org_operation(
+        &mut self,
+        command: Command,
+    ) -> Result<OperationId, SubmitError> {
         let operation = command
             .organization_operation()
             .ok_or(SubmitError::NotAnOperation)?;
@@ -362,7 +358,7 @@ impl ControlPlane {
         self.org.journal.submit(command, self.now_ms())
     }
 
-    fn flush_org_journal(&mut self) {
+    pub(super) fn flush_org_journal(&mut self) {
         if !self.org.ready || !self.handshake_ready {
             return;
         }
@@ -433,6 +429,9 @@ impl ControlPlane {
                 }
                 continue;
             }
+            if self.resolve_session_spawn(&report) {
+                continue;
+            }
             let cancelled = self.resolve_bulk_move(&report);
             self.push_event(Event::OrganizationOperation {
                 operation: report.operation,
@@ -444,517 +443,6 @@ impl ControlPlane {
         }
         self.advance_bulk_moves();
     }
-
-    fn resolve_bulk_move(&mut self, report: &OrgReport) -> Option<BulkMove> {
-        let index = self.org.moves.iter().position(
-            |run| matches!(run.phase, BulkPhase::Submitted(id) if id == report.operation),
-        )?;
-        if matches!(&report.outcome, OrgOutcome::Committed(receipt) if receipt.operation == report.operation)
-            && !self.org.moves[index].remaining.is_empty()
-        {
-            self.org.moves[index].phase = BulkPhase::NeedsSeed;
-            None
-        } else {
-            Some(self.org.moves.remove(index))
-        }
-    }
-
-    fn bulk_moves_seeded(&mut self) {
-        for run in &mut self.org.moves {
-            if matches!(run.phase, BulkPhase::Seeding) {
-                run.phase = BulkPhase::Ready;
-            }
-        }
-    }
-
-    fn cancel_bulk_tail(&mut self, run: BulkMove, why: &str) {
-        self.org.deferred -= run.remaining.len();
-        for (operation, _) in run.remaining {
-            self.push_event(Event::OrganizationOperation {
-                operation,
-                outcome: OrgOutcome::NotSent {
-                    reason: why.to_owned(),
-                },
-            });
-        }
-    }
-
-    fn cancel_bulk_moves(&mut self, why: &str) {
-        for run in std::mem::take(&mut self.org.moves) {
-            self.cancel_bulk_tail(run, why);
-        }
-    }
-
-    fn expire_bulk_reads(&mut self, now: Instant) {
-        let (running, expired): (Vec<_>, Vec<_>) = std::mem::take(&mut self.org.moves)
-            .into_iter()
-            .partition(|run| matches!(run.phase, BulkPhase::Submitted(_)) || now < run.deadline);
-        self.org.moves = running;
-        for run in expired {
-            self.cancel_bulk_tail(run, "the bulk move inventory deadline passed");
-        }
-    }
-
-    fn advance_bulk_moves(&mut self) {
-        self.expire_bulk_reads(Instant::now());
-        if !self.handshake_ready || !self.org.ready || !self.organization.is_live() {
-            return;
-        }
-        let mut running = Vec::new();
-        for mut run in std::mem::take(&mut self.org.moves) {
-            if self.organization.authority() != Some(run.authority) {
-                self.cancel_bulk_tail(run, "the server now serves a different authority");
-                continue;
-            }
-            match run.phase {
-                BulkPhase::NeedsSeed => {
-                    run.phase = BulkPhase::Seeding;
-                    self.queue_org_seed(OrgFilter::All);
-                }
-                BulkPhase::Ready => {
-                    if !self.organization.is_live() {
-                        running.push(run);
-                        continue;
-                    }
-                    if !self.submit_bulk_chunk(&mut run) {
-                        continue;
-                    }
-                }
-                BulkPhase::Submitted(_) | BulkPhase::Seeding => {}
-            }
-            running.push(run);
-        }
-        self.org.moves = running;
-        self.flush_org_journal();
-    }
-
-    fn submit_bulk_chunk(&mut self, run: &mut BulkMove) -> bool {
-        let Some((operation, resources)) = run.remaining.front() else {
-            return false;
-        };
-        let operation = *operation;
-        // Transfer this reserved slot to the journal even while the run is
-        // temporarily removed from the lane during advancement.
-        self.org.deferred -= 1;
-        let result = self
-            .bulk_move_command(operation, resources, run.to)
-            .and_then(|command| self.journal_org_operation(command));
-        if let Err(error) = result {
-            self.org.deferred -= run.remaining.len() - 1;
-            for (operation, _) in run.remaining.drain(..) {
-                self.push_event(Event::OrganizationOperation {
-                    operation,
-                    outcome: OrgOutcome::NotSent {
-                        reason: error.to_string(),
-                    },
-                });
-            }
-            return false;
-        }
-        run.remaining.pop_front();
-        run.phase = BulkPhase::Submitted(operation);
-        true
-    }
-
-    fn bulk_move_command(
-        &self,
-        operation: OperationId,
-        resources: &[ResourceKey],
-        to: SessionKey,
-    ) -> Result<Command, SubmitError> {
-        let to_expected = self.session_record(&to)?.revision;
-        let items = resources
-            .iter()
-            .map(|resource| {
-                let from = self
-                    .organization
-                    .resource(resource)
-                    .ok_or(SubmitError::NotAnOperation)?
-                    .session;
-                Ok(MoveItem {
-                    resource: *resource,
-                    from,
-                    from_expected: self.session_record(&from)?.revision,
-                })
-            })
-            .collect::<Result<Vec<_>, SubmitError>>()?;
-        Ok(Command::ResourceMoveMany {
-            operation,
-            items,
-            to,
-            to_expected,
-        })
-    }
-
-    // ----- typed commands --------------------------------------------------
-
-    fn session_record(
-        &self,
-        session: &SessionKey,
-    ) -> Result<&phux_protocol::wire::frame::SessionRecord, SubmitError> {
-        self.organization
-            .session(session)
-            .ok_or(SubmitError::NotAnOperation)
-    }
-
-    /// Rename a session (`SESSION_RENAME`; the last writer wins).
-    ///
-    /// # Errors
-    ///
-    /// [`Self::submit_organization`]'s errors.
-    pub fn rename_session(
-        &mut self,
-        session: SessionKey,
-        name: &str,
-    ) -> Result<OperationId, SubmitError> {
-        self.submit_organization(Command::SessionRename {
-            operation: mint_operation(),
-            session,
-            name: name.to_owned(),
-        })
-    }
-
-    /// Link a session into a named project, or clear its link
-    /// (`SESSION_SET_PROJECT`; the last writer wins). The link is the
-    /// session's `"project.link"` attribute, separate from the free-text
-    /// `"project"` label; clients group sessions across hosts by it ahead of
-    /// the repository identity.
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError::Unsupported`] unless the connected server advertises
-    /// `SESSION_PROJECT`; [`Self::submit_organization`]'s errors.
-    pub fn set_session_project(
-        &mut self,
-        session: SessionKey,
-        project: Option<&str>,
-    ) -> Result<OperationId, SubmitError> {
-        if !self.handshake_ready || !self.session_project_supported() {
-            return Err(SubmitError::Unsupported);
-        }
-        self.submit_organization(Command::SessionSetProject {
-            operation: mint_operation(),
-            session,
-            project: project.map(str::to_owned),
-        })
-    }
-
-    /// Make a session persistent or ephemeral (the last writer wins).
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::rename_session`].
-    pub fn set_session_lifetime(
-        &mut self,
-        session: SessionKey,
-        lifetime: SessionLifetime,
-    ) -> Result<OperationId, SubmitError> {
-        self.submit_organization(Command::SessionSetLifetime {
-            operation: mint_operation(),
-            session,
-            lifetime,
-        })
-    }
-
-    /// Delete an empty session; refused `NOT_EMPTY` while it has members.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::rename_session`].
-    pub fn delete_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        self.submit_organization(Command::SessionDelete {
-            operation: mint_operation(),
-            session,
-        })
-    }
-
-    /// Kill a whole session (`SESSION_KILL`): the server ends every member,
-    /// work that joined meanwhile included, and deletes the session. The
-    /// outcome is [`Event::OrganizationOperation`]; its receipt counts the
-    /// members ended.
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError::Unsupported`] unless the connected server advertises
-    /// `SESSION_KILL`; [`Self::submit_organization`]'s errors.
-    pub fn kill_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        let supported = self.handshake_ready
-            && self
-                .server
-                .as_ref()
-                .is_some_and(|server| server.has_ext(ServerFeatureExt::SessionKill));
-        if !supported {
-            return Err(SubmitError::Unsupported);
-        }
-        self.submit_organization(Command::SessionKill {
-            operation: mint_operation(),
-            session,
-        })
-    }
-
-    /// Legacy alias for [`Self::intake_resolve`].
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError::NotAnOperation`] when the replica does not hold the
-    /// session; [`Self::submit_organization`]'s errors.
-    pub fn inbox_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        self.intake_resolve(session)
-    }
-
-    /// Clear a session's Intake mark using the legacy-compatible wire command.
-    ///
-    /// # Errors
-    ///
-    /// Session absent from the replica or submission refused.
-    pub fn intake_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        let expected = self.session_record(&session)?.revision;
-        self.submit_organization(Command::intake_resolve(mint_operation(), session, expected))
-    }
-
-    /// Move one resource into `to` (membership only; it keeps running).
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::intake_resolve`], for the resource or either session.
-    pub fn move_resource(
-        &mut self,
-        resource: ResourceKey,
-        to: SessionKey,
-    ) -> Result<OperationId, SubmitError> {
-        let from = self
-            .organization
-            .resource(&resource)
-            .ok_or(SubmitError::NotAnOperation)?
-            .session;
-        let from_expected = self.session_record(&from)?.revision;
-        let to_expected = self.session_record(&to)?.revision;
-        self.submit_organization(Command::ResourceMove {
-            operation: mint_operation(),
-            resource,
-            from,
-            from_expected,
-            to,
-            to_expected,
-        })
-    }
-
-    /// Move many resources into `to`, chunked at the server's batch bound:
-    /// one atomic `RESOURCE_MOVE_MANY` per chunk, each with its own
-    /// operation and outcome. Chunks run sequentially, refreshing the replica
-    /// after each receipt; the whole selection is not atomic. A failed or
-    /// uncertain chunk cancels every remaining chunk as `NotSent`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::intake_resolve`]; nothing is submitted when any resource
-    /// or session is unknown, a resource is duplicated, or capacity is full.
-    pub fn move_resources(
-        &mut self,
-        resources: &[ResourceKey],
-        to: SessionKey,
-    ) -> Result<Vec<OperationId>, SubmitError> {
-        let mut chunks = self.plan_bulk_move(resources, to)?;
-        let operations = chunks.iter().map(|(id, _)| *id).collect();
-        let Some((operation, first)) = chunks.pop_front() else {
-            return Ok(operations);
-        };
-        let command = self.bulk_move_command(operation, &first, to)?;
-        let authority = self
-            .organization
-            .authority()
-            .ok_or(SubmitError::NotAnOperation)?;
-        self.journal_org_operation(command)?;
-        if !chunks.is_empty() {
-            self.org.deferred += chunks.len();
-            self.org.moves.push(BulkMove {
-                authority,
-                to,
-                remaining: chunks,
-                phase: BulkPhase::Submitted(operation),
-                deadline: Instant::now() + Duration::from_millis(ORG_RETRY_HORIZON_MS),
-            });
-        }
-        if self.handshake_ready && !self.organization_supported() {
-            let reports = self.org.journal.begin_connection(false, self.now_ms());
-            self.handle_org_reports(reports);
-        }
-        self.flush_org_journal();
-        Ok(operations)
-    }
-
-    fn plan_bulk_move(
-        &self,
-        resources: &[ResourceKey],
-        to: SessionKey,
-    ) -> Result<VecDeque<(OperationId, Vec<ResourceKey>)>, SubmitError> {
-        self.session_record(&to)?;
-        if resources.iter().collect::<HashSet<_>>().len() != resources.len() {
-            return Err(SubmitError::NotAnOperation);
-        }
-        let chunks = resources
-            .chunks(MAX_ORG_BATCH)
-            .map(|chunk| {
-                let operation = mint_operation();
-                self.bulk_move_command(operation, chunk, to)?;
-                Ok((operation, chunk.to_vec()))
-            })
-            .collect::<Result<VecDeque<_>, SubmitError>>()?;
-        if self.org.journal.len() + self.org.deferred + chunks.len() > ORG_JOURNAL_MAX_OPS {
-            return Err(SubmitError::Full);
-        }
-        Ok(chunks)
-    }
-
-    /// Undo a committed organization edit by its receipt.
-    ///
-    /// # Errors
-    ///
-    /// [`Self::submit_organization`]'s errors.
-    pub fn undo(&mut self, receipt: &Committed) -> Result<OperationId, SubmitError> {
-        self.submit_organization(Command::OrganizationUndo {
-            operation: mint_operation(),
-            undo: receipt.operation,
-            expected: receipt.revisions.clone(),
-        })
-    }
-
-    /// Remove an inactive resource record; refused while it runs.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::rename_session`].
-    pub fn remove_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
-        self.submit_organization(Command::ResourceRemove {
-            operation: mint_operation(),
-            resource,
-        })
-    }
-
-    /// Start a new activation of an inactive resource.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::intake_resolve`].
-    pub fn relaunch_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
-        let expected = self
-            .organization
-            .resource(&resource)
-            .ok_or(SubmitError::NotAnOperation)?
-            .revision;
-        self.submit_organization(Command::ResourceRelaunch {
-            operation: mint_operation(),
-            resource,
-            expected,
-        })
-    }
-
-    /// Terminate a resource's current activation here.
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError::NotAnOperation`] when nothing executes here.
-    pub fn terminate_resource(
-        &mut self,
-        resource: ResourceKey,
-        mode: TerminateMode,
-    ) -> Result<OperationId, SubmitError> {
-        let target = self
-            .organization
-            .resource(&resource)
-            .and_then(live_target)
-            .ok_or(SubmitError::NotAnOperation)?;
-        self.submit_organization(Command::ResourceTerminate {
-            operation: mint_operation(),
-            target,
-            mode,
-        })
-    }
-
-    /// Replace `session`'s arrangement with a handle-space `document`, at the
-    /// revision the replica holds (compare-and-swap: a `CONFLICT` outcome
-    /// means re-read and redo).
-    ///
-    /// # Errors
-    ///
-    /// [`ArrangementSubmitError`] — the replica does not hold the
-    /// arrangement, a leaf has no key, or the submission failed.
-    pub fn replace_arrangement(
-        &mut self,
-        session: SessionKey,
-        document: &HandleDoc,
-    ) -> Result<OperationId, ArrangementSubmitError> {
-        let (key, revision, _, binding) = self
-            .organization
-            .arrangement_document(&session)
-            .ok_or(ArrangementSubmitError::NotHeld)?;
-        let wire = to_protocol(document, self.organization.handles(), &binding)?;
-        Ok(self.submit_organization(Command::ArrangementReplace {
-            operation: mint_operation(),
-            arrangement: key,
-            expected: revision,
-            document: wire,
-        })?)
-    }
-
-    /// Close terminals. Against a server that advertises `ORGANIZATION`
-    /// each is terminated (`RESOURCE_TERMINATE`, which leaves membership and
-    /// arrangement to the server); otherwise one atomic `CLOSE_TAB_RESOURCES`
-    /// when the server advertises it. The reply is
-    /// [`Event::TerminalsClosed`] under the returned id; `None` when neither
-    /// path is available.
-    pub(super) fn close_terminals_by_record(&mut self, ids: &[ResourceId]) -> Option<u32> {
-        if !self.organization_supported() || !self.organization.is_live() {
-            return None;
-        }
-        let request_id = self.next_request_id();
-        let mut batch = CloseBatch {
-            request_id,
-            operations: HashSet::new(),
-            errors: Vec::new(),
-        };
-        for id in ids {
-            let target = self.organization.resource_by_live(id).and_then(live_target);
-            let Some(target) = target else {
-                batch.errors.push(format!("{id:?} has no live record here"));
-                continue;
-            };
-            match self.journal_org_operation(Command::ResourceTerminate {
-                operation: mint_operation(),
-                target,
-                mode: TerminateMode::Graceful,
-            }) {
-                Ok(operation) => {
-                    batch.operations.insert(operation);
-                }
-                Err(error) => batch.errors.push(error.to_string()),
-            }
-        }
-        if batch.operations.is_empty() {
-            self.push_event(Event::TerminalsClosed {
-                request_id,
-                error: (!batch.errors.is_empty()).then(|| batch.errors.join("; ")),
-            });
-        } else {
-            self.org.closes.push(batch);
-            self.flush_org_journal();
-        }
-        Some(request_id)
-    }
-}
-
-/// Why [`ControlPlane::replace_arrangement`] submitted nothing.
-#[derive(Debug, thiserror::Error)]
-pub enum ArrangementSubmitError {
-    /// The replica does not hold the session's arrangement; fetch it first.
-    #[error("the session's arrangement is not loaded")]
-    NotHeld,
-    /// A leaf names a handle with no resource key.
-    #[error(transparent)]
-    Wire(#[from] WireError),
-    /// The journal refused the submission.
-    #[error(transparent)]
-    Submit(#[from] SubmitError),
 }
 
 /// A fresh random operation id.
@@ -967,49 +455,12 @@ pub fn mint_operation() -> OperationId {
     }
 }
 
-fn outcome_sentence(outcome: &OrgOutcome) -> String {
+pub(super) fn outcome_sentence(outcome: &OrgOutcome) -> String {
     match outcome {
         OrgOutcome::Refused(refusal) => phux_client_core::org_ops::refusal_sentence(refusal),
         OrgOutcome::Error { message, .. } => message.clone(),
         OrgOutcome::Unknown { reason } => format!("outcome unknown: {reason}"),
         OrgOutcome::NotSent { reason } => format!("not sent: {reason}"),
         other => format!("{other:?}"),
-    }
-}
-
-#[cfg(test)]
-mod bulk_deadline_tests {
-    #![allow(clippy::unwrap_used, reason = "test assertions")]
-
-    use super::*;
-    use crate::control::ControlOptions;
-
-    #[test]
-    fn inventory_deadline_is_scheduled_and_cancels_only_the_never_sent_tail() {
-        let mut plane = ControlPlane::new(ControlOptions::default());
-        let first = mint_operation();
-        let tail = mint_operation();
-        let deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-        plane.org.moves.push(BulkMove {
-            authority: AuthorityId::new([1; 16]).unwrap(),
-            to: SessionKey::new([2; 16]).unwrap(),
-            remaining: VecDeque::from([(tail, vec![ResourceKey::new([3; 16]).unwrap()])]),
-            phase: BulkPhase::Submitted(first),
-            deadline,
-        });
-        plane.org.deferred = 1;
-        // An attempted command retains independent journal semantics. The
-        // inventory timer is armed only once its receipt has committed.
-        assert!(plane.next_operation_deadline().is_none());
-        plane.org.moves[0].phase = BulkPhase::Seeding;
-        assert_eq!(plane.next_operation_deadline(), Some(deadline));
-        assert!(plane.expire_operations());
-        assert!(matches!(plane.take_events().as_slice(),
-            [Event::OrganizationOperation { operation, outcome: OrgOutcome::NotSent { .. } }] if *operation == tail));
-        assert_eq!(plane.org.deferred, 0);
-        assert!(plane.next_operation_deadline().is_none());
-        assert!(!plane.expire_operations());
-        plane.bulk_moves_seeded(); // A late page cannot resurrect timed-out work.
-        assert!(plane.org.moves.is_empty());
     }
 }

@@ -2,7 +2,6 @@
 
 use std::path::Path;
 
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, RESOURCE_TAGS_KEY, Scope, StateScope,
@@ -52,6 +51,17 @@ impl Degradation {
     pub fn notices(&self) -> &[String] {
         &self.notices
     }
+
+    /// Both answers' notices, `self`'s first, each notice once.
+    #[must_use]
+    pub fn and(mut self, later: Self) -> Self {
+        for notice in later.notices {
+            if !self.notices.contains(&notice) {
+                self.notices.push(notice);
+            }
+        }
+        self
+    }
 }
 
 /// The stderr line `phux` and `phux-mcp` print per notice when a verb hits
@@ -75,11 +85,8 @@ pub struct StateView {
     snapshot: SessionSnapshot,
     /// What that snapshot could not see.
     degradation: Degradation,
-    /// The features the answering server advertised, when negotiated: an
-    /// empty `hosts` list is authoritative only under `HostSessions`.
-    server_features: Option<ServerFeatureSet>,
-    /// The organization records read alongside, when the server advertises
-    /// `ORGANIZATION` and the reader asked for them.
+    /// The organization records read alongside, when the reader asked for
+    /// them.
     organization: Option<Box<crate::org::OrgInventory>>,
 }
 
@@ -89,7 +96,6 @@ impl StateView {
         Self {
             snapshot,
             degradation,
-            server_features: None,
             organization: None,
         }
     }
@@ -104,28 +110,6 @@ impl StateView {
     #[must_use]
     pub fn organization(&self) -> Option<&crate::org::OrgInventory> {
         self.organization.as_deref()
-    }
-
-    /// Record the feature set the answering server negotiated.
-    pub const fn with_server_features(mut self, features: ServerFeatureSet) -> Self {
-        self.server_features = Some(features);
-        self
-    }
-
-    /// The feature set the answering server negotiated, when known.
-    #[must_use]
-    pub const fn server_features(&self) -> Option<ServerFeatureSet> {
-        self.server_features
-    }
-
-    /// Whether the host-session inventory is authoritative (the server
-    /// advertised `ServerFeature::HostSessions`).
-    #[must_use]
-    pub const fn host_sessions_complete(&self) -> bool {
-        match self.server_features {
-            Some(features) => features.contains(ServerFeature::HostSessions),
-            None => false,
-        }
     }
 
     /// The snapshot and its degradation, both bound.
@@ -209,7 +193,7 @@ pub(crate) async fn get_state_on_with_interleaved(
     conn: &mut Connection,
 ) -> Result<(StateView, Vec<FrameKind>), AttachError> {
     let (result, interleaved) = get_state_reply(conn).await?;
-    let view = state_view(conn, result, &interleaved)?;
+    let view = state_view(result, &interleaved)?;
     Ok((view, interleaved))
 }
 
@@ -232,18 +216,13 @@ pub(crate) async fn get_state_reply(
 
 /// The [`StateView`] a `GET_STATE` answer carries.
 pub(crate) fn state_view(
-    conn: &Connection,
     result: CommandResult,
     interleaved: &[FrameKind],
 ) -> Result<StateView, AttachError> {
     let degradation = Degradation::from_interleaved(interleaved);
     match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => {
-            let view = StateView::new(snapshot, degradation);
-            Ok(match conn.negotiated_bootstrap() {
-                Some(negotiated) => view.with_server_features(negotiated.server_features),
-                None => view,
-            })
+            Ok(StateView::new(snapshot, degradation))
         }
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
@@ -457,13 +436,10 @@ async fn resolve_with_reads(
             )
         }
         Selector::Key(_) => {
-            let organization = if crate::org::supported(conn) {
+            let organization =
                 crate::org::fetch(conn, phux_protocol::wire::frame::OrgFilter::All, 0x5200)
                     .await
-                    .ok()
-            } else {
-                None
-            };
+                    .ok();
             selector::resolve_in(
                 selector,
                 snapshot,
@@ -477,17 +453,14 @@ async fn resolve_with_reads(
     }
 }
 
-/// The arrangement of the session named `name`, when the server advertises
-/// `ORGANIZATION` and the session has one this connection can read.
+/// The arrangement of the session named `name`, when it has one this
+/// connection can read.
 pub async fn fetch_arrangement(
     conn: &mut Connection,
     snapshot: &SessionSnapshot,
     name: &str,
 ) -> Arrangements {
     let mut arrangements = Arrangements::new();
-    if !crate::org::supported(conn) {
-        return arrangements;
-    }
     let Some(session) = snapshot.sessions.iter().find(|s| s.name == name) else {
         return arrangements;
     };

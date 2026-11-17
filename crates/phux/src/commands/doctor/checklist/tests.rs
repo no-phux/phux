@@ -197,3 +197,18 @@ fn a_retried_bind_is_waiting_not_off() {
     );
     assert_eq!(item.fix_command, None);
 }
+
+/// An overlay listener waiting for its address beside a bound configured
+/// one reads as waiting, not as listening (#2430).
+#[test]
+fn a_listener_waiting_for_its_address_is_waiting_not_ok() {
+    let quic = RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "100.64.0.1:8788");
+    let wss = RemoteListenerSlot::waiting_for_address(RemoteListenerTransport::Wss);
+    let item = remote_reach(Some(&server(vec![quic, wss], Vec::new())), None);
+    assert_eq!(item.verdict, Verdict::Waiting);
+    assert_eq!(
+        item.reason,
+        "wss listener waiting for a private network address; it starts once one appears"
+    );
+    assert_eq!(item.fix_command, None);
+}

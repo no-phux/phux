@@ -40,7 +40,7 @@ pub(crate) use events::{EnrollEvent, EnrollFailure, ServicePolicy, Supervision};
 pub(crate) use flow::{EnrollOutcome, FarHost, HOST_ADD_WORKLOAD_SCOPE, enroll_over_ssh};
 pub(crate) use identity::{
     CertificateStatus, ClientIdentityFiles, EnrollRequest, HeldIdentity, WorkloadEnrollment,
-    admission_ends, calendar_date, renewal_due,
+    admission_ends, calendar_date, is_hardware_key, renewal_due,
 };
 pub(crate) use pair::{
     PairReport, default_quic_port, probe, probe_deadline, probe_within, satellite_token_path,

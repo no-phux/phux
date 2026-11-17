@@ -9,8 +9,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::process::{Output, Stdio};
@@ -90,78 +89,23 @@ fn last_stderr_json(out: &Output) -> Value {
 
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
-fn spawn_retain_wait_exit_end_to_end() {
-    let server = Server::start();
-    let pane = server.spawn(&["--retain=600"], &["/bin/sh", "-c", "exit 42"]);
-
-    // The waiter needs no timing luck: whether the exit already happened or
-    // is still coming, subscribe-then-read reports it.
-    let (doc, out) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
-    assert_eq!(out.status.code(), Some(0), "{doc}");
-    assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["resource"], pane.as_str());
-    assert_eq!(doc["outcome"], "exited");
-    assert_eq!(doc["exit"]["status"], 42);
-    assert_eq!(doc["retained"], true);
-    assert!(
-        doc["cursor"].as_str().is_some_and(|c| c.contains(':')),
-        "{doc}"
-    );
-
-    let (show, out) = server.json(&["resource", "show", "--json", &pane]);
-    assert!(out.status.success());
-    assert_eq!(show["lifecycle"], "exited");
-    assert_eq!(show["exit"]["status"], 42);
-
-    // `ls --json` lists the retained pane with its lifecycle and exit.
-    let (listing, _) = server.json(&["ls", "--json"]);
-    let row = listing["resources"]
-        .as_array()
-        .expect("resources")
-        .iter()
-        .find(|row| row["id"] == pane.as_str())
-        .expect("the retained pane is listed");
-    assert_eq!(row["lifecycle"], "exited");
-    assert_eq!(row["exit"]["status"], 42);
-
-    // The purge is an explicit kill; afterwards the pane is gone (exit 1).
-    assert!(server.phux(&["kill", "--yes", &pane]).status.success());
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let (doc, out) = server.json(&["resource", "wait", "--json", "--timeout", "5", &pane]);
-        if doc["outcome"] == "gone" {
-            assert_eq!(out.status.code(), Some(1));
-            break;
-        }
-        assert!(Instant::now() < deadline, "the purge never landed: {doc}");
-        std::thread::sleep(POLL);
-    }
-}
-
-#[test]
-#[ignore = "spawns a real phux server; run via `just e2e`."]
 fn spawn_with_a_key_reused_for_another_command_is_an_idempotency_conflict() {
     const KEY: &str = "6e9f1d3b0f8c52d7b4a2f1e0d9c8b7a6";
     let server = Server::start();
-    let first = server.phux(&[
-        "spawn",
-        "--json",
-        "--idempotency-key",
-        KEY,
-        "--",
-        "sleep",
-        "600",
-    ]);
+    let spawn = |seconds| {
+        server.phux(&[
+            "spawn",
+            "--json",
+            "--idempotency-key",
+            KEY,
+            "--",
+            "sleep",
+            seconds,
+        ])
+    };
+    let first = spawn("600");
     assert!(first.status.success(), "{first:?}");
-    let conflict = server.phux(&[
-        "spawn",
-        "--json",
-        "--idempotency-key",
-        KEY,
-        "--",
-        "sleep",
-        "601",
-    ]);
+    let conflict = spawn("601");
     assert_eq!(conflict.status.code(), Some(2), "{conflict:?}");
     assert!(conflict.stdout.is_empty(), "a refusal prints no document");
     assert_eq!(
@@ -292,23 +236,9 @@ fn watch_after_cursor_replays_the_close_of_an_unretained_pane() {
     assert_eq!(doc["outcome"], "exited", "{doc}");
     assert_eq!(doc["retained"], false, "{doc}");
 
-    let replay = server.phux(&[
-        "watch",
-        "--json",
-        "--after",
-        &cursor,
-        "--until",
-        "pane_closed",
-        "--timeout",
-        "10",
-        &pane,
-    ]);
+    let replay = watch_after_until(&server, &cursor, "pane_closed", &pane);
     assert_eq!(replay.status.code(), Some(0), "{replay:?}");
-    let closed = String::from_utf8_lossy(&replay.stdout)
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("NDJSON line"))
-        .find(|line| line["event"] == "pane_closed")
-        .expect("the missed close is replayed");
+    let closed = ndjson_event(&replay, "pane_closed").expect("the missed close is replayed");
     assert!(closed["seq"].as_u64().is_some(), "{closed}");
 }
 
@@ -385,10 +315,13 @@ fn scripted_task_lifecycle_pha406() {
         "the seed pane plus the one spawned pane, not two"
     );
 
-    // A later process sees the exit race-free; only the cursor's
+    // A later process sees the exit race-free: whether it already happened
+    // or is still coming, subscribe-then-read reports it. Only the cursor's
     // `server_id` half is used below.
     let (wait, out) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
     assert_eq!(out.status.code(), Some(0), "{wait}");
+    assert_eq!(wait["schema_version"], 1);
+    assert_eq!(wait["resource"], pane.as_str());
     assert_eq!(wait["outcome"], "exited");
     assert_eq!(wait["exit"]["status"], 7);
     assert_eq!(wait["retained"], true);
@@ -403,6 +336,16 @@ fn scripted_task_lifecycle_pha406() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(show["lifecycle"], "exited");
     assert_eq!(show["exit"]["status"], 7);
+    // `ls --json` lists the retained pane with its lifecycle and exit.
+    let (listing, _) = server.json(&["ls", "--json"]);
+    let row = listing["resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .find(|row| row["id"] == pane.as_str())
+        .expect("the retained pane is listed");
+    assert_eq!(row["lifecycle"], "exited");
+    assert_eq!(row["exit"]["status"], 7);
 
     // Replaying from 0 up to `pane_spawned` yields a cursor that predates
     // the exit by journal order, not timing.
@@ -422,11 +365,7 @@ fn scripted_task_lifecycle_pha406() {
     // the close nobody was watching for live.
     let replay = watch_after_until(&server, &spawn_cursor, "terminal_control", &pane);
     assert_eq!(replay.status.code(), Some(0), "{replay:?}");
-    let control = String::from_utf8_lossy(&replay.stdout)
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("NDJSON line"))
-        .find(|line| line["event"] == "terminal_control")
-        .expect("the missed exit is replayed");
+    let control = ndjson_event(&replay, "terminal_control").expect("the missed exit is replayed");
     assert_eq!(control["action"], "exited");
     assert_eq!(control["exit_status"], 7);
     let control_seq = control["seq"]
@@ -446,6 +385,9 @@ fn scripted_task_lifecycle_pha406() {
         if show.status.code() == Some(1) {
             assert!(show.stdout.is_empty(), "a miss prints no document");
             assert_eq!(last_stderr_json(&show)["error"]["code"], "no_such_target");
+            let (gone, out) = server.json(&["resource", "wait", "--json", "--timeout", "5", &pane]);
+            assert_eq!(gone["outcome"], "gone", "{gone}");
+            assert_eq!(out.status.code(), Some(1));
             break;
         }
         assert!(
@@ -471,4 +413,12 @@ fn watch_after_until(server: &Server, cursor: &str, until: &str, pane: &str) -> 
         "10",
         pane,
     ])
+}
+
+/// The first `event` line of `out`'s NDJSON stdout.
+fn ndjson_event(out: &Output, event: &str) -> Option<Value> {
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("NDJSON line"))
+        .find(|line| line["event"] == event)
 }

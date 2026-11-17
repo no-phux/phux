@@ -103,15 +103,13 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, ZoomIn),
         item!(VIEW, ZoomOut),
         item!(VIEW, ZoomReset),
+        item!(VIEW, InterfaceBigger),
+        item!(VIEW, InterfaceSmaller),
+        item!(VIEW, InterfaceReset),
         item!(VIEW, CopyConfig),
         item!(VIEW, RestoreSessions),
         item!(VIEW, Inbox),
-        item!(VIEW, Galaxy),
-        item!(VIEW, Reef),
-        item!(VIEW, Pitch),
-        item!(VIEW, Kitchen),
-        item!(VIEW, PitLane),
-        item!(VIEW, Hive),
+        item!(VIEW, Playground),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
         item!(VIEW, EssentialShortcuts),
@@ -125,10 +123,13 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(TERMINAL, CopyMode),
         item!(TERMINAL, InsertPath),
         item!(TERMINAL, Screenshot),
+        item!(TERMINAL, QuickLook),
         item!(TERMINAL, NextTab),
         item!(TERMINAL, PreviousTab),
         item!(TERMINAL, NextTerminal),
         item!(TERMINAL, PreviousTerminal),
+        item!(TERMINAL, NextSlotTab),
+        item!(TERMINAL, PreviousSlotTab),
         item!(TERMINAL, NextTerminalInSession),
         item!(TERMINAL, PreviousTerminalInSession),
         item!(TERMINAL, PromptUp),
@@ -216,7 +217,7 @@ impl Desk {
 
     /// Paths under the focused pane's folder, searched on its host.
     pub(super) fn open_paths(&mut self) {
-        let Some(terminal) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(terminal) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         let Some(origin) = self.focused_cwd() else {
@@ -226,7 +227,7 @@ impl Desk {
             );
         };
         self.open_palette(Mode::Paths);
-        self.paths = Some(PathSearch {
+        self.connection.paths = Some(PathSearch {
             terminal,
             origin,
             pending: 0,
@@ -239,7 +240,9 @@ impl Desk {
     /// Ask the host for the paths the query names; an empty query lists the
     /// folder itself.
     fn search_paths(&mut self) {
-        let (Some(client), Some(search)) = (&self.client, self.paths.as_mut()) else {
+        let (Some(client), Some(search)) =
+            (&self.connection.client, self.connection.paths.as_mut())
+        else {
             return;
         };
         let query = self.palette_query.text.trim().to_owned();
@@ -254,7 +257,7 @@ impl Desk {
     /// Answers to the path search. True when the list changed.
     pub(super) fn take_paths(&mut self, client: &Client) -> bool {
         let answers = client.take_path_answers();
-        let Some(search) = self.paths.as_mut() else {
+        let Some(search) = self.connection.paths.as_mut() else {
             return false;
         };
         let Some(answer) = answers
@@ -327,7 +330,7 @@ impl Desk {
         self.palette_mode = Mode::All;
         self.palette_query.clear();
         self.palette_query.focused = false;
-        self.paths = None;
+        self.connection.paths = None;
         if let Some(before) = self.theme_before.take() {
             self.settings.theme = before;
             self.apply_theme();
@@ -339,14 +342,14 @@ impl Desk {
 
     /// The palette's rows for the current query, best first.
     pub fn palette_hits(&self) -> Vec<Hit> {
-        let topology = self.topology.as_ref();
+        let topology = self.connection.topology.as_ref();
         let query = &self.palette_query.text;
         match self.palette_mode {
             Mode::All if self.phone.is_some() => {
                 let native = self.native.is_some();
                 let items = palette::phone::items(
                     topology,
-                    self.reorder.order(),
+                    self.connection.reorder.order(),
                     native,
                     self.resource_items(),
                 );
@@ -364,7 +367,7 @@ impl Desk {
                 items.extend(palette::items(
                     topology,
                     &self.addressable(),
-                    self.reorder.order(),
+                    self.connection.reorder.order(),
                 ));
                 palette::rank(items, query)
             }
@@ -372,10 +375,11 @@ impl Desk {
             Mode::Screens => self.screen_hits(query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
             Mode::Essentials => palette::rank(palette::essential_items(), query),
+            Mode::Playground => palette::rank(palette::action_items(keys::PLAYGROUND), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
             Mode::Sessions => {
                 let mut hits = palette::rank(
-                    palette::session_items(topology, self.reorder.order()),
+                    palette::session_items(topology, self.connection.reorder.order()),
                     query,
                 );
                 let new = palette::new_session_item(topology, query);
@@ -398,7 +402,7 @@ impl Desk {
             }
             // The host already matched them, best first.
             Mode::Paths => {
-                let Some(search) = &self.paths else {
+                let Some(search) = &self.connection.paths else {
                     return Vec::new();
                 };
                 let rows = search.rows.iter();
@@ -412,9 +416,9 @@ impl Desk {
     /// The point under the focused pane's cursor, in window points, where
     /// the path picker opens.
     pub fn cursor_point(&self) -> Option<[f32; 2]> {
-        let shown = self.shown.as_ref()?;
-        let frame = self.client.as_ref()?.acquire_view(shown.view?)?;
-        let [x, y] = *self.origins.get(&shown.resource)?;
+        let shown = self.connection.shown.as_ref()?;
+        let frame = self.connection.client.as_ref()?.acquire_view(shown.view?)?;
+        let [x, y] = *self.connection.origins.get(&shown.resource)?;
         let m = self.metrics();
         let (col, row) = (f32::from(frame.cursor.col), f32::from(frame.cursor.row));
         Some([x + col * m.cell_w, y + (row + 1.0) * m.cell_h])
@@ -423,6 +427,7 @@ impl Desk {
     /// Put a picked path at its pane's prompt as one shell word.
     fn insert_path(&mut self, path: &str, search: PathSearch) {
         let still_there = self
+            .connection
             .topology
             .as_ref()
             .is_some_and(|t| t.pane(&search.terminal).is_some());
@@ -467,7 +472,7 @@ impl Desk {
             // Chosen, so closing doesn't put the old one back.
             self.theme_before = None;
         }
-        let search = self.paths.take();
+        let search = self.connection.paths.take();
         self.close_palette();
         tx.blur();
         self.run_palette_target(hit.item.target, search, tx);
@@ -497,7 +502,7 @@ impl Desk {
 
     /// Select a session and show its focused terminal.
     pub fn show_session(&mut self, name: &str) {
-        let Some(topology) = &self.topology else {
+        let Some(topology) = &self.connection.topology else {
             return;
         };
         let Some(session) = topology.sessions.iter().find(|s| s.name == name) else {
@@ -511,12 +516,12 @@ impl Desk {
             .map(|p| p.terminal_id.clone())
             .or_else(|| self.default_document(session.id));
         let Some(id) = id else {
-            if let Some(client) = &self.client {
+            if let Some(client) = &self.connection.client {
                 client.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
                     name.to_owned(),
                 ));
-                self.pending_session = Some(name.to_owned());
-                self.wanted = None;
+                self.connection.pending_session = Some(name.to_owned());
+                self.connection.wanted = None;
             }
             return;
         };

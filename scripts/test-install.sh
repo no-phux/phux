@@ -18,6 +18,7 @@ export HOME="$TMP/home" SHELL=/bin/zsh
 export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
 export PHUX_NO_SERVICE=1 # lib/test-install-service.sh opts back in
+export PHUX_NO_REPO=1    # lib/test-install-repo.sh opts back in
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
 export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
@@ -159,8 +160,12 @@ mutate next ".products.phux.artifacts[\"$TARGET\"].sha256 = \"$digest_next\""
 install_to() { local dir="$1"; shift; installer --os linux --arch x86_64 --install-dir "$dir" "$@"; }
 
 : > "$CALLS"
-install_to "$TMP/stable" 2>"$TMP/err" >/dev/null
-grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "stable install: $(cat "$TMP/err")"
+install_to "$TMP/stable" 2>"$TMP/err" >"$TMP/out"
+# A default install says one plain line and nothing on stderr; --verbose says more.
+[[ ! -s $TMP/err ]] || fail "a default install said more: $(cat "$TMP/err")"
+[[ $(wc -l <"$TMP/out") -eq 1 ]] && grep -Eq '^phux is installed' "$TMP/out" || fail "stable install: $(cat "$TMP/out")"
+install_to "$TMP/stable" --verbose 2>"$TMP/err" >/dev/null
+grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "verbose install: $(cat "$TMP/err")"
 grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phux-channel" || fail "stable files"
 if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
 if grep -Eq '^1 ' "$METER_CALLS" || grep -Fq 'phux-update: verifying' "$TMP/err"; then fail "progress must be opt-in"; fi
@@ -329,29 +334,7 @@ mkdir -p "$TMP/locked/.phux-install.lock"
 refused 'if none is running, remove' --os linux --arch x86_64 --install-dir "$TMP/locked"
 [[ -d $TMP/locked/.phux-install.lock ]] || fail "a refused install removed another's lock"
 
-# PATH: no remedy when phux is found, a remedy when shadowed, and one
-# idempotent profile line when the directory is off PATH.
-rm -rf "$HOME" && mkdir "$HOME"
-mkdir -p "$TMP/on-path" "$TMP/shadow"
-on="$(cd "$TMP/on-path" && pwd -P)"
-out="$(TEST_PATH="$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
-grep -Fxq 'next: phux' <<<"$out" && ! grep -Fq 'PATH remedy' <<<"$out" || fail "on PATH: $out"
-printf '#!/bin/sh\n' > "$TMP/shadow/phux"
-chmod 755 "$TMP/shadow/phux"
-out="$(TEST_PATH="$TMP/shadow:$on:/usr/bin:/bin" install_to "$on" 2>/dev/null)"
-grep -Fq "next: $on/phux" <<<"$out" && grep -Fq 'PATH remedy' <<<"$out" || fail "shadowed: $out"
-[[ ! -e $HOME/.zshrc ]] || fail "an on-PATH install edited the profile"
-mkdir -p "$TMP/off-path"
-off="$(cd "$TMP/off-path" && pwd -P)"
-install_to "$off" >/dev/null 2>&1
-install_to "$off" >/dev/null 2>&1
-[[ $(grep -cFx "export PATH=$off:\"\$PATH\"" "$HOME/.zshrc") -eq 1 ]] || fail "zsh profile line"
-SHELL=/usr/bin/fish install_to "$off" >/dev/null 2>&1
-grep -Fxq "fish_add_path -g $off" "$HOME/.config/fish/conf.d/phux.fish" || fail "fish profile line"
-rm -rf "$HOME/.zshrc"
-PHUX_NO_MODIFY_PATH=1 install_to "$off" >/dev/null 2>&1
-install_to "$off" --no-modify-path >/dev/null 2>&1
-[[ ! -e $HOME/.zshrc ]] || fail "an opted-out install edited the profile"
+source "$ROOT/scripts/lib/test-install-path.sh"
 
 # The website's install-desktop shim runs the installer with --rune.
 printf '#!/bin/sh\necho "args: $*"\n' > "$SERVED/install"
@@ -362,5 +345,6 @@ if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TM
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
 
 source "$ROOT/scripts/lib/test-install-service.sh"
+source "$ROOT/scripts/lib/test-install-repo.sh"
 
 echo "installer tests passed"

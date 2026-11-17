@@ -77,6 +77,36 @@ test("coverage is the pull-request lane set on either event", () => {
   expect(plan(c, "pull_request", options).coverage).toBe("guards,lint,tests,e2e");
 });
 
+test("a flat docs change selects docs catalog on pull_request, merge_group, and push", () => {
+  // ci-plan passes the diff flag through on every event. The trigger does not
+  // gate it: merge_group uses main's lane policy, and the job still runs.
+  const docs = classifier.classify(["docs/page.md"]);
+  const scope = scopeOf(["docs/page.md"]);
+  for (const event of ["pull_request", "merge_group", "push"] as const) {
+    for (const selected of [true, false]) {
+      const output = planOutputs(
+        plan(docs, triggerFor(event), { scope, docsCatalog: selected }),
+        docs,
+      );
+      expect([event, selected, output["docs_catalog"]]).toEqual([event, selected, selected]);
+    }
+  }
+});
+
+test("docs catalog is selected only for a flat page add, rename, or delete", () => {
+  const docs = classifier.classify(["docs/development.md"]);
+  const scope = scopeOf(["docs/development.md"]);
+  expect(plan(docs, "pull_request", { scope, docsCatalog: true }).docsCatalog).toBe(true);
+  expect(plan(docs, "pull_request", { scope, docsCatalog: false }).docsCatalog).toBe(false);
+  expect(plan(docs, "push", { scope: { kind: "none" } }).docsCatalog).toBe(false);
+  // No status and no scope fail closed, the same way an unknown diff does.
+  expect(plan(docs, "pull_request").docsCatalog).toBe(true);
+  const hidden = planOutputs(plan(docs, "pull_request", { scope, docsCatalog: false }), docs);
+  expect(hidden["docs_catalog"]).toBe(false);
+  expect(String(hidden["coverage"])).not.toContain("docs_catalog");
+  expect(reused(plan(docs, "push", { scope, docsCatalog: true })).docsCatalog).toBe(true);
+});
+
 test("outputs name every lane and the web engine only inside the web lane", () => {
   const c = classifier.classify(["clients/phux-vt-web/vendor/ghostty-vt.wasm"]);
   const outputs = planOutputs(plan(c, "pull_request"), c);
@@ -95,7 +125,7 @@ test("a reused main tree still qualifies the binding, native setup, and icount",
   expect(docs.coverage).toBe("guards");
 });
 
-test("the ci receipt has no macOS coverage on a pull request or a main push", () => {
+test("the ci receipt separates full Linux qualification and never claims Apple coverage", () => {
   // The Linux rune lane still runs. macOS coverage would let a main push
   // reuse a pull request that never started a macOS runner.
   const closure = classifier.classify(["crates/phux-protocol/src/lib.rs"]);
@@ -103,7 +133,7 @@ test("the ci receipt has no macOS coverage on a pull request or a main push", ()
   const main = plan(closure, "push");
   expect(pr.lanes.has("rune")).toBe(true);
   expect(main.lanes.has("rune")).toBe(true);
-  expect(pr.coverage).toBe(main.coverage);
+  expect(main.coverage).toBe(`${pr.coverage},linux-aarch64,packaging`);
   expect(pr.coverage.split(",")).not.toContain("rune_ios");
   expect(pr.coverage.split(",")).not.toContain("macos");
   expect(planOutputs(pr, closure)).not.toHaveProperty("rune_ios");

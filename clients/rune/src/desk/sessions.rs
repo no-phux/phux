@@ -20,15 +20,15 @@ impl Desk {
         if terminal.host().is_none()
             && !session_name.is_empty()
             && attached.as_deref() != Some(session_name)
-            && let Some(client) = &self.client
+            && let Some(client) = &self.connection.client
         {
             client.attach_session(AttachTarget::ByName(session_name.to_owned()));
         }
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         self.drop_dead_views(&client);
-        self.pending_session = None;
+        self.connection.pending_session = None;
         self.want(terminal);
         self.open_wanted(&client);
     }
@@ -38,11 +38,11 @@ impl Desk {
     pub fn ended_by_restart(&self) -> Vec<phux_protocol::ids::ResourceKey> {
         use phux_protocol::ResourceKind;
         use phux_protocol::wire::frame::{ExecState, Outcome};
-        let Some(client) = &self.client else {
+        let Some(client) = &self.connection.client else {
             return Vec::new();
         };
         let Some(key) = client.selected_session().and_then(|id| {
-            let topology = self.topology.as_ref()?;
+            let topology = self.connection.topology.as_ref()?;
             topology.sessions.iter().find(|s| s.id == id)?.key
         }) else {
             return Vec::new();
@@ -62,17 +62,19 @@ impl Desk {
 
     /// Relaunch what a server restart ended in the selected session.
     pub fn restore_session(&mut self) {
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         for key in self.ended_by_restart() {
             if let Err(error) = client.relaunch_resource(key) {
-                self.error = Some(format!("Couldn't restore a terminal: {error}"));
+                self.connection.error = Some(format!("Couldn't restore a terminal: {error}"));
             }
         }
     }
 
     pub fn selected_session_name(&self) -> Option<String> {
-        let id = self.client.as_ref()?.selected_session()?;
-        let topology = self.topology.as_ref()?;
+        let id = self.connection.client.as_ref()?.selected_session()?;
+        let topology = self.connection.topology.as_ref()?;
         topology
             .sessions
             .iter()
@@ -81,29 +83,35 @@ impl Desk {
     }
 
     pub fn new_terminal(&mut self) {
+        self.new_terminal_at(self.focused_cwd());
+    }
+
+    pub(super) fn new_terminal_at(&mut self, cwd: Option<String>) {
         // A restart left nothing live to host a new terminal; bringing back
         // what it ended is the terminal asked for.
         if !self.ended_by_restart().is_empty() {
             return self.restore_session();
         }
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         let session_id = client.selected_session();
         let request = client.spawn_terminal(SpawnRequest {
             command: None,
-            cwd: self.focused_cwd(),
+            cwd,
             env: None,
             session_id,
             initial_size: None,
         });
-        self.pending_spawns.push(request);
+        self.connection.pending_spawns.push(request);
     }
 
     /// Where the focused terminal is, for what starts beside it. A pane
     /// that hasn't said yet (the split made a moment ago) defers to the
     /// panes around it.
     pub(super) fn focused_cwd(&self) -> Option<String> {
-        let shown = self.shown.as_ref()?;
-        let topology = self.topology.as_ref()?;
+        let shown = self.connection.shown.as_ref()?;
+        let topology = self.connection.topology.as_ref()?;
         let cwd = |id: &ResourceId| {
             let cwd = topology.pane(id)?.cwd.clone();
             cwd.filter(|cwd| !cwd.is_empty())
@@ -113,13 +121,14 @@ impl Desk {
 
     pub fn new_session(&mut self) {
         let taken: Vec<String> = self
+            .connection
             .topology
             .iter()
             .flat_map(|t| t.sessions.iter().map(|s| s.name.clone()))
             .collect();
         let name = loop {
-            self.sessions_seq += 1;
-            let name = format!("rune-{}", self.sessions_seq);
+            self.connection.sessions_seq += 1;
+            let name = format!("rune-{}", self.connection.sessions_seq);
             if !taken.contains(&name) {
                 break name;
             }
@@ -141,7 +150,9 @@ impl Desk {
     pub(super) fn create_session_running(&mut self, name: String, command: Option<Vec<String>>) {
         self.link.keep = None;
         let cwd = self.focused_cwd();
-        let Some(client) = &self.client else { return };
+        let Some(client) = &self.connection.client else {
+            return;
+        };
         client.with_control(|control| control.set_session_recovery(SessionRecovery::Automatic));
         client.attach_session(AttachTarget::CreateIfMissing {
             name: name.clone(),
@@ -151,8 +162,8 @@ impl Desk {
         // Show its seed pane once the topology lists it as selected; the
         // current terminal stays until then.
         self.link.creating = true;
-        self.pending_session = Some(name);
-        self.wanted = None;
+        self.connection.pending_session = Some(name);
+        self.connection.wanted = None;
     }
 
     /// The focus a terminal hears about (DEC 1004) is also what admits its
@@ -165,19 +176,19 @@ impl Desk {
             .keyboard()
             .filter(|(_, view)| self.focused && view.is_some());
         let now = now.map(|(terminal, _)| terminal.clone());
-        if self.focus_told == now {
+        if self.connection.focus_told == now {
             return false;
         }
-        if let Some(old) = self.focus_told.take() {
+        if let Some(old) = self.connection.focus_told.take() {
             let _ = client.send_focus(&old, FocusEvent::Lost);
         }
         let Some(new) = now else { return false };
         if client.send_focus(&new, FocusEvent::Gained) {
-            self.focus_told = Some(new);
+            self.connection.focus_told = Some(new);
             self.reclaim_fits();
             return false;
         }
-        self.status == Status::Attached
+        self.connection.status == Status::Attached
     }
 
     /// Step through everything this window can show, every session's.
@@ -187,6 +198,7 @@ impl Desk {
             return;
         }
         let current = self
+            .connection
             .shown
             .as_ref()
             .and_then(|s| all.iter().position(|r| r.id == s.resource))
@@ -199,6 +211,7 @@ impl Desk {
     /// Step through the shown session's terminals, tab by tab in pane order.
     pub fn cycle_in_session(&mut self, step: isize) {
         let all: Vec<ResourceId> = self
+            .connection
             .tabs
             .list
             .iter()
@@ -208,12 +221,13 @@ impl Desk {
             return;
         };
         let current = self
+            .connection
             .shown
             .as_ref()
             .and_then(|s| all.iter().position(|r| *r == s.resource))
             .unwrap_or(0);
         let next = all[stepped(current, step, all.len())].clone();
-        self.zoomed = None;
+        self.connection.zoomed = None;
         self.show(next, &session);
     }
 
@@ -242,6 +256,7 @@ impl Desk {
 
     pub(super) fn title(&mut self, tx: &mut Tx) {
         let title = self
+            .connection
             .shown
             .as_ref()
             .and_then(|s| self.addressable().into_iter().find(|r| r.id == s.resource))
@@ -263,7 +278,8 @@ impl Desk {
         }
         let machine = self.machines.current.as_deref();
         crate::handoff::offer(
-            self.shown
+            self.connection
+                .shown
                 .as_ref()
                 .map(|shown| crate::handoff::payload(machine, &shown.resource)),
         );

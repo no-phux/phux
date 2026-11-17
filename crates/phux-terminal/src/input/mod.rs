@@ -16,7 +16,7 @@ pub use key::PerTerminalKeyEncoder;
 pub use mouse::PerTerminalMouseEncoder;
 pub use paste::{PasteOutcome, PerTerminalPasteEncoder};
 
-use libghostty_vt::{Error, Terminal as GhosttyTerminal, terminal::Mode};
+use libghostty_vt::{Error, Terminal as GhosttyTerminal, mode::Mode};
 
 /// Complete `Send` snapshot of terminal state consulted by input encoders.
 ///
@@ -73,10 +73,12 @@ impl InputEncoderSnapshot {
     pub(crate) fn capture(
         terminal: &GhosttyTerminal<'_, '_>,
         cell_px: (u16, u16),
+        key: &mut PerTerminalKeyEncoder,
+        mouse: &mut PerTerminalMouseEncoder,
     ) -> Result<Self, Error> {
         Ok(Self {
-            key: libghostty_vt::key::EncoderOptions::from_terminal(terminal)?,
-            mouse: libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)?,
+            key: key.options_from_terminal(terminal)?,
+            mouse: mouse.options_from_terminal(terminal)?,
             focus_reporting: terminal.mode(Mode::FOCUS_EVENT)?,
             bracketed_paste: terminal.mode(Mode::BRACKETED_PASTE)?,
             cols: terminal.cols()?,
@@ -116,7 +118,13 @@ mod snapshot_tests {
         ] {
             let mut terminal = GhosttyTerminal::new(91, 37).expect("terminal");
             terminal.vt_write(modes);
-            let snapshot = InputEncoderSnapshot::capture(&terminal, (9, 17)).expect("snapshot");
+            let snapshot = InputEncoderSnapshot::capture(
+                &terminal,
+                (9, 17),
+                &mut PerTerminalKeyEncoder::new().expect("key encoder"),
+                &mut PerTerminalMouseEncoder::new().expect("mouse encoder"),
+            )
+            .expect("snapshot");
             assert_eq!(
                 (snapshot.cols, snapshot.rows, snapshot.cell_px),
                 (91, 37, (9, 17))

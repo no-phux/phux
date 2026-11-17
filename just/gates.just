@@ -36,6 +36,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
+    bash scripts/ci/main-red_test.sh
     bash scripts/check-toolchain-sync.sh
     bash scripts/check-cache-portable.sh
     bash scripts/check-frozen-fixtures.sh
@@ -64,9 +65,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     bash scripts/check-ghostty-pin.sh
 
 
-# The binding crate's opt-in UniFFI encoder (ADR-0135). The unit pool builds
-# default features only, and the mobile artifact never carries the c-abi lane,
-# so this proves the lib target with c-abi off.
+# The binding crate with the mobile artifact's exact features (ADR-0135).
 [group('gates')]
 [private]
 binding-uniffi-test:

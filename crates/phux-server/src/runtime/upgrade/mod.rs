@@ -1,12 +1,8 @@
 //! Graceful-upgrade orchestration (ADR-0032): build the handoff blob, clear
-//! `FD_CLOEXEC` on inherited descriptors, validate the on-disk binary, and
-//! re-exec it as `server --resume <fd>` plus the effective runtime flags
-//! (`--listen` / `--quic` / `--webtransport` / `--connect` / `--hub`) so the
-//! resumed image serves the same surface the old one did.
-//!
-//! Split into [`prepare_upgrade`] (everything reversible — if it fails the old
-//! image keeps serving and no child is stranded) and [`UpgradePlan::exec`]
-//! (the irreversible re-exec). The caller acks the client between the two.
+//! `FD_CLOEXEC` on inherited descriptors, validate the binary, and re-exec it
+//! as `server --resume <fd>` with the effective runtime flags.
+//! [`prepare_upgrade`] is reversible; [`UpgradePlan::exec`] is not, and the
+//! caller acks the client between the two.
 
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};

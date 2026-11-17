@@ -58,9 +58,7 @@ fn ready_prefix_bytes_do_not_grow_with_scrollback() {
         }
         let limits = BootstrapLimits::default();
         let mut manager = NativeTerminalManager::new(terminal, 1).expect("manager");
-        let mut capture = manager
-            .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-            .expect("capture");
+        let mut capture = manager.capture(limits).expect("capture");
         let mut total = 0usize;
         loop {
             let required = match capture.step(&mut []) {
@@ -92,20 +90,10 @@ fn shared_generation_is_content_addressed() {
     let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
         .expect("limits");
     let mut manager = NativeTerminalManager::new(history_terminal(), 1).expect("manager");
-    let mut capture = manager
-        .capture_generation_bounded(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-        .expect("capture");
+    let mut capture = manager.capture(limits).expect("capture");
     drain_ready(&mut capture);
     let (cursor, seed) = manager.finish_generation_capture(capture).expect("finish");
-    let bounds = seed.bounds();
-    manager
-        .install_generation(
-            cursor,
-            seed,
-            bounds,
-            bounds.required_reserved_bytes().expect("res"),
-        )
-        .expect("install");
+    install(&mut manager, cursor, seed);
     manager.retain_generation(&cursor).expect("retain");
     let first = next_record(&manager, &cursor, 0, limits);
     let again = next_record(&manager, &cursor, 0, limits);
@@ -130,20 +118,10 @@ fn managed_capture_defers_multiple_pages_and_finish_past_ready() {
         source.vt_write(format!("history-{row:04}\r\n").as_bytes());
     }
     let mut manager = NativeTerminalManager::new(source, 1).expect("manager");
-    let mut capture = manager
-        .capture_generation_bounded(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-        .expect("capture");
+    let mut capture = manager.capture(limits).expect("capture");
     drain_ready(&mut capture);
     let (cursor, seed) = manager.finish_generation_capture(capture).expect("READY");
-    let bounds = seed.bounds();
-    manager
-        .install_generation(
-            cursor,
-            seed,
-            bounds,
-            bounds.required_reserved_bytes().expect("reservation"),
-        )
-        .expect("install");
+    install(&mut manager, cursor, seed);
 
     let mut index = 0;
     let mut pages = 0;
@@ -200,15 +178,7 @@ fn immutable_history_remains_available_during_another_prefix_capture() {
     let (cursor, seed) = manager
         .finish_generation_capture(first)
         .expect("first READY");
-    let bounds = seed.bounds();
-    manager
-        .install_generation(
-            cursor,
-            seed,
-            bounds,
-            bounds.required_reserved_bytes().expect("reservation"),
-        )
-        .expect("install old cut");
+    install(&mut manager, cursor, seed);
 
     let second = manager.capture(limits).expect("second prefix");
     let during = manager

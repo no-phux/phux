@@ -11,14 +11,13 @@ use rune::Tx;
 use super::Desk;
 use crate::kitchen::{self, Cook};
 use crate::machines::LOCAL;
-use crate::reef::{self, Mood};
+use crate::playground::{self, Mood};
 
 /// How often the kitchen redraws while open: every frame.
 const FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Default)]
 pub struct Kitchen {
-    pub open: bool,
     pub scene: kitchen::Kitchen,
     /// The view's size in points, from its last layout.
     pub viewport: [f32; 2],
@@ -36,29 +35,24 @@ pub struct Kitchen {
 
 impl Desk {
     pub fn toggle_kitchen(&mut self) {
-        if self.kitchen.open {
+        if self.playground == Some(super::surfaces::Playground::Kitchen) {
             self.close_kitchen();
             return;
         }
         self.close_inbox();
-        self.close_galaxy();
-        self.close_reef();
-        self.close_pitch();
-        self.close_pitlane();
-        self.close_hive();
         self.settings_open = false;
-        self.kitchen.open = true;
+        self.playground = Some(super::surfaces::Playground::Kitchen);
         self.kitchen.last = None;
         self.kitchen.scene.selected = None;
     }
 
     pub fn close_kitchen(&mut self) {
-        self.kitchen.open = false;
+        self.close_playground(super::surfaces::Playground::Kitchen);
     }
 
     /// Keep the chefs in step with the fleet and the scene moving while open.
     pub(super) fn tick_kitchen(&mut self, tx: &mut Tx) -> bool {
-        if !self.kitchen.open {
+        if self.playground != Some(super::surfaces::Playground::Kitchen) {
             return false;
         }
         self.refresh_kitchen();
@@ -82,7 +76,7 @@ impl Desk {
     /// registry's), so a line never swaps places when an agent there starts
     /// needing you; every agent the galaxy knows of as a chef.
     fn refresh_kitchen(&mut self) {
-        let mut planets = self.planets();
+        let mut planets = self.fleet_machines();
         let here = self.machines.current.as_deref().unwrap_or(LOCAL);
         let hosts = &self.machines.hosts;
         planets.sort_by_key(|p| match p.name.as_str() {
@@ -101,12 +95,12 @@ impl Desk {
             .iter()
             .enumerate()
             .flat_map(|(at, p)| {
-                p.stars.iter().map(move |s| Cook {
+                p.agents.iter().map(move |s| Cook {
                     id: s.id.clone(),
                     name: s.name.clone(),
                     host: at,
                     mood: Mood::of(s.mark),
-                    species: reef::species(s.kind.as_deref(), &s.name),
+                    species: playground::species(s.kind.as_deref(), &s.name),
                     work: s.work,
                 })
             })
@@ -175,6 +169,6 @@ impl Desk {
         };
         let id = c.who.id.clone();
         self.close_kitchen();
-        self.go_to_star(&id);
+        self.go_to_agent(&id);
     }
 }

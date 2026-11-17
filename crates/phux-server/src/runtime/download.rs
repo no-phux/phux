@@ -1,16 +1,7 @@
-//! Bounded reads of host files for `Command::GetFile`.
-//!
-//! The client names an absolute path and the serving server reads any
-//! regular file its own user can read. A `host` on the command names a
-//! satellite instead; the hub relays it there and the satellite reads its
-//! own filesystem (`commands.rs` routes, `hub::relay` refuses a satellite
-//! without `FILE_DOWNLOAD`). The command is classified `INPUT` on the
-//! server: a consumer that can type into a shell on this host can already
-//! `cat` the file. Each chunk is one request and one reply, so a client
-//! resumes after a reconnect by asking again from its own offset; the chunk
-//! that reaches the end carries the whole-file SHA-256 so the client can
-//! verify what it wrote. The bulk command lane runs the disk work off the
-//! connection dispatcher and bounds how many run at once.
+//! Bounded reads of host files for `Command::GetFile`. Any regular file the
+//! server's user can read, classified `INPUT` (an input holder could `cat`
+//! it). One chunk per request so a client resumes from its own offset; the
+//! final chunk carries the whole-file SHA-256.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};

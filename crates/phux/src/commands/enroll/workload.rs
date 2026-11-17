@@ -75,8 +75,9 @@ pub(crate) fn settle_identity(
 }
 
 /// Enroll a workload client certificate on the far host (ADR-0116):
-/// generate the key here, send only its CSR over ssh stdin to `phux
-/// workload add-key --cert-stdout`, validate the returned chain against the
+/// generate the key here (in this machine's hardware when asked), send
+/// only its CSR over ssh stdin to `phux workload add-key --cert-stdout`,
+/// validate the returned chain against the
 /// key, and store both owner-only under new names. Nothing is revoked here:
 /// the credential this one supersedes goes in [`settle_identity`], once the
 /// entry names the new pair. If the far host enrolled the key but a check
@@ -93,6 +94,9 @@ pub(crate) fn enroll_client_certificate(
     if super::super::remote::validate_name(workload.name).as_deref() != Ok(workload.name) {
         return Err(format!("{:?} is not a valid remote name", workload.name));
     }
+    // Before the far host is touched: a machine that cannot make the key
+    // asked for changes nothing there.
+    let request = workload.client_request()?;
     let authority = ssh_run(
         ssh_host,
         &[remote_phux, "workload", "authority", "--init", "--json"],
@@ -103,8 +107,6 @@ pub(crate) fn enroll_client_certificate(
             authority.failure_detail()
         ));
     }
-    let request = ClientRequest::generate()
-        .map_err(|err| format!("could not generate a client key: {err}"))?;
     let argv = [
         remote_phux,
         "workload",
@@ -191,8 +193,7 @@ pub(crate) fn enroll_with_ticket(
                 .to_owned(),
         );
     };
-    let request = ClientRequest::generate()
-        .map_err(|err| format!("could not generate a client key: {err}"))?;
+    let request = workload.client_request()?;
     let csr = match phux_server::workload::ClientMaterial::from_pem(request.csr_pem().as_bytes()) {
         Ok(phux_server::workload::ClientMaterial::Request(der)) => der.as_ref().to_vec(),
         _ => return Err("could not encode the enrollment request".to_owned()),

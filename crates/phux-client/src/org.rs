@@ -1,10 +1,7 @@
-//! Organization commands over one CLI or MCP connection (`docs/organization.md`),
-//! behind `features_ext.ORGANIZATION`.
+//! Organization commands over one CLI or MCP connection (`docs/organization.md`).
+//! Every 1.x server advertises `features_ext.ORGANIZATION`.
 //!
-//! Every helper here refuses before sending when the server does not
-//! advertise the bit ([`OrgError::Unsupported`]); callers that keep a legacy
-//! path branch on [`supported`] first. Every mutating command carries a
-//! fresh [`OperationId`] unless the caller supplies one, and a connection
+//! Every mutating command carries a fresh [`OperationId`] unless the caller supplies one, and a connection
 //! that drops after the command was sent reports
 //! [`OrgError::OutcomeUnknown`] with that id, so the caller can resend the
 //! same id on a new connection or reconcile from [`fetch`].
@@ -38,7 +35,7 @@ pub use verbs::{
     BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, lock_group,
     move_many, move_resource, relaunch, remove_resource, rename_resource,
     replace_arrangement_of_member, replace_session_arrangement, restore, restore_session_on,
-    session_project_supported, set_session_project, tab_lock_supported, terminate, undo,
+    set_session_project, tab_lock_supported, terminate, undo,
 };
 
 /// Most attempts a compare-and-swap edit makes before reporting the
@@ -149,29 +146,12 @@ impl OrgError {
     }
 }
 
-/// Whether the server behind `conn` advertises `ORGANIZATION`.
-#[must_use]
-pub fn supported(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features_ext
-            .contains(ServerFeatureExt::Organization)
-    })
-}
-
-fn require(conn: &Connection) -> Result<(), OrgError> {
-    if supported(conn) {
-        Ok(())
-    } else {
-        Err(OrgError::Unsupported)
-    }
-}
-
 /// Send one organization command and classify its reply.
 ///
 /// # Errors
 ///
-/// [`OrgError::Unsupported`] with nothing sent; [`OrgError::OutcomeUnknown`]
+/// [`OrgError::Unsupported`] with nothing sent for a placed create the
+/// server cannot honor; [`OrgError::OutcomeUnknown`]
 /// after any transport/decode failure following a possible mutating send.
 /// Read-only requests retain their ordinary transport errors.
 pub async fn request(
@@ -179,7 +159,6 @@ pub async fn request(
     request_id: u32,
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
-    require(conn)?;
     if matches!(
         &command,
         Command::ResourceCreate {

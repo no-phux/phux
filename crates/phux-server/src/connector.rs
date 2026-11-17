@@ -16,7 +16,6 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial, SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, QUIC_RELAY_ALPN, TransportType};
@@ -31,12 +30,8 @@ use crate::transport::Incoming;
 use crate::transport::inner_tls::{InnerAccepted, InnerIo, InnerTls, TLS_HANDSHAKE};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-const BACKOFF_BASE: Duration = Duration::from_millis(500);
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
-const AUTH_FAILED_CODE: u32 = 0x01;
-
-/// Upper bound on a bearer preamble body, as on the QUIC listener.
-const MAX_TOKEN_PREAMBLE: usize = 256;
+use crate::hub::link::{BACKOFF_BASE, BACKOFF_CAP};
+use crate::transport::quic::{AUTH_FAILED_CODE, MAX_TOKEN_PREAMBLE};
 
 /// A validated outbound relay dial plan. Credential contents remain on disk
 /// and are re-read for every attempt.

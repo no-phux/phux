@@ -16,7 +16,7 @@ nested terminal UI or replace the harness's execution policy.
 |---|---|
 | Discover exact panes and ownership | `phux_panes` |
 | Create a sibling shell | `phux_create` |
-| Run one command in an existing POSIX shell | `phux_run` |
+| Run one command in an existing sh, bash, zsh or fish shell | `phux_run` |
 | Start a persistent process from argv | `phux_spawn` |
 | Insert multiline text into a REPL/editor | `phux_paste`, then separately `phux_send_keys` |
 | Observe output without attaching or resizing | `phux_snapshot` |
@@ -59,6 +59,11 @@ Use the returned target with `phux_resource_wait`. `exited` carries the exit
 facts; `gone` is not success; `timed_out` means observation ended. Preserve the
 returned cursor and pass it as `after` when resuming observation. Retention is
 not a durable job database.
+
+A spawned pane appears in the human's session. Spawn only work they should
+see or that outlives your call, and run quick commands with your own shell
+tool. Where the harness offers process control, close a successful job's pane
+once you have read it, and leave a failed one for the human.
 
 ## Agent turns and recovery
 

@@ -40,6 +40,30 @@ pub(crate) struct WorkloadEnrollment<'a> {
     pub(crate) dir: &'a Path,
     /// The registry name, which prefixes the two file names.
     pub(crate) name: &'a str,
+    /// Keep the key in this machine's hardware (`--hardware-key`, or an
+    /// entry whose key already is) instead of a PEM file.
+    pub(crate) hardware_key: bool,
+}
+
+impl WorkloadEnrollment<'_> {
+    /// The key to enroll and its CSR: generated here, or made in the
+    /// machine's hardware. Nothing is written until the reply is accepted.
+    pub(super) fn client_request(&self) -> Result<phux_server::workload::ClientRequest, String> {
+        use phux_server::workload::ClientRequest;
+        if !self.hardware_key {
+            return ClientRequest::generate()
+                .map_err(|err| format!("could not generate a client key: {err}"));
+        }
+        let minted = phux_client_runtime::hardware_key::mint()?;
+        ClientRequest::held(minted.csr_pem, minted.key_file)
+            .map_err(|err| format!("the hardware key signed an unusable request: {err}"))
+    }
+}
+
+/// Whether the key file at `key` is a hardware key: an entry that holds
+/// one keeps the kind when its certificate is replaced.
+pub(crate) fn is_hardware_key(key: Option<&Path>) -> bool {
+    key.is_some_and(phux_client_runtime::hardware_key::is_hardware_key)
 }
 
 /// A stored workload client identity: its two owner-only files and the
@@ -48,7 +72,8 @@ pub(crate) struct WorkloadEnrollment<'a> {
 pub(crate) struct ClientIdentityFiles {
     /// The certificate chain (PEM, leaf then CA).
     pub(crate) certificate: PathBuf,
-    /// The private key (PEM). Named here, read only by the TLS stack.
+    /// The private key: PEM, read only by the TLS stack, or a hardware
+    /// key file naming a key this machine's hardware holds.
     pub(crate) private_key: PathBuf,
     /// `sha256:` of the key: the far host's registry id for it.
     pub(crate) credential_id: Option<String>,
@@ -69,10 +94,16 @@ impl ClientIdentityFiles {
 
     /// The identity a dial presents.
     pub(crate) fn tls(&self) -> TlsClientIdentity {
-        TlsClientIdentity::PemFiles {
-            certificate: self.certificate.clone(),
-            private_key: self.private_key.clone(),
-        }
+        let (certificate, private_key) = (self.certificate.clone(), self.private_key.clone());
+        // ponytail: a hardware key that will not load is presented by path,
+        // which fails the probe it is used on (as an unreadable PEM) instead
+        // of dialing without it. Return the reason if a probe should show it.
+        phux_client_runtime::hardware_key::identity(certificate, private_key, false).unwrap_or_else(
+            |_| TlsClientIdentity::PemFiles {
+                certificate: self.certificate.clone(),
+                private_key: self.private_key.clone(),
+            },
+        )
     }
 
     /// Whether these are a pair `phux host add` enrolled for `name` in
@@ -205,6 +236,23 @@ impl HeldIdentity {
         let certificate = self.certificate.as_deref()?;
         let private_key = self.private_key.as_deref()?;
         Some(ClientIdentityFiles::existing(certificate, private_key))
+    }
+
+    /// The enrollment that replaces this identity for `name` under `dir`:
+    /// its key in this machine's hardware when asked (`hardware_key`) or
+    /// when the held key already is, so a renewal never moves a hardware
+    /// key back into a file.
+    pub(crate) fn replacement<'a>(
+        &self,
+        dir: &'a Path,
+        name: &'a str,
+        hardware_key: bool,
+    ) -> WorkloadEnrollment<'a> {
+        WorkloadEnrollment {
+            dir,
+            name,
+            hardware_key: hardware_key || is_hardware_key(self.private_key.as_deref()),
+        }
     }
 
     /// Whether the entry names neither half.

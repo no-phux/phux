@@ -17,7 +17,7 @@ pub(super) fn register_from_code(target: &RemoteTarget, code: &str) -> Result<Re
     // A failure is a warning, as for `host add` over ssh: the host is still
     // registered, though a `paired` server, the only kind with a remote
     // listener (ADR-0179), admits no dial without a certificate.
-    let identity = match redeem_ticket(&name, &link) {
+    let identity = match redeem_ticket(&name, &link, false) {
         Ok(identity) => identity,
         Err(err) => {
             warn!(
@@ -45,11 +45,12 @@ pub(super) fn register_from_code(target: &RemoteTarget, code: &str) -> Result<Re
 pub(crate) fn pair_from_code(
     target: &RemoteTarget,
     code: &str,
+    hardware_key: bool,
 ) -> Result<(RemoteEntry, CertificateStatus), String> {
     let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
     let name = target.registry_name();
     let new = validated(&name, &link)?;
-    let identity = redeem_ticket(&name, &link).map_err(|err| {
+    let identity = redeem_ticket(&name, &link, hardware_key).map_err(|err| {
         format!(
             "--code: could not enroll with the link's single-use ticket ({err}); \
              the link may have expired or been used already, or the machine is unreachable"
@@ -128,6 +129,7 @@ fn save(
 fn redeem_ticket(
     name: &str,
     link: &pair::ConnectLink,
+    hardware_key: bool,
 ) -> Result<Option<ClientIdentityFiles>, String> {
     let Some(ticket) = link.enrollment_ticket.as_deref() else {
         return Ok(None);
@@ -145,9 +147,12 @@ fn redeem_ticket(
         authority: link.ca_fingerprint.as_deref(),
         route: link.tls_server_name.as_deref(),
     };
+    // An entry already on a hardware key stays on one.
+    let held = remote::find(name).and_then(|entry| entry.client_key);
     let workload = enroll::WorkloadEnrollment {
         dir: &remotes_dir,
         name,
+        hardware_key: hardware_key || enroll::is_hardware_key(held.as_deref()),
     };
     enroll::enroll_with_ticket(quic, &pins, ticket, &workload).map(Some)
 }

@@ -245,7 +245,6 @@ pub(crate) fn supervises_producers(handle: &ResourceHandle) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use phux_protocol::ids::ResourceKind;
     use phux_protocol::wire::frame::SpawnResult;

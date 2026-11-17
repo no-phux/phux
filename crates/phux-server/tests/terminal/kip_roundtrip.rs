@@ -158,10 +158,7 @@ impl TuiProbe {
     }
 
     async fn send_key(&mut self, event: KeyEvent) {
-        let frame = FrameKind::InputKey {
-            terminal_id: self.terminal_id.clone(),
-            event,
-        };
+        let frame = phux_server_testkit::input_key(self.terminal_id.clone(), event);
         send_frame(&mut self.stream, &frame).await;
     }
 

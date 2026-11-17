@@ -70,5 +70,4 @@ mod relay_satellite_attach_role_tests;
 mod host_inventory_tests;
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic, reason = "tests")]
 mod kill_merge_tests;

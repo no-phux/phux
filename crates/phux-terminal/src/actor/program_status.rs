@@ -14,11 +14,64 @@
 use std::fmt::Write as _;
 
 use base64::Engine as _;
+use libghostty_vt::effect::ProgramStatusState;
 
 /// The specification's record cap; at it, the least recently updated
 /// record makes room.
 const MAX_RECORDS: usize = 256;
-const STATES: [&str; 5] = ["blocked", "error", "done", "working", "idle"];
+
+/// One record state this server knows.
+struct StateRow {
+    /// The decoded engine state.
+    state: ProgramStatusState,
+    /// The record's state name, as stored, serialized and replayed.
+    name: &'static str,
+    /// Whether a prompt start or attached-process exit expires it.
+    expires: bool,
+}
+
+/// Every record state, highest priority first.
+const STATES: [StateRow; 5] = [
+    StateRow {
+        state: ProgramStatusState::Blocked,
+        name: "blocked",
+        expires: true,
+    },
+    StateRow {
+        state: ProgramStatusState::Error,
+        name: "error",
+        expires: false,
+    },
+    StateRow {
+        state: ProgramStatusState::Done,
+        name: "done",
+        expires: false,
+    },
+    StateRow {
+        state: ProgramStatusState::Working,
+        name: "working",
+        expires: true,
+    },
+    StateRow {
+        state: ProgramStatusState::Idle,
+        name: "idle",
+        expires: false,
+    },
+];
+
+/// The record's state name, or `None` for a state newer than this server
+/// (and for `clear`, which is not a record state).
+pub(super) fn state_name(state: ProgramStatusState) -> Option<&'static str> {
+    STATES
+        .iter()
+        .find(|row| row.state == state)
+        .map(|row| row.name)
+}
+
+/// Whether a prompt start or attached-process exit expires a record in `name`.
+fn expires(name: &str) -> bool {
+    STATES.iter().any(|row| row.expires && row.name == name)
+}
 
 pub use phux_terminal_api::agent_detect::ProgramStatusRecord as Record;
 
@@ -80,8 +133,7 @@ impl ProgramStatus {
     /// Prompt start or attached-process exit expires working and blocked only.
     pub(crate) fn expire_active(&mut self) -> bool {
         let before = self.records.len();
-        self.records
-            .retain(|record| !matches!(record.state, "working" | "blocked"));
+        self.records.retain(|record| !expires(record.state));
         self.records.len() != before
     }
 
@@ -100,8 +152,8 @@ impl ProgramStatus {
     /// Priority descending, then most recently updated; apps resolve at read.
     pub(crate) fn snapshot(&self) -> Vec<Record> {
         let mut records = Vec::with_capacity(self.records.len());
-        for state in STATES {
-            for stored in self.records.iter().rev().filter(|r| r.state == state) {
+        for row in &STATES {
+            for stored in self.records.iter().rev().filter(|r| r.state == row.name) {
                 let mut record = stored.clone();
                 if record.app.is_none() {
                     record.app = self.inherited_app(&record.id).map(str::to_owned);
@@ -175,6 +227,23 @@ fn append_pair(output: &mut String, key: &str, value: &str) {
 mod tests {
     use super::super::effects::{self, Effect};
     use super::*;
+
+    /// Every state name, highest priority first.
+    fn state_names() -> [&'static str; 5] {
+        STATES.map(|row| row.name)
+    }
+
+    #[test]
+    fn every_engine_state_but_clear_has_a_record_name() {
+        assert_eq!(state_name(ProgramStatusState::Clear), None);
+        for row in &STATES {
+            assert_eq!(state_name(row.state), Some(row.name));
+        }
+        assert_eq!(
+            state_names(),
+            ["blocked", "error", "done", "working", "idle"]
+        );
+    }
 
     /// Apply `body` as the engine reports it from `OSC 7501 ; body BEL`.
     fn report(status: &mut ProgramStatus, body: &str) -> bool {
@@ -278,7 +347,7 @@ mod tests {
     fn expiry_keeps_idle_done_error_and_can_change_inherited_apps() {
         let mut status = ProgramStatus::default();
         report(&mut status, "state=working:app=parent");
-        for state in STATES {
+        for state in state_names() {
             report(&mut status, &format!("state={state}:id={state}"));
         }
         assert!(status.expire_active());
@@ -295,7 +364,7 @@ mod tests {
     #[test]
     fn priority_and_identical_refresh_are_visible_only_when_order_changes() {
         let mut status = ProgramStatus::default();
-        for state in STATES {
+        for state in state_names() {
             report(&mut status, &format!("state={state}:id={state}"));
         }
         assert_eq!(
@@ -304,7 +373,7 @@ mod tests {
                 .iter()
                 .map(|r| r.state)
                 .collect::<Vec<_>>(),
-            STATES
+            state_names()
         );
         assert!(
             !report(&mut status, "state=blocked:id=blocked"),

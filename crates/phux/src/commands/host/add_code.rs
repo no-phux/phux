@@ -28,7 +28,7 @@ pub(super) fn run_add_from_code(raw_name: &str, opts: &AddOpts) -> ExitCode {
         Ok(link) => link,
         Err(err) => return json_err::emit(json, &code_error(err), 2),
     };
-    match remote_target::pair_from_code(&target, &link) {
+    match remote_target::pair_from_code(&target, &link, opts.hardware_key) {
         Ok((entry, status)) => report_registered(
             &HostRow::from_remote(entry),
             "from the connect link",

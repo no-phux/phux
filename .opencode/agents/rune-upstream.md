@@ -61,6 +61,11 @@ from evidence, state the assumption in the PR, and keep going.
   read the last entries, append one per run, and trim the oldest past about
   200 lines. `../rune.git` mirrors upstream; refresh it with
   `git -C ../rune.git fetch -q --prune`.
+- **Phone delivery:** when steering requests scheduled installation, read
+  `PHONE.json` in that same home as private data, never shell-source it.
+  It names the explicitly authorized device, ad-hoc profile, local signing
+  identity and existing private OTA host. Never guess another device, export
+  a private key, create provisioning, or change shared Tailscale hosting.
 - **The installed `phux` and its server are production, and you run inside
   them.** Never build against their socket, never replace the binary, never
   `phux upgrade`. Every shell command you run inherits the production
@@ -95,7 +100,8 @@ from evidence, state the assumption in the PR, and keep going.
    "Next, no upstream needed" on a `rune-phone/SLUG` branch in
    `../worktrees/rune-phone-SLUG`, prove it as step 6 says (both forms), move
    its row to "What works", and ship it as step 7. With nothing left there
-   either, journal "current at SHA" and finish.
+   either, journal "current at SHA" and reconcile phone delivery (step 9)
+   before finishing. A current desktop pin does not prove the phone is current.
 4. **Read the range before the compiler does.** `git -C ../rune.git log --stat
    PIN..dev`; the diff of upstream `CHANGELOG.md` over the range, which is
    written for consumers and lists changes that move an app's output without a
@@ -139,11 +145,54 @@ from evidence, state the assumption in the PR, and keep going.
    that `main` commit, push the tag, and watch `rune-client.yml` to the end. If
    the release turns out bad, put the last good feed back first ("A bad Rune
    release"), then fix forward.
-9. **Close.** Append the journal entry: date, pin before and after, PRs,
+9. **Install the phone, when steering requests it.** This is independent of
+   desktop `release: auto`: a desktop archive or unsigned device bundle is
+   not phone delivery. Use the native workflow in `clients/rune/ios/README.md`
+   ("Scheduled phone updates") and the home's `PHONE.json`.
+   - Validate the private configuration as data. Require `schema: 1` and
+     `enabled: true`; disabled delivery performs no signing, publication or
+     installation. Reject malformed configuration without guessing defaults.
+   - After a merged Rune/phone change, and on quiet runs with a pending phone
+     update, choose the newest qualified main revision. Require its exact
+     `ci-green` gate (including full native proof), not a PR, failed run,
+     simulator screenshot or ancestor standing in for the candidate.
+   - Derive its expected marketing/build versions, then query the configured
+     phone **before building or signing**. Stop when it already matches or is
+     newer; a locked signing keychain cannot make an already-current phone
+     falsely pending. Never downgrade. An unavailable query is not evidence
+     that an earlier receipt still describes the phone.
+   - Build `--target device --release` from that clean revision in your own
+     linked worktree. Verify `build.json`'s revision, target and release
+     profile. Give the unsigned bundle the source-derived numeric build number
+     described in its linked `DELIVERY.md` before signing; same-version dev builds
+     must be distinguishable. Record the source revision and marketing/build
+     versions in private evidence.
+   - Reuse `package_ota.py`, the authorized profile/device and local identity.
+     Keep all entitlement, signature and device-coverage checks. Publish only
+     `site/` to a fresh immutable subdirectory of the configured working host;
+     never republish another preview's root. Verify HTTPS page/manifest MIME
+     types and the complete downloaded IPA against the signed local artifact.
+     Reuse an existing immutable artifact only after rechecking its exact
+     source, versions, signature, device coverage and complete HTTPS digest.
+   - Attempt an
+     in-place `devicectl device install app` of the **signed** Payload bundle
+     on this existing paired device. Never uninstall, clear settings/Keychain,
+     re-pair, launch the user's app, or manufacture a new connection.
+   - Query installed apps again and require both marketing and build versions
+     to match. Installation-command success alone is not verification. Save
+     the receipt at the configured path only after that independent query.
+     A receipt never substitutes for a current device query on a later run.
+   - A locked signing keychain, unreachable/untrusted phone or required OS
+     approval is an explicit delivery blocker, not "updated". Preserve a
+     verified private OTA fallback when signing succeeds, name any remaining
+     on-phone approval, and keep the update pending in Beads/journal for the
+     next tick. Do not claim silent OTA installation or physical-device feel.
+10. **Close.** Append the journal entry: date, pin before and after, PRs,
    adoptions, findings, and what is queued. For each merged change, remove
    its worktree (`git worktree remove ../worktrees/NAME`) and its local
    branch. In a worktree whose PR is still open, run `just worktree-release`
-   and leave it for the next run. End with a three-line summary.
+   and leave it for the next run. End with a three-line summary that includes
+   the phone's verified version/build, or its exact pending-delivery blocker.
 
 ## Self-reliance
 

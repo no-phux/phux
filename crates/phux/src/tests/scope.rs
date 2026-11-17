@@ -4,26 +4,17 @@ use super::*;
 
 #[test]
 fn every_attach_capable_root_path_is_classified_before_dispatch() {
-    for argv in [
-        ["phux", "attach"].as_slice(),
-        ["phux", "new", "work"].as_slice(),
-        ["phux", "worktree", "new", "branch", "--attach"].as_slice(),
-        ["phux", "worktree", "open", "branch", "--attach"].as_slice(),
+    for (line, interactive) in [
+        ("phux attach", true),
+        ("phux new work", true),
+        ("phux worktree new branch --attach", true),
+        ("phux worktree open branch --attach", true),
+        ("phux new -s work --json", false),
+        ("phux worktree open branch", false),
+        ("phux ls", false),
     ] {
-        let cli = crate::parse_cli(argv).expect("interactive invocation parses");
-        assert!(crate::is_interactive_client(&cli), "missed {argv:?}");
-    }
-
-    for argv in [
-        ["phux", "new", "-s", "work", "--json"].as_slice(),
-        ["phux", "worktree", "open", "branch"].as_slice(),
-        ["phux", "ls"].as_slice(),
-    ] {
-        let cli = crate::parse_cli(argv).expect("headless invocation parses");
-        assert!(
-            !crate::is_interactive_client(&cli),
-            "misclassified {argv:?}"
-        );
+        let cli = parse(line).expect("invocation parses");
+        assert_eq!(crate::is_interactive_client(&cli), interactive, "{line}");
     }
 }
 
@@ -50,19 +41,9 @@ fn rec_is_scoped_to_the_two_attaching_paths() {
     assert_eq!(session.as_deref(), Some("work"));
     assert_eq!(rec.rec.as_deref(), Some(std::path::Path::new("demo.cast")));
 
-    let cli = crate::parse_cli([
-        "phux",
-        "rec",
-        "--composited",
-        "work",
-        "--size",
-        "1920x1080",
-        "-o",
-        "demo.cast",
-        "--speed-marked",
-        "2",
-        "--marker-labels",
-    ])
+    let cli = parse(
+        "phux rec --composited work --size 1920x1080 -o demo.cast --speed-marked 2 --marker-labels",
+    )
     .expect("composited rec parses");
     let Some(Command::Rec(crate::commands::RecArgs {
         action,
@@ -105,33 +86,16 @@ fn rec_is_scoped_to_the_two_attaching_paths() {
     assert!(mark_json.json);
     assert!(!json.json);
 
-    assert!(
-        crate::parse_cli(["phux", "rec", "--size", "1920x1080", "-o", "demo.cast"]).is_err(),
-        "--size requires --composited"
-    );
-    assert!(
-        crate::parse_cli([
-            "phux",
-            "rec",
-            "--composited",
-            "--from",
-            "demo.cast",
-            "-o",
-            "out.gif",
-        ])
-        .is_err(),
-        "--composited conflicts with --from"
-    );
-
-    for argv in [
-        ["phux", "ls", "--rec", "demo.gif"].as_slice(),
-        ["phux", "snapshot", "--rec", "demo.gif"].as_slice(),
-        // --rec-format is meaningless without a destination.
-        ["phux", "--rec-format", "gif"].as_slice(),
-        ["phux", "attach", "--rec-format", "gif"].as_slice(),
-    ] {
-        assert!(crate::parse_cli(argv).is_err(), "{argv:?} must not parse");
-    }
+    // --size requires --composited, which conflicts with --from; --rec is
+    // only on the two attaching paths, and --rec-format needs a destination.
+    assert_parses(&[
+        ("phux rec --size 1920x1080 -o demo.cast", false),
+        ("phux rec --composited --from demo.cast -o out.gif", false),
+        ("phux ls --rec demo.gif", false),
+        ("phux snapshot --rec demo.gif", false),
+        ("phux --rec-format gif", false),
+        ("phux attach --rec-format gif", false),
+    ]);
 }
 
 /// A root `--rec` before a verb parses (so the global `--socket` can precede
@@ -202,96 +166,40 @@ fn a_one_off_relay_hop_carries_the_route_and_the_servers_ca() {
 /// form) used to fail at parse time. The any-of rule is post-parse.
 #[test]
 fn attach_dial_auth_flags_need_one_transport() {
-    for argv in [
-        [
-            "phux",
-            "attach",
-            "--quic",
-            "127.0.0.1:8788",
-            "--token",
-            "ab",
-        ]
-        .as_slice(),
-        [
-            "phux",
-            "attach",
-            "--ws",
-            "ws://127.0.0.1:8787",
-            "--token",
-            "ab",
-        ]
-        .as_slice(),
-        [
-            "phux",
-            "attach",
-            "--quic",
-            "127.0.0.1:8788",
-            "--cert-fingerprint",
-            "cd",
-        ]
-        .as_slice(),
-        [
-            "phux",
-            "attach",
-            "--ws",
-            "wss://host:8787",
-            "--tls-server-name",
-            "host",
-        ]
-        .as_slice(),
-    ] {
-        let cli = crate::parse_cli(argv)
-            .unwrap_or_else(|err| panic!("{argv:?} must parse (single transport): {err}"));
-        let Some(Command::Attach(crate::commands::AttachArgs {
+    let refusal = |line: &str| {
+        let Ok(Some(Command::Attach(crate::commands::AttachArgs {
             quic,
             ws,
             token,
             cert_fingerprint,
             tls_server_name,
             ..
-        })) = cli.command
+        }))) = parse(line).map(|cli| cli.command)
         else {
-            panic!("expected Attach for {argv:?}");
+            panic!("{line} must parse as Attach; any refusal is post-parse");
         };
-        assert!(
-            crate::dispatch::attach::dial_auth_without_transport(
-                quic.as_deref(),
-                ws.as_deref(),
-                token.as_deref(),
-                cert_fingerprint.as_deref(),
-                tls_server_name.as_deref(),
-            )
-            .is_none(),
-            "{argv:?} names a transport"
-        );
-    }
-
-    for flag in ["--token", "--cert-fingerprint", "--tls-server-name"] {
-        let argv = ["phux", "attach", flag, "x"];
-        let cli = crate::parse_cli(argv)
-            .unwrap_or_else(|err| panic!("{argv:?} must parse; the refusal is post-parse: {err}"));
-        let Some(Command::Attach(crate::commands::AttachArgs {
-            quic,
-            ws,
-            token,
-            cert_fingerprint,
-            tls_server_name,
-            ..
-        })) = cli.command
-        else {
-            panic!("expected Attach for {argv:?}");
-        };
-        let message = crate::dispatch::attach::dial_auth_without_transport(
+        crate::dispatch::attach::dial_auth_without_transport(
             quic.as_deref(),
             ws.as_deref(),
             token.as_deref(),
             cert_fingerprint.as_deref(),
             tls_server_name.as_deref(),
         )
-        .unwrap_or_else(|| panic!("{argv:?} must be refused without a transport"));
+    };
+    for line in [
+        "phux attach --quic 127.0.0.1:8788 --token ab",
+        "phux attach --ws ws://127.0.0.1:8787 --token ab",
+        "phux attach --quic 127.0.0.1:8788 --cert-fingerprint cd",
+        "phux attach --ws wss://host:8787 --tls-server-name host",
+    ] {
+        assert_eq!(refusal(line), None, "{line} names a transport");
+    }
+    for flag in ["--token", "--cert-fingerprint", "--tls-server-name"] {
+        let message = refusal(&format!("phux attach {flag} x"))
+            .unwrap_or_else(|| panic!("{flag} must be refused without a transport"));
         assert!(
             message.contains("--quic") && message.contains("--ws"),
-            "{argv:?} refusal must name both transports; got {message:?}"
+            "{flag} refusal must name both transports; got {message:?}"
         );
     }
 }
@@ -317,35 +225,26 @@ fn socket_parses_before_and_after_the_verb() {
 /// (via `socketless_verb`), not silently ignored.
 #[test]
 fn socketless_verbs_are_named_and_socket_consumers_are_not() {
-    for argv in [
-        ["phux", "pair", "ls", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "pair", "revoke", "id", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "--socket", "/tmp/x.sock", "config", "path"].as_slice(),
-        ["phux", "plugin", "list", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "logs", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "completion", "zsh", "--socket", "/tmp/x.sock"].as_slice(),
+    for (line, socketless) in [
+        ("phux pair ls", true),
+        ("phux pair revoke id", true),
+        ("phux config path", true),
+        ("phux plugin list", true),
+        ("phux logs", true),
+        ("phux completion zsh", true),
+        ("phux ls", false),
+        ("phux pair", false),
+        ("phux config reload", false),
+        ("phux tag ls work", false),
+        ("phux service install", false),
+        ("phux worktree list", false),
     ] {
-        let cli = crate::parse_cli(argv).expect("the global --socket always parses");
+        let cli = parse(&format!("{line} --socket /tmp/x.sock")).expect("--socket always parses");
         let command = cli.command.as_ref().expect("a verb was given");
-        assert!(
+        assert_eq!(
             crate::commands::socketless_verb(command).is_some(),
-            "{argv:?} names a socketless verb and must be refused"
-        );
-    }
-
-    for argv in [
-        ["phux", "ls", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "pair", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "config", "reload", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "tag", "ls", "work", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "service", "install", "--socket", "/tmp/x.sock"].as_slice(),
-        ["phux", "worktree", "list", "--socket", "/tmp/x.sock"].as_slice(),
-    ] {
-        let cli = crate::parse_cli(argv).expect("consumer verbs parse");
-        let command = cli.command.as_ref().expect("a verb was given");
-        assert!(
-            crate::commands::socketless_verb(command).is_none(),
-            "{argv:?} consumes --socket and must not be refused"
+            socketless,
+            "{line}: a socketless verb refuses --socket; a consumer keeps it"
         );
     }
 }
@@ -355,10 +254,7 @@ fn socketless_verbs_are_named_and_socket_consumers_are_not() {
 #[test]
 fn project_link_and_unlink_parse_their_target_and_remote() {
     use crate::commands::ProjectAction;
-    let cli = crate::parse_cli([
-        "phux", "project", "link", "notes", "phux", "--json", "--remote", "me@mini",
-    ])
-    .expect("link parses");
+    let cli = parse("phux project link notes phux --json --remote me@mini").expect("link parses");
     let command = cli.command.as_ref().expect("a verb");
     let Command::Project(crate::commands::ProjectArgs {
         action:
@@ -397,12 +293,12 @@ fn project_link_and_unlink_parse_their_target_and_remote() {
 #[test]
 fn attach_viewer_and_take_parse_refuse_each_other_and_map_to_roles() {
     use phux_protocol::wire::frame::RolePolicy;
-    assert!(crate::parse_cli(["phux", "attach", "--viewer"]).is_ok());
-    assert!(crate::parse_cli(["phux", "attach", "--take", "work"]).is_ok());
-    assert!(
-        crate::parse_cli(["phux", "attach", "--viewer", "--take"]).is_err(),
-        "a viewer cannot take over: the flags conflict at parse time"
-    );
+    // A viewer cannot take over: the flags conflict at parse time.
+    assert_parses(&[
+        ("phux attach --viewer", true),
+        ("phux attach --take work", true),
+        ("phux attach --viewer --take", false),
+    ]);
     assert_eq!(
         crate::dispatch::attach::declared_attach_role(true, false),
         RolePolicy::VIEWER

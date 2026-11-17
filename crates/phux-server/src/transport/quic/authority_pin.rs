@@ -42,11 +42,7 @@ impl State {
         )
         .unwrap();
         let state = Self {
-            paths: WorkloadPaths {
-                ca_cert: dir.path().join("workload-ca.pem"),
-                ca_key: dir.path().join("workload-ca.key"),
-                registry: dir.path().join("workload-keys"),
-            },
+            paths: WorkloadPaths::in_dir(dir.path()),
             cert: dir.path().join("remote-cert.pem"),
             key: dir.path().join("remote-key.pem"),
             _dir: dir,

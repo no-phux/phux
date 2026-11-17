@@ -148,34 +148,33 @@ async fn connection_cancellation_releases_close_fences_while_later_capture_is_pa
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_during_a_full_bootstrap_mailbox_releases_publication_fence() {
-    LocalSet::new()
-        .run_until(async {
-            let state = SharedState::new();
-            let (session, parent) = parent(&state, false);
-            let (_, handle) = watched_tree(&state, parent, session);
-            let payload = format!("\"{}\"", "x".repeat(8 * 1024 * 1024));
-            publish::<TreeDocument>(&handle, Bytes::from(payload)).await;
-            let viewer = Connection::start_bounded(&state, false, 4).await;
-            viewer.attach(1).await;
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while viewer.rx.capacity() > 0 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("bootstrap filled the transport writer mailbox");
-            let publication = state.with(|s| {
-                s.attached()[&viewer.client]
-                    .publication_gate
-                    .clone()
-                    .unwrap()
-            });
-            assert!(!publication.is_cancelled());
-            viewer.finish().await;
-            assert!(
-                publication.is_cancelled(),
-                "cancellation released the lifecycle publication fence"
-            );
+    crate::runtime::test_support::local(async {
+        let state = SharedState::new();
+        let (session, parent) = parent(&state, false);
+        let (_, handle) = watched_tree(&state, parent, session);
+        let payload = format!("\"{}\"", "x".repeat(8 * 1024 * 1024));
+        publish::<TreeDocument>(&handle, Bytes::from(payload)).await;
+        let viewer = Connection::start_bounded(&state, false, 4).await;
+        viewer.attach(1).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while viewer.rx.capacity() > 0 {
+                tokio::task::yield_now().await;
+            }
         })
-        .await;
+        .await
+        .expect("bootstrap filled the transport writer mailbox");
+        let publication = state.with(|s| {
+            s.attached()[&viewer.client]
+                .publication_gate
+                .clone()
+                .unwrap()
+        });
+        assert!(!publication.is_cancelled());
+        viewer.finish().await;
+        assert!(
+            publication.is_cancelled(),
+            "cancellation released the lifecycle publication fence"
+        );
+    })
+    .await;
 }

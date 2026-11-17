@@ -43,7 +43,8 @@ pub(crate) struct SetFlags {
     /// Human-facing agent name (required, non-empty).
     #[usage(long)]
     pub(crate) name: String,
-    /// Open-vocabulary kind slug, e.g. "claude" or "codex".
+    /// Open-vocabulary kind slug, e.g. "claude" or "codex". Omitted, the
+    /// pane keeps its current kind.
     #[usage(long)]
     pub(crate) kind: Option<String>,
     /// Declared lifecycle state.

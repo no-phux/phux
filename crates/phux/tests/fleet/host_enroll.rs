@@ -93,7 +93,7 @@ impl EnrollHome {
                *) echo \"fake ssh: unexpected: $*\" >&2; exit 1 ;;\n\
              esac\n"
         );
-        write_executable(&path, &script);
+        crate::common::write_executable(&path, &script);
         path
     }
 
@@ -108,7 +108,7 @@ impl EnrollHome {
              echo '{stderr}' >&2\n\
              exit {code}\n"
         );
-        write_executable(&path, &script);
+        crate::common::write_executable(&path, &script);
         path
     }
 
@@ -117,7 +117,7 @@ impl EnrollHome {
         let bin = self.dir.path().join("fake-bin");
         std::fs::create_dir_all(&bin).expect("create fake init-tool dir");
         for tool in ["launchctl", "systemctl"] {
-            write_executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
+            crate::common::write_executable(bin.join(tool), "#!/bin/sh\nexit 0\n");
         }
         let mut paths = vec![bin];
         if let Some(inherited) = std::env::var_os("PATH") {
@@ -789,7 +789,7 @@ fn add_json_emits_the_documented_host_document() {
         Some(3),
         "exactly the three documented top-level keys; document: {doc}"
     );
-    assert_eq!(host.len(), 13, "exactly the documented host keys");
+    assert_eq!(host.len(), 14, "exactly the documented host keys");
     let enrollment = doc["enrollment"]
         .as_object()
         .expect("an `enrollment` object");
@@ -908,10 +908,4 @@ fn satellite_add_leaves_a_hub_unit_alone() {
         before,
         "an already-hub unit must not be rewritten"
     );
-}
-
-fn write_executable(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::write(path, body).expect("write script");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod script");
 }

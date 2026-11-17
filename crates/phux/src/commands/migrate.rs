@@ -417,7 +417,7 @@ fn ask(installed: &[(MigrateAgent, PathBuf)]) -> Option<(MigrateAgent, PathBuf)>
 /// The pane this process runs in, when it belongs to the server `socket`
 /// resolves to: the agent then opens in a split beside it.
 fn own_pane(socket: Option<&Path>) -> Option<u32> {
-    let id = std::env::var("PHUX_TERMINAL_ID").ok()?.parse().ok()?;
+    let id = crate::environment::own_terminal_id()?;
     let inherited = PathBuf::from(std::env::var_os("PHUX_SOCKET")?);
     let target = socket.map_or_else(default_socket_path, Path::to_path_buf);
     (inherited == target).then_some(id)

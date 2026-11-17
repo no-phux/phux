@@ -193,7 +193,6 @@ impl Owner {
                     .map_or(0, |state| state.unread_rows);
                 status
             }),
-            document_revision: self.document_revisions.get(id).copied().unwrap_or(0),
             input_ready: matches!(
                 self.kernel.input_eligibility(id),
                 InputEligibility::Eligible { .. }
@@ -219,9 +218,13 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
-    pub(super) fn bracketed_paste(&self, id: &ResourceId) -> Result<bool, EngineError> {
+    pub(super) fn mode(
+        &self,
+        id: &ResourceId,
+        mode: libghostty_vt::mode::Mode,
+    ) -> Result<bool, EngineError> {
         self.terminal(id)?
-            .mode(libghostty_vt::terminal::Mode::BRACKETED_PASTE)
+            .mode(mode)
             .map_err(|error| engine_error(error.to_string()))
     }
 }

@@ -1,26 +1,20 @@
 #[tokio::test(flavor = "current_thread")]
-async fn serving_host_read_is_feature_gated_and_sent_once() {
+async fn serving_host_read_is_sent_once() {
     use phux_protocol::wire::frame::WHOAMI_KEY;
-    for supported in [false, true] {
-        let features = if supported {
-            ServerFeatureSet::with(&[ServerFeature::Whoami])
-        } else {
-            ServerFeatureSet::new()
-        };
-        let (mut state, mut client, mut server, _) = bootstrapped_loop_with(features).await;
-        state.request_serving_host(&mut client).await.unwrap();
-        state.request_serving_host(&mut client).await.unwrap();
-        let frames = frames_sent(&mut client, &mut server).await;
-        assert_eq!(
-            frames
-                .iter()
-                .filter(|f| matches!(f,
-                    FrameKind::GetMetadata { scope: Scope::Global, key, .. } if key == WHOAMI_KEY
-                ))
-                .count(),
-            usize::from(supported)
-        );
-    }
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.request_serving_host(&mut client).await.unwrap();
+    state.request_serving_host(&mut client).await.unwrap();
+    let frames = frames_sent(&mut client, &mut server).await;
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| matches!(f,
+                FrameKind::GetMetadata { scope: Scope::Global, key, .. } if key == WHOAMI_KEY
+            ))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

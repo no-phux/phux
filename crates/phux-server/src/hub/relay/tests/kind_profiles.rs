@@ -12,14 +12,10 @@ fn content(
     let (out_tx, _out_rx) = mpsc::channel(1);
     ProxySubscription {
         resource_kind: kind,
-        terminal: 7,
-        client: ClientId(1),
-        out_tx,
-        consumer_cancel: CancellationToken::new(),
-        seq: 1,
         awaits_snapshot: true,
         bootstrap_profile: profile,
         bootstrap_limits: Some(limits),
+        ..proxy(7, ClientId(1), out_tx)
     }
 }
 

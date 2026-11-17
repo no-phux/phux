@@ -129,10 +129,7 @@ pub(in crate::attach) fn pane_satellite_down(
 }
 
 /// What follows `satellite {host} ` in every `SatelliteUnreachable`
-/// diagnostic the hub emits (`phux-server` `hub::relay`): the link-teardown
-/// push, the fail-fast mailbox refusal, the dropped or silent reply, and the
-/// cancelled proxy withdrawal. `ERROR` carries no host field, so this prose
-/// is the only place the host appears.
+/// diagnostic the hub emits: `ERROR` carries no host field.
 const UNREACHABLE_TAILS: [&str; 5] = [
     "is unreachable",
     "link is down",

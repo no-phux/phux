@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use phux_config::{
-    Config, ConfigError, CwdInheritance, DefaultsCfg, SidebarPosition, StatusPosition, WindowSize,
-    parse_str,
+    Config, ConfigError, CwdInheritance, DefaultsCfg, KeybindingsCfg, SidebarPosition,
+    StatusPosition, WindowSize, parse_str, parse_with_defaults,
 };
 
 use crate::common::path;
@@ -121,6 +121,22 @@ fn empty_input_is_full_defaults() {
     assert_eq!(cfg.defaults.term, "xterm-256color");
     assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
     assert_eq!(cfg.defaults.history_limit, 50_000);
+}
+
+/// The shipped TOML and the schema's `Default` impls state the same
+/// defaults twice; changing one without the other must fail here.
+#[test]
+fn shipped_defaults_match_the_schema_defaults() {
+    let shipped = parse_with_defaults("", &path()).expect("shipped defaults load");
+    assert_eq!(shipped.defaults, DefaultsCfg::default());
+
+    let schema = KeybindingsCfg::default();
+    assert_eq!(shipped.keybindings.prefix, schema.prefix);
+    assert_eq!(shipped.keybindings.which_key, schema.which_key);
+    assert_eq!(
+        shipped.keybindings.which_key_delay_ms,
+        schema.which_key_delay_ms
+    );
 }
 
 /// Table-driven rejection: unknown fields (`deny_unknown_fields`) and

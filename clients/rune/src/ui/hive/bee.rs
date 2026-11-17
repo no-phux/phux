@@ -5,9 +5,9 @@
 
 use std::f32::consts::TAU;
 
-use super::super::reef::pen::{Pen, Xf, clip_convex, quad};
+use super::super::playground::pen::{Pen, Xf, clip_convex, quad};
 use crate::hive::{DARK, flourish};
-use crate::reef::{Pt, Rgb, Species, mix};
+use crate::playground::{Pt, Rgb, Species, mix};
 
 const HEAD: Rgb = [38.0, 26.0, 18.0];
 const STRIPE: Rgb = [28.0, 18.0, 10.0];

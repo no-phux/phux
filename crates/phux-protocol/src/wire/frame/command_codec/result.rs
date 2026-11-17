@@ -28,9 +28,7 @@ pub(in crate::wire) fn encode_command_result(result: &CommandResult, enc: &mut E
         }
         CommandResult::Accepted { operation } => {
             enc.write_u8(crate::wire::frame::COMMAND_RESULT_TAG_ACCEPTED);
-            for byte in operation.as_bytes() {
-                enc.write_u8(*byte);
-            }
+            enc.write_raw(operation.as_bytes());
         }
     }
 }
@@ -56,10 +54,7 @@ pub(in crate::wire) fn decode_command_result(
             CommandResult::Refused,
         ),
         crate::wire::frame::COMMAND_RESULT_TAG_ACCEPTED => {
-            let mut bytes = [0; 16];
-            for byte in &mut bytes {
-                *byte = dec.read_u8()?;
-            }
+            let bytes: [u8; 16] = dec.read_array()?;
             let operation = IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)?;
             Ok(CommandResult::Accepted { operation })
         }
@@ -98,6 +93,17 @@ fn unknown_result(what: &str, tag: u32) -> CommandResult {
 
 pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
     match value {
+        CommandValue::CredentialSecrets(values) => {
+            enc.write_u8(crate::wire::frame::COMMAND_VALUE_TAG_CREDENTIAL_SECRETS);
+            #[allow(
+                clippy::expect_used,
+                reason = "a string vector has no fallible JSON serialization"
+            )]
+            let bytes = zeroize::Zeroizing::new(
+                serde_json::to_vec(values).expect("credential DTO serialization"),
+            );
+            enc.write_bytes(&bytes);
+        }
         CommandValue::ResourceId(id) => {
             enc.write_u8(COMMAND_VALUE_TAG_RESOURCE_ID);
             encode_terminal_id(id, enc);
@@ -128,9 +134,7 @@ pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) 
             enc.write_u64_be(chunk.size);
             enc.write_bytes(&chunk.data);
             enc.write_option(chunk.sha256.as_ref(), |e, digest| {
-                for byte in digest {
-                    e.write_u8(*byte);
-                }
+                e.write_raw(digest);
             });
         }
         CommandValue::OrganizationPage(page) => {
@@ -155,6 +159,11 @@ pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) 
         }
         CommandValue::ServiceHttpHead(head) => super::service_http::encode_head(head, enc),
         CommandValue::ServiceHttpChunk(chunk) => super::service_http::encode_chunk(chunk, enc),
+        CommandValue::ForwardOpened(id) => {
+            enc.write_u8(crate::wire::frame::COMMAND_VALUE_TAG_FORWARD_OPENED);
+            enc.write_u64_be(*id);
+        }
+        CommandValue::ForwardChunk(chunk) => super::forward::encode_chunk(chunk, enc),
     }
 }
 
@@ -162,6 +171,18 @@ pub(super) fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue
     let tag = dec.read_u8()?;
     match tag {
         COMMAND_VALUE_TAG_RESOURCE_ID => Ok(CommandValue::ResourceId(decode_terminal_id(dec)?)),
+        crate::wire::frame::COMMAND_VALUE_TAG_CREDENTIAL_SECRETS => {
+            let bytes = dec.read_bytes()?;
+            if bytes.len() > crate::credentials::MAX_CREDENTIAL_PAYLOAD {
+                return Err(DecodeError::InvalidCredentialPayload);
+            }
+            let values: crate::credentials::SecretValues =
+                serde_json::from_slice(bytes).map_err(|_| DecodeError::InvalidCredentialPayload)?;
+            values
+                .validate()
+                .map_err(|_| DecodeError::InvalidCredentialPayload)?;
+            Ok(CommandValue::CredentialSecrets(values))
+        }
         COMMAND_VALUE_TAG_GROUP_ID => Ok(CommandValue::GroupId(GroupId::new(dec.read_u32_be()?))),
         COMMAND_VALUE_TAG_STATE => Ok(CommandValue::State(decode_session_snapshot(dec)?)),
         COMMAND_VALUE_TAG_JSON => Ok(CommandValue::Json(dec.read_str()?.to_owned())),
@@ -208,6 +229,12 @@ pub(super) fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue
         crate::wire::frame::COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK => Ok(
             CommandValue::ServiceHttpChunk(super::service_http::decode_chunk(dec)?),
         ),
+        crate::wire::frame::COMMAND_VALUE_TAG_FORWARD_OPENED => {
+            Ok(CommandValue::ForwardOpened(dec.read_u64_be()?))
+        }
+        crate::wire::frame::COMMAND_VALUE_TAG_FORWARD_CHUNK => Ok(CommandValue::ForwardChunk(
+            super::forward::decode_chunk(dec)?,
+        )),
         other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }
 }

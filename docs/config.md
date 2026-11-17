@@ -272,16 +272,43 @@ there wins over the choice Rune saved, and Settings shows it as set in
 [rune]
 theme = "nord"          # a theme id; "" follows the system
 font-size = 14.0        # the size each window starts at
+interface-size = 125    # sidebar, tabs, palette and Settings in percent, 80 to 200
 font-family = ""        # "" is the built-in face
 notifications = true
 option-as-meta = false
 copy-on-select = true
+wheel-arrows = true     # false: the wheel never sends arrows to full-screen programs
 confirm-close = false
 recent-first = true     # list the session you used last first
 ```
 
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
+
+### Markdown viewer
+
+Desktop Markdown documents use the bundled [tmd](https://github.com/jtnk/tmd)
+renderer by default. **Source** switches to the original Markdown;
+**Rendered** switches back. Other document types keep their native viewers.
+To replace the renderer, set an argv (not a shell command):
+
+```toml
+[rune]
+markdown-viewer = ["/absolute/path/to/renderer", "--width", "{width}"]
+# markdown-viewer = []  # source only, no renderer process
+```
+
+The renderer receives UTF-8 Markdown on stdin and must write plain UTF-8
+text to stdout, then exit successfully. Only `{width}` in arguments expands
+(10–100 columns, following the pane); document text is never substituted.
+It runs locally, including for documents published by remote hosts, on at
+most two workers per window. A three-second deadline, 2 MiB output limit
+and visible source fallback bound failures. The command is trusted local
+configuration, not a sandbox; choose a renderer that never executes document
+code or fetches assets automatically. The built-in adapter uses `tmd --print`
+with images and pixel headings disabled: tables and text layout, not tmd's
+interactive terminal UI, colours, clickable links or inline images.
+HTML remains source; the iOS default remains source too.
 
 `quick-terminal` names a global chord that drops a terminal over whatever
 app is in front, on the current Space, without switching to Rune's window.
@@ -348,8 +375,8 @@ The command names:
 - The app: `palette`, `settings`, `change-theme`, `toggle-sidebar`,
   `toggle-full-screen`, `keyboard-shortcuts`, `essential-shortcuts`,
   `get-started`, `bare`, `copy-config`, `copy-diagnostics`,
-  `check-for-updates`, `install-update`, `galaxy`, `reef`, `pitch`,
-  `kitchen`, `pit-lane`, `hive`.
+  `check-for-updates`, `install-update`, `playground` (the palette over
+  the scenes), `galaxy`, `reef`, `pitch`, `kitchen`, `pit-lane`, `hive`.
 
 ## Predictive echo
 
@@ -373,6 +400,39 @@ recordings never see it.
 The setting is read when you attach. After changing it, detach and run
 `phux attach` again; neither `phux config reload` nor an automatic
 reconnect turns off prediction in a session that already has it.
+
+## Tailnet owner devices
+
+With [Tailscale](https://tailscale.com), your own phone and computers can
+reach this machine's phux with no pairing at all:
+
+```toml
+[policy]
+mode = "paired"
+tailnet-owner = true
+```
+
+A device then connects by its host name alone (`quic://mini.tail1234.ts.net:8788`)
+when the local Tailscale client says it belongs to the same Tailscale user
+as this machine. It gets what a phone paired with `phux pair` gets.
+
+- **It's off by default**, and only works under `mode = "paired"`.
+- Only the QUIC listener on this machine's tailnet address takes it, never
+  a listener on a LAN or public address, and never WebSocket.
+- Tagged devices, devices shared in from another tailnet, and other
+  people on your tailnet still need `phux pair`. So does a device that
+  presents a client certificate: that certificate decides, so a device
+  you revoked stays out.
+- If Tailscale can't answer, or this machine is itself tagged, nobody gets
+  in this way.
+- Each connection is recorded in the [audit log](./audit.md) as
+  `tailnet:<your login>` with the device's address. `phux pair ls` says
+  when the mode is on.
+
+The phone pins this machine's certificate authority the first time it
+connects, so a later impostor at the same name is refused. Restart the
+server after changing the setting. To keep a device out, remove it from
+your tailnet or turn the setting off.
 
 ## Debugging
 

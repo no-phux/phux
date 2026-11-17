@@ -89,8 +89,7 @@ impl CopyModeOverlay {
         self.anchor_col = hit.end_col.min(max_col);
         self.mode = SelectionMode::Char;
         self.selecting = false;
-        self.mouse_anchor_screen = None;
-        self.mouse_anchor_viewport_row = None;
+        self.pinned_anchor = None;
     }
 
     /// The search hits for the painter, or `None` before any search.

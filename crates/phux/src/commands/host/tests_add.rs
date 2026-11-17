@@ -26,10 +26,44 @@ pub(super) fn opts() -> AddOpts {
         tls_server_name: None,
         ca_fingerprint: None,
         code: None,
+        hardware_key: false,
         session: None,
         disabled: false,
         json: JsonOpt { json: false },
     }
+}
+
+/// `--hardware-key` is refused where no client certificate is enrolled, and
+/// unasked it checks nothing.
+#[test]
+fn hardware_key_applies_only_where_a_certificate_is_enrolled() {
+    use super::add::{hardware_key_misplaced, hardware_key_ready};
+    let manual = AddMode::Manual {
+        name: "mini".to_owned(),
+        endpoint: "quic://mini:8788".to_owned(),
+    };
+    let ssh = AddMode::Ssh {
+        target: "me@mini".to_owned(),
+    };
+    let code = AddMode::Code {
+        name: "mini".to_owned(),
+    };
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&manual)).is_some());
+    assert!(hardware_key_misplaced(HostRole::Satellite, Some(&ssh)).is_some());
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&ssh)).is_none());
+    assert!(hardware_key_misplaced(HostRole::Remote, Some(&code)).is_none());
+    assert!(hardware_key_ready(false).is_ok());
+}
+
+/// A machine with no Secure Enclave refuses the flag in plain words, before
+/// anything is contacted.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn hardware_key_is_refused_without_a_secure_enclave() {
+    let err = super::add::hardware_key_ready(true).expect_err("no enclave");
+    assert_eq!(err.code, codes::WORKLOAD);
+    assert!(err.message.contains("Secure Enclave"), "{}", err.message);
+    assert!(err.remedy.contains("nothing was changed"), "{}", err.remedy);
 }
 
 /// ADR-0180: a manual relay route needs the server's CA, which is
@@ -192,238 +226,148 @@ fn add_mode_refuses_flags_from_the_other_form() {
     );
 }
 
-/// A login sshd turned away before it began names its `MaxStartups` limit.
-#[test]
-fn a_login_sshd_dropped_names_max_startups() {
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::SshUnreachable(
-            "kex_exchange_identification: Connection closed by remote host".to_owned(),
-        ),
-    );
-    assert!(
-        err.message.contains("cannot reach mini over ssh"),
-        "{}",
-        err.message
-    );
-    assert!(err.remedy.contains("MaxStartups"), "{}", err.remedy);
-}
-
-/// The three shared-middle failure classes map onto the error contract
-/// with distinct, pasteable remedies.
+/// The shared-middle failure classes map onto the error contract with
+/// distinct, pasteable remedies: a refused port 22 says how to turn ssh on,
+/// an unknown key how to check it, a login sshd dropped names `MaxStartups`,
+/// and a failed install is not answered with another `--install`. Under
+/// `--role satellite` the remedy carries the role, or following it verbatim
+/// would register into the remote registry.
 #[test]
 fn add_failures_carry_pasteable_remedies() {
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::SshUnreachable("ssh: connect to host mini port 22: refused".to_owned()),
-    );
-    assert_eq!(err.code, codes::REGISTRY);
-    assert!(
-        err.message.contains("cannot reach mini over ssh"),
-        "got {}",
-        err.message
-    );
-    assert!(
-        err.remedy.contains("`ssh mini`") && err.remedy.contains("`phux host add mini --ssh-only`"),
-        "got {}",
-        err.remedy
-    );
-
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::SshUnreachable(
-            "ssh: connect to host mini port 22: Connection refused".to_owned(),
+    let ssh = |text: &str| EnrollFailure::SshUnreachable(text.to_owned());
+    let no_token = || EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned());
+    for (role, failure, message, remedy, not_remedy) in [
+        (
+            HostRole::Remote,
+            ssh("ssh: connect to host mini port 22: refused"),
+            &["cannot reach mini over ssh"][..],
+            &["`ssh mini`", "`phux host add mini --ssh-only`"][..],
+            None,
         ),
-    );
-    assert!(
-        err.remedy.contains("Remote Login") && err.remedy.contains("tailscale set --ssh"),
-        "a refused port 22 says how to turn ssh on: {}",
-        err.remedy
-    );
-
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::SshUnreachable("Host key verification failed.".to_owned()),
-    );
-    assert!(err.message.contains("host key"), "got {}", err.message);
-    assert!(
-        err.remedy.contains("`ssh mini`"),
-        "an unknown key says how to check it: {}",
-        err.remedy
-    );
-
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::MissingPhux("`phux` was not found on mini".to_owned()),
-    );
-    assert!(err.message.contains("no phux"), "got {}", err.message);
-    assert!(
-        err.remedy.contains("https://phux.sh/install") && err.remedy.contains("--remote-phux"),
-        "the remedy names the install one-liner and the PATH escape: {}",
-        err.remedy
-    );
-
-    assert!(
-        err.remedy.contains("`phux host add mini --install`"),
-        "the remedy offers to install it: {}",
-        err.remedy
-    );
-
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::InstallFailed("the phux installer failed: unsupported platform".to_owned()),
-    );
-    assert!(
-        err.message.contains("could not install phux on mini")
-            && err.message.contains("unsupported platform"),
-        "got {}",
-        err.message
-    );
-    assert!(
-        err.remedy
-            .contains("ssh mini 'curl -fsSL https://phux.sh/install | sh'")
-            && !err.remedy.contains("--install"),
-        "a failed install is not answered with another --install: {}",
-        err.remedy
-    );
-
-    let err = add_failure_error(
-        "mini",
-        HostRole::Remote,
-        &EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned()),
-    );
-    assert!(
-        err.message.contains("no token"),
-        "the middle's message passes through: {}",
-        err.message
-    );
-    assert!(
-        err.remedy.contains("phux doctor")
-            && err.remedy.contains("`phux host add mini --ssh-only`"),
-        "got {}",
-        err.remedy
-    );
+        (
+            HostRole::Remote,
+            ssh("ssh: connect to host mini port 22: Connection refused"),
+            &[],
+            &["Remote Login", "tailscale set --ssh"],
+            None,
+        ),
+        (
+            HostRole::Remote,
+            ssh("kex_exchange_identification: Connection closed by remote host"),
+            &["cannot reach mini over ssh"],
+            &["MaxStartups"],
+            None,
+        ),
+        (
+            HostRole::Remote,
+            ssh("Host key verification failed."),
+            &["host key"],
+            &["`ssh mini`"],
+            None,
+        ),
+        (
+            HostRole::Remote,
+            EnrollFailure::MissingPhux("`phux` was not found on mini".to_owned()),
+            &["no phux"],
+            &[
+                "https://phux.sh/install",
+                "--remote-phux",
+                "`phux host add mini --install`",
+            ],
+            None,
+        ),
+        (
+            HostRole::Remote,
+            EnrollFailure::InstallFailed(
+                "the phux installer failed: unsupported platform".to_owned(),
+            ),
+            &["could not install phux on mini", "unsupported platform"],
+            &["ssh mini 'curl -fsSL https://phux.sh/install | sh'"],
+            Some("--install"),
+        ),
+        (
+            HostRole::Remote,
+            no_token(),
+            &["no token"],
+            &["phux doctor", "`phux host add mini --ssh-only`"],
+            None,
+        ),
+        (
+            HostRole::Satellite,
+            no_token(),
+            &[],
+            &["`phux host add mini --role satellite --ssh-only`"],
+            None,
+        ),
+    ] {
+        let err = add_failure_error("mini", role, &failure);
+        assert_eq!(err.code, codes::REGISTRY);
+        for needle in message {
+            assert!(err.message.contains(needle), "{needle}: {}", err.message);
+        }
+        for needle in remedy {
+            assert!(err.remedy.contains(needle), "{needle}: {}", err.remedy);
+        }
+        if let Some(absent) = not_remedy {
+            assert!(!err.remedy.contains(absent), "{absent}: {}", err.remedy);
+        }
+    }
 }
 
-/// Under `--role satellite`, the pasteable remedy must carry the role,
-/// or following it verbatim would register into the remote registry.
+/// Regression: a name escaping `<state>/remotes` (`../../evil`), or an
+/// unpinned `quic://` endpoint, is refused before any bearer token is
+/// written, at the intended path or the traversal target.
 #[test]
-fn add_failure_remedies_carry_the_satellite_role() {
-    let err = add_failure_error(
-        "mini",
-        HostRole::Satellite,
-        &EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned()),
-    );
-    assert!(
-        err.remedy
-            .contains("`phux host add mini --role satellite --ssh-only`"),
-        "got {}",
-        err.remedy
-    );
-}
-
-/// Regression: a name escaping `<state>/remotes` (`../../evil`) must be
-/// rejected before any token is written.
-#[test]
-fn enroll_rejects_a_traversal_name_before_writing_any_token() {
-    let state_dir = tempfile::tempdir().expect("tempdir");
-
-    let pairing = crate::commands::enroll::PairReport {
-        ca_fingerprint: None,
-        token: "deadbeef".to_owned(),
-        cert_fingerprint: Some("ab".repeat(32)),
-        overlay_addresses: vec!["100.64.0.2".to_owned()],
-    };
-    let route = Route {
-        pairing: Some(&pairing),
-        ..Route::bare("quic://mini:8788")
-    };
-    let err = finish_enroll_in(
-        state_dir.path(),
-        HostRole::Remote,
-        "../../evil",
-        &route,
-        None,
-        Some("me@mini"),
-    )
-    .expect_err("a traversal name must be refused");
-    assert_eq!(err.code, codes::REGISTRY);
-
-    // Nothing that looks like a bearer token landed anywhere under the
-    // (fake) state dir — not at the intended path, and not at the
-    // traversal target either.
-    let found: Vec<_> = walkdir_tokens(state_dir.path()).collect();
-    assert!(
-        found.is_empty(),
-        "rejection must not leave an orphaned token file: {found:?}"
-    );
-}
-
-/// Regression: an unpinned `quic://` endpoint fails before `write_token`,
-/// leaving no orphaned bearer token.
-#[test]
-fn enroll_rejects_unpinned_quic_before_writing_any_token() {
-    let state_dir = tempfile::tempdir().expect("tempdir");
-
-    let pairing = crate::commands::enroll::PairReport {
-        ca_fingerprint: None,
-        token: "deadbeef".to_owned(),
-        cert_fingerprint: None,
-        overlay_addresses: vec!["100.64.0.2".to_owned()],
-    };
-    let route = Route {
-        pairing: Some(&pairing),
-        ..Route::bare("quic://mini:8788")
-    };
-    let err = finish_enroll_in(
-        state_dir.path(),
-        HostRole::Remote,
-        "mini",
-        &route,
-        None,
-        Some("me@mini"),
-    )
-    .expect_err("an unpinned quic endpoint must be refused");
-    assert!(err.message.contains("--cert-fingerprint"), "got {err:?}");
-
-    let found: Vec<_> = walkdir_tokens(state_dir.path()).collect();
-    assert!(
-        found.is_empty(),
-        "rejection must not leave an orphaned token file: {found:?}"
-    );
+fn enroll_refusals_write_no_token() {
+    for (name, cert_fingerprint, needle) in [
+        ("../../evil", Some("ab".repeat(32)), "must not contain"),
+        ("mini", None, "--cert-fingerprint"),
+    ] {
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        let pairing = crate::commands::enroll::PairReport {
+            ca_fingerprint: None,
+            token: "deadbeef".to_owned(),
+            cert_fingerprint,
+            overlay_addresses: vec!["100.64.0.2".to_owned()],
+        };
+        let route = Route {
+            pairing: Some(&pairing),
+            ..Route::bare("quic://mini:8788")
+        };
+        let err = finish_enroll_in(
+            state_dir.path(),
+            HostRole::Remote,
+            name,
+            &route,
+            None,
+            Some("me@mini"),
+        )
+        .expect_err("refused");
+        assert_eq!(err.code, codes::REGISTRY);
+        assert!(err.message.contains(needle), "{name}: {err:?}");
+        let found: Vec<_> = walkdir_tokens(state_dir.path()).collect();
+        assert!(found.is_empty(), "orphaned token file: {found:?}");
+    }
 }
 
 /// An `ssh://` route with no direct candidate keeps no credential; one with a
 /// candidate keeps token and pin; a satellite never keeps any beside `ssh://`.
 #[test]
 fn ssh_route_keeps_credentials_only_for_a_direct_candidate() {
-    assert!(!keeps_credentials(HostRole::Remote, "ssh://me@mini", None));
-    assert!(keeps_credentials(
-        HostRole::Remote,
-        "ssh://me@mini",
-        Some("quic://100.64.0.2:8788")
-    ));
-    assert!(keeps_credentials(
-        HostRole::Remote,
-        "quic://mini:8788",
-        None
-    ));
-    assert!(!keeps_credentials(
-        HostRole::Satellite,
-        "ssh://edge",
-        Some("quic://100.64.0.2:8788")
-    ));
-    assert!(keeps_credentials(
-        HostRole::Satellite,
-        "quic://edge:8788",
-        None
-    ));
+    let quic = Some("quic://100.64.0.2:8788");
+    for (role, endpoint, candidate, keeps) in [
+        (HostRole::Remote, "ssh://me@mini", None, false),
+        (HostRole::Remote, "ssh://me@mini", quic, true),
+        (HostRole::Remote, "quic://mini:8788", None, true),
+        (HostRole::Satellite, "ssh://edge", quic, false),
+        (HostRole::Satellite, "quic://edge:8788", None, true),
+    ] {
+        assert_eq!(
+            keeps_credentials(role, endpoint, candidate),
+            keeps,
+            "{endpoint}"
+        );
+    }
 }
 
 /// Every `*.token` file under `root`, walked without pulling in a full

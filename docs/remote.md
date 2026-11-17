@@ -85,18 +85,19 @@ phux host add mini.tail1234.ts.net --name mini --install --accept-new-host-key
 `--accept-new-host-key` is safe here because the tailnet already vouches for
 the address. Machines that run Tailscale SSH need no SSH key.
 
-`--login` opens the Tailscale app if it isn't running, reconnects a client
-that's signed in but disconnected, or starts a sign-in and prints its link.
-It doesn't wait for the browser: run `phux host discover` again afterwards.
+`--login` opens the Tailscale app, reconnects it, or prints a sign-in link;
+run `phux host discover` again after signing in.
+
+Your own devices can skip pairing
+([tailnet owner devices](./config.md#tailnet-owner-devices)).
 
 The desktop app does this from **Add a machine** under the sidebar's machine
 switcher: it takes `me@host` or a machine from your tailnet and runs
 `phux host add --install` over your existing ssh access.
 
-A server that listens on its tailnet address and starts before Tailscale has
-that address, as at boot, keeps retrying the bind and starts listening as soon
-as the address appears, with no restart; `phux doctor` shows the listener as
-waiting to bind meanwhile.
+A server that starts before Tailscale has its address, as at boot, starts its
+tailnet listeners as soon as the address appears, with no restart;
+`phux doctor` shows them as waiting meanwhile.
 
 ## Using a machine
 
@@ -107,9 +108,9 @@ phux new --remote mini scratch   # create a session there
 phux host ls                     # registered machines
 ```
 
-`ls`, `new`, `kill`, `rename`, `detach`, `upload`, `download`, and `whoami`
-take `--remote NAME`. Pane commands such as `snapshot`, `send-keys`, `run`,
-and `wait` act on the server they connect to. To script panes on another
+`ls`, `new`, `kill`, `rename`, `detach`, `upload`, `download`, `whoami`, and
+[`forward`](./forwarding.md) take `--remote NAME`. Pane commands
+(`snapshot`, `send-keys`) act on their own server. To script panes on another
 machine, run `phux` there over SSH, or [link the machines](#linking-machines)
 so its panes show up here as `mini/@7`.
 

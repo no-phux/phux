@@ -5,7 +5,6 @@
 //! so `phux plugin update` can re-fetch deterministically without re-asking
 //! the user.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use phux_config::plugin::PluginManifestBuild;
@@ -95,12 +94,9 @@ pub(super) fn hash_build_steps(steps: &[PluginManifestBuild]) -> Option<String> 
             feed_bytes(&mut hasher, arg.as_bytes());
         }
     }
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(out, "{byte:02x}");
-    }
-    Some(out)
+    Some(crate::commands::update::apply::hex_lower(
+        &hasher.finalize(),
+    ))
 }
 
 fn feed_count(hasher: &mut Sha256, count: usize) {
@@ -315,7 +311,6 @@ mod tests {
     /// The previous encoding: `{platforms}|{args joined by \u{1f}}` per step.
     fn legacy_build_hash(steps: &[phux_config::plugin::PluginManifestBuild]) -> String {
         use sha2::{Digest, Sha256};
-        use std::fmt::Write as _;
 
         let mut hasher = Sha256::new();
         for step in steps {
@@ -323,12 +318,7 @@ mod tests {
             hasher.update(line.as_bytes());
             hasher.update(b"\n");
         }
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            let _ = write!(out, "{byte:02x}");
-        }
-        out
+        crate::commands::update::apply::hex_lower(&hasher.finalize())
     }
 
     /// Args used to be joined with `\u{1f}`, so `["a","b"]` and `["a\u{1f}b"]`

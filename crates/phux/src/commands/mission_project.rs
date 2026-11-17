@@ -27,7 +27,7 @@ use phux_mission::{
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{AgentEvent, ResourceLifecycle};
 use phux_protocol::wire::info::ResourceInfo;
-use phux_work::{Client, ObjectiveState, OpenRun, StateEdit};
+use phux_work::{Client, ObjectiveState, OpenRun, RunState, StateEdit};
 
 const ACTOR: &str = "keeper";
 
@@ -39,6 +39,9 @@ const BOUND_REFRESH: Duration = Duration::from_millis(200);
 
 /// Level-read / open-run attempts before reconcile gives up for this pass.
 const RECONCILE_ATTEMPTS: u32 = 4;
+
+mod facts;
+use facts::{ExitFact, agent_is_done, exit_of, fact_of, is_gap, is_spawn, phase, report_of};
 
 /// Watch `server_socket` until the process exits. The socket is bound before
 /// this runs, and this thread does not open the store. A projector that
@@ -508,10 +511,13 @@ fn drain_queue(client: &Client, socket: &Path, watch: &mut ProjectionWatch) {
     let Ok(runs) = client.open_runs() else {
         return;
     };
-    let Some(queued) = runs.iter().find(|run| run.run_state == "queued") else {
+    let Some(queued) = runs.iter().find(|run| run.run_state == RunState::Queued) else {
         return;
     };
-    let running = runs.iter().filter(|run| run.run_state == "running").count();
+    let running = runs
+        .iter()
+        .filter(|run| run.run_state == RunState::Running)
+        .count();
     let max_agents = super::mission_start::configured_max_agents(Path::new(&queued.repo_root))
         .unwrap_or(queued.max_agents);
     if max_agents == 0 || running >= usize::try_from(max_agents).unwrap_or(usize::MAX) {
@@ -556,108 +562,6 @@ fn drain_queue(client: &Client, socket: &Path, watch: &mut ProjectionWatch) {
         Ok(Err(err)) => error!("mission queue: {err}"),
         Err(_) => error!("mission queue launch panicked"),
     }
-}
-
-fn phase(run: &OpenRun) -> RunPhase {
-    if run.run_state == "queued" {
-        RunPhase::Queued
-    } else {
-        RunPhase::Running
-    }
-}
-
-const fn report_of(state: AgentMetaState) -> AgentReport {
-    match state {
-        AgentMetaState::Working => AgentReport::Working,
-        AgentMetaState::Blocked => AgentReport::Blocked,
-        AgentMetaState::Done => AgentReport::Done,
-        AgentMetaState::Idle | AgentMetaState::Unknown => AgentReport::Other,
-    }
-}
-
-fn fact_of(resource: &ResourceInfo) -> TerminalFact {
-    if resource.lifecycle == ResourceLifecycle::Exited {
-        TerminalFact::Exited {
-            status: resource.exit.as_ref().and_then(|exit| exit.exit_status),
-        }
-    } else {
-        TerminalFact::Running
-    }
-}
-
-struct SeenExit {
-    status: Option<i32>,
-}
-
-const fn seen_exit(event: &AgentEvent) -> Option<SeenExit> {
-    match event {
-        AgentEvent::TerminalControl {
-            lifecycle: ResourceLifecycle::Exited,
-            exit_status,
-            ..
-        }
-        | AgentEvent::ResourceClosed { exit_status } => Some(SeenExit {
-            status: *exit_status,
-        }),
-        _ => None,
-    }
-}
-
-struct ExitFact {
-    terminal: ResourceId,
-    status: Option<i32>,
-    seq: u64,
-}
-
-fn exit_of(item: &WatchItem) -> Option<ExitFact> {
-    let WatchItem::Event(event) = item else {
-        return None;
-    };
-    let exit = seen_exit(&event.event)?;
-    Some(ExitFact {
-        terminal: event.terminal.clone()?,
-        status: exit.status,
-        seq: event.stamp.as_ref().map_or(0, |stamp| stamp.seq),
-    })
-}
-
-const fn is_gap(item: &WatchItem) -> bool {
-    let WatchItem::Event(event) = item else {
-        return false;
-    };
-    matches!(
-        event.event,
-        AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. }
-    )
-}
-
-const fn is_spawn(item: &WatchItem) -> bool {
-    let WatchItem::Event(event) = item else {
-        return false;
-    };
-    matches!(
-        event.event,
-        AgentEvent::ResourceSpawned {
-            kind: ResourceKind::Terminal,
-            ..
-        }
-    )
-}
-
-fn agent_is_done(item: &WatchItem, id: &str) -> bool {
-    let WatchItem::AgentState(update) = item else {
-        return false;
-    };
-    let Some(terminal) = update.terminal.as_ref() else {
-        return false;
-    };
-    if terminal_key(terminal).as_deref() != Some(id) {
-        return false;
-    }
-    update
-        .record
-        .as_ref()
-        .is_some_and(|record| report_of(record.state) == AgentReport::Done)
 }
 
 fn note_gap() {

@@ -33,22 +33,19 @@ fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_liv
         }
         send_frame(
             &mut legacy,
-            &FrameKind::SubscribeEvents {
-                terminal: Some(pane.clone()),
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(Some(pane.clone()), None),
         )
         .await;
         get_screen_via_hub(&mut legacy, 5, pane.clone()).await;
         attach_live(&mut a, &pane).await;
         // Fresh PTY input after the attach must reach the event observer.
-        let paste = Command::RouteInput {
-            terminal_id: pane.clone(),
-            event: InputEvent::Paste(PasteEvent {
+        let paste = phux_server_testkit::route_input(
+            pane.clone(),
+            InputEvent::Paste(PasteEvent {
                 trust: PasteTrust::Trusted,
                 data: b"event-after-attach\n".to_vec(),
             }),
-        };
+        );
         assert_eq!(command_via_hub(&mut a, 3, paste).await.0, CommandResult::Ok);
         let event = next_event(&mut observer, |frame| {
             matches!(
@@ -118,9 +115,7 @@ async fn get_state_via_hub_frames(
     client: &mut UnixStream,
     request_id: u32,
 ) -> (CommandResult, Vec<FrameKind>) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     command_via_hub(client, request_id, get_state).await
 }
 

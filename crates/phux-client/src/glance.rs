@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use phux_client_runtime::activation::core_exec_state;
 use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind};
 use phux_protocol::wire::frame::{
     ExecState, Outcome, ResourceLifecycle, ResourceRecord, SessionLifetime,
@@ -375,16 +376,9 @@ fn activation_condition(state: ExecState, outcome: Option<Outcome>) -> (Conditio
     }
 }
 
+/// The stable word for an activation's execution state.
 const fn exec_word(state: ExecState) -> &'static str {
-    match state {
-        ExecState::Starting => "starting",
-        ExecState::Running => "running",
-        ExecState::Stopping => "stopping",
-        ExecState::Completed => "completed",
-        ExecState::Failed => "failed",
-        ExecState::Lost => "lost",
-        ExecState::Abandoned => "abandoned",
-    }
+    core_exec_state(state).as_str()
 }
 
 fn outcome_words(outcome: Outcome) -> String {

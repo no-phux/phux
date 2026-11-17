@@ -7,8 +7,7 @@ use std::sync::Arc;
 use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
     ControlPlane, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event, FrameKind, HashSet,
-    Pending, ResourceId, ResourceKind, ServerFeature, SessionSnapshot, StateScope, Status,
-    topology,
+    Pending, ResourceId, ResourceKind, SessionSnapshot, StateScope, Status, topology,
 };
 use crate::control::topology::View;
 use crate::handshake::HelloOk;
@@ -60,16 +59,15 @@ impl ControlPlane {
             self.end_agent_incarnation();
         }
         let (profile, limits) = (info.profile, info.limits);
-        let replay_supported = info.has(ServerFeature::AcknowledgedInput);
         let server_id = info.id.clone();
         self.server = Some(info);
         self.ensure_engine(profile, limits)?;
         self.handshake_ready = true;
         self.set_status(Status::Negotiated);
         let now_ms = self.now_ms();
-        let reports =
-            self.input_replay
-                .begin_connection_at(Some(&server_id), replay_supported, now_ms);
+        let reports = self
+            .input_replay
+            .begin_connection_at(Some(&server_id), true, now_ms);
         self.publish_replay_reports(reports, None);
         if self.options.automatic_lifecycle {
             self.queue_post_handshake();
@@ -176,10 +174,7 @@ impl ControlPlane {
     }
 
     pub(super) fn queue_post_handshake(&mut self) {
-        let after_seq = self
-            .options
-            .event_after_seq
-            .filter(|_| self.server_has(ServerFeature::EventJournal));
+        let after_seq = self.options.event_after_seq;
         self.queue_frame(&FrameKind::SubscribeEvents {
             terminal: None,
             after_seq,
@@ -248,7 +243,9 @@ impl ControlPlane {
         // name for another session before this socket reconnects. Numeric IDs
         // are stable within an incarnation and requalified on a server change.
         self.attach_target = Some(AttachTarget::ById(snapshot.focused_session));
-        self.topology = Some(self.project_topology(snapshot));
+        let mut topology = self.project_topology(snapshot);
+        topology.keep_foregrounds(self.topology.as_ref());
+        self.topology = Some(topology);
         self.error = None;
         self.apply_engine(EngineEvent::AttachStarted {
             attach_id,

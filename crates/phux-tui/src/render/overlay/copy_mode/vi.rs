@@ -1,17 +1,13 @@
-//! Vi keys for copy-mode, following tmux's `copy-mode-vi` where there is a
-//! choice: `h j k l`, `w b e`, `0 ^ $`, `g G`, `H M L`, `C-u C-d C-b C-f`,
-//! `v V C-v` to select, `y` to copy.
-//!
-//! Word and line-end motions need the row's text, which only the dispatcher's
-//! engine has: the overlay asks with a [`CopyMotionRequest`] and the
-//! dispatcher answers with the target column from
+//! Vi keys for copy mode, following tmux's `copy-mode-vi`. Word and line-end
+//! motions need the row's text, so the overlay asks with a
+//! [`CopyMotionRequest`] and the dispatcher answers via
 //! [`phux_client_core::motion::row_motion_target`].
 
 use phux_protocol::input::key::{KeyEvent, ModSet, PhysicalKey};
 
 use phux_client_core::motion::RowMotion;
 
-use super::CopyModeOverlay;
+use super::{CopyModeOverlay, PinnedAnchor};
 use crate::render::overlay::{OverlayCommand, ScreenSelectionPoint, SelectionGrab, SelectionMode};
 
 /// A scroll far enough to reach either end of any scrollback.
@@ -51,15 +47,17 @@ impl CopyModeOverlay {
     /// while the viewport scrolls under a keyboard selection. A no-op until
     /// the dispatcher has reported where the viewport is.
     pub(super) fn pin_anchor(&mut self) {
-        if self.mouse_anchor_screen.is_some() {
+        if self.pinned_anchor.is_some() {
             return;
         }
         if let Some(top) = self.screen_top {
-            self.mouse_anchor_screen = Some(ScreenSelectionPoint {
-                col: self.anchor_col,
-                row: top.saturating_add(u32::from(self.anchor_row)),
+            self.pinned_anchor = Some(PinnedAnchor {
+                screen: ScreenSelectionPoint {
+                    col: self.anchor_col,
+                    row: top.saturating_add(u32::from(self.anchor_row)),
+                },
+                viewport_row: i32::from(self.anchor_row),
             });
-            self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
         }
     }
 
@@ -67,18 +65,17 @@ impl CopyModeOverlay {
     pub(super) const fn collapse(&mut self) {
         self.anchor_row = self.cursor_row;
         self.anchor_col = self.cursor_col;
-        self.mouse_anchor_screen = None;
-        self.mouse_anchor_viewport_row = None;
+        self.pinned_anchor = None;
     }
 
     /// The dispatcher's report of the full-screen row now on viewport row 0:
     /// a pinned anchor moves on screen by exactly what the viewport scrolled.
     pub(super) fn viewport_top_changed(&mut self, screen_top: u32) {
         self.screen_top = Some(screen_top);
-        if let Some(anchor) = self.mouse_anchor_screen {
-            let row = i64::from(anchor.row) - i64::from(screen_top);
-            self.mouse_anchor_viewport_row =
-                Some(i32::try_from(row).unwrap_or(if row < 0 { i32::MIN } else { i32::MAX }));
+        if let Some(pinned) = self.pinned_anchor.as_mut() {
+            let row = i64::from(pinned.screen.row) - i64::from(screen_top);
+            pinned.viewport_row =
+                i32::try_from(row).unwrap_or(if row < 0 { i32::MIN } else { i32::MAX });
         }
     }
 
@@ -182,20 +179,10 @@ impl CopyModeOverlay {
 mod tests {
     use super::*;
 
-    use phux_protocol::input::key::KeyAction;
-
     use crate::render::overlay::RenderOverlay as _;
 
     fn press(overlay: &mut CopyModeOverlay, key: PhysicalKey, mods: ModSet) -> OverlayCommand {
-        overlay.handle_key(&KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        })
+        overlay.handle_key(&crate::test_util::press_mods(key, mods))
     }
 
     fn plain(overlay: &mut CopyModeOverlay, key: PhysicalKey) -> OverlayCommand {

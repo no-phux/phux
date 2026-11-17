@@ -2,9 +2,7 @@
 
 use std::process::ExitCode;
 
-use super::super::enroll::{
-    self, CertificateStatus, EnrollEvent, EnrollRequest, ServicePolicy, WorkloadEnrollment,
-};
+use super::super::enroll::{self, CertificateStatus, EnrollEvent, EnrollRequest, ServicePolicy};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self, Endpoint, RemoteEntry};
 use super::super::remote_target::RemoteTarget;
@@ -61,7 +59,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     };
 
     if opts.role == HostRole::Remote
-        && let Some(row) = already_current(&name, &mut narrate)
+        && let Some(row) = already_current(&name, opts.hardware_key, &mut narrate)
     {
         return report_registered(
             &row,
@@ -84,6 +82,9 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
     let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let workload = previous
+        .held
+        .replacement(&remotes_dir, &name, opts.hardware_key);
     let req = EnrollRequest {
         ssh_host: &ssh_host,
         remote_phux: &remote_phux,
@@ -97,10 +98,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         previous_token: previous.token.as_deref(),
         previous_fingerprint: previous.fingerprint.as_deref(),
         previous_identity: previous.identity.as_ref(),
-        workload: (opts.role == HostRole::Remote).then(|| WorkloadEnrollment {
-            dir: &remotes_dir,
-            name: &name,
-        }),
+        workload: (opts.role == HostRole::Remote).then_some(workload),
     };
     let outcome = match enroll::enroll_over_ssh(&req, &mut |event| narrate(&event)) {
         Ok(outcome) => outcome,
@@ -162,12 +160,17 @@ fn provisioned_phux(
 /// certificate is not due for renewal needs nothing: its row, so `host add`
 /// can say so and stop rather than re-pair it. One without a certificate,
 /// with one due, or whose route does not answer is narrated and set up
-/// again (`None`).
+/// again (`None`), as is one whose file key `hardware_key` asks to move
+/// into this machine's hardware.
 pub(super) fn already_current(
     name: &str,
+    hardware_key: bool,
     narrate: &mut dyn FnMut(&EnrollEvent),
 ) -> Option<HostRow> {
     let entry = remote::find(name)?;
+    if hardware_key && !enroll::is_hardware_key(entry.client_key.as_deref()) {
+        return None;
+    }
     let (cert, _) = entry.client_identity_paths()?;
     let renewal = enroll::renewal_due(cert, chrono::Utc::now().timestamp());
     match (saved_route_answers(&entry), renewal) {

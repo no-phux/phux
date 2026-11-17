@@ -134,34 +134,35 @@ impl Decoder<'_> {
         let mut quic_streams = false;
         let mut resource_kinds = crate::caps::ResourceKindSet::LEGACY;
         let mut platform = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
-                f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
-                f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
-                f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
-                f::CLIENT_CAPS => client_caps = Some(sub!(value, decode_client_capabilities)),
-                f::COMPRESSION => {
-                    compression = Some(crate::caps::CompressionSet::from_bits(sub!(
-                        value,
-                        Decoder::read_u8
-                    )));
-                }
-                f::SSH_ORIGIN => ssh_origin = crate::wire::ssh_origin::decode_ssh_origin(value),
-                f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
-                f::RESOURCE_KINDS => {
-                    resource_kinds =
-                        crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
-                }
-                // A label: an unreadable one is dropped, never a refusal.
-                f::PLATFORM => {
-                    platform = std::str::from_utf8(value)
-                        .ok()
-                        .and_then(crate::caps::ClientPlatform::parse);
-                }
-                _ => {}
+        let mut credential_approvals = false;
+        for_each_field!(self, value, {
+            f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
+            f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+            f::CLIENT_CAPS => client_caps = Some(sub!(value, decode_client_capabilities)),
+            f::COMPRESSION => {
+                compression = Some(crate::caps::CompressionSet::from_bits(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
             }
-        }
+            f::SSH_ORIGIN => ssh_origin = crate::wire::ssh_origin::decode_ssh_origin(value),
+            f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
+            f::CREDENTIAL_APPROVALS => {
+                credential_approvals = sub!(value, Decoder::read_u8) == 1;
+            }
+            f::RESOURCE_KINDS => {
+                resource_kinds =
+                    crate::caps::ResourceKindSet::from_wire(sub!(value, Decoder::read_u64_be));
+            }
+            // A label: an unreadable one is dropped, never a refusal.
+            f::PLATFORM => {
+                platform = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(crate::caps::ClientPlatform::parse);
+            }
+        });
         let mut client_caps = req(client_caps)?;
         if let Some(origin) = ssh_origin {
             client_caps = client_caps.with_ssh_origin(origin);
@@ -174,7 +175,8 @@ impl Decoder<'_> {
         client_caps = client_caps
             .with_quic_streams(quic_streams)
             .with_resource_kinds(resource_kinds)
-            .with_platform(platform);
+            .with_platform(platform)
+            .with_credential_approvals(credential_approvals);
         Ok(FrameKind::Hello {
             client_name: req(client_name)?,
             protocol_major: req(protocol_major)?,
@@ -195,29 +197,24 @@ impl Decoder<'_> {
         let mut max_chunk_bytes = None;
         let mut max_history_page_bytes = None;
         let mut compression: Option<crate::caps::Compression> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
-                f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
-                f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
-                f::SERVER_CAPS => server_caps = Some(sub!(value, decode_server_capabilities)),
-                f::SERVER_ID => server_id = Some(value.to_vec()),
-                f::SELECTED_PROFILE => {
-                    selected_profile = Some(sub!(value, decode_bootstrap_profile));
-                }
-                f::MAX_CHUNK_BYTES => max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be)),
-                f::MAX_HISTORY_PAGE_BYTES => {
-                    max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
-                }
-                f::COMPRESSION => {
-                    compression = Some(crate::caps::Compression::from_u8(sub!(
-                        value,
-                        Decoder::read_u8
-                    )));
-                }
-                _ => {}
+        for_each_field!(self, value, {
+            f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+            f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+            f::SERVER_CAPS => server_caps = Some(sub!(value, decode_server_capabilities)),
+            f::SERVER_ID => server_id = Some(value.to_vec()),
+            f::SELECTED_PROFILE => selected_profile = Some(sub!(value, decode_bootstrap_profile)),
+            f::MAX_CHUNK_BYTES => max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be)),
+            f::MAX_HISTORY_PAGE_BYTES => {
+                max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
             }
-        }
+            f::COMPRESSION => {
+                compression = Some(crate::caps::Compression::from_u8(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
+            }
+        });
         let bootstrap_limits =
             negotiated_bootstrap_limits(max_chunk_bytes, max_history_page_bytes)?;
         let mut server_caps = req(server_caps)?;
@@ -258,21 +255,18 @@ impl Decoder<'_> {
         let mut algorithm = None;
         let mut uncompressed_len = None;
         let mut payload: Option<&[u8]> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::frame_compressed::ALGORITHM => {
-                    algorithm = Some(crate::caps::Compression::from_u8(sub!(
-                        value,
-                        Decoder::read_u8
-                    )));
-                }
-                field::frame_compressed::UNCOMPRESSED_LEN => {
-                    uncompressed_len = Some(sub!(value, Decoder::read_u32_be));
-                }
-                field::frame_compressed::PAYLOAD => payload = Some(value),
-                _ => {}
+        for_each_field!(self, value, {
+            field::frame_compressed::ALGORITHM => {
+                algorithm = Some(crate::caps::Compression::from_u8(sub!(
+                    value,
+                    Decoder::read_u8
+                )));
             }
-        }
+            field::frame_compressed::UNCOMPRESSED_LEN => {
+                uncompressed_len = Some(sub!(value, Decoder::read_u32_be));
+            }
+            field::frame_compressed::PAYLOAD => payload = Some(value),
+        });
         if req(algorithm)? != crate::caps::Compression::Deflate {
             return Err(DecodeError::CompressedFrameInvalid);
         }
@@ -300,11 +294,9 @@ impl Decoder<'_> {
     /// Decode the shared `PING` / `PONG` body: its required nonce.
     pub(super) fn decode_nonce(&mut self) -> Result<u64, DecodeError> {
         let mut nonce: Option<u64> = None;
-        while let Some((id, value)) = self.read_field()? {
-            if id == field::ping::NONCE {
-                nonce = Some(sub!(value, Decoder::read_u64_be));
-            }
-        }
+        for_each_field!(self, value, {
+            field::ping::NONCE => nonce = Some(sub!(value, Decoder::read_u64_be)),
+        });
         req(nonce)
     }
 
@@ -315,16 +307,13 @@ impl Decoder<'_> {
         let mut bootstrap_id: Option<BootstrapId> = None;
         let mut seq: Option<u64> = None;
         let mut bytes: Option<bytes::Bytes> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
-                f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
-                f::BYTES => bytes = Some(self.share_exact(value)),
-                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
-                _ => {}
-            }
-        }
+        for_each_field!(self, value, {
+            f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+            f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
+            f::BYTES => bytes = Some(self.share_exact(value)),
+            f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+            f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+        });
         Ok(FrameKind::ResourceOutput {
             terminal_id: req(terminal_id)?,
             stream_id: req(stream_id)?,

@@ -128,11 +128,8 @@ pub enum SidebarTarget {
     },
 }
 
-/// The click-resolution table for one painted frame.
-///
-/// Membership can change
-/// after the snapshot, so a `switch-session` commits the resolved session
-/// id (name as a fallback) rather than re-deriving it from an index.
+/// The click-resolution table for one painted frame. A `switch-session`
+/// commits the resolved session id, since membership can change after.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarTargets {
     /// The counts the frame was painted from — the same ones [`hit_test`]

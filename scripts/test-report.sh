@@ -72,7 +72,7 @@ rerun_on_base() {
         cd "$tree"
         export CARGO_TARGET_DIR="$root/target/test-report-base"
         cp "$root/.config/nextest.toml" .config/nextest.toml
-        run_nextest --workspace --features phux-server/measure -E "$filter"
+        run_nextest --workspace "${features[@]}" -E "$filter"
     ) >"$work/base.log" 2>&1 || true
     report="$tree/target/nextest/report/junit.xml"
     if [[ -f "$report" ]]; then
@@ -84,10 +84,14 @@ rerun_on_base() {
     git worktree remove --force "$tree"
 }
 
+# The pool's feature set: `just test-report` passes the recipe's
+# TEST_FEATURES so this shares `just test`'s build.
+read -r -a features <<<"${PHUX_TEST_FEATURES:---features phux-server/measure}"
+
 args=("$@")
 whole_pool=
 if [[ ${#args[@]} -eq 0 ]]; then
-    args=(--workspace --features phux-server/measure)
+    args=(--workspace "${features[@]}")
     whole_pool=1
 fi
 

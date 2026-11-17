@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::wire::frame::ControlClass;
+use crate::wire::frame::{ControlClass, RolePolicy};
 
 use bytes::{Bytes, BytesMut};
 
@@ -38,15 +38,65 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
+/// One sample per forwarding op; all share a row.
+fn forward_samples() -> Vec<(Command, &'static Rule)> {
+    use crate::forward::ForwardOp;
+    [
+        ForwardOp::Open {
+            addr: "localhost".to_owned(),
+            port: 3000,
+        },
+        ForwardOp::Read {
+            id: 1,
+            max_bytes: 1,
+        },
+        ForwardOp::Write {
+            id: 1,
+            bytes: vec![1],
+            fin: false,
+        },
+        ForwardOp::Close { id: 1 },
+        ForwardOp::AgentOffer,
+        ForwardOp::AgentReply {
+            id: 1,
+            message: vec![crate::forward::SSH_AGENT_FAILURE],
+        },
+    ]
+    .into_iter()
+    .map(|op| (Command::Forward { op }, &C_FORWARD))
+    .collect()
+}
+
+fn operation() -> IdempotencyKey {
+    IdempotencyKey::new([3; 16]).unwrap()
+}
+
+fn session_key() -> crate::ids::SessionKey {
+    crate::ids::SessionKey::new([4; 16]).unwrap()
+}
+
+fn resource_key() -> crate::ids::ResourceKey {
+    crate::ids::ResourceKey::new([5; 16]).unwrap()
+}
+
 include!("samples/command_samples.rs");
 include!("samples/frame_samples.rs");
+include!("samples/metadata_samples.rs");
 
-fn frame_samples() -> Vec<(FrameKind, &'static Rule)> {
+/// Every client-originated frame shape, each with the row it lands on. The
+/// wire schema samples these too, so each optional field appears both set
+/// and unset.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the wire schema's samples, outside `kinds`, read it"
+)]
+pub(crate) fn frame_samples() -> Vec<(FrameKind, &'static Rule)> {
     let mut samples = connection_samples();
     samples.extend(input_samples());
     samples.extend(stream_samples());
     samples.extend(metadata_samples());
     samples.extend(spawn_samples());
+    samples.extend(host_samples());
     samples
 }
 
@@ -192,7 +242,7 @@ fn only_exempt_or_read_only_methods_are_not_mutating() {
     }
 }
 
-/// The dangerous methods are exactly the approval-gate list of ADR-0128:
+/// The dangerous methods include held actions and credential delivery:
 /// every consumer confirmation (MCP `destructiveHint` and `confirm`, CLI
 /// `--yes`) derives from this set, so it is pinned here by name.
 #[test]
@@ -206,6 +256,7 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
         "CLOSE_TAB_RESOURCES",
+        "CREDENTIALS",
         "SIGNAL_TERMINAL",
         "DETACH_CLIENTS",
         "SHUTDOWN",
@@ -248,15 +299,7 @@ fn only_organization_commands_need_the_v2_verbs() {
                 Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,
                 _ => crate::caps::ServerFeatureExt::Organization,
             };
-            assert_eq!(
-                method.gate,
-                Some(FeatureGate::FeaturesExt {
-                    mask: gate.mask(),
-                    wire_name: gate.wire_name(),
-                }),
-                "{}",
-                method.name
-            );
+            assert_eq!(method.gate, Some(FeatureGate::ext(gate)), "{}", method.name);
         } else {
             assert!(!needs_v2, "{command:?} must keep its legacy verbs");
         }
@@ -303,4 +346,60 @@ fn freeze_resume_and_deny_are_the_payload_exceptions() {
         RESOURCE_TAGS_KEY,
         b"[]"
     )));
+}
+
+/// Every served child kind lands on the parent rows, not default-deny, so a
+/// scoped grant can open one beside a Terminal it may bind.
+#[test]
+fn every_served_child_kind_spawns_on_the_parent_rows() {
+    let remote_parent = ResourceId::satellite("h", 7);
+    for spec in KINDS.iter().filter(|spec| !spec.kind.is_terminal()) {
+        let child = |parent: ResourceId| SpawnResource {
+            kind: spec.kind,
+            ..agent(parent)
+        };
+        for (frame, expected) in [
+            (
+                spawn(None, None, Some(child(terminal()))),
+                &F_SPAWN_CHILD_LOCAL,
+            ),
+            (
+                spawn(Some("h"), None, Some(child(remote_parent.clone()))),
+                &F_SPAWN_CHILD_SATELLITE,
+            ),
+            (
+                spawn(None, Some(terminal()), Some(child(terminal()))),
+                &F_UNCLASSIFIED,
+            ),
+        ] {
+            assert!(std::ptr::eq(frame_rule(&frame), expected), "{}", spec.name);
+        }
+    }
+    let unknown = SpawnResource {
+        kind: ResourceKind::Unknown { tag: 9 },
+        ..agent(terminal())
+    };
+    let unclassified: &Rule = &F_UNCLASSIFIED;
+    assert!(std::ptr::eq(
+        frame_rule(&spawn(None, None, Some(unknown))),
+        unclassified
+    ));
+}
+
+#[test]
+fn verb_set_helpers() {
+    let all = Verbs::of(&Verb::ALL);
+    assert_eq!(all.bits(), Verbs::KNOWN_BITS);
+    assert!(!Verbs::of(&[Verb::Inventory, Verb::Observe]).mutates());
+    assert!(Verbs::of(&[Verb::Observe, Verb::Bind]).mutates());
+    assert!(Verbs::EMPTY.is_empty());
+    assert_eq!(
+        C_GET_PERF_RESET.requirement_label(),
+        "OBSERVE+BIND",
+        "labels list verbs in bit order"
+    );
+    assert_eq!(
+        C_OPEN_LISTENER.requirement_label(),
+        "SIGNAL + owner-UDS transport"
+    );
 }

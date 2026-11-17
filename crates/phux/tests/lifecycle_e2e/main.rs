@@ -1,10 +1,11 @@
 //! Lane-selected failure, idle-exit, upgrade, relay, and remote acceptance tests.
 
-#![allow(
-    clippy::duplicate_mod,
-    reason = "retain each suite's common-module tests and state when consolidating binaries"
-)]
-
+#[path = "../common/mod.rs"]
+mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
+#[path = "../common/paired.rs"]
+mod paired;
 #[path = "../common/runner.rs"]
 mod runner;
 
@@ -26,6 +27,7 @@ mod remote_session_verbs_e2e;
 mod remote_target_e2e;
 mod retain_on_exit_e2e;
 mod reverse_enrollment_e2e;
+mod slot_tabs_e2e;
 mod ssh_bootstrap_e2e;
 mod upgrade_e2e;
 mod upgrade_fd_e2e;

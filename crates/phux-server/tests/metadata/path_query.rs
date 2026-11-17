@@ -7,7 +7,6 @@
     reason = "tests"
 )]
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeatureExt};
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
@@ -15,8 +14,7 @@ use phux_protocol::wire::frame::{
     TYPE_HELLO_OK, TYPE_PATH_RESULTS,
 };
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, recv_until,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SpawnedServer, attach_by_name, recv_typed, recv_until, run_local, send_frame,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -61,26 +59,22 @@ async fn query(
 fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let tree = tmp.path().join("tree");
         std::fs::create_dir_all(tree.join("nested")).unwrap();
         std::fs::write(tree.join("nested/abc file.txt"), b"x").unwrap();
         let mut cmd = phux_server::LaunchCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg("sleep 30");
-        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "paths", cmd);
-        let mut stream = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded_in(tmp, "paths", cmd);
+        let mut stream = server.connect_raw().await;
         send_frame(
             &mut stream,
-            &FrameKind::Hello {
-                client_name: "path-query-test".to_owned(),
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::new()
+            &phux_server_testkit::hello(
+                "path-query-test",
+                ClientCapabilities::new()
                     .with_color_support(ColorSupport::TrueColor)
                     .with_layers(LayerSet::all()),
-            },
+            ),
         )
         .await;
         let (kind, hello) = recv_typed(&mut stream).await;
@@ -124,6 +118,6 @@ fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
         assert_eq!(denied.code, PathErrorCode::Other);
         assert!(denied.message.contains("unknown"));
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }

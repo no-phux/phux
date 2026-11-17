@@ -1,11 +1,9 @@
 //! Directory listings and path-query records.
 
-#![allow(
-    clippy::wildcard_imports,
-    reason = "wire records intentionally share the parent UniFFI enum namespace"
-)]
-
-use super::*;
+use phux_client_runtime::control::{
+    DirectoryChild, DirectoryFailure, DirectoryListing, PathAnswer, PathFailure, PathMatch,
+    PathMatchKind, PathSearchStatus,
+};
 
 /// Why a `LIST_DIRECTORY` produced no listing. The first four mirror the
 /// wire's `DirectoryErrorCode` one for one (an unallocated wire value already
@@ -21,14 +19,14 @@ pub enum WireDirectoryErrorCode {
     Unanswered,
 }
 
-impl From<outcome::DirectoryError> for WireDirectoryErrorCode {
-    fn from(value: outcome::DirectoryError) -> Self {
+impl From<DirectoryFailure> for WireDirectoryErrorCode {
+    fn from(value: DirectoryFailure) -> Self {
         match value {
-            outcome::DirectoryError::NotFound => Self::NotFound,
-            outcome::DirectoryError::PermissionDenied => Self::PermissionDenied,
-            outcome::DirectoryError::NotADirectory => Self::NotADirectory,
-            outcome::DirectoryError::Other => Self::Other,
-            outcome::DirectoryError::Unanswered => Self::Unanswered,
+            DirectoryFailure::NotFound => Self::NotFound,
+            DirectoryFailure::PermissionDenied => Self::PermissionDenied,
+            DirectoryFailure::NotADirectory => Self::NotADirectory,
+            DirectoryFailure::Other => Self::Other,
+            DirectoryFailure::Unanswered => Self::Unanswered,
         }
     }
 }
@@ -41,8 +39,8 @@ pub struct WireDirectoryEntry {
     pub is_symlink: bool,
 }
 
-impl From<outcome::DirectoryEntry> for WireDirectoryEntry {
-    fn from(value: outcome::DirectoryEntry) -> Self {
+impl From<DirectoryChild> for WireDirectoryEntry {
+    fn from(value: DirectoryChild) -> Self {
         Self {
             name: value.name,
             is_symlink: value.is_symlink,
@@ -68,8 +66,8 @@ pub struct WireDirectoryListing {
     pub message: String,
 }
 
-impl From<outcome::Directory> for WireDirectoryListing {
-    fn from(value: outcome::Directory) -> Self {
+impl From<DirectoryListing> for WireDirectoryListing {
+    fn from(value: DirectoryListing) -> Self {
         Self {
             request_id: value.request_id,
             path: value.path,
@@ -90,12 +88,12 @@ pub enum WirePathKind {
     Symlink,
 }
 
-impl From<outcome::PathKind> for WirePathKind {
-    fn from(value: outcome::PathKind) -> Self {
+impl From<PathMatchKind> for WirePathKind {
+    fn from(value: PathMatchKind) -> Self {
         match value {
-            outcome::PathKind::File => Self::File,
-            outcome::PathKind::Directory => Self::Directory,
-            outcome::PathKind::Symlink => Self::Symlink,
+            PathMatchKind::File => Self::File,
+            PathMatchKind::Directory => Self::Directory,
+            PathMatchKind::Symlink => Self::Symlink,
         }
     }
 }
@@ -108,12 +106,12 @@ pub enum WirePathStatus {
     Truncated,
 }
 
-impl From<outcome::PathStatus> for WirePathStatus {
-    fn from(value: outcome::PathStatus) -> Self {
+impl From<PathSearchStatus> for WirePathStatus {
+    fn from(value: PathSearchStatus) -> Self {
         match value {
-            outcome::PathStatus::Complete => Self::Complete,
-            outcome::PathStatus::Warming => Self::Warming,
-            outcome::PathStatus::Truncated => Self::Truncated,
+            PathSearchStatus::Complete => Self::Complete,
+            PathSearchStatus::Warming => Self::Warming,
+            PathSearchStatus::Truncated => Self::Truncated,
         }
     }
 }
@@ -128,14 +126,14 @@ pub enum WirePathError {
     Unanswered,
 }
 
-impl From<outcome::PathError> for WirePathError {
-    fn from(value: outcome::PathError) -> Self {
+impl From<PathFailure> for WirePathError {
+    fn from(value: PathFailure) -> Self {
         match value {
-            outcome::PathError::NotFound => Self::NotFound,
-            outcome::PathError::PermissionDenied => Self::PermissionDenied,
-            outcome::PathError::NotADirectory => Self::NotADirectory,
-            outcome::PathError::Other => Self::Other,
-            outcome::PathError::Unanswered => Self::Unanswered,
+            PathFailure::NotFound => Self::NotFound,
+            PathFailure::PermissionDenied => Self::PermissionDenied,
+            PathFailure::NotADirectory => Self::NotADirectory,
+            PathFailure::Other => Self::Other,
+            PathFailure::Unanswered => Self::Unanswered,
         }
     }
 }
@@ -147,8 +145,8 @@ pub struct WirePathRow {
     pub kind: WirePathKind,
 }
 
-impl From<outcome::PathRow> for WirePathRow {
-    fn from(value: outcome::PathRow) -> Self {
+impl From<PathMatch> for WirePathRow {
+    fn from(value: PathMatch) -> Self {
         Self {
             path: value.path,
             kind: value.kind.into(),
@@ -168,15 +166,15 @@ pub struct WirePathAnswer {
     pub message: String,
 }
 
-impl From<outcome::PathResult> for WirePathAnswer {
-    fn from(value: outcome::PathResult) -> Self {
+impl From<PathAnswer> for WirePathAnswer {
+    fn from(value: PathAnswer) -> Self {
         Self {
             request_id: value.request_id,
             root: value.root,
             parent: value.parent,
             rows: value.rows.into_iter().map(Into::into).collect(),
             status: value.status.map(Into::into),
-            error: value.error.map(Into::into),
+            error: value.failure.map(Into::into),
             message: value.message,
         }
     }

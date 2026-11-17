@@ -161,12 +161,6 @@ async fn watch(socket_path: PathBuf, seed: bool) -> io::Result<super::EnsureDisp
 
 /// Serialize cancellation with daemon creation without transferring ownership
 /// of the daemon to cleanup. Once spawned, it belongs to its own lifecycle.
-///
-/// The daemon inherits nothing but the stdio set on `command`: a descriptor
-/// this process inherited would otherwise stay open for the server's lifetime,
-/// and a caller reading this process's output to EOF would wait on the server
-/// rather than on us (phux-5wxp.5). Its stdin and stdout are `/dev/null`;
-/// stderr is `log`, else `/dev/null`.
 pub(super) fn spawn_daemon(command: &mut Command, log: Option<File>) -> io::Result<Daemon> {
     phux_server::daemon::withhold_inherited_descriptors();
     HELPERS.with_borrow(|helpers| {

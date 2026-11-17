@@ -6,15 +6,10 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
     let mut conn = Connection::connect(&socket).await?;
     let view = phux_client::session_list::listing_view(&mut conn).await?;
     drop(conn);
-    let hosts_complete = view.host_sessions_complete();
     let organization = view.organization().cloned();
     let (snapshot, degradation) = view.into_parts();
-    let list = phux_client::session_list::document(
-        &snapshot,
-        organization.as_ref(),
-        &degradation,
-        hosts_complete,
-    );
+    let list =
+        phux_client::session_list::document(&snapshot, organization.as_ref(), &degradation);
     serde_json::to_value(&list)
         .map_err(|err| ToolError::new(format!("failed to serialize session list: {err}")))
 }

@@ -1,32 +1,17 @@
 //! The versioned state blob handed from the old server image to the new one
-//! across a graceful upgrade (ADR-0032).
+//! across a graceful upgrade (ADR-0032), through an inherited descriptor.
 //!
-//! On `phux upgrade` the running server serializes its whole live
-//! session/window/pane tree, the per-pane PTY handoff (child PID + master fd +
-//! a replayable VT snapshot), every `AgentSession` bound to a carried pane
-//! (its identity and retained record tail), the Group- and Global-scope L3
-//! metadata (layout keys, session tags), and the monotonic id counters into a
-//! [`StateBlob`], passes it to the re-exec'd binary through an inherited
-//! descriptor, and the new image rebuilds itself from it.
-//!
-//! Identity is by **wire** id (`u32`), never core `SlotMap` id, whose
-//! generational tags mean nothing in a fresh process; the new image
-//! re-interns each entity under its recorded wire id, and [`Counters`] carry
-//! the allocators forward.
+//! It carries the live tree, each pane's PTY handoff (child PID, master fd,
+//! replayable VT snapshot), carried `AgentSession`s, Group/Global metadata,
+//! the organization records, and the id counters. Identity is by **wire** id:
+//! core `SlotMap` ids mean nothing in a fresh process.
 //!
 //! The blob is a compatibility boundary (old writer, newer reader):
 //! [`StateBlob::version`] gates incompatible changes, additive fields use
-//! `#[serde(default)]`, and unknown fields are ignored. Field names here and
-//! in every nested type are the format: a renamed Rust field keeps its
-//! persisted name with `#[serde(rename)]`, and `golden_tests` holds the
-//! released shapes to that.
-//!
-//! The organization records ride in [`StateBlob::org`], and each carried
-//! session and resource names its record by key. Windows are synthesized:
-//! one per session that has live panes, so an older reader still rebuilds
-//! the tree. A blob without [`StateBlob::org`] comes from an image that
-//! predates the records; its windows are flattened into members and an
-//! arrangement on resume.
+//! `#[serde(default)]`, unknown fields are ignored, and field names are the
+//! format (`golden_tests` pins the released shapes). Windows are synthesized
+//! so an older reader still rebuilds the tree; a blob without
+//! [`StateBlob::org`] predates the records and is imported on resume.
 
 use std::os::fd::RawFd;
 use std::path::PathBuf;

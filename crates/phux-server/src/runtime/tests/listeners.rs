@@ -40,7 +40,7 @@ fn an_injected_engine_survives_either_mode() {
         assert!(fallback.is_none());
         let state = SharedState::new();
         mirror_config_into_state(&cfg, &cfg.socket_path, &state);
-        install_policy_posture(&state, posture, engine);
+        install_policy_posture(&state, posture, engine, false);
         let live = state.with(|s| s.policy_engine().clone());
         assert!(
             std::ptr::addr_eq(
@@ -59,34 +59,68 @@ fn an_injected_engine_survives_either_mode() {
     }
 }
 
-/// A closed gate must skip the `tailscale` shell-out, not just discard
-/// its answer.
-#[test]
-fn closed_gate_never_calls_detect() {
-    let called = std::cell::Cell::new(false);
-    let result = resolve_auto_overlay_ip(false, || {
-        called.set(true);
-        vec![std::net::IpAddr::from([100, 79, 155, 27])]
-    });
-    assert_eq!(result, None);
-    assert!(
-        !called.get(),
-        "detect() must not run when the gate is closed"
-    );
+static DETECT_CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn detect_records_the_call() -> Vec<std::net::IpAddr> {
+    DETECT_CALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    vec![std::net::IpAddr::from([100, 79, 155, 27])]
 }
 
-#[test]
-fn open_gate_calls_detect_and_uses_first_address() {
-    let called = std::cell::Cell::new(false);
-    let result = resolve_auto_overlay_ip(true, || {
-        called.set(true);
-        vec![
-            std::net::IpAddr::from([100, 79, 155, 27]),
-            std::net::IpAddr::from([100, 79, 155, 28]),
-        ]
-    });
-    assert!(called.get(), "an open gate must run detection");
-    assert_eq!(result, Some(std::net::IpAddr::from([100, 79, 155, 27])));
+/// A closed gate must skip the `tailscale` shell-out, not just discard
+/// its answer.
+#[tokio::test]
+async fn closed_gate_never_calls_detect() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let ports = AutoOverlayPorts {
+        ws: true,
+        quic: true,
+    };
+    let state = SharedState::new();
+    serve_auto_overlay_listeners(
+        false,
+        ports,
+        detect_records_the_call,
+        state.clone(),
+        token,
+        None,
+    )
+    .await
+    .expect("parks until shutdown");
+    assert!(
+        !DETECT_CALLED.load(std::sync::atomic::Ordering::SeqCst),
+        "detect() must not run when the gate is closed"
+    );
+    assert!(!state.with(crate::state::ServerState::has_remote_listener_report));
+}
+
+/// A server up before its overlay reports the free overlay port as waiting
+/// for its address (#2430), and keeps detecting until shutdown.
+#[tokio::test(start_paused = true)]
+async fn a_missing_overlay_address_is_reported_as_waiting_for_it() {
+    let state = SharedState::new();
+    let token = CancellationToken::new();
+    let ports = AutoOverlayPorts {
+        ws: true,
+        quic: false,
+    };
+    let serve =
+        serve_auto_overlay_listeners(true, ports, Vec::new, state.clone(), token.clone(), None);
+    let read = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let report = state.with(|s| s.remote_listeners().clone());
+        token.cancel();
+        report
+    };
+    let (served, report) = tokio::join!(serve, read);
+    served.expect("a shutdown ends the search cleanly");
+    assert_eq!(
+        report.listeners,
+        vec![RemoteListenerSlot::waiting_for_address(
+            RemoteListenerTransport::Wss
+        )],
+        "only the port no explicit address claimed waits"
+    );
 }
 
 /// Only the default profile auto-binds (ports are host-global), and the
