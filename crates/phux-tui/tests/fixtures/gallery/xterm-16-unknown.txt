@@ -10,7 +10,7 @@
 04| ◆ w2                 gemini │|
   1-2 green/- +b, 29-29 gray/-
 05| ○ w3                  merge │|
-  1-2 green/-, 29-29 gray/-
+  1-2 gray/-, 29-29 gray/-
 06| ○ w0                  watch │|
   1-2 gray/-, 29-29 gray/-
 07| · w0                  probe │|

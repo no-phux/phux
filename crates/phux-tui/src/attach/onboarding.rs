@@ -190,20 +190,20 @@ pub(super) fn hint_lines(
 }
 
 fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> Vec<String> {
-    let blocked = crate::render::chrome::AGENT_BLOCKED_GLYPH;
-    let working = crate::render::chrome::AGENT_WORKING_GLYPH;
+    use phux_design::State;
+    let hint = |state: State| {
+        format!(
+            "{} {}",
+            crate::render::chrome::glyph(state),
+            state.word().unwrap_or_default()
+        )
+    };
+    let legend = format!("  {}  {}", hint(State::NeedsYou), hint(State::Working));
     if sidebar_visible {
-        vec![
-            String::new(),
-            format!("  {blocked} needs you  {working} working"),
-        ]
+        vec![String::new(), legend]
     } else {
         let sidebar = binding_label(keybindings, "toggle-sidebar", "Toggle sidebar");
-        vec![
-            String::new(),
-            format!("  {sidebar:<10} agents"),
-            format!("  {blocked} needs you  {working} working"),
-        ]
+        vec![String::new(), format!("  {sidebar:<10} agents"), legend]
     }
 }
 

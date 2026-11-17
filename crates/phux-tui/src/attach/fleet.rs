@@ -17,9 +17,10 @@ use phux_protocol::wire::info::SessionInfo;
 use super::agent_rows::{AgentSessionRow, AgentSessionRows};
 use super::pane_state::{PaneSlot, VcsIndex};
 use crate::layout::ArrangementDoc;
-use crate::render::chrome::{AGENT_BLOCKED_GLYPH, AGENT_IDLE_GLYPH, agent_state_glyph};
+use crate::render::chrome::{agent_state_glyph, glyph};
 use crate::render::overlay::SelectItem;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+use phux_design::State;
 
 /// The fleet overlay's live-refresh tag.
 pub(super) const FLEET_LIVE_KEY: &str = "agent-fleet";
@@ -347,17 +348,21 @@ fn pane_row(
                 crate::render::chrome::state_word(r.state),
             )
         }
-        // A plain pane that asked still needs you: it wears the blocked
-        // ring its divider label does, not the idle one.
-        (None, None) => (
-            if meta.attention {
-                AGENT_BLOCKED_GLYPH
+        // A plain pane that asked still needs you: it wears the needs-you
+        // mark and word its divider label does; a quiet one, the dotted
+        // unknown mark.
+        (None, None) => {
+            let state = if meta.attention {
+                State::NeedsYou
             } else {
-                AGENT_IDLE_GLYPH
-            },
-            meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
-            None,
-        ),
+                State::Unknown
+            };
+            (
+                glyph(state),
+                meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
+                state.word(),
+            )
+        }
     };
     let attention = meta.attention
         || session.is_some_and(|s| s.state == AgentMetaState::Blocked)
@@ -463,7 +468,7 @@ fn foreign_pane_row(
     record: Option<&AgentRecord>,
 ) -> SelectItem {
     let (glyph, who, state_word) = record.map_or_else(
-        || (AGENT_IDLE_GLYPH, "no agent".to_owned(), None),
+        || (glyph(State::Unknown), "no agent".to_owned(), None),
         |r| {
             let who = who_label(&r.name, r.kind.as_deref());
             (

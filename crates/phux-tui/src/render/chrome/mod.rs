@@ -10,7 +10,7 @@ pub mod status_bar;
 #[cfg(test)]
 mod gallery_tests;
 
-use phux_design::{Agent, State, ToneInput};
+use phux_design::{Agent, State, Tone, ToneInput};
 use ratatui::style::Color;
 
 use crate::render::theme::{Glyphs, Theme};
@@ -30,25 +30,41 @@ pub struct AgentBadge {
     pub emphatic: bool,
 }
 
-/// Filled dot: needs you (blocked, or a pane that asked for a human).
+/// Filled dot: needs you (tests pin badges to the Unicode column).
+#[cfg(test)]
 pub(crate) const AGENT_BLOCKED_GLYPH: &str = "●";
 /// Half-filled ring: actively working, not waiting.
+#[cfg(test)]
 pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";
 /// Filled diamond: finished, and nobody has looked yet (the driver tests
 /// pin the tab badge to it).
 #[cfg(test)]
 pub(crate) const AGENT_DONE_GLYPH: &str = "◆";
 /// Hollow ring: idle, or done and seen.
+#[cfg(test)]
 pub(crate) const AGENT_IDLE_GLYPH: &str = "○";
 
+/// The ladder column this process's terminal allows, as every theme built
+/// here gets it ([`crate::render::theme::Outer::detect`]).
+fn process_glyphs() -> Glyphs {
+    static GLYPHS: std::sync::OnceLock<Glyphs> = std::sync::OnceLock::new();
+    *GLYPHS.get_or_init(|| crate::render::theme::Outer::detect().glyphs)
+}
+
+/// The ladder mark for `state` in this terminal's glyph column, for text
+/// drawn without a theme at hand (the fleet picker, onboarding hints): the
+/// same column the sidebar uses, so marks never mix.
+#[must_use]
+pub(crate) fn glyph(state: State) -> &'static str {
+    column(process_glyphs(), state)
+}
+
 /// The one glyph for a declared agent state, shared by the sidebar, the tab
-/// bar, pane titles and the fleet picker (the Unicode ladder column).
+/// bar, pane titles and the fleet picker, through [`phux_design::tone_of`]:
+/// an unknown agent wears the dotted mark, not the idle ring.
 #[must_use]
 pub(crate) fn agent_state_glyph(state: AgentMetaState) -> &'static str {
-    match state {
-        AgentMetaState::Unknown => AGENT_IDLE_GLYPH,
-        known => state_of(&input(known, false, false)).mark().glyph,
-    }
+    glyph(state_of(&input(state, false, false)))
 }
 
 /// The vocabulary word for a declared agent state (`needs you`, never the
@@ -86,24 +102,30 @@ fn state_of(input: &ToneInput) -> State {
 /// The ladder mark for `state` in the theme's glyph column.
 #[must_use]
 pub fn mark(theme: &Theme, state: State) -> &'static str {
+    column(theme.term.glyphs, state)
+}
+
+fn column(glyphs: Glyphs, state: State) -> &'static str {
     let row = state.mark();
-    match theme.term.glyphs {
+    match glyphs {
         Glyphs::Unicode => row.glyph,
         Glyphs::Ascii => row.ascii,
     }
 }
 
-/// The slot a ladder state paints in.
+/// The slot a ladder state paints in: its tone's, so done-seen reads in the
+/// idle tone here as in every other client.
 #[must_use]
 pub const fn state_color(theme: &Theme, state: State) -> Color {
-    match state {
-        State::NeedsYou => theme.agent_blocked,
-        State::Failed | State::Lost => theme.agent_failed,
-        State::Done | State::DoneSeen => theme.agent_done,
-        State::Working => theme.agent_working,
-        State::Idle => theme.agent_idle,
-        // `unknown` and `ended` draw in `text.faint`.
-        State::Unknown | State::Ended => theme.sidebar_section,
+    match state.tone() {
+        Tone::NeedsYou => theme.agent_blocked,
+        Tone::Failed => theme.agent_failed,
+        Tone::Done => theme.agent_done,
+        Tone::Working => theme.agent_working,
+        Tone::Idle => theme.agent_idle,
+        // `unknown` and `ended` draw in `text.faint`; no ladder state wears
+        // the bell's tone.
+        Tone::Unknown | Tone::Bell => theme.sidebar_section,
     }
 }
 
@@ -155,6 +177,26 @@ pub fn needs_you_chip(theme: &Theme, count: usize) -> Option<String> {
 mod tests {
     use super::*;
     use crate::render::theme::{Outer, Term};
+
+    /// A state paints in its tone's slot, so the TUI cannot drift from the
+    /// other clients: done-seen reads in the idle tone, not done's green.
+    #[test]
+    fn a_state_paints_in_its_tones_slot() {
+        let theme = Theme::default();
+        for a in State::ALL {
+            for b in State::ALL {
+                if a.tone() == b.tone() {
+                    assert_eq!(
+                        state_color(&theme, a),
+                        state_color(&theme, b),
+                        "{a:?} {b:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(state_color(&theme, State::DoneSeen), theme.agent_idle);
+        assert_eq!(state_color(&theme, State::Done), theme.agent_done);
+    }
 
     /// An agent of unknown state that asked wears the attention dot; a
     /// quiet one wears the dotted unknown mark, not a ring that reads as

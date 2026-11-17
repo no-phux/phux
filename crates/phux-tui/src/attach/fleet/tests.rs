@@ -238,7 +238,7 @@ fn state_glyphs_cover_the_v1_vocabulary() {
     assert_eq!(agent_state_glyph(AgentMetaState::Working), "◐");
     assert_eq!(agent_state_glyph(AgentMetaState::Idle), "○");
     assert_eq!(agent_state_glyph(AgentMetaState::Done), "◆");
-    assert_eq!(agent_state_glyph(AgentMetaState::Unknown), "○");
+    assert_eq!(agent_state_glyph(AgentMetaState::Unknown), "·");
 }
 
 #[test]
@@ -254,11 +254,11 @@ fn no_record_falls_back_to_title_then_placeholder() {
         },
     );
     let items = local_items(&workspace, &HashMap::new(), &meta);
-    assert_eq!(items[0].label, "○ 0.0 vim src/main.rs");
+    assert_eq!(items[0].label, "· 0.0 vim src/main.rs");
     assert_eq!(items[0].secondary, None, "no record => no state word");
     // Without a title: the placeholder.
     let items = local_items(&workspace, &HashMap::new(), &HashMap::new());
-    assert_eq!(items[0].label, "○ 0.0 no agent");
+    assert_eq!(items[0].label, "· 0.0 no agent");
 }
 
 #[test]
@@ -278,6 +278,7 @@ fn asked_flag_highlights_even_without_a_record() {
         "the ADR-0035 asked flag must highlight the row"
     );
     assert!(items[0].label.starts_with("● "), "{}", items[0].label);
+    assert_eq!(items[0].secondary.as_deref(), Some("needs you"));
 }
 
 #[test]
@@ -431,8 +432,8 @@ fn foreign_session_with_cached_layout_lists_one_step_pane_rows() {
     // Blocked pane highlights (effective high attention).
     assert_eq!(rows[1].label, "● 0:main.1 linter");
     assert!(rows[1].attention, "blocked foreign pane must highlight");
-    // Window 1 pane 0 has no record: `○` + placeholder, no state word.
-    assert_eq!(rows[2].label, "○ 1:logs.0 no agent");
+    // Window 1 pane 0 has no record: the dotted `·` + placeholder, no state word.
+    assert_eq!(rows[2].label, "· 1:logs.0 no agent");
     assert_eq!(rows[2].secondary, None);
     assert_eq!(
         rows[2].action.args.get("window"),
