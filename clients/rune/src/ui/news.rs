@@ -1,10 +1,12 @@
 //! What's new: the bell (the title bar's, or the phone top bar's) and the
 //! sheet it opens.
 
+use phux_design::Tone;
 use rune::{El, col, el, text};
 
-use super::overlay::key_hint;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icon_press, icons};
+use super::overlay::{EXTENTS, key_hint, strong};
+use super::tokens::{Paint, Tokens};
+use super::{Sheet, icon_press, icons};
 use crate::desk::Desk;
 use crate::desk::news::NOTES;
 
@@ -17,19 +19,28 @@ pub fn bell_name(desk: &Desk) -> &'static str {
     }
 }
 
-/// The accent dot on a bell while a note is unread, `size` across at `at`.
-pub fn unread_dot(desk: &Desk, p: &Ink, at: (f32, f32), size: f32) -> Option<El> {
+/// The bell's own dot while a note is unread, `size` across at `at`: the
+/// bell's tone, and no word, since the bell's name says it.
+pub fn unread_dot(desk: &Desk, p: &impl AsRef<Tokens>, at: (f32, f32), size: f32) -> Option<El> {
+    let t = p.as_ref();
     desk.news.unread.then(|| {
         el().absolute(at.0, at.1)
-            .size(size, size)
-            .radius(size / 2.0)
-            .fill(p.accent)
+            .w(size)
+            .h(size)
+            .radius(t.radius.full)
+            .fill(t.status.tone(Tone::Bell).ink)
             .a11y_hidden()
     })
 }
 
 /// The title bar's bell.
-pub fn bell(desk: &Desk, p: &Ink) -> El {
+pub fn bell(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
+    let t = p.as_ref();
+    let s = &t.space;
+    // Over the button's top-right corner, cut out of the bar by a ring of
+    // its ground.
+    let size = s.s2;
+    let at = (s.pointer_min - size - s.hairline, s.s0_5 + s.hairline);
     icon_press(
         &icons::BELL,
         bell_name(desk),
@@ -39,30 +50,44 @@ pub fn bell(desk: &Desk, p: &Ink) -> El {
     )
     .expanded(desk.news.open)
     .help("What's new")
-    // Cut out of the bar by a ring of its ground.
-    .children(unread_dot(desk, p, (15.0, 3.0), 8.0).map(|dot| dot.border(1.5, p.sidebar)))
+    .children(
+        unread_dot(desk, p, at, size).map(|dot| dot.border(s.s0_5, t.roles.layer.sidebar.paint())),
+    )
 }
 
-pub fn view(_desk: &Desk, p: &Ink) -> El {
+pub fn view(_desk: &Desk, p: &impl AsRef<Tokens>) -> El {
+    let t = p.as_ref();
+    let s = &t.space;
+    let r = &t.roles;
     let body = col()
         .w_full()
-        .px(18.0)
-        .py(14.0)
-        .gap(16.0)
+        .px(s.sheet_pad)
+        .py(s.s3)
+        .gap(s.s4)
         .children(NOTES.iter().map(|note| {
             col()
                 .w_full()
-                .gap(3.0)
-                .child(text(note.date).font(CAPTION).color(p.dim))
-                .child(text(note.title).font(LABEL_STRONG).color(p.text).wrap())
-                .child(text(note.body).font(LABEL).color(p.dim).wrap())
+                .gap(s.s1)
+                .child(text(note.date).font(t.ty.caption).color(r.text.dim.paint()))
+                .child(
+                    text(note.title)
+                        .font(strong(t.ty.label))
+                        .color(r.text.text.paint())
+                        .wrap(),
+                )
+                .child(
+                    text(note.body)
+                        .font(t.ty.label)
+                        .color(r.text.dim.paint())
+                        .wrap(),
+                )
         }));
     let sheet = Sheet {
         key: "news",
         title: "What's new",
-        width: 440.0,
-        top: 96.0,
-        scrim: 0.3,
+        width: EXTENTS.news_w,
+        top: s.s12 + s.s12,
+        scrim: 0.0,
         close: Desk::close_news,
     };
     sheet.build(None, body, key_hint("esc", "close", p), p)

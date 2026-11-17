@@ -1,12 +1,16 @@
-//! An ACP agent's question, answerable in place: its options as buttons and
-//! its fields as text, each sent only through the agent's protocol.
+//! An ACP agent's question, answerable in place: its options as kit radios,
+//! checkboxes and buttons, its fields as text, each sent only through the
+//! agent's protocol.
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::{NativeOption, NativeQuestion};
-use rune::{El, Family, TextEdit, TextStyle, col, row, text, text_input};
+use rune::{El, TextEdit, TextStyle, col, row, text, text_input};
+use rune_kit::{Button, ButtonVariant, Checkbox, RadioGroup, RadioItem};
 use serde_json::{Value, json};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use super::inbox::field_shell;
+use super::overlay::strong;
+use super::tokens::{MONO, Paint, Tokens};
 use crate::activity::Ask;
 use crate::desk::Desk;
 use crate::desk::questions::{CLOSED, Draft, response};
@@ -24,11 +28,12 @@ struct At<'a> {
 }
 
 /// An ACP ask on `terminal`: its question's controls, or why there are none.
-pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, ink: &Ink) -> El {
+pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &impl AsRef<Tokens>) -> El {
+    let t = p.as_ref();
     let questions = &desk.inbox.questions;
     let Some((view, draft)) = questions.open(terminal, &ask.id) else {
         let known = questions.views.contains_key(terminal);
-        return note(if known { CLOSED } else { UNLOADED }, ink);
+        return note(if known { CLOSED } else { UNLOADED }, t);
     };
     let question = &draft.question;
     let at = At {
@@ -38,51 +43,80 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, ink: &Ink) -> El {
     };
     let mut panel = col()
         .w_full()
-        .gap(8.0)
+        .gap(t.space.s2)
         .role("group")
         .label(question.title.clone())
         .description(question.message.clone());
     if !question.title.is_empty() && question.title != ask.text {
-        panel = panel.child(say(&question.title, LABEL_STRONG, ink));
+        panel = panel.child(say(&question.title, strong(t.ty.label), t));
     }
     if !question.message.is_empty() && question.message != ask.text {
-        panel = panel.child(say(&question.message, LABEL, ink));
+        panel = panel.child(say(&question.message, t.ty.label, t));
     }
     if let Some(details) = details(question) {
-        let mono = CAPTION.family(Family::SystemMono);
-        panel = panel.child(text(details).font(mono).color(ink.dim).wrap());
+        let mono = TextStyle {
+            family: MONO,
+            ..t.ty.caption
+        };
+        panel = panel.child(
+            text(details)
+                .font(mono)
+                .color(t.roles.text.dim.paint())
+                .wrap(),
+        );
     }
-    panel = controls(panel, draft, &at, ink);
-    let mut actions = row().w_full().gap(6.0).flex_wrap();
+    panel = controls(panel, draft, &at, t);
+    let mut actions = row().w_full().gap(t.space.icon_gap).flex_wrap();
     if matches!(question.kind.as_str(), "input" | "editor" | "ask" | "form") {
-        actions = actions.child(action(&at, "submit", "Submit response", None, true, ink));
+        actions = actions.child(action(
+            &at,
+            "submit",
+            "Submit response",
+            None,
+            Kind::Primary,
+            t,
+        ));
     }
     let cancel = Some(json!({"cancelled": true}));
-    panel = panel.child(actions.child(action(&at, "cancel", "Cancel request", cancel, false, ink)));
+    panel = panel.child(actions.child(action(
+        &at,
+        "cancel",
+        "Cancel request",
+        cancel,
+        Kind::Quiet,
+        t,
+    )));
     if !view.connected {
-        panel = panel.child(note(
-            "ACP controller disconnected. Nothing can be sent.",
-            ink,
-        ));
+        panel = panel.child(note("ACP controller disconnected. Nothing can be sent.", t));
     } else if !view.capabilities.questions.is_supported() {
-        panel = panel.child(note("This agent takes no answers over ACP.", ink));
+        panel = panel.child(note("This agent takes no answers over ACP.", t));
     }
     if let Some(status) = questions.status.get(&question.id) {
-        panel = panel.child(say(status, CAPTION, ink).role("status"));
+        panel = panel.child(say(status, t.ty.caption, t).role("status"));
     }
     if let Some(error) = questions.error.get(&question.id) {
-        let line = text(error.clone()).font(CAPTION).color(ink.danger).wrap();
+        // The invalid state's message: the failed tone, caption type.
+        let line = text(error.clone())
+            .font(t.ty.caption)
+            .color(t.roles.status.failed.paint())
+            .wrap();
         panel = panel.child(line.role("alert"));
     }
     panel
 }
 
-fn say(words: &str, font: TextStyle, ink: &Ink) -> El {
-    text(words.to_owned()).font(font).color(ink.text).wrap()
+fn say(words: &str, font: TextStyle, t: &Tokens) -> El {
+    text(words.to_owned())
+        .font(font)
+        .color(t.roles.text.text.paint())
+        .wrap()
 }
 
-fn note(words: &str, ink: &Ink) -> El {
-    text(words.to_owned()).font(CAPTION).color(ink.dim).wrap()
+fn note(words: &str, t: &Tokens) -> El {
+    text(words.to_owned())
+        .font(t.ty.caption)
+        .color(t.roles.text.dim.paint())
+        .wrap()
 }
 
 /// A permission request's raw fields, for knowing what is being allowed.
@@ -92,66 +126,67 @@ fn details(question: &NativeQuestion) -> Option<String> {
         .then(|| serde_json::to_string_pretty(&question.fields).unwrap_or_default())
 }
 
-fn controls(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
+fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
     let question = &draft.question;
     match question.kind.as_str() {
         "confirm" => panel.child(
             row()
                 .w_full()
-                .gap(6.0)
+                .gap(t.space.icon_gap)
                 .child(action(
                     at,
                     "yes",
                     "Confirm",
                     Some(json!({"confirmed": true})),
-                    false,
-                    ink,
+                    Kind::Primary,
+                    t,
                 ))
                 .child(action(
                     at,
                     "no",
                     "Decline",
                     Some(json!({"confirmed": false})),
-                    false,
-                    ink,
+                    Kind::Quiet,
+                    t,
                 )),
         ),
+        // Each option answers at once: a column of buttons.
         "select" | "permission" => {
-            let mut list = col().w_full().gap(6.0);
+            let mut list = col().w_full().gap(t.space.icon_gap);
             for option in &question.options {
                 let answer = Some(json!({"option_id": option.id}));
                 let label = labelled(option);
-                list = list.child(action(at, &option.id, &label, answer, false, ink));
+                list = list.child(action(at, &option.id, &label, answer, Kind::Quiet, t));
             }
             panel.child(list)
         }
         "input" | "editor" => {
             let multiline = question.kind == "editor";
-            panel.children(field(at, draft, "text", &question.title, multiline, ink))
+            panel.children(field(at, draft, "text", &question.title, multiline, t))
         }
         "ask" => {
             for item in &question.questions {
                 let multi = if item.multi { " (choose multiple)" } else { "" };
                 let heading = format!("{} {}{multi}", item.header, item.question);
                 panel = panel
-                    .child(say(heading.trim(), CAPTION, ink))
-                    .child(choices(at, draft, &item.id, &item.options, item.multi, ink));
+                    .child(say(heading.trim(), t.ty.caption, t))
+                    .child(choices(at, draft, &item.id, &item.options, item.multi, t));
                 let label = format!("Custom response to {}", item.question);
-                panel = panel.children(field(at, draft, &item.id, &label, false, ink));
+                panel = panel.children(field(at, draft, &item.id, &label, false, t));
             }
             panel
         }
-        "form" => form(panel, draft, at, ink),
-        _ => panel.child(note(UNSUPPORTED, ink)),
+        "form" => form(panel, draft, at, t),
+        _ => panel.child(note(UNSUPPORTED, t)),
     }
 }
 
-fn form(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
+fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
     let question = &draft.question;
     let Some(properties) = question.fields.get("properties").and_then(Value::as_object) else {
         return panel.child(note(
             "Unsupported provider form schema; no response submitted.",
-            ink,
+            t,
         ));
     };
     for (id, schema) in properties {
@@ -161,16 +196,16 @@ fn form(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
         } else {
             ""
         };
-        panel = panel.child(say(&format!("{title}{star}"), CAPTION, ink));
+        panel = panel.child(say(&format!("{title}{star}"), t.ty.caption, t));
         if let Some(about) = schema.get("description").and_then(Value::as_str) {
-            panel = panel.child(note(about, ink));
+            panel = panel.child(note(about, t));
         }
         panel = match draft.options.get(id) {
             Some(offered) => {
                 let multi = schema.get("type").and_then(Value::as_str) == Some("array");
-                panel.child(choices(at, draft, id, offered, multi, ink))
+                panel.child(choices(at, draft, id, offered, multi, t))
             }
-            None => panel.children(field(at, draft, id, title, false, ink)),
+            None => panel.children(field(at, draft, id, title, false, t)),
         };
     }
     panel
@@ -183,91 +218,87 @@ fn labelled(option: &NativeOption) -> String {
     }
 }
 
-/// A button that answers (`response`) or submits the draft (`None`).
-fn action(at: &At, id: &str, label: &str, answer: Option<Value>, primary: bool, ink: &Ink) -> El {
-    let button = pressable(format!("acp-{}-{id}", at.question), ink)
-        .px(10.0)
-        .py(5.0)
-        .radius(6.0)
-        .center()
-        .role("button")
-        .label(label.to_owned())
-        .disabled(at.held)
-        .child(say(label, CAPTION, ink).a11y_hidden());
-    let button = if primary {
-        button.fill(ink.accent.alpha(0.3))
-    } else {
-        button.border(1.0, ink.separator)
-    };
-    if at.held {
-        return button.opacity(0.5);
-    }
-    let (terminal, question) = (at.terminal.clone(), at.question.to_owned());
-    button.on_press(move |d: &mut Desk| d.answer_question(&terminal, &question, answer.clone()))
+/// Which button an answer is: the one primary action, or a quiet one.
+#[derive(Clone, Copy)]
+enum Kind {
+    Primary,
+    Quiet,
 }
 
-/// The options offered for one item or field. None starts chosen, not
-/// even the provider's recommendation.
+/// A button that answers (`response`) or submits the draft (`None`). While
+/// the question is held, disabled (the kit's look), never hidden.
+fn action(at: &At, id: &str, label: &str, answer: Option<Value>, kind: Kind, t: &Tokens) -> El {
+    let variant = match kind {
+        Kind::Primary => ButtonVariant::Submit,
+        Kind::Quiet => ButtonVariant::Outline,
+    };
+    let (terminal, question) = (at.terminal.clone(), at.question.to_owned());
+    Button::new(label)
+        .variant(variant)
+        .disabled(at.held)
+        .on_press(move |d: &mut Desk| d.answer_question(&terminal, &question, answer.clone()))
+        .build(&t.kit)
+        .key(format!("acp-{}-{id}", at.question))
+}
+
+/// The options offered for one item or field: radios for one choice,
+/// checkboxes for several. None starts chosen, not even the provider's
+/// recommendation.
 fn choices(
     at: &At,
     draft: &Draft,
     item: &str,
     offered: &[NativeOption],
     multi: bool,
-    ink: &Ink,
+    t: &Tokens,
 ) -> El {
     let chosen = draft.choices.get(item).map(Vec::as_slice).unwrap_or(&[]);
-    let mut line = row().w_full().gap(6.0).flex_wrap();
+    let pick = |option: &NativeOption| {
+        let (question, item, id) = (at.question.to_owned(), item.to_owned(), option.id.clone());
+        move |d: &mut Desk| d.inbox.questions.choose(&question, &item, &id, multi)
+    };
+    if multi {
+        let mut list = col().w_full().gap(t.space.s2).role("group");
+        for option in offered {
+            let on = chosen.contains(&option.id);
+            let mut check = Checkbox::new(on).label(option.label.clone());
+            if let Some(detail) = &option.description {
+                check = check.description(detail.clone());
+            }
+            list = list.child(
+                check
+                    .disabled(at.held)
+                    .on_toggle(pick(option))
+                    .build(&t.kit)
+                    .key(format!("acp-{}-{item}-{}", at.question, option.id)),
+            );
+        }
+        return list;
+    }
+    let mut group = RadioGroup::new().disabled(at.held);
     for option in offered {
         let on = chosen.contains(&option.id);
-        let label = labelled(option);
-        let chip = row()
-            .key(format!("acp-{}-{item}-{}", at.question, option.id))
-            .px(9.0)
-            .py(4.0)
-            .radius(6.0)
-            .items_center()
-            .role(if multi { "checkbox" } else { "radio" })
-            .label(label.clone())
-            .checked(on)
-            .disabled(at.held)
-            .border(
-                1.0,
-                if on {
-                    ink.accent
-                } else {
-                    ink.accent.alpha(0.4)
-                },
-            )
-            .child(say(&label, CAPTION, ink).a11y_hidden());
-        let chip = if on {
-            chip.fill(ink.accent.alpha(0.24))
-        } else {
-            chip
-        };
-        line = line.child(if at.held {
-            chip.opacity(0.5)
-        } else {
-            let (question, item, id) = (at.question.to_owned(), item.to_owned(), option.id.clone());
-            chip.focusable(true)
-                .hover(ink.accent.alpha(0.16))
-                .cursor(rune::Cursor::Pointer)
-                .on_press(move |d: &mut Desk| {
-                    d.inbox.questions.choose(&question, &item, &id, multi)
-                })
-        });
+        let mut radio = RadioItem::new(option.label.clone(), on).on_select(pick(option));
+        if let Some(detail) = &option.description {
+            radio = radio.description(detail.clone());
+        }
+        group = group.item(radio);
     }
-    line
+    group
+        .build(&t.kit)
+        .key(format!("acp-{}-{item}", at.question))
 }
 
 /// A text field, when the draft has one by `id`. Return submits, except in
 /// an editor, where it breaks the line.
-fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, ink: &Ink) -> Option<El> {
+fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tokens) -> Option<El> {
+    let r = &t.roles;
     let edit: &TextEdit = draft.texts.get(id)?;
-    let mut input = text_input(edit, TextStyle::new(13.0, 400.0).lh(18.0))
+    let ink = if at.held { r.text.faint } else { r.text.text };
+    let mut input = text_input(edit, t.ty.body)
         .key(format!("acp-{}-field-{id}", at.question))
         .grow(1.0)
-        .color(ink.text)
+        .color(ink.paint())
         .label(label.to_owned())
         .disabled(at.held);
     if !multiline {
@@ -286,13 +317,8 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, ink: &I
             }
         });
     }
-    Some(
-        row()
-            .w_full()
-            .px(10.0)
-            .py(7.0)
-            .radius(7.0)
-            .fill(ink.separator)
-            .child(input),
-    )
+    Some(field_shell(input, t, !at.held))
 }
+
+#[cfg(test)]
+mod tests;
