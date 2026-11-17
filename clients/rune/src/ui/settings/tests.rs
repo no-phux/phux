@@ -6,6 +6,7 @@ use rune::{Cx, El, Env, Key, KeyEvent, Mods, Runtime};
 use super::*;
 use crate::desk::updates::Work;
 
+mod a11y;
 mod editing;
 mod overflow;
 mod quick;

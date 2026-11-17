@@ -7,6 +7,8 @@ use rune::{Runtime, TouchPhase};
 
 use super::*;
 
+mod a11y;
+
 const ID: &str = "acp-question:phone";
 const LONG: &str =
     "Review the native input verification results before publishing this phone update";

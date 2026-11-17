@@ -257,7 +257,7 @@ fn choices(
     for option in offered {
         let on = chosen.contains(&option.id);
         let label = labelled(option);
-        let mut caption = say(&label, at.font(CAPTION), ink).a11y_hidden();
+        let mut caption = say(&label, at.font(CAPTION), ink);
         if at.phone {
             caption = caption.w_full().min_w(0.0);
         }

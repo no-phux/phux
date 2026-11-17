@@ -94,9 +94,9 @@ pub(in crate::ui) fn toggle(
                     text(detail)
                         .font(super::secondary(desk, CAPTION.lh(15.0)))
                         .color(ink.dim)
-                        .wrap(),
-                )
-                .a11y_hidden(),
+                        .wrap()
+                        .a11y_hidden(),
+                ),
         )
         .child(switch(on, ink).a11y_hidden())
 }
