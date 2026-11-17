@@ -10,7 +10,7 @@
 //!   prompt boundary (the column where typing began on this row), Enter
 //!   past column 0, and arrows over a known glyph. Everything else is
 //!   sent upstream without a local echo.
-//! - [`reconcile_terminal_output_per_cell`] confirms, keeps, or drops the
+//! - [`reconcile_terminal_output_per_cell_at`] confirms, keeps, or drops the
 //!   queue (a contradiction drops the whole suffix).
 //! - [`render_overlay`] writes the displayable guesses as VT.
 //!
@@ -26,7 +26,5 @@ mod reconcile;
 mod state;
 
 pub use overlay::render_overlay;
-pub use reconcile::{
-    ReconcileStats, reconcile_terminal_output_per_cell, reconcile_terminal_output_per_cell_at,
-};
+pub use reconcile::{ReconcileStats, reconcile_terminal_output_per_cell_at};
 pub use state::{Prediction, PredictionKind, PredictionOutcome, PredictionState, PredictiveConfig};

@@ -2,15 +2,16 @@
 
 use super::{
     ChromeCtx, JobDone, PaneScene, RepaintAccumulator, RepaintLevel, ResourceId,
-    SYNC_OUTPUT_WATCHDOG, SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay,
-    adopt_config_reload, content_rect, finish_return_onboarding_after_paint, paint_chrome_in_place,
-    paint_full_frame, paint_pane_rows_in_place, paint_panes_in_place, push_which_key_overlay,
-    refresh_window_chrome, sidebar_reservation, sync_overlays_to_focused_pane,
+    SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay, adopt_config_reload,
+    content_rect, finish_return_onboarding_after_paint, paint_chrome_in_place, paint_full_frame,
+    paint_pane_rows_in_place, paint_panes_in_place, refresh_window_chrome, sidebar_reservation,
+    sync_overlays_to_focused_pane,
 };
 
 mod delivery_fences;
 mod empty_state;
 mod overlay;
+mod timers;
 
 impl super::SessionLoop {
     // ---- small shared projections -------------------------------------
@@ -153,6 +154,13 @@ impl super::SessionLoop {
         else {
             return self.paint_empty_state(out, sidebar, level);
         };
+        // Each pane's place among its slot's tabs, for its title rule.
+        for (id, pane) in &mut self.mirror.panes {
+            pane.slot_tab = self.mirror.workspace.slot_of(id).map(|slot| {
+                let at = slot.strip.iter().position(|tab| tab == id).unwrap_or(0);
+                (at + 1, slot.strip.len())
+            });
+        }
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
@@ -367,83 +375,6 @@ impl super::SessionLoop {
 
     // ---- timers, signals, and the periodic paints -----------------------
 
-    /// The next fade boundary of any origin badge, on the tokio clock.
-    pub(super) fn next_input_origin_wake(&self) -> Option<tokio::time::Instant> {
-        let now = std::time::Instant::now();
-        let soonest = self
-            .mirror
-            .panes
-            .values()
-            .filter_map(|slot| slot.input_origin_delay(now))
-            .min()?;
-        Some(tokio::time::Instant::now() + soonest)
-    }
-
-    /// Repaint the rail at a fade boundary, and drop a badge that has ended.
-    pub(super) fn on_input_origin_phase<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) {
-        let now = std::time::Instant::now();
-        let mut dirty = false;
-        for slot in self.mirror.panes.values_mut() {
-            let Some(mark) = slot.input_origin.as_ref() else {
-                continue;
-            };
-            dirty = true;
-            if now.saturating_duration_since(mark.since)
-                >= crate::attach::pane_state::INPUT_ORIGIN_LIFE
-            {
-                slot.input_origin = None;
-            }
-        }
-        if dirty {
-            self.repaint_view(out, sidebar, RepaintLevel::Chrome);
-        }
-    }
-
-    /// An application that never sent `?2026l`: expose the mirror once.
-    pub(super) fn on_sync_output_timeout<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) {
-        let now = tokio::time::Instant::now();
-        let mut expired = false;
-        for slot in self.mirror.panes.values_mut() {
-            if slot.sync_output_dirty
-                && slot.sync_output_since.is_some_and(|since| {
-                    now.saturating_duration_since(since) >= SYNC_OUTPUT_WATCHDOG
-                })
-            {
-                slot.sync_output_since = None;
-                slot.sync_output_dirty = false;
-                expired = true;
-            }
-        }
-        if expired {
-            self.repaint_view(out, sidebar, RepaintLevel::Full);
-        }
-    }
-
-    /// Push the which-key popup listing the pending prefix's continuations.
-    pub(super) fn on_which_key_timeout<W: crate::attach::RenderSink>(
-        &mut self,
-        out: &mut W,
-        sidebar: Option<SidebarReservation>,
-    ) {
-        self.which_key_deadline = None;
-        if push_which_key_overlay(
-            &mut self.overlays,
-            self.settings.resolver.as_ref(),
-            self.settings.keybindings.as_ref(),
-            &self.settings.theme,
-        ) {
-            self.paint_overlay(out, sidebar);
-        }
-    }
-
     /// Hand every surviving overlay the focused pane's current rect.
     pub(super) fn sync_overlays(&mut self, sidebar: Option<SidebarReservation>) {
         let bar = self.bar();
@@ -483,10 +414,8 @@ impl super::SessionLoop {
         self.paint_bar_row(out, sidebar);
     }
 
-    /// Paint the bar row and nothing else, then put the cursor back where
-    /// the focused pane left it so the paint never strands it in the bar. A
-    /// frame block opens only if the bar writes, so an unchanged row emits
-    /// nothing. The caller repaints any overlay on top.
+    /// Paint the bar row only, then put the cursor back where the focused
+    /// pane left it. An unchanged row emits nothing.
     pub(super) fn paint_bar_row<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

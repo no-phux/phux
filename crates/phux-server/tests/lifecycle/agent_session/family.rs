@@ -28,10 +28,7 @@ fn a_childs_spawn_and_close_reach_the_parents_watchers_once() {
         let mut watcher = server.connect().await;
         send_frame(
             &mut watcher,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            },
+            &phux_server_testkit::subscribe_events(None, None),
         )
         .await;
         subscribe(&mut watcher, 100, Some(parent.clone()), None).await;
@@ -39,23 +36,12 @@ fn a_childs_spawn_and_close_reach_the_parents_watchers_once() {
         let SpawnResult::Ok(session) = spawn_session(&mut owner, 2, parent).await else {
             panic!("spawn session failed");
         };
-        let kill = Command::KillResource {
-            terminal_id: session.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(session.clone());
         assert_eq!(command(&mut owner, 3, kill).await, CommandResult::Ok);
 
         // Count to a barrier on the watcher's own connection.
-        send_frame(
-            &mut watcher,
-            &FrameKind::Command {
-                request_id: 101,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut watcher, 101, phux_server_testkit::get_state())
+            .await;
         let (mut spawned_n, mut closed_n) = (0, 0);
         wait_frame(&mut watcher, "barrier", |frame| match frame {
             FrameKind::Event {
@@ -96,10 +82,7 @@ fn parent_kill_and_pty_exit_cascade_the_child_with_parent_closed() {
         let (parent, session) = parent_and_session(&mut owner, FOREVER).await;
         let mut watcher = server.connect().await;
         attach_resource(&mut watcher, 100, &session).await;
-        let kill = Command::KillResource {
-            terminal_id: parent.clone(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill(parent.clone());
         assert_eq!(command(&mut owner, 3, kill).await, CommandResult::Ok);
         let seen = closes(&mut watcher, std::slice::from_ref(&session)).await;
         assert_eq!(seen[&session].0, CloseReason::ParentClosed);
@@ -130,24 +113,12 @@ fn kill_resources_over_a_mixed_set_closes_each_once() {
         let (parent, session) = parent_and_session(&mut owner, FOREVER).await;
         let unrelated = spawned(&mut owner, 3, sh(FOREVER)).await;
         let targets = [parent, session, unrelated];
-        let kill = Command::KillResources {
-            ids: targets.to_vec(),
-            operation_id: None,
-        };
+        let kill = phux_server_testkit::kill_all(targets.to_vec());
         assert_eq!(command(&mut owner, 4, kill).await, CommandResult::Ok);
         let mut seen = closes(&mut owner, &targets).await;
         // Everything the cascade emitted is now queued ahead of this reply,
         // so a duplicate close would be counted before it.
-        send_frame(
-            &mut owner,
-            &FrameKind::Command {
-                request_id: 5,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut owner, 5, phux_server_testkit::get_state()).await;
         wait_frame(&mut owner, "barrier", |frame| match frame {
             FrameKind::ResourceClosed {
                 terminal_id,

@@ -11,10 +11,7 @@ fn a_recycled_pgid_is_a_new_occupant_not_the_old_one() {
     h.occupy(agent_started("t", 100, Some(999_999)));
     assert_eq!(
         h.identity_tick(),
-        DetectOutcome::Reidentified {
-            kind: "t".to_owned(),
-            name: "t-agent".to_owned(),
-        },
+        reidentified("t"),
         "the id was recycled; the start time is what says so",
     );
 }
@@ -72,10 +69,7 @@ fn a_transiently_unreadable_start_time_does_not_erase_the_one_we_have() {
     h.occupy(agent_started("t", 100, Some(999_999)));
     assert_eq!(
         h.identity_tick(),
-        DetectOutcome::Reidentified {
-            kind: "t".to_owned(),
-            name: "t-agent".to_owned(),
-        },
+        reidentified("t"),
         "the remembered start time survived the failed queries",
     );
 }
@@ -91,10 +85,7 @@ fn a_pgid_change_is_caught_by_the_ordinary_cadence_not_just_the_recheck() {
     h.occupy(agent("u", 200));
     assert_eq!(
         h.tick("WORKING"),
-        DetectOutcome::Reidentified {
-            kind: "u".to_owned(),
-            name: "u-agent".to_owned(),
-        },
+        reidentified("u"),
         "the cheap pgid-only probe must not wait out the full recheck \
              for a change it can see for the price of one ioctl",
     );
@@ -117,7 +108,10 @@ fn a_recycled_pgid_is_invisible_to_the_cheap_probe_but_still_caught_on_recheck()
                  recycle, and must not guess",
         );
         assert_eq!(
-            h.detector.identified_occupant,
+            h.detector
+                .identified
+                .as_ref()
+                .and_then(|agent| agent.occupant),
             Some(Occupant::new(100, Some(700))),
             "tick {i}: still believed to be the ORIGINAL process",
         );
@@ -125,10 +119,7 @@ fn a_recycled_pgid_is_invisible_to_the_cheap_probe_but_still_caught_on_recheck()
 
     assert_eq!(
         h.identity_tick(),
-        DetectOutcome::Reidentified {
-            kind: "t".to_owned(),
-            name: "t-agent".to_owned(),
-        },
+        reidentified("t"),
         "the full recheck still closes the .43 hole the cheap probe cannot",
     );
 }
@@ -142,14 +133,15 @@ fn an_unresolvable_cheap_probe_holds_rather_than_guessing() {
         assert_eq!(h.tick("WORKING"), DetectOutcome::Quiet);
     }
     assert_eq!(
-        h.detector.identified.as_deref(),
+        h.detector.identified_kind(),
         Some("t"),
         "still believed present"
     );
     assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
 }
 
-/// A new occupant gets its own startup grace.
+/// A correction is alone in its tick, and the new occupant gets its own
+/// startup grace.
 #[test]
 fn a_new_occupant_re_anchors_the_startup_grace() {
     let mut h = occupied("t", 100);
@@ -158,6 +150,10 @@ fn a_new_occupant_re_anchors_the_startup_grace() {
         h.identity_tick(),
         DetectOutcome::Reidentified { .. }
     ));
+    assert_eq!(
+        h.detector.published, None,
+        "nothing about the new occupant has been published yet",
+    );
 
     // Its splash screen paints something a rule matches. Silence.
     let mut elapsed = TICK_IDENTIFIED;
@@ -182,19 +178,4 @@ fn a_new_occupant_re_anchors_the_startup_grace() {
         }
         other => panic!("expected a publish for the new occupant, got {other:?}"),
     }
-}
-
-/// A correction is alone in its tick, never with a state.
-#[test]
-fn a_correction_short_circuits_its_own_tick() {
-    let mut h = occupied("t", 100);
-    h.occupy(agent("u", 200));
-    assert!(matches!(
-        h.identity_tick(),
-        DetectOutcome::Reidentified { .. }
-    ));
-    assert_eq!(
-        h.detector.published, None,
-        "nothing about the new occupant has been published yet",
-    );
 }

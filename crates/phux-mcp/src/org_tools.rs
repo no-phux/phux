@@ -161,9 +161,6 @@ fn org_error(verb: &str, err: &OrgError) -> ToolError {
 }
 
 async fn records(conn: &mut Connection, verb: &str) -> Result<OrgInventory, ToolError> {
-    if !org::supported(conn) {
-        return Err(org_error(verb, &OrgError::Unsupported));
-    }
     org::fetch(conn, OrgFilter::All, 1)
         .await
         .map_err(|err| org_error(verb, &err))

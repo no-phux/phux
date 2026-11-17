@@ -19,18 +19,21 @@
 
 pub mod builder;
 pub mod embedder;
+mod frames;
 mod framing;
+pub use frames::*;
 pub mod relay;
 pub mod screen;
 mod server;
 pub mod tracing_capture;
 pub use server::{
-    ServerHandles, hangup_proof_script, seed_pty, spawn_server, spawn_server_seed_pty_no_cmd,
-    spawn_server_with, spawn_server_with_seed_cmd, terminal_server,
+    ServerHandles, SpawnedServer, hangup_proof_script, seed_pty, spawn_server,
+    spawn_server_connected, spawn_server_seed_pty_no_cmd, spawn_server_with,
+    spawn_server_with_seed_cmd, terminal_server,
 };
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -41,11 +44,12 @@ use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind, SpawnResource,
-    SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind,
+    SpawnResource, SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK,
+    ViewportInfo,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::ServerError;
-use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -89,60 +93,28 @@ pub async fn wait_for_socket_with(
     caps: impl FnOnce(ClientCapabilities) -> ClientCapabilities,
 ) -> UnixStream {
     let mut stream = wait_for_raw_socket(path, deadline).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: "phux-server-integration-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps(
-                ClientCapabilities::new()
-                    .with_color_support(ColorSupport::TrueColor)
-                    .with_layers(LayerSet::all()),
-            ),
-        },
-    )
-    .await;
+    let caps = caps(
+        ClientCapabilities::new()
+            .with_color_support(ColorSupport::TrueColor)
+            .with_layers(LayerSet::all()),
+    );
+    send_frame(&mut stream, &hello("phux-server-integration-test", caps)).await;
     let (type_byte, frame) = recv_typed(&mut stream).await;
     assert_eq!(type_byte, TYPE_HELLO_OK);
     assert!(matches!(frame, FrameKind::HelloOk { .. }));
     stream
 }
 
-/// Owning handles for [`spawn_server_connected`]; dropping it stops the server.
-#[must_use = "dropping the shutdown sender stops the server"]
-pub struct SpawnedServer {
-    _tmp: TempDir,
-    socket_path: PathBuf,
-    _shutdown: oneshot::Sender<()>,
-    _server: JoinHandle<Result<(), ServerError>>,
-}
-
-impl SpawnedServer {
-    /// Open another HELLO'd client against this server.
-    pub async fn connect(&self) -> UnixStream {
-        wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await
+/// A `HELLO` at this build's protocol version.
+#[must_use]
+pub fn hello(client_name: &str, client_caps: ClientCapabilities) -> FrameKind {
+    FrameKind::Hello {
+        client_name: client_name.to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps,
     }
-}
-
-/// Spawn a [`phux_server::ServerRuntime`] (optionally pre-seeded) in a temp dir and return
-/// a HELLO'd client. Extra clients use [`SpawnedServer::connect`].
-#[must_use = "dropping the shutdown sender stops the server"]
-pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {
-    let tmp = TempDir::new().unwrap();
-    let socket_path = tmp.path().join("phux.sock");
-    let (shutdown, server) = spawn_server(socket_path.clone(), pre_seeded);
-    let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-    (
-        SpawnedServer {
-            _tmp: tmp,
-            socket_path,
-            _shutdown: shutdown,
-            _server: server,
-        },
-        stream,
-    )
 }
 
 /// Poll `UnixStream::connect(path)` without sending protocol frames.
@@ -348,6 +320,31 @@ pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command)
     await_command_result(stream, request_id).await
 }
 
+/// `GET_STATE { Server }`.
+#[must_use]
+pub const fn get_state() -> Command {
+    Command::GetState {
+        scope: StateScope::Server,
+    }
+}
+
+/// The [`get_state`] snapshot; also an in-order barrier for this connection.
+pub async fn server_state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
+    match command(stream, request_id, get_state()).await {
+        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
+        other => panic!("GET_STATE failed: {other:?}"),
+    }
+}
+
+/// Assert `result` is a `CommandResult::Error` carrying `code`.
+#[track_caller]
+pub fn assert_command_error(result: &CommandResult, code: ErrorCode) {
+    assert!(
+        matches!(result, CommandResult::Error { code: got, .. } if *got == code),
+        "expected {code:?}, got {result:?}"
+    );
+}
+
 /// The address `transport`'s listener actually bound, read from the
 /// server's `GET_STATE` listener report over its UDS. Tests bind port 0 and
 /// ask here, rather than pre-picking a port another process could take.
@@ -357,17 +354,7 @@ pub async fn bound_listener_addr(
     transport: RemoteListenerTransport,
 ) -> std::net::SocketAddr {
     let mut stream = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
-    let result = command(
-        &mut stream,
-        1,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-    )
-    .await;
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("GET_STATE failed: {result:?}");
-    };
+    let snapshot = server_state(&mut stream, 1).await;
     let report = snapshot
         .listeners()
         .unwrap_or_else(|| panic!("the server reported no remote listeners"));

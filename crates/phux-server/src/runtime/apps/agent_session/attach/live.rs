@@ -1,11 +1,7 @@
-//! The live half of an `AgentSession` attach: forward records after the cut,
-//! and recover whatever a broadcast lag skipped.
-//!
-//! A lagged consumer is replayed the skipped records from the session's ring
-//! in the same generation. When the ring has already evicted some of them,
-//! the generation is tombstoned (`OUTBOUND_GAP`, at the last delivered
-//! record) and replaced by a full retained bootstrap: an explicit gap, never
-//! silence.
+//! The live half of an `AgentSession` attach: forward records after the cut.
+//! A lagged consumer is replayed from the ring; if the ring already evicted
+//! them, the generation is tombstoned (`OUTBOUND_GAP`) and re-bootstrapped:
+//! an explicit gap, never silence.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

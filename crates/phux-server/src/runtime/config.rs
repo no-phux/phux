@@ -81,6 +81,10 @@ pub struct ServerConfig {
     /// which refuses to start (ADR-0179); with an injected
     /// [`Self::policy_engine`] it leaves that engine in charge.
     pub policy_mode: Option<phux_config::PolicyMode>,
+    /// `[policy] tailnet-owner` (`docs/config.md#tailnet-owner-devices`):
+    /// under `paired`, the tailnet QUIC listener admits the owner's own
+    /// devices with no token or certificate.
+    pub tailnet_owner: bool,
     /// Event-hook catalog; empty means no dispatcher task runs.
     pub hook_catalog: crate::hooks::HookCatalog,
     /// Exit once no client connection has been open for this long
@@ -172,6 +176,7 @@ impl ServerConfig {
             approval_max_pending_total: phux_config::DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             policy_engine: None,
             policy_mode: None,
+            tailnet_owner: false,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
             env: ServerEnv::default(),

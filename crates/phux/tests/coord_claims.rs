@@ -70,26 +70,23 @@ impl CliStore {
         command(self.root.path(), pane).args(args).output().unwrap()
     }
     fn json(&self, pane: &str, args: &[&str], code: i32) -> Value {
-        let out = self.run(pane, args);
-        assert_eq!(
-            out.status.code(),
-            Some(code),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let bytes = if out.stdout.is_empty() {
-            &out.stderr
-        } else {
-            &out.stdout
-        };
-        serde_json::from_slice(bytes).unwrap_or_else(|err| {
-            panic!(
-                "invalid CLI JSON: {err}; stdout={}; stderr={}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        })
+        json_document(&self.run(pane, args), code)
     }
+}
+
+/// Assert the exit `code`, then parse stdout, or stderr when stdout is empty.
+fn json_document(out: &Output, code: i32) -> Value {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(code), "{stderr}");
+    let bytes = if out.stdout.is_empty() {
+        &out.stderr
+    } else {
+        &out.stdout
+    };
+    serde_json::from_slice(bytes).unwrap_or_else(|err| {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        panic!("invalid CLI JSON: {err}; stdout={stdout}; stderr={stderr}")
+    })
 }
 impl Drop for CliStore {
     fn drop(&mut self) {
@@ -163,18 +160,7 @@ impl LegacyCli {
             .args(args)
             .output()
             .unwrap();
-        assert_eq!(
-            out.status.code(),
-            Some(code),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let bytes = if out.stdout.is_empty() {
-            &out.stderr
-        } else {
-            &out.stdout
-        };
-        serde_json::from_slice(bytes).unwrap()
+        json_document(&out, code)
     }
 }
 
@@ -196,6 +182,10 @@ fn serve_legacy(listener: &std::os::unix::net::UnixListener, socket: &Path) -> V
             std::thread::sleep(Duration::from_millis(5));
             continue;
         };
+        // An accepted socket inherits the listener's O_NONBLOCK on macOS,
+        // where the read timeout below does nothing and a slow client's
+        // read fails with WouldBlock.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
@@ -364,29 +354,27 @@ fn unsafe_release_forms_and_malformed_native_context_fail_closed() {
 }
 
 fn send_mail(cli: &CliStore, to: &str, body: &str) -> Value {
-    cli.json(
-        "@749",
-        &["mail", "send", to, "-t", "pr-1", "-m", body, "--json"],
-        0,
-    )
+    cli.json("@749", &mail_send(to, "pr-1", body, &["--json"]), 0)
+}
+
+/// `mail send TO -t THREAD -m BODY EXTRA...`.
+fn mail_send<'a>(to: &'a str, thread: &'a str, body: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    [&["mail", "send", to, "-t", thread, "-m", body][..], extra].concat()
 }
 
 #[test]
 fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() {
     let store = CliStore::new();
     let key = "12345678123456781234567812345678";
-    let args = [
-        "mail",
-        "send",
-        "@730",
-        "-t",
-        "retry",
-        "-m",
-        "once",
-        "--operation-id",
-        key,
-        "--json",
-    ];
+    let send = |body, extra: &[&'static str]| {
+        mail_send(
+            "@730",
+            "retry",
+            body,
+            &[&["--operation-id", key][..], extra].concat(),
+        )
+    };
+    let args = send("once", &["--json"]);
     let first = store.json("@749", &args, 0);
     let replay = store.json("@749", &args, 0);
     assert_eq!(first["operation_id"], key);
@@ -396,39 +384,11 @@ fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() 
     assert_eq!(first["mail"]["id"], replay["mail"]["id"]);
     let read = store.json("@730", &["mail", "read", "--all", "--peek", "--json"], 0);
     assert_eq!(read["mail"].as_array().unwrap().len(), 1);
-    let conflict = store.json(
-        "@749",
-        &[
-            "mail",
-            "send",
-            "@730",
-            "-t",
-            "retry",
-            "-m",
-            "changed",
-            "--operation-id",
-            key,
-            "--json",
-        ],
-        1,
-    );
+    let conflict = store.json("@749", &send("changed", &["--json"]), 1);
     assert_eq!(conflict["error"]["code"], "mission_operation_conflict");
     assert_eq!(conflict["error"]["recovery"]["operation_id"], key);
     assert_eq!(conflict["error"]["recovery"]["scope"]["kind"], "work_store");
-    let human = store.run(
-        "@749",
-        &[
-            "mail",
-            "send",
-            "@730",
-            "-t",
-            "retry",
-            "-m",
-            "changed",
-            "--operation-id",
-            key,
-        ],
-    );
+    let human = store.run("@749", &send("changed", &[]));
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
     let diagnostic = String::from_utf8_lossy(&human.stderr);
@@ -437,22 +397,8 @@ fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() 
         "{diagnostic}"
     );
     assert!(diagnostic.contains(key), "{diagnostic}");
-    let invalid = store.json(
-        "@749",
-        &[
-            "mail",
-            "send",
-            "@730",
-            "-t",
-            "retry",
-            "-m",
-            "bad",
-            "--operation-id",
-            "bad",
-            "--json",
-        ],
-        2,
-    );
+    let invalid = mail_send("@730", "retry", "bad", &["--operation-id", "bad", "--json"]);
+    let invalid = store.json("@749", &invalid, 2);
     assert_eq!(invalid["error"]["code"], "usage_error");
 }
 
@@ -474,13 +420,10 @@ fn mail_is_stored_and_taken_once_for_the_agent_without_a_bell() {
     let inbox = cli.json("@730", &["mail", "read", "--peek", "--json"], 0);
     assert_eq!(inbox["mail"].as_array().unwrap().len(), 1, "still unread");
     assert!(
-        cli.run(
-            "@749",
-            &["mail", "send", "@730", "-t", "x", "-m", "y", "--no-ring"]
-        )
-        .status
-        .code()
-        .is_some_and(|code| code != 0)
+        cli.run("@749", &mail_send("@730", "x", "y", &["--no-ring"]))
+            .status
+            .code()
+            .is_some_and(|code| code != 0)
     );
 }
 
@@ -519,16 +462,7 @@ fn a_satellite_pane_is_an_address_on_its_hub() {
     let cli = CliStore::new();
     let sent = cli.json(
         "@749",
-        &[
-            "mail",
-            "send",
-            "min-api/pi@3",
-            "-t",
-            "t",
-            "-m",
-            "hi",
-            "--json",
-        ],
+        &mail_send("min-api/pi@3", "t", "hi", &["--json"]),
         0,
     );
     assert_eq!(sent["mail"]["to"][0], "min-api/pi@3", "{sent}");

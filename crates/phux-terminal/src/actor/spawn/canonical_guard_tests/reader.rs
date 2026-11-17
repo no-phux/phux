@@ -169,11 +169,11 @@ fn idle_panes_share_one_poller() {
 #[test]
 fn pane_children_always_advertise_truecolor() {
     for inherited in [None, Some(""), Some("24bit"), Some("256color")] {
-        let mut cmd = shell_command(
+        let mut cmd = crate::engine::command(&phux_terminal_api::launch::shell_command(
             "/bin/sh",
             "printf 'COLOR:%s TERM:%s\\n' \"$COLORTERM\" \"$TERM\"",
             false,
-        );
+        ));
         match inherited {
             Some(value) => cmd.env("COLORTERM", value),
             None => cmd.env_remove("COLORTERM"),

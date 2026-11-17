@@ -4,53 +4,23 @@ use super::*;
 
 #[tokio::test]
 async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        let _hello = futures_util::StreamExt::next(&mut ws)
-            .await
-            .unwrap()
-            .unwrap();
+    let (port, server) = ws_satellite(|_| {
         let mut caps = phux_protocol::caps::ServerCapabilities::default();
         caps.features_ext =
             ServerFeatureExtSet::with(&[phux_protocol::caps::ServerFeatureExt::PathQuery]);
-        let mut encoded = bytes::BytesMut::new();
-        FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: caps,
-            server_id: vec![0; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        }
-        .encode(&mut encoded);
-        futures_util::SinkExt::send(
-            &mut ws,
-            tokio_tungstenite::tungstenite::Message::Binary(encoded.to_vec().into()),
+        hello_ok(
+            caps,
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
         )
-        .await
-        .unwrap();
-    });
-    let spec = DialSpec::Ws {
-        url: format!("ws://127.0.0.1:{port}"),
-        trust: CertTrust::SkipVerify,
-        token_file: None,
-        identity: None,
-    };
+    })
+    .await;
     let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
-        .connect(&SatelliteHost::new("sat"), &spec, None)
+        .connect(&SatelliteHost::new("sat"), &loopback_ws(port), None)
         .await
         .unwrap();
-    assert!(
-        conn.server_features_ext()
-            .unwrap()
-            .contains(phux_protocol::caps::ServerFeatureExt::PathQuery)
-    );
+    let features = conn.server_features_ext().unwrap();
+    assert!(features.contains(phux_protocol::caps::ServerFeatureExt::PathQuery));
     server.await.unwrap();
 }
 
@@ -67,53 +37,19 @@ async fn net_link_selects_the_profile_the_hub_selects_for_native_clients() {
         EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        let tokio_tungstenite::tungstenite::Message::Binary(hello) =
-            futures_util::StreamExt::next(&mut ws)
-                .await
-                .unwrap()
-                .unwrap()
-        else {
-            panic!("expected binary HELLO");
-        };
-        let FrameKind::Hello { client_caps, .. } = FrameKind::decode(&hello).unwrap().0 else {
-            panic!("expected HELLO");
-        };
+    let (port, server) = ws_satellite(move |client_caps| {
         // Select exactly as a native satellite's HELLO handler does.
         let (profile, limits) = select_bootstrap_profile(&client_caps, &native).unwrap();
-        let mut encoded = bytes::BytesMut::new();
-        FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: phux_protocol::caps::ServerCapabilities::default(),
-            server_id: vec![0; 16],
-            selected_profile: Some(profile),
-            bootstrap_limits: limits,
-        }
-        .encode(&mut encoded);
-        futures_util::SinkExt::send(
-            &mut ws,
-            tokio_tungstenite::tungstenite::Message::Binary(encoded.to_vec().into()),
+        hello_ok(
+            phux_protocol::caps::ServerCapabilities::default(),
+            profile,
+            limits,
         )
-        .await
-        .unwrap();
-    });
-    let spec = DialSpec::Ws {
-        url: format!("ws://127.0.0.1:{port}"),
-        trust: CertTrust::SkipVerify,
-        token_file: None,
-        identity: None,
-    };
+    })
+    .await;
     let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
         .with_bootstrap(native)
-        .connect(&SatelliteHost::new("sat"), &spec, None)
+        .connect(&SatelliteHost::new("sat"), &loopback_ws(port), None)
         .await
         .unwrap();
     let downstream = ClientCapabilities::new().with_bootstrap(native);
@@ -162,18 +98,16 @@ async fn net_transport_connects_to_a_loopback_ws_listener_and_notices_the_drop()
                 drop(listener);
             });
 
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(
                 entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
                 NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default()),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            );
 
             wait_for_real_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
 
@@ -190,18 +124,63 @@ async fn net_transport_connects_to_a_loopback_ws_listener_and_notices_the_drop()
 }
 
 pub(super) fn synthesized_hello_ok() -> Vec<u8> {
+    hello_ok(
+        phux_protocol::caps::ServerCapabilities::default(),
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    )
+}
+
+fn hello_ok(
+    server_caps: phux_protocol::caps::ServerCapabilities,
+    profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
+) -> Vec<u8> {
     let mut encoded = bytes::BytesMut::new();
     FrameKind::HelloOk {
         protocol_major: PROTOCOL_VERSION.major,
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
-        server_caps: phux_protocol::caps::ServerCapabilities::default(),
+        server_caps,
         server_id: vec![0; 16],
-        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-        bootstrap_limits: BootstrapLimits::default(),
+        selected_profile: Some(profile),
+        bootstrap_limits,
     }
     .encode(&mut encoded);
     encoded.to_vec()
+}
+
+/// A loopback WS satellite answering the first HELLO with `reply(caps)`.
+async fn ws_satellite(
+    reply: impl FnOnce(phux_protocol::caps::ClientCapabilities) -> Vec<u8> + Send + 'static,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let next = futures_util::StreamExt::next(&mut ws).await.unwrap();
+        let tokio_tungstenite::tungstenite::Message::Binary(hello) = next.unwrap() else {
+            panic!("expected binary HELLO");
+        };
+        let FrameKind::Hello { client_caps, .. } = FrameKind::decode(&hello).unwrap().0 else {
+            panic!("expected HELLO");
+        };
+        let message = tokio_tungstenite::tungstenite::Message::Binary(reply(client_caps).into());
+        futures_util::SinkExt::send(&mut ws, message).await.unwrap();
+    });
+    (port, server)
+}
+
+fn loopback_ws(port: u16) -> DialSpec {
+    DialSpec::Ws {
+        url: format!("ws://127.0.0.1:{port}"),
+        trust: CertTrust::SkipVerify,
+        token_file: None,
+        identity: None,
+    }
 }
 
 pub(super) fn shell_octal(bytes: &[u8]) -> String {
@@ -241,23 +220,15 @@ async fn ssh_transport_spawns_the_planned_argv_and_treats_exit_as_a_drop() {
                     argv_file.display()
                 ),
             );
-            let transport = NetLinkTransport {
-                ssh_program: stub.into(),
-                adopter: crate::hub::adopt::SatelliteAdopter::default(),
-                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
-            };
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                ssh_entry(),
-                transport,
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let transport =
+                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(ssh_entry(), transport);
 
             wait_for_real_status(&statuses, &host, |s| {
                 matches!(
@@ -297,23 +268,15 @@ async fn ssh_transport_drains_stderr_past_the_pipe_buffer_without_stalling() {
                      echo 'DRAINED-TO-EOF' >&2\n\
                      exit 3",
             );
-            let transport = NetLinkTransport {
-                ssh_program: stub.into(),
-                adopter: crate::hub::adopt::SatelliteAdopter::default(),
-                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
-            };
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                ssh_entry(),
-                transport,
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let transport =
+                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(ssh_entry(), transport);
 
             wait_for_real_status(&statuses, &host, |s| {
                 matches!(
@@ -341,23 +304,15 @@ async fn ssh_transport_holds_a_live_child_as_connected() {
                 dir.path(),
                 &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
             );
-            let transport = NetLinkTransport {
-                ssh_program: stub.into(),
-                adopter: crate::hub::adopt::SatelliteAdopter::default(),
-                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
-            };
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            let task = tokio::task::spawn_local(run_link(
-                host.clone(),
-                ssh_entry(),
-                transport,
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let transport =
+                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task,
+            } = supervise(ssh_entry(), transport);
 
             wait_for_real_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
             cancel.cancel();
@@ -374,23 +329,17 @@ async fn ssh_transport_missing_program_is_a_failed_attempt_not_a_panic() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let transport = NetLinkTransport {
-                ssh_program: "/nonexistent/phux-test-no-such-ssh".into(),
-                adopter: crate::hub::adopt::SatelliteAdopter::default(),
-                bootstrap: phux_protocol::caps::BootstrapCapabilities::new(),
-            };
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                ssh_entry(),
-                transport,
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
+            let transport = NetLinkTransport::new(
+                "/nonexistent/phux-test-no-such-ssh".into(),
+                crate::hub::adopt::SatelliteAdopter::default(),
+            );
+            let Supervised {
+                statuses,
+                cancel,
+                host,
+                relay: _relay,
+                task: _task,
+            } = supervise(ssh_entry(), transport);
             wait_for_real_status(&statuses, &host, |s| {
                 matches!(
                     s,

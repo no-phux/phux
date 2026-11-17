@@ -1,12 +1,7 @@
-//! Held commands (ADR-0128, `docs/agents.md#safety`): the
-//! requester's waiter, the decision handler, and withdrawal on disconnect.
-//!
-//! A held command waits in a task on the requester's own connection, so it
-//! runs, when approved, exactly as the requester's dispatch would have run
-//! it: the requester's client id, `request_id`, mailbox, and tokens, and a
-//! fresh check against the requester's grant under the then-current
-//! topology. The approver only ends the approval; its grant is never used to
-//! run anything.
+//! Held commands (ADR-0128, `docs/agents.md#safety`). A held command waits
+//! on the requester's own connection and, when approved, runs exactly as the
+//! requester's dispatch would have, rechecked against the requester's grant;
+//! the approver's grant is never used to run anything.
 
 use std::time::Duration;
 
@@ -272,6 +267,7 @@ pub(super) async fn decide(
     key: &str,
     value: &[u8],
     out_tx: &mpsc::Sender<Outbound>,
+    credential_details: bool,
 ) {
     let Some((id, decision)) = parse_decision(key, value) else {
         refuse(
@@ -283,6 +279,14 @@ pub(super) async fn decide(
         .await;
         return;
     };
+    let credential_request = state.with(|s| {
+        s.pending_approval(id)
+            .is_some_and(|pending| matches!(pending.command, Command::Credentials { .. }))
+    });
+    if decision == Decision::Approve && credential_request && !credential_details {
+        refuse(out_tx, request_id, ErrorCode::Unsupported, "review the exact 1Password references and provider identity in a supported client before approving; unattended credential approval is disabled").await;
+        return;
+    }
     let pending = state.with_mut(|s| s.close_approval(id, decision.outcome(), Some(client_id)));
     match pending {
         Some(pending) => pending.deliver(decision),
@@ -322,4 +326,5 @@ async fn refuse(out_tx: &mpsc::Sender<Outbound>, request_id: u32, code: ErrorCod
 /// Withdraw every action `client` holds; its connection is closing.
 pub(super) fn withdraw(state: &SharedState, client: ClientId) {
     let _ = state.with_mut(|s| s.withdraw_approvals(client));
+    state.with_mut(|s| s.credentials.disconnect(client));
 }

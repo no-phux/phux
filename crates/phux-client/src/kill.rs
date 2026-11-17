@@ -1,17 +1,14 @@
 //! `phux kill` — wire primitives and the shared verb orchestration.
 //!
 //! Covers `SHUTDOWN`, `KILL_RESOURCE` (one Terminal), and killing a whole
-//! session. Against a server that advertises `SESSION_KILL`, killing a
-//! session is that one command ([`kill_session`]): the server ends every
-//! member and deletes the session. Against an older server it is one atomic
-//! `KILL_RESOURCES` of the session's panes.
+//! session with one `SESSION_KILL` ([`kill_session`]): the server ends every
+//! member and deletes the session.
 //!
 //! [`selected`] is the selector resolution and whole-session / per-pane
 //! choice both `phux kill` and MCP `phux_kill` call, so those surfaces
 //! cannot drift.
 
 use phux_protocol::ResourceId;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 
@@ -23,7 +20,7 @@ mod selection;
 mod session;
 
 pub use selection::{KillError, Selected, selected};
-pub use session::{kill_session, session_kill_supported};
+pub use session::kill_session;
 
 /// What a `SHUTDOWN` request answered.
 #[derive(Debug, Clone, PartialEq)]
@@ -135,35 +132,6 @@ fn merged_kill_failures(document: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Why a keyed kill or signal was not answered.
-#[derive(Debug, thiserror::Error)]
-pub enum KeyedError {
-    /// The server does not advertise `KEYED_SIGNAL`, so it would ignore the
-    /// key and run a retry again. Nothing was sent.
-    #[error(
-        "the server does not advertise KEYED_SIGNAL, so it would run a keyed retry again; \
-         nothing was sent"
-    )]
-    Unsupported,
-    /// Transport and decode failures from [`Connection::request`].
-    #[error(transparent)]
-    Attach(#[from] AttachError),
-}
-
-/// Whether the server behind `conn` honors a keyed kill or signal.
-///
-/// That is `KEYED_SIGNAL` (`docs/protocol.md`). An older server ignores
-/// the key and runs a retry again, so a caller refuses a keyed request to it
-/// rather than send one.
-#[must_use]
-pub fn keyed_signal_supported(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features
-            .contains(ServerFeature::KeyedSignal)
-    })
-}
-
 /// Kill every Terminal in `ids` in one atomic round trip (a whole-session
 /// target), with any interleaved notices as the [`Degradation`].
 ///
@@ -193,29 +161,18 @@ pub async fn kill_resources(
 ///
 /// # Errors
 ///
-/// [`KeyedError::Unsupported`], with nothing sent, when the server does not
-/// advertise `KEYED_SIGNAL`; transport and decode failures otherwise.
+/// Transport and decode failures from [`Connection::request`].
 pub async fn kill_resources_keyed(
     conn: &mut Connection,
     request_id: u32,
     ids: Vec<ResourceId>,
     operation_id: IdempotencyKey,
-) -> Result<(KillOutcome, Degradation), KeyedError> {
-    require_keyed_signal(conn)?;
+) -> Result<(KillOutcome, Degradation), AttachError> {
     let command = Command::KillResources {
         ids,
         operation_id: Some(operation_id),
     };
-    Ok(request_kill(conn, request_id, command).await?)
-}
-
-/// Refuse a keyed request to a server that would run its retry again.
-fn require_keyed_signal(conn: &Connection) -> Result<(), KeyedError> {
-    if keyed_signal_supported(conn) {
-        Ok(())
-    } else {
-        Err(KeyedError::Unsupported)
-    }
+    request_kill(conn, request_id, command).await
 }
 
 /// Send one kill command and classify its reply.
@@ -260,20 +217,18 @@ pub async fn kill_resource(
 ///
 /// # Errors
 ///
-/// [`KeyedError::Unsupported`], with nothing sent, when the server does not
-/// advertise `KEYED_SIGNAL`; transport and decode failures otherwise.
+/// Transport and decode failures from [`Connection::request`].
 pub async fn kill_resource_keyed(
     conn: &mut Connection,
     request_id: u32,
     terminal_id: ResourceId,
     operation_id: IdempotencyKey,
-) -> Result<(KillOutcome, Degradation), KeyedError> {
-    require_keyed_signal(conn)?;
+) -> Result<(KillOutcome, Degradation), AttachError> {
     let command = Command::KillResource {
         terminal_id,
         operation_id: Some(operation_id),
     };
-    Ok(request_kill(conn, request_id, command).await?)
+    request_kill(conn, request_id, command).await
 }
 
 #[cfg(test)]

@@ -1,16 +1,10 @@
-//! Pure layout-action helpers for the multi-pane TUI dispatcher.
-//!
-//! Per ADR-0019 the client interprets keybind `ResolvedAction`s into
-//! [`LayoutState`] mutations; the driver adds the wire side effects
-//! (`SPAWN_RESOURCE`, `SET_METADATA`). These helpers never touch the
-//! connection, the clock, or the screen. Focus in the broadcast envelope is
-//! non-authoritative (ADR-0049).
+//! Pure layout-action helpers (ADR-0019): keybind actions to [`LayoutState`]
+//! mutations, never touching the connection, clock, or screen. Focus in the
+//! broadcast envelope is non-authoritative (ADR-0049).
 
 use std::io::{self, Write};
 
-use phux_client::conditional_kill::BoundResource;
 use phux_protocol::ResourceId;
-use phux_protocol::ids::ServerInstance;
 use thiserror::Error;
 
 use super::paint::{SidebarReservation, content_rect};
@@ -18,6 +12,9 @@ use crate::layout::{
     self, Direction, LayoutError, LayoutNode, LayoutState, NodePath, Rect, SplitDir,
 };
 use crate::multi_pane::{pane_rects_proportional_in, split_content_span_at};
+
+mod pending;
+pub(super) use pending::{Adopt, ParkedAdopt, PendingSplit, PendingWindow, SpawnedPane, SplitHost};
 
 /// Errors from the pure action helpers; the driver logs and bells.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -96,17 +93,15 @@ pub fn apply_focus(state: &LayoutState, dir: Direction) -> Option<LayoutState> {
 /// Minimum leaf size along the active axis, in cells (ADR-0019 decision 5).
 const MIN_PANE_CELL: u16 = 2;
 
-/// Resize the focused pane: move the boundary of the enclosing split along
-/// the direction's axis `amount / axis_cells` toward `dir`, so a positive
-/// `amount` grows the focused pane toward `dir` when that side has a
-/// neighbor, and shrinks it from the far side otherwise (tmux's
-/// `resize-pane`). `Ok(None)` when a child would drop below
-/// [`MIN_PANE_CELL`] (the driver bells).
+/// Resize the focused pane tmux-style: move the enclosing split's boundary
+/// along the direction's axis by `amount / axis_cells`, growing toward `dir`
+/// when that side has a neighbor, else shrinking from the far side.
+/// `Ok(None)` when a child would drop below [`MIN_PANE_CELL`].
 ///
 /// # Errors
 /// [`ActionError::NoFocus`] / [`ActionError::EmptyTree`] on an empty state;
-/// [`ActionError::NoResizableBoundary`] when no split along the axis
-/// encloses the focused leaf.
+/// [`ActionError::NoResizableBoundary`] when no split on the axis encloses
+/// the focused leaf.
 pub(super) fn apply_resize(
     state: &LayoutState,
     dir: Direction,
@@ -205,10 +200,8 @@ impl AxisResize<'_> {
         )
     }
 
-    /// The ratio step for `cells` of a split spanning `extent` cells. The
-    /// boundary moves toward `dir` whichever side holds focus: a right or
-    /// lower pane grows toward `dir`, a left or upper one gives way. `ratio`
-    /// is the left (upper) child's share.
+    /// The ratio step for `cells` of a split spanning `extent` cells; the
+    /// boundary moves toward `dir` whichever side holds focus.
     fn signed_delta(&self, extent: f32) -> f32 {
         let delta = self.cells / extent;
         match self.dir {
@@ -251,15 +244,12 @@ fn violates_min_cell(
 }
 
 /// ADR-0048 drag: set the split at `node_path` so its divider sits under the
-/// absolute `pointer` (x for a `Horizontal` split, y for `Vertical`). The
-/// content rect must match the hit test's, so `bar` and `sidebar` inset it.
-/// `Ok(None)` at the [`MIN_PANE_CELL`] floor, so a drag stalls instead of
-/// collapsing a pane.
+/// absolute `pointer`, over the same inset content rect the hit test uses.
+/// `Ok(None)` at the [`MIN_PANE_CELL`] floor, so a drag stalls.
 ///
 /// # Errors
 /// [`ActionError::EmptyTree`] on an empty state;
-/// [`ActionError::NoResizableBoundary`] when `node_path` no longer names a
-/// split (a stale grab) or its budget is zero.
+/// [`ActionError::NoResizableBoundary`] for a stale grab or a zero budget.
 pub(super) fn apply_divider_resize(
     state: &LayoutState,
     node_path: &NodePath,
@@ -329,138 +319,6 @@ pub fn write_bell<W: Write>(out: &mut W) -> io::Result<()> {
     out.flush()
 }
 
-/// An in-flight `split-pane`, parked by request id until its
-/// `RESOURCE_SPAWNED` reply.
-#[derive(Debug, Clone)]
-pub(super) struct PendingSplit {
-    /// The leaf the chord targeted; the split anchors here even if focus
-    /// moved meanwhile.
-    pub focused_at_request: ResourceId,
-    /// Axis along which to split.
-    pub dir: SplitDir,
-    /// Zoom the new pane instead of un-zooming (`placement = "zoomed"`).
-    pub zoom_on_spawn: bool,
-    /// The host the new pane was asked of.
-    pub host: SplitHost,
-    /// Once a satellite spawn answered: the pane whose `ATTACH_RESOURCE`
-    /// decides the split.
-    pub adopt: Option<SpawnedPane>,
-    /// An existing pane (`host/@N` or `@N`) to attach and place; a refusal
-    /// leaves it alone since this client did not spawn it.
-    pub open_existing: Option<ResourceId>,
-}
-
-/// A pane this client spawned on a satellite, with the instance token the
-/// reply bound it to (ADR-0109); `None` means it can never be killed
-/// conditionally.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SpawnedPane {
-    /// The pane, as the spawn reply named it (satellite-tagged).
-    pub id: ResourceId,
-    /// The satellite's instance token the spawn was bound to, if any.
-    pub instance: Option<ServerInstance>,
-}
-
-impl SpawnedPane {
-    /// A pane whose spawn reply carried no instance token.
-    #[cfg(test)]
-    pub(super) const fn unbound(id: ResourceId) -> Self {
-        Self { id, instance: None }
-    }
-
-    /// The pane as a conditional kill names it, when its spawn was bound.
-    pub(super) fn bound(&self) -> Option<BoundResource> {
-        let instance = self.instance?;
-        Some(BoundResource {
-            id: self.id.clone(),
-            instance,
-        })
-    }
-}
-
-/// Which host a parked split's pane is spawned on.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) enum SplitHost {
-    /// The attached server's own host: a split of a local pane.
-    #[default]
-    Attached,
-    /// A satellite, through the attached hub: a split of a pane there.
-    Satellite(phux_protocol::ids::SatelliteHost),
-    /// This host in place of the satellite: the hub lacks host-aware spawns.
-    AttachedInsteadOf(phux_protocol::ids::SatelliteHost),
-}
-
-/// A window or split parked on a satellite pane's `ATTACH_RESOURCE`.
-#[derive(Debug, Clone)]
-pub(super) enum ParkedAdopt {
-    /// A window adopting its pane ([`PendingWindow::adopt`]).
-    Window(PendingWindow),
-    /// A split adopting its pane ([`PendingSplit::adopt`]).
-    Split(PendingSplit),
-}
-
-impl ParkedAdopt {
-    /// The satellite pane whose attach decides this window or split.
-    pub(super) fn pane(&self) -> Option<&ResourceId> {
-        match self {
-            Self::Window(window) => window.adopt.as_ref().map(Adopt::pane),
-            Self::Split(split) => split
-                .adopt
-                .as_ref()
-                .map(|spawned| &spawned.id)
-                .or(split.open_existing.as_ref()),
-        }
-    }
-
-    /// The pane this client spawned for it, if it did.
-    pub(super) const fn spawned_pane(&self) -> Option<&SpawnedPane> {
-        match self {
-            Self::Window(window) => window.spawned_pane(),
-            Self::Split(split) => split.adopt.as_ref(),
-        }
-    }
-}
-
-impl PendingWindow {
-    /// The satellite pane this client spawned for this window, once the
-    /// spawn answered.
-    pub(super) const fn spawned_pane(&self) -> Option<&SpawnedPane> {
-        match &self.adopt {
-            Some(Adopt::Spawned(pane)) => Some(pane),
-            _ => None,
-        }
-    }
-}
-
-/// An in-flight `new-window`, parked by request id; its reply opens a window
-/// named `name` on the spawned pane.
-#[derive(Debug, Clone)]
-pub(super) struct PendingWindow {
-    /// Name for the window the spawned pane will seed.
-    pub name: String,
-    /// `Some` when the window waits on a satellite pane's `ATTACH_RESOURCE`
-    /// reply instead of a spawn; it opens only if that attach succeeds.
-    pub adopt: Option<Adopt>,
-}
-
-/// The satellite pane a parked window attaches before it opens.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Adopt {
-    /// A satellite session's existing pane; a refused attach leaves it alone.
-    Existing(ResourceId),
-    /// A pane this client just spawned; a refused attach kills it.
-    Spawned(SpawnedPane),
-}
-
-impl Adopt {
-    /// The pane, whichever way it came.
-    pub(super) const fn pane(&self) -> &ResourceId {
-        match self {
-            Self::Existing(pane) | Self::Spawned(SpawnedPane { id: pane, .. }) => pane,
-        }
-    }
-}
-
 /// Apply a parked split's `RESOURCE_SPAWNED { Ok }`, anchored at
 /// `focused_at_request` when it is still a leaf, else at the live focus.
 ///
@@ -507,10 +365,8 @@ fn unused_leaf_id(state: &LayoutState) -> ResourceId {
     }
 }
 
-/// The `(cols, rows)` the pane a parked split waits on will get: the
-/// post-reply reflow's computation run one round trip early, sent as
-/// `SPAWN_RESOURCE.initial_size` so the server builds the pane at its real
-/// size. `None` when unpredictable (the caller omits the field).
+/// The `(cols, rows)` a parked split's pane will get, computed one round
+/// trip early for `SPAWN_RESOURCE.initial_size`; `None` when unpredictable.
 pub(super) fn predicted_spawn_dims(
     state: &LayoutState,
     pending: &PendingSplit,
@@ -589,7 +445,6 @@ mod tests {
             zoom_on_spawn,
             host: SplitHost::Attached,
             adopt: None,
-            open_existing: None,
         }
     }
 

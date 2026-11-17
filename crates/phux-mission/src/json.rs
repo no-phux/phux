@@ -237,7 +237,7 @@ impl StartDocument {
                 ordinal: applied.ordinal,
                 agent_kind: applied.agent_kind.clone(),
                 model: applied.model.clone(),
-                state: applied.run_state.clone(),
+                state: applied.run_state.as_str().to_owned(),
             },
             binding: applied.binding.as_ref().map(|binding| BindingDocument {
                 session: binding.session.clone(),

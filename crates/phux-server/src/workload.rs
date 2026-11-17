@@ -197,6 +197,13 @@ impl std::fmt::Debug for WorkloadPaths {
     }
 }
 
+/// Overrides the workload CA certificate location.
+pub const WORKLOAD_CA_ENV: &str = "PHUX_WORKLOAD_CA";
+/// Overrides the workload CA private key location.
+pub const WORKLOAD_CA_KEY_ENV: &str = "PHUX_WORKLOAD_CA_KEY";
+/// Overrides the issued workload key ledger location.
+pub const WORKLOAD_KEYS_ENV: &str = "PHUX_WORKLOAD_KEYS";
+
 impl WorkloadPaths {
     /// The configured locations: each environment override, else the
     /// default under the state directory. For the CLI verbs; the server
@@ -205,9 +212,9 @@ impl WorkloadPaths {
     pub fn from_env() -> Self {
         let path = |var: &str| std::env::var_os(var).map(PathBuf::from);
         Self::with_overrides(
-            path("PHUX_WORKLOAD_CA"),
-            path("PHUX_WORKLOAD_CA_KEY"),
-            path("PHUX_WORKLOAD_KEYS"),
+            path(WORKLOAD_CA_ENV),
+            path(WORKLOAD_CA_KEY_ENV),
+            path(WORKLOAD_KEYS_ENV),
         )
     }
 
@@ -222,6 +229,37 @@ impl WorkloadPaths {
             ca_cert: ca_cert.unwrap_or_else(default_ca_cert_path),
             ca_key: ca_key.unwrap_or_else(default_ca_key_path),
             registry: registry.unwrap_or_else(default_registry_path),
+        }
+    }
+
+    /// Enroll `key` through a CSR with `*@global`, writing the issued chain
+    /// (leaf, then CA) to `chain_out`.
+    #[cfg(test)]
+    pub(crate) fn enroll_test_key(
+        &self,
+        key: &rcgen::KeyPair,
+        chain_out: &Path,
+    ) -> RegisteredCredential {
+        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
+            .unwrap()
+            .serialize_request(key)
+            .unwrap();
+        let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
+        let expires = chrono::Utc::now().timestamp() + 3600;
+        let prepared = prepare_enrollment(self, &material, expires).unwrap();
+        std::fs::write(chain_out, prepared.issued_chain_pem().unwrap()).unwrap();
+        prepared
+            .commit(&self.registry, vec!["*@global".to_owned()], expires)
+            .unwrap()
+    }
+
+    /// The default file names under `dir`.
+    #[cfg(test)]
+    pub(crate) fn in_dir(dir: &Path) -> Self {
+        Self {
+            ca_cert: dir.join("workload-ca.pem"),
+            ca_key: dir.join("workload-ca.key"),
+            registry: dir.join("workload-keys"),
         }
     }
 }

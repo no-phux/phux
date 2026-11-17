@@ -28,7 +28,15 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 value,
             } if crate::runtime::approvals::is_decision(&scope, &key) => {
                 crate::runtime::approvals::decide(
-                    state, client_id, request_id, &key, &value, out_tx,
+                    state,
+                    client_id,
+                    request_id,
+                    &key,
+                    &value,
+                    out_tx,
+                    self.negotiated
+                        .as_ref()
+                        .is_some_and(|selection| selection.client_caps.credential_approvals),
                 )
                 .await;
             }

@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -190,18 +190,6 @@ impl ValidRecord {
         buf.freeze()
     }
 
-    /// Stamp a record and enforce the codec limit on the canonical wire
-    /// shape, including its terminating newline.
-    #[cfg(test)]
-    pub(super) fn stamp_bounded(&self, seq: u64, ts_ms: u64) -> Result<Bytes, RecordError> {
-        let line = self.stamp(seq, ts_ms);
-        let len = line.len();
-        if len > MAX_RECORD_BYTES {
-            return Err(RecordError::Oversized { len });
-        }
-        Ok(line)
-    }
-
     /// Append the canonical line to `out`. Returns the number of bytes written.
     pub(super) fn write_stamp(&self, seq: u64, ts_ms: u64, out: &mut BytesMut) -> usize {
         let start = out.len();
@@ -256,24 +244,10 @@ fn push_u64(out: &mut BytesMut, mut value: u64) {
     out.extend_from_slice(&buf[i..]);
 }
 
-/// `BytesMut` implements [`std::fmt::Write`], not [`std::io::Write`].
-struct BufWriter<'a>(&'a mut BytesMut);
-
-impl std::io::Write for BufWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Serialize `value` onto `out`. [`BufWriter`] never fails, and a string or
-/// JSON object always serializes, so a writer error is dropped.
+/// Serialize `value` onto `out`. A `BytesMut` writer never fails, and a
+/// string or JSON object always serializes, so a writer error is dropped.
 fn append_json(out: &mut BytesMut, value: &impl Serialize) {
-    let _ = serde_json::to_writer(BufWriter(out), value);
+    let _ = serde_json::to_writer(out.writer(), value);
 }
 
 /// Validate one `APPEND_RESOURCE_OUTPUT` payload into records.

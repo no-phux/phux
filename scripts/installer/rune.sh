@@ -157,14 +157,15 @@ install_rune_macos() {
   lock_applications
   publish_rune_macos
   register_bundle_macos "$installed"
-  phux_message ok "installed Phux Rune ${build_id} to ${applications_dir}"
-  printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux Rune.app")"
+  detail ok "installed Phux Rune ${build_id} to ${applications_dir}"
+  rune_installed="Phux Rune is installed. Open Phux Rune from $(pretty_path "$(cd "$applications_dir" && pwd -P)")."
 }
 
 rune_member() {
   case "${1#*/}" in
     phux-rune | phux-rune.release | README.md | LICENSE | NOTICE | THIRD-PARTY-NOTICES.txt | \
     Inter-OFL.txt | JetBrainsMono-OFL.txt | \
+    tmd | tmd-LICENSE.txt | tmd-THIRD-PARTY-NOTICES.md | tmd-VERSION.txt | \
     sh.phux.rune.desktop | sh.phux.rune.png) return 0 ;;
     *) return 1 ;;
   esac
@@ -226,8 +227,9 @@ install_rune_linux() {
   fi
   register_desktop_entry "${installed}/sh.phux.rune.desktop" sh.phux.rune phux-rune sh.phux.rune.png \
     || phux_message warn "could not register the menu entry; run ${bundle}/phux-rune"
-  phux_message ok "installed Phux Rune ${build_id} to ${installed}"
-  printf 'next: %s\n' "$(shell_quote "${bundle}/phux-rune")"
+  detail ok "installed Phux Rune ${build_id} to ${installed}"
+  if [ -x "${install_dir}/phux-rune" ]; then run="phux-rune"; else run="$(shell_quote "${bundle}/phux-rune")"; fi
+  rune_installed="Phux Rune is installed. Open Phux Rune from your apps (or run \`${run}\`)."
 }
 
 # On its own feed: there is no channel to pick and nothing to pin, and the
@@ -240,7 +242,7 @@ install_rune() {
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \
     || die "the macOS build of Phux Rune installs only on macOS"
   if ! has_cli; then
-    phux_message info "phux CLI not found; installing it first"
+    detail info "phux CLI not found; installing it first"
     install_cli "" ""
   fi
   resolve_rune

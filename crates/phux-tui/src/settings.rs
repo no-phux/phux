@@ -1,19 +1,11 @@
 //! Config-derived TUI state: built once per attach, swapped whole on reload.
 //!
-//! [`TuiSettings`] has one composition path and two policies:
+//! * [`TuiSettings::load_tolerant`] (attach): a malformed config never blocks
+//!   attach; failures fall back to defaults with an error line on the bar.
+//! * [`TuiSettings::load_strict`] (reload): any failure fails the whole
+//!   reload and the previous settings stay.
 //!
-//! * **Tolerant** ([`TuiSettings::load_tolerant`], attach). A malformed
-//!   config never blocks attach: a file that does not load falls back to
-//!   the shipped defaults, failures degrade to an error line on the bar
-//!   pointing at `phux config check`, and a bad keybinding disables only
-//!   itself.
-//! * **Strict** ([`TuiSettings::load_strict`], reload). Any failure fails
-//!   the whole reload and the previous settings stay; nothing is half-applied
-//!   (docs/config.md#when-a-change-takes-effect).
-//!
-//! [`TuiSettings::adopt_reload`] swaps keybindings, resolver, theme, chrome
-//! breakpoints, status bar, plugin rows and sidebar sections, and which-key
-//! knobs; sidebar geometry and the mouse gate are attach-time only.
+//! Sidebar geometry and the mouse gate are attach-time only.
 
 use std::path::Path;
 use std::time::Duration;
@@ -361,16 +353,12 @@ fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> Key
 }
 
 /// Compose the status-bar painter from a config plus enabled plugins'
-/// manifests.
-///
-/// The one composition point shared by the tolerant and strict builds (they
-/// once drifted, resetting `position` on reload). Plugin widgets merge after
-/// the user's own. `Ok(None)` ⇒ an empty bar.
+/// manifests: the one path the tolerant and strict builds share. Plugin
+/// widgets merge after the user's own. `Ok(None)` is an empty bar.
 ///
 /// # Errors
 ///
-/// The [`phux_config::widget::StatusBar::build`] error, for the caller's
-/// policy.
+/// The [`phux_config::widget::StatusBar::build`] error.
 pub fn compose_status_bar(
     cfg: &Config,
     manifests: &[PluginManifest],

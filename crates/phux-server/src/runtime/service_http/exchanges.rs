@@ -1,18 +1,8 @@
-//! One connection's open exchanges.
-//!
-//! A slot is reserved before its `SERVICE_HTTP_OPEN` runs and holds the
-//! response body (or, on a hub, the satellite's exchange) once the head
-//! arrives. A `SERVICE_HTTP_READ` leases the body out of its slot for the
-//! length of the read, so one exchange has at most one read in flight; the
-//! number of slots bounds the connection's concurrent service work, and a
-//! byte budget bounds the request bodies opening slots retain for a retry.
-//! Ids come from one process-wide counter, so an id from an earlier
-//! connection never names a later connection's exchange.
-//!
-//! [`Exchanges::reap`] closes exchanges whose reader went away: one never
-//! read within [`UNREAD_REAP`] of its head (an open whose caller stopped
-//! waiting, or a hub's relayed open that timed out there), and one not read
-//! for [`IDLE_REAP`].
+//! One connection's open exchanges. A slot is reserved before
+//! `SERVICE_HTTP_OPEN` runs; a read leases the body, so one exchange has at
+//! most one read in flight. Slots and a byte budget bound the work; ids are
+//! process-wide. [`Exchanges::reap`] closes exchanges unread within
+//! [`UNREAD_REAP`] of the head or idle for [`IDLE_REAP`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

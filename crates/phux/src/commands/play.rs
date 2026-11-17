@@ -383,18 +383,12 @@ fn fit(
 /// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
 /// `None` outside a pane degrades to "play the bytes, resize nothing".
 fn own_pane() -> Option<ResourceId> {
-    let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
-    raw.parse::<u32>().ok().map(ResourceId::local)
+    crate::environment::own_terminal_id().map(ResourceId::local)
 }
 
 /// Stop the tty's line discipline from editing the recording: clear `OPOST`
 /// (a cast's bytes already went through one `ONLCR`) and `ECHO` (nothing reads
 /// stdin). `ISIG` stays, so Ctrl-C stops playback.
-///
-/// Nothing is restored, so this only touches a tty this process owns: the guard
-/// is `tcgetsid(stdout) == getpid()`, true only for a pane's session leader. A
-/// writer run by hand from a shell fails it and leaves that shell's terminal
-/// alone.
 fn quiet_own_tty() {
     use std::io::IsTerminal as _;
     use std::os::fd::AsFd as _;

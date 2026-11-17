@@ -95,6 +95,17 @@ pub enum Form {
 }
 
 impl Form {
+    pub const fn of(harness: crate::playground::Harness) -> Form {
+        use crate::playground::Harness;
+        match harness {
+            Harness::Claude => Form::Lionfish,
+            Harness::Codex => Form::Manta,
+            Harness::OpenCode => Form::Seahorse,
+            Harness::Gemini => Form::Cuttlefish,
+            Harness::Other => Form::Octopus,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Form::Lionfish => "lionfish",

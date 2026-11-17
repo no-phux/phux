@@ -31,12 +31,12 @@ async fn start() -> (Server, UnixStream) {
 }
 
 async fn set_keep_empty(stream: &mut UnixStream, name: &str, keep: bool, request_id: u32) {
-    let set = FrameKind::SetMetadata {
+    let set = phux_server_testkit::set_metadata(
         request_id,
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        value: encode_session_keep_empty(name, keep),
-    };
+        Scope::Global,
+        SESSION_KEEP_EMPTY_KEY,
+        encode_session_keep_empty(name, keep),
+    );
     send_frame(stream, &set).await;
 }
 
@@ -49,20 +49,14 @@ async fn command_ok(stream: &mut UnixStream, request_id: u32, cmd: Command) {
 }
 
 const fn kill(pane: ResourceId) -> Command {
-    Command::KillResource {
-        terminal_id: pane,
-        operation_id: None,
-    }
+    phux_server_testkit::kill(pane)
 }
 
 /// A client attached to `name` and subscribed to the keep-empty mark.
 async fn attached_watcher(server: &Server, name: &str) -> UnixStream {
     let mut client = server.connect().await;
     attach(&mut client, name).await;
-    let subscribe = FrameKind::SubscribeMetadata {
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-    };
+    let subscribe = phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_KEEP_EMPTY_KEY);
     send_frame(&mut client, &subscribe).await;
     state(&mut client, 50).await;
     client
@@ -97,10 +91,7 @@ fn group_kill_detaches_clients_attached_to_a_keep_empty_session() {
         let pane = create_seeded(&mut conn, 1, "kept", true).await;
         let mut client = attached_watcher(&server, "kept").await;
 
-        let kill_all = Command::KillResources {
-            ids: vec![pane],
-            operation_id: None,
-        };
+        let kill_all = phux_server_testkit::kill_all(vec![pane]);
         command_ok(&mut conn, 2, kill_all).await;
         assert_eq!(
             released_then_detached(&mut client, "kept").await,
@@ -162,10 +153,7 @@ fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
         let grouped = create_seeded(&mut conn, 3, "grouped", true).await;
         command_ok(&mut conn, 4, kill(kept)).await;
         command_ok(&mut conn, 5, kill(plain)).await;
-        let kill_all = Command::KillResources {
-            ids: vec![grouped],
-            operation_id: None,
-        };
+        let kill_all = phux_server_testkit::kill_all(vec![grouped]);
         command_ok(&mut conn, 6, kill_all).await;
 
         let snapshot = wait_for_state(&mut conn, 100, "all three reaps", |s| {
@@ -341,10 +329,8 @@ fn keep_empty_mark_is_applied_and_broadcast_on_change() {
     phux_server_testkit::run_local(async {
         let (server, mut writer) = start().await;
         let mut watcher = server.connect().await;
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        };
+        let subscribe =
+            phux_server_testkit::subscribe_metadata(Scope::Global, SESSION_KEEP_EMPTY_KEY);
         send_frame(&mut watcher, &subscribe).await;
         state(&mut watcher, 1).await;
 

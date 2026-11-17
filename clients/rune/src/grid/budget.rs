@@ -16,157 +16,20 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_client_runtime::{Client, Runtime as ClientRuntime, ViewId};
+use phux_client_runtime::{Client, ViewId};
 use phux_perf::{MetricValue, PerfReport};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind};
-use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities},
-};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::FrameKind;
 use rune::{Cx, El, Env, Runtime, row};
 
 use super::{DEFAULT_FONT_SIZE, Metrics, paint};
-use crate::desk::{Desk, Shown};
-use crate::launch::Resolved;
+use crate::desk::Shown;
 use crate::perf;
 
-const FILL: &str = "terminal workload terminal workload terminal workload terminal workload ";
+use crate::test_support::input_fixture;
+use crate::test_support::terminal::{FILL, Replica};
 const SCALE: f32 = 2.0;
 const SIZE: (f32, f32) = (1100.0, 720.0);
-
-fn stream() -> StreamId {
-    StreamId::new(1).expect("a stream id")
-}
-
-fn bootstrap() -> BootstrapId {
-    BootstrapId::new(1).expect("a bootstrap id")
-}
-
-/// An attached embedded client showing `payload` in one view per terminal,
-/// the first of which `feed` writes to.
-struct Replica {
-    client: Arc<Client>,
-    views: Vec<ViewId>,
-    terminal: ResourceId,
-    seq: u64,
-}
-
-impl Replica {
-    fn new(cols: u16, rows: u16, terminals: u32) -> Self {
-        let client = ClientRuntime::embedded(ControlOptions {
-            attach: Some(AttachTarget::ByName("budget".into())),
-            viewport: (cols, rows),
-            ..ControlOptions::default()
-        });
-        client.with_control(ControlPlane::connection_opened);
-        let _ = client.take_outbound();
-        client
-            .feed(FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new(),
-                server_id: vec![1; 16],
-                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-                bootstrap_limits: BootstrapLimits::default(),
-            })
-            .expect("hello");
-        let attach_id = client
-            .take_outbound()
-            .iter()
-            .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
-                FrameKind::Attach { attach_id, .. } => Some(attach_id),
-                _ => None,
-            })
-            .expect("attach request");
-        let ids: Vec<ResourceId> = (1..=terminals).map(ResourceId::local).collect();
-        let (session, window) = (SessionId::new(1), WindowId::new(1));
-        let resources = ids
-            .iter()
-            .map(|id| ResourceInfo::new(id.clone(), window, cols, rows))
-            .collect();
-        let snapshot = SessionSnapshot::new(session, window, ids[0].clone())
-            .with_sessions(vec![SessionInfo::new(session, "budget")])
-            .with_windows(vec![
-                WindowInfo::new(window, session, "shell")
-                    .with_active_resource(Some(ids[0].clone())),
-            ])
-            .with_resources(resources);
-        client
-            .feed(FrameKind::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id: ClientId::new(1),
-            })
-            .expect("attached");
-        let payload = (0..rows)
-            .map(|row| format!("{row:02} {FILL}"))
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        for (index, id) in ids.iter().enumerate() {
-            let number = index as u64 + 1;
-            let stream_id = StreamId::new(number).expect("a stream id");
-            let bootstrap_id = BootstrapId::new(number).expect("a bootstrap id");
-            for frame in [
-                FrameKind::BootstrapBegin {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                    cols,
-                    rows,
-                    base_seq: 0,
-                },
-                FrameKind::BootstrapChunk {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: payload.clone().into_bytes().into(),
-                },
-                FrameKind::BootstrapReady {
-                    terminal_id: id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                },
-            ] {
-                client.feed(frame).expect("bootstrap");
-            }
-        }
-        client
-            .feed(FrameKind::AttachReady { attach_id })
-            .expect("attach ready");
-        let _ = client.take_outbound();
-        let _ = client.take_events();
-        let views = ids
-            .iter()
-            .map(|id| client.create_view(id).expect("a view"))
-            .collect();
-        Self {
-            client: Arc::new(client),
-            views,
-            terminal: ids[0].clone(),
-            seq: 0,
-        }
-    }
-
-    fn feed(&mut self, bytes: String) {
-        self.seq += 1;
-        self.client
-            .feed(FrameKind::ResourceOutput {
-                terminal_id: self.terminal.clone(),
-                stream_id: stream(),
-                bootstrap_id: bootstrap(),
-                seq: self.seq,
-                bytes: bytes.into_bytes().into(),
-            })
-            .expect("output");
-    }
-}
 
 /// The bench's whole view: panes side by side, nothing else.
 struct Panes {
@@ -357,12 +220,12 @@ fn window_phase() {
     const FRAMES: u64 = 128;
     let (cols, rows) = (120, 40);
     let mut replica = Replica::new(cols, rows, 1);
-    let mut desk = Desk::new(&Resolved::offline("budget"));
-    desk.client = Some(Arc::clone(&replica.client));
-    desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
+    let mut desk = crate::test_support::window();
+    desk.connection.client = Some(Arc::clone(&replica.client));
+    desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));
-    desk.shown = Some(Shown {
+    desk.connection.shown = Some(Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
@@ -380,33 +243,64 @@ fn window_phase() {
     assert!(!runtime.animating, "output doesn't keep the window drawing");
 }
 
+/// A Kitty transmit-and-place of a 128x128 image whose colour `index` picks,
+/// as image 1 placement 1 over 40x20 cells at the top left: each call
+/// replaces the last, as an animating program does.
+fn kitty_frame(index: u64) -> String {
+    const SIDE: usize = 128;
+    let shade = (index % 256) as u8;
+    let rgba: Vec<u8> = [shade, 255 - shade, 128, 255].repeat(SIDE * SIDE);
+    format!(
+        "\x1b[1;1H\x1b_Ga=T,f=32,s={SIDE},v={SIDE},i=1,p=1,c=40,r=20,C=1,q=2;{}\x1b\\",
+        base64(&rgba)
+    )
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+/// A still image is uploaded once however often the pane redraws; a looping
+/// animation once per new frame. `tick_us` is the pacing record.
+fn image_phases() {
+    const FRAMES: u64 = 120;
+    let (mut replica, mut runtime) = fixture(80, 24, 1);
+    replica.feed(kitty_frame(0));
+    draw(&mut runtime);
+    let uploads = || perf::IMAGE_UPLOADS.get();
+    let before = uploads();
+    let still = phase("image_still", FRAMES, |index| {
+        let letter = if index % 2 == 0 { 'X' } else { 'Y' };
+        replica.feed(format!("\x1b[24;1H{letter}"));
+        draw(&mut runtime);
+    });
+    assert_eq!(still.patched, FRAMES, "image_still redraws the pane");
+    assert_eq!(uploads() - before, 0, "image_still uploads nothing again");
+    let before = uploads();
+    phase("image_animation", FRAMES, |index| {
+        replica.feed(kitty_frame(index + 1));
+        draw(&mut runtime);
+    });
+    assert_eq!(uploads() - before, FRAMES, "one upload per animation frame");
+}
+
 /// Set in the child that does the measuring.
 const ALONE: &str = "RUNE_BUDGET_ALONE";
-
-/// A real connected terminal behind the native controls, without a server.
-pub(crate) fn input_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    input_fixture_showing("")
-}
-
-/// [`input_fixture`] with `output` already printed in the terminal.
-pub(crate) fn input_fixture_showing(output: &str) -> (Arc<Client>, Runtime<Desk>) {
-    let mut replica = Replica::new(120, 40, 1);
-    if !output.is_empty() {
-        replica.feed(output.to_owned());
-    }
-    let mut desk = Desk::new(&Resolved::offline("input"));
-    desk.client = Some(Arc::clone(&replica.client));
-    desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
-        replica.terminal.clone(),
-    ));
-    desk.shown = Some(Shown {
-        resource: replica.terminal,
-        view: Some(replica.views[0]),
-    });
-    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
-    rt.on_key = Some(Desk::key);
-    (replica.client, rt)
-}
 
 #[test]
 fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
@@ -466,6 +360,7 @@ fn perf_budget() {
         wide_phases();
         split_phase();
         window_phase();
+        image_phases();
         return;
     }
     let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
@@ -482,7 +377,10 @@ fn perf_budget() {
         String::from_utf8_lossy(&output.stderr)
     );
     // A renamed module would match no test and pass with nothing measured.
-    assert!(stdout.contains("window_stream"), "no budget ran: {stdout}");
+    assert!(
+        stdout.contains("image_animation"),
+        "no budget ran: {stdout}"
+    );
     for line in stdout.lines().filter(|line| line.starts_with('{')) {
         println!("{line}");
     }

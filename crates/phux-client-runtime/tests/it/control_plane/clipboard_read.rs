@@ -25,14 +25,7 @@ fn attached_to(replies: bool) -> ControlPlane {
         ]));
     }
     plane.feed(hello).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .expect("ATTACH");
+    let attach_id = plane.queued_attach_id();
     attach(&mut plane, attach_id, b"first");
     let _ = plane.take_outbound();
     let _ = plane.take_events();

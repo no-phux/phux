@@ -78,6 +78,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   `INPUT` on the server as for `GET_FILE`: a holder can already run
   commands there, so loopback-only limits mistakes, not a determined
   holder ([port forwarding](./forwarding.md)).
+- An ssh-agent is forwarded as brokered messages, not a byte stream: the
+  server parses each request from a pane and passes on only a key listing
+  or a signature, so nothing can add, remove, or lock keys. Both sides opt
+  in (`[forward] agent`, off by default, because turning it on replaces
+  `SSH_AUTH_SOCK` in new panes; `phux forward --agent` on the client), and
+  the client asks its user before each signature, since any process on
+  the server can ask ([ssh-agent forwarding](./forwarding.md#ssh-agent)).
 
 **Public operations**
 
@@ -93,6 +100,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   forever. A read-only creation lookup can recover lost replies without effects.
   Missing/expired receipts leave the original outcome unknown; never infer that
   it is safe to start again. Dispatch-time authorization remains authoritative.
+
+- A layout slot holds several terminals as slot tabs on the leaf record, not
+  as a new node kind: the leaf's entry is the default tab and the others are a
+  trailing list that older peers skip, carried over by the server on every
+  replace as locks are. A new kind would make older clients' arrangement
+  reads fail and an older server refuse its store
+  ([slot tabs](./organization.md#slot-tabs)).
 
 **Clients**
 

@@ -1,5 +1,22 @@
 use super::*;
 
+/// The screen state of a fresh `cols`x`rows` terminal after `bytes`.
+fn screen(cols: u16, rows: u16, bytes: &[u8], scrollback: Option<u32>, cells: bool) -> ScreenState {
+    let mut t = fresh(cols, rows);
+    t.vt_write(bytes);
+    let mut synth = SnapshotSynthesizer::new().expect("synth");
+    synth
+        .screen_state_with_scrollback(&t, 1, scrollback, cells)
+        .expect("screen_state_with_scrollback")
+}
+
+/// The sparse styled-cell projection of `bytes` on a fresh terminal.
+fn styled_cells(cols: u16, rows: u16, bytes: &[u8]) -> Vec<phux_core::screen::CellInfo> {
+    screen(cols, rows, bytes, None, true)
+        .cells
+        .expect("cells = true populates Some(..)")
+}
+
 #[test]
 fn screen_state_projects_text_lines_and_dims() {
     // The agent-surface read path: walk the grid into structured text.
@@ -25,25 +42,15 @@ fn screen_state_projects_text_lines_and_dims() {
 fn screen_state_without_cells_leaves_cells_none() {
     // The default read path (cells = false) must not allocate the
     // cells projection — back-compat with the pre-phux-8yl shape.
-    let mut t = fresh(20, 3);
-    t.vt_write(b"hello");
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth.screen_state(&t, 1).expect("screen_state");
+    let screen = screen(20, 3, b"hello", None, false);
     assert!(screen.cells.is_none(), "cells = false leaves cells None");
 }
 
 #[test]
 fn screen_state_cells_collects_styles_sparsely() {
     // Bold-red "HI" then plain "ok": only the styled cells appear.
-    let mut t = fresh(20, 2);
     // ESC[1;31m = bold + red fg; "HI"; ESC[0m reset; " ok".
-    t.vt_write(b"\x1b[1;31mHI\x1b[0m ok");
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, None, true)
-        .expect("screen_state_with_scrollback");
-    let cells = screen.cells.expect("cells = true populates Some(..)");
+    let cells = styled_cells(20, 2, b"\x1b[1;31mHI\x1b[0m ok");
 
     assert_eq!(
         cells.len(),
@@ -72,17 +79,8 @@ fn screen_state_cells_collects_styles_sparsely() {
 #[test]
 fn screen_state_cells_captures_osc133_semantic_marks() {
     // OSC 133 A (prompt) then B (input): cells carry the semantic mark.
-    let mut t = fresh(40, 2);
-    // OSC 133 ; A  -> prompt start. Then "$ " is prompt text.
-    t.vt_write(b"\x1b]133;A\x07$ ");
-    // OSC 133 ; B  -> command (input) start. Then "ls" is input.
-    t.vt_write(b"\x1b]133;B\x07ls");
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, None, true)
-        .expect("screen_state_with_scrollback");
-    let cells = screen.cells.expect("cells = true populates Some(..)");
+    // OSC 133 ;A starts the "$ " prompt, ;B the "ls" input.
+    let cells = styled_cells(40, 2, b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
 
     let prompt_marked = cells
         .iter()
@@ -103,16 +101,8 @@ fn screen_state_cells_captures_osc133_semantic_marks() {
 #[test]
 fn screen_state_cells_reports_true_column_after_wide_glyph() {
     // Styled cell right of a wide glyph reports its true grid column.
-    let mut t = fresh(20, 2);
     // Unstyled wide glyph (你, two columns) then a bold "X" at col 2.
-    t.vt_write("你".as_bytes());
-    t.vt_write(b"\x1b[1mX");
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, None, true)
-        .expect("screen_state_with_scrollback");
-    let cells = screen.cells.expect("cells = true populates Some(..)");
+    let cells = styled_cells(20, 2, "你\x1b[1mX".as_bytes());
 
     // The wide glyph is unstyled and dropped by the sparse filter, so the
     // bold X is the only emitted cell; it must report col 2, not col 1.
@@ -132,15 +122,7 @@ fn screen_state_cells_accounts_for_spacer_head_at_soft_wrap() {
     // A wide glyph that does not fit wraps, leaving a width-1 SpacerHead:
     //   row 0:  a(0) b(1) c(2) SpacerHead(3)
     //   row 1:  你(0,wide) SpacerTail(1) d(2)
-    let mut t = fresh(4, 3);
-    t.vt_write(b"\x1b[1m");
-    t.vt_write("abc你d".as_bytes());
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, None, true)
-        .expect("screen_state_with_scrollback");
-    let cells = screen.cells.expect("cells = true populates Some(..)");
+    let cells = styled_cells(4, 3, "\x1b[1mabc你d".as_bytes());
 
     let coords: Vec<(u16, u16)> = cells.iter().map(|c| (c.row, c.col)).collect();
     assert_eq!(
@@ -150,106 +132,47 @@ fn screen_state_cells_accounts_for_spacer_head_at_soft_wrap() {
              the wide glyph restarts column accounting at col 0 of the next \
              row and its SpacerTail (row 1, col 1) is skipped, got {cells:?}",
     );
-
-    assert!(
-        cells.iter().any(|c| (c.row, c.col) == (1, 0)),
-        "wide glyph wrapped to row 1 must report col 0, got {cells:?}",
-    );
-    assert!(
-        cells.iter().any(|c| (c.row, c.col) == (1, 2)),
-        "cell after the wrapped wide glyph must report true col 2, got {cells:?}",
-    );
 }
 
+/// History is oldest-first; a bounded request keeps the rows nearest the
+/// viewport and flags what it clipped; no request (or no history) yields
+/// none and leaves the viewport as the plain read sees it.
 #[test]
-fn screen_state_with_scrollback_collects_history() {
-    // Five lines on a 3-row grid: two land in scrollback.
+fn screen_state_with_scrollback_windows_history() {
+    let five = b"line1\r\nline2\r\nline3\r\nline4\r\nline5";
+    let cases: &[(u16, Option<u32>, &[&str], bool)] = &[
+        (3, Some(SCROLLBACK_ALL), &["line1", "line2"], false),
+        (2, Some(SCROLLBACK_ALL), &["line1", "line2", "line3"], false),
+        (2, Some(3), &["line1", "line2", "line3"], false),
+        (2, Some(2), &["line2", "line3"], true),
+        (2, None, &[], false),
+        (6, Some(SCROLLBACK_ALL), &[], false),
+    ];
+    for &(rows, window, history, truncated) in cases {
+        let got = screen(20, rows, five, window, false);
+        assert_eq!(got.scrollback, history, "{rows} rows, {window:?}");
+        assert_eq!(got.truncated, truncated, "{rows} rows, {window:?}");
+        let reason = truncated.then_some(TRUNCATED_ROW_WINDOW);
+        assert_eq!(got.truncated_reason.as_deref(), reason);
+        assert_eq!(
+            got.lines.len(),
+            usize::from(rows),
+            "viewport stays full height"
+        );
+    }
     let mut t = fresh(20, 3);
-    t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
-    // Sanity: libghostty must actually be retaining the two scrolled rows.
-    assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 2);
-
+    t.vt_write(five);
     let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 7, Some(SCROLLBACK_ALL), false)
-        .expect("screen_state_with_scrollback");
-
-    assert_eq!(screen.schema_version, SCHEMA_VERSION);
-    assert_eq!(
-        screen.scrollback,
-        vec!["line1".to_owned(), "line2".to_owned()],
-        "all history, oldest first",
-    );
-    assert_eq!(screen.lines.len(), 3, "viewport stays full height");
-    assert_eq!(screen.lines[0], "line3");
-    assert_eq!(screen.lines[1], "line4");
-    assert_eq!(screen.lines[2], "line5");
-}
-
-#[test]
-fn screen_state_with_scrollback_bounds_to_recent_rows() {
-    // A bounded request keeps the rows nearest the viewport (the most
-    // recent history), not the oldest.
-    let mut t = fresh(20, 2);
-    // 5 lines, 2-row viewport -> 3 rows of scrollback (line1..line3).
-    t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
-    assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, Some(2), false)
-        .expect("screen_state_with_scrollback");
-
-    assert_eq!(
-        screen.scrollback,
-        vec!["line2".to_owned(), "line3".to_owned()],
-        "the most-recent 2 of 3 history rows, oldest-first",
-    );
-}
-
-#[test]
-fn screen_state_without_scrollback_leaves_history_empty() {
-    // None must reproduce the legacy viewport-only shape exactly.
-    let mut t = fresh(20, 3);
-    t.vt_write(b"a\r\nb\r\nc\r\nd\r\ne");
-    assert!(t.scrollback_rows().expect("scrollback_rows") > 0);
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let none = synth
-        .screen_state_with_scrollback(&t, 0, None, false)
-        .expect("with None");
-    let legacy = synth.screen_state(&t, 0).expect("screen_state");
-
-    assert!(none.scrollback.is_empty(), "no scrollback requested");
-    assert_eq!(none.lines, legacy.lines, "viewport unchanged by None path");
-    assert!(legacy.scrollback.is_empty());
-}
-
-#[test]
-fn screen_state_with_scrollback_empty_when_no_history() {
-    // Requesting scrollback on a pane with no history yields an empty
-    // vec, not an error.
-    let mut t = fresh(20, 5);
-    t.vt_write(b"only one line");
-    assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 0);
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 0, Some(SCROLLBACK_ALL), false)
-        .expect("screen_state_with_scrollback");
-    assert!(screen.scrollback.is_empty());
-    assert_eq!(screen.lines[0], "only one line");
+    let plain = synth.screen_state(&t, 0).expect("screen_state");
+    assert_eq!(plain.lines, ["line3", "line4", "line5"]);
+    assert!(plain.scrollback.is_empty());
 }
 
 /// A long line soft-wraps; unwrapping joins it back into the written
 /// text, which no single painted row contains.
 #[test]
 fn screen_state_reports_soft_wrap_and_unwraps_to_the_written_line() {
-    let mut t = fresh(10, 4);
-    t.vt_write(b"abcdefghijklmnop");
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth.screen_state(&t, 1).expect("screen_state");
+    let screen = screen(10, 4, b"abcdefghijklmnop", None, false);
 
     let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
     assert_eq!(
@@ -274,11 +197,7 @@ fn screen_state_reports_soft_wrap_and_unwraps_to_the_written_line() {
 /// join does not include the spacer's blank.
 #[test]
 fn screen_state_unwraps_across_a_wide_glyph_at_the_wrap_boundary() {
-    let mut t = fresh(4, 3);
-    t.vt_write("abc你d".as_bytes());
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth.screen_state(&t, 1).expect("screen_state");
+    let screen = screen(4, 3, "abc你d".as_bytes(), None, false);
 
     let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
     assert_eq!(wrap.lines, vec![0], "got {screen:?}");
@@ -299,14 +218,8 @@ fn screen_state_unwraps_across_a_wide_glyph_at_the_wrap_boundary() {
 fn screen_state_reports_soft_wrap_in_scrollback() {
     // 3-row viewport; a long first line wraps into two rows and the
     // later lines push both into history.
-    let mut t = fresh(10, 3);
-    t.vt_write(b"abcdefghijklmnop\r\nsecond\r\nthird\r\nfourth\r\nfifth");
-    assert!(t.scrollback_rows().expect("scrollback_rows") >= 2);
-
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-    let screen = synth
-        .screen_state_with_scrollback(&t, 1, Some(SCROLLBACK_ALL), false)
-        .expect("screen_state_with_scrollback");
+    let bytes = b"abcdefghijklmnop\r\nsecond\r\nthird\r\nfourth\r\nfifth";
+    let screen = screen(10, 3, bytes, Some(SCROLLBACK_ALL), false);
 
     let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
     assert_eq!(
@@ -318,47 +231,6 @@ fn screen_state_reports_soft_wrap_in_scrollback() {
         screen.unwrapped_rows()[0],
         "abcdefghijklmnop",
         "the wrapped history line rejoins",
-    );
-}
-
-/// `truncated` is set only when older retained rows were left out.
-#[test]
-fn screen_state_reports_truncated_only_when_the_window_clipped() {
-    let mut t = fresh(20, 2);
-    // 5 lines, 2-row viewport -> 3 rows of history.
-    t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
-    assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
-    let mut synth = SnapshotSynthesizer::new().expect("synth");
-
-    let clipped = synth
-        .screen_state_with_scrollback(&t, 1, Some(2), false)
-        .expect("screen_state_with_scrollback");
-    assert!(
-        clipped.truncated,
-        "2 of 3 retained history rows: the window dropped an older row",
-    );
-    assert_eq!(
-        clipped.truncated_reason.as_deref(),
-        Some(TRUNCATED_ROW_WINDOW),
-    );
-
-    let whole = synth
-        .screen_state_with_scrollback(&t, 1, Some(SCROLLBACK_ALL), false)
-        .expect("screen_state_with_scrollback");
-    assert!(!whole.truncated, "all retained history: nothing dropped");
-    assert!(whole.truncated_reason.is_none());
-
-    let exact = synth
-        .screen_state_with_scrollback(&t, 1, Some(3), false)
-        .expect("screen_state_with_scrollback");
-    assert!(!exact.truncated, "a window that fits drops nothing");
-
-    let viewport_only = synth
-        .screen_state_with_scrollback(&t, 1, None, false)
-        .expect("screen_state_with_scrollback");
-    assert!(
-        !viewport_only.truncated,
-        "history that was never requested was not dropped from a window",
     );
 }
 

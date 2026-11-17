@@ -6,8 +6,7 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::process::Command;
 use std::time::{Duration, Instant};

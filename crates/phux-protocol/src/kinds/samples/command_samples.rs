@@ -64,22 +64,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::ArrangementLock { .. } => 59,
         Command::HostChecklist => 60,
         Command::Forward { .. } => 61,
+        Command::Credentials { .. } => 62,
     }
 }
 
-const COMMAND_VARIANTS: usize = 62;
-
-fn operation() -> IdempotencyKey {
-    IdempotencyKey::new([3; 16]).unwrap()
-}
-
-fn session_key() -> crate::ids::SessionKey {
-    crate::ids::SessionKey::new([4; 16]).unwrap()
-}
-
-fn resource_key() -> crate::ids::ResourceKey {
-    crate::ids::ResourceKey::new([5; 16]).unwrap()
-}
+const COMMAND_VARIANTS: usize = 63;
 
 /// One sample per organization command, each on its row.
 #[allow(
@@ -247,6 +236,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 arrangement,
                 expected: rev,
                 document: ArrangementDoc::default(),
+                slot_tabs: false,
             },
             &C_ARRANGEMENT_REPLACE,
         ),
@@ -533,6 +523,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (Command::DescribeApi, &C_API_DESCRIBE),
         (Command::PrivacyStatus, &C_PRIVACY_STATUS),
+        (Command::Credentials { op: crate::credentials::CredentialOp::Next { provider: "mac".into() } }, &C_CREDENTIALS),
         (Command::HostChecklist, &C_HOST_CHECKLIST),
         (Command::GetCreation { operation: operation(), session: session_key() }, &C_GET_CREATION),
         (Command::GetPerf { reset: false }, &C_GET_PERF),

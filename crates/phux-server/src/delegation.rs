@@ -1,22 +1,16 @@
 //! Delegated agent credentials (ADR-0163 §5, CONTRACTS §03).
 //!
-//! A launcher (the owner, or a principal already holding the verbs) mints a
-//! credential an agent acts through: [`AGENT_VERBS`] or fewer, on the
-//! launcher's session only, `on_behalf_of` the launcher's human, for a
-//! bounded lifetime. Delegation only narrows: every verb must be one the
-//! launcher holds on that whole session, and none may lie outside
-//! [`AGENT_VERBS`], so `SIGNAL` (which still authorizes legacy kills, R07),
-//! `TERMINATE`, `ORGANIZE`, and `CREATE` are never delegated. `BIND` is:
-//! it lets the agent attach to its session, hold a free input lease (never
-//! one a human holds, ADR-0163 §6), and report its own agent state.
+//! A launcher mints a credential an agent acts through: at most
+//! [`AGENT_VERBS`], on the launcher's session only, `on_behalf_of` the
+//! launcher's human, for a bounded lifetime. Delegation only narrows: every
+//! verb must be one the launcher holds on that whole session, so `SIGNAL`,
+//! `TERMINATE`, `ORGANIZE` and `CREATE` are never delegated. `BIND` is: the
+//! agent may attach, take a free input lease (never a human's), and report its
+//! own state.
 //!
-//! The ledger is in memory and is never written to disk; it is not a
-//! workload-registry record. A credential names its session by wire id, so
-//! it lives exactly as long as that id means that session: a hot upgrade
-//! carries the ledger and each credential's bound socket in the state blob
-//! (session wire ids survive it), and a cold restart, which renumbers
-//! sessions, revokes every credential. Deleting a session revokes the
-//! credentials scoped to it at once (ADR-0163 §5).
+//! The ledger lives only in memory and names its session by wire id: a hot
+//! upgrade carries it, a cold restart (which renumbers sessions) revokes every
+//! credential, and deleting a session revokes its credentials at once.
 
 use std::collections::HashMap;
 use std::os::fd::RawFd;

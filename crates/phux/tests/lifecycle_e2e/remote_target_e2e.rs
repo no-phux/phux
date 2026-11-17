@@ -64,13 +64,7 @@ impl RemoteHome {
                *) echo \"fake ssh: unexpected: $*\" >&2; exit 1 ;;\n\
              esac\n"
         );
-        std::fs::write(&path, script).expect("write fake ssh");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake ssh");
-        }
+        crate::common::write_executable(&path, script);
         path
     }
 

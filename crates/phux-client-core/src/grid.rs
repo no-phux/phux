@@ -4,14 +4,13 @@
 //! flattens the viewport into a [`GridBuffer`]: one plain-old-data [`Cell`]
 //! per viewport cell in row-major order, the UTF-8 arena their text and
 //! hyperlink URIs address, and one [`CellMetadata`] record per cell carrying
-//! the color provenance the resolved RGB fields lose. The C ABI lends a
-//! pointer to that buffer; the mobile bridge copies it as byte vectors once
-//! it re-pins (ADR-0133 decision 3). Neither defines a second cell.
+//! the color provenance the resolved RGB fields lose. The mobile bridge copies
+//! it as byte vectors (ADR-0133 decision 3) and defines no second cell.
 //!
-//! [`Cell`] is `#[repr(C)]` and its field order is part of the native ABI
-//! (`crates/phux-client-ffi/include/phux/client.h`, `PhuxTerminalCell`,
-//! ABI v2). The layout test in `grid/tests.rs` pins its size and every field
-//! offset; changing either is a C ABI break, not a refactor.
+//! [`Cell`] is `#[repr(C)]` and its 36-byte layout is what the mobile bridge
+//! serializes (`phux-client-ffi`'s `projection::grid::encode_cells`). The
+//! layout test in `grid/tests.rs` pins its size and every field offset;
+//! changing either breaks the phone apps' decoder.
 
 use std::fmt;
 
@@ -47,7 +46,7 @@ pub const CELL_OVERLINE: u32 = 1 << 7;
 /// `Cell::flags` bit: the cell is inside the active selection.
 pub const CELL_SELECTED: u32 = 1 << 8;
 /// `Cell::flags` bit: the cell is protected (DECSCA).
-pub const CELL_PROTECTED: u32 = 1 << 9;
+pub(crate) const CELL_PROTECTED: u32 = 1 << 9;
 /// `Cell::flags` bit: the cell carries an OSC 8 hyperlink; see
 /// `Cell::hyperlink_offset` and `Cell::hyperlink_len`.
 pub const CELL_HYPERLINK: u32 = 1 << 10;
@@ -57,14 +56,14 @@ pub const COLOR_KIND_DEFAULT: u8 = 0;
 /// `CellMetadata::foreground_kind`: a 256-color palette index.
 pub const COLOR_KIND_PALETTE: u8 = 1;
 /// `CellMetadata::foreground_kind`: a direct RGB color.
-pub const COLOR_KIND_RGB: u8 = 2;
+pub(crate) const COLOR_KIND_RGB: u8 = 2;
 
 /// One viewport cell, flattened: text and hyperlink URI as spans into the
 /// owning [`GridBuffer`]'s UTF-8 arena, every color palette-resolved to RGB.
 ///
 /// The `content_tag`, `wide`, `semantic_content`, and `underline` fields
 /// carry libghostty's `CellContentTag`, `CellWide`, `CellSemanticContent`,
-/// and `Underline` discriminants; the header names them.
+/// and `Underline` discriminants.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cell {
@@ -264,8 +263,9 @@ impl GridBuffer {
     }
 
     /// The text of fringe cell `col`, as a UTF-8 slice of the arena.
+    #[cfg(test)]
     #[must_use]
-    pub fn fringe_text(&self, col: usize) -> &[u8] {
+    pub(crate) fn fringe_text(&self, col: usize) -> &[u8] {
         self.fringe.get(col).map_or(&[], |cell| {
             let start = cell.utf8_offset as usize;
             &self.utf8[start..start + usize::from(cell.utf8_len)]
@@ -400,7 +400,7 @@ impl GridProjector {
     /// (history plus active area) into [`GridBuffer::fringe`]. Pass the row
     /// just below a scrolled-back viewport. A row past the screen leaves the
     /// fringe empty rather than failing the projection.
-    pub fn project_with_fringe(
+    pub(crate) fn project_with_fringe(
         &mut self,
         terminal: &Terminal<'static, '_>,
         generation: TerminalGeneration,

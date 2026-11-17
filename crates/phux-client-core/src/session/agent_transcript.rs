@@ -175,7 +175,7 @@ fn transcript_data(provider: &str, entry: &TranscriptEntry) -> Value {
 /// Strip terminal escape sequences (CSI, OSC, and two-byte escapes) and every
 /// control character except newline and tab. Carriage returns are dropped.
 #[must_use]
-pub fn clean_text(text: &str) -> String {
+pub(crate) fn clean_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -237,7 +237,7 @@ fn label(text: &str) -> String {
 }
 
 /// Cut `text` to at most `max_bytes`, keeping the head, on a char boundary.
-pub fn keep_head(text: &mut String, max_bytes: usize) {
+pub(crate) fn keep_head(text: &mut String, max_bytes: usize) {
     if text.len() > max_bytes {
         let cut = text.floor_char_boundary(max_bytes);
         text.truncate(cut);
@@ -245,7 +245,7 @@ pub fn keep_head(text: &mut String, max_bytes: usize) {
 }
 
 /// Cut `text` to at most `max_bytes`, keeping the tail, on a char boundary.
-pub fn keep_tail(text: &mut String, max_bytes: usize) {
+pub(crate) fn keep_tail(text: &mut String, max_bytes: usize) {
     if text.len() > max_bytes {
         let start = text.ceil_char_boundary(text.len() - max_bytes);
         text.drain(..start);

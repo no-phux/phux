@@ -11,7 +11,10 @@ high-frame-rate case and JPEG frames are several times smaller. A window
 or display mirror defaults to PNG, because desktop before 0.57.0 and Rune
 before 0.1.0-alpha.17 cannot decode JPEG (they show the frame as invalid);
 mobile decodes either. Pass `--format png` to a page mirror for an older
-viewer. A page
+viewer. A frame is one published document, at most 4 MiB: a PNG mirror
+whose frame grows past that (a large or many-output display) says so and
+sends JPEG from then on, and a frame still too big is refused with an
+error rather than sent; lower `--max-width` for it. A page
 scales its screencast in the browser and maps clicks by each frame's size;
 the window mirror re-encodes its capture with macOS's `sips`, and on Linux
 asks `grim` for the format and scale.

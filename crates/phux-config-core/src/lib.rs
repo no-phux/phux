@@ -24,7 +24,7 @@ pub mod server_bundle;
 pub mod session_color;
 pub mod socket;
 
-pub use clipboard::{ClientDefaults, ClipboardRead};
+pub use clipboard::{ClientDefaults, ClipboardRead, ClipboardWrite};
 pub use error::{ConfigError, byte_offset_to_line_col};
 pub use layer::{ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH};
 pub use loader::ClientConfig;

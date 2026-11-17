@@ -4,25 +4,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-/// The glyphs of a VT stream, CSI escapes dropped.
-fn strip_csi(vt: &str) -> String {
-    let mut out = String::new();
-    let mut chars = vt.chars();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        // Skip the `[` and the parameter bytes through the final byte
-        // (0x40-0x7E). Only CSI sequences are emitted here.
-        for esc in chars.by_ref() {
-            if esc != '[' && ('@'..='~').contains(&esc) {
-                break;
-            }
-        }
-    }
-    out
-}
+use crate::test_util::strip_csi;
 
 /// The real palette overflows its modal, so rows past the fold must be
 /// reachable by scrolling (they once painted off the box's bottom edge).
@@ -30,7 +12,7 @@ fn strip_csi(vt: &str) -> String {
 fn the_real_palette_scrolls_to_its_last_row() {
     use crate::render::Theme;
     use crate::render::overlay::{OverlayState, SelectList};
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::input::key::PhysicalKey;
 
     let items = palette_items(None, &[], &[]);
     let last = items
@@ -66,15 +48,7 @@ fn the_real_palette_scrolls_to_its_last_row() {
     );
 
     // End jumps to the last row: it must now be painted inside the box.
-    overlays.handle_key(&KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::End,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    });
+    overlays.handle_key(&crate::test_util::press(PhysicalKey::End));
     let scrolled = paint(&overlays);
     assert!(
         scrolled.contains(&last),

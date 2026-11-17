@@ -22,10 +22,8 @@ use crate::render::chrome::status_bar::Notice;
 /// close does); the same code is fatal and non-fatal on the same server. An
 /// uncorrelated error names its code in a notice.
 fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -> FrameOutcome {
-    // A correlated error answers a path query or directory listing it
-    // names (a newer server's `UNSUPPORTED`, or a reply this build cannot
-    // read) as a refusal; each consumer drops an id it is not waiting on,
-    // so a raced correlated error stays inert.
+    // A correlated error answers the path query or listing it names as a
+    // refusal; consumers drop ids they are not waiting on.
     if let Some(request_id) = request_id {
         return correlated_refusal(request_id, message);
     }
@@ -126,7 +124,7 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
 fn is_pending_spawn<W: crate::attach::RenderSink>(ctx: &FrameCtx<'_, W>, request_id: u32) -> bool {
     ctx.pending_splits
         .get(&request_id)
-        .is_some_and(|split| split.adopt.is_none() && split.open_existing.is_none())
+        .is_some_and(PendingSplit::awaiting_spawn)
         || ctx
             .pending_windows
             .get(&request_id)
@@ -228,7 +226,7 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
     if ctx
         .pending_splits
         .get(&request_id)
-        .is_some_and(|pending| pending.adopt.is_some() || pending.open_existing.is_some())
+        .is_some_and(|pending| !pending.awaiting_spawn())
     {
         return ctx
             .pending_splits
@@ -323,10 +321,8 @@ fn stranded_bound_pane<W: crate::attach::RenderSink>(
     unreferenced(ctx, &bound.id).map(|_| bound)
 }
 
-/// Whether a kill could reach the pane behind a refusal with `code`. Not
-/// after `SATELLITE_UNREACHABLE`: the hub would hold every keystroke behind
-/// the kill for its relay deadline, and an unconditional retry could hit a
-/// restarted satellite's reused id.
+/// Whether a kill could reach the pane behind a refusal with `code`: not
+/// after `SATELLITE_UNREACHABLE` (it would stall input behind the relay).
 const fn kill_can_reach(code: ErrorCode) -> bool {
     !matches!(code, ErrorCode::SatelliteUnreachable)
 }
@@ -352,10 +348,9 @@ pub(in crate::attach) fn pane_is_referenced(
     let adopting_window = pending_windows
         .values()
         .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
-    let adopting_split = pending_splits.values().any(|split| {
-        split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane)
-            || split.open_existing.as_ref() == Some(pane)
-    });
+    let adopting_split = pending_splits
+        .values()
+        .any(|split| split.adopt.as_ref().map(Adopt::pane) == Some(pane));
     window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 

@@ -6,8 +6,8 @@ use phux_protocol::caps::BootstrapProfileKind;
 
 fn snapshot_ready_offset(bytes: &[u8]) -> Result<usize, NativeStateError> {
     let mut reader = Cursor::new(bytes);
-    let decoder = Decoder::new(&mut reader)?;
-    drop(decoder.ready()?);
+    let decoder = Decoder::new(&mut reader).map_err(engine_error)?;
+    drop(decoder.ready().map_err(engine_error)?);
     let offset = usize::try_from(reader.position()).unwrap_or(bytes.len());
     Ok(offset.min(bytes.len()))
 }
@@ -124,9 +124,7 @@ fn best_detach_cost(
 ) -> std::time::Duration {
     let mut best = std::time::Duration::MAX;
     for _ in 0..samples {
-        let mut capture = manager
-            .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-            .expect("generation capture");
+        let mut capture = manager.capture(limits).expect("generation capture");
         drain_ready(&mut capture);
         let started = std::time::Instant::now();
         let detached = manager.finish_generation_capture(capture);
@@ -140,13 +138,24 @@ fn detach_managed_generation(
     manager: &mut NativeTerminalManager,
     limits: BootstrapLimits,
 ) -> (OpaqueHistoryCursor, NativeGenerationSeed) {
-    let mut capture = manager
-        .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
-        .expect("generation capture");
+    let mut capture = manager.capture(limits).expect("generation capture");
     drain_ready(&mut capture);
     manager
         .finish_generation_capture(capture)
         .expect("detach generation READY continuation")
+}
+
+/// Install a detached generation under its own bounds.
+fn install(
+    manager: &mut NativeTerminalManager,
+    cursor: OpaqueHistoryCursor,
+    seed: NativeGenerationSeed,
+) {
+    let bounds = seed.bounds();
+    let reserved = bounds.required_reserved_bytes().expect("reservation");
+    manager
+        .install_generation(cursor, seed, bounds, reserved)
+        .expect("install generation");
 }
 
 fn install_leased_generation(

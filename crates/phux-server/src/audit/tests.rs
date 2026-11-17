@@ -224,15 +224,8 @@ fn tail_keeps_the_last_n_since_a_seq() {
 
 #[test]
 fn the_actor_comes_from_the_connection_identity() {
-    use phux_protocol::policy::{PeerIdentity, TransportType};
-    let peer = |transport| PeerIdentity {
-        uid: 501,
-        pid: Some(7),
-        exe_path: None,
-        mcp_host_key: None,
-        transport,
-        source_addr: None,
-    };
+    use phux_protocol::policy::TransportType;
+    let peer = crate::test_support::peer;
     let local = audit_actor(&ConnectionIdentity::from(peer(TransportType::UnixSocket)));
     assert_eq!(local, AuditActor::server());
     let ws = audit_actor(&ConnectionIdentity::from(peer(TransportType::WebSocket)));
@@ -240,15 +233,10 @@ fn the_actor_comes_from_the_connection_identity() {
 
     let mut quic = ConnectionIdentity::from(peer(TransportType::Quic));
     quic.credential = Some(crate::auth::AuthenticatedCredential {
-        id: "sha256:ab".to_owned(),
         principal: "human".to_owned(),
-        scopes: vec!["observe@global".to_owned()],
-        issued_at: chrono::Utc::now(),
-        expires_at: None,
-        generation: 1,
-        registry_instance: None,
         subject: Some("jamesponwith@gmail.com".to_owned()),
         managed: Some("no-phux".to_owned()),
+        ..crate::test_support::credential("sha256:ab", &["observe@global"])
     });
     let actor = audit_actor(&quic);
     assert_eq!(actor.credential.as_deref(), Some("sha256:ab"));
@@ -320,22 +308,12 @@ fn a_delegated_connection_audits_on_behalf_of() {
     use crate::policy::ConnectionGrant;
     use crate::state::{ClientId, ServerState};
     use phux_core::PrincipalId;
-    use phux_protocol::policy::{PeerIdentity, TransportType};
+    use phux_protocol::policy::TransportType;
     use phux_protocol::scope::TerminalScopeSet;
 
     let mut state = ServerState::new();
     let client = ClientId(7);
-    state.set_peer_identity(
-        client,
-        PeerIdentity {
-            uid: 501,
-            pid: Some(7),
-            exe_path: None,
-            mcp_host_key: None,
-            transport: TransportType::UnixSocket,
-            source_addr: None,
-        },
-    );
+    state.set_peer_identity(client, crate::test_support::peer(TransportType::UnixSocket));
     state.set_connection_grant(client, ConnectionGrant::owner());
     assert_eq!(state.audit_actor(client).on_behalf_of, None);
     let delegated = ConnectionGrant::delegated(

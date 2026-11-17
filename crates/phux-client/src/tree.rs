@@ -13,8 +13,8 @@ use phux_client_core::session::KernelStatus;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind, SpawnError,
-    SpawnResource, SpawnResult,
+    Command, CommandResult, CommandValue, ControlClass, ErrorCode, FrameKind, MAX_PUBLISH_BYTES,
+    SpawnError, SpawnResource, SpawnResult,
 };
 
 use crate::attach::AttachError;
@@ -371,6 +371,7 @@ pub async fn publish_collecting(
     bytes: Vec<u8>,
     intents: &mut Vec<Intent>,
 ) -> Result<Published, TreeError> {
+    check_publish_size(bytes.len())?;
     require_support(conn)?;
     let (result, interleaved) = conn
         .request(
@@ -392,6 +393,21 @@ pub async fn publish_collecting(
         ))
         .into()),
     }
+}
+
+/// Refuse an empty or over-[`MAX_PUBLISH_BYTES`] document here: the server
+/// closes a connection that sends one, and a producer that redials on a
+/// lost connection would send it again forever.
+fn check_publish_size(len: usize) -> Result<(), TreeError> {
+    if len == 0 {
+        return Err(TreeError::Invalid("the document is empty".into()));
+    }
+    if len > MAX_PUBLISH_BYTES {
+        return Err(TreeError::Invalid(format!(
+            "the document is {len} bytes, over the {MAX_PUBLISH_BYTES}-byte publish limit"
+        )));
+    }
+    Ok(())
 }
 
 /// The tree's newest document.

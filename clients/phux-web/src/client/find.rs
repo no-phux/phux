@@ -19,9 +19,9 @@ pub(super) struct FindBinding {
     listeners: Listeners,
 }
 
-impl FindBinding {
-    pub(super) fn dispose(self) {
-        self.listeners.dispose();
+impl Drop for FindBinding {
+    fn drop(&mut self) {
+        drop(std::mem::take(&mut self.listeners));
         self.container.remove();
     }
 }
@@ -70,20 +70,14 @@ pub(super) fn install(app: &Rc<RefCell<App>>, document: &Document) -> Result<(),
             }
         })?;
     }
-    let old = app
-        .borrow()
-        .bindings
-        .borrow_mut()
-        .find
-        .replace(FindBinding {
-            container,
-            field,
-            label,
-            listeners,
-        });
-    if let Some(old) = old {
-        old.dispose();
-    }
+    let binding = FindBinding {
+        container,
+        field,
+        label,
+        listeners,
+    };
+    let old = app.borrow().bindings.borrow_mut().find.replace(binding);
+    drop(old);
     Ok(())
 }
 

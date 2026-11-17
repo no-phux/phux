@@ -1,7 +1,7 @@
 //! Documents drawn by content type, as the desktop does (#2023), through
 //! the one decode every kind shares (`phux_client_core::document_view`):
-//! images through the surface decoder, JSON pretty-printed, `text/*` and
-//! `+xml`/`+json` as source (Markdown and HTML stay source), anything
+//! images through the surface decoder, JSON pretty-printed, Markdown through
+//! the configured viewer, other text and `+xml`/`+json` as source, anything
 //! else a line naming its size and type.
 
 use phux_client_core::document_view::{self, DocumentContent};
@@ -18,6 +18,7 @@ impl Document {
         images: Option<&rune::ImageCache>,
         decodes: &mut surface::Decodes,
     ) {
+        let source_mode = self.viewer.take().is_some_and(|viewer| viewer.source);
         self.detail = publication.content_type.clone();
         let content = document_view::decode(
             publication.kind,
@@ -37,6 +38,11 @@ impl Document {
         };
         self.invalidate_surface();
         self.body = body;
+        if crate::document_viewer::is_markdown(publication.content_type.as_deref())
+            && matches!(self.body, Body::Tree(_))
+        {
+            self.viewer = Some(crate::document_viewer::Presentation::new(source_mode));
+        }
         if let Some(cut) = cut {
             self.detail = Some(match self.detail.take() {
                 Some(declared) => format!("{declared} · {cut}"),

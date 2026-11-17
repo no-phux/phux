@@ -90,6 +90,7 @@ pub(super) fn moving_out_prunes_the_source_arrangement() {
             name: None,
             tree,
         }],
+        slot_tabs: false,
     })
     .expect("arrangement");
     let ak = h.session(a).arrangement.expect("linked");
@@ -129,6 +130,7 @@ pub(super) fn undoing_a_move_restores_the_source_placement() {
         owner: ArrangementOwner::Session(a),
         expected: Revision::FIRST,
         groups: groups.clone(),
+        slot_tabs: false,
     })
     .expect("arrangement");
     let ak = h.session(a).arrangement.expect("linked");
@@ -142,11 +144,7 @@ pub(super) fn undoing_a_move_restores_the_source_placement() {
             to_expected: rb,
         })
         .expect("move");
-    h.run(Op::OrganizationUndo {
-        original: moved.operation,
-        expected: vec![],
-    })
-    .expect("undo");
+    h.undo(moved.operation).expect("undo");
     assert_eq!(h.resource(r1).session, a);
     let arrangement = h.reg.org().arrangement(&ak).expect("kept");
     assert_eq!(arrangement.groups, groups, "the pane is back where it was");
@@ -173,11 +171,7 @@ pub(super) fn undoing_a_move_out_of_a_deleted_session_refuses() {
         "the empty ephemeral went"
     );
     assert_eq!(
-        h.run(Op::OrganizationUndo {
-            original: moved.operation,
-            expected: vec![],
-        })
-        .err(),
+        h.undo(moved.operation).err(),
         Some(Refusal::InvalidArgument {
             field: "undo",
             reason: "the original session no longer exists".to_owned(),
@@ -208,45 +202,24 @@ pub(super) fn move_many_is_atomic_and_bounded() {
     };
     let rd = h.session(dest).revision;
 
-    assert!(matches!(
-        h.run(Op::ResourceMoveMany {
-            resources: vec![],
-            sources: pins(&h),
+    let all = pins(&h);
+    for (resources, sources) in [
+        (vec![], all.clone()),
+        (vec![ra, ra], all.clone()),
+        (vec![ResourceKey::from_bytes([0; 16]); 300], all.clone()),
+        (vec![ra, rb], all[..1].to_vec()),
+    ] {
+        let refused = h.run(Op::ResourceMoveMany {
+            resources,
+            sources,
             to: dest,
             to_expected: rd,
-        }),
-        Err(Refusal::InvalidArgument { .. })
-    ));
-    assert!(matches!(
-        h.run(Op::ResourceMoveMany {
-            resources: vec![ra, ra],
-            sources: pins(&h),
-            to: dest,
-            to_expected: rd,
-        }),
-        Err(Refusal::InvalidArgument { .. })
-    ));
-    assert!(matches!(
-        h.run(Op::ResourceMoveMany {
-            resources: vec![ResourceKey::from_bytes([0; 16]); 300],
-            sources: pins(&h),
-            to: dest,
-            to_expected: rd,
-        }),
-        Err(Refusal::InvalidArgument { .. })
-    ));
-    assert!(matches!(
-        h.run(Op::ResourceMoveMany {
-            resources: vec![ra, rb],
-            sources: pins(&h)[..1].to_vec(),
-            to: dest,
-            to_expected: rd,
-        }),
-        Err(Refusal::InvalidArgument {
-            field: "sources",
-            ..
-        })
-    ));
+        });
+        assert!(
+            matches!(refused, Err(Refusal::InvalidArgument { .. })),
+            "{refused:?}"
+        );
+    }
     let mut stale = pins(&h);
     stale[1].expected = stale[1].expected.next();
     assert!(matches!(
@@ -302,37 +275,21 @@ pub(super) fn undo_restores_membership_only_while_revisions_match() {
     let receipt = moved.transition.receipt.clone().expect("receipt");
     assert!(receipt.undo.is_some());
 
-    let undone = h
-        .run(Op::OrganizationUndo {
-            original: moved.operation,
-            expected: vec![],
-        })
-        .expect("undo");
+    let undone = h.undo(moved.operation).expect("undo");
     assert_eq!(h.resource(r).session, a);
     assert!(undone.effects.is_empty(), "undo never touches execution");
 
     // The state moved on, so undoing the move again conflicts.
     assert!(matches!(
-        h.run(Op::OrganizationUndo {
-            original: moved.operation,
-            expected: vec![],
-        }),
+        h.undo(moved.operation),
         Err(Refusal::Conflict { .. })
     ));
     // Undoing the undo redoes the move.
-    h.run(Op::OrganizationUndo {
-        original: undone.operation,
-        expected: vec![],
-    })
-    .expect("redo");
+    h.undo(undone.operation).expect("redo");
     assert_eq!(h.resource(r).session, b);
 
     assert_eq!(
-        h.run(Op::OrganizationUndo {
-            original: phux_core::OperationId::from_bytes([0; 16]),
-            expected: vec![],
-        })
-        .err(),
+        h.undo(phux_core::OperationId::from_bytes([0; 16])).err(),
         Some(Refusal::NotFound)
     );
     let rename = h
@@ -342,10 +299,7 @@ pub(super) fn undo_restores_membership_only_while_revisions_match() {
         })
         .expect("rename");
     assert!(matches!(
-        h.run(Op::OrganizationUndo {
-            original: rename.operation,
-            expected: vec![],
-        }),
+        h.undo(rename.operation),
         Err(Refusal::Unsupported { .. })
     ));
 }
@@ -386,11 +340,7 @@ pub(super) fn inbox_resolve_clears_intake_and_undo_restores_it() {
             ..
         }
     )));
-    h.run(Op::OrganizationUndo {
-        original: resolved.operation,
-        expected: vec![],
-    })
-    .expect("undo");
+    h.undo(resolved.operation).expect("undo");
     assert!(h.session(s).awaiting_organization);
 }
 
@@ -418,6 +368,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(theirs, 1)],
+            slot_tabs: false,
         }),
         Err(Refusal::InvalidArgument {
             field: "groups",
@@ -429,6 +380,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(mine, 1), group(mine, 1)],
+            slot_tabs: false,
         }),
         Err(Refusal::InvalidArgument { .. })
     ));
@@ -437,6 +389,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::FIRST,
             groups: vec![group(mine, 1)],
+            slot_tabs: false,
         })
         .err(),
         Some(Refusal::Conflict {
@@ -448,6 +401,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner,
             expected: Revision::ZERO,
             groups: vec![group(mine, 1)],
+            slot_tabs: false,
         })
         .expect("create");
     let Reply::Ok { created, revision } = applied.reply else {
@@ -459,6 +413,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
         owner,
         expected: Revision::FIRST,
         groups: vec![],
+        slot_tabs: false,
     })
     .expect("replace");
     assert!(matches!(
@@ -466,6 +421,7 @@ pub(super) fn arrangement_replace_validates_members_and_revisions() {
             owner: ArrangementOwner::Workspace(phux_core::WorkspaceKey::from_bytes([1; 16])),
             expected: Revision::ZERO,
             groups: vec![],
+            slot_tabs: false,
         }),
         Err(Refusal::Unsupported { .. })
     ));
@@ -515,6 +471,7 @@ pub(super) fn a_locked_tab_refuses_close_until_unlocked_but_not_a_session_kill()
         owner,
         expected: Revision::FIRST,
         groups: vec![tab(5, 1, r1), tab(6, 2, r2)],
+        slot_tabs: false,
     })
     .expect("arrangement");
     let lock = |locked| Op::ArrangementLock {
@@ -538,6 +495,7 @@ pub(super) fn a_locked_tab_refuses_close_until_unlocked_but_not_a_session_kill()
         owner,
         expected: current,
         groups,
+        slot_tabs: false,
     };
     assert!(
         refused(&mut h, replace(vec![tab(6, 2, r2)])),

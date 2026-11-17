@@ -28,15 +28,7 @@ async fn rename_from_prompt(state: &mut SessionLoop, conn: &mut Connection, out:
             "renamed",
             &state.settings.theme,
         )));
-    let mut events = vec![InputEvent::Key(KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::Enter,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    })];
+    let mut events = vec![InputEvent::Key(crate::test_util::press(PhysicalKey::Enter))];
     state
         .dispatch_input(conn, out, None, &mut events)
         .await
@@ -122,9 +114,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
 }
 
 /// #1475: a reopen pressed before the layout read is applied to the
-/// arrangement that read adopts, then saved. An organization server does
-/// not place hidden members on its own, so the extra window is the queued
-/// edit and nothing else.
+/// arrangement that read adopts, then saved.
 #[tokio::test(flavor = "current_thread")]
 async fn a_deferred_reopen_is_saved_when_the_layout_read_lands() {
     use crate::attach::input_dispatch::DeferredArrangementEdit;
@@ -221,10 +211,7 @@ fn deferred_edit_fixture(
                 groups: vec![ArrangementGroup { locked: false,
                     id: [7; 16],
                     name: Some("stored".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(shell),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
                 }],
             },
         );
@@ -352,15 +339,7 @@ async fn deferred_focus_edits_clear_predictions_and_suspend_without_a_known_curs
         state.layout_read_complete = true;
         state.mirror.predict = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         state.mirror.predict.set_cursor(4, 9);
-        state.mirror.predict.predict_key(&KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("a".to_owned()),
-            unshifted_codepoint: None,
-        });
+        state.mirror.predict.predict_key(&crate::test_util::press_text(PhysicalKey::A, Some("a")));
         assert_eq!(state.mirror.predict.pending_len(), 1);
         state.deferred_arrangement_edits.push(edit);
         assert!(state.flush_deferred_arrangement_edits());

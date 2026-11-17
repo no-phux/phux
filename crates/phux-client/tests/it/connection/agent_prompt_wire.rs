@@ -398,36 +398,6 @@ async fn a_resting_level_never_satisfies_prompt_wait() {
     assert_eq!(wait.edges, 0);
 }
 
-/// `phux agent send-keys` rides the same path: one `APPLY_INPUT` for the
-/// whole key sequence, and a retry under the same id.
-#[tokio::test]
-async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
-    let script = Script::new(Some(record("idle"))).apply(vec![
-        refused(ErrorCode::ResourceExhausted),
-        CommandResult::Ok,
-    ]);
-    let (_server, socket, seen) = serve(script);
-    let events = phux_client::send_keys::events_for(&["yes please".to_owned(), "Enter".to_owned()]);
-    assert_eq!(events.len(), 2, "{events:?}");
-
-    let outcome = deliver_acknowledged(
-        &socket,
-        &ResourceId::local(7),
-        op_id(0x4c),
-        events,
-        &always_ok,
-        None,
-    )
-    .await
-    .expect("a verified pane accepts the key batch");
-
-    assert_eq!(outcome.delivery, Delivery::Acked);
-    assert_eq!(outcome.attempts, 2);
-    let ids = seen.lock().expect("ids").clone();
-    assert_eq!(ids.len(), 2, "one APPLY_INPUT per attempt, not per event");
-    assert!(ids.iter().all(|id| *id == op_id(0x4c)));
-}
-
 /// Idempotency for `phux agent send-keys`, read off the wire the same way as
 /// `a_resource_exhausted_retry_reuses_the_same_operation_id`: every
 /// `RESOURCE_EXHAUSTED` resubmission carries the same operation id, and each

@@ -8,6 +8,7 @@ use super::{CAPTION, Ink, LABEL, icons, pressable};
 use crate::desk::{CONTEXT_MENU, Desk, TAB_MENU};
 use crate::keys::{self, Shortcut};
 use crate::palette::{Hit, Mode, Target};
+use crate::ui::Cover;
 
 const WIDTH: f32 = 600.0;
 /// The path picker, narrower, at the cursor.
@@ -29,6 +30,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         Mode::Mirror(source) => source.prompt(),
         Mode::Shortcuts => "Filter keyboard shortcuts…",
         Mode::Essentials => "The keys worth learning first; pick one to try it…",
+        Mode::Playground => "Open a playground scene…",
         Mode::Sessions => "Switch session, or name a new one…",
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",
@@ -56,11 +58,13 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
     for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
         results = results.child(hit_row(hit, index, index == picked, phone, ink));
     }
-    let search = desk.paths.as_ref();
+    let search = desk.connection.paths.as_ref();
     let empty = match search {
         Some(s) if s.searching() => "Searching…",
         Some(s) if s.note.is_some() && hits.is_empty() => s.note.as_deref().unwrap_or_default(),
-        _ if mode == Mode::Screens && hits.is_empty() => desk.resources.screens.empty_text(),
+        _ if mode == Mode::Screens && hits.is_empty() => {
+            desk.connection.resources.screens.empty_text()
+        }
         _ => "Nothing matches",
     };
     if hits.is_empty() {
@@ -134,9 +138,7 @@ pub fn view(desk: &Desk, ink: &Ink, top: f32) -> El {
         }));
     let scrim = el()
         .key("palette-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette());
@@ -198,14 +200,17 @@ pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
         .fill(ink.raised)
         .border(1.0, ink.separator)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.4));
-    let locked = desk.tabs.list.iter().any(|tab| tab.active && tab.locked);
+    let locked = desk
+        .connection
+        .tabs
+        .list
+        .iter()
+        .any(|tab| tab.active && tab.locked);
     for &action in actions {
         rows = rows.children(context_row(action, locked, ink));
     }
     el().key("context-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .modal(true, |d: &mut Desk| d.close_menu())
         .child(rows)

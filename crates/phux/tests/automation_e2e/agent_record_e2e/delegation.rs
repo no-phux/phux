@@ -85,14 +85,23 @@ fn write_script_integration(root: &std::path::Path, script: &str) -> PathBuf {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn agent_start_runs_the_agent_on_a_delegated_credential() {
-    let server = ServerGuard::start("agent");
     let root = tempfile::tempdir().expect("create temp dir");
+    // `agent start` refuses an integration whose working directory differs
+    // from pane @1's. The seed pane starts in the server's cwd or its
+    // `$HOME`, depending on the runner's shell setup, so both are the one
+    // directory the agent is started from.
+    let home = root.path().canonicalize().expect("canonical temp dir");
+    let server = ServerGuard::builder("agent")
+        .env("HOME", &home)
+        .start_with(|cmd| {
+            cmd.current_dir(&home);
+        });
     let phux = crate::runner::phux_bin();
-    // An unspecified seed cwd defaults to HOME, not this client's workspace.
-    // Request the integration's directory explicitly, with an inert shell.
+    // Do not rely on where the seed pane lands. Request the directory the
+    // agent is started from (the integration's cwd), with an inert shell.
     let created = server
         .cmd(&["new", "--json", "-s", "delegation", "--cwd"])
-        .arg(std::env::current_dir().expect("workspace cwd"))
+        .arg(&home)
         .args(["--", "/bin/sh"])
         .output()
         .expect("create delegation pane");
@@ -136,6 +145,7 @@ fn agent_start_runs_the_agent_on_a_delegated_credential() {
         .arg("--socket")
         .arg(&server.socket)
         .arg("bot")
+        .current_dir(&home)
         .stdin(Stdio::null())
         .output()
         .expect("run phux agent start");

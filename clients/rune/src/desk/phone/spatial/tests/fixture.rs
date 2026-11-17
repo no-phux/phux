@@ -8,19 +8,15 @@ use phux_client_runtime::{
     control::{ControlOptions, ControlPlane},
 };
 use phux_protocol::{
-    PROTOCOL_VERSION, ResourceKind,
-    caps::{
-        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
-        ServerFeatureExt, ServerFeatureExtSet,
-    },
+    ResourceKind,
     ids::{
-        ArrangementKey, AuthorityId, BootstrapId, ClientId, ResourceKey, Revision, SessionId,
-        SessionKey, StreamId, WindowId,
+        ArrangementKey, AuthorityId, BootstrapId, ResourceKey, Revision, SessionId, SessionKey,
+        StreamId, WindowId,
     },
     wire::{
         frame::{
-            ArrangementOwner, ArrangementValue, AttachTarget, Command, CommandResult, CommandValue,
-            FrameKind, OrganizationPage, ResourceRecord, SessionRecord,
+            ArrangementOwner, ArrangementValue, AttachTarget, CommandValue, FrameKind,
+            OrganizationPage, ResourceRecord, SessionRecord,
         },
         info::{ResourceInfo, SessionInfo, SessionSnapshot},
     },
@@ -31,6 +27,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::launch::Resolved;
+use crate::wire_fixture::{answer, attach_id, bootstrap, hello, organization_request};
 
 fn session() -> SessionKey {
     SessionKey::new([1; 16]).unwrap()
@@ -39,13 +36,7 @@ fn arrangement() -> ArrangementKey {
     ArrangementKey::new([3; 16]).unwrap()
 }
 
-pub fn outbound(client: &Client) -> Vec<FrameKind> {
-    client
-        .take_outbound()
-        .iter()
-        .map(|b| FrameKind::decode(b).unwrap().0)
-        .collect()
-}
+pub use crate::wire_fixture::outbound;
 
 pub fn doc() -> ArrangementDoc {
     let mut doc = ArrangementDoc {
@@ -57,6 +48,7 @@ pub fn doc() -> ArrangementDoc {
             },
         )],
         active: 0,
+        slots: Vec::new(),
     };
     doc.add_group("other".into(), id(5));
     doc.active = 0;
@@ -105,33 +97,12 @@ pub fn install(client: &Client, doc: &ArrangementDoc, revision: u64) {
         Revision::new(revision),
         to_protocol(doc, &map, &EntryBinding::default()).unwrap(),
     );
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::Arrangement(Box::new(value))),
-        })
-        .unwrap();
+    answer(client, request, CommandValue::Arrangement(Box::new(value)));
 }
 
 fn seed(client: &Client) -> u32 {
     let sent = outbound(client);
-    let attach = sent
-        .iter()
-        .find_map(|f| match f {
-            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
-            _ => None,
-        })
-        .unwrap();
-    let request = sent
-        .iter()
-        .find_map(|f| match f {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetOrganization { .. },
-            } => Some(*request_id),
-            _ => None,
-        })
-        .unwrap();
+    let request = organization_request(&sent).unwrap();
     let page = OrganizationPage::new(AuthorityId::new([1; 16]).unwrap(), Revision::new(1), 0)
         .with_sessions(vec![
             SessionRecord::new(session(), "work", Revision::new(1))
@@ -140,30 +111,18 @@ fn seed(client: &Client) -> u32 {
                 .with_live(Some(SessionId::new(1))),
         ])
         .with_resources(records());
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
-    attach
+    answer(
+        client,
+        request,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
+    attach_id(&sent).unwrap()
 }
 
 fn boot(client: &Client) {
     client.with_control(ControlPlane::connection_opened);
     outbound(client);
-    client
-        .feed(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
-            server_id: vec![1; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        })
-        .unwrap();
+    client.feed(hello(1, true)).unwrap();
     let attach_id = seed(client);
     install(client, &doc(), 1);
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
@@ -189,13 +148,7 @@ fn boot(client: &Client) {
                 })
                 .collect(),
         );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    crate::wire_fixture::attached(client, attach_id, snapshot);
     for record in records()
         .iter()
         .filter(|r| r.kind == ResourceKind::Terminal)
@@ -204,32 +157,13 @@ fn boot(client: &Client) {
         let payload = (0..100)
             .map(|line| format!("Pane {n} history line {line}\r\n"))
             .collect::<String>();
-        for frame in [
-            FrameKind::BootstrapBegin {
-                terminal_id: id(n),
-                stream_id: StreamId::new(u64::from(n)).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
-                profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 80,
-                rows: 24,
-                base_seq: 0,
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id: id(n),
-                stream_id: StreamId::new(u64::from(n)).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
-                chunk_seq: 0,
-                payload: payload.into_bytes().into(),
-            },
-            FrameKind::BootstrapReady {
-                terminal_id: id(n),
-                stream_id: StreamId::new(u64::from(n)).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
-                history_cursor: None,
-            },
-        ] {
-            client.feed(frame).unwrap();
-        }
+        bootstrap(
+            client,
+            &id(n),
+            [u64::from(n), 1],
+            [80, 24],
+            payload.as_bytes(),
+        );
     }
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
 }
@@ -243,7 +177,7 @@ pub fn fixture(phone: bool) -> (Arc<Client>, Runtime<Desk>) {
     let mut desk = Desk::new(&Resolved::offline("spatial fixture")).with_phone(phone);
     desk.prefs = Prefs::memory();
     desk.link.heard = true;
-    desk.client = Some(Arc::clone(&client));
+    desk.connection.client = Some(Arc::clone(&client));
     let mut rt = Runtime::new(desk, crate::ui::view, (393.0, 852.0), Env::new(true, 2.0));
     rt.on_key = Some(Desk::key);
     poll(&mut rt);
@@ -266,15 +200,10 @@ pub fn settle(rt: &mut Runtime<Desk>) {
 }
 
 pub fn focus(rt: &Runtime<Desk>) -> ResourceId {
-    rt.state.shown.as_ref().unwrap().resource.clone()
+    rt.state.connection.shown.as_ref().unwrap().resource.clone()
 }
 
-pub fn geometry(rt: &Runtime<Desk>, key: &str) -> rune::ElementInfo {
-    rt.elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key))
-        .unwrap_or_else(|| panic!("no {key}"))
-}
+pub use crate::ui::element as geometry;
 
 pub fn tap(rt: &mut Runtime<Desk>, key: &str) {
     let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no {key}"));

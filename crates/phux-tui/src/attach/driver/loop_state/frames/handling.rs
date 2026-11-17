@@ -99,14 +99,10 @@ impl super::super::SessionLoop {
     /// Legacy or absent layouts can seed missing members; an unread record
     /// is not absent, and an existing organization record keeps views hidden.
     fn heal_initial_layout(&mut self, outcome: &mut FrameOutcome) {
-        // #1207: heal a missing or partial key instead of hiding panes,
-        // and save it so every client and `phux insert-pane` agree.
-        // On an `ORGANIZATION` server the layout is the session's
-        // arrangement record, and a member it leaves out was closed on
-        // purpose: it stays unarranged behind the reopen action (R15).
-        // Only an absent record, or a legacy key, is healed. A record
-        // that could not be read is not absent: healing it would save a
-        // default over the stored arrangement, so it is left alone.
+        // #1207: heal a missing or partial layout (and save it) instead of
+        // hiding panes. A member an organization record leaves out was
+        // closed on purpose and stays unarranged (R15); an unread record is
+        // not absent, so it is never healed over.
         let unloaded = self.arrangement.as_ref().is_some_and(|link| !link.loaded());
         let key_absent = !outcome.layout_replaced && !unloaded;
         let heal = key_absent || !(self.organization_supported || unloaded);

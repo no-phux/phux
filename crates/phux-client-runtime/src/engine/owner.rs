@@ -17,16 +17,16 @@ use super::{
     EngineDocumentPoint, EngineDocumentSelection, EngineError, FrameKey, GhosttyAdapter,
     GhosttyReplica, GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode,
     Publication, ReplicaInfo, ReplicaPrompt, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch,
-    SearchResults, SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
+    SearchResults, SelectionGestureEvent, SelectionGestureResult,
 };
+#[cfg(feature = "engine")]
+use libghostty_vt::point::{Coordinate as PointCoordinate, Point, Space as PointSpace};
+#[cfg(feature = "engine")]
+use libghostty_vt::selection::Selection;
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
     Behavior, Behaviors, DragEvent, Geometry, Gesture, PressEvent,
 };
-#[cfg(feature = "engine")]
-use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
-#[cfg(feature = "engine")]
-use libghostty_vt::{fmt::Formatter, selection::Selection};
 
 #[cfg(feature = "engine")]
 mod document;
@@ -42,6 +42,8 @@ use super::BoundedSelectionText;
 mod images;
 #[cfg(feature = "engine")]
 mod render;
+#[cfg(feature = "engine")]
+mod sync_output;
 #[cfg(feature = "engine")]
 mod views;
 #[cfg(feature = "engine")]
@@ -100,6 +102,8 @@ pub(super) struct Owner {
     /// Whether predictive echo is drawn underlined.
     #[cfg(feature = "engine")]
     prediction_underline: bool,
+    #[cfg(feature = "engine")]
+    sync_output: HashMap<ResourceId, sync_output::Hold>,
 }
 
 impl Drop for Owner {
@@ -143,6 +147,8 @@ impl Owner {
             next_document_revision: 1,
             #[cfg(feature = "engine")]
             prediction_underline: true,
+            #[cfg(feature = "engine")]
+            sync_output: HashMap::new(),
         }
     }
 
@@ -179,6 +185,7 @@ impl Owner {
         self.visible.clear();
         #[cfg(feature = "engine")]
         {
+            self.sync_output.clear();
             for view in self.views.keys() {
                 self.publication.remove_view(*view);
             }
@@ -254,6 +261,7 @@ impl Owner {
         self.visible.remove(id);
         #[cfg(feature = "engine")]
         {
+            self.sync_output.remove(id);
             self.closed.remove(id);
             self.pending_releases.remove(id);
             self.projectors.remove(id);
@@ -337,8 +345,8 @@ fn viewport_scroll(scroll: Scroll) -> Result<ScrollViewport, EngineError> {
 fn terminal_defaults(
     terminal: &libghostty_vt::Terminal<'_, '_>,
 ) -> Result<(Option<Rgb>, Option<Rgb>, bool), EngineError> {
-    use libghostty_vt::terminal::Mode;
-    let map = |color: libghostty_vt::style::RgbColor| Rgb {
+    use libghostty_vt::mode::Mode;
+    let map = |color: libghostty_vt::color::Rgb| Rgb {
         r: color.r,
         g: color.g,
         b: color.b,
@@ -436,7 +444,7 @@ fn apply_terminal_selection(
 #[cfg(feature = "engine")]
 fn apply_gesture_event<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {
@@ -450,7 +458,7 @@ fn apply_gesture_event<'terminal>(
 #[cfg(feature = "engine")]
 fn apply_gesture_press<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {
@@ -474,7 +482,7 @@ fn apply_gesture_press<'terminal>(
 #[cfg(feature = "engine")]
 fn apply_gesture_drag<'terminal>(
     terminal: &'terminal libghostty_vt::Terminal<'_, '_>,
-    grid_ref: libghostty_vt::screen::GridRef<'terminal>,
+    grid_ref: libghostty_vt::grid_ref::GridRef<'terminal>,
     event: SelectionGestureEvent,
     gesture: &mut Gesture<'_>,
 ) -> Result<Option<Selection<'terminal>>, EngineError> {

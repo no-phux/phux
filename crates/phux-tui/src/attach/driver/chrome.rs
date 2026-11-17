@@ -91,11 +91,8 @@ fn format_attention_hint(asking: usize) -> Option<String> {
     }
 }
 
-/// Refresh all chrome inputs from one coherent view: window tabs, supervisory
-/// badges, agent rows and host-qualified session navigation. Returns whether
-/// any painter input changed, so unchanged metadata bursts need no paint, and
-/// the full agent list (local, peer, satellite) the Agents zone paints, built
-/// whether or not the sidebar shows, for the notifier.
+/// Refresh all chrome inputs from one coherent view. Returns whether any
+/// painter input changed, and the full agent list for the notifier.
 pub(super) fn refresh_window_chrome(
     chrome: &mut ChromeCtx<'_>,
     scene: PaneScene<'_>,
@@ -317,11 +314,9 @@ fn window_exited_mark(
         .map(ExitMark::compact)
 }
 
-/// The sidebar's agent rows, one per agent-running pane in window/leaf order.
-/// Identity and state come from an `AgentSession` stream bound to the pane
-/// (server-enforced, so it wins on state) or the pane's ADR-0040 record;
-/// a pane with neither is a shell and gets no row. Rows never reorder on
-/// lifecycle changes, so navigation targets stay put.
+/// The sidebar's agent rows, one per agent-running pane in window/leaf
+/// order. A bound `AgentSession` stream wins over the ADR-0040 record; rows
+/// never reorder on lifecycle changes.
 pub(super) fn agent_entries(
     workspace: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -386,11 +381,8 @@ pub(super) fn agent_entries(
 }
 
 /// The notifier's view of the agent list: one row per agent-running pane,
-/// keyed by the pane's identity. Local rows resolve their leaf from the
-/// attached layout; a pane with several `AgentSession`s reads as its most
-/// urgent one (blocked, then working, then settled). A local pane that
-/// asked (ADR-0035) without any agent identity arrives as an `agents` row
-/// from [`agent_entries`].
+/// keyed by its identity. A pane with several `AgentSession`s reads as its
+/// most urgent one.
 pub(super) fn notify_rows(
     agents: &[AgentEntry],
     workspace: &ArrangementDoc,

@@ -7,12 +7,13 @@ mod activity;
 mod addressable;
 mod alerts;
 mod askpass;
-mod changes;
 mod connect;
 mod creature;
 mod desk;
 mod diag;
 mod dock;
+mod document_viewer;
+mod features;
 mod galaxy;
 mod grid;
 mod handoff;
@@ -32,16 +33,25 @@ mod paths;
 mod perf;
 mod pitch;
 mod pitlane;
+mod playground;
+mod quick_look;
 mod reef;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scheme;
+mod services;
 mod session_color;
+mod ssh_config;
 mod standing;
 mod system_settings;
 mod theme;
 mod ui;
 mod updates;
+#[cfg(test)]
+mod wire_fixture;
+
+#[cfg(test)]
+mod test_support;
 
 use desk::Desk;
 use rune::{AppSpec, Chrome};
@@ -111,9 +121,21 @@ pub fn run_desktop() {
     // Settings turns it on, is registered when the windows have started.
     let panel = (!phone).then(|| desk::quick::add(&mut app, resolved.clone()));
     let window = app.handle();
+    // Finder's service needs the running app; headless tooling has none.
+    #[cfg(target_os = "macos")]
+    if !rune::is_headless() {
+        let services = app.handle();
+        app.handle()
+            .update(move |_, _| services::register(services));
+    }
     if let Some(panel) = panel {
         window.update(move |desk, _| desk.arm_quick(panel));
     }
+    // Linux: the titlebar is the app's own. Where the compositor draws no
+    // frame (GNOME), Rune takes its bar away and adds the caption buttons;
+    // KDE, Hyprland and X11 keep theirs.
+    #[cfg(target_os = "linux")]
+    let app = app.titlebar(rune::Titlebar::new(ui::TITLEBAR_H));
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);

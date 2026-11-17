@@ -129,8 +129,8 @@ async fn cursor_row_and_translated_pane_render_in_logical_coordinates() {
         .unwrap();
     ctx.save();
     ctx.translate(5.0 * metrics.cell_w, 0.0).unwrap();
-    render(&ctx, &grid, &metrics, true);
-    render_cursor_row(&ctx, &grid, &metrics, false, &Overlay::default());
+    render(&ctx, &grid, &metrics, true, &Overlay::default(), false);
+    render_cursor_row(&ctx, &grid, &metrics, false, &Overlay::default(), false);
     ctx.restore();
     assert_eq!(pixel(&ctx, 93, 3), vec![255, 0, 0, 255]);
     assert_eq!(pixel(&ctx, 3, 3), vec![0, 0, 0, 0]);

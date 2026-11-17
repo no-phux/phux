@@ -26,11 +26,9 @@ impl super::SessionLoop {
         // Whatever woke the loop may have completed a held switch's view.
         self.release_paint_hold_if_ready(out, self.sidebar());
         match stepped {
-            // Any write into a server that already hung up (a SIGWINCH
-            // resize racing a server crash, say) defers to the read side,
-            // exactly as `send_unless_peer_gone` does: the next `recv`
-            // drains what the server sent and then reports the EOF, which is
-            // what the reconnect path and the explained endings key on.
+            // A write into a server that already hung up defers to the read
+            // side (as `send_unless_peer_gone` does): the next `recv` drains
+            // what it sent, then reports the EOF.
             Err(err) if peer_gone(&err) && conn.write_hit_closed_peer() => {
                 tracing::debug!(
                     ?err,
@@ -316,10 +314,8 @@ impl super::SessionLoop {
             .min()
     }
 
-    /// A stalled Terminal or agent cut asks for a fresh bootstrap, as a
-    /// resync the kernel reports on a frame does; then a due satellite probe
-    /// runs. A stalled document never costs the session a rebootstrap: this
-    /// client streams none, so one can only come from an older server.
+    /// A stalled Terminal or agent cut asks for a fresh bootstrap, then a due
+    /// satellite probe runs. A stalled document never costs a rebootstrap.
     async fn on_probe_due(&mut self, conn: &mut Connection) -> Result<Step, AttachError> {
         let mirror = &mut self.mirror;
         mirror

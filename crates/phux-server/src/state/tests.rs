@@ -10,8 +10,10 @@ use phux_protocol::caps::{
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
 #[test]
-fn server_incarnation_is_stable_per_state_and_distinct_between_states() {
-    let first = ServerState::new();
+fn client_ids_count_from_one_and_the_incarnation_is_per_state() {
+    let mut first = ServerState::new();
+    assert_eq!(first.new_client_id(), ClientId(1));
+    assert_eq!(first.new_client_id(), ClientId(2));
     let stable = first.server_incarnation();
     assert_eq!(first.server_incarnation(), stable);
     assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
@@ -39,14 +41,6 @@ pub(super) fn mk_agent_handle(parent: ResourceId, token: CancellationToken) -> R
         1024,
     )
     .handle
-}
-
-#[test]
-fn new_client_id_is_monotonic_from_one() {
-    let mut s = ServerState::new();
-    assert_eq!(s.new_client_id(), ClientId(1));
-    assert_eq!(s.new_client_id(), ClientId(2));
-    assert_eq!(s.new_client_id(), ClientId(3));
 }
 
 #[test]
@@ -100,44 +94,21 @@ fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
 }
 
 #[test]
-fn attach_unknown_session_returns_error() {
+fn attach_subscribes_every_client_to_every_pane() {
     let mut s = ServerState::new();
     let cid = s.new_client_id();
     let err = s.attach_default_caps(cid, "ghost", mk_tx()).unwrap_err();
     assert_eq!(err, AttachError::UnknownSession("ghost".to_owned()));
-}
 
-#[test]
-fn attach_records_client_and_subscribes_to_active_pane() {
-    let mut s = ServerState::new();
-    let (sid, pid) = s.seed_session("default");
-    let cid = s.new_client_id();
-    let returned_sid = s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    assert_eq!(returned_sid, sid);
-    assert!(s.attached().contains_key(&cid));
-    assert_eq!(s.subscribers_for_resource(pid), &[cid]);
-}
-
-#[test]
-fn attach_subscribes_to_every_pane_not_just_the_active_one() {
-    // A multi-pane client is subscribed to all its panes, not just the
-    // active one (else input to other panes is dropped).
-    let mut s = ServerState::new();
     let (sid, pid1) = s.seed_session("default");
-    let pid2 = s
-        .add_pane_to_session(sid)
-        .expect("add a second pane to the session");
-    assert_ne!(pid1, pid2);
-    let cid = s.new_client_id();
-    s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    assert!(
-        s.subscribers_for_resource(pid1).contains(&cid),
-        "client not subscribed to first pane"
-    );
-    assert!(
-        s.subscribers_for_resource(pid2).contains(&cid),
-        "client not subscribed to second pane (the regression)"
-    );
+    // Regression: not only the active pane, else input to the others drops.
+    let pid2 = s.add_pane_to_session(sid).expect("second pane");
+    assert_eq!(s.attach_default_caps(cid, "default", mk_tx()).unwrap(), sid);
+    let other = s.new_client_id();
+    s.attach_default_caps(other, "default", mk_tx()).unwrap();
+    assert!(s.attached().contains_key(&cid));
+    assert_eq!(s.subscribers_for_resource(pid1), &[cid, other]);
+    assert_eq!(s.subscribers_for_resource(pid2), &[cid, other]);
 }
 
 #[test]
@@ -182,81 +153,36 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     );
 }
 
-// ADR-0033 input-lease state machine (the gate's backing store).
-
 #[test]
-fn input_open_by_default_blocks_nobody() {
+fn input_lease_blocks_non_holders_until_released_or_detached() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
     let a = s.new_client_id();
+    let b = s.new_client_id();
     assert_eq!(s.input_lease_holder(pid), None);
     assert!(!s.input_blocked(pid, a), "an Open pane blocks no one");
-}
 
-#[test]
-fn acquired_lease_blocks_others_not_holder() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
-    assert_eq!(
-        s.set_input_lease(pid, a),
-        None,
-        "first acquire has no prior"
-    );
-    assert_eq!(s.input_lease_holder(pid), Some(a));
-    assert!(!s.input_blocked(pid, a), "the holder is never blocked");
-    assert!(s.input_blocked(pid, b), "a non-holder is blocked");
-}
-
-#[test]
-fn seize_returns_prior_holder() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
-    s.set_input_lease(pid, a);
+    assert_eq!(s.set_input_lease(pid, a), None);
+    assert!(!s.input_blocked(pid, a) && s.input_blocked(pid, b));
     assert_eq!(
         s.set_input_lease(pid, b),
         Some(a),
-        "seizing returns the preempted holder"
+        "a seize returns the prior holder"
     );
-    assert_eq!(s.input_lease_holder(pid), Some(b));
-    assert!(
-        s.input_blocked(pid, a),
-        "the preempted client is now blocked"
-    );
-}
+    assert!(s.input_blocked(pid, a));
 
-#[test]
-fn release_is_holder_scoped_and_idempotent() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
-    s.set_input_lease(pid, a);
-    assert!(!s.release_input_lease(pid, b), "non-holder cannot release");
-    assert_eq!(s.input_lease_holder(pid), Some(a));
-    assert!(
-        s.release_input_lease(pid, a),
-        "holder releases its own lease"
-    );
+    assert!(!s.release_input_lease(pid, a), "only the holder releases");
+    assert!(s.release_input_lease(pid, b));
+    assert!(!s.release_input_lease(pid, b), "double release is a no-op");
     assert_eq!(s.input_lease_holder(pid), None);
-    assert!(!s.release_input_lease(pid, a), "double release is a no-op");
-}
 
-#[test]
-fn detach_releases_the_wheel() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
     s.set_input_lease(pid, a);
     assert_eq!(s.leases_held_by(a), vec![pid]);
     s.detach(a);
     assert_eq!(
         s.input_lease_holder(pid),
         None,
-        "a disconnect must never strand the wheel"
+        "a disconnect never strands the wheel"
     );
     assert!(s.leases_held_by(a).is_empty());
 }
@@ -293,88 +219,40 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
 }
 
 #[test]
-fn attach_stores_hello_selected_bootstrap_contract_unchanged() {
+fn attach_stores_hello_caps_and_bootstrap_contract_unchanged() {
     let mut s = ServerState::new();
     let _ = s.seed_session("default");
-    let cid = s.new_client_id();
+    let (default, advertised) = (s.new_client_id(), s.new_client_id());
+    s.attach_default_caps(default, "default", mk_tx()).unwrap();
     let profile = BootstrapProfile::SynthesizedVtStateSync;
     let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
-    s.attach(
-        cid,
-        "default",
-        mk_tx(),
-        ClientCapabilities::default(),
-        profile,
-        limits,
-    )
-    .unwrap();
-    let attached = &s.attached()[&cid];
+    let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
+    s.attach(advertised, "default", mk_tx(), caps, profile, limits)
+        .unwrap();
+    let default = &s.attached()[&default];
+    assert_eq!(default.client_caps.color_support, ColorSupport::TrueColor);
+    let attached = &s.attached()[&advertised];
+    assert_eq!(attached.client_caps.color_support, ColorSupport::Indexed16);
     assert_eq!(attached.bootstrap_profile, Some(profile));
     assert_eq!(attached.bootstrap_limits, limits);
-}
-
-#[test]
-fn two_clients_attach_same_session_see_same_active_pane() {
-    let mut s = ServerState::new();
-    let (_sid, pid) = s.seed_session("default");
-    let a = s.new_client_id();
-    let b = s.new_client_id();
-    s.attach_default_caps(a, "default", mk_tx()).unwrap();
-    s.attach_default_caps(b, "default", mk_tx()).unwrap();
-    let subs = s.subscribers_for_resource(pid);
-    assert!(subs.contains(&a) && subs.contains(&b));
-    assert_eq!(subs.len(), 2);
-}
-
-#[test]
-fn attached_client_color_support_defaults_to_truecolor() {
-    // `attach_default_caps` keeps the most permissive tier.
-    let mut s = ServerState::new();
-    let _ = s.seed_session("default");
-    let cid = s.new_client_id();
-    s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    let client = s.attached().get(&cid).unwrap();
-    assert_eq!(client.client_caps.color_support, ColorSupport::TrueColor);
-}
-
-#[test]
-fn attach_records_advertised_color_support() {
-    // Production path: HELLO advertised a tier, ATTACH consumes it.
-    let mut s = ServerState::new();
-    let _ = s.seed_session("default");
-    let cid = s.new_client_id();
-    s.attach(
-        cid,
-        "default",
-        mk_tx(),
-        ClientCapabilities::new().with_color_support(ColorSupport::Indexed16),
-        BootstrapProfile::SynthesizedVtRaw,
-        BootstrapLimits::default(),
-    )
-    .unwrap();
-    let client = s.attached().get(&cid).unwrap();
-    assert_eq!(client.client_caps.color_support, ColorSupport::Indexed16);
 }
 
 #[test]
 fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     let mut s = ServerState::new();
     let (sid, pid_a) = s.seed_session("default");
-    let pid_b = s.add_pane_to_session(sid).expect("second pane");
+    // The second pane has no handle, so it is excluded.
+    s.add_pane_to_session(sid).expect("second pane");
     let pid_c = s.add_pane_to_session(sid).expect("third pane");
 
     s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new())
         .unwrap();
     s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new())
         .unwrap();
-    // pid_b intentionally has no handle and must be excluded.
 
     let panes = s.attach_snapshot_panes(sid);
     let ids: HashSet<ResourceId> = panes.iter().map(|p| p.terminal_id).collect();
-    assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&pid_a));
-    assert!(ids.contains(&pid_c));
-    assert!(!ids.contains(&pid_b));
+    assert_eq!(ids, HashSet::from([pid_a, pid_c]));
     for pane in panes {
         assert_eq!(
             s.resource_from_wire(&pane.wire_terminal_id),

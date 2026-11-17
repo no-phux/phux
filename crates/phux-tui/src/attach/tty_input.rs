@@ -1,15 +1,9 @@
-//! The outer terminal's input handle, read on reactor readiness.
+//! The outer terminal's input handle, read on reactor readiness instead of
+//! the blocking pool (one cross-thread wake per keystroke).
 //!
-//! `tokio::io::stdin()` reads on the blocking pool, costing a cross-thread
-//! wake-up per keystroke. [`TtyInput::Ready`] registers a private
-//! non-blocking handle to the controlling terminal with the reactor instead.
-//!
-//! The handle is a fresh open of the terminal's device path (`ttyname` of fd
-//! 0): `O_NONBLOCK` on fd 0's shared description would leak to the parent
-//! shell after exit, and a `/dev/tty` fd is not kqueue-registrable on macOS.
-//! Termios is per device, so the raw-mode guard still governs it.
-//! [`TtyInput::Blocking`] is the fallback whenever that path cannot be
-//! established.
+//! [`TtyInput::Ready`] is a fresh open of `ttyname(0)`: `O_NONBLOCK` on fd
+//! 0's shared description would leak to the parent shell, and `/dev/tty` is
+//! not kqueue-registrable on macOS. [`TtyInput::Blocking`] is the fallback.
 
 use std::io;
 use std::io::IsTerminal;
@@ -27,10 +21,8 @@ pub(super) enum TtyInput {
     /// Blocking-pool-backed stdin. Correct everywhere, slower by one
     /// cross-thread wake-up per read.
     Blocking(Box<tokio::io::Stdin>),
-    /// EOF has been reported once; reads never complete again. A terminal at
-    /// EOF answers `Ok(0)` forever, and stdin is polled first in the biased
-    /// `select!`, so re-reporting it starved the signal arms (a client once
-    /// spun a core and ignored `kill`).
+    /// EOF was reported once; reads never complete again. Re-reporting a
+    /// terminal's endless `Ok(0)` starved the signal arms.
     Closed,
 }
 
@@ -48,10 +40,9 @@ impl TtyInput {
         }
         match controlling_tty() {
             // Read interest only; the handle is `O_RDONLY`.
-            // SAFETY: `controlling_tty` returns a freshly opened, valid `OwnedFd`.
-            // Moving it into `AsyncFd` keeps the same descriptor and underlying
-            // file description open until deregistration; we only borrow it for
-            // reads and never replace it or expose a raw alias that could close it.
+            // SAFETY: `controlling_tty` returns a freshly opened, valid
+            // `OwnedFd`; `AsyncFd` keeps it open until deregistration and it
+            // is only borrowed for reads, never replaced or aliased.
             Ok(fd) => match unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) } {
                 Ok(registered) => {
                     tracing::debug!("reading the outer terminal on reactor readiness");

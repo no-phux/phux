@@ -70,8 +70,6 @@ pub fn view(_desk: &Desk, p: &Ink) -> El {
 
 #[cfg(test)]
 mod tests {
-    use crate::desk::Desk;
-
     #[test]
     fn the_bell_opens_whats_new_and_close_shuts_it() {
         use rune::accesskit::Action;
@@ -80,7 +78,7 @@ mod tests {
             (false, (1100.0, 720.0), "news-button"),
             (true, (393.0, 852.0), "phone-news"),
         ] {
-            let mut desk = Desk::settings_test_fixture().with_phone(phone);
+            let mut desk = crate::test_support::settings_window().with_phone(phone);
             desk.settings_open = false;
             desk.news.unread = true;
             let mut rt =
@@ -100,7 +98,7 @@ mod tests {
     fn the_phone_bars_esc_closes_whats_new() {
         use crate::desk::phone::Soft;
 
-        let mut desk = Desk::settings_test_fixture().with_phone(true);
+        let mut desk = crate::test_support::settings_window().with_phone(true);
         desk.settings_open = false;
         desk.toggle_news();
         let mut rt = rune::Runtime::new(

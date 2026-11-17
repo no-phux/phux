@@ -17,7 +17,6 @@ use std::time::Duration;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, EventStamp, FrameKind, SpawnResult,
-    StateScope,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -121,14 +120,7 @@ async fn command(
     request_id: u32,
     command: Command,
 ) -> (CommandResult, Vec<Seen>) {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
+    phux_server_testkit::send_command(stream, request_id, command).await;
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     let mut seen = Vec::new();
     loop {
@@ -148,9 +140,7 @@ async fn command(
 }
 
 const fn get_state() -> Command {
-    Command::GetState {
-        scope: StateScope::Server,
-    }
+    phux_server_testkit::get_state()
 }
 
 /// `SUBSCRIBE_EVENTS` then the barrier; returns the replay sent ahead of it.
@@ -162,10 +152,7 @@ async fn subscribe(
 ) -> Vec<Seen> {
     send_frame(
         stream,
-        &FrameKind::SubscribeEvents {
-            terminal,
-            after_seq,
-        },
+        &phux_server_testkit::subscribe_events(terminal, after_seq),
     )
     .await;
     let (result, seen) = command(stream, request_id, get_state()).await;
@@ -311,10 +298,7 @@ async fn journal_contents(socket: &Path) -> Vec<Seen> {
     let (mut reader, _) = connect_as(socket, "journal-reader", full_caps()).await;
     send_frame(
         &mut reader,
-        &FrameKind::SubscribeEvents {
-            terminal: None,
-            after_seq: Some(0),
-        },
+        &phux_server_testkit::subscribe_events(None, Some(0)),
     )
     .await;
     drain_until_quiet(&mut reader, Duration::from_millis(400)).await

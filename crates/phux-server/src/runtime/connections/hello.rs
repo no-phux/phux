@@ -218,12 +218,15 @@ pub(super) async fn negotiate_hello(
 /// What this server advertises: everything implemented, less what its
 /// configuration turns off.
 fn server_features_ext(state: &SharedState) -> ServerFeatureExtSet {
-    let features = runtime_server_features_ext();
-    if state.with(|s| s.forward().tcp) {
-        features
-    } else {
-        features.without(ServerFeatureExt::ForwardTcp)
+    let (tcp, agent) = state.with(|s| (s.forward().tcp, s.forward_agent().socket().is_some()));
+    let mut features = runtime_server_features_ext();
+    if !tcp {
+        features = features.without(ServerFeatureExt::ForwardTcp);
     }
+    if !agent {
+        features = features.without(ServerFeatureExt::ForwardAgent);
+    }
+    features
 }
 
 /// Explicitly implemented extension support, separate from HELLO negotiation.
@@ -244,6 +247,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::PerfControl,
         ServerFeatureExt::SessionProject,
         ServerFeatureExt::TabLock,
+        ServerFeatureExt::SlotTabs,
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,
@@ -253,8 +257,10 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::Mirrors,
         ServerFeatureExt::PrivacyStatus,
         ServerFeatureExt::ClipboardRead,
+        ServerFeatureExt::Credentials,
         ServerFeatureExt::HostChecklist,
         ServerFeatureExt::ForwardTcp,
+        ServerFeatureExt::ForwardAgent,
     ])
 }
 
@@ -398,10 +404,6 @@ impl NegotiatedConnection {
     /// subscriptions start at `STREAM_BIND`.
     pub(in crate::runtime) const fn quic_streams(self) -> bool {
         self.server_features.contains(ServerFeature::QuicStreams)
-    }
-
-    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
-        self.server_features.contains(ServerFeature::TerminalReply)
     }
 }
 const fn runtime_server_features() -> ServerFeatureSet {

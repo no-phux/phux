@@ -20,105 +20,101 @@ use super::{
 
 #[tokio::test(flavor = "current_thread")]
 async fn whoami_reports_the_effective_grant() {
-    LocalSet::new()
-        .run_until(async {
-            let fixture = paired(&["observe@global", "input@host:devbox"]);
-            let outcome = exchange(
-                &fixture.state,
-                script(&[hello("scope-matrix"), whoami(9)]),
-                None,
-                has_metadata(9),
-            )
-            .await;
-            let record = outcome.whoami(9);
-            assert_eq!(record["credential_id"], fixture.credential_id.as_str());
-            assert_eq!(
-                record["grant"],
-                serde_json::json!([
-                    { "verbs": ["observe"], "selector": "global" },
-                    { "verbs": ["input"], "selector": "host:devbox" },
-                ]),
-                "the registry ceiling, not the cached `*@global`"
-            );
-        })
+    crate::runtime::test_support::local(async {
+        let fixture = paired(&["observe@global", "input@host:devbox"]);
+        let outcome = exchange(
+            &fixture.state,
+            script(&[hello("scope-matrix"), whoami(9)]),
+            None,
+            has_metadata(9),
+        )
         .await;
+        let record = outcome.whoami(9);
+        assert_eq!(record["credential_id"], fixture.credential_id.as_str());
+        assert_eq!(
+            record["grant"],
+            serde_json::json!([
+                { "verbs": ["observe"], "selector": "global" },
+                { "verbs": ["input"], "selector": "host:devbox" },
+            ]),
+            "the registry ceiling, not the cached `*@global`"
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_narrowly_scoped_workload_reads_its_own_whoami() {
-    LocalSet::new()
-        .run_until(async {
-            for (engine, ceiling) in [(Engine::Registry, None), (Engine::Fixed, Some(()))] {
-                let fixture = fixture(engine, |t| match ceiling {
-                    None => vec!["observe@host:x".to_owned()],
-                    Some(()) => vec![format!("input@terminal:{}", t.alpha)],
-                });
-                let outcome = exchange(
-                    &fixture.state,
-                    script(&[hello("scope-matrix"), whoami(10)]),
-                    None,
-                    has_metadata(10),
-                )
-                .await;
-                let record = outcome.whoami(10);
-                assert_eq!(
-                    record["grant"].as_array().map(Vec::len),
-                    Some(1),
-                    "{record}"
-                );
-                assert_eq!(outcome.denials(Some(10)), 0);
-            }
-        })
-        .await;
+    crate::runtime::test_support::local(async {
+        for (engine, ceiling) in [(Engine::Registry, None), (Engine::Fixed, Some(()))] {
+            let fixture = fixture(engine, |t| match ceiling {
+                None => vec!["observe@host:x".to_owned()],
+                Some(()) => vec![format!("input@terminal:{}", t.alpha)],
+            });
+            let outcome = exchange(
+                &fixture.state,
+                script(&[hello("scope-matrix"), whoami(10)]),
+                None,
+                has_metadata(10),
+            )
+            .await;
+            let record = outcome.whoami(10);
+            assert_eq!(
+                record["grant"].as_array().map(Vec::len),
+                Some(1),
+                "{record}"
+            );
+            assert_eq!(outcome.denials(Some(10)), 0);
+        }
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_second_hello_on_a_paired_connection_still_closes() {
-    LocalSet::new()
-        .run_until(async {
-            let fixture = paired(&["*@global"]);
-            let outcome = exchange(
-                &fixture.state,
-                script(&[hello("scope-matrix"), hello("scope-matrix")]),
-                None,
-                |_| false,
-            )
-            .await;
-            assert!(outcome.closed, "HELLO is valid only in PRE_HELLO");
-        })
+    crate::runtime::test_support::local(async {
+        let fixture = paired(&["*@global"]);
+        let outcome = exchange(
+            &fixture.state,
+            script(&[hello("scope-matrix"), hello("scope-matrix")]),
+            None,
+            |_| false,
+        )
         .await;
+        assert!(outcome.closed, "HELLO is valid only in PRE_HELLO");
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn client_sent_frame_compressed_is_refused_at_decode() {
-    LocalSet::new()
-        .run_until(async {
-            let fixture = paired(&["*@global"]);
-            let inner = paste(&fixture.alpha, vec![b'a'; 16 * 1024]);
-            let mut scratch = BytesMut::new();
-            let mut compressed = BytesMut::new();
-            inner.encode_compressed(Compression::Deflate, &mut scratch, &mut compressed);
-            assert_eq!(
-                compressed[4], TYPE_FRAME_COMPRESSED,
-                "the envelope is on the wire"
-            );
-            let outcome = exchange(
-                &fixture.state,
-                vec![encode(&hello("scope-matrix")), compressed],
-                None,
-                |_| false,
-            )
-            .await;
-            assert!(outcome.closed, "{:?}", outcome.frames);
-            assert!(outcome.frames.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Error {
-                    code: ErrorCode::MalformedMessage,
-                    ..
-                }
-            )));
-        })
+    crate::runtime::test_support::local(async {
+        let fixture = paired(&["*@global"]);
+        let inner = paste(&fixture.alpha, vec![b'a'; 16 * 1024]);
+        let mut scratch = BytesMut::new();
+        let mut compressed = BytesMut::new();
+        inner.encode_compressed(Compression::Deflate, &mut scratch, &mut compressed);
+        assert_eq!(
+            compressed[4], TYPE_FRAME_COMPRESSED,
+            "the envelope is on the wire"
+        );
+        let outcome = exchange(
+            &fixture.state,
+            vec![encode(&hello("scope-matrix")), compressed],
+            None,
+            |_| false,
+        )
         .await;
+        assert!(outcome.closed, "{:?}", outcome.frames);
+        assert!(outcome.frames.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Error {
+                code: ErrorCode::MalformedMessage,
+                ..
+            }
+        )));
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -148,56 +144,54 @@ async fn the_owner_socket_keeps_todays_behaviour() {
 /// and Terminal only; a grant without INVENTORY is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn get_state_answers_with_only_what_the_grant_inventories() {
-    LocalSet::new()
-        .run_until(async {
-            let fixture = fixture(Engine::Fixed, |topology| {
-                vec![format!("inventory@group:{}", topology.alpha_group)]
-            });
-            let get_state = command(
-                1,
-                Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            );
-            let outcome = exchange(
-                &fixture.state,
-                script(&[hello("scope-matrix"), get_state]),
-                None,
-                has_result(1),
-            )
-            .await;
-            let Some(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(
-                snapshot,
-            ))) = outcome.result(1)
-            else {
-                panic!("GET_STATE answered: {:?}", outcome.frames);
-            };
-            let ids: Vec<_> = snapshot.resources.iter().map(|r| r.id.clone()).collect();
-            assert_eq!(ids, vec![fixture.alpha.clone()], "never beta");
-            assert_eq!(snapshot.sessions.len(), 1, "{:?}", snapshot.sessions);
-            assert!(!ids.contains(&fixture.beta));
-
-            let blind = fixture_with(Engine::Fixed, "observe@global");
-            let get_state = command(
-                2,
-                Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            );
-            let outcome = exchange(
-                &blind.state,
-                script(&[hello("scope-matrix"), get_state]),
-                None,
-                has_result(2),
-            )
-            .await;
-            assert!(
-                is_permission_denied(outcome.result(2)),
-                "{:?}",
-                outcome.frames
-            );
-        })
+    crate::runtime::test_support::local(async {
+        let fixture = fixture(Engine::Fixed, |topology| {
+            vec![format!("inventory@group:{}", topology.alpha_group)]
+        });
+        let get_state = command(
+            1,
+            Command::GetState {
+                scope: phux_protocol::wire::frame::StateScope::Server,
+            },
+        );
+        let outcome = exchange(
+            &fixture.state,
+            script(&[hello("scope-matrix"), get_state]),
+            None,
+            has_result(1),
+        )
         .await;
+        let Some(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(snapshot))) =
+            outcome.result(1)
+        else {
+            panic!("GET_STATE answered: {:?}", outcome.frames);
+        };
+        let ids: Vec<_> = snapshot.resources.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids, vec![fixture.alpha.clone()], "never beta");
+        assert_eq!(snapshot.sessions.len(), 1, "{:?}", snapshot.sessions);
+        assert!(!ids.contains(&fixture.beta));
+
+        let blind = fixture_with(Engine::Fixed, "observe@global");
+        let get_state = command(
+            2,
+            Command::GetState {
+                scope: phux_protocol::wire::frame::StateScope::Server,
+            },
+        );
+        let outcome = exchange(
+            &blind.state,
+            script(&[hello("scope-matrix"), get_state]),
+            None,
+            has_result(2),
+        )
+        .await;
+        assert!(
+            is_permission_denied(outcome.result(2)),
+            "{:?}",
+            outcome.frames
+        );
+    })
+    .await;
 }
 
 fn fixture_with(engine: Engine, scope: &str) -> Fixture {

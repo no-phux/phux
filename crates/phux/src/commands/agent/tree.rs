@@ -209,9 +209,7 @@ pub(super) async fn mirror_pane(
     if let Some(target) = pane {
         return resolve(socket_path, target, verb, json).await;
     }
-    std::env::var("PHUX_TERMINAL_ID")
-        .ok()
-        .and_then(|raw| raw.parse::<u32>().ok())
+    crate::environment::own_terminal_id()
         .map(phux_protocol::ids::ResourceId::local)
         .ok_or_else(|| {
             json_err::emit(

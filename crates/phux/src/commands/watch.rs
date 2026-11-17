@@ -88,17 +88,6 @@ pub(crate) struct WatchArgs<'a> {
 /// `phux watch [TARGET]` — stream a pane's live events and its
 /// `phux.agent/v1` record, one line per item, until EOF or Ctrl-C, without
 /// attaching or resizing. `--json` keeps stdout pure NDJSON.
-///
-/// No `schema_version` on this stream (ADR-0071): a per-line field is overhead
-/// and a header line is missed by reconnecting consumers. The binary version
-/// and the `event` vocabulary are the contract; consumers ignore unknown events
-/// and fields (see `docs/scripting.md#watching-events`).
-///
-/// `--until EVENT` gates the stream: the first matching item is printed and the
-/// watch exits 0. `--timeout SECS` always exits 124 on expiry, like `wait`. A
-/// server EOF with an unsatisfied `--until` exits 1 (the event did not happen);
-/// without `--until`, EOF is exit 0. Ctrl-C is always exit 0. Diagnostics go to
-/// stderr; no summary is appended to stdout.
 pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
     let WatchArgs {
         session,
@@ -230,6 +219,12 @@ fn watch_exit(
     }
 }
 
+/// The `--json` resume line on stderr. Its shape is documented in
+/// docs/build-a-client.md and checked against it by a test.
+pub(crate) fn cursor_json(cursor: Option<&str>, cursor_void: bool) -> serde_json::Value {
+    serde_json::json!({ "cursor": cursor, "cursor_void": cursor_void })
+}
+
 /// The last stderr line: where to resume with `--after` (ADR-0123), as JSON
 /// under `--json`. Nothing without an event journal.
 fn report_cursor(resume: &ResumeState, json: bool) {
@@ -239,10 +234,10 @@ fn report_cursor(resume: &ResumeState, json: bool) {
             // Resume-cursor JSON is a machine stderr contract, not a diagnostic.
             eprintln!(
                 "{}",
-                serde_json::json!({
-                    "cursor": cursor.as_ref().map(ToString::to_string),
-                    "cursor_void": resume.cursor_void(),
-                })
+                cursor_json(
+                    cursor.as_ref().map(ToString::to_string).as_deref(),
+                    resume.cursor_void()
+                )
             );
         }
         return;

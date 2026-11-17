@@ -79,24 +79,26 @@ pub struct Chord {
 }
 
 impl Chord {
-    const fn cmd(cap: Cap) -> Self {
+    /// The key alone.
+    const fn bare(cap: Cap) -> Self {
         Self {
             cap,
-            command: true,
+            command: false,
             ctrl: false,
             alt: false,
             shift: false,
         }
     }
 
-    const fn ctrl(cap: Cap) -> Self {
+    const fn cmd(cap: Cap) -> Self {
         Self {
-            cap,
-            command: false,
-            ctrl: true,
-            alt: false,
-            shift: false,
+            command: true,
+            ..Self::bare(cap)
         }
+    }
+
+    const fn ctrl(cap: Cap) -> Self {
+        Self::bare(cap).and_ctrl()
     }
 
     const fn shift(self) -> Self {
@@ -108,13 +110,7 @@ impl Chord {
 
     /// The key with Shift alone.
     const fn shifted(cap: Cap) -> Self {
-        Self {
-            cap,
-            command: false,
-            ctrl: false,
-            alt: false,
-            shift: true,
-        }
+        Self::bare(cap).shift()
     }
 
     const fn alt(self) -> Self {
@@ -123,13 +119,7 @@ impl Chord {
 
     /// The key with Option (Alt) alone.
     const fn opt(cap: Cap) -> Self {
-        Self {
-            cap,
-            command: false,
-            ctrl: false,
-            alt: true,
-            shift: false,
-        }
+        Self::bare(cap).alt()
     }
 
     const fn and_ctrl(self) -> Self {
@@ -296,6 +286,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::Kitchen, "Open Kitchen", [], []),
     row!(Shortcut::PitLane, "Open Pit Lane", [], []),
     row!(Shortcut::Hive, "Open Hive", [], []),
+    row!(Shortcut::Playground, "Playground…", [], []),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
     row!(Shortcut::ChangeTheme, "Change Theme", [], []),
     row!(
@@ -310,6 +301,7 @@ pub const COMMANDS: &[Command] = &[
         [m('i').shift(), Chord::opt(Cap::Char(';'))],
         [l(';')]
     ),
+    row!(mac Shortcut::QuickLook, "Quick Look", [m('y')]),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(
         Shortcut::EssentialShortcuts,
@@ -321,6 +313,7 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),
+    row!(Shortcut::WhatWorksHere, "What Works Here", [], []),
     row!(Shortcut::PairPhone, "Pair a Phone", [], []),
     row!(Shortcut::RetryConnection, "Retry Connection", [], []),
     row!(Shortcut::CopyDiagnostics, "Copy Diagnostics", [], []),
@@ -431,6 +424,19 @@ pub const COMMANDS: &[Command] = &[
         [m('[').shift()],
         [Chord::ctrl(Cap::PageUp).shift()]
     ),
+    // Shift beside Command+Left/Right, which walk the session's terminals.
+    row!(
+        Shortcut::NextSlotTab,
+        "Next Tab in Split",
+        [Chord::cmd(Cap::Right).shift()],
+        [Chord::ctrl(Cap::Right).shift()]
+    ),
+    row!(
+        Shortcut::PreviousSlotTab,
+        "Previous Tab in Split",
+        [Chord::cmd(Cap::Left).shift()],
+        [Chord::ctrl(Cap::Left).shift()]
+    ),
     row!(
         Shortcut::ToggleSidebar,
         "Toggle Sidebar",
@@ -462,6 +468,24 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::ZoomOut, "Smaller Text", [m('-')], [l('-')]),
     row!(Shortcut::ZoomReset, "Default Text Size", [m('0')], [l('0')]),
+    row!(
+        Shortcut::InterfaceBigger,
+        "Bigger Interface",
+        [m('=').alt(), m('=').shift().alt()],
+        [l('=').alt()]
+    ),
+    row!(
+        Shortcut::InterfaceSmaller,
+        "Smaller Interface",
+        [m('-').alt()],
+        [l('-').alt()]
+    ),
+    row!(
+        Shortcut::InterfaceReset,
+        "Default Interface Size",
+        [m('0').alt()],
+        [l('0').alt()]
+    ),
     row!(
         Shortcut::ScrollTop,
         "Scroll to Top of History",
@@ -506,6 +530,16 @@ pub const COMMANDS: &[Command] = &[
 /// The keys worth learning first, in teaching order: the ones that make a
 /// terminal, move between terminals, and find what needs you. Every one has
 /// a chord on each platform (tested), so the list never shows a bare title.
+/// The playground's scenes, listed under View → Playground rather than in View.
+pub const PLAYGROUND: &[Shortcut] = &[
+    Shortcut::Galaxy,
+    Shortcut::Reef,
+    Shortcut::Pitch,
+    Shortcut::Kitchen,
+    Shortcut::PitLane,
+    Shortcut::Hive,
+];
+
 pub const ESSENTIALS: &[Shortcut] = &[
     Shortcut::NewTerminal,
     Shortcut::NewSession,

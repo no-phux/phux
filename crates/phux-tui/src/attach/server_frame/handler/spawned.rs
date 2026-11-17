@@ -7,7 +7,9 @@ use super::replies::unreferenced;
 use super::windows::handle_window_spawned;
 use super::{FrameCtx, FrameOutcome};
 use crate::attach::actions;
-use crate::attach::actions::{ParkedAdopt, PendingSplit, SpawnedPane, SplitHost, apply_spawned_ok};
+use crate::attach::actions::{
+    Adopt, ParkedAdopt, PendingSplit, SpawnedPane, SplitHost, apply_spawned_ok,
+};
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::content_rect;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
@@ -60,19 +62,17 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } if !new_id.is_local() => {
             Ok(FrameOutcome {
                 adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
-                    adopt: Some(SpawnedPane {
+                    adopt: Some(Adopt::Spawned(SpawnedPane {
                         id: new_id,
                         instance,
-                    }),
+                    })),
                     ..pending
                 })],
                 ..FrameOutcome::default()
             })
         }
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } => {
-            let mut outcome = apply_split_spawned(ctx, new_id, &pending)?;
-            outcome.notices.extend(split_fallback_notice(&pending.host));
-            Ok(outcome)
+            apply_split_spawned(ctx, new_id, &pending)
         }
         SpawnResult::Err(err) => {
             log_split_spawn_error(request_id, &err);
@@ -97,10 +97,8 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
 pub(super) const UNCERTAIN_SPAWN: &str =
     "the new pane's outcome is unknown (a newer server's answer); it may exist";
 
-/// A parked split, window, or floating spawn whose answer does not say
-/// whether a pane was created: it settles with a notice saying so, never as
-/// "nothing was created". A pane the server did create surfaces through
-/// its spawn event like any other.
+/// A parked spawn whose answer does not say whether a pane was created
+/// settles with a notice saying so; a created pane surfaces via its event.
 fn uncertain_spawn<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     request_id: u32,
@@ -119,10 +117,9 @@ fn uncertain_spawn<W: crate::attach::RenderSink>(
     }
 }
 
-/// ADR-0147: a floating overlay's spawn answered. Seed its slot at the box
-/// interior, marked floating, so paint and input find it; it joins no window.
-/// A refusal bells with the reason; a second overlay racing an open one, or
-/// a non-local id, is killed instead.
+/// ADR-0147: a floating overlay's spawn answered: seed its slot at the box
+/// interior, in no window. A refusal bells; a racing second overlay or a
+/// non-local id is killed.
 fn handle_floating_spawned<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     title: String,
@@ -188,9 +185,7 @@ pub(super) fn close_floating<W: crate::attach::RenderSink>(
 }
 
 /// The retained floating overlay's process failed: keep its last screen up,
-/// titled with the exit and `any key`, so a popup's error can be read (tmux
-/// `-EE`). Any key or action dismisses it, killing the Terminal. `None` when
-/// `terminal_id` is not the floating pane or the process succeeded.
+/// titled with the exit (tmux `-EE`), until any key dismisses it.
 pub(super) fn hold_failed_floating<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     terminal_id: &ResourceId,
@@ -254,17 +249,6 @@ fn split_refusal_notice(host: &SplitHost, reason: &str) -> Option<Notice> {
     )))
 }
 
-/// A satellite split a hub without host-aware spawns opened on itself: say
-/// the pane is on this host.
-fn split_fallback_notice(host: &SplitHost) -> Option<Notice> {
-    let SplitHost::AttachedInsteadOf(satellite) = host else {
-        return None;
-    };
-    Some(Notice::warn(format!(
-        "this hub may not be able to spawn on {satellite}; the split opened on this host"
-    )))
-}
-
 /// Apply a spawned split in the window holding its source pane (the user may
 /// have switched windows meanwhile), seed the slot, and focus it if that
 /// window is on screen. A split whose source is gone is [`split_dropped`].
@@ -273,7 +257,7 @@ pub(super) fn apply_split_spawned<W: crate::attach::RenderSink>(
     new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
-    let keep_existing = pending.open_existing.is_some();
+    let keep_existing = pending.opens_existing();
     let Some(index) = window_holding_pane(ctx.workspace, &pending.focused_at_request) else {
         return Ok(abandon_split(
             ctx,

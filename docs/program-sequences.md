@@ -119,14 +119,18 @@ and kitty's OSC 5522 writes are treated the same way.
 
 - Every selection (`c`, `p`, `s`, and the rest) means the clipboard of the
   user's machine.
-- Only a write from the pane the user's TUI has focused, from live output,
+- Only a write from the pane the client has focused (in Rune, while its
+  window has focus), from live output,
   of UTF-8 `text/plain` at most 1 MiB decoded, is used. phux drops a write
   replayed from history, a clear, and anything else. Only the last write in
   one chunk of output counts.
 - The user's `defaults.clipboard-write` decides: `allow` (the default) sets
-  the clipboard, `ask` shows the size and asks first, `deny` drops it.
-- phux passes the text on to the user's terminal as OSC 52, which may have
-  its own policy.
+  the clipboard, `ask` shows the size and asks first, `deny` drops it. Rune
+  asks one write at a time, ignores Return for the prompt's first half
+  second, and treats a config it cannot parse as `deny`. Copies the user
+  makes themselves never pass through this policy.
+- The TUI passes the text on to the user's terminal as OSC 52, which may
+  have its own policy; Rune sets its own clipboard.
 
 `OSC 52 ; c ; ? ST` asks to read the clipboard. By default it gets no
 reply, so a program MUST NOT wait for one without a timeout.
@@ -174,6 +178,14 @@ A BEL (`0x07`) outside a control string is a `bell` event in `phux watch`
 and the MCP tools, one per chunk of output. It does not ring the user's
 terminal, and does not mark the pane as needing attention. A BEL that ends
 an OSC is a terminator, not a bell.
+
+## Focus reports (DEC 1004)
+
+A pane that sets `CSI ? 1004 h` gets `CSI I` when it becomes the pane the
+user types into and `CSI O` when it stops being that pane. Both the terminal
+UI and Rune report every move: a pane, tab or session switch, a floating
+pane opening or closing, a detach, and the user's terminal window gaining or
+losing focus. A pane that isn't on screen never gets `CSI I`.
 
 ## Replies phux sends
 

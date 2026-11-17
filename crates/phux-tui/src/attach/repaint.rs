@@ -1,11 +1,6 @@
-//! The monotone repaint accumulator (ADR-0029 §2) and the frame pacer.
-//!
-//! Loop-level triggers RAISE a level during an iteration and the loop DRAINS
-//! it exactly once, so N triggers (a burst of agent-metadata broadcasts, say)
-//! collapse into one paint at the highest requested level instead of N
-//! full-screen clears. [`RepaintLevel`] orders by declaration, so a raise is a
-//! monotone `max`. [`PaintPacer`] is the same idea across iterations: paints
-//! landing inside one frame interval collapse into one.
+//! The monotone repaint accumulator (ADR-0029) and the frame pacer: triggers
+//! raise a [`RepaintLevel`] (a `max`) and the loop drains it once per
+//! iteration; [`PaintPacer`] collapses paints inside one frame interval.
 
 use std::time::Duration;
 
@@ -18,17 +13,11 @@ pub(super) enum RepaintLevel {
     /// In-place chrome only (sidebar strip + status bar): no `ED2`, no pane
     /// interior, and unchanged painters emit nothing.
     Chrome,
-    /// Each visible pane's dirty rows in place, then chrome: no `ED2`, no
-    /// forced pane paint, so a pane whose rows are clean emits nothing. Used
-    /// when the tiles are unchanged but a pane's content moved under the
-    /// client's own hand (a wheel or copy-mode scroll of its viewport), which
-    /// no pane output will ever paint.
+    /// Each visible pane's dirty rows in place, then chrome: for a local
+    /// viewport scroll at unchanged tiles, which no pane output will paint.
     Rows,
-    /// Every visible pane re-rendered in place, then chrome: no `ED2`, so the
-    /// view never flashes blank on a terminal that ignores DEC 2026. Used for
-    /// a view swap whose tile rectangles are unchanged (switching between
-    /// windows of the same shape), where the panes fully cover the content at
-    /// the same cells and nothing is left stale.
+    /// Every visible pane re-rendered in place, then chrome, with no `ED2`:
+    /// a view swap whose tile rectangles are unchanged.
     Panes,
     /// `ED2` + every pane + dividers + chrome, for when pane rects moved.
     Full,
@@ -91,13 +80,9 @@ fn frame_interval() -> Duration {
     })
 }
 
-/// The frame-rate governor for pane output.
-///
-/// A producer whose lines arrive one wake-up apart would otherwise cost one
-/// full repaint per line. The first frame after a lull paints immediately (no
-/// added latency); frames inside the window still reach the mirrors, but
-/// their panes are remembered and settled in ONE composited frame when the
-/// window expires. Output answering the user's own input is never paced.
+/// The frame-rate governor for pane output: the first frame after a lull
+/// paints at once; frames inside the window reach the mirrors and settle in
+/// one composited frame when it expires. Input echo is never paced.
 #[derive(Debug, Default)]
 pub(super) struct PaintPacer {
     /// Earliest instant the next frame may be emitted; `None` before any paint.

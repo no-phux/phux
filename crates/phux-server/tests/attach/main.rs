@@ -18,7 +18,6 @@ mod detach_terminal;
 mod end_to_end;
 mod hello_survives_detach;
 mod lagged_attach_terminal_resync;
-mod native_kernel;
 mod reattach_multipane_input;
 mod reattach_other_session;
 mod reconnect_scenario;

@@ -74,6 +74,12 @@ function pathScope(detection: Detection): PathScope {
   return { kind: detection.kind === "full" ? "full" : "none" };
 }
 
+// Full history fails closed and runs the catalog job. Release metadata
+// has no flat docs page, so the job stays off.
+function docsCatalogSelected(detection: Detection): boolean {
+  return detection.kind === "paths" ? detection.docsCatalog : detection.kind !== "release-metadata";
+}
+
 function validatedPush(event: string, repository: string, receipt: Receipt): boolean {
   return (
     event === "push" &&
@@ -126,6 +132,7 @@ export const commands: Record<string, Command> = {
         perfBaseline: perfBaselineLabel(event, eventPath),
         queueVerified: !fallback,
         runeQualify: event !== "pull_request",
+        docsCatalog: docsCatalogSelected(detection),
       });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };

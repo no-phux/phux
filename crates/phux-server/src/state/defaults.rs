@@ -75,6 +75,18 @@ impl ServerState {
         &self.config.forward
     }
 
+    /// The ssh-agent broker.
+    pub(crate) const fn forward_agent(&self) -> &crate::runtime::forward::agent::Broker {
+        &self.forward_agent
+    }
+
+    /// Mutable [`Self::forward_agent`].
+    pub(crate) const fn forward_agent_mut(
+        &mut self,
+    ) -> &mut crate::runtime::forward::agent::Broker {
+        &mut self.forward_agent
+    }
+
     /// Read the `[restore]` settings set by [`Self::set_restore`].
     #[must_use]
     pub const fn restore(&self) -> &phux_config::RestoreCfg {

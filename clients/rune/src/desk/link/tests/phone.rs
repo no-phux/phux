@@ -23,13 +23,13 @@ fn phone() -> Desk {
 /// The phone app with a terminal on screen whose connection ended in `error`.
 fn failed(error: &str) -> Desk {
     let mut desk = phone();
-    desk.shown = Some(Shown {
+    desk.connection.shown = Some(Shown {
         resource: ResourceId::local(1),
         view: phux_client_runtime::ViewId::from_raw(1),
     });
-    desk.client = Some(embedded());
-    desk.status = Status::Failed;
-    desk.error = Some(error.to_owned());
+    desk.connection.client = Some(embedded());
+    desk.connection.status = Status::Failed;
+    desk.connection.error = Some(error.to_owned());
     desk.link.down_since = Some(Instant::now() - Duration::from_secs(5));
     desk
 }
@@ -102,19 +102,19 @@ fn the_phone_says_what_to_check_once_a_dial_runs_long() {
     let hint = reach_hint("mini");
     // No client at all is already a failure: say so from the start.
     assert_eq!(desk.standing(), Standing::Unreachable(hint.clone()));
-    desk.client = Some(embedded());
-    desk.status = Status::Connecting;
+    desk.connection.client = Some(embedded());
+    desk.connection.status = Status::Connecting;
     assert_eq!(desk.standing(), Standing::Connecting(String::new()));
     desk.link.down_since = Some(Instant::now() - Duration::from_secs(2));
     assert_eq!(desk.standing(), Standing::Connecting(hint.clone()));
-    desk.status = Status::Failed;
-    desk.error = Some(UNANSWERED.to_owned());
+    desk.connection.status = Status::Failed;
+    desk.connection.error = Some(UNANSWERED.to_owned());
     assert_eq!(desk.standing(), Standing::Unreachable(hint));
     // A desktop keeps the transport's words, and waits without any.
     let mut desktop = stale(embedded());
     assert_eq!(desktop.standing(), Standing::Connecting(String::new()));
-    desktop.status = Status::Failed;
-    desktop.error = Some(UNANSWERED.to_owned());
+    desktop.connection.status = Status::Failed;
+    desktop.connection.error = Some(UNANSWERED.to_owned());
     assert_eq!(
         desktop.standing(),
         Standing::Unreachable(UNANSWERED.to_owned())
@@ -124,8 +124,8 @@ fn the_phone_says_what_to_check_once_a_dial_runs_long() {
 #[test]
 fn the_phones_banner_names_its_computer_and_keeps_the_servers_words() {
     let mut desk = failed(UNANSWERED);
-    desk.status = Status::Connecting;
-    desk.error = None;
+    desk.connection.status = Status::Connecting;
+    desk.connection.error = None;
     let keeps = "Your sessions keep running on mini.";
     assert_eq!(desk.banner(), Some(Banner::Reconnecting(keeps.to_owned())));
     desk.link.ended = Some("the server is shutting down".to_owned());
@@ -162,8 +162,8 @@ fn a_refused_phone_is_offered_pairing_from_the_banner() {
 #[test]
 fn a_desktops_stuck_banner_is_unchanged() {
     let mut desk = stale(embedded());
-    desk.status = Status::Failed;
-    desk.error = Some(QUIC_REFUSED.to_owned());
+    desk.connection.status = Status::Failed;
+    desk.connection.error = Some(QUIC_REFUSED.to_owned());
     let rt = drawn(desk, (1100.0, 720.0));
     assert!(rt.find("banner-pair").is_none());
     let (banner, _) = rt.presented("reconnect-banner").expect("the banner");
@@ -212,7 +212,7 @@ fn the_phones_placeholder_offers_what_can_help() {
     };
     let unshown = |error: &str| {
         let mut desk = failed(error);
-        desk.shown = None;
+        desk.connection.shown = None;
         desk
     };
     // Refused: pair again, which is also where its other computers are.
@@ -224,14 +224,14 @@ fn the_phones_placeholder_offers_what_can_help() {
     assert!(pair.is_none() && retry.is_some() && machines.is_some_and(|h| h >= 44.0));
     // Dialing says nothing at first, then offers a retry beside its hint.
     let mut dialing = unshown(UNANSWERED);
-    dialing.status = Status::Connecting;
-    dialing.error = None;
+    dialing.connection.status = Status::Connecting;
+    dialing.connection.error = None;
     dialing.link.down_since = None;
     let [pair, retry, machines] = keys(dialing);
     assert!(pair.is_none() && retry.is_none() && machines.is_some());
     let mut slow = unshown(UNANSWERED);
-    slow.status = Status::Connecting;
-    slow.error = None;
+    slow.connection.status = Status::Connecting;
+    slow.connection.error = None;
     let [_, retry, _] = keys(slow);
     assert!(retry.is_some());
 }

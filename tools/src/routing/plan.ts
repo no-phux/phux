@@ -36,7 +36,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
   lint: [["rust-lint"]],
   tests: [["test"]],
   e2e: [["e2e"]],
-  ffi: [["binding-uniffi-test"], ["ffi-abi"]],
+  ffi: [["binding-uniffi-test"]],
   icount: [["perf-icount"]],
   integrations: [["agent-integrations-check"]],
   web: [["web-vt-check"], ["web-client-check"]],
@@ -153,6 +153,11 @@ export interface PlanOptions {
   readonly scope?: PathScope;
   /** The pull request carries `perf-baseline`. */
   readonly perfBaseline?: boolean;
+  /**
+   * The diff adds, renames, or deletes a top-level `docs/*.md`. Omitted fails
+   * closed. A release-metadata scope has no such page, so it stays off.
+   */
+  readonly docsCatalog?: boolean;
 }
 
 export interface Plan {
@@ -166,6 +171,8 @@ export interface Plan {
   readonly unitMode: Classification["unitMode"];
   readonly unitTargets: string;
   readonly testFilterset: string;
+  /** Run the website docs catalog job. Not a recipe lane and not receipt coverage. */
+  readonly docsCatalog: boolean;
 }
 
 /** `push` here is main's policy: a push to main or a merge group. */
@@ -180,6 +187,11 @@ function touches(scope: PathScope | undefined, patterns: readonly string[]): boo
   if (scope.kind === "none") return false;
   if (scope.paths.length === 0) return true;
   return scope.paths.some((path) => matchesAny(path, patterns));
+}
+
+function docsCatalogNeeded(options: PlanOptions): boolean {
+  if (options.docsCatalog !== undefined) return options.docsCatalog;
+  return options.scope?.kind !== "none";
 }
 
 /** Main always qualifies these lanes; only PRs may use their path scope. */
@@ -246,6 +258,7 @@ export function plan(
     unitMode: push ? "workspace" : c.unitMode,
     unitTargets: push ? "" : c.unitTargets,
     testFilterset: push ? "" : c.testFilterset,
+    docsCatalog: docsCatalogNeeded(options),
   };
 }
 
@@ -270,6 +283,7 @@ export function planOutputs(p: Plan, c: Classification): Record<string, string |
     ...Object.fromEntries(LANES.map((lane) => [lane, p.lanes.has(lane)])),
     rune_qualify: p.lanes.has("rune") && p.runeQualify,
     docs_only: c.docsOnly,
+    docs_catalog: p.docsCatalog,
     web_engine: p.lanes.has("web") && c.needed.has("web_engine"),
     content: c.contentNeeded,
     unit_mode: p.unitMode,

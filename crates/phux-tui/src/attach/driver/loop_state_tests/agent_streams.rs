@@ -63,18 +63,15 @@ async fn append(producer: &mut tokio::net::UnixStream, id: &ResourceId, kind: &s
 }
 
 async fn open_loop(socket: &std::path::Path) -> (SessionLoop, Connection, Vec<u8>) {
-    use crate::attach::driver::session_io::{
-        attach_client_caps, send_attach_without_size_vote, wait_for_attached,
-    };
+    use crate::attach::driver::session_io::{attach_client_caps, send_attach, wait_for_attached};
     let caps = attach_client_caps(None, &crate::attach::Dial::uds(socket));
     let mut client = Connection::connect_with_hello(socket, "tui-agent-live-test".into(), caps)
         .await
         .unwrap();
     let negotiated = client.negotiated_bootstrap().unwrap();
-    let attach_id =
-        send_attach_without_size_vote(&mut client, AttachTarget::ByName(SESSION.into()))
-            .await
-            .unwrap();
+    let attach_id = send_attach(&mut client, AttachTarget::ByName(SESSION.into()))
+        .await
+        .unwrap();
     let attached = wait_for_attached(&mut client, attach_id).await.unwrap();
     let mut state = SessionLoop::new(
         negotiated,
@@ -212,9 +209,9 @@ async fn prove_reattach(
     out: &mut Vec<u8>,
     id: &ResourceId,
 ) {
-    use crate::attach::driver::session_io::send_attach_without_size_vote;
+    use crate::attach::driver::session_io::send_attach;
     let previous = state.mirror.engine_kernel.agent_stream_info(id);
-    send_attach_without_size_vote(client, AttachTarget::ByName(SESSION.into()))
+    send_attach(client, AttachTarget::ByName(SESSION.into()))
         .await
         .unwrap();
     // Native rebootstrap retains this kernel's committed cursor. Drive the

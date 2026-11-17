@@ -3,11 +3,11 @@
   "files": {
     "desktop/AppIcon.png": {
       "destination": "clients/rune/packaging/AppIcon.png",
-      "sha256": "3a02b69904509332d21714d2835b39024b3f2d753df85c78cc9cc0fad7a6aa99"
+      "sha256": "303a0ab1e724a2223f561cc9ae39dbaed35c5254c7213fe2511f37b613af93d8"
     },
     "desktop/AppIcon.svg": {
       "destination": "clients/rune/packaging/AppIcon.svg",
-      "sha256": "a3f51b813da499d90a99932120d3fc19b5e270e1c1dff52d5f02ae251d1495ac"
+      "sha256": "a75c7adb346e7c9d3792b55ead73cf5d90dffce55197a5161c00cd99d825fabb"
     },
     "logos/docs-wordmark.png": {
       "destination": "docs/assets/logo.png",
@@ -47,8 +47,8 @@
     }
   },
   "schema": 1,
-  "sha256": "2e5f120f4d8705663e11ad9a601d1d6adb8a00273ac5092ac74e870b11f847ab",
-  "source_revision": "d3fc8adf97ac57c363d951950eebe2647828d47d",
-  "url": "https://phux.sh/brand/releases/1.5.0/phux-brand.zip",
-  "version": "1.5.0"
+  "sha256": "7f2b7cf8d031e3852de4603c625524bb3f875f9569eea81d37f498cd090ba098",
+  "source_revision": "9b3a5b4233f846cbfc9b1942b186ce2273f5e6e4",
+  "url": "https://phux.sh/brand/releases/1.6.0/phux-brand.zip",
+  "version": "1.6.0"
 }

@@ -73,10 +73,6 @@ pub fn parse_client(user_input: &str, path: &Path) -> Result<ClientConfig, Confi
 }
 
 /// [`load_client_from`] at [`config_path`].
-///
-/// # Errors
-///
-/// See [`load_client_from`].
 pub fn load_client() -> Result<ClientConfig, ConfigError> {
     load_client_from(&config_path())
 }

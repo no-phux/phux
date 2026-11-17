@@ -2,7 +2,8 @@
 //!
 //! Native bootstrap is the official GHOSTSNP snapshot codec: the server sends
 //! the READY prefix, this adapter reconstructs a live terminal, then history
-//! units are pulled and authenticated by the engine-owned staged decoder.
+//! units are checked by phux's framing/CRC preflight, then decoded through the
+//! stock engine API with application-owned record boundaries.
 //!
 //! Replicas never answer terminal queries: the server's canonical terminal is
 //! the sole query answerer (`docs/protocol.md#terminal-queries`), so no `on_pty_write`
@@ -17,12 +18,15 @@ use std::{
 
 use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
+    color::{Palette, PaletteIndex, Rgb as RgbColor},
+    effect::ClipboardWrite,
     fmt::Formatter,
-    screen::{CellContentTag, CellWide, TrackedGridRef},
+    grid_ref::TrackedGridRef,
+    point::{Coordinate as PointCoordinate, Point, Space as PointSpace},
+    screen::CellWide,
     selection::Selection,
     snapshot::{FeedDecoder, FeedIncrementalDecoder},
-    style::{Palette, PaletteIndex, RgbColor},
-    terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},
+    terminal::ScrollViewport,
 };
 use phux_protocol::{
     BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
@@ -32,8 +36,7 @@ use thiserror::Error;
 use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EnginePresentationAdapter, EngineProjectionOrigin,
-    EngineProjectionRow, EngineSearchMatch, HistoryApplyOutcome,
+    EnginePresentationAdapter, EngineSearchMatch, HistoryApplyOutcome,
 };
 use crate::history::DocumentAnchorId;
 
@@ -50,11 +53,10 @@ mod replica;
 pub mod snapshot;
 
 use document::enforce_history_budget;
-use native::{PendingEffects, finish_native, install_effect_hooks, push_history, push_native};
-use projection::{
-    empty_projection, engine_history_rows, grid_ref_graphemes, history_window, rewrap_history_rows,
-    to_ghostty_point, to_ghostty_space, trim_projection_rows,
+use native::{
+    PendingEffects, finish_native, install_effect_hooks, push_history, push_native, start_native,
 };
+use projection::{grid_ref_graphemes, to_ghostty_point, to_ghostty_space};
 pub use replica::GhosttyReplica;
 use replica::{NativeDecoderState, NativeReplica, ReplicaState};
 
@@ -317,6 +319,11 @@ pub enum GhosttyEngineError {
     /// The native decoder has already failed and cannot be driven again.
     #[error("native checkpoint decoder is no longer usable")]
     DecoderFailed,
+    /// Pending input exceeded tracking limits and cannot be safely replayed.
+    #[error(
+        "cannot clear while parser continuation is unavailable; retry after the pending sequence completes"
+    )]
+    ClearContinuationUnavailable,
 }
 
 impl GhosttyEngineError {

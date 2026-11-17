@@ -312,5 +312,4 @@ fn retract_hook(wire_terminal_id: &WireResourceId, prior: Option<Prior>) -> Opti
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod agent_drain_tests;

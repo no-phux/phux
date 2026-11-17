@@ -12,7 +12,6 @@ use phux_protocol::wire::frame::{Command, CommandResult, InputMode, TerminalSign
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::kill::KeyedError;
 use crate::selector::{self, Selector};
 use crate::state::Degradation;
 /// Whether delivering `signal` is dangerous (ADR-0128): the catalog's
@@ -92,24 +91,20 @@ pub const fn signal_command(terminal_id: ResourceId, signal: TerminalSignal) -> 
 ///
 /// # Errors
 ///
-/// [`KeyedError::Unsupported`], with nothing sent, when the server does not
-/// advertise `KEYED_SIGNAL`; transport and decode failures otherwise.
+/// Transport and decode failures from [`Connection::request`].
 pub async fn signal_keyed(
     conn: &mut Connection,
     request_id: u32,
     terminal_id: ResourceId,
     signal: TerminalSignal,
     operation_id: IdempotencyKey,
-) -> Result<(LeaseOutcome, Degradation), KeyedError> {
-    if !crate::kill::keyed_signal_supported(conn) {
-        return Err(KeyedError::Unsupported);
-    }
+) -> Result<(LeaseOutcome, Degradation), AttachError> {
     let command = Command::SignalTerminal {
         terminal_id,
         signal,
         operation_id: Some(operation_id),
     };
-    Ok(request_lease(conn, request_id, command).await?)
+    request_lease(conn, request_id, command).await
 }
 
 /// Send one command and classify its reply with its interleaved notices.
@@ -140,15 +135,9 @@ pub enum SignalError {
     /// The pane is not a Terminal, so it has no process group to signal.
     #[error(transparent)]
     WrongKind(#[from] crate::read::WrongKind),
-    /// Connect, keyed-signal, or transport failure.
+    /// Connect or transport failure.
     #[error(transparent)]
-    Keyed(#[from] KeyedError),
-}
-
-impl From<AttachError> for SignalError {
-    fn from(err: AttachError) -> Self {
-        Self::Keyed(KeyedError::Attach(err))
-    }
+    Attach(#[from] AttachError),
 }
 
 /// A [`deliver`] that reached the server.

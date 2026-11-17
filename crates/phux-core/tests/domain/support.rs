@@ -116,13 +116,29 @@ impl Harness {
 
     pub fn create_resource(&mut self, session: SessionKey, spec: NewResource) -> ResourceKey {
         let applied = self
-            .run(Op::ResourceCreate {
-                placement: None,
-                session: Some(session),
-                resource: spec,
-            })
+            .create(Some(session), spec, None)
             .expect("resource create");
         created(&applied).1.expect("resource key")
+    }
+
+    pub fn undo(&mut self, original: phux_core::OperationId) -> Result<Applied, Refusal> {
+        self.run(Op::OrganizationUndo {
+            original,
+            expected: vec![],
+        })
+    }
+
+    pub fn create(
+        &mut self,
+        session: Option<SessionKey>,
+        resource: NewResource,
+        placement: Option<phux_core::CreatePlacement>,
+    ) -> Result<Applied, Refusal> {
+        self.run(Op::ResourceCreate {
+            session,
+            resource,
+            placement,
+        })
     }
 
     pub fn shell_in(&mut self, session: SessionKey) -> ResourceKey {

@@ -4,8 +4,8 @@
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,
+    mode::Mode,
     paste::{encode as paste_encode, is_safe},
-    terminal::Mode,
 };
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 

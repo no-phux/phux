@@ -185,7 +185,7 @@ impl Group {
 
     /// This group, locked or not.
     #[must_use]
-    pub const fn with_locked(mut self, locked: bool) -> Self {
+    pub(crate) const fn with_locked(mut self, locked: bool) -> Self {
         self.locked = locked;
         self
     }
@@ -200,19 +200,18 @@ pub use identity::fresh_id;
 
 pub use legacy::{LayoutDecodeError, LayoutEncodeError};
 
-pub use projection::{
-    LAYOUT_KEY, LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, layout_key,
-    projection_key_session,
-};
+pub use projection::{LAYOUT_KEY, LAYOUT_METADATA_GROUP, layout_key, projection_key_session};
 
 mod arrangement;
 mod mutation;
 mod ops;
+mod slots;
 
 pub use arrangement::ArrangementDoc;
 pub use mutation::{LayoutMutation, MutationError, adopt_unarranged_groups, apply_mutation};
-use ops::shifted_index;
-pub use ops::{focus_direction, kill_pane, leaves, repair_focus, set_ratio_at, split_at};
+pub use ops::{focus_direction, kill_pane, leaves, set_ratio_at, split_at};
+use ops::{repair_focus, shifted_index};
+pub use slots::Slot;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]

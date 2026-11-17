@@ -1,14 +1,7 @@
 //! The client-side mirror of the attached session that server frames fold
-//! into.
-//!
-//! **TL;DR.** [`SessionMirror`] owns the state the frame dispatcher
-//! (`server_frame::handle_server_frame`) reads and writes: the session
-//! kernel, the pane slots, the layout mirror, focus and zoom, the session
-//! name, the predictor, and the request-correlated bookkeeping for spawns,
-//! closes, and agent records. The live loop (`SessionLoop`), the headless
-//! composite, and the dispatcher's test rigs each own one, so a new piece of
-//! mirrored state is one field here plus [`SessionMirror::new`], not an edit
-//! to every call site (phux-jx39.3).
+//! into: [`SessionMirror`] owns the kernel, pane slots, layout, focus, zoom,
+//! predictor, and request-correlated bookkeeping. The live loop, the
+//! headless composite, and the dispatcher's test rigs each own one.
 
 use std::collections::{HashMap, HashSet};
 

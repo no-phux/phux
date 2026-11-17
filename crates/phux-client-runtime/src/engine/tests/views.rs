@@ -5,6 +5,7 @@ use phux_client_core::grid::CELL_SELECTED;
 mod document;
 mod lifecycle;
 mod presentation;
+mod sync_output;
 
 fn output(owner: &EngineHandle, terminal: &ResourceId, seq: u64, bytes: &[u8]) {
     apply_ok(

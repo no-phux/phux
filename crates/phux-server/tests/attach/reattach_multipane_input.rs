@@ -8,14 +8,12 @@ use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, SpawnResult, StateScope};
+use phux_protocol::wire::frame::{CommandResult, CommandValue, SpawnResult};
 use phux_server::LaunchCommand as CommandBuilder;
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, attach_by_name, command, run_local, send_frame, spawn_resource,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    Spawn, SpawnedServer, attach_by_name, command, run_local, send_frame, spawn_resource,
 };
 
 use super::common::{attached, type_line};
@@ -24,14 +22,7 @@ async fn panes_and_focus(
     stream: &mut UnixStream,
     request_id: u32,
 ) -> (Vec<ResourceId>, ResourceId) {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
-    let CommandResult::OkWith(CommandValue::State(snap)) =
-        command(stream, request_id, get_state).await
-    else {
-        panic!("GET_STATE failed");
-    };
+    let snap = phux_server_testkit::server_state(stream, request_id).await;
     (
         snap.resources.iter().map(|p| p.id.clone()).collect(),
         snap.focused_resource,
@@ -42,12 +33,7 @@ async fn panes_and_focus(
 async fn assert_echo(stream: &mut UnixStream, pane: &ResourceId, needle: char) {
     let mut last = String::new();
     for request_id in 3000..3040 {
-        let get_screen = Command::GetScreen {
-            terminal_id: pane.clone(),
-            request_scrollback: None,
-            cells: false,
-            format: 0,
-        };
+        let get_screen = phux_server_testkit::get_screen(pane.clone());
         let CommandResult::OkWith(CommandValue::Json(json)) =
             command(stream, request_id, get_screen).await
         else {
@@ -66,14 +52,11 @@ async fn assert_echo(stream: &mut UnixStream, pane: &ResourceId, needle: char) {
 #[test]
 fn reattach_to_multipane_session_can_type_into_non_active_pane() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (_shutdown, _server) =
-            spawn_server_with_seed_cmd(socket.clone(), "default", CommandBuilder::new("cat"));
-        let mut observer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded("default", CommandBuilder::new("cat"));
+        let mut observer = server.connect().await;
 
         // A builds a two-pane session, then leaves.
-        let mut a = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut a = server.connect().await;
         send_frame(&mut a, &attach_by_name("default")).await;
         attached(&mut a).await;
         let spawned = spawn_resource(&mut a, 1, Spawn::command(&["cat"])).await;
@@ -84,7 +67,7 @@ fn reattach_to_multipane_session_can_type_into_non_active_pane() {
         assert_eq!(panes_and_focus(&mut observer, 10).await.0.len(), 2);
         drop(a);
 
-        let mut b = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut b = server.connect().await;
         send_frame(&mut b, &attach_by_name("default")).await;
         attached(&mut b).await;
         let (panes, active) = panes_and_focus(&mut observer, 11).await;

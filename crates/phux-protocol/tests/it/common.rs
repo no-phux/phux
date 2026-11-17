@@ -8,7 +8,7 @@
 
 // `pub` is idiomatic for a shared test module even though the `it` binary is
 // its own crate root, and not every helper has a caller in every build.
-#![allow(dead_code, unreachable_pub, clippy::unwrap_used)]
+#![allow(dead_code, unreachable_pub, clippy::unwrap_used, clippy::panic)]
 
 /// Append an unsigned LEB128 varint.
 pub fn put_varint(out: &mut Vec<u8>, mut v: u64) {
@@ -70,6 +70,53 @@ pub fn assert_round_trip(frame: &phux_protocol::wire::frame::FrameKind) {
     assert_eq!(&decode(&encode(frame)).unwrap(), frame);
 }
 
+/// Render `bytes` as an `xxd`-style hex dump for the golden snapshots:
+/// 16 columns per row, `OFFSET | HEX HEX ... | ASCII`.
+pub fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    if bytes.is_empty() {
+        return "(empty)\n".to_owned();
+    }
+    let mut out = String::new();
+    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x} |", chunk_idx * 16);
+        for (i, b) in chunk.iter().enumerate() {
+            if i == 8 {
+                out.push(' ');
+            }
+            let _ = write!(out, " {b:02x}");
+        }
+        for i in chunk.len()..16 {
+            if i == 8 {
+                out.push(' ');
+            }
+            out.push_str("   ");
+        }
+        out.push_str(" |");
+        for &b in chunk {
+            out.push(if (0x20..=0x7e).contains(&b) {
+                char::from(b)
+            } else {
+                '.'
+            });
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The golden dump of `frame`, asserting it round-trips first.
+pub fn dump_frame(frame: &phux_protocol::wire::frame::FrameKind) -> String {
+    let bytes = encode(frame);
+    assert_eq!(
+        &decode(&bytes).unwrap(),
+        frame,
+        "the golden frame round-trips"
+    );
+    hex_dump(&bytes)
+}
+
 /// Read an unsigned LEB128 varint at `*offset`, advancing it.
 pub fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
     let mut value = 0u64;
@@ -128,4 +175,41 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     tlv_field(&mut fields, 2, &7u32.to_be_bytes());
     tlv_field(&mut fields, 3, &1u32.to_be_bytes());
     framed_tlv(0x81, &fields)
+}
+
+/// `snapshot` as the `GET_STATE` reply that carries it.
+pub const fn state_reply(
+    snapshot: phux_protocol::wire::info::SessionSnapshot,
+) -> phux_protocol::wire::frame::FrameKind {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    FrameKind::CommandResult {
+        request_id: 1,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+/// The snapshot a framed `GET_STATE` reply carries.
+pub fn decode_state(bytes: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
+    match FrameKind::decode(bytes).unwrap().0 {
+        FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } => snapshot,
+        other => panic!("expected a state result, got {other:?}"),
+    }
+}
+
+/// The snapshot an `ATTACHED` frame built around positional `snapshot`
+/// bytes decodes to.
+pub fn decode_attached_snapshot(snapshot: &[u8]) -> phux_protocol::wire::info::SessionSnapshot {
+    use phux_protocol::wire::frame::FrameKind;
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, snapshot);
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
+    match FrameKind::decode(&framed_tlv(0x81, &fields)).unwrap().0 {
+        FrameKind::Attached { snapshot, .. } => snapshot,
+        other => panic!("expected Attached, got {other:?}"),
+    }
 }

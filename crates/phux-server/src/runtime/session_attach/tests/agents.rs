@@ -80,48 +80,47 @@ async fn expect_agent_bootstrap(
 
 #[tokio::test(flavor = "current_thread")]
 async fn agent_only_and_document_sessions_defer_cuts_without_closing_live_agents() {
-    LocalSet::new()
-        .run_until(async {
-            for with_document in [false, true] {
-                let state = SharedState::new();
-                let (session, parent) = parent(&state, false);
-                if with_document {
-                    tree(&state, parent, session);
-                }
-                let (agent, mut requests) = agent_stub(&state, parent, session);
-                let wire = state.with_mut(|s| s.intern_resource_wire(agent));
-                let output = state.with(|s| s.resource_handle(agent).unwrap().output.clone());
-                let mut connection = Connection::start(&state, false).await;
-                for attach_id in [1, 2] {
-                    connection.attach(attach_id).await;
-                    let profiles =
-                        prefix(&mut connection, 1 + usize::from(with_document), attach_id).await;
-                    assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
-                    assert!(
-                        requests.try_recv().is_err(),
-                        "aggregate capture never requests an agent cut"
-                    );
-                    assert_eq!(
-                        output.receiver_count(),
-                        0,
-                        "replacement ATTACH fences the prior explicit pump"
-                    );
-                    assert!(state.with(|s| s.resource_handle(agent).is_some()));
-                    subscribe_agent(
-                        &mut connection,
-                        &mut requests,
-                        &wire,
-                        (attach_id == 2).then_some(1),
-                    )
-                    .await;
-                    assert_eq!(
-                        output.receiver_count(),
-                        1,
-                        "only the explicit subscription owns a pump"
-                    );
-                }
-                connection.finish().await;
+    crate::runtime::test_support::local(async {
+        for with_document in [false, true] {
+            let state = SharedState::new();
+            let (session, parent) = parent(&state, false);
+            if with_document {
+                tree(&state, parent, session);
             }
-        })
-        .await;
+            let (agent, mut requests) = agent_stub(&state, parent, session);
+            let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+            let output = state.with(|s| s.resource_handle(agent).unwrap().output.clone());
+            let mut connection = Connection::start(&state, false).await;
+            for attach_id in [1, 2] {
+                connection.attach(attach_id).await;
+                let profiles =
+                    prefix(&mut connection, 1 + usize::from(with_document), attach_id).await;
+                assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
+                assert!(
+                    requests.try_recv().is_err(),
+                    "aggregate capture never requests an agent cut"
+                );
+                assert_eq!(
+                    output.receiver_count(),
+                    0,
+                    "replacement ATTACH fences the prior explicit pump"
+                );
+                assert!(state.with(|s| s.resource_handle(agent).is_some()));
+                subscribe_agent(
+                    &mut connection,
+                    &mut requests,
+                    &wire,
+                    (attach_id == 2).then_some(1),
+                )
+                .await;
+                assert_eq!(
+                    output.receiver_count(),
+                    1,
+                    "only the explicit subscription owns a pump"
+                );
+            }
+            connection.finish().await;
+        }
+    })
+    .await;
 }

@@ -19,6 +19,7 @@ const CARD_W: f32 = 236.0;
 mod agents;
 mod done;
 mod look;
+mod machines;
 mod migrate;
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,7 @@ fn page(desk: &Desk, p: &Ink) -> El {
         Step::Look => look::look(desk, p),
         Step::Agents => agents::agents(desk, p),
         Step::Migrate => migrate::migrate(desk, p),
+        Step::Machines => machines::machines(desk, p),
         Step::Done => done::done(desk, p),
     };
     let content = col()
@@ -270,14 +272,11 @@ fn welcome(desk: &Desk, p: &Ink) -> El {
                 .level(1),
         )
         .child(
-            text(
-                "Pick a look, give your agents the phux skill and the permissions they \
-                 need, and bring your key bindings with you.",
-            )
-            .font(LEAD)
-            .color(p.dim)
-            .align(Align::Center)
-            .wrap(),
+            text(words::PROMISE.welcome)
+                .font(LEAD)
+                .color(p.dim)
+                .align(Align::Center)
+                .wrap(),
         )
         .child(el().h(6.0))
         .child(primary(

@@ -125,26 +125,8 @@ fn push_manifest(catalog: &mut StartupCatalog, manifest: &PluginManifest, hash: 
 
 /// Both lists must allow this OS. `None` allows every OS.
 fn platforms_allow(manifest: Option<&[PluginPlatform]>, entry: Option<&[PluginPlatform]>) -> bool {
-    list_allows(manifest) && list_allows(entry)
-}
-
-fn list_allows(platforms: Option<&[PluginPlatform]>) -> bool {
-    let Some(platforms) = platforms else {
-        return true;
-    };
-    current_platform().is_some_and(|current| platforms.contains(&current))
-}
-
-const fn current_platform() -> Option<PluginPlatform> {
-    if cfg!(target_os = "macos") {
-        Some(PluginPlatform::Macos)
-    } else if cfg!(target_os = "linux") {
-        Some(PluginPlatform::Linux)
-    } else if cfg!(target_os = "windows") {
-        Some(PluginPlatform::Windows)
-    } else {
-        None
-    }
+    use crate::hooks::platform_enabled;
+    platform_enabled(manifest) && platform_enabled(entry)
 }
 
 /// FNV-1a of the manifest bytes. Stable for the life of a process and across

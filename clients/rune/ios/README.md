@@ -51,6 +51,7 @@ python3 clients/rune/ios/package_ota.py \
   --app '/absolute/scratch/ios-device/Phux Rune.app' \
   --profile /absolute/private/Rune.mobileprovision \
   --identity APPLE_DISTRIBUTION_CERTIFICATE_SHA1 \
+  --keychain /absolute/private/login.keychain-db \
   --device-udid REGISTERED_PHONE_UDID \
   --base-url https://private.example/rune-preview/ \
   --out /absolute/scratch/rune-ota
@@ -75,6 +76,24 @@ The user must approve installation on the phone. A signed IPA and reachable
 install page are **not** proof that the app installed, launched or passed
 physical-device qualification.
 
+`--keychain` is optional. It scopes profile decoding and both the framework
+and app signatures to that existing keychain, without changing shared defaults,
+trust or key access. This matters when the signing process's default is the
+system keychain even though the user's login keychain is unlocked. Query and
+unlock the selected keychain, not an unrelated default.
+
+### Scheduled phone updates
+
+With an explicit standing installation order, the upstream follower delivers
+qualified native development builds to the registered iPhone using signed
+ad-hoc distribution and its existing paired-device connection, not TestFlight.
+[DELIVERY.md](./DELIVERY.md) defines the private `PHONE.json` configuration,
+early installed-version check, source-derived build number, immutable OTA
+fallback, in-place install and independent verification. No uninstall,
+credential reset, app launch or silent-OTA claim is part of delivery.
+
+### Native qualification
+
 `qualify.py` creates and deletes its own exact simulator UDID, selects a
 compatible available runtime/model pair, and owns a same-source server on a
 short temporary socket with clean configuration. All commands are bounded.
@@ -92,9 +111,25 @@ OS before checking continued rendering. The report must also say the surface
 shows its drawable at the screen's scale: Rune reports its own geometry, not
 how the layer presents it. A fresh process then reconnects from
 saved settings and the same Keychain key, with no ticket or pairing payload.
+Backgrounding activates the simulator's already-running Home screen, not a
+cold Settings process. Fresh UIKit receipts and a later presented frame still
+prove the real OS transition; launch success alone never qualifies it.
 It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
+
+The native surface presents layout-driven frames in UIKit's Core Animation
+transaction so keyboard geometry and Metal contents move together. Ordinary
+display-link frames remain nontransactional. An unavailable drawable keeps
+an owed frame, retried with backoff up to 250 ms while active and visible,
+instead of abandoning it after three attempts. Exposed space during resize
+uses the last drawn frame's ground, not the launch colour.
+
+The shared runtime holds every terminal presentation during DEC 2026
+synchronized output, including independent views and on-demand catch-up.
+It keeps the last committed frame until the end marker; a one-second
+watchdog on the connection driver's deadline lane releases a missing end
+marker and wakes the consumer even without more terminal output.
 
 The initial launch never requests termination: the fixture owns a newly
 created simulator with a freshly installed app, so no previous process can

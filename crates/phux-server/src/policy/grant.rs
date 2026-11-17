@@ -119,6 +119,14 @@ impl ConnectionGrant {
         })
     }
 
+    /// This grant, attributed to `principal`: a tailnet owner device's
+    /// `tailnet:` credential, which names no registry record.
+    #[must_use]
+    pub fn with_principal(mut self, principal: PrincipalId) -> Self {
+        self.principal = principal;
+        self
+    }
+
     /// This grant, acting as a principal of `kind`: how a paired device's
     /// credential becomes a human principal.
     #[must_use]

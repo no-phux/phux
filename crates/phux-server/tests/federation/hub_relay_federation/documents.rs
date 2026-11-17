@@ -120,16 +120,7 @@ fn input_to_a_satellite_document_reaches_its_producer_through_the_hub() {
         };
         let display = Some(ControlClasses::EMPTY.with(ControlClass::Display));
         let refused = phux_server_testkit::command(&mut hub, 2, send(display)).await;
-        assert!(
-            matches!(
-                refused,
-                CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    ..
-                }
-            ),
-            "{refused:?}"
-        );
+        assert_command_error(&refused, ErrorCode::PermissionDenied);
         let taken = phux_server_testkit::command(&mut hub, 3, send(None)).await;
         assert!(matches!(taken, CommandResult::Ok), "{taken:?}");
         let deadline = Instant::now() + STEP_DEADLINE;
@@ -352,7 +343,7 @@ fn satellite_documents_relay_whatever_terminal_profile_the_client_chose() {
                 Command::attach_terminal(fed.sat_id(), None),
             )
             .await;
-            assert_error(&refused, ErrorCode::CodecUnavailable);
+            assert_command_error(&refused, ErrorCode::CodecUnavailable);
             drop(hub);
         }
 

@@ -9,18 +9,17 @@ use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::Desk;
-use super::galaxy::Planet;
+use super::fleet::Machine;
 use crate::creature;
 use crate::hive::{self, Forager};
 use crate::machines::LOCAL;
-use crate::reef::{self, Mood};
+use crate::playground::{self, Mood};
 
 /// How often the hive redraws while open: every frame.
 const FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Default)]
 pub struct Hive {
-    pub open: bool,
     pub scene: hive::Hive,
     /// The view's size in points, from its last layout.
     pub viewport: [f32; 2],
@@ -37,29 +36,24 @@ pub struct Hive {
 
 impl Desk {
     pub fn toggle_hive(&mut self) {
-        if self.hive.open {
+        if self.playground == Some(super::surfaces::Playground::Hive) {
             self.close_hive();
             return;
         }
         self.close_inbox();
-        self.close_galaxy();
-        self.close_reef();
-        self.close_pitch();
-        self.close_kitchen();
-        self.close_pitlane();
         self.settings_open = false;
-        self.hive.open = true;
+        self.playground = Some(super::surfaces::Playground::Hive);
         self.hive.last = None;
         self.hive.scene.selected = None;
     }
 
     pub fn close_hive(&mut self) {
-        self.hive.open = false;
+        self.close_playground(super::surfaces::Playground::Hive);
     }
 
     /// Keep the bees in step with the fleet and the scene moving while open.
     pub(super) fn tick_hive(&mut self, tx: &mut Tx) -> bool {
-        if !self.hive.open {
+        if self.playground != Some(super::surfaces::Playground::Hive) {
             return false;
         }
         self.refresh_hive();
@@ -83,7 +77,7 @@ impl Desk {
     /// sort (a frame never moves when an agent starts waiting); every agent
     /// it knows of as a bee.
     fn refresh_hive(&mut self) {
-        let mut planets = self.planets();
+        let mut planets = self.fleet_machines();
         let here = (self.machines.current.clone()).unwrap_or_else(|| LOCAL.to_owned());
         let order: Vec<String> = [here, LOCAL.to_owned()]
             .into_iter()
@@ -95,13 +89,13 @@ impl Desk {
         let foragers = planets
             .iter()
             .enumerate()
-            .flat_map(|(at, p)| p.stars.iter().map(move |s| (at, s)))
+            .flat_map(|(at, p)| p.agents.iter().map(move |s| (at, s)))
             .map(|(at, s)| Forager {
                 id: s.id.clone(),
                 name: s.name.clone(),
                 host: at,
                 mood: Mood::of(s.mark),
-                species: reef::species(s.kind.as_deref(), &s.name),
+                species: playground::species(s.kind.as_deref(), &s.name),
                 tier: creature::tier(s.work.as_ref()),
                 work: s.work,
             })
@@ -170,13 +164,13 @@ impl Desk {
         };
         let id = b.who.id.clone();
         self.close_hive();
-        self.go_to_star(&id);
+        self.go_to_agent(&id);
     }
 }
 
 /// `planets` back in machine order: `order`'s, the rest after in the order
 /// they came. A stable sort, so the galaxy's tie order holds.
-fn sort_machines(planets: &mut [Planet], order: &[String]) {
+fn sort_machines(planets: &mut [Machine], order: &[String]) {
     planets.sort_by_key(|p| {
         order
             .iter()
@@ -189,11 +183,11 @@ fn sort_machines(planets: &mut [Planet], order: &[String]) {
 mod tests {
     use super::*;
 
-    fn planet(name: &str) -> Planet {
-        Planet {
+    fn planet(name: &str) -> Machine {
+        Machine {
             name: name.to_owned(),
             online: true,
-            stars: Vec::new(),
+            agents: Vec::new(),
             known: true,
             note: None,
         }

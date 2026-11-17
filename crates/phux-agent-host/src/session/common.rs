@@ -29,9 +29,10 @@ pub(super) fn configure(command: &mut Command, spec: &HostSpec) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    command
-        .env("PHUX_AGENT_REPORTING", "0")
-        .env("PHUX_TERMINAL_ID", spec.parent.to_string());
+    command.env("PHUX_AGENT_REPORTING", "0").env(
+        "PHUX_TERMINAL_ID",
+        phux_protocol::native_agent::parent_terminal_env_value(&spec.parent),
+    );
     // PHUX_SOCKET stays the launcher's delegated tool socket, not an owner socket.
     command.env("PHUX_SOCKET", &spec.socket);
 }

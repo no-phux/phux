@@ -27,29 +27,25 @@ fn satellite_error_rolls_back_the_commands_subscription() {
     let FrameKind::Command { request_id, .. } = decode(&wire) else {
         panic!("expected COMMAND");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "nope".to_owned(),
-            },
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: "nope".to_owned(),
+        },
+    });
     assert!(matches!(
         reply_rx.try_recv().expect("resolved"),
         CommandResult::Error { .. }
     ));
     // The rolled-back registration must not fan anything out.
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(9),
-            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-            seq: 1,
-            bytes: bytes::Bytes::from_static(b"leak"),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(9),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
+        seq: 1,
+        bytes: bytes::Bytes::from_static(b"leak"),
+    });
     assert!(out_rx.try_recv().is_err(), "rolled-back subscriber leaked");
 }
 
@@ -64,13 +60,7 @@ fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
 
     // B's event-only stream is established and demonstrably Open.
     subscribe(&mut session, 9, ClientId(2), tx_b.clone());
-    session
-        .handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(ResourceId::local(9)),
-            event: AgentEvent::CommandStarted,
-            stamp: None,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&agent_event(9));
     assert!(rx_b.try_recv().is_ok(), "B's event stream must be open");
 
     let (reply_b, mut reply_rx_b) = oneshot::channel();
@@ -78,15 +68,11 @@ fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
         command: Command::attach_terminal(ResourceId::local(9), None),
         reply: reply_b,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(2),
-            out_tx: tx_b.clone(),
-            consumer_cancel: CancellationToken::new(),
             seq: 2,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(BootstrapLimits::default()),
+            ..proxy(9, ClientId(2), tx_b.clone())
         }),
     });
     let FrameKind::Command { request_id, .. } = decode(&wire) else {
@@ -98,21 +84,17 @@ fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
         .expect("B filler one");
     tx_b.try_send(Outbound::Frame(FrameKind::Detach))
         .expect("B filler two");
-    session
-        .handle_inbound(&encode(&snapshot_frame(9)))
-        .expect("valid satellite frame");
+    session.feed(&snapshot_frame(9));
     assert!(matches!(
         rx_c.try_recv().expect("C receives its snapshot"),
         Outbound::Frame(FrameKind::BootstrapReady { .. })
     ));
 
-    session
-        .handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InternalError,
-            message: "transient".to_owned(),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::InternalError,
+        message: "transient".to_owned(),
+    });
     assert!(matches!(
         reply_rx_b.try_recv().expect("B's upgrade resolves"),
         CommandResult::Error { .. }
@@ -127,9 +109,7 @@ fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
         rx_b.try_recv().expect("B filler two drains"),
         Outbound::Frame(FrameKind::Detach)
     ));
-    session
-        .handle_inbound(&encode(&output_frame(9, 1, b"after-error")))
-        .expect("valid satellite frame");
+    session.feed(&output_frame(9, 1, b"after-error"));
     assert!(matches!(
         rx_b.try_recv().expect("B's retained snapshot flushes"),
         Outbound::Frame(FrameKind::BootstrapReady { .. })
@@ -151,36 +131,28 @@ fn satellite_error_never_rolls_back_a_preexisting_subscription() {
         command: Command::attach_terminal(ResourceId::local(9), None),
         reply,
         subscribe: Some(ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
             seq: 2,
             awaits_snapshot: true,
             bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: Some(BootstrapLimits::default()),
+            ..proxy(9, ClientId(1), out_tx)
         }),
     });
     let FrameKind::Command { request_id, .. } = decode(&wire) else {
         panic!("expected COMMAND");
     };
-    session
-        .handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InternalError,
-            message: "transient".to_owned(),
-        }))
-        .expect("valid satellite frame");
-    session
-        .handle_inbound(&encode(&FrameKind::ResourceOutput {
-            terminal_id: ResourceId::local(9),
-            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-            seq: 1,
-            bytes: bytes::Bytes::from_static(b"still here"),
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::InternalError,
+        message: "transient".to_owned(),
+    });
+    session.feed(&FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(9),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
+        seq: 1,
+        bytes: bytes::Bytes::from_static(b"still here"),
+    });
     assert!(
         out_rx.try_recv().is_ok(),
         "pre-existing subscription must survive the errored re-subscribe"
@@ -251,12 +223,10 @@ fn prune_abandoned_drops_only_commands_whose_consumer_gave_up() {
     assert_eq!(session.prune_abandoned(), 1, "abandoned entry pruned");
 
     // A late reply for the pruned id is dropped.
-    session
-        .handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        }))
-        .expect("valid satellite frame");
+    session.feed(&FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Ok,
+    });
     assert!(live_rx.try_recv().is_err(), "live command still pending");
     session.teardown("done");
     assert!(matches!(

@@ -71,7 +71,7 @@ fn inline_question_fields_take_the_terminal_ime_and_return_it_on_blur() {
                 no_input(&client);
 
                 // Click below the card, not its controls or the phone's toolbar.
-                let [x, y] = rt.state.origins[&id(1)];
+                let [x, y] = rt.state.connection.origins[&id(1)];
                 let height = rt.state.pane_area(&id(1)).unwrap()[1];
                 rt.pointer_down(x + 10.0, y + height - 25.0);
                 rt.pointer_up(x + 10.0, y + height - 25.0);

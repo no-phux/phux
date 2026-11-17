@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::InputMode;
 
 use super::{
     AttachTarget, Command, ControlPlane, Event, FrameKind, Observation, Pending, ResourceId,
-    ServerFeature, Status, StreamRecovery, ViewportInfo, encode,
+    Status, StreamRecovery, encode,
 };
 
 impl ControlPlane {
@@ -22,27 +22,11 @@ impl ControlPlane {
 
     /// Every event queued since the last drain, in order, preceded by one
     /// [`Event::TerminalChanged`] per terminal that changed.
-    ///
-    /// Accepts agent publications in the batch: that drain is delivery
-    /// acceptance. A binding that accepts later, at its own explicit clear
-    /// rather than when a pointer borrow ends, uses [`Self::take_events_leased`].
+    /// The drain accepts the agent publications in it.
     pub fn take_events(&mut self) -> Vec<Event> {
         let events = self.drain_events();
         self.agent_delivery.accept_drained(&events);
         events
-    }
-
-    /// Drain events without accepting agent publications.
-    ///
-    /// Returned [`Event::AgentPublication`] arcs stay journaled until
-    /// [`Self::accept_agent_publication`] or a newer full cut supersedes them.
-    /// Only the explicit call accepts delivery; ending a pointer borrow does not.
-    /// The C adapter also supersedes staged effects on a full cut, and otherwise
-    /// accepts in `phux_client_effect_clear`. Loss replays unsuperseded,
-    /// unaccepted allocations once the next catalog and attach are ready.
-    #[must_use]
-    pub fn take_events_leased(&mut self) -> Vec<Event> {
-        self.drain_events()
     }
 
     fn drain_events(&mut self) -> Vec<Event> {
@@ -123,45 +107,6 @@ impl ControlPlane {
     }
 
     // ----- the common surface --------------------------------------------
-
-    /// Queue an embedder-correlated `ATTACH` on a manually driven plane.
-    ///
-    /// This is the stable-C-ABI seam: the embedder chooses the attach id and
-    /// pixel geometry, while the runtime remains authoritative for lifecycle,
-    /// kernel ownership, and subsequent frame handling.
-    pub fn attach_explicit(
-        &mut self,
-        attach_id: u32,
-        target: AttachTarget,
-        viewport: ViewportInfo,
-        request_scrollback: bool,
-        scrollback_limit_lines: u32,
-        role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
-    ) -> bool {
-        if self.options.automatic_lifecycle
-            || !self.handshake_ready
-            || self.status == Status::Attached
-            || self.active_attach_id.is_some()
-            || attach_id == 0
-        {
-            return false;
-        }
-        self.viewport.desired = viewport;
-        self.viewport.pending = false;
-        self.options.scrollback_lines = scrollback_limit_lines;
-        self.options.attach_role = role_policy;
-        self.attach_target = Some(target.clone());
-        self.active_attach_id = Some(attach_id);
-        self.queue_frame(&FrameKind::Attach {
-            attach_id,
-            target,
-            viewport,
-            request_scrollback,
-            scrollback_limit_lines,
-            role_policy,
-        });
-        true
-    }
 
     /// Select a session, switching a healthy connection with per-terminal
     /// attach/detach commands instead of redialing it.
@@ -415,15 +360,13 @@ impl ControlPlane {
     /// Close a batch of terminals. Against a server that advertises
     /// `ORGANIZATION`, each is terminated (`RESOURCE_TERMINATE`), leaving
     /// membership and arrangement to the server; otherwise one atomic
-    /// `CLOSE_TAB_RESOURCES`. `None` when neither is available. The reply is
+    /// `CLOSE_TAB_RESOURCES`. `None` before the handshake. The reply is
     /// [`Event::TerminalsClosed`].
     pub fn close_terminals(&mut self, ids: Vec<ResourceId>) -> Option<u32> {
         if let Some(request_id) = self.close_terminals_by_record(&ids) {
             return Some(request_id);
         }
-        if !self.server_has(ServerFeature::CloseTabResources) {
-            return None;
-        }
+        self.server.as_ref()?;
         let request_id = self.next_request_id();
         self.pending.insert(request_id, Pending::Close);
         self.queue_frame(&FrameKind::Command {
@@ -443,12 +386,10 @@ impl ControlPlane {
     }
 
     /// Subscribe to the server-wide event stream from `after_seq`
-    /// (ADR-0123); the cursor is honored only on a server that advertises
-    /// `EVENT_JOURNAL`.
+    /// (ADR-0123).
     pub fn subscribe_events(&mut self, after_seq: Option<u64>) {
         self.options.event_after_seq = after_seq;
         if self.handshake_ready {
-            let after_seq = after_seq.filter(|_| self.server_has(ServerFeature::EventJournal));
             self.queue_frame(&FrameKind::SubscribeEvents {
                 terminal: None,
                 after_seq,

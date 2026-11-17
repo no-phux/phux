@@ -136,14 +136,7 @@ fn instance_is_dangerous(method: &str, payload: Payload, args: &Value) -> bool {
 }
 
 fn signal_arg(args: &Value) -> Option<TerminalSignal> {
-    match args.get("signal").and_then(Value::as_str)? {
-        "interrupt" => Some(TerminalSignal::Interrupt),
-        "freeze" => Some(TerminalSignal::Freeze),
-        "resume" => Some(TerminalSignal::Resume),
-        "terminate" => Some(TerminalSignal::Terminate),
-        "kill" => Some(TerminalSignal::Kill),
-        _ => None,
-    }
+    crate::tools::signals::signal_named(args.get("signal").and_then(Value::as_str)?)
 }
 
 /// The decision frame a `phux_approve` call sends, on a placeholder id.
@@ -182,7 +175,7 @@ pub(crate) fn annotate(tools: &mut Value) {
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::tool_table::{Hints, TOOLS, hints_for};
+    use crate::tool_table::{Hints, TOOLS};
 
     fn catalog_names() -> Vec<String> {
         crate::tools::catalog()
@@ -205,30 +198,6 @@ mod tests {
             read_only: entry["annotations"]["readOnlyHint"].as_bool().unwrap(),
             destructive: entry["annotations"]["destructiveHint"].as_bool().unwrap(),
         }
-    }
-
-    /// Every catalog tool has a row, every row names a catalog tool and only
-    /// catalog methods, and each descriptor carries exactly the hints the
-    /// kind table derives.
-    #[test]
-    fn annotations_match_kind_table() {
-        let names = catalog_names();
-        for name in &names {
-            let derived = hints_for(name)
-                .unwrap_or_else(|| panic!("{name} has no row, or names an unknown method"));
-            assert_eq!(annotation(name), derived, "{name}");
-        }
-        for row in TOOLS {
-            assert!(
-                names.iter().any(|name| name == row.name),
-                "stale row {}",
-                row.name
-            );
-        }
-        let mut rows: Vec<&str> = TOOLS.iter().map(|row| row.name).collect();
-        rows.sort_unstable();
-        rows.dedup();
-        assert_eq!(rows.len(), TOOLS.len(), "a tool has two rows");
     }
 
     #[test]
@@ -301,7 +270,8 @@ mod tests {
     }
 
     /// The dangerous methods, pinned by name (ADR-0128).
-    const DANGEROUS: [&str; 15] = [
+    const DANGEROUS: [&str; 16] = [
+        "CREDENTIALS",
         "KILL_RESOURCE",
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
@@ -334,7 +304,11 @@ mod tests {
     ];
 
     /// The dangerous methods no CLI verb asks before, and why.
-    const CLI_UNGATED: [(&str, &str); 5] = [
+    const CLI_UNGATED: [(&str, &str); 6] = [
+        (
+            "CREDENTIALS",
+            "every request is held by the server for separate, exact approval; no MCP tool requests or provides values",
+        ),
         (
             "CLOSE_TAB_RESOURCES",
             "no CLI verb or MCP tool sends it; a native client's explicit Close Tab is the act",

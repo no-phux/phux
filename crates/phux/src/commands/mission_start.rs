@@ -591,9 +591,6 @@ fn mint_credential(socket: &Path, session: &str) -> Result<String, String> {
             .connect()
             .await
             .map_err(|err| err.to_string())?;
-        if !phux_client::org::supported(&conn) {
-            return Err("this server cannot mint an agent credential".to_owned());
-        }
         let inventory = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
             .await
             .map_err(|err| err.to_string())?;

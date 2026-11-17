@@ -13,6 +13,14 @@ Missing enforcement, malformed context, or API/permission errors qualify the
 PR instead. `native setup` and `rust icount` are then mandatory, as on
 `merge_group` and `main`: a skip fails the aggregate.
 A merge group plans like a main push.
+
+`docs-catalog` is path-filtered, not a recipe lane. It runs when a top-level
+`docs/*.md` is added, renamed, or deleted, and when the diff cannot be read,
+on a pull request, a merge group, and a main push. It fails only when
+`discover()` reports an uncatalogued flat page on the head that the planner's
+base did not already report. A delete does not fail. A filtered skip passes,
+on a pull request and on main.
+
 On the queue, and Rune-affecting fallback PRs (including release metadata),
 the same required aggregate also calls and requires the
 `rune-macos` child. A skipped, failed or cancelled Apple child is not a pass.

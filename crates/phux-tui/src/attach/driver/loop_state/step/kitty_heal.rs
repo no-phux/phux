@@ -47,10 +47,8 @@ impl super::super::SessionLoop {
         }
     }
 
-    /// Mark the images due a heal at `now` (the focus-in set when
-    /// `on_focus`) for re-sending and repaint the visible panes' rows in
-    /// place, which re-sends them and leaves clean cells alone. Under an
-    /// overlay or a held switch the heal is deferred instead.
+    /// Mark the images due a heal at `now` for re-sending and repaint the
+    /// visible panes' rows in place; deferred under an overlay or held switch.
     pub(in crate::attach::driver::loop_state) fn heal_kitty_images<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

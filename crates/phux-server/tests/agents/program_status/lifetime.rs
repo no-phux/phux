@@ -103,9 +103,7 @@ fn a_retained_terminal_expires_work_at_exit_and_keeps_done_and_error_records() {
                 let result = command(
                     &mut pane.stream,
                     request_id,
-                    Command::GetState {
-                        scope: StateScope::Server,
-                    },
+                    phux_server_testkit::get_state(),
                 )
                 .await;
                 let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {

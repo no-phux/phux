@@ -9,27 +9,14 @@ fn reconnect_with_reused_ids(plane: &mut ControlPlane) {
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .expect("the reconnect attaches");
+    let attach_id = plane.queued_attach_id();
     reattach(plane, attach_id, epoch + 1);
     let _ = plane.take_outbound();
 }
 
 /// `attach`, with the fresh bootstrap generation a new connection carries.
 fn reattach(plane: &mut ControlPlane, attach_id: u32, generation: u64) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     let stream_id = StreamId::new(1).unwrap();
     let bootstrap_id = BootstrapId::new(generation).unwrap();
     for frame in [
@@ -163,14 +150,7 @@ fn a_recovery_between_drain_and_status_sampling_stays_in_one_observation() {
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    let attach_id = plane.queued_attach_id();
     reattach(&mut plane, attach_id, 2);
     let done = plane.take_observation();
     assert_eq!(done.status, Status::Attached);
@@ -278,12 +258,10 @@ fn an_ordinary_refresh_is_not_a_new_incarnation() {
     let before = plane.take_observation();
     let request_id = plane.refresh_topology().unwrap();
     let _ = plane.take_outbound();
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot())),
-        })
-        .unwrap();
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot())),
+    );
     let after = plane.take_observation();
     assert_eq!(after.connection_epoch, before.connection_epoch);
     assert!(boundaries(&after).is_empty());
@@ -476,12 +454,7 @@ fn an_accepted_detach_expires_clipboard_requests_and_focus() {
     let _ = plane.take_events();
     output(&mut plane, 1, OSC52);
     let request_id = plane.detach_terminal(&terminal());
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
     assert!(clipboard_events(&plane.take_events()).is_empty());
     reconnect_with_reused_ids(&mut plane);
     let _ = plane.take_events();

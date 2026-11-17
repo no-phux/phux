@@ -157,8 +157,7 @@ else
     dump="$(just --justfile "${ROOT}/justfile" --dump --dump-format json)"
     for recipe in check rust-lint build build-all build-lean build-release install-dev rebuild \
         fmt lint crate-check integration-check native-smoke \
-        test test-report test-archive test-cargo e2e stress e2e-repro examples-smoke agents-fleet-smoke agents-fleet-live \
-        ffi-build; do
+        test test-report test-archive test-cargo e2e stress e2e-repro examples-smoke agents-fleet-smoke agents-fleet-live; do
         if jq -e --arg r "$recipe" '.recipes[$r].dependencies | any(.recipe == "worktree-claim")' <<<"$dump" >/dev/null; then
             ok "just ${recipe} claims the worktree first"
         else

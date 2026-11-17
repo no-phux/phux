@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use phux_core::screen::ScreenState;
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -13,7 +12,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, RESOURCE_AGENT_SESSION_KEY,
     SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
-    SESSION_NAME_KEY, Scope, SpawnResult, StateScope,
+    SESSION_NAME_KEY, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::LaunchCommand as CommandBuilder;
@@ -23,11 +22,10 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, command,
-    join_after_shutdown, recv_typed, recv_until, recv_until_deadline, recv_until_detached,
-    run_local, send_frame, spawn_resource, spawn_server_connected, spawn_server_seed_pty_no_cmd,
-    spawn_server_with_seed_cmd, try_recv_typed, wait_for_raw_socket, wait_for_server_screen_text,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, assert_command_error,
+    attach_by_name, command, join_after_shutdown, recv_typed, recv_until, recv_until_deadline,
+    recv_until_detached, run_local, send_frame, spawn_resource, spawn_server_connected,
+    spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_server_screen_text, wait_for_socket,
 };
 
 async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
@@ -40,9 +38,7 @@ async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
 }
 
 async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    let get_state = phux_server_testkit::get_state();
     match command(stream, request_id, get_state).await {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
         other => panic!("expected State, got {other:?}"),
@@ -84,11 +80,7 @@ async fn get_metadata(
 ) -> Option<Vec<u8>> {
     send_frame(
         stream,
-        &FrameKind::GetMetadata {
-            request_id,
-            scope,
-            key: key.to_owned(),
-        },
+        &phux_server_testkit::get_metadata(request_id, scope, key),
     )
     .await;
     recv_until(stream, |_, frame| match frame {
@@ -104,12 +96,7 @@ async fn get_metadata(
 async fn set_global(stream: &mut UnixStream, request_id: u32, key: &str, value: Vec<u8>) {
     send_frame(
         stream,
-        &FrameKind::SetMetadata {
-            request_id,
-            scope: Scope::Global,
-            key: key.to_owned(),
-            value,
-        },
+        &phux_server_testkit::set_metadata(request_id, Scope::Global, key, value),
     )
     .await;
 }
@@ -180,16 +167,7 @@ fn read_verbs_answer_over_the_wire() {
         );
         let unknown_format =
             command(&mut stream, 4, get_screen(pane.id.clone(), None, false, 3)).await;
-        assert!(
-            matches!(
-                unknown_format,
-                CommandResult::Error {
-                    code: ErrorCode::Unsupported,
-                    ..
-                }
-            ),
-            "an undefined format is refused as unsupported, never guessed: {unknown_format:?}"
-        );
+        assert_command_error(&unknown_format, ErrorCode::Unsupported);
 
         let state = Command::GetTerminalState {
             terminal_id: pane.id.clone(),
@@ -218,13 +196,7 @@ fn read_verbs_answer_over_the_wire() {
         let ghost = ResourceId::local(99_999);
         for (request_id, verb) in [
             (6, get_screen(ghost.clone(), None, false, 0)),
-            (
-                7,
-                Command::KillResource {
-                    terminal_id: ghost.clone(),
-                    operation_id: None,
-                },
-            ),
+            (7, phux_server_testkit::kill(ghost.clone())),
             (
                 8,
                 Command::GetTerminalState {
@@ -270,21 +242,16 @@ fn read_verbs_answer_over_the_wire() {
 #[test]
 fn hello_ok_advertises_the_command_features() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, handle) = phux_server_testkit::spawn_server(socket.clone(), None);
-        let mut raw = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::start(None, |_| {});
+        let mut raw = server.connect_raw().await;
         send_frame(
             &mut raw,
-            &FrameKind::Hello {
-                client_name: "features".to_owned(),
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                client_caps: ClientCapabilities::new()
+            &phux_server_testkit::hello(
+                "features",
+                ClientCapabilities::new()
                     .with_color_support(ColorSupport::TrueColor)
                     .with_layers(LayerSet::all()),
-            },
+            ),
         )
         .await;
         let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut raw).await.1 else {
@@ -305,7 +272,7 @@ fn hello_ok_advertises_the_command_features() {
             );
         }
         drop(raw);
-        join_after_shutdown(shutdown, handle).await;
+        server.stop().await;
     });
 }
 
@@ -314,14 +281,13 @@ fn hello_ok_advertises_the_command_features() {
 fn apply_input_acks_after_real_pty_write_and_flush() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args([
             "-c",
             "IFS= read -r line; printf 'APPLIED:%s\\n' \"$line\"; sleep 1",
         ]);
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded_in(tmp, "work", cmd);
+        let mut stream = server.connect().await;
         let terminal_id = attach(&mut stream, "work").await.resources[0].id.clone();
 
         send_frame(
@@ -368,7 +334,6 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
 fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         // 40 lines push the first into scrollback; the sentinel is not a
         // substring of any later line.
         let mut cmd = CommandBuilder::new("/bin/sh");
@@ -378,8 +343,8 @@ fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
              i=2; while [ $i -le 40 ]; do echo \"scrollback-line-$i\"; i=$((i+1)); done; \
              printf '\\033[1;31mroundtrip-vt-check\\033[0m'; sleep 5",
         ]);
-        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::seeded_in(tmp, "work", cmd);
+        let mut stream = server.connect().await;
         let pane = attach(&mut stream, "work").await.resources[0].clone();
         wait_for_server_screen_text(
             &mut stream,
@@ -464,10 +429,7 @@ fn kill_resource_and_kill_resources_ack_and_close() {
             panic!("spawn c");
         };
 
-        let kill_one = Command::KillResource {
-            terminal_id: pane_b.clone(),
-            operation_id: None,
-        };
+        let kill_one = phux_server_testkit::kill(pane_b.clone());
         let kill_many = Command::KillResources {
             ids: vec![pane_a.clone(), pane_c.clone(), ResourceId::local(999_999)],
             operation_id: None,
@@ -476,14 +438,7 @@ fn kill_resource_and_kill_resources_ack_and_close() {
             (43, kill_one, vec![pane_b]),
             (44, kill_many, vec![pane_a, pane_c]),
         ] {
-            send_frame(
-                &mut stream,
-                &FrameKind::Command {
-                    request_id,
-                    command: kill,
-                },
-            )
-            .await;
+            phux_server_testkit::send_command(&mut stream, request_id, kill).await;
             // The ack and each RESOURCE_CLOSED arrive in any order; the
             // last kill self-exits the server and closes the connection.
             let (mut acked, mut closed) = (false, Vec::new());

@@ -47,6 +47,13 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
             ),
             keyed("Allow once", "Allow once (Return)"),
         ),
+        Pending::ClipboardWrite(terminal, text) => (
+            format!(
+                "{terminal} wants to set your clipboard ({} characters).",
+                text.chars().count()
+            ),
+            keyed("Allow", "Allow (Return)"),
+        ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
             keyed("End session", "End session (Return)"),
@@ -58,7 +65,7 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
 /// asking never resizes them.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     // A popup covers this place and asks in its own box.
-    if desk.popup.command().is_some() {
+    if desk.connection.popup.command().is_some() {
         return None;
     }
     question_bar(desk, p)

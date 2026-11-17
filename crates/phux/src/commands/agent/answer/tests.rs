@@ -205,3 +205,12 @@ fn server_refusals_map_to_the_documented_exit_codes() {
         unknown.err.remedy
     );
 }
+
+/// The success document is the one docs/build-a-client.md shows.
+#[test]
+fn the_answered_document_matches_the_client_page() {
+    let marker = marker("deploy-7", &["yes", "no"]);
+    let operation = uuid::Uuid::nil();
+    let document = super::answered_document("@1", &marker, "yes", AnswerSource::Choice, &operation);
+    crate::commands::agent::client_contract::assert_documented("agent-answer", &document);
+}

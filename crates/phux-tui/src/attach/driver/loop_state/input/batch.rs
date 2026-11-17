@@ -66,6 +66,7 @@ impl super::super::SessionLoop {
             return Ok(Step::Continue);
         }
         if let Some(focused) = self.note_host_focus(&events) {
+            self.focus_reports.set_outer(focused);
             self.on_host_focus(out, sidebar, focused);
         }
         // Computed before dispatch drains `events`; armed after, so it keys to

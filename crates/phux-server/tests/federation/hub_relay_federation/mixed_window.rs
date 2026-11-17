@@ -140,10 +140,7 @@ async fn arrangement(
 }
 
 const fn leaf(n: u8, target: EntryTarget) -> ArrangementNode {
-    ArrangementNode::Leaf(EntryRef {
-        entry: [n; 16],
-        target,
-    })
+    ArrangementNode::Leaf(EntryRef::new([n; 16], target))
 }
 
 fn satellite_target(id: &ResourceId) -> EntryTarget {
@@ -212,6 +209,7 @@ async fn arrange_mixed_window(
         arrangement: key,
         expected: current.revision,
         document: document.clone(),
+        slot_tabs: false,
     };
     let (result, _) = command_via_hub(hub, 102, replace).await;
     assert!(
@@ -367,7 +365,7 @@ async fn assert_degraded(
     layout: (ArrangementKey, &ArrangementDoc),
 ) {
     let [local, a, b] = panes;
-    assert_error(
+    assert_command_error(
         &get_screen_via_hub(hub, 400, b.clone()).await,
         ErrorCode::SatelliteUnreachable,
     );
@@ -389,10 +387,7 @@ async fn assert_degraded(
 }
 
 async fn kill(hub: &mut UnixStream, request_id: u32, id: &ResourceId) {
-    let command = Command::KillResource {
-        terminal_id: id.clone(),
-        operation_id: None,
-    };
+    let command = phux_server_testkit::kill(id.clone());
     let (result, _) = command_via_hub(hub, request_id, command).await;
     assert_eq!(result, CommandResult::Ok, "KILL_RESOURCE {id:?}");
 }

@@ -91,6 +91,13 @@ pub enum Kind {
     /// A forward ended, with its byte counts and the reason.
     #[serde(rename = "forward.close")]
     ForwardClose,
+    /// A client offered its ssh-agent to this server's panes.
+    #[serde(rename = "forward.agent.offer")]
+    ForwardAgentOffer,
+    /// A pane asked the offered ssh-agent to sign, with the key's
+    /// fingerprint and whether it was signed.
+    #[serde(rename = "forward.agent.sign")]
+    ForwardAgentSign,
     /// A client answered a pane's OSC 52 clipboard read.
     #[serde(rename = "clipboard.read")]
     ClipboardRead,

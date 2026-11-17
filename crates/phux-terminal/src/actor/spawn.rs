@@ -13,7 +13,7 @@ mod command;
 mod exit;
 mod write;
 
-pub use command::*;
+pub(crate) use command::*;
 pub(crate) use exit::*;
 pub(super) use write::*;
 

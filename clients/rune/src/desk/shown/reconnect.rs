@@ -6,13 +6,9 @@ use std::sync::Arc;
 
 use phux_client_runtime::control::{ControlOptions, ControlPlane, SessionRecovery, Status};
 use phux_client_runtime::{Client, Runtime};
-use phux_protocol::ids::{BootstrapId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities},
-};
 
 use crate::desk::{Desk, input};
 use crate::launch::Resolved;
@@ -21,26 +17,14 @@ fn terminal() -> ResourceId {
     ResourceId::local(1)
 }
 
-fn sent(client: &Client) -> Vec<FrameKind> {
-    let frames = client.take_outbound();
-    let decode = |bytes: &Vec<u8>| FrameKind::decode(bytes).expect("decode").0;
-    frames.iter().map(decode).collect()
-}
+use crate::wire_fixture::{answer, bootstrap, outbound as sent};
 
 /// The server answers a new connection: the same incarnation, and an
 /// inventory of one session holding one terminal.
 fn greet(client: &Client) {
     let _ = client.take_outbound();
     client
-        .feed(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: vec![1; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        })
+        .feed(crate::wire_fixture::hello(1, false))
         .expect("hello");
     let read = |frame: &FrameKind| match frame {
         FrameKind::Command {
@@ -56,12 +40,7 @@ fn greet(client: &Client) {
         .with_sessions(vec![SessionInfo::new(session, "work")])
         .with_windows(vec![shell])
         .with_resources(vec![ResourceInfo::new(terminal(), window, 80, 24)]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .expect("the inventory");
+    answer(client, request_id, CommandValue::State(snapshot));
 }
 
 /// The server streams the terminal the window subscribed to, showing `says`.
@@ -77,38 +56,13 @@ fn stream(client: &Client, round: u64, says: &str) {
         .iter()
         .find_map(subscribe)
         .expect("the window subscribes to its terminal");
-    let stream_id = StreamId::new(round).expect("a stream id");
-    let bootstrap_id = BootstrapId::new(round).expect("a bootstrap id");
-    for frame in [
-        FrameKind::CommandResult {
+    client
+        .feed(FrameKind::CommandResult {
             request_id,
             result: CommandResult::Ok,
-        },
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 80,
-            rows: 24,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: says.as_bytes().to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
-        client.feed(frame).expect("the stream");
-    }
+        })
+        .expect("the subscription");
+    bootstrap(client, &terminal(), [round; 2], [80, 24], says.as_bytes());
 }
 
 /// One poll and one frame, as the window runs them.
@@ -121,9 +75,9 @@ fn step(rt: &mut rune::Runtime<Desk>) {
 
 /// The first row of the terminal on screen, or `None` with nothing painted.
 fn on_screen(rt: &rune::Runtime<Desk>, client: &Client) -> Option<String> {
-    let view = rt.state.shown.as_ref()?.view?;
+    let view = rt.state.connection.shown.as_ref()?.view?;
     let frame = client.acquire_view(view)?;
-    rt.state.layout.as_ref()?;
+    rt.state.connection.layout.as_ref()?;
     if rt.find("placeholder-machines").is_some() {
         return None;
     }
@@ -153,7 +107,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     let mut desk = Desk::new(&Resolved::offline("reconnect")).with_phone(phone);
     desk.prefs = rune::prefs::Prefs::memory();
     desk.link.heard = true; // no first-run tour over the terminal
-    desk.client = Some(Arc::clone(&client));
+    desk.connection.client = Some(Arc::clone(&client));
     let env = rune::Env::new(true, 2.0);
     let mut rt = rune::Runtime::new(desk, crate::ui::view, size, env);
 
@@ -168,7 +122,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     // The socket drops. The screen stays, and input says it can't land.
     client.with_control(|control| control.connection_lost(None));
     step(&mut rt);
-    assert_eq!(rt.state.status, Status::Connecting);
+    assert_eq!(rt.state.connection.status, Status::Connecting);
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
     type_x(&mut rt);
     let notice = rt.state.notice.as_ref().map(|notice| notice.text.as_str());
@@ -181,7 +135,7 @@ fn reconnects_in_place(phone: bool, size: (f32, f32)) {
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
     greet(&client);
     step(&mut rt);
-    assert_eq!(rt.state.status, Status::Attached);
+    assert_eq!(rt.state.connection.status, Status::Attached);
     assert_eq!(on_screen(&rt, &client).as_deref(), Some("one"));
 
     // The stream resumes into what is on screen, and typing reaches it.

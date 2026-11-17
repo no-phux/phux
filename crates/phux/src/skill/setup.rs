@@ -431,9 +431,7 @@ pub(crate) fn doctor_summary() -> Result<(Vec<&'static str>, Vec<&'static str>),
 /// The hidden `phux skill session-start` hook: one line of context for an
 /// agent's new session. Always exits 0.
 pub(crate) fn session_start(socket: Option<PathBuf>) -> ExitCode {
-    let pane = std::env::var("PHUX_TERMINAL_ID")
-        .ok()
-        .and_then(|id| id.parse::<u32>().ok());
+    let pane = crate::environment::own_terminal_id();
     let guide = "Run `phux skill` for the guide to driving phux panes, sessions and agents.";
     match pane {
         Some(id) => {

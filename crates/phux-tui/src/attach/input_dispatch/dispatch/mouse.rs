@@ -1,10 +1,6 @@
-//! Mouse routing for the dispatcher: the pointer stage of
-//! [`EventEnv::dispatch_event`], chrome hit-tests (sidebar strip, status-bar
-//! row, pane dividers), and the pane-level gestures the client claims
-//! (click-to-focus, wheel, context menu, drag-to-copy).
-//!
-//! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
-//! types without widening their visibility.
+//! Mouse routing for the dispatcher: chrome hit-tests (sidebar, status bar,
+//! dividers) and the pane gestures the client claims (click-to-focus, wheel,
+//! context menu, drag-to-copy).
 
 use super::super::args::{
     bare_action, focus_pane_action, select_window_action, switch_host_action,
@@ -28,10 +24,8 @@ use crate::render::overlay::{SelectionGrab, SelectionMode};
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
-    /// ADR-0048 pointer stage: chrome drags, sidebar and bar clicks, then
-    /// hit-testing the pane composition. A divider press grabs its split; a
-    /// pane press focuses and forwards (pane-local), so mouse-tracking apps
-    /// still get every event over their cells. Claims every mouse event.
+    /// ADR-0048 pointer stage: chrome drags and clicks, then the pane
+    /// composition; a pane press focuses and forwards. Claims every event.
     pub(super) async fn route_mouse_input(
         &mut self,
         ev: &InputEvent,
@@ -87,10 +81,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// ADR-0147: while the floating overlay is open it owns the pointer. Its
-    /// interior gets the event pane-local (the wheel scrolls it as it would a
-    /// tile), its border swallows it, and a press anywhere else dismisses it.
-    /// `None` when no overlay is open.
+    /// ADR-0147: the open floating overlay owns the pointer: its interior
+    /// gets events pane-local, and a press outside dismisses it.
     async fn route_floating_mouse(
         &mut self,
         mouse: &MouseEvent,
@@ -187,10 +179,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(matches!(grab, DragGrab::Window(_)))
     }
 
-    /// The sidebar strip claims every pointer event over its cells before
-    /// pane routing. A left press commits the row's action through
-    /// `run_action` (or grabs the edge); a right press opens a menu;
-    /// everything else is consumed. `None` when not over the strip.
+    /// The sidebar strip claims every pointer event over its cells: a left
+    /// press commits its row (or grabs the edge), a right press a menu.
     async fn route_sidebar_click(
         &mut self,
         mouse: &MouseEvent,
@@ -258,10 +248,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(layout_changed)
     }
 
-    /// The status-bar row is chrome: a left press on a tab commits its
-    /// `select-window` (and picks it up for dragging), a right press opens a
-    /// menu, and everything else is consumed. The sidebar hit-tests first,
-    /// so by here the event is in the bar's own span. `None` off the row.
+    /// The status-bar row is chrome: a left press on a tab selects (and
+    /// grabs) it, a right press opens a menu, the rest is consumed.
     async fn route_status_bar_click(
         &mut self,
         mouse: &MouseEvent,
@@ -475,11 +463,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// Drag-to-copy (tmux): a left press on a pane whose app does not track
-    /// the mouse, or any Ctrl-left press, starts a copy-mode selection;
-    /// motion and release then route through the overlay stage. As in
-    /// Ghostty, a double-click copies the word, a triple-click the line, and
-    /// an Alt-drag selects a rectangle.
+    /// Drag-to-copy (tmux): a left press on a pane that does not track the
+    /// mouse, or any Ctrl-left press, starts a selection. Double-click copies
+    /// a word, triple a line; Alt-drag selects a rectangle.
     fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &ResourceId) -> bool {
         let force_copy = routed.mods.contains(ModSet::CTRL);
         if !is_left_press(routed)
@@ -580,7 +566,7 @@ pub(super) fn pane_scroll_modes(
         wants_mouse_tracking: terminal_wants_mouse_tracking(terminal),
         alt_screen: terminal_in_alt_screen(terminal),
         alt_scroll: terminal
-            .mode(libghostty_vt::terminal::Mode::ALT_SCROLL)
+            .mode(libghostty_vt::mode::Mode::ALT_SCROLL)
             .unwrap_or(false),
     })
 }
@@ -640,13 +626,8 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// Map a left press on the sidebar strip to the action it commits, through
-/// the same `ResolvedAction` vocabulary as a keybinding: window rows
-/// `select-window`, plugin section rows `focus-pane`, agent rows a local
-/// `select-window` or a cross-session
-/// `switch-session` (from the painted `targets`), session rows
-/// `switch-session { name, host? }`, headers and overflow their management
-/// views, `+ new` `new-window`, the chevron `toggle-sidebar`.
+/// Map a left press on the sidebar strip to the `ResolvedAction` it commits,
+/// the same vocabulary as a keybinding.
 pub(in crate::attach::input_dispatch) fn sidebar_click_action(
     strip: crate::layout::Rect,
     targets: &crate::render::chrome::sidebar::SidebarTargets,
@@ -661,13 +642,13 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
         }
         SidebarHit::Project(j) => {
             let key = targets.projects.get(j)?.clone()?;
-            return Some(phux_config::keybind::ResolvedAction {
-                action: "toggle-project-group".to_owned(),
-                args: std::collections::BTreeMap::from([(
+            return Some(crate::attach::resolved(
+                "toggle-project-group",
+                std::collections::BTreeMap::from([(
                     "project".to_owned(),
                     toml::Value::String(key),
                 )]),
-            });
+            ));
         }
         SidebarHit::Plugin(s, j) => {
             let (window, pane) = *targets.plugin.get(s)?.get(j)?;
@@ -691,13 +672,10 @@ fn agents_filter_action(
         FilterChip::Scope(scope) => ("scope", scope.name()),
         FilterChip::Host => ("host", "next"),
     };
-    phux_config::keybind::ResolvedAction {
-        action: "agents-filter".to_owned(),
-        args: std::collections::BTreeMap::from([(
-            key.to_owned(),
-            toml::Value::String(value.to_owned()),
-        )]),
-    }
+    crate::attach::resolved(
+        "agents-filter",
+        std::collections::BTreeMap::from([(key.to_owned(), toml::Value::String(value.to_owned()))]),
+    )
 }
 
 /// Agent targets distinguish client-local focus from a cross-session attach.
@@ -741,10 +719,7 @@ fn sidebar_agent_action(
             toml::Value::Integer(i64::try_from(pane).ok()?),
         );
     }
-    Some(phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    })
+    Some(crate::attach::resolved("switch-session", args))
 }
 
 /// Preserve host qualification even when two hosts use the same session name.
@@ -758,10 +733,7 @@ fn sidebar_session_action(
     if let Some(host) = &target.host {
         args.insert("host".to_owned(), toml::Value::String(host.clone()));
     }
-    phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    }
+    crate::attach::resolved("switch-session", args)
 }
 
 /// Map a press on the status-bar row to its action: a tab commits
@@ -798,13 +770,8 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
     )));
 }
 
-/// The active window's name, or an empty string when the workspace has no
-/// windows yet. Used as the window menu's title.
-/// The active tab as the bar labels it: its name, or `Tab N` by its index
-/// when the name is one the server handed out (a bare integer, which would
-/// read as a second, disagreeing index).
-/// Quantise an f64 pointer position (1-px-per-cell per SPEC §9.2.1) to an
-/// outer-viewport cell, saturating into `u16` like the mouse hit-test.
+/// Quantise an f64 pointer position (1 px per cell, SPEC §9.2.1) to a cell,
+/// saturating into `u16`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

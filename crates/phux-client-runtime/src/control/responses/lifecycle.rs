@@ -261,6 +261,7 @@ impl ControlPlane {
         if let Some(engine) = &self.engine {
             topology.retain_listed(|id| !engine.is_closed(id));
         }
+        topology.keep_foregrounds(self.topology.as_ref());
         // The snapshot carries the user-set title; the shell's title only
         // ever arrives live, so a refresh keeps the one already shown.
         if let Some(previous) = &self.topology {

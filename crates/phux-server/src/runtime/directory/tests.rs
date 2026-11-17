@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use std::fs;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 

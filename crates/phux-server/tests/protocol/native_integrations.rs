@@ -5,12 +5,10 @@ use phux_protocol::ids::SessionKey;
 use phux_protocol::native_agent::{
     NativeIntegrationCatalog, NativeRequest, NativeRequestPayload, SpawnedNativeAgent,
 };
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, command, join_after_shutdown, recv_typed, run_local, send_frame,
-    spawn_server_with, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, assert_command_error, command, join_after_shutdown, recv_typed,
+    run_local, send_frame, spawn_server_with, wait_for_raw_socket,
 };
 
 fn native(request: NativeRequest) -> Command {
@@ -69,24 +67,6 @@ async fn connect(socket: &std::path::Path) -> tokio::net::UnixStream {
     stream
 }
 
-async fn snapshot(
-    stream: &mut tokio::net::UnixStream,
-    request_id: u32,
-) -> phux_protocol::wire::info::SessionSnapshot {
-    let result = command(
-        stream,
-        request_id,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-    )
-    .await;
-    let CommandResult::OkWith(CommandValue::State(state)) = result else {
-        panic!("state: {result:?}")
-    };
-    state
-}
-
 async fn invalid_directories(stream: &mut tokio::net::UnixStream, session: SessionKey) {
     for (index, cwd) in [
         "",
@@ -107,16 +87,7 @@ async fn invalid_directories(stream: &mut tokio::net::UnixStream, session: Sessi
             }),
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
-                    ..
-                }
-            ),
-            "{result:?}"
-        );
+        assert_command_error(&result, ErrorCode::InvalidCommand);
     }
 }
 
@@ -148,7 +119,7 @@ fn native_integration_inventory_and_invalid_launches_use_real_dispatch() {
                 cfg.native_host_executable = Some(guardian);
             });
         let mut stream = connect(&socket).await;
-        let state = snapshot(&mut stream, 1).await;
+        let state = phux_server_testkit::server_state(&mut stream, 1).await;
         let session = state
             .sessions
             .iter()
@@ -188,7 +159,7 @@ fn native_integration_inventory_and_invalid_launches_use_real_dispatch() {
         )
         .await;
         assert!(matches!(missing_session, CommandResult::Error { .. }));
-        let after = snapshot(&mut stream, 21).await;
+        let after = phux_server_testkit::server_state(&mut stream, 21).await;
         assert_eq!(state.sessions.len(), after.sessions.len());
         assert_eq!(state.resources.len(), after.resources.len());
         // A real inert guardian, not a provider echo: wire dispatch reaches the

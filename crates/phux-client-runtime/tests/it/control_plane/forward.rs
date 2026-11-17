@@ -154,3 +154,104 @@ fn a_dropped_open_closes_the_forward_it_was_answered_with() {
         "the close's answer resolves nothing"
     );
 }
+
+fn plane_with_agent() -> ControlPlane {
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
+    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
+        *server_caps = server_caps
+            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::ForwardAgent]));
+    }
+    plane.feed(hello).unwrap();
+    let _ = plane.take_outbound();
+    plane
+}
+
+/// The two forwarding bits gate their own calls: a server with only TCP
+/// forwarding is never sent an ssh-agent offer, and the reverse.
+#[test]
+fn each_forwarding_bit_gates_only_its_own_calls() {
+    let mut tcp = plane_with_forward();
+    assert!(!tcp.forward_agent_supported());
+    assert_eq!(tcp.agent_offer().unwrap_err(), ForwardError::Unsupported);
+    assert_eq!(
+        tcp.agent_reply(1, vec![5]).unwrap_err(),
+        ForwardError::Unsupported
+    );
+    assert!(tcp.take_outbound().is_empty());
+
+    let mut agent = plane_with_agent();
+    assert!(agent.forward_agent_supported() && !agent.forward_supported());
+    assert_eq!(
+        agent.forward_open("localhost".to_owned(), 80).unwrap_err(),
+        ForwardError::Unsupported
+    );
+    assert!(agent.take_outbound().is_empty());
+}
+
+#[test]
+fn an_offer_is_sent_and_a_request_surfaces_to_be_answered() {
+    use phux_protocol::wire::frame::AgentEvent;
+    let mut plane = plane_with_agent();
+    let offer = plane.agent_offer().unwrap();
+    let (request_id, command) = sent_request_id(&mut plane);
+    assert!(matches!(
+        command,
+        Command::Forward {
+            op: ForwardOp::AgentOffer
+        }
+    ));
+    answer(&mut plane, request_id, CommandResult::Ok);
+    assert_eq!(ready(offer), Ok(()));
+
+    let _ = plane.take_events();
+    let asked = FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::SshAgentRequest {
+            id: 7,
+            message: vec![11],
+        },
+        stamp: None,
+    };
+    plane.feed(asked.clone()).unwrap();
+    let events = plane.take_events();
+    assert!(
+        matches!(events.as_slice(), [Event::Frame(frame)] if **frame == asked),
+        "{events:?}"
+    );
+    let read: Vec<_> = events
+        .into_iter()
+        .filter_map(phux_client_runtime::control::forward::agent_request)
+        .collect();
+    assert_eq!(read, [(7, vec![11])]);
+
+    let reply = plane.agent_reply(7, vec![12, 0, 0, 0, 0]).unwrap();
+    let (request_id, command) = sent_request_id(&mut plane);
+    let sent = ForwardOp::AgentReply {
+        id: 7,
+        message: vec![12, 0, 0, 0, 0],
+    };
+    assert!(matches!(command, Command::Forward { op } if op == sent));
+    let late = CommandResult::Error {
+        code: ErrorCode::NotFound,
+        message: "gone".to_owned(),
+    };
+    answer(&mut plane, request_id, late);
+    assert!(matches!(
+        ready(reply).unwrap_err(),
+        ForwardError::Refused {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+
+    // An over-long reply is never sent.
+    let over = vec![5; phux_protocol::forward::MAX_AGENT_MESSAGE_BYTES + 1];
+    assert_eq!(
+        plane.agent_reply(8, over).unwrap_err(),
+        ForwardError::Invalid
+    );
+    assert!(plane.take_outbound().is_empty());
+}

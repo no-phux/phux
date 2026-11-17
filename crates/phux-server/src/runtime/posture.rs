@@ -11,15 +11,10 @@ use tracing::{error, info};
 /// The engine a posture calls for; `None` keeps the state's current engine.
 pub(in crate::runtime) type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
 
-/// Resolve the startup posture from `[policy] mode` and the configured entry
-/// points, refuse the contradictions (`docs/remote.md#who-can-connect`), and
-/// build the engine it calls for.
-///
-/// A `resuming` image (ADR-0032) never exits on a refusal: the previous
-/// process is already gone, and exiting would end every pane it handed over.
-/// It takes [`crate::policy::PolicyPosture::resume_fallback`] instead, logs
-/// the refusal, and returns the fallback so the caller can leave the remote
-/// entry points unbound.
+/// Resolve the startup posture from `[policy] mode` and the entry points,
+/// refuse contradictions (`docs/remote.md#who-can-connect`), and build its
+/// engine. A `resuming` image never exits on a refusal (the old process is
+/// gone): it takes [`crate::policy::PolicyPosture::resume_fallback`].
 pub(in crate::runtime) fn startup_policy(
     cfg: &ServerConfig,
     remote_listener: bool,
@@ -98,7 +93,9 @@ pub(in crate::runtime) fn posture_policy_engine(
         PolicyPosture::Paired => {
             let authority = workload_auth::WorkloadAuth::configured(&cfg.env)
                 .map_err(ServerError::PolicyMaterial)?;
-            std::sync::Arc::new(ScopedPolicy::paired(authority.registry))
+            std::sync::Arc::new(
+                ScopedPolicy::paired(authority.registry).with_tailnet_owner(cfg.tailnet_owner),
+            )
         }
     };
     Ok(Some(engine))
@@ -118,14 +115,17 @@ pub(in crate::runtime) const fn remote_listener_configured(
 }
 
 /// Mirror the posture into shared state: whether TLS listeners require a
-/// workload certificate, and the engine that mints each connection's grant.
+/// workload certificate, whether they admit the owner's tailnet devices
+/// (`paired` only), and the engine that mints each connection's grant.
 pub(in crate::runtime) fn install_policy_posture(
     state: &SharedState,
     posture: crate::policy::PolicyPosture,
     engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
+    tailnet_owner: bool,
 ) {
     state.with_mut(|s| {
         s.set_policy_posture(posture);
+        s.set_tailnet_owner(tailnet_owner && posture.requires_workload_mtls());
         if let Some(engine) = engine {
             s.set_policy_engine(engine);
         }

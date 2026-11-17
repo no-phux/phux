@@ -1,12 +1,6 @@
-//! Size budget for the attach client (phux-jx39.7): the parameter-threading
-//! and god-function debt the jx39 stages paid down cannot silently come back.
-//!
-//! Clippy already fails any function over 7 parameters or 100 lines; the only
-//! way past it is an `#[allow]`. So the budget pins the allows themselves:
-//! each surviving `too_many_arguments` / `too_many_lines` allow is listed
-//! here with its ceiling, and a new allow or a grown signature fails this
-//! test. Lower a number when you pay debt down; raise one only deliberately,
-//! with the reason in the same change.
+//! Size budget for the attach client: every surviving `too_many_arguments` /
+//! `too_many_lines` allow is pinned here with its ceiling, so a new allow or
+//! a grown signature fails. Lower a number when you pay debt down.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]

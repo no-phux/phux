@@ -72,18 +72,18 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest frame body a consumer may hand the WebSocket lane: the SPEC §5
 /// hard bound, the same ceiling Cockpit's socket worker enforces inbound
 /// (`transport.max_frame_bytes` less its 4-byte prefix).
-pub const MAX_FRAME_BODY: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_FRAME_BODY: usize = phux_protocol::wire::frame::MAX_FRAME_LEN as usize;
 
 /// Plan the QUIC dial for `authority` (`HOST:PORT`): resolve the name, apply
 /// the pin rule, and parse the bearer token. The returned plan owns the
 /// token; drop it as soon as the dial has sent its preamble.
-pub async fn plan_quic(resolved: &Resolved, authority: &str) -> Result<QuicDial, String> {
+pub(crate) async fn plan_quic(resolved: &Resolved, authority: &str) -> Result<QuicDial, String> {
     plan_quic_with_token(resolved, authority, None).await
 }
 
 /// Plan a QUIC dial with an optional in-memory token overriding the registry
 /// file. Native embedders use this for Keychain-backed credentials.
-pub async fn plan_quic_with_token(
+pub(crate) async fn plan_quic_with_token(
     resolved: &Resolved,
     authority: &str,
     token: Option<String>,
@@ -114,6 +114,61 @@ pub async fn plan_quic_with_token(
         }),
         inner,
     })
+}
+
+/// The certificate authority the phux server at `authority` (`HOST:PORT`)
+/// presents, to pin before dialing a machine on your tailnet that was never
+/// paired (`docs/config.md#tailnet-owner-devices`).
+///
+/// Only a name that resolves to a tailnet address is probed: the tailnet
+/// already vouches for the address, as `phux host add
+/// --accept-new-host-key` relies on, and the pin then guards every later
+/// dial. Nothing is sent: the handshake is refused on a pin no authority
+/// matches, and the refusal names the presented one.
+///
+/// # Errors
+///
+/// A name off the tailnet, an unreachable server, or one presenting no
+/// authority.
+pub async fn tailnet_authority(authority: &str) -> Result<String, String> {
+    let (bare, addr) = resolve_quic_addr(authority, authority).await?;
+    if !phux_config_core::remote::is_tailnet(addr.ip()) {
+        return Err(format!(
+            "{bare} is not on your tailnet; pair it with phux pair instead"
+        ));
+    }
+    let dial = QuicDial {
+        addr,
+        server_name: quic_server_name(bare),
+        token: None,
+        trust: CertTrust::Authority {
+            ca: format!("sha256:{}", "0".repeat(64)),
+        },
+        inner: None,
+        identity: Some(phux_dial::TlsClientIdentity::None),
+    };
+    let probe = phux_dial::quic::connect_with_alpn(&dial, phux_protocol::policy::QUIC_ALPN);
+    match tokio::time::timeout(DIAL_TIMEOUT, probe).await {
+        Ok(Err(DialError::AuthorityChanged(change))) => change.presented.ok_or_else(|| {
+            format!("{bare} presents no certificate authority; pair it with phux pair instead")
+        }),
+        Ok(Err(err)) => Err(format!("{bare}: {err}")),
+        Ok(Ok(_)) => Err(format!("{bare}: the probe was not refused")),
+        Err(_) => Err(format!("{bare} did not answer; is phux running there?")),
+    }
+}
+
+/// [`tailnet_authority`] on a runtime of its own, for an embedder's thread.
+///
+/// # Errors
+///
+/// As [`tailnet_authority`], or no runtime.
+pub fn tailnet_authority_blocking(authority: &str) -> Result<String, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("probe runtime: {err}"))?
+        .block_on(tailnet_authority(authority))
 }
 
 /// The end-to-end session a relayed dial runs to the server (ADR-0180), or
@@ -196,7 +251,11 @@ fn quic_server_name(bare: &str) -> String {
 
 /// Plan the WebSocket dial for `url`: a routable target must be `wss://`,
 /// pinned, and carry a token; loopback may be plaintext with neither.
-pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<WsDial, String> {
+pub(crate) fn plan_ws(
+    resolved: &Resolved,
+    url: &str,
+    token: Option<String>,
+) -> Result<WsDial, String> {
     let name = resolved.name.as_str();
     let target = WsTarget::parse(url).map_err(|err| format!("{name}: {err}"))?;
     if !target.is_loopback() {
@@ -235,7 +294,7 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
 }
 
 /// Read the bearer token for this dial. Failures name the file, never bytes.
-pub fn load_token(resolved: &Resolved) -> Result<Option<String>, String> {
+pub(crate) fn load_token(resolved: &Resolved) -> Result<Option<String>, String> {
     read_token(resolved.token_file.as_deref()).map_err(|err| format!("{}: {err}", resolved.name))
 }
 
@@ -256,7 +315,7 @@ fn bad_token(resolved: &Resolved) -> String {
 
 /// Split one complete `len:u32 BE` + body frame off the front of `pending`,
 /// leaving a partial tail for the next read.
-pub fn take_frame(pending: &mut BytesMut) -> Result<Option<BytesMut>, &'static str> {
+pub(crate) fn take_frame(pending: &mut BytesMut) -> Result<Option<BytesMut>, &'static str> {
     let Some(header) = pending.get(..4) else {
         return Ok(None);
     };
@@ -276,7 +335,7 @@ pub fn take_frame(pending: &mut BytesMut) -> Result<Option<BytesMut>, &'static s
 /// message that disagrees with its declared length would desynchronize the
 /// consumer's framed stream, so it fails the connection with a reason
 /// instead.
-pub fn check_inbound(name: &str, frame: &[u8]) -> Result<(), String> {
+pub(crate) fn check_inbound(name: &str, frame: &[u8]) -> Result<(), String> {
     framing::check_frame(frame)
         .map(|_| ())
         .map_err(|err| format!("{name} sent a malformed frame: {err}"))
@@ -327,7 +386,7 @@ pub fn dial_message(name: &str, err: &DialError) -> String {
 /// The `authority_changed` refusal (ADR-0153): both fingerprints, why it is
 /// refused, and the re-pair that accepts a rotation the operator made.
 #[must_use]
-pub fn authority_changed_message(name: &str, change: &phux_dial::AuthorityChange) -> String {
+pub(crate) fn authority_changed_message(name: &str, change: &phux_dial::AuthorityChange) -> String {
     format!(
         "{name}: {change}. Refusing to connect: a rotated authority and an impostor look \
          the same from here. If the host's operator rotated it (`phux workload authority \
@@ -338,14 +397,14 @@ pub fn authority_changed_message(name: &str, change: &phux_dial::AuthorityChange
 /// Preserve the QUIC application-close code: quinn's stream I/O displays
 /// `connection lost` even when the peer sent `AUTH_FAILED`.
 #[must_use]
-pub fn quic_closed_message(name: &str, err: &quinn::ConnectionError) -> String {
+pub(crate) fn quic_closed_message(name: &str, err: &quinn::ConnectionError) -> String {
     dial_message(name, &phux_dial::quic::close_error(err))
 }
 
 /// A QUIC stream that ended: the connection's close reason when it has
 /// one, the stream error otherwise.
 #[must_use]
-pub fn quic_stream_lost(
+pub(crate) fn quic_stream_lost(
     name: &str,
     connection: &quinn::Connection,
     err: impl std::fmt::Display,

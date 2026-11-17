@@ -9,11 +9,14 @@ use crate::desk::{Desk, SettingsCategory as Category};
 #[derive(Clone, Copy)]
 pub(super) enum Entry {
     Theme,
+    HoverToolbar,
+    InterfaceSize,
     TextSize,
     Font,
     CopySelect,
     ConfirmClose,
     OptionMeta,
+    WheelArrows,
     QuickTerminal,
     QuickChord,
     Notifications,
@@ -25,13 +28,16 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 17] = [
         Self::Theme,
+        Self::HoverToolbar,
+        Self::InterfaceSize,
         Self::TextSize,
         Self::Font,
         Self::CopySelect,
         Self::ConfirmClose,
         Self::OptionMeta,
+        Self::WheelArrows,
         Self::QuickTerminal,
         Self::QuickChord,
         Self::Notifications,
@@ -44,12 +50,13 @@ impl Entry {
 
     const fn category(self) -> Category {
         match self {
-            Self::Theme => Category::Appearance,
+            Self::Theme | Self::HoverToolbar | Self::InterfaceSize => Category::Appearance,
             Self::TextSize
             | Self::Font
             | Self::CopySelect
             | Self::ConfirmClose
             | Self::OptionMeta
+            | Self::WheelArrows
             | Self::QuickTerminal
             | Self::QuickChord => Category::Terminal,
             Self::Notifications => Category::Notifications,
@@ -62,11 +69,14 @@ impl Entry {
     const fn title(self) -> &'static str {
         match self {
             Self::Theme => "Theme",
+            Self::HoverToolbar => "Show toolbar on hover",
+            Self::InterfaceSize => "Interface size",
             Self::TextSize => "Text size",
             Self::Font => "Font",
             Self::CopySelect => "Copy on select",
             Self::ConfirmClose => "Confirm before closing",
             Self::OptionMeta => "Option as Meta",
+            Self::WheelArrows => "Scroll full-screen programs with arrows",
             Self::QuickTerminal => "Quick terminal",
             Self::QuickChord => "Quick terminal shortcut",
             Self::Notifications => "Notifications",
@@ -83,6 +93,14 @@ impl Entry {
             Self::Theme => {
                 "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
             }
+            Self::HoverToolbar => {
+                "Tabs and buttons stay hidden until the pointer reaches the top of the window, so \
+                 the terminal fills it."
+            }
+            Self::InterfaceSize => {
+                "The sidebar, tabs, palette and Settings from 80% to 200%. The terminal's text \
+                 keeps its own size."
+            }
             Self::TextSize => "Terminal text from 8 to 32 points.",
             Self::Font => "Terminal font. One that isn't installed shows the system's.",
             Self::CopySelect => "Finishing a selection puts it on the clipboard.",
@@ -91,6 +109,11 @@ impl Entry {
                  choose, only a terminal an agent runs in asks."
             }
             Self::OptionMeta => "Option sends Esc-prefixed keys instead of typing å and ∑.",
+            Self::WheelArrows => {
+                "Scrolling over a full-screen program that doesn't use the mouse sends Up and \
+                 Down, unless the program turned that off. Off, scrolling there does nothing, so \
+                 it can't recall old prompts in an agent's input."
+            }
             Self::QuickTerminal => {
                 "A shortcut drops a terminal over any app, holding the quick session on this \
                  computer. It works in every app, so it's off until you turn it on."
@@ -107,9 +130,7 @@ impl Entry {
             }
             Self::PairPhone => super::super::pair::DETAIL,
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
-            Self::GetStarted => {
-                "The look, the phux agent skill, permissions and your key bindings, step by step."
-            }
+            Self::GetStarted => crate::onboarding::PROMISE.get_started,
             Self::Updates => {
                 "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
             }
@@ -120,14 +141,17 @@ impl Entry {
         let on = |value| if value { "On" } else { "Off" }.to_owned();
         match self {
             Self::Theme => desk.settings.theme.map_or("System", |t| t.name).to_owned(),
+            Self::InterfaceSize => format!("{}%", desk.interface_size),
             Self::TextSize => format!("{:.0} pt", desk.font_size),
             Self::Font => match desk.font_family.as_str() {
                 "" => "System".to_owned(),
                 family => family.to_owned(),
             },
+            Self::HoverToolbar => on(desk.settings.hover_toolbar),
             Self::CopySelect => on(desk.settings.copy_on_select),
             Self::ConfirmClose => on(desk.settings.confirm_close),
             Self::OptionMeta => on(desk.settings.option_as_meta),
+            Self::WheelArrows => on(desk.settings.wheel_arrows),
             Self::QuickTerminal => on(desk.quick_chord.on),
             Self::QuickChord => desk.quick_chord.recorder.keycaps().concat(),
             Self::Notifications => on(desk.settings.notifications),
@@ -166,10 +190,13 @@ impl Entry {
     const fn aliases(self) -> &'static str {
         match self {
             Self::Theme => "colors colours appearance palette",
+            Self::HoverToolbar => "titlebar tab bar hide reveal edge to edge full window chrome",
+            Self::InterfaceSize => "ui scale zoom bigger larger sidebar accessibility",
             Self::TextSize => "font zoom typography",
             Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
             Self::OptionMeta => "alt keyboard escape",
+            Self::WheelArrows => "mouse wheel trackpad alternate scroll arrow keys history tui",
             Self::QuickTerminal | Self::QuickChord => {
                 "global hotkey shortcut drop down dropdown panel quake visor"
             }
@@ -178,7 +205,10 @@ impl Entry {
             Self::Hosts => "remote ssh connection",
             Self::PairPhone => "mobile iphone android qr code scan link devices revoke tailnet",
             Self::Diagnostics => "logs debug troubleshooting",
-            Self::GetStarted => "onboarding welcome setup skill permissions migrate import",
+            Self::GetStarted if crate::onboarding::PERMISSIONS => {
+                "onboarding welcome setup skill permissions migrate import"
+            }
+            Self::GetStarted => "onboarding welcome setup skill migrate import",
             Self::Updates => {
                 "upgrade version automatic release channel stable next preview install"
             }
@@ -194,7 +224,8 @@ impl Entry {
                 Desk::settings_themes,
                 ink,
             ),
-            Self::TextSize => controls::stepper(desk, ink),
+            Self::InterfaceSize => controls::interface_size(desk, ink),
+            Self::TextSize => controls::text_size(desk, ink),
             Self::Font => self.link(
                 "settings-font",
                 desk,
@@ -238,6 +269,12 @@ impl Entry {
     fn toggle(self, desk: &Desk, ink: &Ink) -> El {
         let file = &desk.file;
         let (key, value, press, managed): (_, _, fn(&mut Desk), _) = match self {
+            Self::HoverToolbar => (
+                "set-hover-toolbar",
+                desk.settings.hover_toolbar,
+                Desk::toggle_hover_toolbar,
+                false,
+            ),
             Self::CopySelect => (
                 "set-copy-select",
                 desk.settings.copy_on_select,
@@ -255,6 +292,12 @@ impl Entry {
                 desk.settings.option_as_meta,
                 Desk::toggle_option_as_meta,
                 file.option_as_meta.is_some(),
+            ),
+            Self::WheelArrows => (
+                "set-wheel-arrows",
+                desk.settings.wheel_arrows,
+                Desk::toggle_wheel_arrows,
+                file.wheel_arrows.is_some(),
             ),
             Self::QuickTerminal => (
                 "set-quick-terminal",
@@ -420,8 +463,10 @@ pub(super) fn matching(desk: &Desk) -> Vec<(Category, Vec<Entry>)> {
                     !matches!(entry, Entry::QuickTerminal | Entry::QuickChord)
                         || desk.quick_chord.available()
                 })
-                // A phone doesn't pair a phone.
-                .filter(|entry| !matches!(entry, Entry::PairPhone) || desk.phone.is_none())
+                // A phone doesn't pair a phone, and has no toolbar to hide.
+                .filter(|entry| {
+                    !matches!(entry, Entry::PairPhone | Entry::HoverToolbar) || desk.phone.is_none()
+                })
                 .filter(|entry| entry.category() == category)
                 .filter(|entry| entry.matches(desk, &query))
                 .collect();

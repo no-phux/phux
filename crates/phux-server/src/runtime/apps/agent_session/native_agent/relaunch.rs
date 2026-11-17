@@ -3,7 +3,7 @@
 use phux_core::Refusal;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::native_agent::{
-    MAX_NATIVE_PAYLOAD_BYTES, NATIVE_HOST_SPEC_ENV, SpawnNativeAgent,
+    MAX_NATIVE_PAYLOAD_BYTES, NATIVE_HOST_SPEC_ENV, SpawnNativeAgent, is_reserved_native_env,
 };
 use phux_protocol::wire::frame::CommandResult;
 
@@ -114,10 +114,7 @@ fn native_relaunch_spec(
     if spec.guardian.is_some()
         || spec.guardian_key.is_some()
         || spec.guardian_expected.is_some()
-        || spec.env.keys().any(|key| {
-            key.starts_with("PHUX_NATIVE_")
-                || matches!(key.as_str(), "PHUX_SOCKET" | "PHUX_TERMINAL_ID")
-        })
+        || spec.env.keys().any(|key| is_reserved_native_env(key))
     {
         return Err(invalid(
             "saved native recipe contains private bootstrap or stale destination data".into(),

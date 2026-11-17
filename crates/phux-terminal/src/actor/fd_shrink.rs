@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use phux_core::{LaunchDiagnostic, LaunchStage};
+use phux_terminal_api::launch::STRICT_CWD_KEY;
 use portable_pty::{Child, CommandBuilder, MasterPty, SlavePty};
 
 mod exec_status;
@@ -53,7 +54,7 @@ pub(super) fn spawn_pane_child(
 }
 
 fn strict_cwd(cmd: &CommandBuilder) -> bool {
-    cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some()
+    cmd.get_env(STRICT_CWD_KEY).is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +248,7 @@ fn spawn_argv(trampoline: &Path, cmd: &CommandBuilder) -> io::Result<Vec<CString
 fn spawn_envp(cmd: &CommandBuilder) -> io::Result<Vec<CString>> {
     let mut envp = Vec::new();
     for (key, value) in cmd.iter_full_env_as_str() {
-        if key == SPAWN_CWD_KEY || key == super::spawn::STRICT_CWD_KEY {
+        if key == SPAWN_CWD_KEY || key == STRICT_CWD_KEY {
             continue;
         }
         envp.push(c_pair(key, value)?);
@@ -263,7 +264,7 @@ fn spawn_envp(cmd: &CommandBuilder) -> io::Result<Vec<CString>> {
 fn spawn_directory(cmd: &CommandBuilder) -> Option<PathBuf> {
     if let Some(cwd) = cmd.get_cwd() {
         let path = PathBuf::from(cwd);
-        if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() || path.is_dir() {
+        if cmd.get_env(STRICT_CWD_KEY).is_some() || path.is_dir() {
             return Some(path);
         }
     }

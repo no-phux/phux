@@ -18,8 +18,9 @@
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::process::{Command, Output};
 
-use phux_client::testkit::{ScriptSpec, ScriptedServer};
+use phux_client::testkit::{OrgFixture, ScriptSpec, ScriptedServer};
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::wire::frame::SessionLifetime;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 /// One satellite's worth of prose, in the shape `hub::relay` writes it.
@@ -93,14 +94,16 @@ fn stdout_of(output: &Output) -> String {
 
 /// A healthy server: the merged answer is the whole truth.
 fn whole_fleet() -> ScriptSpec {
-    ScriptSpec::new().state(fleet())
+    let mut org = OrgFixture::new();
+    org.session("work", SessionLifetime::Persistent);
+    ScriptSpec::new().state(fleet()).organization(org)
 }
 
 /// A hub with one satellite it could not reach. The notice rides ahead of the
 /// ack because that is where the reference server puts it — the harness owns
 /// that ordering, not this test.
 fn partial_fleet() -> ScriptSpec {
-    ScriptSpec::new().degradation_notice(OUTAGE).state(fleet())
+    whole_fleet().degradation_notice(OUTAGE)
 }
 
 /// `ls` answers a whole fleet with no warning and `unreachable: []` (present,
@@ -167,12 +170,8 @@ fn kill_and_tag_never_call_an_unsearchable_pane_absent() {
 #[test]
 fn rename_warns_but_still_renames_under_a_partial_fleet() {
     // Session names never aggregate, so a partial fleet cannot hide the rename
-    // or a collision: warn and succeed, unlike `kill`/`tag`. The script's second
-    // `GET_STATE` is the applied roster, as the real server's barrier reply is.
-    let spec = ScriptSpec::new()
-        .degradation_notice(OUTAGE)
-        .states([fleet(), fleet_named("play")]);
-    let output = run_verb(spec, &["rename", "work", "play"]);
+    // or a collision: warn and succeed, unlike `kill`/`tag`.
+    let output = run_verb(partial_fleet(), &["rename", "work", "play"]);
     assert!(
         output.status.success(),
         "stderr was: {}",
@@ -194,7 +193,7 @@ fn rename_still_refuses_an_unknown_session_under_a_partial_fleet() {
 }
 
 #[test]
-fn ls_without_host_sessions_warns_and_keeps_successful_listing() {
+fn ls_on_a_baseline_server_keeps_successful_satellite_listing() {
     use phux_protocol::ids::SatelliteHost;
 
     let snapshot = fleet().with_resources(vec![
@@ -206,12 +205,9 @@ fn ls_without_host_sessions_warns_and_keeps_successful_listing() {
             24,
         ),
     ]);
-    // ScriptSpec advertises no features by default, including HOST_SESSIONS.
+    // Every 1.x server reports HOST_SESSIONS.
     let output = run_verb(ScriptSpec::new().state(snapshot), &["ls"]);
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout_of(&output).contains("edge"));
-    assert_eq!(
-        stderr_of(&output),
-        "phux: warn: ls: satellite sessions are unavailable from this server (it does not report HOST_SESSIONS); its satellite terminals are listed above\n"
-    );
+    assert_eq!(stderr_of(&output), "");
 }

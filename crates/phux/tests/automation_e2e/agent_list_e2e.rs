@@ -7,8 +7,7 @@
     reason = "tests"
 )]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::time::{Duration, Instant};
 

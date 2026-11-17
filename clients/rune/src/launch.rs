@@ -29,7 +29,8 @@ pub fn install() -> Result<(), String> {
 /// Run `script` as `sh -c` and, when it fails, say why in its last words.
 fn run_installer(script: &str) -> Result<(), String> {
     let out = Command::new("/bin/sh")
-        .args(["-c", script, "install.sh"])
+        // No terminal to ask for sudo on: never the apt or dnf repository.
+        .args(["-c", script, "install.sh", "--no-repo"])
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("could not run the installer: {error}"))?;

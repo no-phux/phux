@@ -18,9 +18,9 @@ fn id(n: u32) -> ResourceId {
 
 /// An attached window showing one terminal, on settings no test can save.
 fn window() -> (Arc<Client>, rune::Runtime<Desk>) {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.prefs = rune::prefs::Prefs::memory();
-    rt.state.status = Status::Attached;
+    rt.state.connection.status = Status::Attached;
     rt.frame(0.0);
     let _ = client.take_outbound();
     (client, rt)
@@ -51,7 +51,7 @@ fn open(rt: &mut rune::Runtime<Desk>, line: &str) -> u32 {
     rt.update(|d, _| d.open_popup(line));
     rt.frame(0.0);
     rt.frame(0.0);
-    rt.state.popup.request.expect("a spawn is out")
+    rt.state.connection.popup.request.expect("a spawn is out")
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn the_palette_asks_and_the_box_spawns_at_its_own_size() {
         d.palette_query.text = "lazygit".to_owned();
         d.palette_run(None, tx);
     });
-    assert_eq!(rt.state.popup.command(), Some("lazygit"));
+    assert_eq!(rt.state.connection.popup.command(), Some("lazygit"));
     assert!(!rt.state.palette_open);
     rt.frame(0.0);
     rt.frame(0.0);
@@ -127,7 +127,7 @@ fn the_box_takes_the_keyboard_and_goes_when_its_command_ends() {
 
     // One at a time: a second is refused and said.
     rt.update(|d, _| d.open_popup("htop"));
-    assert_eq!(rt.state.popup.command(), Some("lazygit"));
+    assert_eq!(rt.state.connection.popup.command(), Some("lazygit"));
     let said = rt.state.notice.as_ref().expect("a notice");
     assert!(said.text.contains("already open"));
 
@@ -153,9 +153,50 @@ fn a_spawn_that_fails_takes_the_box_down_and_says_why() {
     let (client, mut rt) = window();
     let request = open(&mut rt, "lazygit");
     rt.update(|d, _| assert!(d.popup_spawned(&client, request, None, Some("no pty"))));
-    assert_eq!(rt.state.popup.command(), None);
+    assert_eq!(rt.state.connection.popup.command(), None);
     let said = rt.state.notice.as_ref().expect("a notice");
     assert_eq!(said.text, "Popup not started: no pty");
+}
+
+#[test]
+fn replacing_the_runtime_closes_only_its_popup_and_releases_its_view() {
+    use phux_protocol::caps::{ServerCapabilities, ServerFeature, ServerFeatureSet};
+    use phux_protocol::wire::frame::Command;
+    let replica = crate::test_support::terminal::Replica::with_capabilities(
+        80,
+        24,
+        2,
+        ServerCapabilities::new()
+            .with_features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources])),
+    );
+    let client = replica.client.clone();
+    let mut desk = crate::test_support::window();
+    desk.connection.client = Some(client.clone());
+    desk.connection.status = Status::Attached;
+    desk.connection.shown = Some(crate::desk::Shown {
+        resource: id(1),
+        view: Some(replica.views[0]),
+    });
+    desk.open_popup("test command");
+    desk.popup_laid_out([600.0, 400.0]);
+    let request = desk.connection.popup.request.unwrap();
+    assert!(desk.popup_spawned(&client, request, Some(&id(2)), None));
+    let view = desk.connection.popup.view_of(&id(2)).unwrap();
+    let _ = client.take_outbound();
+    desk.replace_connection(crate::desk::link::Replacement::Retry);
+    assert!(client.view_generation(view).is_none());
+    let closed: Vec<_> = client
+        .take_outbound()
+        .iter()
+        .filter_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+            FrameKind::Command {
+                command: Command::CloseTabResources { ids },
+                ..
+            } => Some(ids),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closed, vec![vec![id(2)]]);
 }
 
 #[test]
@@ -165,10 +206,13 @@ fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
     // Dismissed while it starts: the box goes now, and the terminal that
     // lands later is still the popup's to close.
     rt.update(|d, tx| d.shortcut(Shortcut::CloseTerminal, tx));
-    assert_eq!(rt.state.popup.command(), None);
-    assert_eq!(rt.state.popup.request, Some(request));
+    assert_eq!(rt.state.connection.popup.command(), None);
+    assert_eq!(rt.state.connection.popup.request, Some(request));
     rt.update(|d, _| assert!(d.popup_spawned(&client, request, Some(&id(7)), None)));
-    assert!(rt.state.popup.terminal().is_none() && rt.state.popup.request.is_none());
+    assert!(
+        rt.state.connection.popup.terminal().is_none()
+            && rt.state.connection.popup.request.is_none()
+    );
     rt.frame(0.0);
 
     // With "Confirm before closing" on, a running command is asked about.
@@ -179,7 +223,11 @@ fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
         d.close_terminal();
     });
     assert_eq!(rt.state.pending, Some(Pending::Close(id(7))));
-    assert_eq!(rt.state.popup.terminal(), Some(&id(7)), "still up");
+    assert_eq!(
+        rt.state.connection.popup.terminal(),
+        Some(&id(7)),
+        "still up"
+    );
     rt.frame(0.0);
     assert!(rt.find("confirm-bar").is_some(), "asked in the box");
 
@@ -187,7 +235,11 @@ fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
     rt.update(|d, _| assert!(d.popup_ended(&client, &id(7), false)));
     assert_eq!(rt.state.pending, None);
     assert_eq!(
-        rt.state.shown.as_ref().map(|s| s.resource.clone()),
+        rt.state
+            .connection
+            .shown
+            .as_ref()
+            .map(|s| s.resource.clone()),
         Some(id(1))
     );
 }

@@ -16,12 +16,12 @@ fn tick(rt: &mut Runtime<Desk>, clock: f64) {
 
 /// A point a few cells into the focused terminal's grid.
 fn in_grid(rt: &Runtime<Desk>) -> (f32, f32) {
-    let [x, y] = rt.state.origins[&id(1)];
+    let [x, y] = rt.state.connection.origins[&id(1)];
     (x + 30.0, y + 60.0)
 }
 
 fn offset(client: &phux_client_runtime::Client, rt: &Runtime<Desk>) -> u64 {
-    let view = rt.state.shown.as_ref().unwrap().view.unwrap();
+    let view = rt.state.connection.shown.as_ref().unwrap().view.unwrap();
     client.acquire_view(view).unwrap().scrollbar.offset
 }
 
@@ -160,6 +160,34 @@ fn a_drag_is_a_pagers_arrows_and_a_tracking_programs_wheel_never_its_button() {
     assert_eq!(rt.state.phone.as_ref().unwrap().travel, [0.0; 2]);
 }
 
+/// Arrows recall old prompts in a chat TUI: they go only where the program
+/// keeps DEC 1007 on and the person hasn't turned them off.
+#[test]
+fn a_drag_sends_no_arrows_once_1007_is_reset_or_the_setting_is_off() {
+    let arrows = |frames: &[FrameKind]| {
+        frames
+            .iter()
+            .filter(|f| matches!(f, FrameKind::InputKey { .. }))
+            .count()
+    };
+    let (client, mut rt) = fixture(true);
+    output(&client, 1, 1, b"\x1b[?1049h\x1b[?1007l");
+    poll(&mut rt);
+    let at = in_grid(&rt);
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert_eq!(arrows(&outbound(&client)), 0, "1007 reset");
+
+    output(&client, 1, 2, b"\x1b[?1007h");
+    poll(&mut rt);
+    rt.state.settings.wheel_arrows = false;
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert_eq!(arrows(&outbound(&client)), 0, "setting off");
+
+    rt.state.settings.wheel_arrows = true;
+    swipe(&mut rt, at, 60.0, 1.6);
+    assert!(arrows(&outbound(&client)) > 0, "both on: arrows as before");
+}
+
 #[test]
 fn a_hold_selects_by_words_and_lifting_copies_the_selection() {
     use crate::desk::phone::touch::Feedback;
@@ -168,7 +196,7 @@ fn a_hold_selects_by_words_and_lifting_copies_the_selection() {
     touch(&mut rt, Started, x, y);
     tick(&mut rt, 1.0);
     tick(&mut rt, 1.2);
-    let view = rt.state.shown.as_ref().unwrap().view.unwrap();
+    let view = rt.state.connection.shown.as_ref().unwrap().view.unwrap();
     let engine = client.engine().unwrap();
     assert!(
         engine.view_selection_text(view).is_err(),
@@ -248,7 +276,7 @@ fn a_stationary_long_hold_copies_on_lift_without_opening_a_menu() {
     assert!(rt.copy_request.take().is_some(), "lifting copies the word");
     assert!(rt.state.pointer.menu.is_none());
     assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
-    assert_eq!(rt.state.gesture, 0);
+    assert_eq!(rt.state.connection.gesture, 0);
     no_input(&client);
 }
 
@@ -292,7 +320,7 @@ fn a_hold_is_timed_from_the_touch_and_never_fires_for_a_finger_that_is_gone() {
     // Left mid-hold (the app resigned, a sheet took the pointer): the
     // selection ends where it was, and nothing is copied.
     rt.update(|d, _| d.phone_interrupted());
-    assert_eq!(rt.state.gesture, 0);
+    assert_eq!(rt.state.connection.gesture, 0);
     assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
     touch(&mut rt, Cancelled, x, y);
     assert!(rt.copy_request.is_none());

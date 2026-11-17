@@ -30,10 +30,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             })
             .cloned()
     }
-    /// Feed a key to predictive echo (mouse/paste/focus bypass it), peeking
-    /// the focused pane's grid so arrows can size the grapheme they cross.
-    /// ADR-0090: predictions queue on both screens; on the alternate screen
-    /// display waits for echo evidence.
+    /// Feed a key to predictive echo, peeking the focused grid so arrows can
+    /// size the grapheme they cross (ADR-0090).
     pub(super) fn feed_predict(&mut self, ev: &InputEvent) -> bool {
         use crate::predict::PredictionOutcome;
         let InputEvent::Key(key_event) = ev else {
@@ -87,7 +85,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let lines = crate::attach::paste_safety::line_count(&paste.data);
         self.ctx
             .overlays
-            .push(Box::new(crate::render::overlay::PasteConfirmOverlay::new(
+            .push(Box::new(crate::render::overlay::ConfirmOverlay::paste(
                 paste.clone(),
                 lines,
                 bracketed,
@@ -96,12 +94,17 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// Forward key/focus/paste input to the focused pane (ADR-0019). Input
+    /// Forward key/paste input to the focused pane (ADR-0019). Input
     /// before ATTACHED, or to an exited or unreachable pane, is dropped.
+    /// The outer window's focus reports aren't forwarded: the driver's
+    /// `report_focus` tells the panes, as it does for every focus move.
     pub(super) async fn forward_to_focused_pane(
         &mut self,
         ev: InputEvent,
     ) -> Result<bool, AttachError> {
+        if matches!(ev, InputEvent::Focus(_)) {
+            return Ok(false);
+        }
         let Some(pane) = self.input_target() else {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);

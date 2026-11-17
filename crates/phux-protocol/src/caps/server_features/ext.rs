@@ -86,12 +86,24 @@ pub enum ServerFeatureExt {
     /// The server answers `HOST_CHECKLIST`: what works on its host, with
     /// reasons and fixes.
     HostChecklist = 0x0080_0000,
-    // 0x0100_0000 left free for concurrent work.
+    /// Explicitly approved, ephemeral 1Password credential exchanges.
+    Credentials = 0x0100_0000,
     /// The server answers `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`,
     /// and `FORWARD_CLOSE`: TCP connections it dials on its own loopback
     /// for the client (`docs/forwarding.md`). Not advertised when
     /// `[forward] tcp = false`.
     ForwardTcp = 0x0200_0000,
+    /// The server answers `AGENT_OFFER` and `AGENT_REPLY`: it brokers
+    /// ssh-agent requests from its panes to a client that offered its
+    /// agent (`docs/forwarding.md#ssh-agent`). Advertised only with
+    /// `[forward] agent = true`.
+    ForwardAgent = 0x0400_0000,
+    /// Arrangement leaves carry slot tabs and the server keeps them
+    /// (`docs/organization.md#slot-tabs`): an `ARRANGEMENT_REPLACE` flagged
+    /// `SLOT_TABS` sets them, and one that isn't keeps them as they stand.
+    /// Advertised only beside [`Self::Organization`]; a client MUST see the
+    /// bit before writing tabs, since an older server drops them.
+    SlotTabs = 0x0800_0000,
 }
 
 impl ServerFeatureExt {
@@ -121,7 +133,10 @@ impl ServerFeatureExt {
         Self::TabLock,
         Self::ClipboardRead,
         Self::HostChecklist,
+        Self::Credentials,
         Self::ForwardTcp,
+        Self::ForwardAgent,
+        Self::SlotTabs,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -152,7 +167,10 @@ impl ServerFeatureExt {
             Self::TabLock => "TAB_LOCK",
             Self::ClipboardRead => "CLIPBOARD_READ",
             Self::HostChecklist => "HOST_CHECKLIST",
+            Self::Credentials => "CREDENTIALS",
             Self::ForwardTcp => "FORWARD_TCP",
+            Self::ForwardAgent => "FORWARD_AGENT",
+            Self::SlotTabs => "SLOT_TABS",
         }
     }
 

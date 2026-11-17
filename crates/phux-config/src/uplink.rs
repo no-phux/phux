@@ -49,10 +49,6 @@ pub struct UplinkConfigEntry {
 
 impl UplinkConfigEntry {
     /// The hub's host and port from [`Self::hub`].
-    ///
-    /// # Errors
-    ///
-    /// As [`split_host_port`].
     pub fn hub_host_port(&self) -> Result<(String, u16), String> {
         split_host_port(&self.hub)
     }

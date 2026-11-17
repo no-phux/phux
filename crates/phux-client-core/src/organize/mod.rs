@@ -22,12 +22,10 @@ pub mod journal;
 pub mod plan;
 pub mod text;
 
-pub use candidates::{
-    Candidate, Candidates, Destination, MAX_OPTIONS, NewSession, candidates, generated_name,
-};
-pub use facts::{Facts, PaneFacts, Scope, SessionFacts, in_scope, scrub};
+pub use candidates::{Candidate, Candidates, Destination, NewSession, candidates};
+pub use facts::{Facts, PaneFacts, Scope, SessionFacts, scrub};
 pub use heuristic::heuristic_verdicts;
-pub use jev::{JEV_MODEL, JevAnswerError, QUESTIONS_PER_REQUEST, jev_request, read_jev_answers};
+pub use jev::{JevAnswerError, jev_request, read_jev_answers};
 pub use journal::{CreatedSession, JOURNAL_SCHEMA, Journal, MovedPane};
 pub use plan::{
     DEFAULT_MIN_CONFIDENCE, JudgeKind, Kept, KeptReason, Plan, PlanInput, PlannedMove,

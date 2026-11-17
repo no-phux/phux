@@ -10,6 +10,7 @@ import { git } from "../lib/git.ts";
 import { api, gh, ghLines } from "../lib/github.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
 import { findValidation, type Receipt } from "../routing/receipt.ts";
+import { mergeGroupGate } from "./queue-ci.ts";
 
 export type Version = readonly [number, number, number];
 
@@ -37,6 +38,44 @@ export function validationState(runs: readonly unknown[], sha: string, workflow:
     .toSorted((a, b) => Number(b["id"]) - Number(a["id"]) || attempt(b) - attempt(a));
   if (latest === undefined || latest["status"] !== "completed") return "pending";
   return str(latest["conclusion"]) ?? "unknown";
+}
+
+/**
+ * Push ci for `ci-green`. No matching run is `missing`. A run that has not
+ * finished keeps its own status (`queued`, `in_progress`, ...), never `missing`.
+ */
+export function ciPushState(runs: readonly unknown[], sha: string, workflow: string): string {
+  const attempt = (run: Table): number => Number(run["run_attempt"] ?? 1);
+  const [latest] = runs
+    .map(table)
+    .filter(
+      (run) =>
+        run["head_sha"] === sha &&
+        run["head_branch"] === "main" &&
+        run["event"] === "push" &&
+        run["path"] === workflow,
+    )
+    .toSorted((a, b) => Number(b["id"]) - Number(a["id"]) || attempt(b) - attempt(a));
+  if (latest === undefined) return "missing";
+  if (latest["status"] !== "completed") return str(latest["status"]) ?? "pending";
+  return str(latest["conclusion"]) ?? "unknown";
+}
+
+/**
+ * The merge-group fallback runs only when no push ci exists. An in-flight
+ * push keeps its refusal: a tag cannot be undone if that push later goes red.
+ * Returns the refusal, or undefined when the SHA may tag.
+ */
+export function ciGreenResult(
+  sha: string,
+  push: string,
+  rune: string,
+  queue: () => string | undefined,
+): string | undefined {
+  const pushRefusal = releaseRefusal(push, sha, rune);
+  if (pushRefusal === undefined) return undefined;
+  if (push !== "missing") return pushRefusal;
+  return queue();
 }
 
 // `vX.Y.Z` is phux; `<component>-vX.Y.Z` is every other release-please package.
@@ -201,6 +240,16 @@ function ciConclusion(repository: string, sha: string): string {
   return workflowConclusion(repository, sha, "ci.yml", CI_WORKFLOW);
 }
 
+function ciPushConclusion(repository: string, sha: string): string {
+  const query = new URLSearchParams({ head_sha: sha, event: "push", per_page: "20" });
+  const runs = list(
+    table(api.json(`repos/${repository}/actions/workflows/ci.yml/runs?${query.toString()}`))[
+      "workflow_runs"
+    ],
+  );
+  return ciPushState(runs, sha, CI_WORKFLOW);
+}
+
 function runeMacosConclusion(repository: string, sha: string): string {
   return workflowConclusion(repository, sha, "rune-macos.yml", RUNE_MACOS_WORKFLOW);
 }
@@ -303,7 +352,9 @@ export function ciGreen(sha: string): number {
   const repository = process.env["GITHUB_REPOSITORY"];
   if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
   const rune = runeMacosOn(repository, sha);
-  const refusal = releaseRefusal(ciConclusion(repository, sha), sha, rune.state);
+  const refusal = ciGreenResult(sha, ciPushConclusion(repository, sha), rune.state, () =>
+    mergeGroupGate(repository, sha, nativeReleaseProof),
+  );
   if (refusal === undefined) return 0;
   console.error(`::error::${refusal}`);
   return 1;

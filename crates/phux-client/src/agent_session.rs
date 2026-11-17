@@ -4,13 +4,9 @@
 //! `KILL_RESOURCE`, [`emit`] is `APPEND_RESOURCE_OUTPUT` of JSONL records,
 //! and [`log`] is an observer attach whose bootstrap carries the retained
 //! records, then live `RESOURCE_OUTPUT` under `follow`.
-//!
-//! Every verb is gated on [`ServerFeature::ResourceKinds`] before any frame
-//! a server without it would silently drop.
 
 use serde::{Deserialize, Serialize};
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError,
@@ -37,8 +33,8 @@ pub const EVENT_TYPES: &[&str] = &[
 ];
 
 /// Largest encoded record (one JSON object plus its newline) the server
-/// accepts.
-pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// accepts; the kernel's reader enforces the same ceiling.
+pub use phux_client_core::session::agent_stream::MAX_RECORD_BYTES;
 
 /// Largest payload one `APPEND_RESOURCE_OUTPUT` carries.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
@@ -195,8 +191,7 @@ pub struct LogOutcome {
 /// the CLI maps codes without parsing messages.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentSessionError {
-    /// The server did not advertise `RESOURCE_KINDS`, so agent sessions do
-    /// not exist there. Refused before any resource is touched.
+    /// The server refused the `AgentSession` kind.
     #[error(
         "server does not advertise RESOURCE_KINDS, so agent sessions do not exist there; \
          upgrade the server"
@@ -275,30 +270,12 @@ fn render_ids(ids: &[ResourceId]) -> String {
         .join(", ")
 }
 
-/// Whether `conn`'s server advertised agent sessions in `HELLO_OK`.
-///
-/// # Errors
-///
-/// [`AgentSessionError::Unsupported`] when the bit is absent.
-pub fn require_support(conn: &Connection) -> Result<(), AgentSessionError> {
-    let supported = conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features
-            .contains(ServerFeature::ResourceKinds)
-    });
-    if supported {
-        Ok(())
-    } else {
-        Err(AgentSessionError::Unsupported)
-    }
-}
-
 /// Open an `AgentSession` bound to `parent`; the caller becomes its
 /// producer. The server does not deduplicate sessions per Terminal.
 ///
 /// # Errors
 ///
-/// [`AgentSessionError::Unsupported`], the structured spawn refusals
+/// [`AgentSessionError::Unsupported`] and the structured spawn refusals
 /// ([`AgentSessionError::ParentNotFound`], [`AgentSessionError::ParentKindMismatch`],
 /// [`AgentSessionError::Refused`]), or transport failure.
 pub async fn open(
@@ -307,7 +284,6 @@ pub async fn open(
     provider: &str,
     native_id: Option<&str>,
 ) -> Result<Opened, AgentSessionError> {
-    require_support(conn)?;
     let frame = FrameKind::SpawnResource {
         request_id: REQUEST_SPAWN,
         group: GroupId::new(1),
@@ -366,10 +342,8 @@ pub async fn open(
 ///
 /// # Errors
 ///
-/// [`AgentSessionError::Unsupported`], a server refusal, or transport
-/// failure.
+/// A server refusal, or transport failure.
 pub async fn close(conn: &mut Connection, resource: &ResourceId) -> Result<(), AgentSessionError> {
-    require_support(conn)?;
     let (result, interleaved) = conn
         .request(
             REQUEST_KILL,
@@ -405,7 +379,6 @@ pub async fn emit(
     resource: &ResourceId,
     records: &[EmitRecord],
 ) -> Result<Emitted, AgentSessionError> {
-    require_support(conn)?;
     if records.is_empty() {
         return Err(AgentSessionError::RecordInvalid(
             "nothing to append".to_owned(),

@@ -188,22 +188,6 @@ fn dispatch_input(
     }
 }
 
-/// Discard a client terminal-engine reply (docs/protocol.md#terminal-queries): the canonical
-/// terminal already answered the query once, and a second answer reaches
-/// the child as typed input.
-pub(crate) fn handle_terminal_reply(
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    bytes: &[u8],
-) {
-    trace!(
-        ?client_id,
-        ?wire_terminal_id,
-        bytes = bytes.len(),
-        "terminal reply discarded: the canonical terminal answers queries",
-    );
-}
-
 /// Route an inbound `FRAME_ACK` to the pane's actor for per-consumer cache
 /// eviction (ADR-0018). Acks are hints, so an unknown pane, a
 /// non-subscriber, or a full mailbox just drops it. The host relays satellites.

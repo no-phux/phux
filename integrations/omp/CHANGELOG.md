@@ -11,6 +11,13 @@
 * Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
   Pi/OMP transcript mapper.
 
+## [0.6.0](https://github.com/no-phux/phux/compare/omp-extension-v0.5.1...omp-extension-v0.6.0) (2026-11-14)
+
+
+### Features
+
+* **agent:** unique %name per agent pane, and opencode 1.x support ([#2485](https://github.com/no-phux/phux/issues/2485)) ([93a0b48](https://github.com/no-phux/phux/commit/93a0b4857619fd5023625e771df2bed675cc26ac))
+
 ## [0.5.1](https://github.com/no-phux/phux/compare/omp-extension-v0.5.0...omp-extension-v0.5.1) (2026-11-11)
 
 

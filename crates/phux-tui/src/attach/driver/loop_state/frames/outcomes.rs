@@ -3,7 +3,7 @@
 use super::super::{
     AttachEnd, AttachError, Connection, FrameKind, FrameOutcome, FrameStep, HashMap,
     MAX_PENDING_STREAM_BINDS, Notice, RepaintAccumulator, ResourceId, SidebarReservation,
-    detached_loop_exit, fleet_projection_dirty, path_picker, send_unless_peer_gone,
+    ToastOverlay, detached_loop_exit, fleet_projection_dirty, path_picker, send_unless_peer_gone,
     should_emit_frame_ack, spawned_satellite_panes,
 };
 
@@ -50,9 +50,7 @@ impl super::super::SessionLoop {
     }
 
     /// Fold one non-terminal frame outcome into the loop: attach what it
-    /// discovered, fold peer, rename, watch, and chrome changes, send the
-    /// requests it owes, and raise (never paint) what the burst drain must
-    /// repaint. `prev_rects` is the pre-frame leaf geometry a reflow diffs.
+    /// found, send what it owes, and raise (never paint) the repaint owed.
     pub(in crate::attach::driver::loop_state) async fn fold_frame_outcome<
         W: crate::attach::RenderSink,
     >(
@@ -78,7 +76,7 @@ impl super::super::SessionLoop {
         self.fold_chrome_and_notices(&mut outcome, repaint);
         self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
         let reply = outcome.path_results.take();
-        if path_picker::accept_reply(self.path.pending.as_ref(), &mut self.overlays, reply) {
+        if path_picker::accept_reply(self.pending_path.as_ref(), &mut self.overlays, reply) {
             self.paint_overlay(out, sidebar);
         }
         self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects)
@@ -260,12 +258,9 @@ impl super::super::SessionLoop {
         if outcome.clear_layout {
             self.clear_stored_layout(conn).await?;
         }
-        // `ATTACHED` initially exposes a one-pane fallback. The persisted
-        // multi-window layout lands later as this correlated metadata reply.
-        // Reflow every restored window here, before `settle_frame_view`
-        // schedules its full paint. Doing it earlier can only see the fallback;
-        // doing it on first window selection turns that selection into a
-        // corrective resize instead of an ordinary paint.
+        // The persisted layout lands after `ATTACHED`'s one-pane fallback:
+        // reflow every restored window here, before the full paint, so the
+        // first window selection is a paint rather than a corrective resize.
         let bind_reflow_owed = std::mem::take(&mut self.bind_reflow_owed);
         if outcome.layout_get_answered || bind_reflow_owed {
             self.size_workspace_panes(conn, sidebar).await?;
@@ -306,6 +301,14 @@ impl super::super::SessionLoop {
         });
         if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
+        }
+        if let Some(note) = &outcome.note {
+            self.overlays.push(Box::new(ToastOverlay::new(
+                note.title.clone(),
+                note.lines.clone(),
+                &self.settings.theme,
+            )));
+            self.paint_overlay(out, sidebar);
         }
         // The `phux config reload` doorbell rang.
         if outcome.config_reload {

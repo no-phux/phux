@@ -10,8 +10,8 @@ use std::f32::consts::TAU;
 
 use phux_protocol::ids::ResourceId;
 
-use crate::activity::Mark;
 use crate::creature::{Form, TIERS};
+use crate::playground::{self, Harness, Mood, Pt, Rgb, Rng, hash, lerp, mix};
 
 mod colors;
 mod coral;
@@ -19,51 +19,6 @@ mod sim;
 pub use colors::Pal;
 pub use coral::{TILE, Zone, caustic_tile, sand_y, zone};
 pub use sim::Swimmer;
-
-pub type Rgb = [f32; 3];
-pub type Pt = [f32; 2];
-
-/// What a fish acts out, from the mark the galaxy colours a star by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Mood {
-    Working,
-    /// Blocked, asking, failed or rang: rises to the surface.
-    Waiting,
-    Done,
-    Idle,
-}
-
-impl Mood {
-    /// The galaxy's marks in the prototype's four moods: a finished agent
-    /// still counts as needing you there, here it glides home. An idle agent
-    /// with work still running under it (a build, a watch loop) is working.
-    pub fn of(mark: Mark) -> Mood {
-        match mark {
-            Mark::Done | Mark::Succeeded => Mood::Done,
-            _ if mark.needs_you() => Mood::Waiting,
-            _ if mark.live() || mark == Mark::Background => Mood::Working,
-            _ => Mood::Idle,
-        }
-    }
-
-    pub fn color(self) -> Rgb {
-        match self {
-            Mood::Working => [89.0, 212.0, 255.0],
-            Mood::Waiting => [255.0, 181.0, 71.0],
-            Mood::Done => [98.0, 230.0, 180.0],
-            Mood::Idle => [159.0, 176.0, 189.0],
-        }
-    }
-
-    pub fn word(self) -> &'static str {
-        match self {
-            Mood::Working => "working",
-            Mood::Waiting => "needs you",
-            Mood::Done => "done",
-            Mood::Idle => "idle",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pattern {
@@ -87,68 +42,62 @@ pub struct Species {
 }
 
 pub const CLAUDE: Species = Species {
-    body: [255.0, 118.0, 58.0],
-    belly: [255.0, 216.0, 176.0],
-    fin: [255.0, 148.0, 84.0],
+    body: playground::CLAUDE.body,
+    belly: playground::CLAUDE.belly,
+    fin: playground::CLAUDE.fin,
     pattern: Pattern::Bands,
     fat: 1.0,
     tall: 0.9,
-    form: Form::Lionfish,
+    form: Form::of(playground::CLAUDE.harness),
 };
 pub const CODEX: Species = Species {
-    body: [44.0, 102.0, 232.0],
-    belly: [150.0, 202.0, 255.0],
-    fin: [255.0, 212.0, 64.0],
+    body: playground::CODEX.body,
+    belly: playground::CODEX.belly,
+    fin: playground::CODEX.fin,
     pattern: Pattern::Mask,
     fat: 1.05,
     tall: 0.8,
-    form: Form::Manta,
+    form: Form::of(playground::CODEX.harness),
 };
 pub const OPENCODE: Species = Species {
-    body: [242.0, 196.0, 50.0],
-    belly: [255.0, 244.0, 186.0],
-    fin: [248.0, 172.0, 36.0],
+    body: playground::OPENCODE.body,
+    belly: playground::OPENCODE.belly,
+    fin: playground::OPENCODE.fin,
     pattern: Pattern::Lines,
     fat: 1.3,
     tall: 1.7,
-    form: Form::Seahorse,
+    form: Form::of(playground::OPENCODE.harness),
 };
 pub const GEMINI: Species = Species {
-    body: [150.0, 98.0, 242.0],
-    belly: [222.0, 204.0, 255.0],
-    fin: [104.0, 222.0, 255.0],
+    body: playground::GEMINI.body,
+    belly: playground::GEMINI.belly,
+    fin: playground::GEMINI.fin,
     pattern: Pattern::Spots,
     fat: 0.88,
     tall: 0.7,
-    form: Form::Cuttlefish,
+    form: Form::of(playground::GEMINI.harness),
 };
 /// Every other harness, and an agent that never said which it is.
 pub const OTHER: Species = Species {
-    body: [112.0, 190.0, 186.0],
-    belly: [222.0, 246.0, 240.0],
-    fin: [86.0, 170.0, 204.0],
+    body: playground::OTHER.body,
+    belly: playground::OTHER.belly,
+    fin: playground::OTHER.fin,
     pattern: Pattern::Plain,
     fat: 0.95,
     tall: 0.8,
-    form: Form::Octopus,
+    form: Form::of(playground::OTHER.harness),
 };
 
 /// The species for an agent's declared kind slug (`claude`, `claude-code`,
 /// `gemini-cli`), else its name, which is often the harness's.
 pub fn species(kind: Option<&str>, name: &str) -> &'static Species {
-    let of = |s: &str| {
-        let s = s.to_ascii_lowercase();
-        [
-            ("claude", &CLAUDE),
-            ("codex", &CODEX),
-            ("opencode", &OPENCODE),
-            ("gemini", &GEMINI),
-        ]
-        .into_iter()
-        .find(|(slug, _)| s.starts_with(slug))
-        .map(|(_, species)| species)
-    };
-    kind.and_then(of).or_else(|| of(name)).unwrap_or(&OTHER)
+    match playground::species(kind, name).harness {
+        Harness::Claude => &CLAUDE,
+        Harness::Codex => &CODEX,
+        Harness::OpenCode => &OPENCODE,
+        Harness::Gemini => &GEMINI,
+        Harness::Other => &OTHER,
+    }
 }
 
 /// How much smaller fish are drawn in a reef of `n`, so a crowd stays readable.
@@ -160,47 +109,10 @@ pub fn fish_scale(n: usize) -> f32 {
     }
 }
 
-/// The prototype's mulberry32: the same reef from the same seed.
-#[derive(Debug, Clone)]
-pub struct Rng(u32);
-
-impl Rng {
-    pub fn new(seed: u32) -> Rng {
-        Rng(seed)
-    }
-
-    pub fn next(&mut self) -> f32 {
-        self.0 = self.0.wrapping_add(0x6D2B_79F5);
-        let mut x = self.0;
-        x = (x ^ (x >> 15)).wrapping_mul(x | 1);
-        x ^= x.wrapping_add((x ^ (x >> 7)).wrapping_mul(x | 61));
-        ((x ^ (x >> 14)) as f64 / 4_294_967_296.0) as f32
-    }
-}
-
-/// FNV-1a over UTF-16 units, as the prototype hashes a host name.
-pub fn hash(s: &str) -> u32 {
-    s.encode_utf16().fold(2_166_136_261u32, |h, unit| {
-        (h ^ unit as u32).wrapping_mul(16_777_619)
-    })
-}
-
 /// A school's lane, 0 to 1, from its key: schools prefer their own depths.
 /// The rng's first draw, as raw FNV-1a clusters keys that end alike.
 pub fn lane(key: &str) -> f32 {
     Rng::new(hash(key)).next()
-}
-
-pub fn lerp(a: f32, b: f32, k: f32) -> f32 {
-    a + (b - a) * k
-}
-
-pub fn mix(a: Rgb, b: Rgb, k: f32) -> Rgb {
-    [
-        lerp(a[0], b[0], k),
-        lerp(a[1], b[1], k),
-        lerp(a[2], b[2], k),
-    ]
 }
 
 #[derive(Debug, Clone)]

@@ -1,17 +1,11 @@
-//! QUIC dialer round-trip (`phux-y8v6`, ADR-0007).
-//!
-//! Stands up a minimal quinn server with the same TLS shape the real
-//! `QuicListener` uses — TLS 1.3, the `phux-quic/1` ALPN, a self-signed cert —
-//! and drives [`Connection::connect_quic`] against it. This exercises the
-//! client side end-to-end: the TLS handshake (ALPN negotiation + signature
-//! verification), the optional bearer-token preamble, and the SPEC §5 frame
-//! framing in both directions. The server's own acceptance of these frames is
-//! covered by `phux-server`'s `transport::quic` tests; this is the mirror.
+//! QUIC dialer round trips (ADR-0007): a minimal quinn server with the real
+//! listener's TLS shape drives [`Connection::connect_quic`] end to end (TLS,
+//! the bearer-token preamble, SPEC §5 framing). `phux-server`'s
+//! `transport::quic` tests are the mirror.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -28,24 +22,18 @@ use phux_protocol::wire::frame::FrameKind;
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-/// A self-signed cert + key in a fresh tempdir, kept alive for the test.
-fn cert_pair() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+/// A quinn server on an OS-assigned loopback port with the real
+/// `QuicListener`'s shape: TLS 1.3, the phux ALPN, a self-signed cert (kept
+/// in the returned tempdir as `cert.pem`).
+fn server() -> (tempfile::TempDir, quinn::Endpoint, SocketAddr) {
     let dir = tempfile::tempdir().unwrap();
-    let cert = dir.path().join("cert.pem");
-    let key = dir.path().join("key.pem");
+    let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     phux_server::transport::tls::ensure_self_signed(&cert, &key).unwrap();
-    (dir, cert, key)
-}
-
-/// A quinn server endpoint on an OS-assigned loopback port, TLS 1.3 + the phux
-/// ALPN, terminating with the given self-signed cert — the same shape the real
-/// `QuicListener` builds.
-fn server_endpoint(cert: &Path, key: &Path) -> (quinn::Endpoint, SocketAddr) {
-    let certs = CertificateDer::pem_file_iter(cert)
+    let certs = CertificateDer::pem_file_iter(&cert)
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let key = PrivateKeyDer::from_pem_file(key).unwrap();
+    let key = PrivateKeyDer::from_pem_file(&key).unwrap();
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -62,48 +50,96 @@ fn server_endpoint(cert: &Path, key: &Path) -> (quinn::Endpoint, SocketAddr) {
     server_config.transport_config(Arc::new(transport));
     let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = endpoint.local_addr().unwrap();
-    (endpoint, addr)
+    (dir, endpoint, addr)
 }
 
-/// Read one length-prefixed phux frame off a quinn recv stream.
+fn skip_verify(addr: SocketAddr) -> QuicDial {
+    QuicDial {
+        addr,
+        server_name: "localhost".to_owned(),
+        token: None,
+        trust: CertTrust::SkipVerify,
+        identity: None,
+        inner: None,
+    }
+}
+
+/// Read one length-prefixed body off a quinn recv stream, prefix included.
+async fn read_prefixed(recv: &mut quinn::RecvStream) -> Vec<u8> {
+    let mut bytes = vec![0u8; 4];
+    recv.read_exact(&mut bytes).await.unwrap();
+    let len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+    bytes.resize(4 + len, 0);
+    recv.read_exact(&mut bytes[4..]).await.unwrap();
+    bytes
+}
+
 async fn read_frame(recv: &mut quinn::RecvStream) -> FrameKind {
-    let mut header = [0u8; 4];
-    recv.read_exact(&mut header).await.unwrap();
-    let len = u32::from_be_bytes(header) as usize;
-    let mut framed = header.to_vec();
-    framed.resize(4 + len, 0);
-    recv.read_exact(&mut framed[4..]).await.unwrap();
-    FrameKind::decode(&framed).unwrap().0
+    FrameKind::decode(&read_prefixed(recv).await).unwrap().0
 }
 
-/// Write one length-prefixed phux frame onto a quinn send stream.
 async fn write_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
     let mut out = BytesMut::new();
     frame.encode(&mut out);
     send.write_all(&out).await.unwrap();
 }
 
-#[allow(
-    clippy::panic,
-    reason = "the fixture must reject a non-HELLO first frame"
-)]
 async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
     accept_hello_with_caps(send, recv, ServerCapabilities::new()).await;
 }
 
-mod hello;
-use hello::accept_hello_with_caps;
+#[allow(
+    clippy::panic,
+    reason = "the fixture must reject a non-HELLO first frame"
+)]
+async fn accept_hello_with_caps(
+    send: &mut quinn::SendStream,
+    recv: &mut quinn::RecvStream,
+    server_caps: ServerCapabilities,
+) {
+    let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
+        panic!("expected HELLO");
+    };
+    if server_caps.features.contains(ServerFeature::QuicStreams) {
+        assert!(
+            client_caps.quic_streams,
+            "QUIC_STREAMS selection requires an explicit client offer"
+        );
+    }
+    let (selected_profile, bootstrap_limits) =
+        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
+            .expect("fixture profiles intersect");
+    write_frame(
+        send,
+        &FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps,
+            server_id: Vec::new(),
+            selected_profile: Some(selected_profile),
+            bootstrap_limits,
+        },
+    )
+    .await;
+}
+
+/// Accept one connection and its control stream, granting `QUIC_STREAMS`.
+async fn accept_multistream(
+    endpoint: &quinn::Endpoint,
+) -> (quinn::Connection, quinn::SendStream, quinn::RecvStream) {
+    let conn = endpoint.accept().await.unwrap().await.unwrap();
+    let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+    let caps = ServerCapabilities::new()
+        .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams]));
+    accept_hello_with_caps(&mut send, &mut recv, caps).await;
+    (conn, send, recv)
+}
 
 async fn read_stream_bind(
     recv: &mut quinn::RecvStream,
 ) -> phux_protocol::wire::stream_bind::StreamBind {
-    let mut prefix = [0_u8; 4];
-    recv.read_exact(&mut prefix).await.unwrap();
-    let len = u32::from_be_bytes(prefix) as usize;
-    let mut bytes = Vec::with_capacity(4 + len);
-    bytes.extend_from_slice(&prefix);
-    bytes.resize(4 + len, 0);
-    recv.read_exact(&mut bytes[4..]).await.unwrap();
+    let bytes = read_prefixed(recv).await;
     let (bind, used) = phux_protocol::wire::stream_bind::decode(&bytes).unwrap();
     assert_eq!(used, bytes.len());
     bind
@@ -120,8 +156,7 @@ const fn ack(seq: u64) -> FrameKind {
 
 #[tokio::test]
 async fn loopback_skip_verify_round_trips_both_directions() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
 
     let from_client = ack(11);
     let from_server = ack(22);
@@ -144,14 +179,7 @@ async fn loopback_skip_verify_round_trips_both_directions() {
     };
 
     let client = async {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.send(&from_client).await.expect("send");
         let received = conn.recv().await.expect("recv");
@@ -168,8 +196,7 @@ async fn loopback_skip_verify_round_trips_both_directions() {
 
 #[tokio::test]
 async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let from_client = FrameKind::FrameAck {
         terminal_id: terminal_id.clone(),
@@ -184,15 +211,7 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
         let from_client = from_client.clone();
         let from_server = from_server.clone();
         async move {
-            let conn = endpoint.accept().await.unwrap().await.unwrap();
-            let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-            accept_hello_with_caps(
-                &mut control_send,
-                &mut control_recv,
-                ServerCapabilities::new()
-                    .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-            )
-            .await;
+            let (conn, mut control_send, mut control_recv) = accept_multistream(&endpoint).await;
             let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
             let bind = read_stream_bind(&mut terminal_recv).await;
             assert_eq!(bind.terminal_id, terminal_id);
@@ -214,14 +233,7 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
     };
 
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         assert!(conn.multistream_enabled());
         // A Terminal a persisted layout names before its attach is confirmed
@@ -275,8 +287,7 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
 
 #[tokio::test]
 async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let viewport = FrameKind::ViewportResize {
         viewport: phux_protocol::wire::frame::ViewportInfo::new(100, 40),
@@ -289,15 +300,7 @@ async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
     };
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let server = async {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut control_send,
-            &mut control_recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, mut control_send, mut control_recv) = accept_multistream(&endpoint).await;
         let (_terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
         assert_eq!(
             read_stream_bind(&mut terminal_recv).await.terminal_id,
@@ -316,14 +319,7 @@ async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
         done_rx.await.expect("client consumed receipts");
     };
     let client = async {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
         conn.send(&viewport).await.expect("viewport barrier");
@@ -345,21 +341,12 @@ async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
 
 #[tokio::test]
 async fn malformed_terminal_stream_length_fails_promptly() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
 
     let server_terminal_id = terminal_id.clone();
     let server = async move {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut control_send,
-            &mut control_recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, _control_send, _control_recv) = accept_multistream(&endpoint).await;
         let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
         let bind = read_stream_bind(&mut terminal_recv).await;
         assert_eq!(bind.terminal_id, server_terminal_id);
@@ -368,14 +355,7 @@ async fn malformed_terminal_stream_length_fails_promptly() {
     };
 
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
         let error = tokio::time::timeout(std::time::Duration::from_secs(2), conn.recv())
@@ -396,19 +376,10 @@ async fn malformed_terminal_stream_length_fails_promptly() {
 
 #[tokio::test]
 async fn partial_terminal_body_error_precedes_clean_end() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let server = async move {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut control_send,
-            &mut control_recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, _control_send, _control_recv) = accept_multistream(&endpoint).await;
         let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
         let _ = read_stream_bind(&mut terminal_recv).await;
         terminal_send.write_all(&8_u32.to_be_bytes()).await.unwrap();
@@ -417,14 +388,7 @@ async fn partial_terminal_body_error_precedes_clean_end() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
         let error = conn
@@ -441,20 +405,11 @@ async fn partial_terminal_body_error_precedes_clean_end() {
 
 #[tokio::test]
 async fn incomplete_terminal_body_does_not_block_control_and_expires() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let (deadline_observed_tx, deadline_observed_rx) = tokio::sync::oneshot::channel();
     let server = async move {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut control_send,
-            &mut control_recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, mut control_send, _control_recv) = accept_multistream(&endpoint).await;
         let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
         let _ = read_stream_bind(&mut terminal_recv).await;
         terminal_send
@@ -467,14 +422,7 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
             .expect("client observes the incomplete-frame deadline");
     };
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         #[cfg(feature = "testkit")]
         let mut conn = Connection::connect_quic_with_terminal_frame_deadline_for_test(
             &dial,
@@ -516,8 +464,7 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
 
 #[tokio::test]
 async fn queued_old_generation_is_discarded_after_rebind() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let old = ack(22);
     let current = ack(33);
@@ -525,15 +472,7 @@ async fn queued_old_generation_is_discarded_after_rebind() {
         let old = old.clone();
         let current = current.clone();
         async move {
-            let conn = endpoint.accept().await.unwrap().await.unwrap();
-            let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-            accept_hello_with_caps(
-                &mut control_send,
-                &mut control_recv,
-                ServerCapabilities::new()
-                    .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-            )
-            .await;
+            let (conn, _control_send, _control_recv) = accept_multistream(&endpoint).await;
             let (mut first_send, mut first_recv) = conn.accept_bi().await.unwrap();
             assert_eq!(read_stream_bind(&mut first_recv).await.stream_id.get(), 1);
             write_frame(&mut first_send, &old).await;
@@ -545,14 +484,7 @@ async fn queued_old_generation_is_discarded_after_rebind() {
         }
     };
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("first bind");
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -588,21 +520,12 @@ async fn receive_with_mode(conn: &mut Connection, poll: bool) -> FrameKind {
 /// A lifecycle close on control must retire its Terminal stream before a
 /// later history reply can reach a session kernel that already closed it.
 async fn resource_close_retires_terminal_stream(poll: bool) {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
     let terminal_id = ResourceId::local(9);
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let server = async move {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut send,
-            &mut recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, mut send, _recv) = accept_multistream(&endpoint).await;
         let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
         let bind = read_stream_bind(&mut terminal_recv).await;
         let mut bytes = BytesMut::new();
@@ -647,14 +570,7 @@ async fn resource_close_retires_terminal_stream(poll: bool) {
         let _ = done_rx.await;
     };
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.unwrap();
         conn.bind_terminal(&terminal_id).await.unwrap();
         let closed = receive_with_mode(&mut conn, poll).await;
@@ -694,19 +610,10 @@ async fn resource_close_retires_stream_before_next_try_recv() {
 
 #[tokio::test]
 async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
 
     let server = async move {
-        let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
-        accept_hello_with_caps(
-            &mut control_send,
-            &mut control_recv,
-            ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
-        )
-        .await;
+        let (conn, _control_send, _control_recv) = accept_multistream(&endpoint).await;
         let mut streams = Vec::new();
         for expected in 1..=127 {
             let (send, mut recv) = conn.accept_bi().await.unwrap();
@@ -719,14 +626,7 @@ async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
     };
 
     let client = async move {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         for id in 1..=127 {
             conn.bind_terminal(&ResourceId::local(id))
@@ -752,9 +652,9 @@ async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
 
 #[tokio::test]
 async fn pinned_fingerprint_accepts_matching_cert() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
-    let fingerprint = phux_server::transport::tls::cert_fingerprint(&cert).unwrap();
+    let (dir, endpoint, addr) = server();
+    let fingerprint =
+        phux_server::transport::tls::cert_fingerprint(&dir.path().join("cert.pem")).unwrap();
 
     let frame = ack(7);
 
@@ -790,8 +690,7 @@ async fn pinned_fingerprint_accepts_matching_cert() {
 
 #[tokio::test]
 async fn wrong_fingerprint_is_rejected() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
 
     // Drive the server accept on a detached task; it never completes because the
     // client aborts the handshake at certificate verification.
@@ -828,8 +727,7 @@ async fn shutdown_closes_connection_promptly() {
     // The reconnect probe (and any clean teardown) must close the QUIC
     // connection at once — a CONNECTION_CLOSE — rather than leaving the server
     // to reap a phantom connection at its 30s idle timeout.
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
 
     let server = async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
@@ -841,14 +739,7 @@ async fn shutdown_closes_connection_promptly() {
     };
 
     let client = async {
-        let dial = QuicDial {
-            addr,
-            server_name: "localhost".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            identity: None,
-            inner: None,
-        };
+        let dial = skip_verify(addr);
         let conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.shutdown().await;
     };
@@ -865,8 +756,7 @@ async fn shutdown_closes_connection_promptly() {
 
 #[tokio::test]
 async fn token_preamble_precedes_frames() {
-    let (_dir, cert, key) = cert_pair();
-    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let (_dir, endpoint, addr) = server();
 
     let token = vec![0xABu8; 32];
     let frame = ack(99);

@@ -199,11 +199,7 @@ fn push_session_entries(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, limit
 }
 
 /// Resolve an outer-viewport cell to a sidebar target; `None` off the strip,
-/// on the rule, or on a blank row.
-///
-/// Headers open their management views; the
-/// rule's bottom corner is the collapse chevron. `counts` must match the
-/// painted frame.
+/// on the rule, or on a blank row. `counts` must match the painted frame.
 #[must_use]
 pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<SidebarHit> {
     let local_x = x.checked_sub(rect.x)?;

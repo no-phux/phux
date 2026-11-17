@@ -4,6 +4,11 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
+There is no published SDK or client library yet. A program builds on the
+entry points below: the versioned `--json` CLI, the MCP server, the server
+protocol, or the Rust crates `phux-client-runtime` and `phux-client-ffi`,
+which are not on crates.io yet ([Not shipped](#not-shipped)).
+
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
@@ -27,6 +32,9 @@ quoted from there.
   every client draws; `[[producers]]` keeps the program running.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
   Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
+- [Build a phux client](./build-a-client.md). Read agents and their
+  questions, answer one, and follow events, with the JSON a test keeps
+  stable.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [Embed phux](./embedding.md). Read these for what a library would be,
   and for the SDK status below.
@@ -74,8 +82,16 @@ connection that last typed into it (a key or a paste, attached or through
 
 - `client` is the server's id for the connection, the same number
   `input_holder` and `viewers` use.
-- `client_name` is the name the client gave itself when it connected, such
-  as `phux-mobile`, `phux-cli/0.148.0`, or `null`.
+- `client_name` is the name the client gave itself when it connected, or
+  `null` when it gave none. phux's own programs send `name/version`. Split
+  on the last `/`, the same parse as the older `phux-client/<version>`:
+  `phux-tui/<version>` is the interactive client, `phux-cli/<version>` is a
+  headless verb (`send-keys`, `paste`, `run`, and the other one-shot
+  commands), and `phux-mcp/<version>` is a connection the MCP adapter opens
+  itself. A tool that runs the `phux` binary, including the adapter's
+  `phux_run`, reports `phux-cli` because that process is the CLI. Other
+  programs keep their own words (`phux-mobile`, `phux-hub`, `phux-web`).
+  An older build still reports `phux-client/<version>`.
 - `route` is the `auth_route` word [`phux whoami`](./remote.md#who-can-do-what)
   reports for that connection.
 - `remote` is `false` for the owner's Unix socket and the loopback
@@ -126,7 +142,7 @@ the hub.
 
 ## Not shipped
 
-There is no public SDK. [Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
+[Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
 says this repository ships no Python or JavaScript package for driving
 phux. `phux-client-core` and `phux-client-runtime` set `publish = false`.
 [Embedding](./embedding.md) says none of the embed crates is on crates.io

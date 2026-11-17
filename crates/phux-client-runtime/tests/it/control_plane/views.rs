@@ -33,13 +33,7 @@ fn listed(plane: &ControlPlane, id: &ResourceId) -> bool {
 }
 
 fn attached(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
+    plane.attached(attach_id, snapshot);
 }
 
 fn reattach(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {
@@ -47,14 +41,7 @@ fn reattach(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKin
     plane.connection_opened();
     let _ = plane.take_outbound();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .expect("reconnect attaches");
+    let attach_id = plane.queued_attach_id();
     attached(plane, attach_id, snapshot);
     plane
         .take_outbound()
@@ -74,12 +61,10 @@ fn state_read(frames: &[FrameKind]) -> Option<u32> {
 }
 
 fn answer(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .expect("GET_STATE reply");
+    plane.reply(
+        request_id,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
 }
 
 /// One `GET_STATE` round trip; the events it caused.

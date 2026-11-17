@@ -2,31 +2,7 @@
 // Engines and posture.
 // -----------------------------------------------------------------------------
 
-/// A peer on `transport` running as the serving user.
-fn peer(transport: TransportType) -> PeerIdentity {
-    PeerIdentity {
-        uid: nix::unistd::geteuid().as_raw(),
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport,
-        source_addr: None,
-    }
-}
-
-fn credential(id: &str, scopes: &[&str]) -> AuthenticatedCredential {
-    AuthenticatedCredential {
-        id: id.to_owned(),
-        principal: id.to_owned(),
-        scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
-        issued_at: Utc::now(),
-        expires_at: None,
-        generation: 1,
-        registry_instance: None,
-        subject: None,
-        managed: None,
-    }
-}
+use crate::test_support::{credential, peer};
 
 /// A registry file holding one credential with `scopes`.
 fn enrolled(scopes: &[&str]) -> (tempfile::TempDir, std::path::PathBuf, String) {
@@ -299,4 +275,32 @@ fn denial_errors_are_limited_to_one_per_interval() {
     assert!(grant.admit_denial_error(start));
     assert!(!grant.admit_denial_error(start + Duration::from_millis(999)));
     assert!(grant.admit_denial_error(start + Duration::from_secs(1)));
+}
+
+/// `[policy] tailnet-owner`: the admission's owner-device credential gets a
+/// paired person's device grant over QUIC with the mode on, and nothing
+/// with it off or on another transport.
+#[test]
+fn a_tailnet_owner_device_holds_a_paired_device_grant_only_with_the_mode_on() {
+    let (_dir, path, _id) = enrolled(&["observe@global"]);
+    let owner = crate::auth::tailnet_owner_test_credential("me@example.com");
+    let on = paired_policy(&path).with_tailnet_owner(true);
+    let grant = on
+        .decide(&peer(TransportType::Quic), Some(&owner))
+        .expect("an owner device is admitted");
+    assert!(!grant.is_owner(), "never the owner socket's grant");
+    assert_eq!(grant.credential_id, None, "no registry record to revoke it by");
+    assert_eq!(grant.kind(), phux_core::actor::PrincipalKind::Human);
+    assert_eq!(
+        crate::policy::principal_name(grant.principal()),
+        "tailnet:me@example.com"
+    );
+    for transport in [TransportType::WebSocket, TransportType::WebTransport] {
+        assert!(on.decide(&peer(transport), Some(&owner)).is_err(), "{transport:?}");
+    }
+    let off = paired_policy(&path);
+    assert!(off.decide(&peer(TransportType::Quic), Some(&owner)).is_err());
+    // A look-alike id with another principal is a workload id, and unknown.
+    let forged = credential("tailnet:me@example.com", &[]);
+    assert!(on.decide(&peer(TransportType::Quic), Some(&forged)).is_err());
 }

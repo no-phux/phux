@@ -119,6 +119,11 @@ pub(crate) fn run_swap_pane(
     )
 }
 
+/// `phux slot add|out|next|prev`: a slot tab edit through the same path.
+pub(crate) fn run_slot(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    run(operation, json, socket)
+}
+
 fn run(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {

@@ -107,7 +107,7 @@ pub(crate) fn run_app(action: &AppAction, socket: Option<PathBuf>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if pane.is_none() {
-        if std::env::var_os("PHUX_TERMINAL_ID").is_none() {
+        if crate::environment::own_terminal_id().is_none() {
             return fail(
                 "not running in a phux pane and no `--pane` given",
                 "run `phux spawn --app NAME`, run this inside a pane, or pass `--pane @N`",

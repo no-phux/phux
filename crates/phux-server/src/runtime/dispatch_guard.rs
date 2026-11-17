@@ -101,7 +101,8 @@ fn audit_command(
             | Command::AppendResourceOutput { .. }
             | Command::AcquireInput { .. }
             | Command::ReleaseInput { .. }
-            // Audited as `forward.open` and `forward.close`, never per chunk.
+            // Audited as `forward.open` and `forward.close`, never per chunk;
+            // ssh-agent forwarding as `forward.agent.offer` and `.sign`.
             | Command::Forward { .. }
     );
     if (routine && !denied) || !crate::audit::enabled() {

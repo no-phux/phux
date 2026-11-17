@@ -1,7 +1,5 @@
-//! Actions on placeholder leaves: documents, trees, surfaces, and agent
-//! panes another client arranged. The TUI owns only their views, so a kill
-//! closes the view (as Rune hides them) and never ends the resource or its
-//! producer; terminal-only actions bell locally.
+//! Actions on placeholder leaves another client arranged: a kill closes the
+//! view and never ends the resource; terminal-only actions bell.
 
 use phux_protocol::ResourceId;
 

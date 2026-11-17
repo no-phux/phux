@@ -213,7 +213,7 @@ fn run_tailscale_ip(program: &std::ffi::OsStr) -> Option<String> {
 
 /// Run `<program> <args>` and return its stdout, or `None` when it is
 /// missing, fails, or outlives `deadline` (it is then killed).
-fn run_tailscale(
+pub(crate) fn run_tailscale(
     program: &std::ffi::OsStr,
     args: &[&str],
     deadline: std::time::Duration,
@@ -325,15 +325,7 @@ fn cgnat_route_probe() -> Option<IpAddr> {
     sock.local_addr().ok().map(|addr| addr.ip())
 }
 
-/// Whether `ip` is in a range the overlay assigns tailnet addresses from:
-/// `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
-#[must_use]
-pub fn is_tailnet(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
-        v4 @ IpAddr::V4(_) => is_cgnat(v4),
-    }
-}
+pub use phux_config_core::remote::is_tailnet;
 
 /// Whether `ip` sits inside the CGNAT range Tailscale assigns from,
 /// `100.64.0.0/10`.

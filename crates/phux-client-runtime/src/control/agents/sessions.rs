@@ -2,7 +2,6 @@
 //! admitting delivery, and releasing streams when their parent closes.
 
 use crate::control::subscriptions::Origin;
-use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{CloseReason, Command, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
@@ -33,17 +32,12 @@ fn session_info(resource: &ResourceInfo) -> AgentSessionInfo {
 impl ControlPlane {
     /// Safe committed sequence for an `AgentSession` resume request.
     ///
-    /// The current server must advertise resume support. The owner-thread
+    /// Every 1.x server resumes agent streams. The owner-thread
     /// query reads only committed kernel state, which survives reconnect to
     /// the same incarnation and is reset before a new incarnation is admitted.
     #[must_use]
     pub fn agent_after_seq(&self, terminal_id: &ResourceId) -> Option<u64> {
-        if !self.handshake_ready
-            || !self
-                .server
-                .as_ref()
-                .is_some_and(|server| server.has_ext(ServerFeatureExt::AgentStreamResume))
-        {
+        if !self.handshake_ready {
             return None;
         }
         self.engine

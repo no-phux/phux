@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { capture } from "../lib/process.ts";
+import { repoPath } from "../lib/repo.ts";
 import { str, table, type Table } from "../lib/value.ts";
 import {
   action,
@@ -17,7 +18,6 @@ import {
 } from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { runeMacosPlan } from "./rune-macos.ts";
-import { repoPath } from "../lib/repo.ts";
 
 function evaluate(value: unknown, github: Table, extra: Table = {}): unknown {
   if (typeof value !== "string") return value;
@@ -277,7 +277,11 @@ test("fallback fork PR qualification grants no signing, release or provisioning 
 });
 
 test("ci rejects a failed or cancelled native queue dependency", () => {
-  const script = run(steps(job(workflow("ci.yml"), "ci")).find((step) => run(step) !== "") ?? {});
+  const script = run(
+    steps(job(workflow("ci.yml"), "ci")).find((step) =>
+      run(step).includes("scripts/ci/ci-aggregate.sh"),
+    ) ?? {},
+  );
   expect(needs(job(workflow("ci.yml"), "ci"))).toContain("queue-apple");
   for (const state of ["success", "failure", "cancelled", "skipped"]) {
     const proc = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {

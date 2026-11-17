@@ -162,7 +162,7 @@ proptest! {
         }
         prop_assume!(!groups.is_empty());
         let active = groups.len() / 2;
-        let ws = ArrangementDoc { groups, active };
+        let ws = ArrangementDoc { groups, active, slots: Vec::new(),  };
         let bytes = ws.encode_cbor().expect("encode");
         let decoded = ArrangementDoc::decode_cbor(&bytes).expect("decode");
         prop_assert_eq!(decoded, ws);

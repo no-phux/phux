@@ -26,6 +26,7 @@ use crate::perf;
 use crate::theme::Selection;
 
 mod glyphs;
+mod images;
 mod missing;
 
 /// Inter, which replacing Rune's built-in fonts has to name again, and a
@@ -82,6 +83,8 @@ pub struct Metrics {
     pub cell_h: f32,
     /// Added to the face's advance so it equals `cell_w`.
     tracking: f32,
+    /// An underline's thickness: a device pixel per 13 points of text.
+    line: f32,
 }
 
 impl Metrics {
@@ -103,6 +106,21 @@ impl Metrics {
             cell_w,
             cell_h: snap(font_size * 1.3),
             tracking: cell_w - natural,
+            line: (font_size / 13.0).round().max(1.0) / scale,
+        }
+    }
+
+    /// The same cells in a view zoomed `k` times (`Cx::zoom`): the same
+    /// device pixels, in points `k` times smaller. Measuring at the zoomed
+    /// size instead would shape a smaller face and drift a pixel.
+    pub fn zoomed(self, k: f32) -> Self {
+        Self {
+            font_size: self.font_size / k,
+            scale: self.scale * k,
+            cell_w: self.cell_w / k,
+            cell_h: self.cell_h / k,
+            tracking: self.tracking / k,
+            line: self.line / k,
         }
     }
 
@@ -293,8 +311,7 @@ fn cursor_shape(m: &Metrics, cursor: &CursorPaint<Color>) -> El {
 }
 
 fn decoration(m: &Metrics, line: &Decoration<Color>) -> El {
-    let px = 1.0 / m.scale;
-    let thick = (m.font_size / 13.0).round().max(1.0) * px;
+    let thick = m.line;
     let y = match line.kind {
         DecorationKind::Underline(_) => m.cell_h - thick * 2.0,
         DecorationKind::Strikethrough => m.cell_h * 0.55,
@@ -423,6 +440,10 @@ fn build(
         .fill(list.background)
         // A row that moves lands at once: output never slides or fades.
         .instant_changes();
+    let (under, over) = images::layers(frame, metrics);
+    if let Some(under) = under {
+        grid = grid.child(under);
+    }
     // Rows are named by what they show, so a scrolled row keeps its subtree;
     // equal rows are told apart by their order.
     let mut seen: HashMap<u64, u16> = HashMap::new();
@@ -432,6 +453,9 @@ fn build(
         let id = format!("r{version:x}-{twin}");
         *twin += 1;
         grid = grid.child(memo(id, version, || row_el(&list, row, metrics)));
+    }
+    if let Some(over) = over {
+        grid = grid.child(over);
     }
     grid
 }

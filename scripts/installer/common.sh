@@ -24,6 +24,10 @@ die() {
   phux_message error "$*"
   exit 1
 }
+# A step worth knowing about only with --verbose: versions, places, checks.
+detail() {
+  [ "${verbose:-0}" -eq 0 ] || phux_message "$@"
+}
 
 usage() {
   cat <<'EOF'
@@ -42,6 +46,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --no-repo                       On Debian, Ubuntu, Fedora and RHEL, install the release
+                                  archive instead of adding phux's apt or dnf repository
+                                  (also $PHUX_NO_REPO=1). The repository is the default for
+                                  the stable channel, so phux updates with the system.
   --service, --no-service         On Linux, run (or skip) `phux service install` without
                                   asking: a systemd user unit plus linger, so sessions
                                   survive logout and reboot. Default: ask on a terminal,
@@ -54,12 +62,22 @@ only when none is found.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
+  --verbose                       Also say what was installed where, and how it was checked.
   --help                          Show this help.
 
 With minisign on PATH, the release checksum's signature, and the channel
 manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
+}
+
+# PATH for reading: ~ for HOME. Not for a command line; shell_quote is.
+pretty_path() {
+  # shellcheck disable=SC2088 # a ~ to read, never expanded
+  case "${HOME:-}:$1" in
+    ?*:"${HOME:-}"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # POSIX stand-in for `printf %q`: bare when no shell treats a character
@@ -290,7 +308,7 @@ verify_signature() {
   if ! command -v minisign >/dev/null 2>&1; then
     [ "${PHUX_REQUIRE_SIGNATURE:-0}" = 0 ] \
       || die "PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH; nothing was installed"
-    phux_message info "minisign not found; checking the SHA-256 without its release signature"
+    detail info "minisign not found; checking the SHA-256 without its release signature"
     return 0
   fi
   download "${asset_url}.sha256" "${work}/signed.sha256" \

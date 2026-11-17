@@ -1,41 +1,10 @@
 use super::*;
-use phux_protocol::caps::BootstrapStreamProfile;
-use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::wire::frame::FrameKind;
 
 /// The server's fresh cut after applying the client's proposed PTY size.
 /// Put a prompt on its last row, where overlay controls previously hid it.
 fn resized_prompt(client: &phux_client_runtime::Client, cols: u16, rows: u16) {
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(2).unwrap();
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: id(1),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id(1),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: format!("\x1b[2J\x1b[{rows};1HPROMPT_READY> ")
-                .into_bytes()
-                .into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id(1),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
-        client.feed(frame).unwrap();
-    }
+    let prompt = format!("\x1b[2J\x1b[{rows};1HPROMPT_READY> ");
+    crate::wire_fixture::bootstrap(client, &id(1), [1, 2], [cols, rows], prompt.as_bytes());
 }
 
 fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
@@ -57,7 +26,7 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
         rt.state.phone.as_ref().unwrap().stage,
         [viewport[2], viewport[3]]
     );
-    let grid_top = rt.state.origins[&id(1)][1];
+    let grid_top = rt.state.connection.origins[&id(1)][1];
     let last_row_bottom = grid_top + f32::from(rows) * rt.state.metrics().cell_h;
     assert!(
         last_row_bottom <= toolbar[1] - crate::ui::PAD + 0.5,
@@ -87,7 +56,7 @@ fn phone_sizes_reserve_toolbar_and_header_space_so_the_last_prompt_stays_visible
             rt.set_viewport(size, 2.0);
             rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = keyboard);
             settle(&mut rt);
-            let ((cols, rows), _) = rt.state.fitted[&id(1)];
+            let ((cols, rows), _) = rt.state.connection.fitted[&id(1)];
             assert_viewport(&rt, rows);
             resized_prompt(&client, cols, rows);
             poll(&mut rt);

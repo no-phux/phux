@@ -48,8 +48,12 @@ pub struct Resources {
     pub(super) pasting: Option<u32>,
     /// The screen and window picker.
     pub screens: screens::Screens,
+    /// Admission survives connection replacement, including retired jobs.
+    viewers: crate::document_viewer::Pool,
     /// OSC 52 reads: this window's grants and recent questions.
     pub(super) clipboard_reads: super::clipboard_read::ClipboardReads,
+    /// OSC 52 writes: this window's policy and held question.
+    pub(super) clipboard_writes: super::clipboard_write::ClipboardWrites,
 }
 
 struct PendingDocument {
@@ -63,6 +67,7 @@ pub struct Document {
     pub body: Body,
     /// A typed document's content type, and what is shown of it.
     pub detail: Option<String>,
+    pub viewer: Option<crate::document_viewer::Presentation>,
     surface: surface::Surface,
     subscription: Subscription,
 }
@@ -98,6 +103,7 @@ impl Document {
             seq: None,
             body: Body::Pending,
             detail: None,
+            viewer: None,
             surface: surface::Surface::default(),
             subscription: Subscription::Unrequested,
         }
@@ -128,28 +134,94 @@ fn same_execution(a: &ResourceRecord, b: &ResourceRecord) -> bool {
 }
 
 impl Desk {
+    pub fn toggle_document_source(&mut self, id: &ResourceId) {
+        if let Some(viewer) = self
+            .connection
+            .resources
+            .entries
+            .get_mut(id)
+            .and_then(|d| d.viewer.as_mut())
+        {
+            viewer.toggle();
+            self.generation += 1;
+        }
+    }
+
+    pub(super) fn finish_document_viewers(&mut self, tx: &mut rune::Tx) -> bool {
+        if !self
+            .connection
+            .resources
+            .entries
+            .values()
+            .any(|d| d.viewer.is_some())
+        {
+            return false;
+        }
+        let executable = std::env::current_exe().unwrap_or_default();
+        let adapter = crate::document_viewer::Viewer::configured(
+            self.file.markdown_viewer.as_deref(),
+            &executable,
+        );
+        let widths: HashMap<_, _> = self
+            .connection
+            .resources
+            .entries
+            .keys()
+            .filter_map(|id| {
+                let [width, _] = self.pane_area(id)?;
+                (width > 0.0).then(|| (id.clone(), (width / 7.5).floor().clamp(10.0, 100.0) as u16))
+            })
+            .collect();
+        let resources = &mut self.connection.resources;
+        let mut changed = false;
+        let mut pending = false;
+        for (id, document) in &mut resources.entries {
+            let (Some(viewer), Body::Tree(source), Some(width)) =
+                (&mut document.viewer, &document.body, widths.get(id))
+            else {
+                continue;
+            };
+            let (updated, waiting) = viewer.poll(&mut resources.viewers, &adapter, source, *width);
+            changed |= updated;
+            pending |= waiting;
+        }
+        if pending {
+            tx.wake_after(std::time::Duration::from_millis(25));
+        }
+        if changed {
+            self.generation += 1;
+        }
+        changed
+    }
+
     pub(super) fn finish_document_images(&mut self) -> bool {
-        self.resources.decodes.reap();
+        self.connection.resources.decodes.reap();
         let mut changed = false;
         // A document waiting for admission gets first use of freed slots;
         // continuously publishing surfaces cannot monopolize all decoders.
         for document in self
+            .connection
             .resources
             .entries
             .values_mut()
             .filter(|d| d.surface.flight.is_none())
         {
-            changed |= document
-                .finish_surface(self.resources.images.as_ref(), &mut self.resources.decodes);
+            changed |= document.finish_surface(
+                self.connection.resources.images.as_ref(),
+                &mut self.connection.resources.decodes,
+            );
         }
         for document in self
+            .connection
             .resources
             .entries
             .values_mut()
             .filter(|d| d.surface.flight.is_some())
         {
-            changed |= document
-                .finish_surface(self.resources.images.as_ref(), &mut self.resources.decodes);
+            changed |= document.finish_surface(
+                self.connection.resources.images.as_ref(),
+                &mut self.connection.resources.decodes,
+            );
         }
         if changed {
             self.generation += 1;
@@ -157,14 +229,15 @@ impl Desk {
         changed
     }
     pub fn is_document(&self, id: &ResourceId) -> bool {
-        self.resources.entries.contains_key(id)
+        self.connection.resources.entries.contains_key(id)
     }
 
     pub(super) fn listed_resources(&self) -> Vec<ResourceId> {
-        self.topology
+        self.connection
+            .topology
             .iter()
             .flat_map(|t| t.panes.iter().map(|p| p.terminal_id.clone()))
-            .chain(self.resources.entries.keys().cloned())
+            .chain(self.connection.resources.entries.keys().cloned())
             .collect()
     }
 
@@ -173,10 +246,10 @@ impl Desk {
     }
 
     pub(super) fn default_document(&self, session: u32) -> Option<ResourceId> {
-        if self.status != phux_client_runtime::control::Status::Attached {
+        if self.connection.status != phux_client_runtime::control::Status::Attached {
             return None;
         }
-        let client = self.client.as_ref()?;
+        let client = self.connection.client.as_ref()?;
         let org = client.organization();
         if !org.is_live() {
             return None;
@@ -184,8 +257,10 @@ impl Desk {
         let key = org.session_by_live(phux_protocol::SessionId(session))?.key;
         let listed: Vec<_> = org
             .members(&key)
-            .filter(|r| r.kind.is_document() && !self.resources.dismissed.contains(&r.key))
-            .filter(|r| !self.resources.execution_closed(r))
+            .filter(|r| {
+                r.kind.is_document() && !self.connection.resources.dismissed.contains(&r.key)
+            })
+            .filter(|r| !self.connection.resources.execution_closed(r))
             .filter_map(|r| r.live.clone())
             .collect();
         org.arrangement_document(&key)
@@ -201,10 +276,16 @@ impl Desk {
     }
 
     pub(super) fn publish_document(&mut self, publication: &Arc<DocumentPublication>) -> bool {
-        let Some(document) = self.resources.entries.get_mut(&publication.resource_id) else {
+        let Some(document) = self
+            .connection
+            .resources
+            .entries
+            .get_mut(&publication.resource_id)
+        else {
             // Bootstrap may beat the paged organization seed. Retain only
             // the newest cut until its identity arrives on this epoch.
             let pending = self
+                .connection
                 .resources
                 .pending
                 .entry(publication.resource_id.clone());
@@ -222,8 +303,8 @@ impl Desk {
         };
         let changed = document.publish(
             publication,
-            self.resources.images.as_ref(),
-            &mut self.resources.decodes,
+            self.connection.resources.images.as_ref(),
+            &mut self.connection.resources.decodes,
         );
         if changed {
             self.generation += 1;
@@ -233,46 +314,37 @@ impl Desk {
 
     pub(super) fn retire_documents(&mut self, client: &Client) {
         let key = self
+            .connection
             .shown
             .as_ref()
-            .and_then(|s| self.resources.entries.get(&s.resource))
+            .and_then(|s| self.connection.resources.entries.get(&s.resource))
             .map(|d| d.record.key);
         if key.is_some() {
-            self.resources.returning = self.resources.returning.or(key);
+            self.connection.resources.returning = self.connection.resources.returning.or(key);
             self.drop_shown(client);
-            self.wanted = None;
+            self.connection.wanted = None;
         }
-        self.resources.entries.clear();
-        self.resources.pending.clear();
-        self.resources.closed.clear();
-        self.resources.input.clear();
+        self.connection.resources.entries.clear();
+        self.connection.resources.pending.clear();
+        self.connection.resources.closed.clear();
+        self.connection.resources.input.clear();
         // starting holds command correlations, not live resource handles;
         // reconnect receipts must settle them (including producer failures).
-        self.resources.producers.clear();
-    }
-
-    pub(super) fn carry_document_focus(&mut self, next: &mut Desk) {
-        next.resources.returning = self.resources.returning.or_else(|| {
-            self.shown
-                .as_ref()
-                .and_then(|s| self.resources.entries.get(&s.resource))
-                .map(|d| d.record.key)
-        });
-        next.resources.dismissed = self.resources.dismissed.clone();
+        self.connection.resources.producers.clear();
     }
 
     pub(super) fn refresh_resources(&mut self, client: &Client) -> bool {
         self.follow_document_server(client);
         // The replica can still report Live between transport loss and the
         // next HELLO/seed. Its old handles are not current-epoch identity.
-        if self.status != phux_client_runtime::control::Status::Attached {
+        if self.connection.status != phux_client_runtime::control::Status::Attached {
             return false;
         }
         let org = client.organization();
         if !org.is_live() {
             return false;
         }
-        let satellites = self.topology.iter().flat_map(|t| &t.documents);
+        let satellites = self.connection.topology.iter().flat_map(|t| &t.documents);
         let live: Vec<_> = org
             .resources()
             .iter()
@@ -280,22 +352,24 @@ impl Desk {
             .cloned()
             .chain(satellites.filter_map(satellite::record))
             .collect();
-        self.resources
+        self.connection
+            .resources
             .closed
             .retain(|_, closed| live.iter().any(|record| same_execution(record, closed)));
         let live: Vec<_> = live
             .into_iter()
-            .filter(|record| !self.resources.execution_closed(record))
+            .filter(|record| !self.connection.resources.execution_closed(record))
             .collect();
         self.retire_replaced_document(client, &live);
-        let before = self.resources.entries.len();
-        self.resources
+        let before = self.connection.resources.entries.len();
+        self.connection
+            .resources
             .entries
             .retain(|_, doc| live.iter().any(|r| same_execution(r, &doc.record)));
-        let mut changed = self.resources.entries.len() != before;
+        let mut changed = self.connection.resources.entries.len() != before;
         for record in live {
             let id = record.live.clone().expect("live records");
-            match self.resources.entries.entry(id) {
+            match self.connection.resources.entries.entry(id) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(Document::new(record));
                     changed = true;
@@ -313,24 +387,27 @@ impl Desk {
         let server = client.server().map(|s| s.id);
         // None → HELLO identity establishes this epoch; it must not retire a
         // bootstrap cut received before the first session AttachReady.
-        if self.resources.server.is_some() && self.resources.server != server {
+        if self.connection.resources.server.is_some() && self.connection.resources.server != server
+        {
             self.retire_documents(client);
         }
-        self.resources.server = server;
+        self.connection.resources.server = server;
     }
 
     fn adopt_pending_documents(&mut self) -> bool {
         let mut changed = false;
-        for pending in std::mem::take(&mut self.resources.pending).into_values() {
+        for pending in std::mem::take(&mut self.connection.resources.pending).into_values() {
             let publication = &pending.publication;
             if self
+                .connection
                 .resources
                 .entries
                 .contains_key(&publication.resource_id)
             {
                 changed |= self.publish_document(publication);
             } else if pending.since.elapsed() < super::WANTED_GRACE {
-                self.resources
+                self.connection
+                    .resources
                     .pending
                     .insert(publication.resource_id.clone(), pending);
             }
@@ -339,8 +416,9 @@ impl Desk {
     }
 
     pub(super) fn forget_document(&mut self, client: &Client, id: &ResourceId) -> bool {
-        self.resources.pending.remove(id);
+        self.connection.resources.pending.remove(id);
         let record = self
+            .connection
             .resources
             .entries
             .remove(id)
@@ -353,10 +431,10 @@ impl Desk {
                     .cloned()
             });
         let Some(record) = record else { return false };
-        if self.resources.execution_closed(&record) {
+        if self.connection.resources.execution_closed(&record) {
             return false;
         }
-        self.resources.closed.insert(id.clone(), record);
+        self.connection.resources.closed.insert(id.clone(), record);
         self.mirror_unavailable();
         true
     }
@@ -366,27 +444,30 @@ impl Desk {
     }
 
     fn retire_replaced_document(&mut self, client: &Client, live: &[ResourceRecord]) {
-        let Some(shown) = &self.shown else { return };
-        let Some(old) = self.resources.entries.get(&shown.resource) else {
+        let Some(shown) = &self.connection.shown else {
+            return;
+        };
+        let Some(old) = self.connection.resources.entries.get(&shown.resource) else {
             return;
         };
         if live.iter().any(|r| same_execution(r, &old.record)) {
             return;
         }
         let key = old.record.key;
-        let returning = self.resources.returning.unwrap_or(key);
+        let returning = self.connection.resources.returning.unwrap_or(key);
         self.close_shown(client, &[]);
         // A temporary phone fallback is not an explicit focus change: the
         // replacement execution of this key still takes priority.
-        self.resources.returning = Some(returning);
+        self.connection.resources.returning = Some(returning);
         if !live.iter().any(|record| record.key == key) {
             self.mirror_unavailable();
         }
     }
 
     fn restore_document(&mut self, client: &Client) -> bool {
-        if let Some(key) = self.resources.returning
+        if let Some(key) = self.connection.resources.returning
             && let Some(id) = self
+                .connection
                 .resources
                 .entries
                 .iter()
@@ -397,6 +478,7 @@ impl Desk {
             return true;
         }
         let gone = self
+            .connection
             .shown
             .as_ref()
             .filter(|s| s.view.is_none())
@@ -404,6 +486,7 @@ impl Desk {
             .filter(|id| !self.is_document(id));
         let Some(gone) = gone else { return false };
         let next = self
+            .connection
             .layout
             .as_ref()
             .filter(|_| self.phone.is_none())
@@ -418,23 +501,31 @@ impl Desk {
     /// Closing a mirror removes its view from the shared arrangement. It
     /// does not close a terminal, stop its producer, or migrate its process.
     pub(super) fn hide_documents(&mut self, ids: &[ResourceId]) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
-        self.resources.dismissed.extend(
-            ids.iter()
-                .filter_map(|id| self.resources.entries.get(id).map(|d| d.record.key)),
-        );
+        self.connection
+            .resources
+            .dismissed
+            .extend(ids.iter().filter_map(|id| {
+                self.connection
+                    .resources
+                    .entries
+                    .get(id)
+                    .map(|d| d.record.key)
+            }));
         if let Some((session, mut doc)) = self.arrangement(&client) {
             remove_document_leaves(&mut doc, ids);
             self.write_arrangement(&client, session, &doc, "Mirror view not closed");
         }
         if self
+            .connection
             .shown
             .as_ref()
             .is_some_and(|s| ids.contains(&s.resource))
         {
             let next = self
+                .connection
                 .layout
                 .as_ref()
                 .filter(|_| self.phone.is_none())

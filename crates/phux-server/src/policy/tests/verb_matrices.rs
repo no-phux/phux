@@ -231,6 +231,7 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             arrangement: k.arrangement,
             expected: rev,
             document: ArrangementDoc::default(),
+            slot_tabs: false,
         }),
         command(Command::SessionSetProject {
             operation: op,

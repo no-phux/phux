@@ -119,11 +119,15 @@ impl Desk {
             return Standing::Incompatible(words.clone());
         }
         let why = || {
-            let last = self.client.as_ref().and_then(|client| client.last_error());
-            let error = self.error.clone().or(last).unwrap_or_default();
+            let last = self
+                .connection
+                .client
+                .as_ref()
+                .and_then(|client| client.last_error());
+            let error = self.connection.error.clone().or(last).unwrap_or_default();
             self.in_words(&error)
         };
-        match (&self.client, self.status) {
+        match (&self.connection.client, self.connection.status) {
             _ if self.link.handing_off() && !self.link_is_up() => {
                 Standing::Connecting("The server is updating.".to_owned())
             }
@@ -165,12 +169,17 @@ impl Desk {
 
     /// Connected, with nothing on screen: is there anything to show?
     fn inventory(&self) -> Standing {
-        let selected = self.client.as_ref().and_then(|c| c.selected_session());
-        let Some(topology) = &self.topology else {
+        let selected = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|c| c.selected_session());
+        let Some(topology) = &self.connection.topology else {
             return Standing::Opening;
         };
         let session = topology.sessions.iter().find(|s| Some(s.id) == selected);
-        let waiting = self.pending_session.is_some() || !self.pending_spawns.is_empty();
+        let waiting =
+            self.connection.pending_session.is_some() || !self.connection.pending_spawns.is_empty();
         match session {
             _ if waiting => Standing::Opening,
             None if topology.sessions.is_empty() => Standing::NoSessions,
@@ -187,13 +196,20 @@ impl Desk {
     /// What to say over panes that have stopped updating. Silent for the
     /// first moment of any drop.
     pub fn banner(&self) -> Option<Banner> {
-        if self.shown.is_none() || self.link_is_up() || !self.link.is_down_for(BANNER_AFTER) {
+        if self.connection.shown.is_none()
+            || self.link_is_up()
+            || !self.link.is_down_for(BANNER_AFTER)
+        {
             return None;
         }
         if self.stuck() {
             return Some(Banner::Stuck(self.standing()));
         }
-        let last = self.client.as_ref().and_then(|client| client.last_error());
+        let last = self
+            .connection
+            .client
+            .as_ref()
+            .and_then(|client| client.last_error());
         let ended = self.link.ended.clone();
         let (why, place) = match &self.native {
             // The server's own parting words are already plain.
@@ -212,15 +228,18 @@ impl Desk {
     /// The machine refused this window's credential: pairing again is the
     /// only way back.
     pub fn unpaired(&self) -> bool {
-        self.error.as_deref().is_some_and(refused_for_good)
+        self.connection
+            .error
+            .as_deref()
+            .is_some_and(refused_for_good)
     }
 
     /// A word for the current machine's row.
     pub fn link_word(&self) -> &'static str {
-        match self.status {
+        match self.connection.status {
             _ if self.link_is_up() => "connected",
             Status::Failed | Status::Closed => "not connected",
-            _ if self.client.is_none() && !self.link.finding => "not connected",
+            _ if self.connection.client.is_none() && !self.link.finding => "not connected",
             _ => "connecting",
         }
     }

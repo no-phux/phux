@@ -15,100 +15,47 @@ pub struct PathRow {
     pub kind: PathKind,
 }
 
-/// Filesystem entry kind.
+wire_enum! { as_wire / from_wire;
+/// Filesystem entry kind. The decoder drops a row whose kind a newer
+/// server allocated rather than misclassify it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathKind {
     /// Regular file.
-    File,
+    File = 0,
     /// Directory.
-    Directory,
+    Directory = 1,
     /// Symbolic link, whether or not its target resolves.
-    Symlink,
+    Symlink = 2,
+}
 }
 
-impl PathKind {
-    const fn as_wire(self) -> u8 {
-        match self {
-            Self::File => 0,
-            Self::Directory => 1,
-            Self::Symlink => 2,
-        }
-    }
-
-    /// `None` for a kind a newer server allocated; the decoder drops that
-    /// row rather than misclassify it.
-    const fn from_wire(tag: u8) -> Option<Self> {
-        match tag {
-            0 => Some(Self::File),
-            1 => Some(Self::Directory),
-            2 => Some(Self::Symlink),
-            _ => None,
-        }
-    }
-}
-
+wire_enum! { as_wire / from_wire else Truncated;
 /// Whether results represent the entire search, a warming index, or a cap.
+/// A newer status reads as `Truncated`: not known to be exhaustive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathStatus {
     /// Complete for this query.
-    Complete,
+    Complete = 0,
     /// A bounded partial result while host discovery is still warming.
-    Warming,
+    Warming = 1,
     /// A hard result or traversal bound was hit; not exhaustive.
-    Truncated,
+    Truncated = 2,
+}
 }
 
-impl PathStatus {
-    const fn as_wire(self) -> u8 {
-        match self {
-            Self::Complete => 0,
-            Self::Warming => 1,
-            Self::Truncated => 2,
-        }
-    }
-
-    /// An unallocated status reads as [`Self::Truncated`]: a newer server's
-    /// status is not known to be exhaustive, and a retry may return more.
-    const fn from_wire(tag: u8) -> Self {
-        match tag {
-            0 => Self::Complete,
-            1 => Self::Warming,
-            _ => Self::Truncated,
-        }
-    }
-}
-
+wire_enum! { as_wire / from_wire else Other;
 /// Typed refusal of a host path query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathErrorCode {
     /// Root does not exist.
-    NotFound,
+    NotFound = 0,
     /// The caller lacks permission to search the root.
-    PermissionDenied,
+    PermissionDenied = 1,
     /// Root is not a directory.
-    NotADirectory,
+    NotADirectory = 2,
     /// Invalid root/query, host route, timeout or other I/O error.
-    Other,
+    Other = 3,
 }
-
-impl PathErrorCode {
-    const fn as_wire(self) -> u8 {
-        match self {
-            Self::NotFound => 0,
-            Self::PermissionDenied => 1,
-            Self::NotADirectory => 2,
-            Self::Other => 3,
-        }
-    }
-
-    const fn from_wire(tag: u8) -> Self {
-        match tag {
-            0 => Self::NotFound,
-            1 => Self::PermissionDenied,
-            2 => Self::NotADirectory,
-            _ => Self::Other,
-        }
-    }
 }
 
 /// Successful results, rooted on the queried host.

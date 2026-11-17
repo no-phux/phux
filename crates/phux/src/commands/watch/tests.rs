@@ -30,70 +30,55 @@ fn json_of(event: AgentEvent, terminal: Option<&str>) -> serde_json::Value {
     serde_json::from_str(&line).unwrap()
 }
 
+/// Each event's line carries exactly its documented keys: a missing
+/// terminal is absent, a missing exit status is present and null.
 #[test]
-fn watch_json_title_changed_carries_title_and_terminal() {
-    let v = json_of(
-        AgentEvent::TitleChanged {
-            title: "build".to_owned(),
-        },
-        Some("@3"),
-    );
-    assert_eq!(v["event"], "title_changed");
-    assert_eq!(v["title"], "build");
-    assert_eq!(v["terminal"], "@3");
-}
-
-#[test]
-fn watch_json_bell_is_minimal() {
-    let v = json_of(AgentEvent::Bell, None);
-    assert_eq!(v["event"], "bell");
-    // No terminal selector supplied → key absent (not null).
-    assert!(v.get("terminal").is_none());
-    // Bell carries no payload field.
-    assert!(v.get("title").is_none());
-}
-
-#[test]
-fn watch_json_pane_closed_carries_exit_status() {
-    let v = json_of(
-        AgentEvent::ResourceClosed {
-            exit_status: Some(0),
-        },
-        Some("@1"),
-    );
-    assert_eq!(v["event"], "pane_closed");
-    assert_eq!(v["exit_status"], 0);
-
-    // A signal-killed pane reports null exit_status (present, not absent).
-    let v = json_of(AgentEvent::ResourceClosed { exit_status: None }, Some("@1"));
-    assert!(v["exit_status"].is_null());
-}
-
-#[test]
-fn watch_json_command_finished_exit_code_nullable() {
-    // The documented exit-code gap: the reference server emits None.
-    let v = json_of(AgentEvent::CommandFinished { exit_code: None }, None);
-    assert_eq!(v["event"], "command_finished");
-    assert!(v["exit_code"].is_null());
-}
-
-#[test]
-fn watch_json_asked_carries_question() {
-    let v = json_of(
-        AgentEvent::Asked {
-            id: "q1".to_owned(),
-            question: "Deploy to prod?".to_owned(),
-            suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
-            elapsed_seconds: None,
-        },
-        Some("@9"),
-    );
-    assert_eq!(v["event"], "asked");
-    assert_eq!(v["terminal"], "@9");
-    assert_eq!(v["id"], "q1");
-    assert_eq!(v["question"], "Deploy to prod?");
-    assert_eq!(v["suggestions"], serde_json::json!(["Yes", "No", "Hold"]));
-    assert!(v["elapsed_seconds"].is_null());
+fn watch_json_lines_carry_each_events_fields() {
+    use serde_json::json;
+    for (event, terminal, expected) in [
+        (
+            AgentEvent::TitleChanged {
+                title: "build".to_owned(),
+            },
+            Some("@3"),
+            json!({"event": "title_changed", "title": "build", "terminal": "@3"}),
+        ),
+        (AgentEvent::Bell, None, json!({"event": "bell"})),
+        (
+            AgentEvent::ResourceClosed {
+                exit_status: Some(0),
+            },
+            Some("@1"),
+            json!({"event": "pane_closed", "exit_status": 0, "terminal": "@1"}),
+        ),
+        // A signal-killed pane reports null exit_status (present, not absent).
+        (
+            AgentEvent::ResourceClosed { exit_status: None },
+            Some("@1"),
+            json!({"event": "pane_closed", "exit_status": null, "terminal": "@1"}),
+        ),
+        // The documented exit-code gap: the reference server emits None.
+        (
+            AgentEvent::CommandFinished { exit_code: None },
+            None,
+            json!({"event": "command_finished", "exit_code": null}),
+        ),
+        (
+            AgentEvent::Asked {
+                id: "q1".to_owned(),
+                question: "Deploy to prod?".to_owned(),
+                suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
+                elapsed_seconds: None,
+            },
+            Some("@9"),
+            json!({
+                "event": "asked", "terminal": "@9", "id": "q1", "question": "Deploy to prod?",
+                "suggestions": ["Yes", "No", "Hold"], "elapsed_seconds": null,
+            }),
+        ),
+    ] {
+        assert_eq!(json_of(event, terminal), expected);
+    }
 }
 
 // -- agent_state ------------------------------------------------------
@@ -116,68 +101,45 @@ fn agent_json(update: &AgentStateUpdate, terminal: Option<&str>) -> serde_json::
     serde_json::from_str(&line).unwrap()
 }
 
+/// The detector never writes `attention`; the line carries the derived
+/// value. `from` appears only once a prior record is known, and a tombstone
+/// keeps the identity with a present-and-null `state`, so a consumer keyed on
+/// `state` sees the record go away.
 #[test]
-fn agent_state_json_carries_identity_state_and_derived_attention() {
-    let update = AgentStateUpdate {
+fn agent_state_json_carries_identity_state_attention_and_transition() {
+    use serde_json::json;
+    let blocked = || Some(record("reviewer", Some("claude"), AgentMetaState::Blocked));
+    let update = |record, previous| AgentStateUpdate {
         terminal: None,
-        record: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
-        previous: None,
+        record,
+        previous,
     };
-    let v = agent_json(&update, Some("@7"));
-    assert_eq!(v["event"], "agent_state");
-    assert_eq!(v["terminal"], "@7");
-    assert_eq!(v["name"], "reviewer");
-    assert_eq!(v["kind"], "claude");
-    assert_eq!(v["state"], "blocked");
-    // The detector never writes `attention`; L3 §3.7 derives it, and the
-    // stream carries the derived value so a consumer need not re-derive.
-    assert_eq!(v["attention"], "high");
-    // Nothing to transition from on the first record for a Terminal.
-    assert!(v.get("from").is_none());
-}
-
-#[test]
-fn agent_state_json_carries_the_transition_when_one_is_known() {
-    let update = AgentStateUpdate {
-        terminal: None,
-        record: Some(record("reviewer", None, AgentMetaState::Blocked)),
-        previous: Some(record("reviewer", None, AgentMetaState::Working)),
-    };
-    let v = agent_json(&update, Some("@7"));
-    assert_eq!(v["from"], "working");
-    assert_eq!(v["state"], "blocked");
-    assert!(v.get("kind").is_none(), "absent kind stays absent");
-}
-
-#[test]
-fn agent_state_json_tombstone_nulls_state_and_keeps_identity() {
-    let update = AgentStateUpdate {
-        terminal: None,
-        record: None,
-        previous: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
-    };
-    let v = agent_json(&update, Some("@7"));
-    assert_eq!(v["event"], "agent_state");
-    // Present-and-null, not absent: a consumer keyed on `state` must see
-    // the record go away rather than read the previous value forever.
-    assert!(v["state"].is_null());
-    assert_eq!(v["name"], "reviewer");
-    assert_eq!(v["from"], "blocked");
-    assert!(v.get("attention").is_none());
-}
-
-#[test]
-fn agent_state_json_tombstone_with_no_prior_record_is_still_a_line() {
-    let update = AgentStateUpdate {
-        terminal: None,
-        record: None,
-        previous: None,
-    };
-    let v = agent_json(&update, Some("@7"));
-    assert_eq!(v["event"], "agent_state");
-    assert!(v["state"].is_null());
-    assert!(v.get("name").is_none());
-    assert!(v.get("from").is_none());
+    for (update, expected) in [
+        (
+            update(blocked(), None),
+            json!({"event": "agent_state", "terminal": "@7", "name": "reviewer",
+                "kind": "claude", "state": "blocked", "attention": "high"}),
+        ),
+        (
+            update(
+                Some(record("reviewer", None, AgentMetaState::Blocked)),
+                Some(record("reviewer", None, AgentMetaState::Working)),
+            ),
+            json!({"event": "agent_state", "terminal": "@7", "name": "reviewer",
+                "state": "blocked", "attention": "high", "from": "working"}),
+        ),
+        (
+            update(None, blocked()),
+            json!({"event": "agent_state", "terminal": "@7", "name": "reviewer",
+                "kind": "claude", "state": null, "from": "blocked"}),
+        ),
+        (
+            update(None, None),
+            json!({"event": "agent_state", "terminal": "@7", "state": null}),
+        ),
+    ] {
+        assert_eq!(agent_json(&update, Some("@7")), expected);
+    }
 }
 
 #[test]
@@ -307,36 +269,35 @@ fn until_matches_exactly_the_name_the_json_line_carries() {
     }
 }
 
+/// `unknown` stays a waitable name; the journal-era events (ADR-0123) have
+/// their own.
 #[test]
-fn an_agent_state_item_is_named_agent_state() {
+fn items_and_journal_era_events_are_named_and_unknown_tags_stay_unknown() {
     let item = WatchItem::AgentState(AgentStateUpdate {
         terminal: None,
         record: Some(record("reviewer", None, AgentMetaState::Blocked)),
         previous: None,
     });
     assert_eq!(watch_item_event(&item), "agent_state");
-}
-
-/// `unknown` stays a waitable name; the journal-era events (ADR-0123) have
-/// their own.
-#[test]
-fn journal_era_events_are_named_and_unknown_tags_stay_unknown() {
+    let names: Vec<_> = every_event().iter().map(watch_event_kind).collect();
     assert_eq!(
-        watch_event_kind(&AgentEvent::Unknown {
-            tag: 0xFE,
-            body: Vec::new()
-        }),
-        "unknown"
-    );
-    assert_eq!(
-        watch_event_kind(&AgentEvent::CwdChanged {
-            cwd: "/tmp".to_owned()
-        }),
-        "cwd_changed"
-    );
-    assert_eq!(
-        watch_event_kind(&AgentEvent::SourceGap { dropped: 1 }),
-        "source_gap"
+        names,
+        [
+            "command_started",
+            "command_finished",
+            "title_changed",
+            "bell",
+            "pane_spawned",
+            "pane_closed",
+            "dirty",
+            "idle",
+            "asked",
+            "cwd_changed",
+            "terminal_control",
+            "journal_gap",
+            "source_gap",
+            "unknown",
+        ]
     );
 }
 

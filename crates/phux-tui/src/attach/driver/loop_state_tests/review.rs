@@ -329,9 +329,7 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
     assert_unread_done_row(&out, "agent");
 }
 
-// ---- the per-frame fold's raise matrix (phux-jx39.5) ------------------------
+// ---- the per-frame fold's raise matrix -------------------------------------
 //
-// `fold_frame_outcome` never paints: it raises what the burst drain owes.
-// Peer-side changes defer the chrome refresh to the drain (`peers.chrome_dirty`,
-// which `drain_repaint` turns into an in-place chrome paint) and raise the
-// fleet; local changes raise chrome only when a painter input moved.
+// `fold_frame_outcome` never paints: peer changes defer chrome to the drain
+// and raise the fleet; local changes raise chrome only when an input moved.

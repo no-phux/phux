@@ -117,73 +117,39 @@ mod tests {
         assert!(!is_mirrored_key("phux.agent-session/v1"));
     }
 
-    #[test]
-    fn a_local_agent_record_is_stored_under_the_satellite_scope() {
-        let state = SharedState::new();
-        let bytes = br#"{"name":"reviewer"}"#.to_vec();
-        let applied = state.with_mut(|s| {
-            apply_mirrored(
-                s,
-                &host(),
-                &local_scope(7),
-                RESOURCE_AGENT_KEY,
-                Some(bytes.clone()),
-            )
-        });
-        assert!(applied);
-        let stored = state.with(|s| s.metadata().get(&satellite_scope(7), RESOURCE_AGENT_KEY));
-        assert_eq!(stored.as_deref(), Some(bytes.as_slice()));
-        assert!(
-            state
-                .with(|s| s.metadata().get(&local_scope(7), RESOURCE_AGENT_KEY))
-                .is_none(),
-            "the hub must not keep the satellite's Local scope"
-        );
+    fn get(state: &SharedState, scope: &Scope, key: &str) -> Option<Vec<u8>> {
+        state.with(|s| s.metadata().get(scope, key))
     }
 
+    /// Mirrored keys land under the satellite scope (never the Local one) and
+    /// a tombstone removes them; other keys and satellite scopes are ignored.
     #[test]
-    fn a_tombstone_removes_the_mirrored_key() {
+    fn a_mirrored_record_is_stored_under_the_satellite_scope_until_tombstoned() {
         let state = SharedState::new();
-        state.with_mut(|s| {
-            apply_mirrored(
-                s,
-                &host(),
-                &local_scope(7),
-                RESOURCE_ASKED_KEY,
-                Some(ASKED_PRESENT.to_vec()),
-            );
-        });
-        let cleared = state
-            .with_mut(|s| apply_mirrored(s, &host(), &local_scope(7), RESOURCE_ASKED_KEY, None));
-        assert!(cleared);
+        let apply = |scope: &Scope, key: &str, value: Option<&[u8]>| {
+            state.with_mut(|s| apply_mirrored(s, &host(), scope, key, value.map(<[u8]>::to_vec)))
+        };
+        let record = br#"{"name":"reviewer"}"#.as_slice();
+        assert!(apply(&local_scope(7), RESOURCE_AGENT_KEY, Some(record)));
+        assert_eq!(
+            get(&state, &satellite_scope(7), RESOURCE_AGENT_KEY).as_deref(),
+            Some(record)
+        );
+        assert!(get(&state, &local_scope(7), RESOURCE_AGENT_KEY).is_none());
+        assert!(apply(&local_scope(7), RESOURCE_AGENT_KEY, None));
         assert!(
             state
-                .with(|s| s.metadata().get(&satellite_scope(7), RESOURCE_ASKED_KEY))
-                .is_none()
+                .with(|s| s.metadata().list(&satellite_scope(7)))
+                .is_empty()
         );
-    }
 
-    #[test]
-    fn a_non_allowlisted_key_and_a_satellite_scope_are_ignored() {
-        let state = SharedState::new();
-        let ignored = state.with_mut(|s| {
-            let other = apply_mirrored(
-                s,
-                &host(),
-                &local_scope(7),
-                "phux.tags/v1",
-                Some(b"x".to_vec()),
-            );
-            let chained = apply_mirrored(
-                s,
-                &host(),
-                &satellite_scope(7),
-                RESOURCE_AGENT_KEY,
-                Some(br#"{"name":"nope"}"#.to_vec()),
-            );
-            other || chained
-        });
-        assert!(!ignored);
+        assert!(is_mirrored_key(RESOURCE_ASKED_KEY) && !is_mirrored_key("phux.agent-session/v1"));
+        assert!(!apply(&local_scope(7), "phux.tags/v1", Some(b"x")));
+        assert!(!apply(
+            &satellite_scope(7),
+            RESOURCE_AGENT_KEY,
+            Some(record)
+        ));
         assert!(
             state
                 .with(|s| s.metadata().list(&satellite_scope(7)))
@@ -194,22 +160,14 @@ mod tests {
     #[test]
     fn the_asked_flag_is_one_byte_or_a_tombstone() {
         let state = SharedState::new();
-        let wire = ResourceId::local(3);
-        state.with_mut(|s| publish_asked_flag(s, &wire, true));
+        let scope = Scope::Resource(ResourceId::local(3));
+        state.with_mut(|s| publish_asked_flag(s, &ResourceId::local(3), true));
         assert_eq!(
-            state
-                .with(|s| s
-                    .metadata()
-                    .get(&Scope::Resource(wire.clone()), RESOURCE_ASKED_KEY))
-                .as_deref(),
+            get(&state, &scope, RESOURCE_ASKED_KEY).as_deref(),
             Some(ASKED_PRESENT)
         );
-        state.with_mut(|s| publish_asked_flag(s, &wire, false));
-        assert!(
-            state
-                .with(|s| s.metadata().get(&Scope::Resource(wire), RESOURCE_ASKED_KEY))
-                .is_none()
-        );
+        state.with_mut(|s| publish_asked_flag(s, &ResourceId::local(3), false));
+        assert!(get(&state, &scope, RESOURCE_ASKED_KEY).is_none());
     }
 
     #[test]
@@ -222,105 +180,62 @@ mod tests {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let state = SharedState::new();
         session.set_journal(Some(state.clone()));
-        let frames = session.prepare_request(&RelayRequest::MirrorTerminal { terminal: 7 });
-        assert!(
-            session
-                .handle_request_checked(RelayRequest::MirrorTerminal { terminal: 7 })
-                .is_none()
-        );
+        let mirror = || RelayRequest::MirrorTerminal { terminal: 7 };
+        let frames = session.prepare_request(&mirror());
+        assert!(session.handle_request_checked(mirror()).is_none());
         assert_eq!(
             frames.len(),
             4,
             "subscribe and get, for each allowlisted key"
         );
         assert!(
-            session
-                .prepare_request(&RelayRequest::MirrorTerminal { terminal: 7 })
-                .is_empty(),
+            session.prepare_request(&mirror()).is_empty(),
             "a second mirror on the same connection sends nothing"
         );
-
-        let changed = FrameKind::MetadataChanged {
-            scope: local_scope(7),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-            value: Some(br#"{"name":"reviewer"}"#.to_vec()),
+        let mut feed = |frame: FrameKind| {
+            let mut buf = bytes::BytesMut::new();
+            frame.encode(&mut buf);
+            // Ignored frames must not tear the link either.
+            session.handle_inbound(&buf).expect("in-bounds frame");
+        };
+        let changed = |scope, key: &str, value: &[u8]| FrameKind::MetadataChanged {
+            scope,
+            key: key.to_owned(),
+            value: Some(value.to_vec()),
             actor: None,
         };
-        let mut buf = bytes::BytesMut::new();
-        changed.encode(&mut buf);
-        session
-            .handle_inbound(&buf)
-            .expect("metadata changed is in-bounds");
+
+        let record = br#"{"name":"reviewer"}"#.as_slice();
+        feed(changed(local_scope(7), RESOURCE_AGENT_KEY, record));
         assert_eq!(
-            state
-                .with(|s| s.metadata().get(&satellite_scope(7), RESOURCE_AGENT_KEY))
-                .as_deref(),
-            Some(&br#"{"name":"reviewer"}"#[..])
+            get(&state, &satellite_scope(7), RESOURCE_AGENT_KEY).as_deref(),
+            Some(record)
         );
+        feed(changed(local_scope(7), "phux.tags/v1", b"nope"));
+        assert!(get(&state, &satellite_scope(7), "phux.tags/v1").is_none());
+        // Hub-and-spoke does not chain.
+        feed(changed(
+            satellite_scope(7),
+            RESOURCE_ASKED_KEY,
+            ASKED_PRESENT,
+        ));
+        assert!(get(&state, &satellite_scope(7), RESOURCE_ASKED_KEY).is_none());
 
-        let ignored = FrameKind::MetadataChanged {
-            scope: local_scope(7),
-            key: "phux.tags/v1".to_owned(),
-            value: Some(b"nope".to_vec()),
-            actor: None,
-        };
-        buf.clear();
-        ignored.encode(&mut buf);
-        session
-            .handle_inbound(&buf)
-            .expect("a non-allowlisted key must not tear the link");
-        assert!(
-            state
-                .with(|s| s.metadata().get(&satellite_scope(7), "phux.tags/v1"))
-                .is_none()
-        );
-
-        let chained = FrameKind::MetadataChanged {
-            scope: satellite_scope(7),
-            key: RESOURCE_ASKED_KEY.to_owned(),
-            value: Some(ASKED_PRESENT.to_vec()),
-            actor: None,
-        };
-        buf.clear();
-        chained.encode(&mut buf);
-        session
-            .handle_inbound(&buf)
-            .expect("a satellite-tagged scope must not tear the link");
-        assert!(
-            state
-                .with(|s| s.metadata().get(&satellite_scope(7), RESOURCE_ASKED_KEY))
-                .is_none(),
-            "hub-and-spoke does not chain"
-        );
-
-        // The first GET on the wire is phux.agent/v1. Decode it and answer
-        // that request id with the asked flag's sibling by walking frames.
-        let mut asked_request = None;
-        for frame in &frames {
-            let (decoded, _) = FrameKind::decode(frame).expect("mirror frame decodes");
-            if let FrameKind::GetMetadata {
-                request_id, key, ..
-            } = decoded
-                && key == RESOURCE_ASKED_KEY
-            {
-                asked_request = Some(request_id);
-            }
-        }
-        let request_id = asked_request.expect("the mirror reads the asked key");
-        let reply = FrameKind::MetadataValue {
+        // Answer the mirror's GET of the asked key.
+        let request_id = frames
+            .iter()
+            .find_map(|frame| match FrameKind::decode(frame).expect("decodes").0 {
+                FrameKind::GetMetadata {
+                    request_id, key, ..
+                } if key == RESOURCE_ASKED_KEY => Some(request_id),
+                _ => None,
+            })
+            .expect("the mirror reads the asked key");
+        feed(FrameKind::MetadataValue {
             request_id,
             value: Some(ASKED_PRESENT.to_vec()),
-        };
-        buf.clear();
-        reply.encode(&mut buf);
-        session
-            .handle_inbound(&buf)
-            .expect("metadata value is in-bounds");
-        assert_eq!(
-            state
-                .with(|s| s.metadata().get(&satellite_scope(7), RESOURCE_ASKED_KEY))
-                .as_deref(),
-            Some(ASKED_PRESENT)
-        );
+        });
+        let asked = get(&state, &satellite_scope(7), RESOURCE_ASKED_KEY);
+        assert_eq!(asked.as_deref(), Some(ASKED_PRESENT));
     }
 }

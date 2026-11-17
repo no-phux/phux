@@ -37,5 +37,32 @@ include!("tools/watch.rs");
 include!("tools/lifecycle.rs");
 include!("tools/parsing.rs");
 include!("tools/kinds.rs");
+#[path = "tools/signals.rs"]
+pub(crate) mod signals;
 include!("tools/tests.rs");
 include!("tools/upload_tests.rs");
+
+/// Longest `timeout_secs` any bounded tool accepts. A tool call that never
+/// returns wedges its host, so no bounded tool has an unbounded mode.
+pub(crate) const MAX_TIMEOUT_SECS: u64 = 3600;
+
+/// The `timeout_secs` argument of a bounded tool.
+///
+/// An integer from 1 to [`MAX_TIMEOUT_SECS`]; `default` when absent, or
+/// required when `default` is `None`.
+pub(crate) fn bounded_timeout_secs(args: &Value, default: Option<u64>) -> Result<u64, ToolError> {
+    let out_of_range = || {
+        ToolError::new(format!(
+            "`timeout_secs` must be an integer in 1..={MAX_TIMEOUT_SECS}"
+        ))
+    };
+    args.get("timeout_secs").map_or_else(
+        || default.ok_or_else(out_of_range),
+        |value| {
+            value
+                .as_u64()
+                .filter(|secs| (1..=MAX_TIMEOUT_SECS).contains(secs))
+                .ok_or_else(out_of_range)
+        },
+    )
+}
