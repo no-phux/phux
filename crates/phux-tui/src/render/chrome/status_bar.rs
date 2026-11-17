@@ -404,6 +404,13 @@ impl StatusBarPainter {
         true
     }
 
+    /// Show how many panes need you as the ladder mark and count (` ●N `,
+    /// in the `attention` tone), or clear the chip at zero. The bar is too
+    /// narrow for the word; the mark carries it.
+    pub fn set_needs_you(&mut self, count: usize) -> bool {
+        self.set_attention(crate::render::chrome::needs_you_chip(&self.theme, count))
+    }
+
     /// Adopt `theme` for every bar colour; a change invalidates the row
     /// cache. The driver calls this at attach and on each config reload.
     pub fn set_theme(&mut self, theme: &Theme) {

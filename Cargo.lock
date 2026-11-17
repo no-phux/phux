@@ -3528,6 +3528,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-crash",
+ "phux-design",
  "phux-frozen",
  "phux-perf",
  "phux-plugin",

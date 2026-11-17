@@ -76,19 +76,10 @@ fn format_supervisory_badge(
     (!tokens.is_empty()).then(|| format!(" {} ", tokens.join(" ")))
 }
 
-/// The attention hint, counting asking panes across ALL windows (the point is
-/// a question the user cannot see), or `None` when nothing asks.
-fn attention_hint(panes: &HashMap<ResourceId, PaneSlot>) -> Option<String> {
-    format_attention_hint(panes.values().filter(|slot| slot.attention).count())
-}
-
-/// Pure formatter behind [`attention_hint`].
-fn format_attention_hint(asking: usize) -> Option<String> {
-    match asking {
-        0 => None,
-        1 => Some(" ask ".to_owned()),
-        n => Some(format!(" ask·{n} ")),
-    }
+/// Panes that need you, across ALL windows (the point is a question the
+/// user cannot see). The bar shows it as ` ●N `.
+fn needs_you_count(panes: &HashMap<ResourceId, PaneSlot>) -> usize {
+    panes.values().filter(|slot| slot.attention).count()
 }
 
 /// Refresh all chrome inputs from one coherent view. Returns whether any
@@ -154,7 +145,7 @@ fn feed_status_bar(
     let panes = scene.panes;
     let mut changed = sb.set_windows(windows);
     changed |= sb.set_supervisory(supervisory_badge(panes, scene.focused, own_client_id));
-    changed |= sb.set_attention(attention_hint(panes));
+    changed |= sb.set_needs_you(needs_you_count(panes));
     // The focused pane's cwd / exit feed the bar widgets.
     let focused = scene.focused.and_then(|id| panes.get(id));
     changed |= sb.set_focused_cwd(focused.and_then(|slot| slot.cwd.clone()));

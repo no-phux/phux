@@ -6,6 +6,12 @@ panes keep your terminal's colours. phux themes use the `colors.toml`
 format of [Omarchy](https://omarchy.org), the Arch Linux desktop setup,
 so any Omarchy theme works as it is.
 
+With no theme selected, the chrome uses the phux house look, `phux` in
+dark mode or `phux-light` in light mode. Every theme, the house look
+included, goes through one solver from the
+[phux design language](./design-language.md), so chrome text stays
+readable on any palette.
+
 ```sh
 phux theme install https://github.com/someone/omarchy-nord-theme
 phux theme set nord
@@ -120,15 +126,70 @@ phux: error: theme /path/to/colors.toml: missing `red` (and nothing to derive it
 
 ### How theme colours map onto the chrome
 
-| Theme colour | Paints |
+phux does not paint a theme's colours directly. It passes the theme to
+the design language's solver, the same one the desktop and phone apps
+use, and paints the roles that come out. The solver reads these keys:
+
+| Theme colour | Solver input |
 | --- | --- |
-| `accent` | Titles, the active tab, the focused pane's border and label, finished agents |
-| `foreground` | Recessive text: hints, section headers, idle agents, unfocused pane labels |
-| `bright_foreground` | Body text on panels |
-| `muted` | Rules, borders, unfocused pane dividers |
+| `background` | The ground. The panel fill (`surface`) is one step off it. |
+| `foreground` | Body text, and the source of the dim and faint tiers |
+| `color0` to `color15` (or `red`, `green`, ...) | The status tones: `yellow` for needs you, `blue` for working, `green` for done, `red` for failed |
+| `accent` | The focus colour |
 | `selection` | The selected row's background |
-| `green`, `yellow`, `red` | Key chords and working agents; agents that need you; errors |
-| `lighter_background` (dark) or `background` a shade darker (light) | The sidebar, status bar, and popup panels |
+| `cursor` | Kept as the cursor colour |
+
+The solver moves each colour toward black or white only as far as it
+needs to reach 4.5:1 on every panel. When a theme already clears that, its
+colours come through unchanged.
+
+## Status marks
+
+An agent's state is shown by a mark and a colour together, and the mark
+is always enough on its own. That keeps it readable without colour,
+under `NO_COLOR`, and for colour-blind users.
+
+| Mark | ASCII | State | Slot |
+| --- | --- | --- | --- |
+| `●` | `*` | Needs you: waiting on a human, or a pane that asked | `agent_blocked`, `attention` |
+| `✕` | `x` | Failed: exited nonzero, crashed, or its host was lost | `agent_failed` |
+| `◆` | `+` | Done, and you have not looked yet | `agent_done` |
+| `◐` | `~` | Working | `agent_working` |
+| `○` | `o` | Idle, or done and already seen | `agent_idle`, `agent_done` |
+| `·` | `.` | Unknown | `sidebar_section` |
+| `–` | `-` | Ended: exited cleanly with no agent | `sidebar_section` |
+
+The status bar shows how many panes need you as `●2`. A window row
+marks a pane that needs you with `●`, a failed pane with `✕` and its exit
+code, and a clean exit with `–`. Under a Chinese, Japanese or Korean
+locale, or a locale that is not UTF-8, the whole ladder switches to the
+ASCII column, because those marks can draw two cells wide there.
+
+## Terminal colours
+
+phux fits the chrome to what your terminal can show:
+
+- **24-bit colour** (`COLORTERM=truecolor` or `24bit`) paints the roles
+  as they are.
+- **256 colours** (`TERM` ending in `256color`) snaps each role to the
+  nearest entry from 16 to 255. phux never uses entries 0 to 15, because
+  you may have remapped them. If snapping costs a colour its contrast, it
+  moves one more step toward white or black.
+- **16 colours** paints the chrome in your terminal's own ANSI colours:
+  cyan for focus, yellow for needs you, red for failed, green for done,
+  and bright blue for working (blue on a light background). Body text
+  uses your terminal's foreground, and a selected row is drawn in reverse
+  video.
+- **`NO_COLOR`** turns colour off. The marks, the words and bold still
+  carry every state, and a selected row is drawn in reverse video.
+
+When phux attaches, it asks your terminal for its background colour
+(OSC 11) and solves the chrome against that, so text on the terminal's
+own background stays readable. With no theme selected, the reply also
+picks light or dark mode. If the terminal doesn't answer, `COLORFGBG`
+picks the mode, and otherwise phux uses dark. When phux doesn't know the
+background, pane borders and titles are drawn on the panel fill, since no
+text colour is safe on an unknown background.
 
 ## Overriding one colour
 
@@ -149,10 +210,10 @@ writes every slot with its shipped value, commented out.
 
 | Slot | Paints |
 | --- | --- |
-| `accent` | Modal titles, the query caret, the active tab and focused frame |
-| `title` | Section and tab titles |
-| `chord` | Key chords in help and the which-key popup |
-| `action` | Action labels; `reset` uses your terminal's foreground |
+| `accent` | Focus: modal titles, the query caret, the active tab and focused frame |
+| `title` | Section and tab titles (body text unless you set it) |
+| `chord` | Key chords in help and the which-key popup, drawn bold |
+| `action` | Action labels |
 | `dim` | Recessive text: hints and sub-lines |
 | `border` | Rules and modal borders |
 | `section_header` | Headings inside help and pickers |
@@ -162,12 +223,13 @@ writes every slot with its shipped value, commented out.
 | `shadow` | The drop shadow under floating modals; `reset` turns it off |
 | `selection_fg` | Text of the selected row and the copy-mode strip |
 | `selection_bg` | Background of the selected row and the copy-mode strip |
-| `attention` | "Needs you": the asked marker and blocked agents |
-| `sidebar_section` | The sidebar's section headers |
+| `attention` | Needs you: the status-bar count and the asked marker |
+| `sidebar_section` | The sidebar's section headers, and the unknown and ended marks |
 | `agent_idle` | An agent with nothing that needs you |
 | `agent_working` | An agent making progress |
-| `agent_blocked` | An agent waiting on you |
+| `agent_blocked` | An agent that needs you |
 | `agent_done` | An agent that finished |
+| `agent_failed` | A pane that failed: a nonzero exit, a crash, or a lost host |
 | `divider` | Pane borders away from the focused pane |
 | `divider_focus` | The focused pane's border (drawn bold) |
 | `pane_title` | An unfocused pane's label on its top border |
@@ -177,11 +239,14 @@ Status-bar widgets can use the same colours by name: `fg = "theme.accent"`
 in a widget style follows the slot. See
 [Status bar and sidebar](./status-bar.md#styles-and-colours).
 
-**Keep the contrast.** Every shipped slot that paints text or a rule
-clears 4.5:1 against `surface`, in three steps: rules, then recessive
-text, then the accent plus bold for focus. Retinting one slot is fine.
-Dropping a step below that floor makes chrome some people can't see at
-all.
+**Keep the contrast.** Every slot that paints text or a rule clears
+4.5:1 against `surface`. The rules use the faint tier, recessive text the
+dim tier, and focus the accent plus bold, so the three stay in that
+order. A slot you set yourself is used exactly as you wrote it, on any
+terminal: phux does not snap it to 256 or 16 colours. On a terminal
+without 24-bit colour, write an ANSI index (`"12"`) or a name (`"cyan"`).
+Retinting one slot is fine. Dropping a slot below the 4.5:1 floor makes
+chrome some people can't see at all.
 
 ## Debugging
 

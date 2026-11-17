@@ -20,13 +20,17 @@ pub(super) fn to_ratatui_style(style: &CellStyle, theme: &Theme) -> Style {
     let mut s = Style::default();
     if let Some(fg) = parse_color(style.fg.as_deref(), theme) {
         s = s.fg(fg);
+    } else if style.dim {
+        // `dim` is the recessive register: the theme's `dim` colour, solved
+        // to 4.5:1 on the bar, never SGR 2 (whose rendering varies by
+        // terminal and can drop text below any contrast floor).
+        s = s.fg(theme.dim);
     }
     if let Some(bg) = parse_color(style.bg.as_deref(), theme) {
         s = s.bg(bg);
     }
     let mut m = Modifier::empty();
     m.set(Modifier::BOLD, style.bold);
-    m.set(Modifier::DIM, style.dim);
     m.set(Modifier::ITALIC, style.italic);
     m.set(Modifier::UNDERLINED, style.underline);
     m.set(Modifier::REVERSED, style.reverse);
@@ -57,14 +61,10 @@ pub(super) fn parse_color(spec: Option<&str>, theme: &Theme) -> Option<Color> {
     )
 }
 
-/// The persistent error strip's style: bold selection ink on the theme's
-/// `error` slot, so the diagnostic reads as an alarm strip rather than
-/// blending into normal chrome.
+/// The persistent error strip's style: [`Theme::alarm`], so the diagnostic
+/// reads as an alarm strip rather than blending into normal chrome.
 pub(super) fn alarm_style(theme: &Theme) -> Style {
-    Style::default()
-        .fg(theme.selection_fg)
-        .bg(theme.error)
-        .add_modifier(Modifier::BOLD)
+    theme.alarm()
 }
 
 /// `message` in a fresh `cols`-wide row buffer, styled `style`, truncated

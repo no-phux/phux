@@ -218,9 +218,16 @@ async fn connect_attach_dial(
     dial: &Dial,
     probe_default_colors: bool,
 ) -> Result<Connection, AttachError> {
-    let default_colors = probe_default_colors
-        .then(crate::attach::terminal_probe::default_colors)
-        .flatten();
+    // Never query a terminal that is not where the frames go (spec §4.2).
+    let default_colors = (probe_default_colors
+        && std::io::IsTerminal::is_terminal(&std::io::stdout()))
+    .then(crate::attach::terminal_probe::default_colors)
+    .flatten();
+    // The chrome solves its roles against the background it really sits
+    // on; the theme reads this when the loop builds its settings.
+    if let Some(colors) = default_colors {
+        crate::render::theme::record_reported(colors);
+    }
     let client_caps = attach_client_caps(default_colors, dial);
     Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await
 }

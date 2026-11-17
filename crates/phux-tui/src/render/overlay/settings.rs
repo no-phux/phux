@@ -756,7 +756,7 @@ impl SettingsOverlay {
         }
         let fg = self.theme.selection_fg;
         RowColors {
-            row: Style::default().fg(fg).bg(self.theme.selection_bg),
+            row: self.theme.on_selection(Style::default().fg(fg)),
             text: fg,
             marker: fg,
         }
@@ -766,9 +766,7 @@ impl SettingsOverlay {
     fn header_line(&self, section: SettingSection) -> Line<'static> {
         Line::from(Span::styled(
             section.title().to_owned(),
-            Style::default()
-                .fg(self.theme.section_header)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(self.theme.sidebar_section),
         ))
     }
 

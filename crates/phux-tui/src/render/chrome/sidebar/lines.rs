@@ -4,7 +4,10 @@ use phux_config::widget::WindowInfo;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::render::chrome::{AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE};
+use phux_design::State;
+use ratatui::style::Color;
+
+use crate::render::chrome::{mark, state_color};
 use crate::render::{clip_text, display_width};
 
 use super::compose::justify;
@@ -54,11 +57,13 @@ impl SidebarPainter {
     /// right-aligned. The active row's bed is laid by [`Self::compose`].
     pub(super) fn name_line(&self, index: usize, w: &WindowInfo, text_w: u16) -> Line<'static> {
         let (glyph, glyph_style) = self.window_glyph(w);
-        let exited = w.exited_marker();
-        let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
-        // Reserve 2 cells for the ` !` attention
-        // suffix so a long label can't push it off the strip.
-        // Same for the retained-exit ` x` / ` xN` marker.
+        let exited = self.exit_suffix(w);
+        let exited_w = exited
+            .as_ref()
+            .map_or(0, |(marker, _)| display_width(marker));
+        // Reserve 2 cells for the ` ●` needs-you suffix so a long label
+        // can't push it off the strip. Same for the retained-exit ` ✕N` /
+        // ` –` marker.
         let label_w = usize::from(text_w)
             .saturating_sub(4) // nested indent + glyph + space
             .saturating_sub(if w.attention { 2 } else { 0 })
@@ -87,18 +92,18 @@ impl SidebarPainter {
             Span::styled(format!("{glyph} "), glyph_style),
             Span::styled(label.clone(), style),
         ];
-        // A window holding a pane that asked for a
-        // human answer (ADR-0035) gets a themed `!` marker.
+        // A window holding a pane that asked for a human answer (ADR-0035)
+        // gets the needs-you mark.
         if w.attention {
             left.push(Span::styled(
-                " !",
+                format!(" {}", mark(&self.theme, State::NeedsYou)),
                 Style::default()
                     .fg(self.theme.attention)
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        if let Some(marker) = exited {
-            left.push(Span::styled(marker, Style::default().fg(self.theme.dim)));
+        if let Some((marker, style)) = exited {
+            left.push(Span::styled(marker, style));
         }
         let used = 4 + display_width(&label) + if w.attention { 2 } else { 0 } + exited_w;
         let right = fitting_branch(w, usize::from(text_w).saturating_sub(used))
@@ -112,10 +117,31 @@ impl SidebarPainter {
         justify(left, right, text_w)
     }
 
+    /// A retained pane's exit suffix (ADR-0124) on the ladder: ` ✕N` in the
+    /// failed tone for a nonzero status or a signal, ` –` in faint for a
+    /// clean or unreported exit.
+    fn exit_suffix(&self, w: &WindowInfo) -> Option<(String, Style)> {
+        let status = w.exited.as_deref()?;
+        let state = if status.is_empty() || status == "0" {
+            State::Ended
+        } else {
+            State::Failed
+        };
+        let code = if state == State::Failed { status } else { "" };
+        let mut style = Style::default().fg(state_color(&self.theme, state));
+        if state.mark().bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        Some((format!(" {}{code}", mark(&self.theme, state)), style))
+    }
+
     /// A window row's glyph and its style.
     fn window_glyph(&self, w: &WindowInfo) -> (String, Style) {
         if w.attention {
-            return ("●".to_owned(), Style::default().fg(self.theme.attention));
+            return (
+                mark(&self.theme, State::NeedsYou).to_owned(),
+                Style::default().fg(self.theme.attention),
+            );
         }
         if let Some(badge) = &w.badge {
             let mut style = Style::default().fg(badge
@@ -129,10 +155,15 @@ impl SidebarPainter {
             }
             return (badge.glyph.clone(), style);
         }
+        // Focus, not status. Under the ASCII ladder these must not borrow
+        // its marks either (`*` is needs you, `o` idle), nor keep the
+        // ambiguous-width dots the ladder dropped.
+        let ascii = self.theme.term.glyphs == crate::render::theme::Glyphs::Ascii;
+        let (active, inactive) = if ascii { (">", " ") } else { ("●", "○") };
         if w.active {
-            ("●".to_owned(), Style::default().fg(self.theme.accent))
+            (active.to_owned(), Style::default().fg(self.theme.accent))
         } else {
-            ("○".to_owned(), Style::default().fg(self.theme.dim))
+            (inactive.to_owned(), Style::default().fg(self.theme.dim))
         }
     }
 
@@ -227,7 +258,7 @@ impl SidebarPainter {
         let color = self
             .session_color(&s.name)
             .filter(|_| quiet)
-            .unwrap_or(color);
+            .map_or(color, |identity| self.theme.identity(identity));
         let counts = self.roster_histogram(s);
         let counts_w: usize = counts.iter().map(|span| display_width(&span.content)).sum();
         let indent = roster_indent(s);
@@ -271,8 +302,16 @@ impl SidebarPainter {
             return Vec::new();
         }
         let rungs = [
-            (AGENT_BLOCKED, s.blocked, self.theme.agent_blocked),
-            (AGENT_DONE, s.done_unvisited, self.theme.agent_done),
+            (
+                mark(&self.theme, State::NeedsYou),
+                s.blocked,
+                self.theme.agent_blocked,
+            ),
+            (
+                mark(&self.theme, State::Done),
+                s.done_unvisited,
+                self.theme.agent_done,
+            ),
         ];
         let mut spans = Vec::new();
         for (glyph, n, color) in rungs.into_iter().filter(|(_, n, _)| *n > 0) {
@@ -287,16 +326,17 @@ impl SidebarPainter {
         spans
     }
 
-    const fn roster_badge(&self, s: &SessionRosterEntry) -> (&'static str, ratatui::style::Color) {
+    fn roster_badge(&self, s: &SessionRosterEntry) -> (&'static str, Color) {
+        let quiet = mark(&self.theme, State::Idle);
         if s.satellite {
-            ("○", self.theme.dim)
+            (quiet, self.theme.dim)
         } else {
             match s.top_rank() {
-                4 => (AGENT_BLOCKED, self.theme.agent_blocked),
-                3 => (AGENT_DONE, self.theme.agent_done),
+                4 => (mark(&self.theme, State::NeedsYou), self.theme.agent_blocked),
+                3 => (mark(&self.theme, State::Done), self.theme.agent_done),
                 // Working is quiet: the dot only lights for what needs you.
-                1 | 2 => ("○", self.theme.agent_idle),
-                _ => ("○", self.theme.dim),
+                1 | 2 => (quiet, self.theme.agent_idle),
+                _ => (quiet, self.theme.dim),
             }
         }
     }

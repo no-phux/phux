@@ -250,7 +250,11 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
         crate::attach::resolved("split-pane", args),
     )
     .indented()
-    .secondary(record.state.as_str().to_owned());
+    .secondary(
+        crate::render::chrome::state_word(record.state)
+            .unwrap_or_default()
+            .to_owned(),
+    );
     if attention {
         item = item.attention();
     }
@@ -332,12 +336,16 @@ fn pane_row(
             (
                 agent_state_glyph(session.state),
                 who,
-                Some(session.state.as_str()),
+                crate::render::chrome::state_word(session.state),
             )
         }
         (None, Some(r)) => {
             let who = who_label(&r.name, r.kind.as_deref());
-            (agent_state_glyph(r.state), who, Some(r.state.as_str()))
+            (
+                agent_state_glyph(r.state),
+                who,
+                crate::render::chrome::state_word(r.state),
+            )
         }
         // A plain pane that asked still needs you: it wears the blocked
         // ring its divider label does, not the idle one.
@@ -458,7 +466,11 @@ fn foreign_pane_row(
         || (AGENT_IDLE_GLYPH, "no agent".to_owned(), None),
         |r| {
             let who = who_label(&r.name, r.kind.as_deref());
-            (agent_state_glyph(r.state), who, Some(r.state.as_str()))
+            (
+                agent_state_glyph(r.state),
+                who,
+                crate::render::chrome::state_word(r.state),
+            )
         },
     );
     let attention = record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
