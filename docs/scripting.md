@@ -104,8 +104,12 @@ the number is not read as the command.
 `phux new` starts a server if none is running; without `--json` it also
 attaches. `phux new --json` fails if the session already exists, so a
 script that runs twice should pick a fresh name or end the old session
-first with `phux kill --yes NAME`. `phux spawn` never starts a server: with none running it
-exits 1 with `no_server`.
+first with `phux kill --yes NAME`. When the command cannot start (not
+found, or a working directory that does not exist), `phux new` and
+`phux worktree new` exit 1 with `spawn_failed` and the reason; the session
+is kept holding the failed launch, so remove it with `phux kill --yes NAME`
+(or `phux worktree remove BRANCH`) before trying again. `phux spawn` never
+starts a server: with none running it exits 1 with `no_server`.
 
 ## Typing into a pane
 

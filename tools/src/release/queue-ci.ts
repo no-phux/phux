@@ -34,11 +34,19 @@ interface RequiredJob {
 
 const laneName = (value: string): Lane | undefined => LANES.find((lane) => lane === value);
 
-/** Jobs ci.yml runs when the push plan selects their lane. Read from the workflow. */
+const callsRuneMacos = (spec: Table): boolean =>
+  (str(spec["uses"]) ?? "").endsWith("/rune-macos.yml");
+
+/**
+ * Jobs ci.yml runs when the push plan selects their lane. Read from the workflow.
+ * The rune-macos caller is judged on its own (see `appleState`), even though
+ * its PR fallback gate also names the rune lane.
+ */
 export function jobsRequiredBy(pushPlan: Plan): readonly RequiredJob[] {
   const selected = pushPlan.lanes;
   const required: RequiredJob[] = [];
   for (const [id, spec] of Object.entries(jobs(workflow("ci.yml")))) {
+    if (callsRuneMacos(spec)) continue;
     const gate = str(spec["if"]) ?? "";
     const lanes = [...gate.matchAll(/needs\.plan\.outputs\.([A-Za-z0-9_]+) == 'true'/g)]
       .map((match) => laneName(match[1] ?? ""))
@@ -56,9 +64,7 @@ export function jobsRequiredBy(pushPlan: Plan): readonly RequiredJob[] {
 
 /** Display name of the ci.yml job that calls rune-macos.yml. */
 export function queueAppleName(): string {
-  const found = Object.entries(jobs(workflow("ci.yml"))).find(([, spec]) =>
-    (str(spec["uses"]) ?? "").endsWith("/rune-macos.yml"),
-  );
+  const found = Object.entries(jobs(workflow("ci.yml"))).find(([, spec]) => callsRuneMacos(spec));
   if (found === undefined) throw new Failure("ci.yml does not call rune-macos.yml");
   const [id, spec] = found;
   return str(spec["name"]) ?? id;

@@ -143,7 +143,44 @@ pub(crate) async fn create_session_via_metadata(
         }
         CreateOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
         CreateOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
+        CreateOutcome::LaunchFailed { diagnostic, .. } => Err(report_launch_failed(
+            json,
+            name,
+            command.as_deref(),
+            diagnostic.as_ref(),
+        )),
     }
+}
+
+/// The session was created but its seed command did not start: exit 1,
+/// `spawn_failed` under `json`, naming what is left behind.
+fn report_launch_failed(
+    json: bool,
+    name: &str,
+    command: Option<&[String]>,
+    diagnostic: Option<&phux_protocol::api::LaunchDiagnostic>,
+) -> ExitCode {
+    use crate::commands::json_err::{CliError, codes, emit};
+    let program = command.and_then(<[String]>::first).map_or_else(
+        || "the default shell".to_owned(),
+        |program| format!("`{program}`"),
+    );
+    emit(
+        json,
+        &CliError::new(
+            codes::SPAWN_FAILED,
+            format!(
+                "session '{name}' was created, but {program} did not start: {}",
+                phux_client::session::launch_failure_reason(diagnostic)
+            ),
+            format!(
+                "the session is kept with the failed launch; `phux kill --yes {name}` removes it \
+                 (`phux worktree remove BRANCH` for a worktree's session). Fix the command \
+                 and run it again"
+            ),
+        ),
+        1,
+    )
 }
 
 /// Map a [`CreateSessionError`] to the failure code, attributing transport

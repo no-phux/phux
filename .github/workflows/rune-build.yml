@@ -21,7 +21,7 @@ on:
         type: string
         default: all
       # Package and launch every selected host, including linux-aarch64.
-      # A pull request passes false: check.sh and cargo-deny on linux-x86_64.
+      # Only queue-verified PRs pass false: check/deny on linux-x86_64.
       # A tag, the cache warm, and a dispatch pass nothing, so they qualify.
       qualify:
         type: boolean

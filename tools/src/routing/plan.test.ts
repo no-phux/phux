@@ -27,7 +27,7 @@ function lanes(
   trigger: Trigger,
   extra: { perfBaseline?: boolean; scope?: PathScope } = {},
 ): Lane[] {
-  const options: PlanOptions = { scope: extra.scope ?? scopeOf(paths) };
+  const options: PlanOptions = { queueVerified: true, scope: extra.scope ?? scopeOf(paths) };
   const chosen = plan(classifier.classify(paths), trigger, {
     ...options,
     ...(extra.perfBaseline === undefined ? {} : { perfBaseline: extra.perfBaseline }),
@@ -71,7 +71,7 @@ test("a push runs the full unit pool; a pull request keeps its filterset", () =>
 test("coverage is the pull-request lane set on either event", () => {
   const paths = ["crates/phux-mcp/src/lib.rs"];
   const c = classifier.classify(paths);
-  const options = { scope: scopeOf(paths) };
+  const options = { queueVerified: true, scope: scopeOf(paths) };
   // The receipt does not claim native setup or icount: this pull request ran neither.
   expect(plan(c, "push", options).coverage).toBe("guards,lint,tests,e2e");
   expect(plan(c, "pull_request", options).coverage).toBe("guards,lint,tests,e2e");
@@ -129,7 +129,7 @@ test("the ci receipt separates full Linux qualification and never claims Apple c
   // The Linux rune lane still runs. macOS coverage would let a main push
   // reuse a pull request that never started a macOS runner.
   const closure = classifier.classify(["crates/phux-protocol/src/lib.rs"]);
-  const pr = plan(closure, "pull_request");
+  const pr = plan(closure, "pull_request", { queueVerified: true });
   const main = plan(closure, "push");
   expect(pr.lanes.has("rune")).toBe(true);
   expect(main.lanes.has("rune")).toBe(true);
@@ -144,7 +144,7 @@ test("the ci receipt separates full Linux qualification and never claims Apple c
 test("legacy queue booleans cannot be mistaken for native scope or Apple qualification", () => {
   const paths = ["crates/phux-client-runtime/src/lib.rs"];
   const c = classifier.classify(paths);
-  const options: PlanOptions = { scope: { kind: "diff", paths } };
+  const options: PlanOptions = { queueVerified: true, scope: { kind: "diff", paths } };
   expect(planOutputs(plan(c, "pull_request", options), c)).toMatchObject({
     native: false,
     icount: false,

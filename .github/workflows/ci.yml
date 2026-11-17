@@ -52,6 +52,7 @@ jobs:
       native: ${{ steps.plan.outputs.native }}
       rune: ${{ steps.plan.outputs.rune }}
       rune_qualify: ${{ steps.plan.outputs.rune_qualify }}
+      queue_verified: ${{ steps.plan.outputs.queue_verified }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       docs_catalog: ${{ steps.plan.outputs.docs_catalog }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
@@ -395,7 +396,7 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
-  # PRs check/deny on x86_64. Main/queue also package and launch both Linux hosts.
+  # Only queue-verified PRs may skip packaging and the second Linux host.
   rune:
     needs: plan
     if: needs.plan.outputs.rune == 'true'
@@ -405,11 +406,16 @@ jobs:
       ios: false
       qualify: ${{ needs.plan.outputs.rune_qualify == 'true' }}
 
-  # Apple proof remains inside the required queue gate.
+  # Required Apple proof: the queue, or Rune PRs on an unverified queue.
   queue-apple:
     name: queue-apple
-    if: github.event_name == 'merge_group'
+    needs: plan
+    if: >-
+      github.event_name == 'merge_group' ||
+      (github.event_name == 'pull_request' && needs.plan.outputs.queue_verified != 'true' && needs.plan.outputs.rune == 'true')
     uses: ./.github/workflows/rune-macos.yml
+    with:
+      qualify: true
 
   docs-catalog:
     name: docs catalog
@@ -446,7 +452,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Main and queue require native/icount success.
       - name: plan succeeded; every lane passed or was not needed
         env:
           RESULTS: ${{ toJSON(needs) }}

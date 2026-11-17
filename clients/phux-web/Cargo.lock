@@ -340,7 +340,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "phux-client-core"
-version = "0.156.0"
+version = "0.157.0"
 dependencies = [
  "ciborium",
  "phux-core",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.156.0"
+version = "0.157.0"
 dependencies = [
  "serde",
  "sha2",
@@ -370,7 +370,7 @@ version = "0.156.0"
 
 [[package]]
 name = "phux-perf"
-version = "0.156.0"
+version = "0.157.0"
 dependencies = [
  "libc",
  "nix",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.156.0"
+version = "0.157.0"
 dependencies = [
  "bitflags",
  "bytes",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.156.0"
+version = "0.157.0"
 dependencies = [
  "bytes",
  "phux-protocol",

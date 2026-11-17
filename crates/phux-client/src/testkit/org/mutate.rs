@@ -44,6 +44,14 @@ impl OrgFixture {
                 let mut groups = Vec::new();
                 if launch.is_some() {
                     let resource = self.shell(session);
+                    if let Some(diagnostic) = self.failing_launch
+                        && let Some(activation) = self
+                            .resource_mut(&resource)
+                            .and_then(|record| record.activation.as_mut())
+                    {
+                        activation.state = ExecState::Failed;
+                        activation.diagnostic = Some(diagnostic);
+                    }
                     let record = self.resource_ref(&resource).expect("made");
                     committed = committed
                         .with_resource(Some(resource))

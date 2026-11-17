@@ -356,6 +356,9 @@ describe("merge_group ci-green", () => {
     const paths = ["clients/rune/src/main.rs"];
     const runePlan = pushPlan(paths);
     expect(runePlan.lanes.has("rune")).toBe(true);
+    expect(jobsRequiredBy(runePlan).map((required) => required.name)).not.toContain(
+      queueAppleName(),
+    );
     const rows = jobsRequiredBy(runePlan).flatMap((required) =>
       required.id === "rune"
         ? [

@@ -11,7 +11,9 @@ mod create;
 mod empty;
 mod rename;
 
-pub use create::{CreateOutcome, CreateSessionError, CreateSessionRequest, create_session};
+pub use create::{
+    CreateOutcome, CreateSessionError, CreateSessionRequest, create_session, launch_failure_reason,
+};
 pub use empty::{
     CreateEmptyOutcome, check_session_directory, create_empty_session,
     create_empty_session_with_attrs,

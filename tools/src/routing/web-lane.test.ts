@@ -86,7 +86,10 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
         env: {
           ...process.env,
           EVENT_NAME: "pull_request",
-          RESULTS: JSON.stringify({ plan: { result: "success" }, [id]: { result } }),
+          RESULTS: JSON.stringify({
+            plan: { result: "success", outputs: { queue_verified: "true" } },
+            [id]: { result },
+          }),
         },
         stdout: "ignore",
       }).exitCode;

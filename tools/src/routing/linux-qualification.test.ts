@@ -13,7 +13,7 @@ test.each([
   ".cargo/config.toml",
 ])("%s has partial PR coverage and full queue/main Linux qualification", (path) => {
   const c = classifier.classify([path]);
-  const options = { scope: { kind: "diff" as const, paths: [path] } };
+  const options = { queueVerified: true, scope: { kind: "diff" as const, paths: [path] } };
   const pr = plan(c, "pull_request", options);
   expect(pr.lanes.has("rune")).toBe(true);
   expect(pr.runeQualify).toBe(false);
@@ -32,12 +32,12 @@ test("Linux mode is an explicit option, never the legacy queue boolean", () => {
   const paths = ["clients/rune/src/main.rs"];
   const c = classifier.classify(paths);
   const scope = { kind: "diff" as const, paths };
-  const pr = plan(c, "pull_request", { scope });
-  const dispatch = plan(c, "pull_request", { scope, runeQualify: true });
+  const pr = plan(c, "pull_request", { scope, queueVerified: true });
+  const dispatch = plan(c, "pull_request", { scope, queueVerified: true, runeQualify: true });
   expect(dispatch.coverage).toBe(`${pr.coverage},linux-aarch64,packaging`);
   expect([...dispatch.lanes]).toEqual([...pr.lanes]);
   for (const legacy of [true, false]) {
-    expect(plan(c, "pull_request", legacy).runeQualify).toBe(false);
+    expect(plan(c, "pull_request", legacy).runeQualify).toBe(true);
     expect(plan(c, "push", legacy).runeQualify).toBe(true);
   }
   const docs = plan(classifier.classify(["docs/development.md"]), "push");

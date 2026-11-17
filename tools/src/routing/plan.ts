@@ -3,7 +3,7 @@
 // A pull request runs exactly what its diff can affect. A push to main or a
 // merge group widens the Rust lanes to the full pool (a non-strict merge can
 // combine two green diffs into a red tree). Native setup and rust icount are
-// path-scoped on PRs, mandatory on main/queue, and never removed by reuse.
+// path-scoped only on queue-verified PRs, otherwise mandatory, and never removed by reuse.
 // Rune's Apple legs belong to rune-macos.yml, not this Linux lane receipt.
 // `just check` runs the PR plan through the same recipes the jobs call.
 import { list, str, table } from "../lib/value.ts";
@@ -47,7 +47,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */
 export const CI_ONLY: ReadonlySet<Lane> = new Set(["icount", "native"]);
 
-/** Full Linux qualification is absent from ordinary PR receipts. */
+/** Full Linux qualification is absent from queue-verified fast-path PR receipts. */
 export const LINUX_QUALIFY = ["linux-aarch64", "packaging"] as const;
 
 /**
@@ -140,9 +140,11 @@ export type PathScope =
   | { readonly kind: "none" };
 
 export interface PlanOptions {
+  /** Affirmative live base-branch rules evidence; unknown defaults to full qualification. */
+  readonly queueVerified?: boolean;
   /** Legacy queue option; Apple qualification is now owned by rune-macos.yml. */
   readonly mergeQueue?: boolean;
-  /** Package and launch both Linux hosts; defaults on for main/queue. */
+  /** Request Linux qualification; only verified-queue PRs may default it off. */
   readonly runeQualify?: boolean;
   /**
    * Omitted and `full` fail closed (every pull-request lane). `none` is a
@@ -195,22 +197,21 @@ function docsCatalogNeeded(options: PlanOptions): boolean {
 /** Main always qualifies these lanes; only PRs may use their path scope. */
 function qualificationRequired(
   trigger: Trigger,
-  scope: PathScope | undefined,
+  options: PlanOptions,
   patterns: readonly string[],
 ): boolean {
-  return trigger === "push" || touches(scope, patterns);
+  return trigger === "push" || options.queueVerified !== true || touches(options.scope, patterns);
 }
 
 function needed(c: Classification, trigger: Trigger, options: PlanOptions): Record<Lane, boolean> {
   const push = trigger === "push";
   const rust = c.needed.has("phux");
   const fullUnit = c.unitMode === "workspace" || c.unitMode === "rdeps";
-  // Pull requests run these two only for their own inputs. Main policy always
-  // runs them, including a docs-only or release-metadata push: the aggregate
-  // rejects a skip there.
+  // Only queue-verified pull requests may path-scope these. The aggregate
+  // rejects a skip on fallback PRs and main/queue, even for docs/metadata.
   const icount =
-    options.perfBaseline === true || qualificationRequired(trigger, options.scope, ICOUNT_PR_PATHS);
-  const native = qualificationRequired(trigger, options.scope, NATIVE_SETUP_PATHS);
+    options.perfBaseline === true || qualificationRequired(trigger, options, ICOUNT_PR_PATHS);
+  const native = qualificationRequired(trigger, options, NATIVE_SETUP_PATHS);
   return {
     guards: true,
     lint: rust,
@@ -243,8 +244,13 @@ export function plan(
   // Coverage stays the pull-request lane set. A push that reuses a receipt
   // still runs native and icount (see `reused`), so the receipt does not claim
   // a pull request validated them when that pull request skipped them.
-  const covered = needed(c, "pull_request", options);
-  const runeQualify = (options.runeQualify ?? push) && covered.rune;
+  const covered = needed(c, "pull_request", {
+    ...options,
+    // Main's receipt contract stays path-scoped; its mandatory lanes run again.
+    queueVerified: push || options.queueVerified === true,
+  });
+  const runeQualify =
+    (push || options.queueVerified !== true || options.runeQualify === true) && covered.rune;
   return {
     lanes: chosen(needed(c, trigger, options)),
     runeQualify,
