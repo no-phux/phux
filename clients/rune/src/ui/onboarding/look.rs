@@ -1,20 +1,65 @@
 //! The Look step: colour scheme, sidebar, glass, and the theme strip.
+//!
+//! style-literals: illustration. The little windows and theme cards are
+//! drawings in their own colours (an art module, §5.1); the chrome around
+//! them (the choice rings, the groups and the glass slider) is on tokens.
 
 use super::*;
 
+/// The drawings' own sizes and colours: illustration constants.
+mod art {
+    use rune::Color;
+
+    /// A little window.
+    pub(super) const WINDOW: (f32, f32) = (72.0, 48.0);
+    pub(super) const WINDOW_RADIUS: f32 = 9.0;
+    pub(super) const SIDEBAR_W: f32 = 18.0;
+    pub(super) const LIGHTS: f32 = 5.0;
+    /// The Auto window's two halves.
+    pub(super) const LIGHT_GROUND: u32 = 0xf2_f2_f4;
+    pub(super) const DARK_GROUND: u32 = 0x1c_1c_21;
+    /// A theme card.
+    pub(super) const CARD: (f32, f32) = (112.0, 58.0);
+    pub(super) const CARD_NAME_MAX: f32 = 118.0;
+    pub(super) const DOT: f32 = 9.0;
+
+    /// macOS's traffic lights.
+    pub(super) fn lights() -> [Color; 3] {
+        [
+            rune::oklch(0.68, 0.19, 25.0),
+            rune::oklch(0.82, 0.16, 85.0),
+            rune::oklch(0.74, 0.17, 145.0),
+        ]
+    }
+}
+
 /// A titled group inside a panel.
-fn group(title: &'static str, body: El, p: &Ink) -> El {
+fn group(title: &'static str, body: El, t: &Tokens) -> El {
     col()
-        .gap(8.0)
+        .gap(t.space.s2)
         .min_w(0.0)
         .child(
             text(title)
-                .font(LABEL_STRONG)
-                .color(p.dim)
+                .font(semibold(t.ty.label))
+                .color(t.roles.text.dim.paint())
                 .role("heading")
                 .level(2),
         )
         .child(body)
+}
+
+/// A choice's selected ring: the accent at the focus ring's width, an
+/// on/selected indicator (§1.2), around the art at `radius.md`.
+fn ring(e: El, on: bool, t: &Tokens) -> El {
+    let s = &t.space;
+    e.radius(t.radius.md).padding(s.s0_5 + s.hairline).border(
+        s.focus_ring.width,
+        if on {
+            t.roles.accent.accent.paint()
+        } else {
+            Color::TRANSPARENT
+        },
+    )
 }
 
 /// A pickable tile with a drawing and its word under it.
@@ -23,17 +68,14 @@ fn choice(
     word: &'static str,
     on: bool,
     art: El,
-    p: &Ink,
+    t: &Tokens,
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
     col()
-        .gap(6.0)
+        .gap(t.space.icon_gap)
         .items_center()
         .child(
-            pressable(key, p)
-                .radius(12.0)
-                .padding(3.0)
-                .border(2.0, if on { p.accent } else { Color::TRANSPARENT })
+            ring(crate::ui::pressable(key, t), on, t)
                 .focusable(true)
                 .role("radio")
                 .label(word)
@@ -43,8 +85,15 @@ fn choice(
         )
         .child(
             text(word)
-                .font(if on { LABEL_STRONG } else { LABEL })
-                .color(if on { p.text } else { p.dim })
+                .font(if on { semibold(t.ty.label) } else { t.ty.label })
+                .color(
+                    if on {
+                        t.roles.text.text
+                    } else {
+                        t.roles.text.dim
+                    }
+                    .paint(),
+                )
                 .a11y_hidden(),
         )
 }
@@ -53,28 +102,14 @@ fn choice(
 fn window(ground: Color, ink: Color, sidebar: bool) -> El {
     let dots = row()
         .gap(3.0)
-        .child(
-            el().size(5.0, 5.0)
-                .radius(2.5)
-                .fill(rune::oklch(0.68, 0.19, 25.0)),
-        )
-        .child(
-            el().size(5.0, 5.0)
-                .radius(2.5)
-                .fill(rune::oklch(0.82, 0.16, 85.0)),
-        )
-        .child(
-            el().size(5.0, 5.0)
-                .radius(2.5)
-                .fill(rune::oklch(0.74, 0.17, 145.0)),
-        );
+        .children(art::lights().map(|c| el().size(art::LIGHTS, art::LIGHTS).radius(2.5).fill(c)));
     row()
-        .size(72.0, 48.0)
-        .radius(9.0)
-        .clip_rounded(9.0)
+        .size(art::WINDOW.0, art::WINDOW.1)
+        .radius(art::WINDOW_RADIUS)
+        .clip_rounded(art::WINDOW_RADIUS)
         .fill(ground)
         .border(1.0, ink.alpha(0.18))
-        .children(sidebar.then(|| el().w(18.0).h_full().fill(ink.alpha(0.1))))
+        .children(sidebar.then(|| el().w(art::SIDEBAR_W).h_full().fill(ink.alpha(0.1))))
         .child(
             col()
                 .grow(1.0)
@@ -87,24 +122,29 @@ fn window(ground: Color, ink: Color, sidebar: bool) -> El {
         )
 }
 
-pub(super) fn look(desk: &Desk, p: &Ink) -> El {
+pub(super) fn look(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
     let current = desk.settings.theme;
     let scheme = current.map(|t| t.dark);
-    let (light, dark) = (theme::color(0xf2f2f4), theme::color(0x1c1c21));
+    let (light, dark) = (
+        theme::color(art::LIGHT_GROUND),
+        theme::color(art::DARK_GROUND),
+    );
+    let half = art::WINDOW.0 / 2.0;
     let auto = row()
-        .size(72.0, 48.0)
-        .radius(9.0)
-        .clip_rounded(9.0)
-        .child(window(light, Color::BLACK, false).w(36.0).radius(0.0))
-        .child(window(dark, Color::WHITE, false).w(36.0).radius(0.0));
+        .size(art::WINDOW.0, art::WINDOW.1)
+        .radius(art::WINDOW_RADIUS)
+        .clip_rounded(art::WINDOW_RADIUS)
+        .child(window(light, Color::BLACK, false).w(half).radius(0.0))
+        .child(window(dark, Color::WHITE, false).w(half).radius(0.0));
     let schemes = row()
-        .gap(10.0)
+        .gap(s.s3)
         .child(choice(
             "look-auto",
             "Auto",
             scheme.is_none(),
             auto,
-            p,
+            t,
             |d: &mut Desk| d.choose_scheme(None),
         ))
         .child(choice(
@@ -112,7 +152,7 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
             "Light",
             scheme == Some(false),
             window(light, Color::BLACK, false),
-            p,
+            t,
             |d: &mut Desk| d.choose_scheme(Some(false)),
         ))
         .child(choice(
@@ -120,26 +160,27 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
             "Dark",
             scheme == Some(true),
             window(dark, Color::WHITE, false),
-            p,
+            t,
             |d: &mut Desk| d.choose_scheme(Some(true)),
         ));
     let shown = desk.sidebar_open;
+    let (ground, ink) = (t.roles.layer.ground.paint(), t.roles.text.text.paint());
     let sidebar = row()
-        .gap(10.0)
+        .gap(s.s3)
         .child(choice(
             "look-sidebar",
             "Sidebar",
             shown,
-            window(p.bg, p.text, true),
-            p,
+            window(ground, ink, true),
+            t,
             |d: &mut Desk| d.set_sidebar_open(true),
         ))
         .child(choice(
             "look-no-sidebar",
             "Hidden",
             !shown,
-            window(p.bg, p.text, false),
-            p,
+            window(ground, ink, false),
+            t,
             |d: &mut Desk| d.set_sidebar_open(false),
         ));
     // The picker's own list, System first, narrowed to the chosen scheme.
@@ -151,75 +192,102 @@ pub(super) fn look(desk: &Desk, p: &Ink) -> El {
         .w_full()
         .min_w(0.0)
         .scroll_x()
-        .scroll_edge_fade(16.0)
+        .scroll_edge_fade(s.s4)
         .child(
             row()
-                .gap(10.0)
-                .py(2.0)
-                .children(themes.map(|t| theme_card(t, current, p))),
+                .gap(s.s3)
+                .py(s.s0_5)
+                .children(themes.map(|theme| theme_card(theme, current, t))),
         );
     col()
         .w_full()
         .items_center()
-        .gap(18.0)
+        .gap(s.s5)
         .child(heading(
             &icons::PALETTE,
             "Make phux yours",
             "Every pick shows on this window as you make it.",
-            p,
+            t,
         ))
         .child(
-            panel(p)
+            panel(t)
                 .child(
                     row()
                         .w_full()
-                        .gap(24.0)
+                        .gap(s.s6)
                         .flex_wrap()
-                        .child(group("Colour scheme", schemes, p))
-                        .child(group("Sidebar", sidebar, p)),
+                        .child(group("Colour scheme", schemes, t))
+                        .child(group("Sidebar", sidebar, t)),
                 )
                 .children(
                     cfg!(target_os = "macos")
-                        .then(|| group("Glass", glass_slider(desk.settings.glass, p), p).w_full()),
+                        .then(|| group("Glass", glass_slider(desk.settings.glass, t), t).w_full()),
                 )
-                .child(el().w_full().h(1.0).fill(p.separator))
-                .child(group("Theme", strip, p).w_full()),
+                .child(
+                    el().w_full()
+                        .h(s.hairline)
+                        .fill(t.roles.border.base.paint()),
+                )
+                .child(group("Theme", strip, t).w_full()),
         )
 }
 
 /// Steps the arrow keys move the glass slider by, in percent.
 const GLASS_STEP: u8 = 5;
 
-/// The glass slider: drag or click along the track, or use the arrow keys.
-/// Every value applies to the window as it changes.
-fn glass_slider(percent: u8, p: &Ink) -> El {
-    let t = f32::from(percent) / 100.0;
+/// The glass slider (an OWN slider: the kit has none): drag or click along
+/// the track, or use the arrow keys. Every value applies to the window as
+/// it changes, through §1.9's tint (`1 − g·(1 − tint_min)`), so the far end
+/// is the thinnest glass `verify` allows, never clear.
+fn glass_slider(percent: u8, t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let at = f32::from(percent) / 100.0;
     let set_from = |d: &mut Desk, drag: &mut rune::Drag, _: &mut rune::Tx| {
         let at = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0);
         d.set_glass((at * 100.0).round() as u8);
     };
+    let knob = t.icon.size.lg;
     let track = row()
         .w_full()
-        .h(28.0)
+        .h(t.icon.button.md)
         .items_center()
-        .child(el().grow(t).h(6.0).radius(3.0).fill(p.accent))
         .child(
-            el().size(20.0, 20.0)
-                .radius(10.0)
-                .fill(Color::WHITE)
-                .border(1.0, p.separator)
-                .shadow(1.0, 3.0, p.shade),
+            el().grow(at)
+                .h(s.icon_gap)
+                .radius(t.radius.full)
+                .fill(r.accent.accent.paint()),
         )
-        .child(el().grow(1.0 - t).h(6.0).radius(3.0).fill(p.separator));
+        .child(
+            t.elevate(
+                el().size(knob, knob)
+                    .radius(t.radius.full)
+                    .fill(Color::WHITE)
+                    .border(s.hairline, r.border.control.paint()),
+                Tier::Raised,
+            ),
+        )
+        .child(
+            el().grow(1.0 - at)
+                .h(s.icon_gap)
+                .radius(t.radius.full)
+                .fill(r.border.control.paint()),
+        );
+    let caption = |words: &'static str| {
+        text(words)
+            .font(t.ty.caption)
+            .color(r.text.dim.paint())
+            .a11y_hidden()
+    };
     row()
         .w_full()
-        .gap(14.0)
+        .gap(s.s3)
         .items_center()
-        .child(text("Solid").font(CAPTION).color(p.dim).a11y_hidden())
+        .child(caption("Solid"))
         .child(
             el().key("look-glass")
                 .grow(1.0)
-                .min_w(120.0)
+                .min_w(t.space.s16 * 2.0)
                 .focusable(true)
                 .role("slider")
                 .label("Glass")
@@ -239,51 +307,77 @@ fn glass_slider(percent: u8, p: &Ink) -> El {
                 })
                 .child(track),
         )
-        .child(text("Glass").font(CAPTION).color(p.dim).a11y_hidden())
+        .child(caption("Glass"))
         .child(
             text(format!("{percent}%"))
-                .font(CAPTION)
-                .color(p.text)
-                .w(40.0)
+                .font(t.ty.micro)
+                .color(r.text.text.paint())
+                .w(s.s10)
                 .a11y_hidden(),
         )
 }
 
 /// A theme as a card in its own colours: `Aa`, a prompt in its accent, and
-/// its palette as dots. `None` is System.
-fn theme_card(t: Option<&'static Theme>, current: Option<&'static Theme>, p: &Ink) -> El {
-    let (ground, ink, accent) = t.map_or((p.bg, p.text, p.accent), |t| {
+/// its palette as dots. `None` is System: the house look, its status tones
+/// for dots.
+fn theme_card(theme: Option<&'static Theme>, current: Option<&'static Theme>, t: &Tokens) -> El {
+    let r = &t.roles;
+    let (ground, ink, accent) = theme.map_or(
         (
-            theme::color(t.background),
-            theme::color(t.foreground),
-            theme::color(t.accent),
-        )
-    });
-    let palette: Vec<Color> = t.map_or_else(
-        || {
-            let m = p.marks;
-            vec![m.alert, m.good, m.working, p.accent, m.done, m.bell]
+            r.layer.ground.paint(),
+            r.text.text.paint(),
+            r.accent.accent_text.paint(),
+        ),
+        |theme| {
+            (
+                crate::theme::color(theme.background),
+                crate::theme::color(theme.foreground),
+                crate::theme::color(theme.accent),
+            )
         },
-        |t| t.ansi[1..7].iter().map(|c| theme::color(*c)).collect(),
     );
-    let on = t.map(|t| t.id) == current.map(|t| t.id);
-    let name = t.map_or("System", |t| t.name);
+    let palette: Vec<Color> = theme.map_or_else(
+        || {
+            use phux_design::Tone;
+            [
+                Tone::Failed,
+                Tone::Done,
+                Tone::Working,
+                Tone::NeedsYou,
+                Tone::Idle,
+                Tone::Bell,
+            ]
+            .map(|tone| t.status.tone(tone).ink)
+            .to_vec()
+        },
+        |theme| {
+            theme.ansi[1..7]
+                .iter()
+                .map(|c| crate::theme::color(*c))
+                .collect()
+        },
+    );
+    let on = theme.map(|t| t.id) == current.map(|t| t.id);
+    let name = theme.map_or("System", |t| t.name);
     let art = col()
-        .size(112.0, 58.0)
+        .size(art::CARD.0, art::CARD.1)
         .padding(8.0)
         .gap(7.0)
-        .radius(9.0)
+        .radius(art::WINDOW_RADIUS)
         .fill(ground)
         .border(1.0, ink.alpha(0.16))
         .child(
             row()
                 .gap(8.0)
                 .items_center()
-                .child(text("Aa").font(TextStyle::new(15.0, 600.0)).color(ink))
+                .child(text("Aa").font(semibold(t.ty.lead)).color(ink))
                 .child(
                     el().px(4.0).radius(4.0).fill(accent.alpha(0.22)).child(
                         text("~/")
-                            .font(CAPTION.family(rune::Family::SystemMono))
+                            .font(TextStyle {
+                                family: crate::ui::tokens::MONO,
+                                ..t.ty.caption
+                            })
                             .color(accent),
                     ),
                 ),
@@ -292,30 +386,31 @@ fn theme_card(t: Option<&'static Theme>, current: Option<&'static Theme>, p: &In
             row().gap(3.0).children(
                 palette
                     .into_iter()
-                    .map(|c| el().size(9.0, 9.0).radius(4.5).fill(c)),
+                    .map(|c| el().size(art::DOT, art::DOT).radius(4.5).fill(c)),
             ),
         );
-    let key = format!("look-theme-{}", t.map_or("system", |t| t.id));
+    let key = format!("look-theme-{}", theme.map_or("system", |t| t.id));
     col()
-        .gap(5.0)
+        .gap(t.space.s1)
         .items_center()
         .child(
-            pressable(key, p)
-                .radius(12.0)
-                .padding(3.0)
-                .border(2.0, if on { p.accent } else { Color::TRANSPARENT })
+            ring(crate::ui::pressable(key, t), on, t)
                 .focusable(true)
                 .role("radio")
                 .label(name)
                 .checked(on)
-                .on_press(move |d: &mut Desk| d.choose_theme(t))
+                .on_press(move |d: &mut Desk| d.choose_theme(theme))
                 .child(art.a11y_hidden()),
         )
         .child(
             text(name)
-                .font(if on { LABEL_STRONG } else { CAPTION })
-                .color(if on { p.text } else { p.dim })
-                .max_w(118.0)
+                .font(if on {
+                    semibold(t.ty.caption)
+                } else {
+                    t.ty.caption
+                })
+                .color(if on { r.text.text } else { r.text.dim }.paint())
+                .max_w(art::CARD_NAME_MAX)
                 .truncate()
                 .a11y_hidden(),
         )

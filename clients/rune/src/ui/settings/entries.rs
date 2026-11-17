@@ -2,9 +2,10 @@
 
 use rune::{El, col, el, row, text};
 
-use super::super::{CAPTION, Ink, icons, pressable, updates};
-use super::{COPY, controls};
+use super::super::{icons, pressable, updates};
+use super::controls;
 use crate::desk::{Desk, SettingsCategory as Category};
+use crate::ui::tokens::{Paint, Tokens};
 
 #[derive(Clone, Copy)]
 pub(super) enum Entry {
@@ -206,43 +207,37 @@ impl Entry {
         }
     }
 
-    pub(super) fn view(self, desk: &Desk, ink: &Ink) -> El {
+    pub(super) fn view(self, desk: &Desk, t: &Tokens) -> El {
         match self {
             Self::Theme => self.link(
                 "settings-theme",
                 desk,
                 self.value(desk),
                 Desk::settings_themes,
-                ink,
+                t,
             ),
-            Self::TextSize => controls::stepper(desk, ink),
-            Self::Font => self.link(
-                "settings-font",
-                desk,
-                self.value(desk),
-                Desk::next_font,
-                ink,
-            ),
+            Self::TextSize => controls::stepper(desk, t),
+            Self::Font => self.link("settings-font", desk, self.value(desk), Desk::next_font, t),
             Self::Hosts => self.link(
                 "settings-machines",
                 desk,
                 self.value(desk),
                 Desk::toggle_machines,
-                ink,
+                t,
             ),
-            Self::PairPhone => super::super::pair::panel(desk, ink, true),
-            Self::Diagnostics => diagnostics(desk, ink),
+            Self::PairPhone => super::super::pair::panel(desk, t, true),
+            Self::Diagnostics => diagnostics(desk, t),
             Self::GetStarted => self.link(
                 "settings-get-started",
                 desk,
                 self.value(desk),
                 Desk::open_onboarding,
-                ink,
+                t,
             ),
             Self::Updates => el()
                 .w_full()
-                .padding(16.0)
-                .child(updates::settings(desk, ink)),
+                .padding(t.space.s4)
+                .child(updates::settings(desk, t)),
             Self::QuickChord => {
                 let managed = desk.file.quick_terminal.is_some();
                 let detail = if managed {
@@ -250,13 +245,13 @@ impl Entry {
                 } else {
                     self.detail()
                 };
-                controls::shortcut(desk, self.title(), detail, ink)
+                controls::shortcut(desk, self.title(), detail, t)
             }
-            _ => self.toggle(desk, ink),
+            _ => self.toggle(desk, t),
         }
     }
 
-    fn toggle(self, desk: &Desk, ink: &Ink) -> El {
+    fn toggle(self, desk: &Desk, t: &Tokens) -> El {
         let file = &desk.file;
         let (key, value, press, managed): (_, _, fn(&mut Desk), _) = match self {
             Self::HoverToolbar => (
@@ -308,7 +303,15 @@ impl Entry {
         } else {
             self.detail()
         };
-        controls::toggle(desk, key, self.title(), detail, value, press, ink)
+        let toggle = controls::Toggle {
+            key,
+            title: self.title(),
+            detail,
+            on: value,
+            press,
+            enabled: true,
+        };
+        controls::toggle(desk, toggle, t)
     }
 
     fn link(
@@ -317,54 +320,56 @@ impl Entry {
         desk: &Desk,
         value: String,
         press: fn(&mut Desk),
-        ink: &Ink,
+        t: &Tokens,
     ) -> El {
-        pressable(key, ink)
+        let s = &t.space;
+        pressable(key, t)
             .w_full()
-            .min_h(60.0)
-            .px(16.0)
-            .py(10.0)
-            .gap(12.0)
+            .min_h(s.touch_min)
+            .px(s.s4)
+            .py(s.s3)
+            .gap(s.s3)
             .items_center()
             .focusable(true)
             .label(self.title())
             .description(self.detail())
             .a11y_value(value.clone())
             .on_press(press)
-            .child(self.link_copy(desk, &value, ink))
+            .child(self.link_copy(desk, &value, t))
             .children(desk.phone.is_none().then(|| {
                 text(value)
-                    .font(CAPTION)
-                    .color(ink.dim)
-                    .max_w(120.0)
+                    .font(t.ty.caption)
+                    .color(t.roles.text.dim.paint())
+                    .max_w(GEOMETRY.value_max)
                     .truncate()
                     .a11y_hidden()
             }))
             // Font cycles in place, so it has nowhere to point.
-            .children((!matches!(self, Self::Font)).then(|| {
-                rune::icon(&icons::CHEVRON_RIGHT, 14.0)
-                    .color(ink.dim)
-                    .a11y_hidden()
-            }))
+            .children((!matches!(self, Self::Font)).then(|| chevron(t)))
     }
 
-    fn link_copy(self, desk: &Desk, value: &str, ink: &Ink) -> El {
+    fn link_copy(self, desk: &Desk, value: &str, t: &Tokens) -> El {
         let title = text(self.title())
-            .font(super::primary(desk, COPY))
-            .color(ink.text)
+            .font(super::medium(super::primary(desk, t)))
+            .color(t.roles.text.text.paint())
             .wrap();
         let heading = if desk.phone.is_some() {
             row()
                 .w_full()
-                .gap(8.0)
+                .gap(t.space.s2)
                 .flex_wrap()
                 .items_center()
-                .child(title.w(80.0).min_w(80.0).grow(1.0))
+                .child(
+                    title
+                        .w(GEOMETRY.phone_title_min)
+                        .min_w(GEOMETRY.phone_title_min)
+                        .grow(1.0),
+                )
                 .child(
                     text(value)
-                        .font(super::secondary(desk, CAPTION))
-                        .color(ink.dim)
-                        .max_w(140.0)
+                        .font(super::secondary(desk, t))
+                        .color(t.roles.text.dim.paint())
+                        .max_w(GEOMETRY.phone_value_max)
                         .wrap_anywhere(),
                 )
         } else {
@@ -373,23 +378,43 @@ impl Entry {
         col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(3.0)
+            .gap(t.space.s0_5)
             .child(heading)
             .child(
                 text(self.detail())
-                    .font(super::secondary(desk, CAPTION.lh(15.0)))
-                    .color(ink.dim)
+                    .font(super::secondary(desk, t))
+                    .color(t.roles.text.dim.paint())
                     .wrap(),
             )
             .a11y_hidden()
     }
 }
 
-fn diagnostics(desk: &Desk, ink: &Ink) -> El {
-    pressable("copy-diagnostics", ink)
+/// Widths a link row's value keeps: component sizes, not style.
+struct Geometry {
+    value_max: f32,
+    phone_title_min: f32,
+    phone_value_max: f32,
+}
+
+const GEOMETRY: Geometry = Geometry {
+    value_max: 120.0,
+    phone_title_min: 80.0,
+    phone_value_max: 140.0,
+};
+
+fn chevron(t: &Tokens) -> El {
+    rune::icon(&icons::CHEVRON_RIGHT, t.icon.size.md)
+        .color(t.roles.text.dim.paint())
+        .a11y_hidden()
+}
+
+fn diagnostics(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    pressable("copy-diagnostics", t)
         .w_full()
-        .min_h(60.0)
-        .padding(16.0)
+        .min_h(s.touch_min)
+        .padding(s.s4)
         .focusable(true)
         .label("Copy diagnostics")
         .description(Entry::Diagnostics.detail())
@@ -397,30 +422,30 @@ fn diagnostics(desk: &Desk, ink: &Ink) -> El {
         .child(
             row()
                 .w_full()
-                .gap(12.0)
+                .gap(s.s3)
                 .items_center()
                 .child(
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .gap(3.0)
+                        .gap(s.s0_5)
                         .child(
                             text(if desk.updater.copied {
                                 "Copied"
                             } else {
                                 "Copy diagnostics"
                             })
-                            .font(super::primary(desk, COPY))
-                            .color(ink.text),
+                            .font(super::medium(super::primary(desk, t)))
+                            .color(t.roles.text.text.paint()),
                         )
                         .child(
                             text(Entry::Diagnostics.detail())
-                                .font(super::secondary(desk, CAPTION))
-                                .color(ink.dim)
+                                .font(super::secondary(desk, t))
+                                .color(t.roles.text.dim.paint())
                                 .wrap(),
                         ),
                 )
-                .child(rune::icon(&icons::CHEVRON_RIGHT, 14.0).color(ink.dim))
+                .child(chevron(t))
                 .a11y_hidden(),
         )
 }

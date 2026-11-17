@@ -6,8 +6,11 @@ use rune::{Env, Key, Runtime};
 use super::*;
 use crate::onboarding::{AgentSkill, KEEP_ALIVE, Permissions};
 
+mod modes;
+
 const SIZE: (f32, f32) = (1100.0, 720.0);
-const SCALE: f32 = 2.0;
+/// Snapshots render at the Retina scale.
+const SCALE: u8 = 2;
 
 fn skill(agent: &str, state: &str) -> AgentSkill {
     AgentSkill {
@@ -25,7 +28,12 @@ fn window(step: Step) -> Runtime<Desk> {
     desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = theme::find("midnight");
-    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
+    let mut rt = Runtime::new(
+        desk,
+        crate::ui::view,
+        SIZE,
+        Env::new(true, f32::from(SCALE)),
+    );
     rt.on_key = Some(Desk::key);
     rt.update(|d, tx| {
         d.open_onboarding();
@@ -62,7 +70,10 @@ fn snap(rt: &mut Runtime<Desk>, name: &str) {
     let Some(dir) = std::env::var_os("RUNE_ONBOARDING_SNAP") else {
         return;
     };
-    let (w, h) = ((SIZE.0 * SCALE) as u32, (SIZE.1 * SCALE) as u32);
+    let (w, h) = (
+        (SIZE.0 * f32::from(SCALE)) as u32,
+        (SIZE.1 * f32::from(SCALE)) as u32,
+    );
     let gpu = rune::render::Gpu::headless();
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
     let pixels = crate::ui::offscreen(&gpu, &mut renderer, rt, (w, h));
@@ -85,7 +96,7 @@ fn every_step_renders_its_parts() {
         "look-light",
         "look-dark",
         "look-sidebar",
-        "look-theme-midnight",
+        "look-theme-phux",
     ] {
         assert!(has(&rt, key), "{key}");
     }

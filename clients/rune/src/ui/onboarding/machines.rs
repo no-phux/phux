@@ -1,131 +1,123 @@
 //! The Add your other machines step: hosts from the ssh config and the
-//! tailnet, ticked and set up one after another.
+//! tailnet, ticked (kit `Checkbox`) and set up one after another.
 
 use super::*;
 use crate::desk::machines::ssh::Offered;
 
-fn checkbox(on: bool, p: &Ink) -> El {
-    let frame = el()
-        .size(16.0, 16.0)
-        .radius(4.0)
-        .center()
-        .border(1.0, if on { p.accent } else { p.dim });
-    if on {
-        frame
-            .fill(p.accent)
-            .child(rune::icon(&icons::CHECK, 12.0).color(p.on_accent))
-    } else {
-        frame
-    }
+/// A host name in the chrome's mono face (§1.4 voice).
+fn host(name: String, t: &Tokens) -> El {
+    text(name)
+        .font(TextStyle {
+            family: crate::ui::tokens::MONO,
+            ..semibold(t.ty.label)
+        })
+        .color(t.roles.text.text.paint())
 }
 
-fn status(words: impl Into<String>, ink: Color) -> El {
-    text(words.into()).font(CAPTION).color(ink).truncate()
-}
-
-fn machine(target: String, name: String, state: Offered, p: &Ink) -> El {
-    let line = row().w_full().h(30.0).px(10.0).gap(10.0).items_center();
-    // The name keeps its width; a long step is what gets cut.
-    let label = text(name.clone()).font(LABEL_STRONG).color(p.text);
-    let row = match &state {
-        // A failed one ticks again to retry.
-        Offered::Pick(_) | Offered::Failed(_) => {
-            let on = state == Offered::Pick(true);
-            let failed = matches!(state, Offered::Failed(_));
-            pressable(format!("onboarding-machine-{target}"), p)
-                .w_full()
-                .h(30.0)
-                .px(10.0)
-                .gap(10.0)
-                .radius(7.0)
-                .items_center()
-                .focusable(true)
-                .role("checkbox")
-                .label(name)
-                .checked(on)
-                .on_press(move |d: &mut Desk| d.pick_machine(&target))
-                .child(checkbox(on, p))
-                .child(label.a11y_hidden())
-                .child(el().grow(1.0))
-                .children(failed.then(|| status("Couldn't set up", p.danger)))
-        }
-        Offered::Done => line
-            .child(rune::icon(&icons::CHECK, 14.0).color(p.marks.good))
-            .child(label)
-            .child(el().grow(1.0))
-            .child(status("Set up", p.marks.good)),
-        Offered::Waiting => line
-            .child(checkbox(true, p))
-            .child(label)
-            .child(el().grow(1.0))
-            .child(status("Waiting", p.dim)),
-        Offered::Running(step) => line
-            .child(checkbox(true, p))
-            .child(label)
-            .child(el().grow(1.0))
-            .child(status(step.clone(), p.accent)),
+fn machine(target: String, name: String, state: Offered, t: &Tokens) -> El {
+    let s = &t.space;
+    let line = || {
+        row()
+            .w_full()
+            .min_h(s.row_h + s.s0_5)
+            .px(s.s3)
+            .gap(s.s3)
+            .items_center()
     };
+    let row =
+        match &state {
+            // A failed one ticks again to retry.
+            Offered::Pick(_) | Offered::Failed(_) => {
+                let on = state == Offered::Pick(true);
+                let failed = matches!(state, Offered::Failed(_));
+                let key = format!("onboarding-machine-{target}");
+                // The kit checkbox is the whole row: its name is the host's.
+                let tick = rune_kit::Checkbox::new(on)
+                    .label(name.clone())
+                    .hide_label()
+                    .on_toggle(move |d: &mut Desk| d.pick_machine(&target))
+                    .build(&t.kit);
+                line().child(
+                    t.kit
+                        .interactive(tick.key(key))
+                        .grow(1.0)
+                        .radius(t.radius.sm)
+                        .cursor(rune::Cursor::Pointer)
+                        .child(host(name, t).a11y_hidden())
+                        .child(el().grow(1.0))
+                        .children(failed.then(|| {
+                            tone_badge(t, State::Failed, Some("Couldn't set up".to_owned()))
+                        })),
+                )
+            }
+            Offered::Done => line()
+                .child(tone_badge(t, State::Done, Some("Set up".to_owned())))
+                .child(host(name, t)),
+            Offered::Waiting => line().child(host(name, t)).child(el().grow(1.0)).child(
+                text("Waiting")
+                    .font(t.ty.caption)
+                    .color(t.roles.text.dim.paint()),
+            ),
+            Offered::Running(step) => line()
+                .child(host(name, t))
+                .child(el().grow(1.0))
+                .child(tone_badge(t, State::Working, Some(step.clone()))),
+        };
     let why = match state {
         Offered::Failed(why) => Some(
-            col()
-                .w_full()
-                .min_w(0.0)
-                .pl(36.0)
-                .pr(10.0)
-                .child(text(why).font(COPY).color(p.danger).wrap()),
+            col().w_full().min_w(0.0).px(s.s3).child(
+                text(why)
+                    .font(t.ty.caption)
+                    .color(t.status.tone(phux_design::Tone::Failed).ink)
+                    .wrap(),
+            ),
         ),
         _ => None,
     };
     col().w_full().child(row).children(why)
 }
 
-pub(super) fn machines(desk: &Desk, p: &Ink) -> El {
+pub(super) fn machines(desk: &Desk, t: &Tokens) -> El {
     let list = &desk.machines;
     let head = heading(
         &icons::MACHINES,
         "Add your other machines",
         "Tick the ones you use. phux installs itself on each over ssh and starts \
          there, and their sessions show in the sidebar.",
-        p,
+        t,
     );
     let offered = list.offered();
-    let mut panel = panel(p).max_w(460.0).gap(4.0);
+    let mut panel = panel(t).max_w(GEOMETRY.machines_max).gap(t.space.s1);
     if offered.is_empty() {
         panel = panel.child(note(
             "No machines in your ssh config or on your tailnet. Add one any time from \
              Settings → Machines.",
-            p,
+            t,
         ));
     }
     let mut picked = 0;
     for (target, name) in offered {
         let state = list.offer_state(&target);
         picked += usize::from(state == Offered::Pick(true));
-        panel = panel.child(machine(target, name, state, p));
+        panel = panel.child(machine(target, name, state, t));
     }
     let set_up = (picked > 0).then(|| {
         let label = match picked {
             1 => "Set up 1 machine".to_owned(),
             n => format!("Set up {n} machines"),
         };
-        pill(
-            "onboarding-machines-set-up",
-            label,
-            p.accent,
-            p.on_accent,
-            p,
-        )
-        .on_press(Desk::set_up_picked)
-        .self_center()
+        action("onboarding-machines-set-up", label, true, t)
+            .on_press(Desk::set_up_picked)
+            .self_center()
     });
     col()
         .w_full()
         .items_center()
-        .gap(18.0)
+        .gap(t.space.s5)
         .child(head)
         .child(panel.children(set_up))
         .child(note(
             "Uses your ssh access. Machines keep setting up if you continue.",
-            p,
+            t,
         ))
 }

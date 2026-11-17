@@ -1,34 +1,73 @@
-//! The few reusable settings controls. Shared switches also serve Updates.
+//! The few reusable settings controls. Shared switches also serve Updates
+//! and onboarding.
 
-use rune::{El, Family, TextStyle, col, el, row, text};
+use rune::{El, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, Switch};
 
-use super::super::{CAPTION, Ink, LABEL, pressable};
+use super::{primary, secondary, surface};
 use crate::desk::Desk;
 use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
-use crate::theme::color;
+use crate::ui::pressable;
+use crate::ui::tokens::{Paint, Tokens};
 
-pub(in crate::ui) fn section(title: &'static str, ink: &Ink) -> El {
+/// The shortcut recorder's width: room for a chord's caps.
+struct Geometry {
+    recorder_w: f32,
+}
+
+const GEOMETRY: Geometry = Geometry { recorder_w: 150.0 };
+
+/// A kit `Button` (§4.1.3 ADOPT) under phux's key, in the Tab order.
+/// `Submit` is the one primary action per view; `Outline` the others.
+pub(in crate::ui) fn kit_button(
+    key: impl Into<String>,
+    label: impl Into<String>,
+    variant: ButtonVariant,
+    t: &Tokens,
+) -> El {
+    Button::new(label)
+        .variant(variant)
+        .control_size(ControlSize::Large)
+        .build(&t.kit)
+        .key(key)
+        .focusable(true)
+        .min_h(grown(t.ty.body, t.space.s2))
+}
+
+/// The height a kit control needs for its label at this window's text
+/// scale: kit control heights are fixed (AppKit metrics), so at a larger
+/// text size the control grows to its label's `style` line plus `pad`
+/// instead of clipping it. At the default scale this is the kit's height.
+pub(in crate::ui) fn grown(style: rune::TextStyle, pad: f32) -> f32 {
+    style.line_px() + pad
+}
+
+pub(in crate::ui) fn section(title: &'static str, t: &Tokens) -> El {
     text(title)
-        .font(TextStyle::new(12.0, 600.0))
-        .color(ink.dim)
+        .font(super::semibold(t.ty.label))
+        .color(t.roles.text.dim.paint())
         .role("heading")
         .level(2)
 }
 
-pub(super) fn card(rows: Vec<El>, ink: &Ink) -> El {
+/// A list of rows on a raised card (`radius.md`, `border.base`), hairline
+/// rules between them inset to the row's text.
+pub(super) fn card(rows: Vec<El>, t: &Tokens) -> El {
+    let s = &t.space;
+    let rule = t.roles.border.base.paint();
     let mut card = col()
         .w_full()
-        .radius(16.0)
-        .clip_rounded(16.0)
-        .fill(super::surface(ink))
-        .border(1.0, ink.separator);
+        .radius(t.radius.md)
+        .clip_rounded(t.radius.md)
+        .fill(surface(t))
+        .border(s.hairline, rule);
     for (index, item) in rows.into_iter().enumerate() {
         if index > 0 {
             card = card.child(
-                el().h(1.0)
+                el().h(s.hairline)
                     .w_full()
-                    .px(16.0)
-                    .child(el().w_full().h(1.0).fill(ink.separator))
+                    .px(s.s4)
+                    .child(el().w_full().h(s.hairline).fill(rule))
                     .a11y_hidden(),
             );
         }
@@ -37,72 +76,84 @@ pub(super) fn card(rows: Vec<El>, ink: &Ink) -> El {
     card
 }
 
-fn switch(on: bool, ink: &Ink) -> El {
-    row()
-        .w(34.0)
-        .h(22.0)
-        .px(3.0)
-        .radius(11.0)
-        .items_center()
-        .fill(if on { ink.accent } else { ink.dim })
-        .children(on.then(|| el().grow(1.0)))
+/// A row's title over its detail, as a screen reader never hears them twice.
+fn copy(desk: &Desk, title: &'static str, detail: &'static str, t: &Tokens) -> El {
+    col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(t.space.s0_5)
         .child(
-            el().size(16.0, 16.0)
-                .radius(8.0)
-                .fill(if on { ink.on_accent } else { ink.raised }),
+            text(title)
+                .font(super::medium(primary(desk, t)))
+                .color(t.roles.text.text.paint())
+                .wrap(),
         )
+        .child(
+            text(detail)
+                .font(secondary(desk, t))
+                .color(t.roles.text.dim.paint())
+                .wrap(),
+        )
+        .a11y_hidden()
 }
 
-pub(in crate::ui) fn toggle(
-    desk: &Desk,
-    key: &'static str,
-    title: &'static str,
-    detail: &'static str,
-    on: bool,
-    press: fn(&mut Desk),
-    ink: &Ink,
-) -> El {
-    row()
-        .key(key)
+/// A switch row: what it sets, and the kit switch that shows it.
+pub(in crate::ui) struct Toggle {
+    pub(in crate::ui) key: &'static str,
+    pub(in crate::ui) title: &'static str,
+    pub(in crate::ui) detail: &'static str,
+    pub(in crate::ui) on: bool,
+    pub(in crate::ui) press: fn(&mut Desk),
+    /// Off, the row takes no press and draws the kit's disabled switch.
+    pub(in crate::ui) enabled: bool,
+}
+
+/// The whole row is the switch (role, name, description, checked), so a
+/// press anywhere on it flips it; the kit `Switch` draws the track and
+/// stays out of the tree and the Tab order.
+pub(in crate::ui) fn toggle(desk: &Desk, toggle: Toggle, t: &Tokens) -> El {
+    let s = &t.space;
+    let size = if desk.phone.is_some() {
+        ControlSize::Small
+    } else {
+        ControlSize::Mini
+    };
+    let track = Switch::new(toggle.on)
+        .label(toggle.title)
+        .hide_label()
+        .control_size(size)
+        .disabled(!toggle.enabled)
+        .build(&t.kit)
+        .focusable(false)
+        .a11y_hidden();
+    let row = row()
+        .key(toggle.key)
         .w_full()
-        .min_h(60.0)
-        .px(16.0)
-        .py(10.0)
-        .gap(12.0)
+        .min_h(s.touch_min)
+        .px(s.s4)
+        .py(s.s3)
+        .gap(s.s3)
         .items_center()
-        .focusable(true)
         .role("switch")
-        .label(title)
-        .description(detail)
-        .checked(on)
-        .hover(ink.hover)
+        .label(toggle.title)
+        .description(toggle.detail)
+        .checked(toggle.on)
+        .child(copy(desk, toggle.title, toggle.detail, t))
+        .child(track);
+    if !toggle.enabled {
+        return row.disabled(true);
+    }
+    t.kit
+        .interactive(row)
+        .focusable(true)
         .cursor(rune::Cursor::Pointer)
-        .on_press(press)
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(3.0)
-                .child(
-                    text(title)
-                        .font(super::primary(desk, TextStyle::new(13.0, 500.0)))
-                        .color(ink.text)
-                        .wrap(),
-                )
-                .child(
-                    text(detail)
-                        .font(super::secondary(desk, CAPTION.lh(15.0)))
-                        .color(ink.dim)
-                        .wrap(),
-                )
-                .a11y_hidden(),
-        )
-        .child(switch(on, ink).a11y_hidden())
+        .on_press(toggle.press)
 }
 
 /// A row with a shortcut recorder: the quick terminal's chord, live, and
-/// what holds it when it's refused. Off, or set in the file, it's dimmed.
-pub(super) fn shortcut(desk: &Desk, title: &'static str, detail: &'static str, ink: &Ink) -> El {
+/// what holds it when it's refused. Off, or set in the file, it's disabled.
+pub(super) fn shortcut(desk: &Desk, title: &'static str, detail: &'static str, t: &Tokens) -> El {
+    let s = &t.space;
     let quick = &desk.quick_chord;
     let owner = quick.owner.clone();
     let words = move |error: &rune::ShortcutError, chord: Option<&rune::Shortcut>| {
@@ -115,63 +166,37 @@ pub(super) fn shortcut(desk: &Desk, title: &'static str, detail: &'static str, i
         .label(title)
         .on_change(|d: &mut Desk, next, _| d.record_quick_chord(next))
         .error_message(words)
-        .width(150.0)
+        .width(GEOMETRY.recorder_w)
         .disabled(!quick.on || desk.file.quick_terminal.is_some())
-        .build(&kit(ink));
+        .build(&t.kit);
     row()
         .key("quick-chord")
         .w_full()
-        .min_h(60.0)
-        .px(16.0)
-        .py(10.0)
-        .gap(12.0)
+        .min_h(s.touch_min)
+        .px(s.s4)
+        .py(s.s3)
+        .gap(s.s3)
         .items_center()
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(3.0)
-                .child(
-                    text(title)
-                        .font(super::primary(desk, TextStyle::new(13.0, 500.0)))
-                        .color(ink.text)
-                        .wrap(),
-                )
-                .child(
-                    text(detail)
-                        .font(super::secondary(desk, CAPTION.lh(15.0)))
-                        .color(ink.dim)
-                        .wrap(),
-                )
-                .a11y_hidden(),
-        )
+        .child(copy(desk, title, detail, t))
         .child(recorder)
 }
 
-/// The recorder's kit in this window's colours.
-fn kit(ink: &Ink) -> rune_kit::Kit {
-    let mut kit = rune_kit::Kit::neutral(crate::theme::on_fill(ink.bg) == rune::Color::WHITE);
-    let c = &mut kit.c;
-    (c.bg_base, c.border_base, c.border_focus) = (ink.bg, ink.separator, ink.accent);
-    (c.text_muted, c.text_faint, c.layer_03) = (ink.text, ink.dim, ink.hover);
-    (c.danger.fg, c.danger.border) = (ink.danger, ink.danger);
-    kit
-}
-
-pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
+/// Text size: a stepper on the control outline, its value in `tnum`.
+pub(super) fn stepper(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
     let step = |glyph: &'static str, name, key: &'static str, press: fn(&mut Desk)| {
-        pressable(key, ink)
-            .size(44.0, 44.0)
+        pressable(key, t)
+            .size(s.touch_min, s.touch_min)
             .focusable(true)
-            .radius(8.0)
+            .radius(t.radius.sm)
             .center()
-            .border(1.0, ink.separator)
+            .border(s.hairline, t.roles.border.control.paint())
             .label(name)
             .on_press(press)
             .child(
                 text(glyph)
-                    .font(TextStyle::new(18.0, 450.0))
-                    .color(ink.text)
+                    .font(t.ty.lead)
+                    .color(t.roles.text.text.paint())
                     .a11y_hidden(),
             )
     };
@@ -179,10 +204,10 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
     row()
         .key("text-size")
         .w_full()
-        .min_h(60.0)
-        .px(16.0)
-        .py(8.0)
-        .gap(4.0)
+        .min_h(s.touch_min)
+        .px(s.s4)
+        .py(s.s2)
+        .gap(s.s1)
         .items_center()
         .label("Text size")
         .focusable(true)
@@ -199,8 +224,8 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
         })
         .child(
             text("Text size")
-                .font(super::primary(desk, LABEL))
-                .color(ink.text)
+                .font(super::medium(primary(desk, t)))
+                .color(t.roles.text.text.paint())
                 .grow(1.0)
                 .a11y_hidden(),
         )
@@ -208,10 +233,10 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
             d.zoom(Some(d.font_size - 1.0))
         }))
         .child(
-            el().w(36.0).center().child(
+            el().w(t.icon.button.lg).center().child(
                 text(size)
-                    .font(super::secondary(desk, CAPTION))
-                    .color(ink.text)
+                    .font(t.ty.micro)
+                    .color(t.roles.text.text.paint())
                     .a11y_hidden(),
             ),
         )
@@ -220,55 +245,64 @@ pub(super) fn stepper(desk: &Desk, ink: &Ink) -> El {
         }))
 }
 
-pub(super) fn preview(desk: &Desk, ink: &Ink) -> El {
-    let (bg, fg, accent) = desk
-        .settings
-        .theme
-        .map_or((ink.bg, ink.text, ink.accent), |t| {
-            (color(t.background), color(t.foreground), t.roles().accent)
-        });
+/// The chosen theme as a terminal shows it: its own ground and ink (terminal
+/// content, not chrome), the prompt in the window's legible accent.
+pub(super) fn preview(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let (bg, fg) =
+        desk.settings
+            .theme
+            .map_or((r.layer.ground.paint(), r.text.text.paint()), |theme| {
+                (
+                    crate::theme::color(theme.background),
+                    crate::theme::color(theme.foreground),
+                )
+            });
+    let mono = |style: rune::TextStyle| rune::TextStyle {
+        family: crate::ui::tokens::MONO,
+        ..style
+    };
     col()
         .key("settings-preview")
         .w_full()
-        .gap(8.0)
+        .gap(s.s2)
         .child(
-            section("Preview", ink)
-                .font(super::secondary(desk, TextStyle::new(12.0, 600.0)))
-                .px(16.0),
+            section("Preview", t)
+                .font(super::heading_type(desk, t))
+                .px(s.s4),
         )
         .child(
             col()
                 .w_full()
-                .padding(20.0)
-                .gap(8.0)
-                .radius(14.0)
+                .padding(s.s5)
+                .gap(s.s2)
+                .radius(t.radius.md)
                 .fill(bg)
-                .border(1.0, ink.separator)
+                .border(s.hairline, r.border.base.paint())
                 .label("Terminal preview")
                 .child(
                     text("~/workspace  ·  main")
-                        .font(super::secondary(desk, CAPTION).family(Family::Mono))
+                        .font(mono(secondary(desk, t)))
                         .color(fg),
                 )
                 .child(
                     text("❯ phux attach")
-                        .font(
-                            super::primary(desk, TextStyle::new(14.0, 500.0)).family(Family::Mono),
-                        )
-                        .color(accent),
+                        .font(mono(super::medium(primary(desk, t))))
+                        .color(r.accent.accent_text.paint()),
                 )
                 .child(
                     text("Your sessions, right where you left them.")
-                        .font(super::secondary(desk, CAPTION).family(Family::Mono))
+                        .font(mono(secondary(desk, t)))
                         .color(fg)
                         .wrap(),
                 ),
         )
         .child(
             text("One theme for the interface and terminals. Programs can set their own colours.")
-                .font(super::secondary(desk, CAPTION))
-                .color(ink.dim)
+                .font(secondary(desk, t))
+                .color(r.text.dim.paint())
                 .wrap()
-                .px(16.0),
+                .px(s.s4),
         )
 }

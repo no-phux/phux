@@ -1,28 +1,79 @@
 //! First-run onboarding, drawn where the terminals go: the sidebar and title
 //! bar stay, so every pick on the Look step shows on the real window. While
 //! an agent brings a setup over, its pane sits beside the step.
+//!
+//! Actions are kit buttons (`Submit` for the step's one primary action),
+//! choices kit checkboxes, status the OWN `tone_badge` (§4.1.3).
 
+use phux_design::State;
 use rune::{Align, Color, Cx, DragItem, El, TextStyle, Transition, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize};
 
-use super::{CAPTION, CARD_GAP, Ink, LABEL, LABEL_STRONG, icons, panes, pressable};
+use super::badge::tone_badge;
+use super::settings::{grown, medium, semibold};
+use super::tokens::{Paint, Tier, Tokens};
+use super::{Ink, icons, panes};
 use crate::desk::Desk;
 use crate::desk::onboarding::{Migrate, Probe};
 use crate::keys::{self, Shortcut};
 use crate::onboarding::{self as words, Grant, PERMISSIONS, Service, Step};
 use crate::theme::{self, Theme};
 
-const TITLE: TextStyle = TextStyle::new(26.0, 700.0);
-const LEAD: TextStyle = TextStyle::new(13.5, 450.0).lh(19.0);
-const COPY: TextStyle = TextStyle::new(12.0, 450.0).lh(16.0);
-const CARD_W: f32 = 236.0;
-
 mod agents;
 mod done;
+// style-literals: illustration. The Look step's little windows are art.
+#[allow(clippy::disallowed_methods)]
 mod look;
 mod machines;
 mod migrate;
 #[cfg(test)]
 mod tests;
+
+/// Onboarding's geometry: column widths and art sizes the token schema has
+/// no role for. Component sizes, not style.
+struct Geometry {
+    /// The widest a step's heading and lead run.
+    heading_max: f32,
+    welcome_max: f32,
+    /// A panel of choices, and the narrower single-column ones.
+    panel_max: f32,
+    list_max: f32,
+    machines_max: f32,
+    status_max: f32,
+    sheet_max: f32,
+    /// One of the Agents step's cards.
+    card_w: f32,
+    card_min_h: f32,
+    /// The heading's icon tile, and a card's.
+    hero_tile: f32,
+    card_tile: f32,
+    /// The brand fox on Welcome and Done, and the app badge to drag.
+    fox: f32,
+    fox_done: f32,
+    badge: f32,
+    /// A Bring-your-setup agent tile.
+    agent_tile_w: f32,
+    agent_tile_h: f32,
+}
+
+const GEOMETRY: Geometry = Geometry {
+    heading_max: 560.0,
+    welcome_max: 520.0,
+    panel_max: 600.0,
+    list_max: 400.0,
+    machines_max: 460.0,
+    status_max: 420.0,
+    sheet_max: 480.0,
+    card_w: 236.0,
+    card_min_h: 220.0,
+    hero_tile: 64.0,
+    card_tile: 44.0,
+    fox: 136.0,
+    fox_done: 112.0,
+    badge: 44.0,
+    agent_tile_w: 84.0,
+    agent_tile_h: 68.0,
+};
 
 /// The terminal area: the step when onboarding is open, the panes otherwise,
 /// and both while the migration's agent works.
@@ -32,10 +83,12 @@ pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
     if !desk.onboarding.open || desk.bare.is_some() {
         return panes::view(desk, p, cx);
     }
+    let t: &Tokens = p.as_ref();
     desk.onboarding.fox.still.set(cx.is_reduced_motion());
+    let ground = t.roles.layer.ground.paint();
     let step = panes::card(
-        el().w_full().h_full().fill(p.bg).child(page(desk, p)),
-        p.bg,
+        el().w_full().h_full().fill(ground).child(page(desk, t)),
+        ground,
         panes::Lit::Resting,
         p,
     );
@@ -52,7 +105,7 @@ pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .grow(1.0)
         .w_full()
         .min_h(0.0)
-        .gap(CARD_GAP)
+        .gap(t.space.card_gap)
         .child(el().w(0.0).grow(0.8).min_w(0.0).h_full().child(step))
         .child(
             col()
@@ -65,15 +118,16 @@ pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
 }
 
 /// One step, centred while it fits and scrolling when it doesn't.
-fn page(desk: &Desk, p: &Ink) -> El {
+fn page(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
     let step = desk.onboarding.step;
     let body = match step {
-        Step::Welcome => welcome(desk, p),
-        Step::Look => look::look(desk, p),
-        Step::Agents => agents::agents(desk, p),
-        Step::Migrate => migrate::migrate(desk, p),
-        Step::Machines => machines::machines(desk, p),
-        Step::Done => done::done(desk, p),
+        Step::Welcome => welcome(desk, t),
+        Step::Look => look::look(desk, t),
+        Step::Agents => agents::agents(desk, t),
+        Step::Migrate => migrate::migrate(desk, t),
+        Step::Machines => machines::machines(desk, t),
+        Step::Done => done::done(desk, t),
     };
     let content = col()
         .key(format!("onboarding-{}", step.id()))
@@ -86,13 +140,13 @@ fn page(desk: &Desk, p: &Ink) -> El {
         .child(
             col()
                 .w_full()
-                .px(24.0)
-                .py(28.0)
-                .gap(14.0)
+                .px(s.s6)
+                .py(s.s8)
+                .gap(s.s4)
                 .items_center()
                 .transition(Transition::opacity())
                 .child(body)
-                .children(nav(desk, p)),
+                .children(nav(desk, t)),
         );
     col()
         .w_full()
@@ -105,143 +159,127 @@ fn page(desk: &Desk, p: &Ink) -> El {
         .children(
             desk.onboarding
                 .grant_sheet
-                .then(|| agents::grant_sheet(desk, p)),
+                .then(|| agents::grant_sheet(desk, t)),
         )
 }
 
-fn heading(glyph: &'static rune::Icon, title: &'static str, lead: &'static str, p: &Ink) -> El {
+fn heading(glyph: &'static rune::Icon, title: &'static str, lead: &'static str, t: &Tokens) -> El {
     col()
         .w_full()
-        .max_w(560.0)
-        .gap(8.0)
+        .max_w(GEOMETRY.heading_max)
+        .gap(t.space.s2)
         .items_center()
-        .child(tile(glyph, 64.0, p))
+        .child(tile(glyph, GEOMETRY.hero_tile, t))
         .child(
             text(title)
-                .font(TITLE)
-                .color(p.text)
+                .font(t.ty.display)
+                .color(t.roles.text.text.paint())
                 .align(Align::Center)
                 .role("heading")
                 .level(1),
         )
         .child(
             text(lead)
-                .font(LEAD)
-                .color(p.dim)
+                .font(t.ty.lead)
+                .color(t.roles.text.dim.paint())
                 .align(Align::Center)
                 .wrap(),
         )
 }
 
-/// An icon on a rounded accent tile.
-fn tile(glyph: &'static rune::Icon, size: f32, p: &Ink) -> El {
+/// An icon on a neutral tile: colour means state, never decoration (D8).
+fn tile(glyph: &'static rune::Icon, size: f32, t: &Tokens) -> El {
+    let radius = if size > GEOMETRY.card_tile {
+        t.radius.lg
+    } else {
+        t.radius.md
+    };
     el().size(size, size)
-        .radius(size * 0.25)
+        .radius(radius)
         .continuous_corners()
-        .fill(p.accent.alpha(0.16))
-        .border(1.0, p.accent.alpha(0.28))
+        .fill(t.roles.wash.current.paint())
+        .border(t.space.hairline, t.roles.border.base.paint())
         .center()
-        .child(rune::icon(glyph, size * 0.5).color(p.accent))
+        .child(rune::icon(glyph, size / 2.0).color(t.roles.text.text.paint()))
         .a11y_hidden()
 }
 
-/// The accent pill: Continue, Install, Start.
-fn primary(key: &'static str, label: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
-    pressable(key, p)
-        .h(34.0)
-        .px(18.0)
-        .gap(8.0)
-        .radius(17.0)
-        .items_center()
-        .fill(p.accent)
-        .focusable(true)
-        .role("button")
-        .label(label)
+/// The step's one primary action (kit `Submit`): Continue, Start.
+fn primary(key: &'static str, label: &'static str, t: &Tokens, press: fn(&mut Desk)) -> El {
+    Button::new(label)
+        .variant(ButtonVariant::Submit)
+        .control_size(ControlSize::ExtraLarge)
         .on_press(press)
-        .child(
-            text(label)
-                .font(TextStyle::new(14.0, 600.0))
-                .color(p.on_accent)
-                .a11y_hidden(),
-        )
-        .child(
-            rune::icon(&icons::ARROW_RIGHT, 14.0)
-                .color(p.on_accent)
-                .a11y_hidden(),
-        )
-}
-
-/// A quiet pill.
-fn quiet(key: impl Into<String>, label: impl Into<String>, p: &Ink) -> El {
-    pill(key, label.into(), p.current, p.text, p)
-}
-
-fn pill(key: impl Into<String>, label: String, fill: Color, ink: Color, p: &Ink) -> El {
-    pressable(key, p)
-        .h(28.0)
-        .px(12.0)
-        .radius(14.0)
-        .items_center()
-        .fill(fill)
+        .build(&t.kit)
+        .key(key)
         .focusable(true)
-        .role("button")
-        .label(label.clone())
-        .child(text(label).font(LABEL_STRONG).color(ink).a11y_hidden())
+        .min_h(grown(t.ty.body, t.space.s4))
 }
 
-/// A rounded word on a tinted ground: Recommended, 1 of 3 granted.
-fn badge(words: impl Into<String>, ink: Color) -> El {
-    el().px(8.0)
-        .py(2.0)
-        .radius(9.0)
-        .border(1.0, ink.alpha(0.5))
-        .fill(ink.alpha(0.1))
-        .child(text(words.into()).font(CAPTION).color(ink))
+/// A secondary action (kit `Outline`).
+fn quiet(key: impl Into<String>, label: impl Into<String>, t: &Tokens) -> El {
+    action(key, label.into(), false, t)
+}
+
+/// A kit button: `Submit` when `accent`, else `Outline`.
+fn action(key: impl Into<String>, label: String, accent: bool, t: &Tokens) -> El {
+    let variant = if accent {
+        ButtonVariant::Submit
+    } else {
+        ButtonVariant::Outline
+    };
+    Button::new(label)
+        .variant(variant)
+        .control_size(ControlSize::Large)
+        .build(&t.kit)
+        .key(key)
+        .focusable(true)
+        .min_h(grown(t.ty.body, t.space.s2))
+}
+
+/// A neutral word on a hairline: Recommended. Not a status, so no tone.
+fn badge(words: impl Into<String>, t: &Tokens) -> El {
+    el().px(t.space.s2)
+        .py(t.space.s0_5)
+        .radius(t.radius.xs)
+        .border(t.space.hairline, t.roles.border.control.paint())
+        .child(
+            text(words.into())
+                .font(t.ty.caption)
+                .color(t.roles.text.dim.paint()),
+        )
         .self_center()
 }
 
-/// A green check and a word: Installed, Granted.
-fn good(word: &'static str, p: &Ink) -> El {
-    row()
-        .h(28.0)
-        .px(12.0)
-        .gap(6.0)
-        .radius(14.0)
-        .items_center()
-        .fill(p.marks.good.alpha(0.12))
-        .child(rune::icon(&icons::CHECK, 13.0).color(p.marks.good))
-        .child(text(word).font(LABEL_STRONG).color(p.marks.good))
+/// Done, as colour, mark and word: Installed, Granted.
+fn good(word: &'static str, t: &Tokens) -> El {
+    tone_badge(t, State::Done, Some(word.to_owned()))
 }
 
 /// Back and Continue, under every step but the first and last.
-fn nav(desk: &Desk, p: &Ink) -> Option<El> {
+fn nav(desk: &Desk, t: &Tokens) -> Option<El> {
     let step = desk.onboarding.step;
     if matches!(step, Step::Welcome | Step::Done) {
         return None;
     }
-    let back = pressable("onboarding-back", p)
-        .size(34.0, 34.0)
-        .radius(17.0)
-        .center()
-        .fill(p.accent.alpha(0.14))
-        .focusable(true)
-        .label("Back")
-        .on_press(Desk::onboarding_back)
-        .child(
-            rune::icon(&icons::ARROW_LEFT, 14.0)
-                .color(p.accent)
-                .a11y_hidden(),
-        );
+    let back = super::icon_press(
+        &icons::ARROW_LEFT,
+        "Back",
+        "onboarding-back",
+        t,
+        Desk::onboarding_back,
+    )
+    .focusable(true);
     Some(
         row()
-            .pt(10.0)
-            .gap(10.0)
+            .pt(t.space.s3)
+            .gap(t.space.s3)
             .items_center()
             .child(back)
             .child(primary(
                 "onboarding-continue",
                 "Continue",
-                p,
+                t,
                 Desk::onboarding_continue,
             )),
     )
@@ -256,68 +294,67 @@ fn art(image: Option<&rune::Image>, size: f32) -> El {
     }
 }
 
-fn welcome(desk: &Desk, p: &Ink) -> El {
+fn welcome(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
     col()
         .w_full()
-        .max_w(520.0)
-        .gap(12.0)
+        .max_w(GEOMETRY.welcome_max)
+        .gap(s.s3)
         .items_center()
-        .child(art(desk.fox_image(), 136.0).a11y_hidden())
+        .child(art(desk.fox_image(), GEOMETRY.fox).a11y_hidden())
         .child(
             text("Get started with phux")
-                .font(TextStyle::new(30.0, 700.0))
-                .color(p.text)
+                .font(t.ty.display)
+                .color(t.roles.text.text.paint())
                 .align(Align::Center)
                 .role("heading")
                 .level(1),
         )
         .child(
             text(words::PROMISE.welcome)
-                .font(LEAD)
-                .color(p.dim)
+                .font(t.ty.lead)
+                .color(t.roles.text.dim.paint())
                 .align(Align::Center)
                 .wrap(),
         )
-        .child(el().h(6.0))
+        .child(el().h(s.s2))
         .child(primary(
             "onboarding-continue",
             "Continue",
-            p,
+            t,
             Desk::onboarding_continue,
         ))
         .child(
-            pressable("onboarding-skip", p)
-                .px(10.0)
-                .py(4.0)
-                .radius(6.0)
-                .focusable(true)
-                .label("Skip for now")
+            Button::new("Skip for now")
+                .variant(ButtonVariant::Ghost)
+                .control_size(ControlSize::Large)
                 .on_press(Desk::skip_onboarding)
-                .child(
-                    text("Skip for now")
-                        .font(LABEL)
-                        .color(p.accent)
-                        .a11y_hidden(),
-                ),
+                .build(&t.kit)
+                .key("onboarding-skip")
+                .focusable(true)
+                .min_h(grown(t.ty.body, t.space.s2)),
         )
 }
 
-fn panel(p: &Ink) -> El {
+/// A group of choices: an opaque raised card (no ad hoc translucency,
+/// §1.2), `radius.lg`.
+fn panel(t: &Tokens) -> El {
+    let s = &t.space;
     col()
         .w_full()
-        .max_w(600.0)
-        .padding(16.0)
-        .gap(16.0)
-        .radius(14.0)
+        .max_w(GEOMETRY.panel_max)
+        .padding(s.s4)
+        .gap(s.s4)
+        .radius(t.radius.lg)
         .continuous_corners()
-        .fill(p.raised.alpha(0.6))
-        .border(1.0, p.separator)
+        .fill(t.roles.layer.raised.paint())
+        .border(s.hairline, t.roles.border.base.paint())
 }
 
-fn note(words: impl Into<String>, p: &Ink) -> El {
+fn note(words: impl Into<String>, t: &Tokens) -> El {
     text(words.into())
-        .font(COPY)
-        .color(p.dim)
+        .font(t.ty.body)
+        .color(t.roles.text.dim.paint())
         .align(Align::Center)
         .wrap()
 }

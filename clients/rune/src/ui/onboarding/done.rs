@@ -2,23 +2,14 @@
 
 use super::*;
 
-/// A chord as key caps: `⇧⌘S`, or `Ctrl+Shift+S`.
-fn caps(chord: &str, p: &Ink) -> El {
+/// A chord as kit key caps (`Keybind`): `⇧⌘S`, or `Ctrl+Shift+S`.
+fn caps(chord: &str, t: &Tokens) -> El {
     let parts: Vec<String> = if chord.contains('+') {
         chord.split('+').map(str::to_owned).collect()
     } else {
         chord.chars().map(String::from).collect()
     };
-    row().gap(4.0).children(parts.into_iter().map(|part| {
-        el().min_w(22.0)
-            .h(22.0)
-            .px(6.0)
-            .radius(5.0)
-            .center()
-            .fill(p.current)
-            .border(1.0, p.separator)
-            .child(text(part).font(CAPTION).color(p.text))
-    }))
+    rune_kit::Keybind::new(&parts).build(&t.kit)
 }
 
 /// Three keys worth knowing, from the keymap Rune runs.
@@ -28,40 +19,40 @@ const KEYS: [Shortcut; 3] = [
     Shortcut::SplitRight,
 ];
 
-/// On by default: without it a reboot, or often a logout, ends every session.
-fn keep_alive(desk: &Desk, p: &Ink) -> El {
+/// A single-column card: opaque raised, `radius.md`.
+fn card(t: &Tokens) -> El {
     col()
         .w_full()
-        .max_w(400.0)
-        .radius(12.0)
-        .fill(p.raised.alpha(0.6))
-        .border(1.0, p.separator)
-        .child(crate::ui::settings::toggle(
-            desk,
-            "onboarding-keep-alive",
-            "Keep sessions running after logout and reboot",
-            "Runs phux as a systemd user service.",
-            desk.onboarding.keep_alive,
-            Desk::toggle_keep_alive,
-            p,
-        ))
+        .max_w(GEOMETRY.list_max)
+        .radius(t.radius.md)
+        .fill(t.roles.layer.raised.paint())
+        .border(t.space.hairline, t.roles.border.base.paint())
+}
+
+/// On by default: without it a reboot, or often a logout, ends every session.
+fn keep_alive(desk: &Desk, t: &Tokens) -> El {
+    let toggle = crate::ui::settings::Toggle {
+        key: "onboarding-keep-alive",
+        title: "Keep sessions running after logout and reboot",
+        detail: "Runs phux as a systemd user service.",
+        on: desk.onboarding.keep_alive,
+        press: Desk::toggle_keep_alive,
+        enabled: true,
+    };
+    card(t).child(crate::ui::settings::toggle(desk, toggle, t))
 }
 
 /// Start an agent found here, so the first run ends with one at work; with
 /// none, the short tour instead of a dead end.
-fn start_agent(desk: &Desk, p: &Ink) -> El {
-    let panel = col()
+fn start_agent(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    let panel = card(t)
         .key("done-agents")
-        .w_full()
-        .max_w(400.0)
-        .padding(14.0)
-        .gap(10.0)
-        .radius(12.0)
-        .items_center()
-        .fill(p.raised.alpha(0.6))
-        .border(1.0, p.separator);
+        .padding(s.s4)
+        .gap(s.s3)
+        .items_center();
     let found = match &desk.onboarding.skills {
-        Probe::Asking => return panel.child(note("Looking for agents on this computer…", p)),
+        Probe::Asking => return panel.child(note("Looking for agents on this computer…", t)),
         Probe::Ready(skills) => words::starters(skills),
         Probe::Unsupported | Probe::Failed(_) => Vec::new(),
     };
@@ -70,110 +61,108 @@ fn start_agent(desk: &Desk, p: &Ink) -> El {
             .child(note(
                 "No coding agent found on this computer. Install Claude Code, Codex or \
                  OpenCode and phux runs it here, with its status in the sidebar.",
-                p,
+                t,
             ))
-            .child(quiet("done-tour", "Take the short tour", p).on_press(Desk::take_the_tour));
+            .child(quiet("done-tour", "Take the short tour", t).on_press(Desk::take_the_tour));
     }
+    // The first agent is the step's suggestion; the others are choices.
     let buttons = found.into_iter().enumerate().map(|(at, id)| {
-        let (fill, ink) = if at == 0 {
-            (p.accent, p.on_accent)
-        } else {
-            (p.current, p.text)
-        };
         let label = format!("Start {} here", words::agent_name(id));
-        pill(format!("done-agent-{id}"), label, fill, ink, p)
+        action(format!("done-agent-{id}"), label, at == 0, t)
             .on_press(move |d: &mut Desk| d.start_agent(id))
     });
     panel
         .child(note(
             "Start an agent in a pane with the phux skill set up. Its status shows in the sidebar.",
-            p,
+            t,
         ))
         .child(
             row()
-                .gap(8.0)
+                .gap(s.s2)
                 .flex_wrap()
                 .justify_center()
                 .children(buttons),
         )
 }
 
-pub(super) fn done(desk: &Desk, p: &Ink) -> El {
-    let mut list = col()
-        .w_full()
-        .max_w(400.0)
-        .radius(12.0)
-        .fill(p.raised.alpha(0.6))
-        .border(1.0, p.separator);
+/// The brand fox with the done mark on its shoulder.
+fn mark(desk: &Desk, t: &Tokens) -> El {
+    let done = t.status.tone(phux_design::Tone::Done).ink;
+    let side = t.icon.button.md;
+    // The mark sits a step in from the fox's corner.
+    let at = GEOMETRY.fox_done - side - t.space.s1;
+    el().size(GEOMETRY.fox_done, GEOMETRY.fox_done)
+        .child(art(desk.fox_image(), GEOMETRY.fox_done))
+        .child(
+            el().absolute(at, at)
+                .size(side, side)
+                .radius(t.radius.full)
+                .center()
+                .fill(done)
+                .child(rune::icon(&icons::CHECK, t.icon.grid).color(crate::theme::on_fill(done))),
+        )
+        .a11y_hidden()
+}
+
+pub(super) fn done(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    let rule = t.roles.border.base.paint();
+    let mut list = card(t);
     for (at, command) in KEYS.into_iter().filter_map(keys::command).enumerate() {
         if at > 0 {
             list = list.child(
                 el().w_full()
-                    .px(14.0)
-                    .child(el().w_full().h(1.0).fill(p.separator)),
+                    .px(s.s3)
+                    .child(el().w_full().h(s.hairline).fill(rule)),
             );
         }
         list = list.child(
             row()
                 .key(format!("done-key-{at}"))
                 .w_full()
-                .h(44.0)
-                .px(14.0)
+                .min_h(s.touch_min)
+                .px(s.s3)
                 .items_center()
                 .label(format!("{}, {}", command.title, command.hint()))
-                .child(text(command.title).font(LABEL).color(p.text).a11y_hidden())
+                .child(
+                    text(command.title)
+                        .font(medium(t.ty.label))
+                        .color(t.roles.text.text.paint())
+                        .a11y_hidden(),
+                )
                 .child(el().grow(1.0))
-                .child(caps(&command.hint(), p).a11y_hidden()),
+                .child(caps(&command.hint(), t).a11y_hidden()),
         );
     }
-    let mark = el()
-        .size(112.0, 112.0)
-        .child(art(desk.fox_image(), 112.0))
-        .child(
-            el().absolute(80.0, 80.0)
-                .size(28.0, 28.0)
-                .radius(14.0)
-                .center()
-                .fill(p.marks.good)
-                .child(rune::icon(&icons::CHECK, 16.0).color(crate::theme::on_fill(p.marks.good))),
-        )
-        .a11y_hidden();
     col()
         .w_full()
-        .gap(12.0)
+        .gap(s.s3)
         .items_center()
-        .child(mark)
+        .child(mark(desk, t))
         .child(
             text("You're all set")
-                .font(TITLE)
-                .color(p.text)
+                .font(t.ty.display)
+                .color(t.roles.text.text.paint())
                 .align(Align::Center)
                 .role("heading")
                 .level(1),
         )
-        .child(start_agent(desk, p))
+        .child(start_agent(desk, t))
         .child(
             text("A few keys worth knowing, from your keymap.")
-                .font(LEAD)
-                .color(p.dim)
+                .font(t.ty.lead)
+                .color(t.roles.text.dim.paint())
                 .align(Align::Center),
         )
         .child(list)
-        .children(words::KEEP_ALIVE.then(|| keep_alive(desk, p)))
+        .children(words::KEEP_ALIVE.then(|| keep_alive(desk, t)))
         // Optional: the phone app, from the same screen Settings shows.
-        .child(
-            el().w_full()
-                .max_w(400.0)
-                .radius(12.0)
-                .fill(p.raised.alpha(0.6))
-                .border(1.0, p.separator)
-                .child(super::super::pair::panel(desk, p, false)),
-        )
-        .child(el().h(4.0))
+        .child(card(t).child(crate::ui::pair::panel(desk, t, false)))
+        .child(el().h(s.s1))
         .child(primary(
             "onboarding-start",
             "Start using phux",
-            p,
+            t,
             Desk::start_using,
         ))
 }
