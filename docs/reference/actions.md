@@ -52,6 +52,8 @@ The **Palette** column is the command-palette section the action is offered unde
 | `next-pane` | Pane |  | Cycle focus to the next pane |
 | `previous-pane` | Pane |  | Cycle focus to the previous pane |
 | `last-pane` | Pane |  | Jump back to the previously focused pane |
+| `next-slot-tab` | Pane |  | Show the focused split's next tab |
+| `previous-slot-tab` | Pane |  | Show the focused split's previous tab |
 | `toggle-zoom` | Pane |  | Zoom the focused pane to fill the tab (toggle) |
 | `toggle-sidebar` | phux |  | Show or hide the sidebar (toggle) |
 | `command-palette` | — |  | Open the fuzzy commands and help finder |

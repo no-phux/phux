@@ -1,5 +1,5 @@
 ---
-source: crates/phux-tui/src/render/chrome/dividers.rs
+source: crates/phux-tui/src/render/chrome/dividers/tests/titles.rs
 expression: "format!(\"bright {bright_row}\\ndim    {dim_row}\\n\")"
 ---
 bright ─ [ada] shell ──────────────────────────────────
