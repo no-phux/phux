@@ -15,19 +15,51 @@
         margin: 0;
         background: var(--phux-layer-ground);
         color: var(--phux-text-text);
+        /* Human copy in the ui face (§1.4 voice); machine nouns opt into
+           mono below. */
         font: var(--phux-type-label-weight) var(--phux-type-label-size) / var(--phux-type-label-line-height)
-          var(--phux-font-mono);
+          var(--phux-font-ui);
+        font-feature-settings: var(--phux-font-ui-features);
       }
+      /* One centred content column with a shared start edge: the hint, the
+         controls, the terminal and the badges all align to it. */
       main {
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
         gap: var(--phux-space-s3);
         padding: var(--phux-space-page-margin);
+        inline-size: min(100%, max-content);
+        max-inline-size: 100%;
+        box-sizing: border-box;
+        margin-inline: auto;
+      }
+      main > * {
+        max-inline-size: 100%;
+        box-sizing: border-box;
+      }
+      /* Machine nouns: paths, ids, counts and commands, in mono with
+         tabular figures, isolated left to right so a right-to-left page
+         never reorders them (§1.11). */
+      .phux-path-results,
+      .phux-path-panel input,
+      #phux-approvals pre,
+      .phux-find input,
+      .phux-find-count,
+      .phux-machine {
+        font-family: var(--phux-font-mono);
+        font-variant-numeric: tabular-nums;
+        direction: ltr;
+        unicode-bidi: isolate;
       }
       /* The wasm client sizes the canvas to the terminal grid and paints its
-         own ground, solved from the terminal's palette. */
+         own ground, solved from the terminal's palette. Terminal cells run
+         left to right whatever the page's direction: the canvas's text
+         direction is pinned so the bidi algorithm never runs over them. */
       #phux-term {
+        direction: ltr;
+        unicode-bidi: isolate;
+        align-self: start;
         background: var(--phux-layer-ground);
         outline: var(--phux-space-hairline) solid var(--phux-border-base);
         image-rendering: pixelated;

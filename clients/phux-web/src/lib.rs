@@ -372,6 +372,8 @@ pub fn render_cursor_row(
 /// left to right whatever the page's direction, so the alignment is the
 /// physical `left`, never `start` (which a right-to-left page would flip).
 fn set_cell_text(ctx: &CanvasRenderingContext2d, m: &Metrics) {
+    // The canvas element is `direction: ltr` (index.html), so `fillText`
+    // never reorders a row's glyphs on a right-to-left page.
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
     ctx.set_text_align("left");

@@ -124,8 +124,10 @@ pub const fn mark(state: State) -> &'static str {
         State::DoneSeen | State::Idle => {
             r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/>"#
         }
+        // Eight dots on the ring, as Rune draws it: a dashed stroke at
+        // badge size rasterises close to solid and reads as idle.
         State::Unknown => {
-            r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.2 2.2" stroke-linecap="round"/>"#
+            r#"<circle cx="8" cy="3.7" r="0.8" fill="currentColor"/><circle cx="11.04" cy="4.96" r="0.8" fill="currentColor"/><circle cx="12.3" cy="8" r="0.8" fill="currentColor"/><circle cx="11.04" cy="11.04" r="0.8" fill="currentColor"/><circle cx="8" cy="12.3" r="0.8" fill="currentColor"/><circle cx="4.96" cy="11.04" r="0.8" fill="currentColor"/><circle cx="3.7" cy="8" r="0.8" fill="currentColor"/><circle cx="4.96" cy="4.96" r="0.8" fill="currentColor"/>"#
         }
         State::Ended => {
             r#"<path d="M4.5 8h7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#
@@ -297,5 +299,10 @@ pub(super) fn bell_dot(document: &web_sys::Document) -> Option<web_sys::Element>
     dot.set_attribute("aria-label", word("bell").unwrap_or_default())
         .ok()?;
     dot.set_inner_html(&svg(BELL_MARK));
+    // Mark and word, never the mark alone (§1.3 rule 1).
+    let label = document.create_element("span").ok()?;
+    label.set_class_name("phux-agent-word");
+    label.set_text_content(Some(word("bell").unwrap_or_default()));
+    dot.append_child(&label).ok()?;
     Some(dot)
 }
