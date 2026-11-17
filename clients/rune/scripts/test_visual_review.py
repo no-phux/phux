@@ -56,10 +56,10 @@ class VisualReview(unittest.TestCase):
 
     def test_bundle_has_all_families_hashes_and_honest_status(self):
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 159)
+        self.assertEqual(len(manifest["cases"]), 255)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                         {"inbox": 96, "settings": 34, "navigation": 28, "resources": 1})
+                         {"inbox": 192, "settings": 34, "navigation": 28, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -109,6 +109,9 @@ class VisualReview(unittest.TestCase):
             "inbox/phone-reply-dark-393x852-2x.png",
             "inbox/desktop-scrolled-light-640x360-1x.png",
             "inbox/phone-native-reply-light-320x280-1x.png",
+            "inbox/phone-sending-light-320x280-1x.png",
+            "inbox/phone-other-question-dark-320x568-2x.png",
+            "inbox/desktop-refused-light-640x360-1x.png",
             "settings/small-typed-search.png",
             "settings/small-no-match.png",
             "navigation/matching-light-320.png",
@@ -351,7 +354,7 @@ print("test result: ok. 1 passed")
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 159)
+        self.assertEqual(len(manifest["cases"]), 255)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
         self.assertEqual(len(list((out / "logs").glob("*.log"))), 8)

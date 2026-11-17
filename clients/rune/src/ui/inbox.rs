@@ -9,7 +9,7 @@ use super::sidebar::mark_color;
 use super::status::notice_line;
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::{Ask, Mark};
-use crate::desk::Desk;
+use crate::desk::{Desk, NoticeKind};
 use crate::inbox::{self, Item, Waiting};
 use crate::ui::Cover;
 
@@ -227,13 +227,43 @@ fn reply(desk: &Desk, ink: &Ink) -> El {
             .min_w(0.0)
             .py((44.0 - TOUCH_TEXT.line_px()) / 2.0);
     }
-    row()
+    let mut field = row()
         .w_full()
         .px(10.0)
         .py(if phone { 0.0 } else { 7.0 })
         .radius(7.0)
         .fill(ink.separator)
-        .child(input)
+        .child(input);
+    if phone {
+        field = field.gap(8.0).pr(0.0).child(send_reply(desk, ink));
+    }
+    field
+}
+
+/// A local, named action beside the phone's editor; Return is not its only hint.
+fn send_reply(desk: &Desk, ink: &Ink) -> El {
+    let items = desk.inbox_items();
+    let busy = desk
+        .picked_index(&items)
+        .and_then(|i| items.get(i))
+        .is_some_and(|item| matches!(item, Item::Terminal(w) if desk.answering(&w.terminal)));
+    let mut send = pressable("inbox-send", ink)
+        .label(if busy { "Sending answer" } else { "Send reply" })
+        .size(44.0, 44.0)
+        .radius(22.0)
+        .center()
+        .fill(ink.accent)
+        .preserve_focus_on_press(true)
+        .on_press(|d: &mut Desk| d.send_picked_reply())
+        .child(
+            text(if busy { "…" } else { "↑" })
+                .font(TextStyle::new(22.0, 600.0))
+                .color(ink.raised),
+        );
+    if busy || desk.inbox.reply.text.trim().is_empty() {
+        send = send.disabled(true).opacity(0.45);
+    }
+    send
 }
 
 fn approval_card(approval: &Approval, phone: bool, ink: &Ink) -> El {
@@ -377,6 +407,7 @@ fn empty(ink: &Ink) -> El {
 fn footer(desk: &Desk, ink: &Ink) -> El {
     let mut foot = row().w_full().px(14.0).py(8.0).gap(12.0).items_center();
     foot = match &desk.notice {
+        Some(notice) if desk.phone.is_some() && notice.kind == NoticeKind::Info => return el(),
         Some(notice) => foot.child(notice_line(Some(notice), ink)),
         None if desk.phone.is_some() => return el(),
         None => foot
@@ -400,7 +431,26 @@ fn title(desk: &Desk, count: usize, ink: &Ink) -> El {
         .items_center()
         .justify_between();
     if phone {
-        title = title.child(row().gap(10.0).items_center().child(heading).child(count));
+        let mut leading = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(2.0)
+            .child(row().gap(10.0).items_center().child(heading).child(count));
+        // Confirmations stay in the fixed header; errors wrap beside the editor.
+        if let Some(notice) = &desk.notice
+            && notice.kind == NoticeKind::Info
+        {
+            leading = leading.child(
+                text(notice.text.clone())
+                    .key("inbox-receipt-status")
+                    .role("status")
+                    .font(CAPTION)
+                    .color(ink.text)
+                    .w_full()
+                    .truncate(),
+            );
+        }
+        title = title.gap(8.0).child(leading);
         title = title.child(
             pressable("inbox-close", ink)
                 .label("Close Inbox")
