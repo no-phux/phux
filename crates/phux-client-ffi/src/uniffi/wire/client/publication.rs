@@ -26,12 +26,23 @@ impl RemoteClient {
             connection_epoch: observation.connection_epoch,
             events,
             events_dropped: observation.events_dropped,
-            status: status::connection(Some(observation.status)).into(),
+            status: WireStatus::from(Some(observation.status)),
             last_error: observation.last_error,
             topology: observation.topology.map(|graph| {
                 let replica = client.map(Client::organization);
-                topology::session_graph(graph, replica.as_ref()).into()
+                session_topology(graph, replica.as_ref())
             }),
         }
+    }
+}
+
+#[uniffi::export]
+impl RemoteClient {
+    /// The latest measured round trip to the server in microseconds, or
+    /// `None` before a liveness probe is answered on this connection.
+    /// `nudge` sends a probe, so a health view refreshes it by nudging.
+    pub fn round_trip_micros(&self) -> Option<u32> {
+        let round_trip = self.runtime_client()?.round_trip()?;
+        Some(u32::try_from(round_trip.as_micros()).unwrap_or(u32::MAX))
     }
 }

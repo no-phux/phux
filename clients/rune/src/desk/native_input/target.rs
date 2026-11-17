@@ -42,13 +42,16 @@ impl Field {
             }
             ("find-query", Some(Modal::FindField)) => (
                 Self::Find,
-                format!("{:?}", d.shown.as_ref().map(|s| (&s.resource, s.view))),
+                format!(
+                    "{:?}",
+                    d.connection.shown.as_ref().map(|s| (&s.resource, s.view))
+                ),
             ),
             ("settings-query", Some(Modal::Settings)) if d.settings_search_focused() => {
                 (Self::Settings, "settings".into())
             }
             ("rename-field", Some(Modal::Rename)) => {
-                (Self::Rename, format!("{:?}", d.tabs.renaming))
+                (Self::Rename, format!("{:?}", d.connection.tabs.renaming))
             }
             ("inbox-reply", Some(Modal::Inbox)) => (Self::Inbox, inbox_owner(d)?),
             ("machine-field", Some(Modal::Machines)) => (Self::Machine, "machine".into()),
@@ -105,9 +108,9 @@ impl Field {
     pub(super) fn edit<'a>(&self, d: &'a Desk) -> Option<&'a TextEdit> {
         Some(match self {
             Self::Palette => &d.palette_query,
-            Self::Find => &d.find_query,
+            Self::Find => &d.connection.find_query,
             Self::Settings => &d.settings_ui.query,
-            Self::Rename => &d.tabs.rename_field,
+            Self::Rename => &d.connection.tabs.rename_field,
             Self::Inbox => &d.inbox.reply,
             Self::Machine => &d.machines.field,
             Self::PhoneSessions => &d.phone.as_ref()?.query,
@@ -120,9 +123,9 @@ impl Field {
     pub(super) fn edit_mut<'a>(&self, d: &'a mut Desk) -> Option<&'a mut TextEdit> {
         Some(match self {
             Self::Palette => &mut d.palette_query,
-            Self::Find => &mut d.find_query,
+            Self::Find => &mut d.connection.find_query,
             Self::Settings => &mut d.settings_ui.query,
-            Self::Rename => &mut d.tabs.rename_field,
+            Self::Rename => &mut d.connection.tabs.rename_field,
             Self::Inbox => &mut d.inbox.reply,
             Self::Machine => &mut d.machines.field,
             Self::PhoneSessions => &mut d.phone.as_mut()?.query,
@@ -138,10 +141,11 @@ impl Field {
         })
     }
 
-    pub(super) fn changed(&self, d: &mut Desk) {
+    pub(super) fn changed(&self, d: &mut Desk, tx: &mut Tx) {
         match self {
             Self::Palette => d.palette_edited(),
             Self::Find => d.run_search(),
+            Self::PhoneSessions => d.phone_search_edited(tx),
             _ => {}
         }
     }
@@ -191,7 +195,7 @@ impl Field {
                 tx.blur();
             }
             if edit.text != before {
-                self.changed(d);
+                self.changed(d, tx);
             }
         }
     }
@@ -216,10 +220,11 @@ pub(super) fn resolve(rt: &Runtime<Desk>) -> Option<Target> {
         return None;
     }
     let connection = format!(
-        "{}:{}:{:?}",
+        "{}:{}:{}:{:?}",
         d.link.server,
-        d.epoch,
-        d.client.as_ref().map(std::sync::Arc::as_ptr)
+        d.connection.namespace(),
+        d.connection.epoch,
+        d.connection.client.as_ref().map(std::sync::Arc::as_ptr)
     );
     if let Some(control) = control(d, &connection) {
         return Some(control);
@@ -241,7 +246,7 @@ fn terminal(d: &Desk, connection: &str) -> Option<Target> {
     if d.native.is_some() && super::accessory::editing(d) {
         return None;
     }
-    let shown = d.shown.as_ref()?;
+    let shown = d.connection.shown.as_ref()?;
     Some(Target::Terminal(format!(
         "{connection}:{}:{:?}",
         shown.resource, shown.view?

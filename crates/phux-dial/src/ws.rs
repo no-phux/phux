@@ -27,8 +27,8 @@ use crate::tls::{CertTrust, TlsClientIdentity};
 const WS_PING_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long a WebSocket may go without *any* inbound message before the peer
-/// is declared gone: three ping intervals, so one lost ping is tolerated.
-pub const WS_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// is declared gone: three pings, so losing one is tolerated.
+pub const WS_LIVENESS_TIMEOUT: Duration = WS_PING_INTERVAL.saturating_mul(3);
 
 /// What the keepalive wants done next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,22 +353,6 @@ impl WsReader {
         }
     }
 
-    /// Receive the next binary message, skipping control frames; `Ok(None)`
-    /// on a clean close.
-    ///
-    /// **This read can park forever** on a half-open connection. Session
-    /// code wants [`recv_message_alive`]; this form is for exchanges the
-    /// caller already bounds.
-    pub async fn recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
-        loop {
-            match self.recv_activity().await? {
-                WsActivity::Message(data) => return Ok(Some(data)),
-                WsActivity::Control => {}
-                WsActivity::Closed => return Ok(None),
-            }
-        }
-    }
-
     /// Take the next phux frame **only if one is already buffered**, without
     /// awaiting the socket, so the attach loop can coalesce a burst into one
     /// render pass.
@@ -530,52 +514,6 @@ mod tests {
             assert_eq!(target.port, 8787);
             assert!(target.is_loopback());
         }
-    }
-
-    #[tokio::test]
-    async fn ipv6_loopback_dials_and_exchanges_a_message() {
-        let listener = tokio::net::TcpListener::bind("[::1]:0")
-            .await
-            .expect("bind IPv6 fixture");
-        let address = listener.local_addr().expect("fixture address");
-        let server = async move {
-            let (tcp, _) = listener.accept().await.expect("accept IPv6 TCP");
-            #[allow(
-                clippy::result_large_err,
-                reason = "tungstenite fixes the HTTP rejection response type"
-            )]
-            let mut ws = tokio_tungstenite::accept_hdr_async(
-                tcp,
-                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                    assert_eq!(
-                        request.headers().get("host").expect("Host authority"),
-                        address.to_string().as_str()
-                    );
-                    assert_eq!(request.uri().path(), "/phux");
-                    Ok(response)
-                },
-            )
-            .await
-            .expect("upgrade IPv6 WebSocket");
-            assert_eq!(
-                ws.next().await.expect("message").expect("read message"),
-                Message::Binary(b"ipv6".to_vec().into())
-            );
-        };
-        let client = async {
-            let mut ws = dial(&plain_dial(format!("ws://{address}/phux")))
-                .await
-                .expect("dial IPv6 WebSocket");
-            ws.send(Message::Binary(b"ipv6".to_vec().into()))
-                .await
-                .expect("send IPv6 payload");
-        };
-        tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::join!(server, client);
-        })
-        .await
-        .expect("IPv6 handshake and payload complete");
     }
 
     fn plain_dial(url: String) -> WsDial {

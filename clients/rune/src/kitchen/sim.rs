@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 
 use super::{Chef, Cook, Goal, Kitchen};
 use crate::creature;
-use crate::reef::{Mood, Rgb, Rng, hash};
+use crate::playground::{Mood, Rgb, Rng, hash};
 
 /// One fixed step of scene time: the same scene whatever the frame rate.
 pub const STEP: f32 = 1.0 / 60.0;

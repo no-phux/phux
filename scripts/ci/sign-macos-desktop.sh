@@ -109,11 +109,13 @@ if [[ ${#binaries[@]} -gt 0 ]]; then
     exit 0
 fi
 
-# Sign the bundled coordinator before sealing the app; never mutate it after signing.
-if [[ -e "$app/Contents/MacOS/phux" ]]; then
-    test -x "$app/Contents/MacOS/phux"
-    codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app/Contents/MacOS/phux"
-fi
+# Sign bundled executables before sealing the app; never mutate them after signing.
+for helper in phux tmd; do
+    if [[ -e "$app/Contents/MacOS/$helper" ]]; then
+        test -x "$app/Contents/MacOS/$helper"
+        codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app/Contents/MacOS/$helper"
+    fi
+done
 codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 

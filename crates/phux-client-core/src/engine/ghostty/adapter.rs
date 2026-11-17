@@ -3,10 +3,10 @@
 use super::{
     BootstrapProgress, BootstrapStreamProfile, CONTINUATION_LIMIT, CanonicalGeometry,
     DocumentAnchorId, EngineAdapter, EngineCodec, EngineDamage, EngineEffect, EngineEffectBuffer,
-    EnginePresentationAdapter, FeedDecoder, GhosttyAdapter, GhosttyEngineError, GhosttyReplica,
-    GhosttyTerminal, HashMap, HistoryApplyOutcome, NativeDecoderState, NativeReplica,
-    PendingEffects, PhantomData, PointSpace, Rc, ReplicaState, SYNTH_SCROLLBACK_ROWS,
-    enforce_history_budget, finish_native, install_effect_hooks, push_history, push_native,
+    EnginePresentationAdapter, GhosttyAdapter, GhosttyEngineError, GhosttyReplica, GhosttyTerminal,
+    HashMap, HistoryApplyOutcome, NativeDecoderState, PendingEffects, PhantomData, PointSpace, Rc,
+    ReplicaState, SYNTH_SCROLLBACK_ROWS, enforce_history_budget, finish_native,
+    install_effect_hooks, push_history, push_native, start_native,
 };
 
 impl EngineAdapter for GhosttyAdapter {
@@ -22,28 +22,11 @@ impl EngineAdapter for GhosttyAdapter {
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
-                let mut terminal = GhosttyTerminal::new(geometry.cols, geometry.rows)?;
-                phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
-                terminal.resize(geometry.cols, geometry.rows, 8, 16)?;
-                terminal.set_scrollback_max_lines(Some(SYNTH_SCROLLBACK_ROWS))?;
-                let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
-                install_effect_hooks(&mut terminal, &pending)?;
-                ReplicaState::Synthesized {
-                    terminal,
-                    protocol_finished: false,
-                }
+                synthesized_replica(geometry, &pending)?
             }
             BootstrapStreamProfile::NativeState {
                 codec: EngineCodec::LibghosttySnapshotV1,
-            } if self.native_available => {
-                let mut decoder = FeedDecoder::new(CONTINUATION_LIMIT)?;
-                decoder.set_max_continuation_bytes(CONTINUATION_LIMIT)?;
-                ReplicaState::Native(NativeReplica {
-                    pending: Rc::clone(&pending),
-                    decoder: NativeDecoderState::Collecting(decoder),
-                    protocol_finished: false,
-                })
-            }
+            } if self.native_available => ReplicaState::Native(start_native(Rc::clone(&pending))?),
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
@@ -228,6 +211,22 @@ impl EngineAdapter for GhosttyAdapter {
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
     }
+}
+
+fn synthesized_replica(
+    geometry: CanonicalGeometry,
+    pending: &Rc<PendingEffects>,
+) -> Result<ReplicaState, GhosttyEngineError> {
+    let mut terminal = GhosttyTerminal::new(geometry.cols, geometry.rows)?;
+    phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+    terminal.resize(geometry.cols, geometry.rows, 8, 16)?;
+    terminal.set_scrollback_max_lines(Some(SYNTH_SCROLLBACK_ROWS))?;
+    terminal.set_continuation_max_bytes(CONTINUATION_LIMIT)?;
+    install_effect_hooks(&mut terminal, pending)?;
+    Ok(ReplicaState::Synthesized {
+        terminal,
+        protocol_finished: false,
+    })
 }
 
 impl EnginePresentationAdapter for GhosttyAdapter {

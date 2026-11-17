@@ -57,6 +57,42 @@ impl ServerState {
         self.config.voice = voice;
     }
 
+    /// Set the `[restore]` settings. Called once at server startup to mirror
+    /// [`crate::runtime::ServerConfig::restore`].
+    pub fn set_restore(&mut self, restore: phux_config::RestoreCfg) {
+        self.config.restore = restore;
+    }
+
+    /// Set the `[forward]` settings. Called once at server startup to mirror
+    /// [`crate::runtime::ServerConfig::forward`].
+    pub fn set_forward(&mut self, forward: phux_config::ForwardCfg) {
+        self.config.forward = forward;
+    }
+
+    /// Read the `[forward]` settings set by [`Self::set_forward`].
+    #[must_use]
+    pub const fn forward(&self) -> &phux_config::ForwardCfg {
+        &self.config.forward
+    }
+
+    /// The ssh-agent broker.
+    pub(crate) const fn forward_agent(&self) -> &crate::runtime::forward::agent::Broker {
+        &self.forward_agent
+    }
+
+    /// Mutable [`Self::forward_agent`].
+    pub(crate) const fn forward_agent_mut(
+        &mut self,
+    ) -> &mut crate::runtime::forward::agent::Broker {
+        &mut self.forward_agent
+    }
+
+    /// Read the `[restore]` settings set by [`Self::set_restore`].
+    #[must_use]
+    pub const fn restore(&self) -> &phux_config::RestoreCfg {
+        &self.config.restore
+    }
+
     /// Set the metadata value cap (ADR-0129).
     pub const fn set_metadata_value_bytes(&mut self, bytes: u32) {
         self.config.metadata_value_bytes = bytes;

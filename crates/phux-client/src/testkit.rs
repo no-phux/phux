@@ -41,6 +41,8 @@ pub use org::OrgFixture;
 mod reply;
 mod spec;
 
+pub use spec::baseline_features;
+
 use reply::reference_reply;
 
 const FIXTURE_STREAM_ID: StreamId =
@@ -114,10 +116,10 @@ pub struct ScriptSpec {
     /// The `COMMAND_RESULT` an `APPEND_RESOURCE_OUTPUT` is answered with
     /// (default a bare `Ok`).
     append_result: Option<CommandResult>,
-    /// The features `HELLO_OK` advertises; empty by default, so a verb that
-    /// needs a bit must refuse against `new()`.
+    /// The features `HELLO_OK` advertises; [`ScriptSpec::new`] starts from
+    /// the 1.x baseline, so a verb that needs a later bit refuses against it.
     server_features: ServerFeatureSet,
-    /// The extended features `HELLO_OK` advertises; empty by default.
+    /// The extended features `HELLO_OK` advertises; see `server_features`.
     server_features_ext: ServerFeatureExtSet,
     /// When set, `GET_SCREEN` is never answered: the connection stays open
     /// and silent. See [`ScriptSpec::wedge_screen_reads`].
@@ -250,10 +252,11 @@ impl ScriptedServer {
             }
             if subscribed && self.spec.end == EndOfScript::HangUp {
                 // Half-close so the client sees a clean EOF rather than
-                // ECONNRESET from unread frames; give one racing frame a
-                // bounded chance to land, without waiting for the close.
+                // ECONNRESET from unread frames; give racing frames (a
+                // watch subscribes to more than one key) a bounded chance
+                // to land, without waiting for the close.
                 self.link.close_output().await;
-                if let Ok(Some(frame)) =
+                while let Ok(Some(frame)) =
                     tokio::time::timeout(std::time::Duration::from_millis(50), self.link.recv())
                         .await
                 {
@@ -282,6 +285,28 @@ pub fn serve_one(
     let listener = UnixListener::bind(&socket).expect("bind scripted server");
     let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
     (socket, server)
+}
+
+/// [`serve_one`] in a fresh tempdir, then dial it: the tempdir (keep it
+/// alive), the client connection, and the server task.
+///
+/// # Panics
+///
+/// If the tempdir, bind, or connect fails.
+#[cfg(test)]
+pub async fn connect_one(
+    spec: ScriptSpec,
+) -> (
+    tempfile::TempDir,
+    crate::attach::connection::Connection,
+    tokio::task::JoinHandle<Vec<FrameKind>>,
+) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (socket, server) = serve_one(dir.path(), spec);
+    let conn = crate::attach::connection::Connection::connect(&socket)
+        .await
+        .expect("connect");
+    (dir, conn, server)
 }
 
 /// Serve every connection `listener` accepts with a fresh spec from

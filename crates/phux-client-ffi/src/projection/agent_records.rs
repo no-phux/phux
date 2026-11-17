@@ -1,6 +1,6 @@
 //! `AgentSession` records (ADR-0103) as the codec's own JSON lines.
 //!
-//! The kernel validated and decoded every record; both encoders hand them
+//! The kernel validated and decoded every record; the bridge hands them
 //! on as `AgentEventsJsonlV1` lines (`{"seq","ts_ms","type","data"}`, one
 //! object per line, each ending in `\n`) so a host parses one documented
 //! shape, including the `phux.transcript/v1` entries `provider_raw` records
@@ -11,14 +11,14 @@ use phux_client_core::session::agent_stream::{
 };
 
 /// One representation-neutral foreign record batch.
-pub(crate) struct RecordBatch {
+pub struct RecordBatch {
     pub mode: AgentRecordMode,
     pub jsonl: String,
     pub seq: u64,
 }
 
 /// Empty appends advance identity only; empty replacements clear evidence.
-pub(crate) fn project(publication: &AgentPublication) -> Option<RecordBatch> {
+pub fn project(publication: &AgentPublication) -> Option<RecordBatch> {
     if publication.mode == AgentRecordMode::Append && publication.records.is_empty() {
         return None;
     }

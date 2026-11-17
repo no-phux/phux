@@ -215,15 +215,47 @@ pub(crate) struct Plan {
     pub(crate) latest: Option<Entry>,
     /// What this run installs: the manifest's build, or a `--version` pin.
     pub(crate) target: Build,
-    /// Whether the target differs from what is installed.
-    pub(crate) changes_version: bool,
-    /// Whether the target is an update over what is installed.
-    pub(crate) update_available: bool,
+    /// How the target relates to what is installed.
+    pub(crate) change: VersionChange,
     /// The release target triple for this host.
     pub(crate) host_target: &'static str,
 }
 
+/// How an update target relates to the installed build. An upgrade always
+/// changes the version; the type keeps "upgrade, yet unchanged" unspellable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionChange {
+    /// The target is what is installed.
+    Same,
+    /// The target is an update over what is installed.
+    Upgrade,
+    /// The target differs but is not an update: a downgrade, a rollback, or
+    /// a pin to an older build.
+    Other,
+}
+
+impl VersionChange {
+    /// Classify `target` against `installed`, given whether it is newer.
+    pub(crate) const fn between(differs: bool, newer: bool) -> Self {
+        match (differs, newer) {
+            (false, _) => Self::Same,
+            (true, true) => Self::Upgrade,
+            (true, false) => Self::Other,
+        }
+    }
+}
+
 impl Plan {
+    /// Whether the target differs from what is installed.
+    pub(crate) fn changes_version(&self) -> bool {
+        self.change != VersionChange::Same
+    }
+
+    /// Whether the target is an update over what is installed.
+    pub(crate) fn update_available(&self) -> bool {
+        self.change == VersionChange::Upgrade
+    }
+
     /// The manifest entry for the target, when the manifest names it. A pin
     /// to any other release is verified against its own sidecar.
     pub(super) fn vouched(&self) -> Option<&Entry> {

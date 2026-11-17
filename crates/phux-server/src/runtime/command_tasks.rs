@@ -171,116 +171,113 @@ mod tests {
 
     #[tokio::test]
     async fn queued_commands_keep_order_and_control_can_run() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut tasks =
-                    CommandTasks::with_budget(Budget::new(4, 1024), CancellationToken::new());
-                let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-                let first_finished = Rc::new(Cell::new(false));
-                let first = first_finished.clone();
-                tasks
-                    .try_submit(20, async move {
-                        release_rx.await.unwrap();
-                        first.set(true);
-                    })
-                    .unwrap();
-                let (second_tx, mut second_rx) = tokio::sync::oneshot::channel();
-                tasks
-                    .try_submit(20, async move {
-                        assert!(
-                            first_finished.get(),
-                            "upload must finish before transcription"
-                        );
-                        second_tx.send(()).unwrap();
-                    })
-                    .unwrap();
-                tokio::task::yield_now().await;
-                assert!(matches!(
-                    second_rx.try_recv(),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-                ));
-                release_tx.send(()).unwrap();
-                second_rx.await.unwrap();
-                tasks.shutdown().await;
-                drop(tasks);
-            })
-            .await;
+        crate::runtime::test_support::local(async {
+            let mut tasks =
+                CommandTasks::with_budget(Budget::new(4, 1024), CancellationToken::new());
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let first_finished = Rc::new(Cell::new(false));
+            let first = first_finished.clone();
+            tasks
+                .try_submit(20, async move {
+                    release_rx.await.unwrap();
+                    first.set(true);
+                })
+                .unwrap();
+            let (second_tx, mut second_rx) = tokio::sync::oneshot::channel();
+            tasks
+                .try_submit(20, async move {
+                    assert!(
+                        first_finished.get(),
+                        "upload must finish before transcription"
+                    );
+                    second_tx.send(()).unwrap();
+                })
+                .unwrap();
+            tokio::task::yield_now().await;
+            assert!(matches!(
+                second_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            release_tx.send(()).unwrap();
+            second_rx.await.unwrap();
+            tasks.shutdown().await;
+            drop(tasks);
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn admission_counts_active_work_and_shutdown_reclaims_all_captures() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let budget = Budget::new(4, 100);
-                let mut tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
-                let payload = Rc::new(());
-                for _ in 0..4 {
-                    let retained = payload.clone();
-                    tasks
-                        .try_submit(25, async move {
-                            std::future::pending::<()>().await;
-                            drop(retained);
-                        })
-                        .unwrap();
-                }
-                tokio::task::yield_now().await;
-                assert_eq!(budget.jobs.available_permits(), 0);
-                assert_eq!(budget.bytes.available_permits(), 0);
-                assert!(
-                    tasks
-                        .try_submit(0, async { panic!("refused work ran") })
-                        .is_err()
-                );
-                tasks.shutdown().await;
-                drop(tasks);
-                assert_eq!(Rc::strong_count(&payload), 1);
-                assert_eq!(budget.jobs.available_permits(), 4);
-                assert_eq!(budget.bytes.available_permits(), 100);
+        crate::runtime::test_support::local(async {
+            let budget = Budget::new(4, 100);
+            let mut tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
+            let payload = Rc::new(());
+            for _ in 0..4 {
+                let retained = payload.clone();
+                tasks
+                    .try_submit(25, async move {
+                        std::future::pending::<()>().await;
+                        drop(retained);
+                    })
+                    .unwrap();
+            }
+            tokio::task::yield_now().await;
+            assert_eq!(budget.jobs.available_permits(), 0);
+            assert_eq!(budget.bytes.available_permits(), 0);
+            assert!(
+                tasks
+                    .try_submit(0, async { panic!("refused work ran") })
+                    .is_err()
+            );
+            tasks.shutdown().await;
+            drop(tasks);
+            assert_eq!(Rc::strong_count(&payload), 1);
+            assert_eq!(budget.jobs.available_permits(), 4);
+            assert_eq!(budget.bytes.available_permits(), 100);
 
-                // A byte refusal rolls back the job admission it took.
-                let tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
-                assert!(
-                    tasks
-                        .try_submit(101, async { panic!("refused work ran") })
-                        .is_err()
-                );
-                assert_eq!(budget.jobs.available_permits(), 4);
-                assert_eq!(tasks.connection.jobs.available_permits(), CONNECTION_JOBS);
-            })
-            .await;
+            // A byte refusal rolls back the job admission it took.
+            let tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
+            assert!(
+                tasks
+                    .try_submit(101, async { panic!("refused work ran") })
+                    .is_err()
+            );
+            assert_eq!(budget.jobs.available_permits(), 4);
+            assert_eq!(tasks.connection.jobs.available_permits(), CONNECTION_JOBS);
+        })
+        .await;
     }
 
     /// workload-auth §7 step 2: after revocation cancels the connection, a
     /// queued bulk command never starts.
     #[tokio::test]
     async fn cancellation_stops_queued_work_before_it_runs() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let cancel = CancellationToken::new();
-                let mut tasks = CommandTasks::with_budget(Budget::new(4, 1024), cancel.clone());
-                let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-                tasks
-                    .try_submit(1, async move {
-                        let _ = release_rx.await;
-                    })
-                    .unwrap();
-                let ran = Rc::new(Cell::new(false));
-                let queued = ran.clone();
-                tasks
-                    .try_submit(1, async move {
-                        queued.set(true);
-                    })
-                    .unwrap();
+        crate::runtime::test_support::local(async {
+            let cancel = CancellationToken::new();
+            let mut tasks = CommandTasks::with_budget(Budget::new(4, 1024), cancel.clone());
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            tasks
+                .try_submit(1, async move {
+                    let _ = release_rx.await;
+                })
+                .unwrap();
+            let ran = Rc::new(Cell::new(false));
+            let queued = ran.clone();
+            tasks
+                .try_submit(1, async move {
+                    queued.set(true);
+                })
+                .unwrap();
+            tokio::task::yield_now().await;
+            cancel.cancel();
+            drop(release_tx);
+            for _ in 0..8 {
                 tokio::task::yield_now().await;
-                cancel.cancel();
-                drop(release_tx);
-                for _ in 0..8 {
-                    tokio::task::yield_now().await;
-                }
-                assert!(!ran.get(), "a job queued behind cancellation never runs");
-                tasks.shutdown().await;
-                drop(tasks);
-            })
-            .await;
+            }
+            assert!(!ran.get(), "a job queued behind cancellation never runs");
+            tasks.shutdown().await;
+            drop(tasks);
+        })
+        .await;
     }
 }

@@ -82,7 +82,7 @@ fn native_find_focuses_settings_search_instead_of_the_terminal() {
         });
         settle(&mut rt);
         assert!(rt.state.settings_search_focused());
-        assert!(rt.state.find.is_none());
+        assert!(rt.state.connection.find.is_none());
         rt.update(|d, tx| d.blur_settings_search(tx));
         settle(&mut rt);
         rt.update(|d, tx| d.modal_command(Modal::Settings, Shortcut::Find, tx));
@@ -91,7 +91,7 @@ fn native_find_focuses_settings_search_instead_of_the_terminal() {
             rt.state.settings_search_focused(),
             "menu Find shares chord policy"
         );
-        assert!(rt.state.find.is_none());
+        assert!(rt.state.connection.find.is_none());
         no_terminal_input(&client);
     }
 }
@@ -172,10 +172,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
         settle(&mut rt);
         tap(&mut rt, "settings-query", 0.1);
         rt.paste("clipboard");
-        rt.key(KeyEvent {
-            key: Key::Enter,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Enter));
         settle(&mut rt);
         assert!(!rt.state.settings_search_focused());
         assert_eq!(rt.state.settings_ui.query.text, "clipboard");
@@ -185,10 +182,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
                 .any(|e| e.key.as_deref() == Some("settings-query") && e.focused)
         );
         tap(&mut rt, "settings-query", 0.3);
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         settle(&mut rt);
         assert!(rt.state.settings_open);
         assert!(rt.state.settings_search_focused());
@@ -213,10 +207,7 @@ fn native_enter_escape_and_close_reconcile_settings_focus() {
             rt.state.settings_ui.query.focused
         );
         tap(&mut rt, "settings-terminal", 0.5);
-        rt.key(KeyEvent {
-            key: Key::Escape,
-            mods: Mods::default(),
-        });
+        rt.key(crate::keys::plain(Key::Escape));
         settle(&mut rt);
         assert_eq!(
             rt.state.settings_open, phone,

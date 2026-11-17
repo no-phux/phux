@@ -52,6 +52,7 @@ Panes:
   swap-pane     Swap two panes in a layout
   terminal      Create and place terminals; inspect API and receipts
   resource      Inspect a resource or wait for its process to exit
+  slot          Keep several panes in one layout slot, as tabs
 
 Agents:
   agent         See and drive the agents running in panes
@@ -63,9 +64,11 @@ Agents:
   mission       Track tasks in the local work store
   mail          Send, read and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
+  notify        Post a note for a pane, shown as a toast
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
+  credentials   Use 1Password credentials with one-time approval
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -75,6 +78,7 @@ Machines:
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
+  forward       Forward a port or your ssh-agent to the server's machine
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -627,11 +631,9 @@ Global flags:
 ```text
 List every pane's detected or declared agent and current state.
 
-The third column is the pane's `%name` address, `-` when it has no agent record,
-or why its record name is listed but not `%`-addressable (a name outside
-`[a-z][a-z0-9_-]`, a per-kind constant like `claude`, or one several panes
-share). A per-kind name shows the `phux agent set` that names the pane. JSON
-carries `address` and `address_refusal`.
+The third column is the pane's `%name` (`opencode`, `opencode-2`), `-` with no
+agent record, or the `phux agent set` that names the pane when `%` cannot reach
+its name. JSON carries `address` and `address_refusal`.
 
 Usage: phux agent list [FLAGS]
 
@@ -1130,9 +1132,10 @@ Global flags:
 ```text
 Declare the agent identity and state associated with a pane.
 
-Writes the whole agent record (last writer wins), then reads it back. Exits 1
-(`agent_record_unconfirmed`) when the read-back shows the write did not land or
-the server refused the read; prints the confirmed record on success.
+Writes the whole agent record (last writer wins), keeping the pane's kind when
+`--kind` is omitted, then reads it back. Exits 1 (`agent_record_unconfirmed`)
+when the read-back shows the write did not land or the server refused the read;
+prints the confirmed record on success.
 
 Usage: phux agent set <FLAGS> [TARGET]
 
@@ -1142,7 +1145,8 @@ Arguments:
 Flags:
       --name <NAME>            Human-facing agent name (required, non-empty).
       --kind <KIND>            Open-vocabulary kind slug, e.g. "claude" or
-                               "codex".
+                               "codex". Omitted, the pane keeps its current
+                               kind.
       --state <STATE>          Declared lifecycle state.
                                [possible values: unknown, idle, working,
                                blocked, done]
@@ -1744,7 +1748,8 @@ Approve a held action
 
 Releases the held action ID once: the server runs it as the workload that asked,
 under that workload's own grant, and answers that workload. Asks on a terminal;
-pass `--yes` when stdin is not one.
+pass `--yes` when stdin is not one. Credential requests require interactive
+review of the exact references and identities; `--yes` cannot approve them.
 
 Usage: phux approve [--yes] [--json] <ID>
 
@@ -1752,7 +1757,7 @@ Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
-      --yes            Approve without asking.
+      --yes            Approve a noncredential held action without asking.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -2644,6 +2649,95 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux credentials`
+
+```text
+Use 1Password credentials with one-time approval
+
+Start `serve` on the machine with the 1Password desktop app. `run` starts a
+LOCAL process only after approval and provider completion. Review requests with
+`phux approvals`; decide them with `phux approve ID` or `phux deny ID`.
+
+Usage: phux credentials <SUBCOMMAND>
+
+Commands:
+  run    Execute a LOCAL command with approved secrets injected into its
+         environment.
+  serve  Serve approved requests using the local 1Password desktop integration.
+  help   Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux credentials run`
+
+```text
+Execute a LOCAL command with approved secrets injected into its environment.
+
+Usage: phux credentials run <FLAGS> <COMMAND>…
+
+Arguments:
+  <COMMAND>…  Local executable and arguments, after --. Never use a secret as an
+              argument.
+
+Flags:
+      --provider <NAME>           Provider name on the connected broker.
+      --env <NAME=op://VAULT/ITEM/FIELD>  Environment assignment to a reference;
+                                  repeat for multiple variables.
+      --purpose <TEXT>            Human-readable reason shown in the approval
+                                  request.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux credentials serve`
+
+```text
+Serve approved requests using the local 1Password desktop integration.
+
+Usage: phux credentials serve <FLAGS>
+
+Flags:
+      --name <NAME>               Provider name requesters select.
+      --account <ACCOUNT>         1Password account selector (not a secret).
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
 ## `phux deny`
 
 ```text
@@ -2726,16 +2820,31 @@ server is a normal state and not a broken install.
 
 It ends with "What works here": agent status, notifications, remote reach, file
 transfer, restore after restart and the agent skill, each with the reason and
-the fix. `--json` carries it as `checklist`.
+the fix. `--json` carries it as `checklist`. `--remote HOST` asks that machine's
+server for its list instead.
 
-Usage: phux doctor [--json]
+Usage: phux doctor [--json] [--remote <[USER@]HOST[:PORT]>]
 
 Flags:
-      --json           Emit a stable JSON document instead of human text.
-  -h, --help           Print help
+      --json                      Emit a stable JSON document instead of human
+                                  text.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux download`
@@ -2769,6 +2878,57 @@ Flags:
                                   (default: 60)
       --json                      Print the structured receipt on stdout,
                                   including refusals.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
+```
+
+## `phux forward`
+
+```text
+Listen on this machine and carry each TCP connection to a port on the machine
+the phux server runs on, like `ssh -L`, through the phux connection you already
+have.
+
+`-L 3000:localhost:8080` listens on 127.0.0.1:3000 here and reaches
+localhost:8080 there; a leading BIND_ADDR changes the local address. The server
+dials only its own loopback (`localhost`, `127.0.0.1`, `::1`) unless its
+`[forward] allow` lists the target. Runs in the foreground until Ctrl-C. If the
+phux connection drops, open connections are closed, the listener stays, and new
+connections are served once it reconnects.
+
+`--agent` serves this machine's ssh-agent to the panes on that server instead,
+like `ssh -A`, when the server has `[forward] agent = true`: `ssh` and `git` in
+a pane there can list your keys and ask for signatures, and every signature is
+shown here for a yes or no first. Nothing can add or remove keys. Runs in the
+foreground until Ctrl-C.
+
+Usage: phux forward [FLAGS]
+
+Flags:
+  -L <SPEC>                       What to forward:
+                                  `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+      --agent                     Serve this machine's ssh-agent
+                                  (`SSH_AUTH_SOCK`) to the server's panes,
+                                  asking here before each signature.
+      --yes                       With `--agent`: sign without asking. Any
+                                  process in any pane on that server can then
+                                  use your keys while this runs, the same risk
+                                  as `ssh -A`.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -2872,11 +3032,16 @@ host add NAME quic://HOST:PORT --token-file PATH --cert-fingerprint FP`
 entry, so repeat the credential flags when re-adding a name. `--role satellite`
 registers a peer this hub dials for its users instead of a server you attach to.
 
+`phux host add NAME --code LINK` registers NAME from the connect link `phux
+pair` printed on the other machine, relay links included, without ssh and
+without attaching.
+
 Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
-  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, or an endpoint URI
-              (`quic://`, `wss://`, `ssh://`) to register as is.
+  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, an endpoint URI
+              (`quic://`, `wss://`, `ssh://`) to register as is, or with
+              `--code` the name to register the link under.
   [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
               entry's name.
 
@@ -2942,6 +3107,22 @@ Flags:
                                  prints). Every dial runs end to end with that
                                  server inside the relayed stream, so the relay
                                  sees only ciphertext.
+      --code <LINK>              Pair from a connect link instead of over ssh,
+                                 registering TARGET as the name: the
+                                 `https://phux.sh/connect?...` link `phux pair`
+                                 prints (or its `phux://connect?...` spelling),
+                                 relay links included. `-` reads the link from
+                                 stdin, which keeps its token out of the process
+                                 list. A link's single-use enrollment ticket
+                                 must redeem, or nothing is registered. Phux
+                                 Rune runs this for a link it is opened with.
+      --hardware-key             Keep the client certificate's key in this Mac's
+                                 Secure Enclave instead of a file, so a copy of
+                                 the key file is useless anywhere else. For the
+                                 ssh form and `--code`; refused, with nothing
+                                 changed, on a machine without a Secure Enclave.
+                                 A host added this way keeps a hardware key
+                                 through later renewals.
       --session <NAME>           Session to attach on arrival (`--role remote`
                                  only). Omitted: the remote server's own
                                  last-attach memory decides.
@@ -3276,7 +3457,7 @@ the one it replaces on the far host. Nothing else about the entry changes: no
 re-pairing, no service install. Certificates are issued for 90 days; dials warn
 and `phux doctor` reports one within 14 days of expiry.
 
-Usage: phux host renew [--remote-phux <PATH>] [--json] <NAME>
+Usage: phux host renew [FLAGS] <NAME>
 
 Arguments:
   <NAME>  Registered remote name.
@@ -3287,6 +3468,11 @@ Flags:
                             Omitted: the one the entry recorded when it was
                             added.
                             (default: phux)
+      --hardware-key        Make the new key in this Mac's Secure Enclave
+                            instead of a file, and remove the file key it
+                            replaces. Refused, with nothing changed, on a
+                            machine without a Secure Enclave. A host already on
+                            a hardware key stays on one without this flag.
       --json                Emit stable, versioned JSON on stdout instead of the
                             human view. On failure, stdout stays empty and
                             stderr carries one JSON error object.
@@ -4386,6 +4572,42 @@ Global flags:
                                   `$PHUX_SOCKET`)
 ```
 
+## `phux notify`
+
+```text
+Post a note for a pane.
+
+Rune and the TUI show the note as a toast. When the pane is out of sight, a
+`warn` or `error` note also raises a system notification. Each note replaces the
+pane's last one, so a progress note can be updated in place. Inside a pane the
+note is about that pane; elsewhere, the focused pane.
+
+Examples:
+phux notify "formatted 3 files"
+phux notify --level error "build failed" "3 errors in src/lib.rs"
+phux notify --pane @4 "deploy 90%"
+
+Usage: phux notify [FLAGS] <TITLE> [BODY]
+
+Arguments:
+  <TITLE>  What the note says, on one line.
+  [BODY]   More detail, shown under the title.
+
+Flags:
+      --level <LEVEL>  How much it matters.
+                       [possible values: info, warn, error]
+                       (default: info)
+      --pane <TARGET>  The pane the note is about (a selector). Default: this
+                       pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux omarchy`
 
 ```text
@@ -4613,7 +4835,8 @@ Flags:
                              the address itself).
       --name <NAME>          Human-readable server name to embed in the connect
                              link, shown by the device in its server list.
-                             Omitted: the device picks a default.
+                             Omitted: this machine's name, its `MagicDNS` short
+                             name when the link dials by it, else its host name.
       --json                 Emit the mint, rotation, revocation, list, or prune
                              result as JSON on stdout. `phux host add` consumes
                              the mint document over ssh.
@@ -5917,12 +6140,17 @@ Global flags:
 Show one resource: kind, lifecycle, exit, process, tags, agent.
 
 Prints `key: value` lines, or with `--json` the stable document. Read-only:
-never attaches or resizes.
+never attaches or resizes. `controller` is the connection that last typed into a
+pane: its client id, the name it gave itself, the route it connected by, and
+whether that route is remote. It is `null` when nobody has typed or that
+connection has closed.
 
-Usage: phux resource show [--json] <TARGET>
+Usage: phux resource show [--json] [TARGET]
 
 Arguments:
-  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+  [TARGET]  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+            Omit it inside a pane to show that pane (`$PHUX_TERMINAL_ID`);
+            elsewhere the default is the most-recently-focused pane.
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -6024,7 +6252,7 @@ Global flags:
 Run a command in a pane and capture its exit code.
 
 Reports the command's exit code, output, and duration. Brackets the command with
-sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh) — and
+sentinels to capture the exit status, so it drives sh, bash, zsh, and fish — and
 refuses (exit 2) when a shell is not what is reading the pane, since against
 `vim` or `less` the same bytes are keystrokes, not a command; `--force` skips
 that precondition. The process exit code mirrors the command's — and is 125 when
@@ -6345,6 +6573,11 @@ Flags:
                             running process itself is never adopted: neither
                             launchd nor systemd can restart-supervise a process
                             it did not start.
+
+                            When the live server is the one this systemd unit
+                            already runs, the unit is rewritten, and a listener
+                            it gains comes up by restarting that server in
+                            place, panes kept (`phux upgrade`).
       --print               Print the unit (and the restore wrapper) to stdout
                             without writing or loading anything.
   -h, --help                Print help
@@ -6604,6 +6837,115 @@ Flags:
                        directory's.
       --json           Print the per-agent result as JSON
                        (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot`
+
+```text
+Keep several panes in one layout slot, as tabs
+
+A slot shows one of its tabs and keeps the others running at its size, so
+switching never reflows. Attached clients switch what they show with their own
+keys; `next` and `prev` here move the slot's default, what a fresh attach and
+older clients show.
+
+Usage: phux slot <SUBCOMMAND>
+
+Commands:
+  add   Make PANE the last tab of the slot showing TO.
+  next  Make the next tab the slot's default.
+  out   Give the tab PANE a slot of its own, split beside the one it left.
+  prev  Make the previous tab the slot's default.
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot add`
+
+```text
+Make PANE the last tab of the slot showing TO.
+
+PANE leaves wherever it was: its own split collapses, or it leaves another slot.
+
+Usage: phux slot add <--to <PANE>> [--json] <PANE>
+
+Arguments:
+  <PANE>  The pane to make a tab.
+
+Flags:
+      --to <PANE>      Any tab of the slot it joins.
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot next`
+
+```text
+Make the next tab the slot's default.
+
+Usage: phux slot next [--json] [PANE]
+
+Arguments:
+  [PANE]  Any tab of the slot; `.` for the focused pane.
+          (default: .)
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot out`
+
+```text
+Give the tab PANE a slot of its own, split beside the one it left.
+
+Usage: phux slot out [FLAGS] <PANE>
+
+Arguments:
+  <PANE>  The tab to take out.
+
+Flags:
+      --split <SPLIT>  Split axis: `horizontal` stacks the panes, `vertical`
+                       places them side by side.
+                       [possible values: horizontal, h, vertical, v]
+                       (default: vertical)
+      --ratio <RATIO>  Fraction left to the slot; strictly between 0 and 1.
+                       (default: 0.5)
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot prev`
+
+```text
+Make the previous tab the slot's default.
+
+Usage: phux slot prev [--json] [PANE]
+
+Arguments:
+  [PANE]  Any tab of the slot; `.` for the focused pane.
+          (default: .)
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 
 Global flags:
@@ -7442,10 +7784,10 @@ Flags:
                         Repeatable; any one of them satisfies the watch. The
                         vocabulary is the one this stream prints: `agent_state`,
                         `asked`, `bell`, `command_finished`, `command_started`,
-                        `cwd_changed`, `dirty`, `idle`, `journal_gap`,
-                        `pane_closed`, `pane_spawned`, `source_gap`,
-                        `terminal_control`, `title_changed`, `unknown`.
-                        `unknown` also matches `cwd_changed`,
+                        `controller_changed`, `cwd_changed`, `dirty`, `idle`,
+                        `journal_gap`, `pane_closed`, `pane_spawned`,
+                        `source_gap`, `terminal_control`, `title_changed`,
+                        `unknown`. `unknown` also matches `cwd_changed`,
                         `terminal_control`, `journal_gap`, and `source_gap`,
                         which printed as `unknown` before they had names, so an
                         existing `--until unknown` keeps working. An

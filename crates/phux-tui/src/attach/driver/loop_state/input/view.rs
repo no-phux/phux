@@ -6,31 +6,18 @@ use super::super::{
 };
 use super::PriorView;
 
-/// How much of the view a batch that reported `layout_changed` must redraw,
-/// from the pre-batch and current tilings:
+/// How much of the view a batch that reported `layout_changed` must redraw:
 ///
-/// * the same panes on the same cells: only focus (the heavy borders) moved,
-///   so repaint chrome in place — [`RepaintLevel::Chrome`];
-/// * the same rectangles holding different panes: redraw the panes in place
-///   with no whole-screen clear — [`RepaintLevel::Panes`];
-/// * moved rectangles, or a pane with no published grid to draw: a full
-///   clear-and-recompose — [`RepaintLevel::Full`].
+/// * same panes on the same cells (only focus moved): [`RepaintLevel::Chrome`];
+/// * same rectangles holding different panes: [`RepaintLevel::Panes`], drawn
+///   in place with no clear, so a tab click does not flash on a terminal
+///   without DEC 2026. Taken only when the new tiling covers every old cell
+///   and every pane has a published replica;
+/// * anything else: [`RepaintLevel::Full`].
 ///
-/// The middle arm is what keeps a tab or window click from clearing and
-/// re-compositing the whole screen — the flash a pane on the alternate
-/// screen shows on a terminal that ignores DEC 2026. It is taken only when
-/// the new tiling fully covers the old cells: an identical rectangle
-/// multiset, and every pane `pane_paints` (has a slot and a published
-/// replica), so no stale cell can survive the skipped clear.
-///
-/// This rect diff cannot see boxes drawn over unchanged tiles, so the
-/// caller (`SessionLoop::classify_repaint`) overrides it to
-/// [`RepaintLevel::Full`] first when the batch dismissed a modal overlay
-/// (palette, picker, prompt, copy-mode; focus-only palette actions too) or
-/// opened or closed the floating overlay. That trades the Chrome/Panes
-/// no-clear path for a clear that removes the stale box; on a terminal
-/// without DEC 2026 the dismiss can flash, which is the documented "On
-/// dismiss, repaint everything" behavior of `handle_overlay_key`.
+/// The rect diff cannot see overlay boxes, so `SessionLoop::classify_repaint`
+/// forces `Full` first when the batch dismissed a modal or toggled the
+/// floating overlay.
 pub(in crate::attach::driver::loop_state) fn classify_repaint(
     before: &HashMap<ResourceId, crate::layout::Rect>,
     after: &HashMap<ResourceId, crate::layout::Rect>,
@@ -65,12 +52,9 @@ pub(in crate::attach::driver::loop_state) fn same_rects(
 
 impl super::super::SessionLoop {
     /// How much of the view a batch that reported `layout_changed` must
-    /// redraw, from the pre-batch and current tilings. A dismissed modal or a
-    /// toggled floating overlay forces [`RepaintLevel::Full`]; otherwise see
-    /// [`classify_repaint`] for the rect-diff rule. The pane liveness probe
-    /// reads this loop's slots and published grids. Unchanged tiles over a
-    /// pane whose viewport the batch scrolled still repaint that pane's rows
-    /// ([`RepaintLevel::Rows`]).
+    /// redraw. A dismissed modal or toggled floating overlay forces
+    /// [`RepaintLevel::Full`]; otherwise [`classify_repaint`]'s rect diff,
+    /// with [`RepaintLevel::Rows`] for a pane whose viewport scrolled.
     pub(super) fn classify_repaint(
         &self,
         prior: &PriorView,
@@ -146,10 +130,8 @@ impl super::super::SessionLoop {
             && self.mirror.workspace.active == prior.active_window
             && !self.detach_pending
         {
-            // This window's own layout moved (`resize-pane`, a divider drag,
-            // a swap): resize exactly the panes whose tile changed. A switch
-            // to another window is not a resize (bootstrap sized its panes),
-            // and nothing may follow a sent `DETACH`.
+            // This window's own layout moved: resize exactly the panes whose
+            // tile changed (a window switch is not a resize).
             let rects = view_rects(
                 &self.mirror.workspace,
                 self.mirror.zoomed.as_ref(),
@@ -157,7 +139,15 @@ impl super::super::SessionLoop {
                 self.viewport_dims,
             );
             let leaves = self.mirror.surface_leaves();
-            emit_moved_tiles(conn, leaves, &prior.rects, &rects, self.resize_cell_px).await?;
+            emit_moved_tiles(
+                conn,
+                leaves,
+                &self.mirror.workspace.slots,
+                &prior.rects,
+                &rects,
+                self.resize_cell_px,
+            )
+            .await?;
         }
         Ok(())
     }

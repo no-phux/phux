@@ -1,14 +1,8 @@
 //! A kill's close, committed in the lock that admits it (`docs/protocol.md`).
-//!
-//! The reply to `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and
-//! `CLOSE_TAB_RESOURCES` follows the commit, so the commit is the whole
-//! teardown an observer can see: every closed resource leaves the registry
-//! (and so `GET_STATE`, `ATTACHED`, and every lookup), its `pane_closed` is
-//! journaled, and an emptied ephemeral session goes with it, all in one
-//! acquisition. Only the process outlives the commit: its actor was
-//! cancelled and runs the hangup grace, and its exit watcher later finds the
-//! resource already reaped and only fires `pane-exit` (see
-//! [`ServerState::end_exit_watch`]).
+//! The reply follows the commit, so the commit is the whole observable
+//! teardown: the resource leaves the registry, its `pane_closed` is
+//! journaled, and an emptied ephemeral session goes too. Only the process
+//! outlives it, in its hangup grace ([`ServerState::end_exit_watch`]).
 
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_core::process::ExitOutcome;

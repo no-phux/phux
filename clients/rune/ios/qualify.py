@@ -278,7 +278,8 @@ class Qualification:
         # simulator. An in-app state toggle is not OS lifecycle evidence.
         background = documents / "rune-background.json"
         background.unlink(missing_ok=True)
-        self.simctl("launch", self.udid, "com.apple.Preferences")
+        # Home is already running; cold Settings startup can stall its launch RPC.
+        self.simctl("launch", self.udid, "com.apple.springboard")
         self.await_scene_report(background, pid, "native scene did not acknowledge OS backgrounding")
         shutil.copy2(background, self.out / (prefix + background.name))
         self.require_alive(pid)

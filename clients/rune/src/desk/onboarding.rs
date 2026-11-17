@@ -26,6 +26,7 @@ use crate::onboarding::{
 use crate::system_settings;
 
 mod dock;
+mod start;
 
 const DONE_KEY: &str = "onboarding_done";
 const STEP_KEY: &str = "onboarding_step";
@@ -100,6 +101,8 @@ pub struct Onboarding {
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
     pub copied: bool,
+    /// The agent the last step is starting, once its skill is in place.
+    pub starting: Option<String>,
     /// Run the server as a systemd user service when onboarding finishes
     /// (Linux). On unless switched off.
     pub keep_alive: bool,
@@ -127,6 +130,7 @@ impl Default for Onboarding {
             bundle: None,
             migrate: Migrate::Choosing,
             copied: false,
+            starting: None,
             keep_alive: true,
             dock: dock::Dock::default(),
             asked_at: f64::NEG_INFINITY,
@@ -205,6 +209,9 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         self.onboarding.copied = false;
         let _ = self.prefs.set(STEP_KEY, step.id());
+        if step == Step::Machines {
+            self.list_machines();
+        }
     }
 
     pub fn onboarding_continue(&mut self) {
@@ -232,26 +239,6 @@ impl Desk {
         self.onboarding.grant_sheet = false;
         let _ = self.prefs.set(DONE_KEY, &true);
         let _ = self.prefs.set(STEP_KEY, Step::Welcome.id());
-    }
-
-    /// The last step's button: a normal session, made if there is none.
-    pub fn start_using(&mut self) {
-        self.finish_onboarding();
-        if words::KEEP_ALIVE && self.onboarding.keep_alive {
-            self.ask(&["service", "install", "--adopt"], SLOW, Done::Service);
-        }
-        let Some(topology) = &self.topology else {
-            return;
-        };
-        if !topology.sessions.is_empty() {
-            return;
-        }
-        let taken: Vec<String> = topology.sessions.iter().map(|s| s.name.clone()).collect();
-        let folder = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
-        self.create_session(words::session_name(&folder, &taken));
     }
 
     pub fn toggle_keep_alive(&mut self) {
@@ -416,7 +403,7 @@ impl Desk {
     /// Stop the agent: its pane closes and the tiles come back.
     pub fn cancel_migration(&mut self) {
         if let Migrate::Running(_, Some(pane)) = &self.onboarding.migrate
-            && let Some(client) = &self.client
+            && let Some(client) = &self.connection.client
         {
             let _ = client.close_terminals(vec![pane.clone()]);
         }
@@ -428,11 +415,11 @@ impl Desk {
         match (&pane, migration.session) {
             (Some(pane), Some(session)) => self.show(pane.clone(), &session),
             (None, Some(session)) => {
-                if let Some(client) = &self.client {
+                if let Some(client) = &self.connection.client {
                     client.attach_session(AttachTarget::ByName(session.clone()));
                 }
-                self.pending_session = Some(session);
-                self.wanted = None;
+                self.connection.pending_session = Some(session);
+                self.connection.wanted = None;
             }
             (Some(pane), None) => {
                 self.want(pane.clone());
@@ -456,6 +443,7 @@ impl Desk {
                         Probe::Failed(error) => self.say(NoticeKind::Error, error),
                         probe => self.onboarding.skills = probe,
                     }
+                    self.launch_agent();
                 }
                 Done::Shimmed(result) => self.onboarding.shims = Some(Probe::from(result)),
                 Done::Permissions(result) => {

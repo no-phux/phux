@@ -7,13 +7,18 @@ use phux_client_core::layout::{LayoutNode, SplitDir, leaves, split_at};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
-use phux_protocol::ids::{OperationId, ResourceId, Revision};
+use phux_protocol::ids::{OperationId, ResourceId, Revision, SessionKey};
 
 use super::{Desk, NoticeKind, Placement};
 
-/// A spawned terminal waiting for the arrangement: where it goes, and since
-/// when.
-pub(super) type Unplaced = (ResourceId, Placement, Instant);
+/// A terminal waiting for one session's arrangement, never whichever session
+/// happens to be selected when its replica or retry becomes ready.
+pub(super) struct Unplaced {
+    pub(super) terminal: ResourceId,
+    session: SessionKey,
+    place: Placement,
+    since: Instant,
+}
 
 /// An arrangement write for a spawned terminal.
 pub(super) struct SplitWrite {
@@ -30,13 +35,13 @@ const PATIENCE: Duration = Duration::from_secs(3);
 
 impl Desk {
     pub(super) fn splits_waiting(&self) -> bool {
-        !self.unplaced_splits.is_empty() || self.split_write.is_some()
+        !self.connection.unplaced_splits.is_empty() || self.connection.split_write.is_some()
     }
 
     /// Split the focused pane: spawn a terminal beside it, placed when the
     /// server answers.
     pub fn split(&mut self, dir: SplitDir) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+        let (Some(client), Some(shown)) = (&self.connection.client, &self.connection.shown) else {
             return;
         };
         let request = client.spawn_terminal(SpawnRequest {
@@ -46,16 +51,68 @@ impl Desk {
             session_id: client.selected_session(),
             initial_size: None,
         });
-        self.pending_splits
-            .insert(request, Some((shown.resource.clone(), dir)));
-        self.zoomed = None;
+        self.connection.pending_splits.insert(
+            request,
+            (
+                self.placement_session(client),
+                Some((shown.resource.clone(), dir)),
+            ),
+        );
+        self.connection.zoomed = None;
     }
 
-    /// Queue a spawned terminal for placement.
-    pub(super) fn place_split(&mut self, client: &Client, new: &ResourceId, place: Placement) {
-        self.unplaced_splits
-            .push((new.clone(), place, Instant::now()));
+    /// Keep the destination captured when the spawn or move was requested.
+    pub(super) fn place_split(
+        &mut self,
+        client: &Client,
+        new: &ResourceId,
+        place: Placement,
+        session: Option<SessionKey>,
+    ) {
+        let Some(session) = session else {
+            self.say(NoticeKind::Error, "The tab or split could not be queued: its destination session was not known. Open the terminal from the palette.");
+            return;
+        };
+        self.connection.unplaced_splits.push(Unplaced {
+            terminal: new.clone(),
+            session,
+            place,
+            since: Instant::now(),
+        });
         self.place_pending_splits(client);
+    }
+
+    pub(super) fn placement_session(&self, client: &Client) -> Option<SessionKey> {
+        let selected = client.selected_session()?;
+        self.connection
+            .topology
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|s| s.id == selected)?
+            .key
+    }
+
+    /// Selection is not an instruction to redirect an outstanding placement.
+    /// Forget its correlation too: a late refusal must not retry in the new
+    /// session, and a late success must not steal the person's focus back.
+    fn cancel_foreign_splits(&mut self, client: &Client) {
+        let selected = self.placement_session(client);
+        let before = self.connection.unplaced_splits.len();
+        self.connection
+            .unplaced_splits
+            .retain(|item| Some(item.session) == selected);
+        let write = self
+            .connection
+            .split_write
+            .take_if(|write| Some(write.item.session) != selected);
+        let cancelled = before != self.connection.unplaced_splits.len() || write.is_some();
+        if let Some(operation) = write.and_then(|write| write.sent) {
+            self.connection.layout_ops.remove(&operation);
+        }
+        if cancelled {
+            self.say(NoticeKind::Error, "Pending tab/split placement cancelled because the selected session changed. The terminal remains in its original session; open it from the palette.");
+        }
     }
 
     /// Write the next queued split once the session's arrangement is here,
@@ -63,46 +120,45 @@ impl Desk {
     /// waiting for the replica to show the last: a write from an old document
     /// is refused, or worse, splits a target that isn't in it.
     pub(super) fn place_pending_splits(&mut self, client: &Client) {
-        if self.receipts.waiting() {
+        if self.connection.receipts.waiting() {
             return;
         }
+        self.cancel_foreign_splits(client);
         self.finish_split(client);
-        while self.split_write.is_none() && !self.unplaced_splits.is_empty() {
+        while self.connection.split_write.is_none() && !self.connection.unplaced_splits.is_empty() {
             if self.arrangement(client).is_none() {
                 self.expire_splits();
                 return;
             }
             let base = self.arrangement_revision(client);
-            let (new, place, since) = self.unplaced_splits.remove(0);
-            let written = match &place {
-                Some((target, dir)) => self.write_split(client, target, &new, *dir),
-                None => self.write_tab(client, &new),
+            let item = self.connection.unplaced_splits.remove(0);
+            let written = match &item.place {
+                Some((target, dir)) => self.write_split(client, target, &item.terminal, *dir),
+                None => self.write_tab(client, &item.terminal),
             };
             match written {
                 Some(operation) => {
-                    self.split_write = Some(SplitWrite {
+                    self.connection.split_write = Some(SplitWrite {
                         sent: Some(operation),
                         refused: false,
                         base,
-                        item: (new, place, since),
+                        item,
                     });
                 }
                 // Not writable yet (the replica hasn't heard of the new
                 // terminal): the next poll tries again.
-                None if since.elapsed() < PATIENCE => {
-                    self.unplaced_splits.insert(0, (new, place, since));
+                None if item.since.elapsed() < PATIENCE => {
+                    self.connection.unplaced_splits.insert(0, item);
                     return;
                 }
-                None => self.give_up_split(new),
+                None => self.give_up_split(item.terminal),
             }
         }
     }
 
     /// The revision of the selected session's arrangement in the replica.
     fn arrangement_revision(&self, client: &Client) -> Option<Revision> {
-        let selected = client.selected_session()?;
-        let topology = self.topology.as_ref()?;
-        let session = topology.sessions.iter().find(|s| s.id == selected)?.key?;
+        let session = self.placement_session(client)?;
         client.with_control(|control| {
             let document = control.organization().arrangement_document(&session);
             document.map(|(_, revision, _, _)| revision)
@@ -112,33 +168,33 @@ impl Desk {
     /// Close out a write the server answered, once the replica has caught
     /// up: the new pane takes the keyboard, or a refused one goes again.
     fn finish_split(&mut self, client: &Client) {
-        let Some(write) = &self.split_write else {
+        let Some(write) = &self.connection.split_write else {
             return;
         };
         // An answer lost to a reconnect mustn't hold up every later split.
-        let late = write.item.2.elapsed() >= PATIENCE;
+        let late = write.item.since.elapsed() >= PATIENCE;
         let unseen = self.arrangement_revision(client) == write.base;
         if (write.sent.is_some() || unseen) && !late {
             return;
         }
-        let Some(SplitWrite { refused, item, .. }) = self.split_write.take() else {
+        let Some(SplitWrite { refused, item, .. }) = self.connection.split_write.take() else {
             return;
         };
         match refused {
-            false => self.want(item.0),
-            true if late => self.give_up_split(item.0),
-            true => self.unplaced_splits.insert(0, item),
+            false => self.want(item.terminal),
+            true if late => self.give_up_split(item.terminal),
+            true => self.connection.unplaced_splits.insert(0, item),
         }
     }
 
     /// Splits that have waited too long show on their own.
     fn expire_splits(&mut self) {
-        let waiting = std::mem::take(&mut self.unplaced_splits);
+        let waiting = std::mem::take(&mut self.connection.unplaced_splits);
         for item in waiting {
-            if item.2.elapsed() < PATIENCE {
-                self.unplaced_splits.push(item);
+            if item.since.elapsed() < PATIENCE {
+                self.connection.unplaced_splits.push(item);
             } else {
-                self.give_up_split(item.0);
+                self.give_up_split(item.terminal);
             }
         }
     }
@@ -164,7 +220,7 @@ impl Desk {
                 self.abandon_layout(operation, &reason)
             }
             other => {
-                if !self.layout_ops.remove(&operation) {
+                if !self.connection.layout_ops.remove(&operation) {
                     return false;
                 }
                 self.layout_written(client, operation, !other.succeeded());
@@ -175,15 +231,16 @@ impl Desk {
 
     /// Drop a failed/uncertain write without focusing or retrying old handles.
     pub(super) fn abandon_layout(&mut self, operation: OperationId, reason: &str) -> bool {
-        if !self.layout_ops.remove(&operation) {
+        if !self.connection.layout_ops.remove(&operation) {
             return false;
         }
         if self
+            .connection
             .split_write
             .as_ref()
             .is_some_and(|w| w.sent == Some(operation))
         {
-            self.split_write = None;
+            self.connection.split_write = None;
         }
         self.say(NoticeKind::Error, format!("Layout write did not settle: {reason}. Check the server’s panes in the palette before retrying."));
         true
@@ -198,6 +255,7 @@ impl Desk {
         refused: bool,
     ) {
         let split = self
+            .connection
             .split_write
             .as_mut()
             .filter(|write| write.sent == Some(operation));
@@ -205,7 +263,8 @@ impl Desk {
             Some(write) => {
                 write.sent = None;
                 write.refused = refused;
-                self.refetch_arrangement(client);
+                let session = write.item.session;
+                self.refetch_arrangement(client, session);
             }
             None if refused => self.say(
                 NoticeKind::Error,
@@ -216,12 +275,12 @@ impl Desk {
         self.place_pending_splits(client);
     }
 
-    fn refetch_arrangement(&self, client: &Client) {
-        let selected = client.selected_session();
-        let session = self.topology.as_ref().and_then(|t| {
-            let session = t.sessions.iter().find(|s| Some(s.id) == selected)?;
-            session.arrangement
-        });
+    fn refetch_arrangement(&self, client: &Client, session: SessionKey) {
+        let session = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.session_keyed(&session)?.arrangement);
         if let Some(arrangement) = session {
             let _ = client.fetch_arrangement(arrangement);
         }

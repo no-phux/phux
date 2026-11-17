@@ -1,18 +1,32 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { formatOutputs, writeOutputs } from "../lib/actions.ts";
-import { Failure, UsageError, type Command } from "../lib/command.ts";
+import { describe, Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
-import { classifyEvent, diffPaths } from "./detect.ts";
+import { classifyDetection, classifyEvent, detect, diffPaths } from "./detect.ts";
 import { checkMerge } from "./merge-check.ts";
-import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, reused, type Plan } from "./plan.ts";
+import {
+  CI_ONLY,
+  eventHasLabel,
+  LANE_RECIPES,
+  LANES,
+  PERF_BASELINE_LABEL,
+  plan,
+  planOutputs,
+  reused,
+  triggerFor,
+  type PathScope,
+  type Plan,
+} from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
+import { reusedMacos, runeMacosPlan } from "./rune-macos.ts";
 
 const print = (result: Classification) => console.log(formatOutputs(toOutputs(result)));
 const WORKFLOW = ".github/workflows/ci.yml";
+const RUNE_MACOS = ".github/workflows/rune-macos.yml";
 
 /** Files that differ between `base` and the working tree, untracked included. */
 function workingChanges(base: string): string[] {
@@ -74,12 +88,40 @@ export const commands: Record<string, Command> = {
     summary: "Plan ci.yml for the current event: its lanes, test scope, and receipt.",
     run() {
       const event = process.env["GITHUB_EVENT_NAME"] ?? "";
+      const eventPath = process.env["GITHUB_EVENT_PATH"];
       const repository = process.env["GITHUB_REPOSITORY"] ?? "";
-      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"]);
+      const detection = detect(event, eventPath);
+      const c = classifyDetection(detection);
       // A merge group is main's tree before it lands: main policy.
-      const main = event === "push" || event === "merge_group";
-      const queued = event === "pull_request" && process.env["PHUX_MERGE_QUEUE"] === "true";
-      const p = plan(c, main ? "push" : "pull_request", queued);
+      const scope: PathScope =
+        detection.kind === "paths"
+          ? { kind: "diff", paths: detection.paths }
+          : detection.kind === "full"
+            ? { kind: "full" }
+            : { kind: "none" };
+      let perfBaseline = false;
+      if (event === "pull_request" && eventPath !== undefined) {
+        try {
+          perfBaseline = eventHasLabel(
+            JSON.parse(readFileSync(eventPath, "utf8")),
+            PERF_BASELINE_LABEL,
+          );
+        } catch (error) {
+          // The event file is how the label arrives. Unreadable means run the lane.
+          console.error(`perf-baseline label unreadable; running icount: ${describe(error)}`);
+          perfBaseline = true;
+        }
+      }
+      // Full history fails closed and runs the catalog job. Release metadata
+      // has no flat docs page, so the job stays off.
+      const docsCatalog =
+        detection.kind === "paths" ? detection.docsCatalog : detection.kind !== "release-metadata";
+      const p = plan(c, triggerFor(event), {
+        scope,
+        perfBaseline,
+        runeQualify: event !== "pull_request",
+        docsCatalog,
+      });
       const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
       const receipt: Receipt = { schema: 2, tree, workflow: WORKFLOW, coverage: p.coverage };
       const validated =
@@ -87,12 +129,47 @@ export const commands: Record<string, Command> = {
       const run = validated ? reused(p) : p;
       const outputs = planOutputs(run, c);
       console.error(
-        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}` +
-          (outputs["rune_ios"] === true ? " (rune with iOS)" : ""),
+        `${validated ? "Tree already validated; lanes: " : "Lanes: "}${[...run.lanes].join(" ")}`,
       );
       writeOutputs({
         ...outputs,
         validated,
+        receipt: JSON.stringify(receipt),
+        receipt_name: artifactName(receipt),
+      });
+      return 0;
+    },
+  },
+  "rune-macos-plan": {
+    summary: "Plan rune-macos.yml: macOS and iOS legs, and the receipt of what ran.",
+    run() {
+      const event = process.env["GITHUB_EVENT_NAME"] ?? "";
+      const repository = process.env["GITHUB_REPOSITORY"] ?? "";
+      const c = classifyEvent(event, process.env["GITHUB_EVENT_PATH"], "qualify-rune");
+      // Pull requests never launch macOS. Every other event plans as a push:
+      // a dispatch or a nightly run qualifies the whole tree.
+      const pullRequest = event === "pull_request";
+      const planned = runeMacosPlan(c, pullRequest ? "pull_request" : "push");
+      const tree = git(["rev-parse", "HEAD^{tree}"]).trim();
+      const receipt: Receipt = {
+        schema: 2,
+        tree,
+        workflow: RUNE_MACOS,
+        coverage: planned.coverage,
+      };
+      const validated =
+        event === "push" &&
+        repository !== "" &&
+        planned.coverage !== "" &&
+        alreadyValidated(receipt, repository);
+      const run = validated ? reusedMacos(planned) : planned;
+      console.error(
+        `${validated ? "Tree already validated; " : ""}rune-macos: ${run.macos ? "macos" : "skip"}${run.ios ? " ios" : ""}`,
+      );
+      writeOutputs({
+        macos: run.macos,
+        ios: run.ios,
+        coverage: planned.coverage,
         receipt: JSON.stringify(receipt),
         receipt_name: artifactName(receipt),
       });
@@ -120,12 +197,15 @@ export const commands: Record<string, Command> = {
         if (values.preflight) return 0;
       }
       const base = values.base ?? git(["merge-base", "origin/main", "HEAD"]).trim();
-      const p = plan(new Classifier().classify(workingChanges(base)), "pull_request");
+      const paths = workingChanges(base);
+      const p = plan(new Classifier().classify(paths), "pull_request", {
+        scope: { kind: "diff", paths },
+      });
       const lanes = LANES.filter((lane) => p.lanes.has(lane));
       const local = lanes.filter((lane) => !CI_ONLY.has(lane));
       const skipped = [
         ...lanes.filter((lane) => CI_ONLY.has(lane)),
-        ...(p.runeIos ? ["rune iOS simulator"] : []),
+        ...(p.lanes.has("rune") ? ["rune macOS and iOS simulator (rune-macos.yml)"] : []),
       ];
       console.log(`changes since ${base.slice(0, 12)} need: ${lanes.join(", ")}`);
       if (skipped.length > 0) console.log(`CI only, not run here: ${skipped.join(", ")}`);

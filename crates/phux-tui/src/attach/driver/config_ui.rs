@@ -52,11 +52,9 @@ pub(super) fn push_which_key_overlay(
     true
 }
 
-/// Reload the config at `path` in place, never half-applied: on success the
-/// reloadable settings swap, the overlay stack adopts the new `[chrome]`
-/// breakpoints and theme, and the sidebar painter is rebuilt cache-cold under
-/// the new theme; on any failure the old config stays and a toast shows the
-/// error. Returns whether the reload took. Repainting is the caller's.
+/// Reload the config at `path` in place, never half-applied: on failure the
+/// old config stays and a toast shows the error. Returns whether it took;
+/// repainting is the caller's.
 pub(super) fn adopt_config_reload(
     settings: &mut TuiSettings,
     overlays: &mut OverlayState,

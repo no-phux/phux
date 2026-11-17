@@ -14,7 +14,7 @@ fn glass_ink_tracks_its_terminal_ground_not_the_os_appearance() {
 
 #[test]
 fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
-    let mut desk = Desk::settings_test_fixture().with_phone(true);
+    let mut desk = crate::test_support::settings_window().with_phone(true);
     desk.settings.theme = None;
     desk.settings_open = false;
     // No terminal yet: the black one starts on, so a light-mode phone
@@ -27,13 +27,19 @@ fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
     desk.settings.theme = light;
     let sheets = ink(&desk, Color::WHITE);
     assert_eq!(crate::theme::on_fill(sheets.raised), Color::BLACK);
+    desk.open_phone_sessions();
+    assert_eq!(
+        edge_color(&desk),
+        sheets.bg,
+        "UIKit continues the navigation page's theme"
+    );
 }
 
 #[test]
 fn the_active_tab_is_brought_whole_into_the_strip() {
-    let mut desk = Desk::settings_test_fixture().with_phone(true);
+    let mut desk = crate::test_support::settings_window().with_phone(true);
     desk.settings_open = false;
-    desk.tabs.list = (0..6u8)
+    desk.connection.tabs.list = (0..6u8)
         .map(|i| crate::desk::Tab {
             locked: false,
             id: [i; 16],

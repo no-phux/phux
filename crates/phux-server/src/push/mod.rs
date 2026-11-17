@@ -1,19 +1,14 @@
 //! Host-originated background push (ADR-0155).
 //!
-//! A phone that wants to hear about an ask while it is suspended registers a
-//! *push grant* under `phux.push/v1/<device>`
+//! A suspended phone registers a *push grant* under `phux.push/v1/<device>`
 //! ([background push](../../../docs/protocol/host-operations.md#background-push)):
-//! the gateway it trusts, a bearer secret that gateway minted for it,
-//! and the id the phone knows this server by. When an agent asks and the
-//! connection that wrote a grant is gone, the server posts a content-free
-//! notice (host, pane, question id, action) to that gateway, which forwards it
-//! to APNs. An agent whose block is known only from its screen (no ask
-//! behind it) is pushed the same way when its record turns `blocked`. A
-//! grant that opts in (`"finished": true`) also hears that an agent finished
-//! the turn it was working on. The server never
-//! holds APNs credentials; the gateway never sees terminal bytes; a phone
-//! that is still connected gets nothing here, because it already sees both
-//! itself.
+//! its gateway, a bearer that gateway minted, and the id the phone knows this
+//! server by. When an agent asks (or turns `blocked` on screen evidence), a
+//! held action waits, or an opted-in turn finishes, and the grant's writing
+//! connection is gone, the server posts a content-free notice to the gateway,
+//! which forwards it to APNs. The server never holds APNs credentials, the
+//! gateway never sees terminal bytes, and a still-connected phone gets
+//! nothing.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -199,12 +194,18 @@ pub(crate) enum Notice<'a> {
     Blocked,
     /// An agent finished its turn; only grants that opted in hear it.
     Finished,
+    /// A held action (its approval id) awaits a decision. Every device
+    /// hears it; each id is minted fresh, so once.
+    Approve(&'a str),
 }
 
 /// The ask id a [`Notice::Blocked`] carries: the gateway wants a question
 /// for an alert, and no real ask exists to name. A reply pinned to it is
 /// refused by the phone (no question has this id), which then opens the pane.
 pub(crate) const BLOCKED_QUESTION: &str = "blocked";
+
+/// The `pane` an approval that names no single Terminal carries.
+pub(crate) const SERVER_PANE: &str = "server";
 
 /// The grants to push `notice` to: every registered device whose writing
 /// connection is gone, filtered by [`Notice`]. A key whose value no longer
@@ -235,7 +236,7 @@ pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue
         }
         let wanted = match notice {
             Notice::Ask(ask_id) => s.push_grants_mut().claim(&key, ask_id),
-            Notice::Blocked => true,
+            Notice::Blocked | Notice::Approve(_) => true,
             Notice::Finished => grant.finished,
         };
         if !wanted {
@@ -249,7 +250,13 @@ pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue
 /// An ask was broadcast for `pane`: post it to every absent device.
 pub(crate) fn on_asked(state: &SharedState, pane: &WireResourceId, ask_id: &str) {
     let targets = state.with_mut(|s| targets(s, Notice::Ask(ask_id)));
-    post(targets, pane, Notice::Ask(ask_id));
+    post(targets, &encode_pane(pane), Notice::Ask(ask_id));
+}
+
+pub(crate) fn on_approval(s: &mut ServerState, pane: Option<&WireResourceId>, id: &str) {
+    let targets = targets(s, Notice::Approve(id));
+    let pane = pane.map_or_else(|| SERVER_PANE.to_owned(), encode_pane);
+    post(targets, &pane, Notice::Approve(id));
 }
 
 /// The pane's agent record is about to change from `before` to `after`.
@@ -291,22 +298,21 @@ pub(crate) fn on_agent_record(
         _ => return,
     };
     let targets = targets(s, notice);
-    post(targets, pane, notice);
+    post(targets, &encode_pane(pane), notice);
 }
 
 /// One send per target, each its own task; nothing here waits. Off a runtime
 /// (a test driving the store directly) nothing is sent.
-fn post(targets: Vec<GrantValue>, pane: &WireResourceId, notice: Notice<'_>) {
+fn post(targets: Vec<GrantValue>, pane: &str, notice: Notice<'_>) {
     if targets.is_empty() {
         return;
     }
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let pane = encode_pane(pane);
     let (action, question) = wire_notice(notice);
     for target in targets {
-        let pane = pane.clone();
+        let pane = pane.to_owned();
         let question = question.map(str::to_owned);
         runtime.spawn(async move {
             match send(&target, &pane, action, question.as_deref()).await {
@@ -327,6 +333,7 @@ const fn wire_notice(notice: Notice<'_>) -> (&'static str, Option<&str>) {
         Notice::Ask(ask_id) => ("reply", Some(ask_id)),
         Notice::Blocked => ("open", Some(BLOCKED_QUESTION)),
         Notice::Finished => ("finished", None),
+        Notice::Approve(id) => ("approve", Some(id)),
     }
 }
 

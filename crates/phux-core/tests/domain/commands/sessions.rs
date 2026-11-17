@@ -205,10 +205,7 @@ pub(super) fn session_set_project_links_and_clears_only_the_link() {
         [Event::SessionProjectSet { project: None, .. }]
     ));
     assert!(matches!(
-        h.run(Op::OrganizationUndo {
-            original: link_op.operation,
-            expected: vec![],
-        }),
+        h.undo(link_op.operation),
         Err(Refusal::Unsupported { .. })
     ));
 }

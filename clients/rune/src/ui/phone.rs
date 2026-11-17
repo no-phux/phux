@@ -5,16 +5,13 @@
 
 use rune::{Color, Cursor, Cx, El, Key, TextStyle, col, el, row, text, tok};
 
-use super::{
-    Ink, TITLEBAR_H, icons, inbox, machines, news, overlay, palette, panes, settings, spatial,
-    status, tabs,
-};
+use super::{Ink, TITLEBAR_H, icons, news, overlay, panes, settings, spatial, status};
 use crate::desk::Desk;
 use crate::desk::phone::{Latch, Phone, Soft};
 use crate::keys::Shortcut;
 
 mod keyboard;
-mod navigation;
+pub(super) mod navigation;
 use keyboard::keyboard;
 
 const TITLE: TextStyle = TextStyle::new(16.0, 600.0);
@@ -37,7 +34,11 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // Glass floats beside the terminal, which may not have taken a newly
     // chosen theme yet: its ink contrasts with the ground actually drawn.
     let drawn = ground_ink(terminal_ground(desk), cx.accent(), desk.settings.theme);
-    let controls = if desk.settings_open { &p } else { &drawn };
+    let controls = if desk.settings_open || desk.phone_page().is_some() {
+        &p
+    } else {
+        &drawn
+    };
     cx.foreground(p.text);
     let stage = phone_stage(desk, &p, cx);
     let top = top_inset(desk, cx);
@@ -63,12 +64,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         desk,
         &p,
         top,
+        cx,
     );
-    col()
-        .key("phone")
-        .w_full()
-        .h_full()
-        .fill(fill)
+    let root = col().key("phone").w_full().h_full();
+    super::chrome_ground(root, desk.glass(), fill)
         .child(content)
         .children(bar)
         .children(
@@ -83,9 +82,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 /// starts on: never the system's light page behind a dark launch.
 fn terminal_ground(desk: &Desk) -> Color {
     let frame = desk
+        .connection
         .client
         .as_ref()
-        .zip(desk.shown.as_ref())
+        .zip(desk.connection.shown.as_ref())
         .and_then(|(client, shown)| client.acquire_view(shown.view?));
     frame.map_or_else(
         || {
@@ -110,6 +110,8 @@ fn ink(desk: &Desk, accent: Color) -> Ink {
 fn edge_fill(desk: &Desk, p: &Ink) -> Color {
     if desk.settings_open {
         p.sidebar
+    } else if desk.phone_page().is_some() {
+        p.bg
     } else {
         terminal_ground(desk)
     }
@@ -122,18 +124,8 @@ pub(crate) fn edge_color(desk: &Desk) -> Color {
     edge_fill(desk, &ink(desk, accent))
 }
 
-fn overlays(root: El, desk: &Desk, p: &Ink, top: f32) -> El {
-    root.children(navigation::view(desk, p, top))
-        .children(status::banner(desk, p))
-        .children(desk.inbox.open.then(|| inbox::view(desk, p)))
-        .children(machines::sheet(desk, p))
-        .children(desk.news.open.then(|| news::view(desk, p)))
-        .children(tabs::rename_sheet(desk, p))
-        .children(
-            desk.pointer
-                .menu
-                .map(|at| palette::context_menu(desk, at, p)),
-        )
+fn overlays(root: El, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> El {
+    super::floating_surfaces(root.children(status::banner(desk, p)), desk, p, top, cx)
 }
 
 fn top_inset(desk: &Desk, cx: &Cx<Desk>) -> f32 {
@@ -169,12 +161,11 @@ fn phone_stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         })
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p))
-        .children(desk.palette_open.then(|| palette::view(desk, p, 8.0)))
 }
 
-/// Tinted glass under a rim lit from above and a soft lift. Every surface
-/// sits beside the terminal on its flat ground, never over its text, so
-/// there is nothing behind one for a backdrop blur to show.
+/// A light rim and restrained lift, shared by the floating controls. Only
+/// surfaces over changing content opt into backdrop blur: blurring flat
+/// ground adds GPU passes without changing a pixel.
 fn glass(surface: El, p: &Ink) -> El {
     surface
         .continuous_corners()
@@ -208,7 +199,7 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
     let full = desk.window_title();
     // With no terminal on screen the window title is only the app's name:
     // the capsule names the computer instead.
-    let title = if desk.shown.is_some() {
+    let title = if desk.connection.shown.is_some() {
         full.strip_suffix(&format!(" — {session}"))
             .unwrap_or(full)
             .to_owned()
@@ -235,13 +226,13 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
     let place = glass(capsule, p)
         .press(p.hover)
         .cursor(Cursor::Pointer)
-        .label(if desk.shown.is_some() {
+        .label(if desk.connection.shown.is_some() {
             "Choose pane"
         } else {
             "Connections"
         })
         .on_press(|d: &mut Desk| {
-            if d.shown.is_some() {
+            if d.connection.shown.is_some() {
                 d.phone_picker();
             } else {
                 d.toggle_machines();
@@ -309,13 +300,14 @@ fn top_bar(desk: &Desk, p: &Ink) -> El {
 }
 
 fn focused_tone(desk: &Desk, p: &Ink) -> Color {
-    desk.shown.as_ref().map_or(p.dim, |shown| {
+    desk.connection.shown.as_ref().map_or(p.dim, |shown| {
         super::sidebar::mark_color(desk.activities.mark(&shown.resource), p)
     })
 }
 
 fn place_detail(desk: &Desk, session: &str) -> String {
     let state = desk
+        .connection
         .shown
         .as_ref()
         .map(|shown| desk.activities.mark(&shown.resource));
@@ -328,7 +320,7 @@ fn place_detail(desk: &Desk, session: &str) -> String {
 /// The session's tabs by name, and a new one. A lone tab needs no strip:
 /// its rows go to the terminal, and New Tab is in the commands.
 fn tab_pills(desk: &Desk, p: &Ink) -> Option<El> {
-    if desk.tabs.list.len() < 2 {
+    if desk.connection.tabs.list.len() < 2 {
         return None;
     }
     let mut pills = glass(
@@ -347,7 +339,7 @@ fn tab_pills(desk: &Desk, p: &Ink) -> Option<El> {
             .scroll_margin(20.0),
         p,
     );
-    for (index, tab) in desk.tabs.list.iter().enumerate() {
+    for (index, tab) in desk.connection.tabs.list.iter().enumerate() {
         let waiting = tab
             .resources
             .iter()
@@ -495,6 +487,7 @@ fn accessory(desk: &Desk, phone: &Phone, p: &Ink) -> El {
         .press(p.hover)
         .cursor(Cursor::Grab)
         .label("Arrow keys: drag")
+        .touch_drags_at_once()
         .on_drag(|d: &mut Desk, drag, tx| d.pad_drag(drag.phase, drag.dx, drag.dy, tx))
         .child(glyph(&icons::PAD, 20.0, p.text));
     let pair = glass(

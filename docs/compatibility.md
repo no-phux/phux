@@ -71,7 +71,7 @@ not list it.
 
 Clients are still tolerant, because that rule can be gotten wrong.
 `phux_protocol::wire::decode::newer_server_fallback` is the shared rule,
-and the runtime, the C ABI, the TUI, and the web client all apply it:
+and the runtime, the TUI, and the web client all apply it:
 
 - unknown tagged fields and record tails are skipped;
 - a reply this build cannot read (`COMMAND_RESULT`, `METADATA_VALUE`,

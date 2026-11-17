@@ -44,9 +44,7 @@ async fn an_unreachable_arrangement_link_never_falls_back_to_the_layout_key() {
 }
 
 /// A failed first arrangement read is "not loaded", never "absent": nothing
-/// heals the default layout into the record or writes it, and once the
-/// control socket comes up the read is retried before any write, so the
-/// stored arrangement (a named group the client never saw) is not replaced.
+/// is healed or written, and the read is retried before any write.
 #[tokio::test(flavor = "current_thread")]
 async fn a_failed_first_arrangement_read_never_overwrites_the_stored_record() {
     use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
@@ -63,10 +61,7 @@ async fn a_failed_first_arrangement_read_never_overwrites_the_stored_record() {
             groups: vec![ArrangementGroup { locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
-                tree: ArrangementNode::Leaf(EntryRef {
-                    entry: [1; 16],
-                    target: EntryTarget::Member(shell),
-                }),
+                tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
             }],
         },
     );

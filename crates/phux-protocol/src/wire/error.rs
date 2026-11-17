@@ -110,6 +110,9 @@ pub enum DecodeError {
     /// A native request was not valid JSON matching the typed DTO.
     #[error("invalid NATIVE_AGENT JSON payload")]
     InvalidNativeAgentPayload,
+    /// A credential message was malformed or exceeded its bounds.
+    #[error("invalid or oversized credential payload")]
+    InvalidCredentialPayload,
 
     /// A `CHECKOUT` request or answer exceeded its JSON byte bound.
     #[error("CHECKOUT payload exceeds protocol limits")]
@@ -122,6 +125,11 @@ pub enum DecodeError {
     /// header bound (`crate::service_http`).
     #[error("SERVICE_HTTP payload exceeds protocol limits")]
     ServiceHttpLimitExceeded,
+
+    /// A `FORWARD_*` address, read size, or chunk exceeded its bound
+    /// (`crate::forward`).
+    #[error("FORWARD payload exceeds protocol limits")]
+    ForwardLimitExceeded,
 
     /// A well-formed JSON payload named an operation, variant, or field this
     /// build does not know: newer, not malformed. A receiver refuses it

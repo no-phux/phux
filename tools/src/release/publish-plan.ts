@@ -9,6 +9,8 @@ import { writeOutputs } from "../lib/actions.ts";
 import { git } from "../lib/git.ts";
 import { api, gh, ghLines } from "../lib/github.ts";
 import { list, str, table, type Table } from "../lib/value.ts";
+import { findValidation, type Receipt } from "../routing/receipt.ts";
+import { mergeGroupGate } from "./queue-ci.ts";
 
 export type Version = readonly [number, number, number];
 
@@ -36,6 +38,44 @@ export function validationState(runs: readonly unknown[], sha: string, workflow:
     .toSorted((a, b) => Number(b["id"]) - Number(a["id"]) || attempt(b) - attempt(a));
   if (latest === undefined || latest["status"] !== "completed") return "pending";
   return str(latest["conclusion"]) ?? "unknown";
+}
+
+/**
+ * Push ci for `ci-green`. No matching run is `missing`. A run that has not
+ * finished keeps its own status (`queued`, `in_progress`, ...), never `missing`.
+ */
+export function ciPushState(runs: readonly unknown[], sha: string, workflow: string): string {
+  const attempt = (run: Table): number => Number(run["run_attempt"] ?? 1);
+  const [latest] = runs
+    .map(table)
+    .filter(
+      (run) =>
+        run["head_sha"] === sha &&
+        run["head_branch"] === "main" &&
+        run["event"] === "push" &&
+        run["path"] === workflow,
+    )
+    .toSorted((a, b) => Number(b["id"]) - Number(a["id"]) || attempt(b) - attempt(a));
+  if (latest === undefined) return "missing";
+  if (latest["status"] !== "completed") return str(latest["status"]) ?? "pending";
+  return str(latest["conclusion"]) ?? "unknown";
+}
+
+/**
+ * The merge-group fallback runs only when no push ci exists. An in-flight
+ * push keeps its refusal: a tag cannot be undone if that push later goes red.
+ * Returns the refusal, or undefined when the SHA may tag.
+ */
+export function ciGreenResult(
+  sha: string,
+  push: string,
+  rune: string,
+  queue: () => string | undefined,
+): string | undefined {
+  const pushRefusal = releaseRefusal(push, sha, rune);
+  if (pushRefusal === undefined) return undefined;
+  if (push !== "missing") return pushRefusal;
+  return queue();
 }
 
 // `vX.Y.Z` is phux; `<component>-vX.Y.Z` is every other release-please package.
@@ -183,11 +223,35 @@ export function splitLanes(tags: readonly string[]): {
   return lanes;
 }
 
-function ciConclusion(repository: string, sha: string): string {
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const RUNE_MACOS_WORKFLOW = ".github/workflows/rune-macos.yml";
+
+function workflowConclusion(repository: string, sha: string, file: string, path: string): string {
   const query = new URLSearchParams({ head_sha: sha, event: "push", per_page: "20" });
-  const path = `repos/${repository}/actions/workflows/ci.yml/runs?${query.toString()}`;
-  const runs = list(table(api.json(path))["workflow_runs"]);
-  return validationState(runs, sha, ".github/workflows/ci.yml");
+  const runs = list(
+    table(api.json(`repos/${repository}/actions/workflows/${file}/runs?${query.toString()}`))[
+      "workflow_runs"
+    ],
+  );
+  return validationState(runs, sha, path);
+}
+
+function ciConclusion(repository: string, sha: string): string {
+  return workflowConclusion(repository, sha, "ci.yml", CI_WORKFLOW);
+}
+
+function ciPushConclusion(repository: string, sha: string): string {
+  const query = new URLSearchParams({ head_sha: sha, event: "push", per_page: "20" });
+  const runs = list(
+    table(api.json(`repos/${repository}/actions/workflows/ci.yml/runs?${query.toString()}`))[
+      "workflow_runs"
+    ],
+  );
+  return ciPushState(runs, sha, CI_WORKFLOW);
+}
+
+function runeMacosConclusion(repository: string, sha: string): string {
+  return workflowConclusion(repository, sha, "rune-macos.yml", RUNE_MACOS_WORKFLOW);
 }
 
 /** Why `sha` must not ship, or undefined when main's ci passed on that exact commit. */
@@ -197,11 +261,100 @@ export function ciRefusal(state: string, sha: string): string | undefined {
   return `ci.yml is ${state} on main for ${sha}`;
 }
 
+/** Why `sha` must not ship, or undefined when that commit's rune-macos push run passed. */
+export function runeMacosRefusal(state: string, sha: string): string | undefined {
+  if (state === "success") return undefined;
+  if (PENDING.has(state))
+    return `no finished full-coverage rune-macos push proof on main for ${sha}; rerun the qualified push when green`;
+  return `rune-macos is ${state} on main for ${sha}`;
+}
+
+/** Both qualified workflows must prove the release commit itself, never an ancestor. */
+export function releaseRefusal(ci: string, sha: string, rune: string): string | undefined {
+  const ciNo = ciRefusal(ci, sha);
+  if (ciNo !== undefined) return ciNo;
+  return runeMacosRefusal(rune, sha);
+}
+
+/** A cheap green workflow without both-leg evidence is still unqualified. */
+export function nativeReleaseProof(
+  sha: string,
+  state: string,
+  qualified: boolean,
+): { evidence: string; state: string } {
+  return { evidence: sha, state: state === "success" && !qualified ? "pending" : state };
+}
+
+function runeMacosOn(repository: string, sha: string): { evidence: string; state: string } {
+  const state = runeMacosConclusion(repository, sha);
+  if (state !== "success") return nativeReleaseProof(sha, state, false);
+  const receipt: Receipt = {
+    schema: 2,
+    tree: git(["rev-parse", "--verify", `${sha}^{tree}`]).trim(),
+    workflow: RUNE_MACOS_WORKFLOW,
+    coverage: "macos,rune_ios",
+  };
+  return nativeReleaseProof(
+    sha,
+    state,
+    findValidation(receipt, repository, undefined, sha) !== undefined,
+  );
+}
+
+/**
+ * Drop or hold tags whose rune-macos proof is missing. A pending or red
+ * proof of the event's own commit stops the whole publish, the way ci does.
+ * Any other draft stays a draft and is named on `blocked`.
+ */
+function ownNativeGate(
+  plan: Plan,
+  strictSha: string | undefined,
+  lookup: (sha: string) => { evidence: string; state: string },
+  shaOf: (tag: string) => string,
+): Plan | undefined {
+  if (strictSha === undefined) return undefined;
+  const own = plan.publish.filter((tag) => shaOf(tag) === strictSha);
+  if (own.length === 0) return undefined;
+  const rune = lookup(strictSha);
+  if (rune.state === "success") return undefined;
+  if (PENDING.has(rune.state)) return { ...plan, publish: [], wait: true };
+  return {
+    ...plan,
+    publish: [],
+    fail: `rune-macos is ${rune.state} for ${rune.evidence}; not publishing ${own.join(", ")}`,
+  };
+}
+
+/** Every published SHA needs exact native proof, regardless of its last diff or author. */
+export function applyRuneGate(
+  plan: Plan,
+  strictSha: string | undefined,
+  lookup: (sha: string) => { evidence: string; state: string },
+  shaOf: (tag: string) => string,
+): Plan {
+  if (plan.fail !== undefined || plan.wait) return plan;
+  const own = ownNativeGate(plan, strictSha, lookup, shaOf);
+  if (own !== undefined) return own;
+  const publish: string[] = [];
+  const held: string[] = [];
+  for (const tag of plan.publish) {
+    const rune = lookup(shaOf(tag));
+    if (rune.state === "success") publish.push(tag);
+    else held.push(`${tag} (rune-macos ${rune.state} for ${rune.evidence})`);
+  }
+  const note = held.length === 0 ? "" : `still draft, rune-macos is not green: ${held.join("; ")}`;
+  const blocked = note === "" ? plan.blocked : plan.blocked ? `${plan.blocked}; ${note}` : note;
+  return { ...plan, publish, blocked };
+}
+
 /** Fail a tag whose commit main hasn't proved: rune-client.yml's preflight. */
 export function ciGreen(sha: string): number {
   const repository = process.env["GITHUB_REPOSITORY"];
   if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
-  const refusal = ciRefusal(ciConclusion(repository, sha), sha);
+  const rune = runeMacosOn(repository, sha);
+  const refusal = ciGreenResult(sha, ciPushConclusion(repository, sha), rune.state, () =>
+    mergeGroupGate(repository, sha, nativeReleaseProof),
+  );
   if (refusal === undefined) return 0;
   console.error(`::error::${refusal}`);
   return 1;
@@ -229,10 +382,14 @@ export function main(): number {
   const eventSha =
     env["GITHUB_EVENT_NAME"] === "workflow_run" && sha && !dispatch ? sha : undefined;
 
-  const plan = decide(releases(repository), (commit) => ciConclusion(repository, commit), {
+  const decided = decide(releases(repository), (commit) => ciConclusion(repository, commit), {
     eventSha,
     dispatchTag: dispatch || undefined,
   });
+  const strict =
+    eventSha ?? (dispatch && decided.fail === undefined ? tagSha(dispatch) : undefined);
+  const waitingOnCi = decided.wait;
+  const plan = applyRuneGate(decided, strict, (commit) => runeMacosOn(repository, commit), tagSha);
   for (const tag of plan.delete) {
     gh(["release", "delete", tag, "--repo", repository, "--yes"]);
     console.log(`deleted superseded draft ${tag}`);
@@ -247,7 +404,9 @@ export function main(): number {
     phux_tag: lanes.phux,
     integration_tags: JSON.stringify(lanes.integration),
   });
-  if (plan.wait) console.log(`ci.yml still running for ${eventSha}; publish retries when it ends`);
+  if (waitingOnCi)
+    console.log(`ci.yml still running for ${eventSha}; publish retries when it ends`);
+  else if (plan.wait) console.log("rune-macos still running; publish retries when it ends");
   else console.log(`publishing ${plan.publish.join(", ") || "nothing"}`);
   if (plan.blocked) console.log(`::warning::${plan.blocked}`);
   return 0;

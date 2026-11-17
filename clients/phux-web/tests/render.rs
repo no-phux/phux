@@ -74,7 +74,7 @@ async fn renders_engine_grid_to_canvas() {
         cell_h: 16.0,
         font: "14px monospace".to_owned(),
     };
-    render(&ctx, &grid, &m, false);
+    render(&ctx, &grid, &m, false, &Overlay::default(), false);
 
     // Sample a pixel inside cell (0,0): it should be the red background.
     let pixel = ctx.get_image_data(3, 3, 1, 1).unwrap();
@@ -143,7 +143,7 @@ async fn a_wide_character_paints_across_its_spacer_cell() {
 
     let grid = term.grid();
     let fg = grid.default_fg;
-    render(&ctx, &grid, &m, false);
+    render(&ctx, &grid, &m, false, &Overlay::default(), false);
     assert!(near(&ctx, spacer, size, fg) > 0, "right half painted");
 
     // The cursor on the wide character inverts its own cell and leaves the
@@ -151,7 +151,7 @@ async fn a_wide_character_paints_across_its_spacer_cell() {
     term.write(b"\r");
     let grid = term.grid();
     assert_eq!((grid.cursor_col, grid.cursor_row), (0, 0));
-    render(&ctx, &grid, &m, true);
+    render(&ctx, &grid, &m, true, &Overlay::default(), false);
     assert!(
         near(&ctx, spacer, size, fg) > 0,
         "right half beside the cursor"
@@ -159,7 +159,7 @@ async fn a_wide_character_paints_across_its_spacer_cell() {
 
     // A blink redraws the cursor's row in both phases.
     for cursor_on in [false, true, false] {
-        render_cursor_row(&ctx, &grid, &m, cursor_on, &Overlay::default());
+        render_cursor_row(&ctx, &grid, &m, cursor_on, &Overlay::default(), false);
         assert!(
             near(&ctx, spacer, size, fg) > 0,
             "right half after a blink (cursor {cursor_on})"

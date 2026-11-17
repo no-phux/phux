@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use phux_client_runtime::publication::GridFrame;
 use phux_protocol::ids::ResourceId;
 use rune::{Mods, Phase, PointerPress, Tx};
 
@@ -34,11 +35,56 @@ pub struct Pointer {
     pub tab_menu: bool,
     /// The window's size in points, as the open menu last measured it.
     pub window: [f32; 2],
+    /// The Quick Look preview ⌘Y opened, while it may still be up.
+    pub(super) quick_look: Option<std::process::Child>,
+    /// The pointer is at the top edge, so a hover-reveal toolbar shows.
+    pub toolbar: bool,
 }
 
 impl Desk {
     fn link_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Link> {
+        let (frame, col, row) = self.cell_at(terminal, x, y)?;
+        links::at(&frame, col, row).or_else(|| self.file_at(terminal, &frame, col, row))
+    }
+
+    /// A path to an existing file, as compilers and agents print them. Only
+    /// a pane on this machine: another machine's path could name a local
+    /// file that merely shares it.
+    fn file_at(
+        &self,
+        terminal: &ResourceId,
+        frame: &GridFrame,
+        col: u16,
+        row: u16,
+    ) -> Option<Link> {
+        if self.remote(terminal) {
+            return None;
+        }
+        let mut link = links::word_at(frame, col, row)?;
+        // A bare word could be any file in the cwd; a path has a slash.
+        if !link.url.contains('/') || link.url.contains("://") {
+            return None;
+        }
+        let cwd = self
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|t| t.pane(terminal)?.cwd.clone());
+        let path = crate::quick_look::resolve(&link.url, cwd.as_deref().map(std::path::Path::new))?;
+        link.url = url::Url::from_file_path(path).ok()?.to_string();
+        Some(link)
+    }
+
+    /// The cell the pointer last moved over: its pane, frame and cell.
+    pub(super) fn pointed(&self) -> Option<(ResourceId, Arc<GridFrame>, u16, u16)> {
+        let (terminal, x, y) = self.pointer.last.clone()?;
+        let (frame, col, row) = self.cell_at(&terminal, x, y)?;
+        Some((terminal, frame, col, row))
+    }
+
+    fn cell_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<(Arc<GridFrame>, u16, u16)> {
         let frame = self
+            .connection
             .client
             .as_ref()?
             .acquire_view(self.view_of(terminal)?)?;
@@ -52,7 +98,7 @@ impl Desk {
             return None;
         }
         let (col, row) = m.cell_at(x, y, frame.cols, frame.rows);
-        links::at(&frame, col, row)
+        Some((frame, col, row))
     }
 
     fn set_hover(&mut self, hover: Option<(ResourceId, Link)>) {
@@ -112,7 +158,7 @@ impl Desk {
 
     /// Whether `terminal`'s files are on another machine: this whole window's
     /// server is, or the pane is a federated satellite's in a local window.
-    fn remote(&self, terminal: &ResourceId) -> bool {
+    pub(super) fn remote(&self, terminal: &ResourceId) -> bool {
         self.machines.current.is_some() || terminal.host().is_some()
     }
 

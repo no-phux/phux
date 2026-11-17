@@ -11,7 +11,7 @@ use phux_protocol::wire::frame::{FrameKind, ViewportInfo};
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::attach::surface_leaf::SurfaceLeaves;
-use crate::layout::{ArrangementDoc, LayoutState};
+use crate::layout::{ArrangementDoc, LayoutState, Slot};
 
 use super::session_io::send_unless_peer_gone;
 
@@ -53,13 +53,38 @@ pub(super) async fn emit_view_reflow(
     let Some(ls) = workspace.render_group(zoomed) else {
         return Ok(());
     };
-    emit_layout_reflow(conn, leaves, ls.as_ref(), prev_rects, content, cell_px).await
+    emit_layout_reflow(
+        conn,
+        leaves,
+        ls.as_ref(),
+        &workspace.slots,
+        prev_rects,
+        content,
+        cell_px,
+    )
+    .await
 }
 
-/// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
-/// between two [`view_rects`] of the same window (a `resize-pane`, divider
-/// drag, or swap). Both sides come from the one tiling, so a viewport too
-/// small to tile cannot read as a change.
+/// `resized` and, after each resized slot's shown tab, its hidden tabs at
+/// the same size, so switching tabs never reflows a program.
+fn with_hidden_tabs(
+    resized: Vec<(ResourceId, crate::layout::Rect)>,
+    slots: &[Slot],
+) -> Vec<(ResourceId, crate::layout::Rect)> {
+    let mut out = Vec::with_capacity(resized.len());
+    for (id, rect) in resized {
+        let hidden = slots
+            .iter()
+            .filter(|slot| slot.showing() == &id)
+            .flat_map(|slot| slot.strip.iter().filter(|tab| **tab != id))
+            .map(|tab| (tab.clone(), rect));
+        out.extend(std::iter::once((id.clone(), rect)).chain(hidden));
+    }
+    out
+}
+
+/// Emit `RESIZE_TERMINAL` for each pane whose tile changed size between two
+/// [`view_rects`] of the same window.
 #[allow(
     clippy::future_not_send,
     reason = "the session kernel holds libghostty state; ADR-0003 binds us to current-thread"
@@ -67,15 +92,22 @@ pub(super) async fn emit_view_reflow(
 pub(super) async fn emit_moved_tiles(
     conn: &mut Connection,
     leaves: SurfaceLeaves<'_>,
+    slots: &[Slot],
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     rects: &HashMap<ResourceId, crate::layout::Rect>,
     cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
-    for (terminal_id, rect) in rects {
-        let moved = prev_rects
-            .get(terminal_id)
-            .is_none_or(|prev| (prev.w, prev.h) != (rect.w, rect.h));
-        if !moved || rect.w == 0 || rect.h == 0 || !resizable(conn, leaves, terminal_id) {
+    let moved = rects
+        .iter()
+        .filter(|(terminal_id, rect)| {
+            prev_rects
+                .get(*terminal_id)
+                .is_none_or(|prev| (prev.w, prev.h) != (rect.w, rect.h))
+        })
+        .map(|(id, rect)| (id.clone(), *rect))
+        .collect();
+    for (terminal_id, rect) in &with_hidden_tabs(moved, slots) {
+        if rect.w == 0 || rect.h == 0 || !resizable(conn, leaves, terminal_id) {
             continue;
         }
         conn.send(&FrameKind::ResizeTerminal {
@@ -118,7 +150,16 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
             .await?;
         } else {
             let previous = &no_previous_rects;
-            emit_layout_reflow(conn, leaves, &window.state, previous, content, cell_px).await?;
+            emit_layout_reflow(
+                conn,
+                leaves,
+                &window.state,
+                &workspace.slots,
+                previous,
+                content,
+                cell_px,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -133,6 +174,7 @@ async fn emit_layout_reflow(
     conn: &mut Connection,
     leaves: SurfaceLeaves<'_>,
     layout: &LayoutState,
+    slots: &[Slot],
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
     cell_px: Option<(u16, u16)>,
@@ -145,7 +187,7 @@ async fn emit_layout_reflow(
             "viewport too small for current layout; rendering may be garbled",
         );
     }
-    for (terminal_id, new_rect) in &diff.changed {
+    for (terminal_id, new_rect) in &with_hidden_tabs(diff.changed, slots) {
         // A leaf a persisted layout names before its ATTACH_RESOURCE is
         // confirmed has no QUIC stream yet, and may name a pane that died
         // with a previous server. It is sized once its stream binds.
@@ -176,11 +218,6 @@ fn resizable(conn: &Connection, leaves: SurfaceLeaves<'_>, terminal_id: &Resourc
     conn.can_route_terminal(terminal_id) && !leaves.contains(terminal_id)
 }
 
-/// A `VIEWPORT_RESIZE` frame for `viewport`.
-pub(super) const fn viewport_resize_frame(viewport: ViewportInfo) -> FrameKind {
-    FrameKind::ViewportResize { viewport }
-}
-
 /// The current viewport, or 80x24 (logged) if the query fails.
 pub(super) fn current_viewport_or_default() -> ViewportInfo {
     match current_viewport() {
@@ -199,29 +236,19 @@ pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 /// The host's per-cell pixel size, floored exactly as the server derives it
 /// (SPEC L1 §9.2.1).
 pub(super) fn host_cell_px(viewport: &ViewportInfo) -> (u16, u16) {
-    reported_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
+    resize_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
 }
 
-/// The cell size the host actually reported, or `None` without usable pixel
-/// metrics (the server then keeps the pane's last cell size).
-fn reported_cell_px(viewport: &ViewportInfo) -> Option<(u16, u16)> {
+/// ADR-0145: the cell size each `RESIZE_TERMINAL` carries: the one the host
+/// actually reported, or `None` without usable pixel metrics (the server
+/// then keeps the pane's last cell size).
+pub(super) fn resize_cell_px(viewport: &ViewportInfo) -> Option<(u16, u16)> {
     if viewport.cols == 0 || viewport.rows == 0 {
         return None;
     }
     let w = viewport.pixel_w? / viewport.cols;
     let h = viewport.pixel_h? / viewport.rows;
     (w > 0 && h > 0).then_some((w, h))
-}
-
-/// ADR-0145: the cell size each `RESIZE_TERMINAL` carries. `None` against a
-/// server that does not apply it (it still gets the legacy viewport vote)
-/// or when the host reports no pixel metrics.
-pub(super) fn resize_cell_px(pane_sized: bool, viewport: &ViewportInfo) -> Option<(u16, u16)> {
-    if pane_sized {
-        reported_cell_px(viewport)
-    } else {
-        None
-    }
 }
 
 /// Read the controlling-TTY size via `tcgetwinsize` and return the
@@ -253,6 +280,26 @@ pub(super) fn current_viewport() -> Result<ViewportInfo, AttachError> {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    /// A resized slot brings its hidden tabs to the same size, so showing
+    /// one never reflows its program.
+    #[test]
+    fn hidden_slot_tabs_follow_their_slot_s_size() {
+        let tid = ResourceId::local;
+        let rect = crate::layout::Rect {
+            x: 0,
+            y: 1,
+            w: 40,
+            h: 20,
+        };
+        let slot = Slot {
+            strip: vec![tid(2), tid(3)],
+            default: 0,
+            shown: 0,
+        };
+        let resized = with_hidden_tabs(vec![(tid(2), rect), (tid(1), rect)], &[slot]);
+        assert_eq!(resized, [(tid(2), rect), (tid(3), rect), (tid(1), rect)]);
+    }
     use crate::attach::surface_leaf::LeafBook;
     use tokio::net::UnixStream;
 
@@ -340,11 +387,10 @@ mod tests {
     /// ADR-0145: the resize cell size is the host's reported cell, only
     /// when the server applies it and the host reports pixel metrics.
     #[test]
-    fn resize_cell_px_needs_the_feature_and_real_metrics() {
+    fn resize_cell_px_needs_real_metrics() {
         let metered = ViewportInfo::new(100, 30).with_pixels(Some(900), Some(540));
-        assert_eq!(resize_cell_px(true, &metered), Some((9, 18)));
-        assert_eq!(resize_cell_px(false, &metered), None);
-        assert_eq!(resize_cell_px(true, &ViewportInfo::new(100, 30)), None);
+        assert_eq!(resize_cell_px(&metered), Some((9, 18)));
+        assert_eq!(resize_cell_px(&ViewportInfo::new(100, 30)), None);
         assert_eq!(
             host_cell_px(&ViewportInfo::new(100, 30)),
             HOST_CELL_PX_FALLBACK

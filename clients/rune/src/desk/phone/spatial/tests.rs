@@ -1,9 +1,11 @@
 use super::*;
 
 mod fixture;
+mod ime;
 mod input;
 mod refit;
 mod touch;
+mod touch_ownership;
 mod viewport;
 
 fn id(n: u32) -> ResourceId {
@@ -157,9 +159,13 @@ fn real_map_taps_choose_literal_nested_leaves_and_track_external_focus() {
     let arrangement_before = stored(&client);
     assert_eq!(focus(&rt), id(1));
     assert_eq!(rt.state.on_screen(), [id(1)]);
-    assert_eq!(rt.state.others.len(), 3);
-    assert!(rt.state.others[&id(2)].is_some());
-    assert_eq!(rt.state.others[&id(4)], None, "document shares the map");
+    assert_eq!(rt.state.connection.others.len(), 3);
+    assert!(rt.state.connection.others[&id(2)].is_some());
+    assert_eq!(
+        rt.state.connection.others[&id(4)],
+        None,
+        "document shares the map"
+    );
     let [x, y, w, h] = geometry(&rt, "phone-minimap").rect;
     touch(&mut rt, Started, x + w * 0.6, y + h * 0.3);
     touch(&mut rt, Ended, x + w * 0.6, y + h * 0.3);
@@ -270,7 +276,7 @@ fn map_swipes_do_not_also_tap_and_picker_reaches_document_and_tiny_leaves() {
     settle(&mut rt);
     tap(&mut rt, &format!("phone-pick-{}", id(4)));
     assert_eq!(focus(&rt), id(4));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
     assert!(!rt.state.phone.as_ref().unwrap().picker);
     no_input(&client);
 }
@@ -290,7 +296,7 @@ fn modal_blocks_map_handle_picker_and_tabs_without_terminal_input() {
         assert_eq!(focus(&rt), id(1), "blocked {key}");
     }
     assert!(!rt.state.phone.as_ref().unwrap().picker);
-    assert!(rt.state.tabs.list[0].active);
+    assert!(rt.state.connection.tabs.list[0].active);
     no_input(&client);
 }
 
@@ -298,8 +304,8 @@ fn modal_blocks_map_handle_picker_and_tabs_without_terminal_input() {
 fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_seen() {
     use phux_client_runtime::control::Event;
     let (client, mut rt) = fixture(true);
-    let first = rt.state.shown.as_ref().unwrap().view.unwrap();
-    let second = rt.state.others[&id(2)].unwrap();
+    let first = rt.state.connection.shown.as_ref().unwrap().view.unwrap();
+    let second = rt.state.connection.others[&id(2)].unwrap();
     let [x, y, _, _] = geometry(&rt, &format!("phone-spatial-pane-{}", id(1))).rect;
     touch(&mut rt, Started, x + 60.0, y + 100.0);
     touch(&mut rt, Moved, x + 60.0, y + 180.0);
@@ -325,10 +331,11 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
         crate::activity::Mark::Bell,
         "painting did not mark hidden pane seen"
     );
-    assert_eq!(rt.state.fitted.len(), 1);
-    assert_eq!(rt.state.areas.len(), 1);
+    assert_eq!(rt.state.connection.fitted.len(), 1);
+    assert_eq!(rt.state.connection.areas.len(), 1);
     assert!(
         rt.state
+            .connection
             .painted
             .borrow()
             .as_ref()
@@ -336,11 +343,17 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
     );
     rt.update(|d, _| d.focus_pane(&id(2)));
     settle(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().view, Some(second));
-    assert_eq!(rt.state.others[&id(1)], Some(first));
+    assert_eq!(
+        rt.state.connection.shown.as_ref().unwrap().view,
+        Some(second)
+    );
+    assert_eq!(rt.state.connection.others[&id(1)], Some(first));
     rt.update(|d, _| d.focus_pane(&id(1)));
     settle(&mut rt);
-    assert_eq!(rt.state.shown.as_ref().unwrap().view, Some(first));
+    assert_eq!(
+        rt.state.connection.shown.as_ref().unwrap().view,
+        Some(first)
+    );
     assert_eq!(client.acquire_view(first).unwrap().scrollbar.offset, offset);
     assert_eq!(engine.view_selection_text(first).unwrap(), selection);
     no_input(&client);
@@ -352,12 +365,12 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     let (client, mut rt) = fixture(true);
     // Unlike the geometry-only fixture, resize settling runs on the app clock.
     rt.poll = Some(Desk::poll);
-    let before = rt.state.fitted[&id(1)];
+    let before = rt.state.connection.fitted[&id(1)];
     tap(&mut rt, "phone-keyboard-toggle");
     settle(&mut rt);
     assert!(!rt.state.phone.as_ref().unwrap().keyboard);
-    assert!(rt.state.fitted[&id(1)].0.1 > before.0.1);
-    assert_eq!(rt.state.fitted.len(), 1);
+    assert!(rt.state.connection.fitted[&id(1)].0.1 > before.0.1);
+    assert_eq!(rt.state.connection.fitted.len(), 1);
     let sizes: Vec<_> = outbound(&client)
         .into_iter()
         .filter_map(|f| match f {
@@ -386,7 +399,7 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
         .collect();
     assert_eq!(sizes, [id(3)], "new focus gets one destination size");
     assert_eq!(
-        rt.state.areas.len(),
+        rt.state.connection.areas.len(),
         2,
         "hidden siblings never laid out for sizing"
     );
@@ -435,7 +448,10 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
         rt.find("phone-minimap").is_none(),
         "single-pane group has no map"
     );
-    assert!(rt.state.others.is_empty(), "no session-wide grid");
+    assert!(
+        rt.state.connection.others.is_empty(),
+        "no session-wide grid"
+    );
     rt.update(|d, _| d.want(id(6)));
     poll(&mut rt);
     settle(&mut rt);
@@ -444,7 +460,7 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
         leaves(rt.state.phone.as_ref().unwrap().tree.as_ref().unwrap()),
         [id(6)]
     );
-    assert!(rt.state.others.is_empty());
+    assert!(rt.state.connection.others.is_empty());
     assert!(rt.find("phone-minimap").is_none());
     no_input(&client);
 }
@@ -452,8 +468,8 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
 #[test]
 fn a_reconnect_reopens_all_retained_views_and_forgets_the_old_gesture() {
     let (client, mut rt) = fixture(true);
-    let before = rt.state.shown.as_ref().unwrap().view;
-    let old_other = rt.state.others[&id(2)];
+    let before = rt.state.connection.shown.as_ref().unwrap().view;
+    let old_other = rt.state.connection.others[&id(2)];
     let (x, y) = rt.find("phone-navigation").unwrap();
     touch(&mut rt, Started, x, y);
     touch(&mut rt, Moved, x - 70.0, y);
@@ -464,9 +480,9 @@ fn a_reconnect_reopens_all_retained_views_and_forgets_the_old_gesture() {
     touch(&mut rt, Ended, x - 70.0, y);
     settle(&mut rt);
     assert_eq!(focus(&rt), id(1));
-    assert_ne!(rt.state.shown.as_ref().unwrap().view, before);
-    assert_ne!(rt.state.others[&id(2)], old_other);
-    assert_eq!(rt.state.others.len(), 3);
+    assert_ne!(rt.state.connection.shown.as_ref().unwrap().view, before);
+    assert_ne!(rt.state.connection.others[&id(2)], old_other);
+    assert_eq!(rt.state.connection.others.len(), 3);
     assert!(!rt.state.layout_is_stale());
     no_input(&client);
 }
@@ -476,25 +492,31 @@ fn desktop_keeps_splits_zoom_divider_preview_and_all_pane_sizing() {
     use phux_client_core::layout::leaves;
     let (client, mut rt) = fixture(false);
     assert_eq!(
-        leaves(rt.state.layout.as_ref().unwrap()),
+        leaves(rt.state.connection.layout.as_ref().unwrap()),
         [id(1), id(2), id(3), id(4)]
     );
     assert_eq!(rt.state.on_screen().len(), 4);
-    assert!(rt.state.fitted.contains_key(&id(2)));
-    assert!(rt.state.fitted.contains_key(&id(3)));
+    assert!(rt.state.connection.fitted.contains_key(&id(2)));
+    assert!(rt.state.connection.fitted.contains_key(&id(3)));
     assert!(rt.find("phone-canvas").is_none());
     assert!(rt.find("divider-[]").is_some());
     rt.update(|d, _| d.drag_divider(vec![], 0.6, false));
     assert!(
-        matches!(rt.state.layout.as_ref().unwrap(), LayoutNode::Split { ratio, .. } if *ratio == 0.6)
+        matches!(rt.state.connection.layout.as_ref().unwrap(), LayoutNode::Split { ratio, .. } if *ratio == 0.6)
     );
     rt.update(|d, _| {
-        d.dragging = None;
+        d.connection.dragging = None;
         d.toggle_zoom();
     });
-    assert_eq!(leaves(rt.state.layout.as_ref().unwrap()), [id(1)]);
+    assert_eq!(
+        leaves(rt.state.connection.layout.as_ref().unwrap()),
+        [id(1)]
+    );
     rt.update(|d, _| d.toggle_zoom());
-    assert_eq!(leaves(rt.state.layout.as_ref().unwrap()).len(), 4);
+    assert_eq!(
+        leaves(rt.state.connection.layout.as_ref().unwrap()).len(),
+        4
+    );
     no_input(&client);
 }
 
@@ -518,10 +540,10 @@ fn identity_changes_cancel_navigation_even_with_identical_resource_rectangles() 
 fn dead_views_are_recreated_and_closed_terminal_focus_uses_full_group() {
     use phux_protocol::wire::frame::{CloseReason, FrameKind};
     let (client, mut rt) = fixture(true);
-    let dead = rt.state.others[&id(2)].unwrap();
+    let dead = rt.state.connection.others[&id(2)].unwrap();
     client.destroy_view(dead).unwrap();
     poll(&mut rt);
-    assert_ne!(rt.state.others[&id(2)], Some(dead));
+    assert_ne!(rt.state.connection.others[&id(2)], Some(dead));
     rt.update(|d, _| d.focus_pane(&id(3)));
     settle(&mut rt);
     client
@@ -535,7 +557,7 @@ fn dead_views_are_recreated_and_closed_terminal_focus_uses_full_group() {
     poll(&mut rt);
     settle(&mut rt);
     assert_eq!(focus(&rt), id(2));
-    assert!(!rt.state.others.contains_key(&id(3)));
+    assert!(!rt.state.connection.others.contains_key(&id(3)));
     assert!(!rt.state.layout_is_stale());
     no_input(&client);
 }

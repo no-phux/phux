@@ -4,7 +4,7 @@
 
 use phux_client_core::layout::{Direction, LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Drag, Key, KeyEvent, Phase};
+use rune::{Drag, Key, KeyEvent, Phase, Tx};
 
 use super::super::Desk;
 use super::super::input::Modal;
@@ -242,14 +242,18 @@ impl Desk {
 
     /// Only the dedicated map/handle owns this gesture. Content keeps its
     /// terminal mouse/selection behavior. One release commits one neighbor.
-    pub fn phone_navigate(&mut self, drag: &Drag, map: bool) {
+    pub fn phone_navigate(&mut self, drag: &Drag, map: bool, tx: &mut Tx) {
+        // Touch capture queues a final Move beside Up, even for a tap. Its
+        // default instant commit would snap the focus marker and landing.
+        // The canvas's offset_motion(NONE) still follows the finger directly.
+        tx.animated();
         if self.modal().is_some() {
             if let Some(phone) = self.phone.as_mut() {
                 phone.reset_navigation();
             }
             return;
         }
-        let Some(focus) = self.shown.as_ref().map(|s| s.resource.clone()) else {
+        let Some(focus) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
         let Some(phone) = self.phone.as_mut() else {
@@ -282,7 +286,7 @@ impl Desk {
         let dir = direction(drag.dx, drag.dy);
         let next = self
             .navigation_tree()
-            .zip(self.shown.as_ref())
+            .zip(self.connection.shown.as_ref())
             .and_then(|(tree, shown)| toward(tree, &shown.resource, dir));
         let Some(phone) = self.phone.as_mut() else {
             return;

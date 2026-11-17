@@ -2,12 +2,11 @@
 //! reap) must get a typed reply for every request and leave the server
 //! responsive.
 
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult, StateScope};
+use phux_protocol::wire::frame::{CommandResult, FrameKind, SpawnResult};
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, attach_by_name, command, join_after_shutdown, recv_until,
-    run_local, send_frame, spawn_server_seed_pty_no_cmd, wait_for_socket,
+    Spawn, SpawnedServer, attach_by_name, command, recv_until, run_local, send_frame,
 };
 
 async fn next_command_result(stream: &mut UnixStream) -> CommandResult {
@@ -21,10 +20,7 @@ async fn next_command_result(stream: &mut UnixStream) -> CommandResult {
 const fn kill(request_id: u32, terminal_id: phux_protocol::ResourceId) -> FrameKind {
     FrameKind::Command {
         request_id,
-        command: Command::KillResource {
-            terminal_id,
-            operation_id: None,
-        },
+        command: phux_server_testkit::kill(terminal_id),
     }
 }
 
@@ -32,10 +28,8 @@ const fn kill(request_id: u32, terminal_id: phux_protocol::ResourceId) -> FrameK
 #[test]
 fn spawn_storm_then_kill_storm_does_not_panic() {
     run_local(async {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("default"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let server = SpawnedServer::pty(Some("default"));
+        let mut stream = server.connect().await;
         send_frame(&mut stream, &attach_by_name("default")).await;
 
         for request_id in 0..24 {
@@ -69,20 +63,13 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
         send_frame(&mut stream, &kill(99, spawned[0].clone())).await;
         let _ = next_command_result(&mut stream).await;
 
-        let state = command(
-            &mut stream,
-            98,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-        )
-        .await;
+        let state = command(&mut stream, 98, phux_server_testkit::get_state()).await;
         assert!(
             matches!(state, CommandResult::OkWith(_)),
             "unresponsive: {state:?}"
         );
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }

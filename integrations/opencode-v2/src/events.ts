@@ -46,3 +46,50 @@ function permissionData(data: Record<string, unknown>): Readonly<Record<string, 
     ...(question === undefined ? {} : { question }),
   };
 }
+
+/**
+ * Apply one OpenCode 1.x plugin event (`{ type, properties }`) to the phux
+ * producer. 1.x names a permission `permission.asked` (`permission.updated`
+ * before 1.2) and also asks `question.asked`.
+ */
+export function applyV1Event(
+  lifecycle: OpenCodeLifecycle,
+  event: { readonly type?: unknown; readonly properties?: unknown },
+): Promise<void> {
+  const props = record(event.properties);
+  if (props === undefined) return Promise.resolve();
+  if (event.type === "session.deleted") {
+    const id = record(props.info)?.id;
+    return typeof id === "string" ? lifecycle.deleteSession(id) : Promise.resolve();
+  }
+  const sessionID = props.sessionID;
+  if (typeof sessionID !== "string") return Promise.resolve();
+  const id = typeof props.id === "string" ? { id: props.id } : {};
+  switch (event.type) {
+    case "permission.asked":
+    case "permission.updated": {
+      const what = typeof props.permission === "string" ? props.permission : props.type;
+      const patterns = [props.patterns ?? props.pattern].flat().filter((item) => typeof item === "string");
+      const title = typeof props.title === "string" ? props.title : [what, ...patterns].filter(Boolean).join(": ");
+      return lifecycle.ask(sessionID, { kind: "permission", ...id, ...(title ? { question: title } : {}) });
+    }
+    case "question.asked": {
+      const first = record([props.questions].flat()[0]);
+      const question = typeof first?.question === "string" ? first.question : undefined;
+      const options = Array.isArray(first?.options) ? first.options : [];
+      const suggestions = options.map((option) => record(option)?.label).filter((label) => typeof label === "string");
+      return lifecycle.ask(sessionID, {
+        kind: "question",
+        ...id,
+        ...(question === undefined ? {} : { question }),
+        ...(suggestions.length === 0 ? {} : { suggestions }),
+      });
+    }
+    default:
+      return applyServerEvent(lifecycle, { type: event.type, data: props });
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}

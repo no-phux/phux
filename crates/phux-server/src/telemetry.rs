@@ -168,15 +168,23 @@ pub async fn run_log_rotation_task() {
     }
 }
 
-/// A non-blocking appender at `path` (parent created), plus its
+/// A non-blocking appender at `path` (parent made), plus its
 /// [`WorkerGuard`]. Rotates at open.
 fn file_writer(
     path: &Path,
 ) -> std::io::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::owner_dir::create(parent)?;
     }
     let _ = rotate_log(path, LOG_ROTATE_THRESHOLD_BYTES, LOG_ROTATE_MAX_GENERATIONS);
+    Ok(tracing_appender::non_blocking(appender(path)?))
+}
+
+/// An owner-only (ADR-0028) appender to exactly `path`, parent created.
+fn appender(path: &Path) -> std::io::Result<tracing_appender::rolling::RollingFileAppender> {
+    if let Some(parent) = path.parent() {
+        crate::owner_dir::create(parent)?;
+    }
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let file_name = path.file_name().ok_or_else(|| {
         std::io::Error::other(format!(
@@ -184,14 +192,12 @@ fn file_writer(
             path.display()
         ))
     })?;
-    // Pre-create owner-only (ADR-0028); the appender's default is 0o644.
+    // Pre-create owner-only; the appender's default is 0o644.
     harden_log_sink(path)?;
-    // `rolling::never` appends to exactly this file.
-    let appender = tracing_appender::rolling::never(
+    Ok(tracing_appender::rolling::never(
         dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf),
         file_name,
-    );
-    Ok(tracing_appender::non_blocking(appender))
+    ))
 }
 
 /// Ensure the sink exists with mode `0o600` before any write (ADR-0028):
@@ -220,7 +226,7 @@ fn harden_log_sink(path: &Path) -> std::io::Result<()> {
 /// Per-pid client log path, `<state dir>/client-<pid>.log`.
 #[must_use]
 pub fn default_client_log_path() -> PathBuf {
-    let mut dir = client_state_dir();
+    let mut dir = state_dir();
     dir.push(format!("client-{}.log", std::process::id()));
     dir
 }
@@ -239,11 +245,6 @@ pub fn server_log_path() -> PathBuf {
 #[must_use]
 pub fn state_dir() -> PathBuf {
     phux_config::instance::state_dir()
-}
-
-/// `$XDG_STATE_HOME/phux` (or `$HOME/.local/state/phux`).
-fn client_state_dir() -> PathBuf {
-    state_dir()
 }
 
 /// Install the subscriber for a server or one-shot CLI process, before the
@@ -314,22 +315,7 @@ pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_or_else(default_client_log_path, PathBuf::from);
 
     // Synchronous writer: `std::process::exit` skips guard flushes.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::other(format!(
-            "PHUX_LOG path has no file name: {}",
-            path.display()
-        ))
-    })?;
-    harden_log_sink(&path)?;
-    let appender = tracing_appender::rolling::never(
-        dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf),
-        file_name,
-    );
-    let file_layer = fmt_layer(format, appender, false);
+    let file_layer = fmt_layer(format, appender(&path)?, false);
 
     tracing_subscriber::registry()
         .with(env_filter())
@@ -407,347 +393,186 @@ fn append_panic_record_synchronously(
 mod tests {
     use super::*;
 
-    /// `PHUX_LOG_FORMAT=json` (any case) is JSON; anything else is text.
+    /// Run `f` with `key` set (or removed), then restore it. Process-global
+    /// env: nextest isolates tests.
+    fn with_env<R>(key: &str, value: Option<&std::ffi::OsStr>, f: impl FnOnce() -> R) -> R {
+        let prev = std::env::var_os(key);
+        let set = |value: Option<&std::ffi::OsStr>| match value {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        };
+        set(value);
+        let out = f();
+        set(prev.as_deref());
+        out
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).expect("read")
+    }
+
     #[test]
     fn log_format_from_env_parses_json_case_insensitively() {
-        // Process-global env; nextest isolates tests, and the var is restored.
-        let prev = std::env::var_os(ENV_LOG_FORMAT);
-        unsafe { std::env::set_var(ENV_LOG_FORMAT, "JSON") };
-        assert_eq!(LogFormat::from_env(), LogFormat::Json);
-        unsafe { std::env::set_var(ENV_LOG_FORMAT, "text") };
-        assert_eq!(LogFormat::from_env(), LogFormat::Text);
-        unsafe { std::env::remove_var(ENV_LOG_FORMAT) };
-        assert_eq!(LogFormat::from_env(), LogFormat::Text);
-        match prev {
-            Some(v) => unsafe { std::env::set_var(ENV_LOG_FORMAT, v) },
-            None => unsafe { std::env::remove_var(ENV_LOG_FORMAT) },
+        for (value, format) in [
+            (Some("JSON"), LogFormat::Json),
+            (Some("text"), LogFormat::Text),
+            (None, LogFormat::Text),
+        ] {
+            let value = value.map(std::ffi::OsStr::new);
+            assert_eq!(with_env(ENV_LOG_FORMAT, value, LogFormat::from_env), format);
         }
     }
 
-    /// `server_log_path` honors `XDG_STATE_HOME` and names
-    /// `<profile-dir>/server.log`.
     #[test]
-    fn server_log_path_honors_xdg_state_home() {
-        let prev = std::env::var_os("XDG_STATE_HOME");
+    fn log_paths_honor_xdg_state_home_and_scope_the_client_by_pid() {
         let leaf = phux_config::instance::state_dir()
             .file_name()
             .expect("the state dir always has a final component")
             .to_string_lossy()
             .into_owned();
-        // Process-global env; nextest isolates tests, and the var is restored.
-        unsafe { std::env::set_var("XDG_STATE_HOME", "/custom/state") };
+        let custom = with_env(
+            "XDG_STATE_HOME",
+            Some("/custom/state".as_ref()),
+            server_log_path,
+        );
         assert_eq!(
-            server_log_path(),
+            custom,
             PathBuf::from(format!("/custom/state/{leaf}/server.log"))
         );
         // Empty behaves as unset.
-        unsafe { std::env::set_var("XDG_STATE_HOME", "") };
-        let fallback = server_log_path();
+        let fallback = with_env("XDG_STATE_HOME", Some("".as_ref()), server_log_path);
         assert!(
             fallback.ends_with(format!(".local/state/{leaf}/server.log")),
-            "got {fallback:?}"
+            "{fallback:?}"
         );
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
-        }
+
+        let client = default_client_log_path();
+        let name = format!("client-{}.log", std::process::id());
+        assert_eq!(client, state_dir().join(name));
     }
 
-    /// The client path is `<state dir>/client-<pid>.log`.
-    #[test]
-    fn default_client_log_path_is_pid_scoped_under_state_dir() {
-        let path = default_client_log_path();
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .expect("file name");
-        assert!(name.starts_with("client-"), "got {name}");
-        assert_eq!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("log"),
-            "got {name}"
-        );
-        assert!(name.contains(&std::process::id().to_string()), "got {name}");
-        assert!(path.to_string_lossy().contains("phux"), "got {path:?}");
-    }
-
-    /// The panic hook's synchronous record lands on disk without a guard,
-    /// at mode 0o600.
+    /// The synchronous crash record lands without a guard, at 0o600, and
+    /// only when `PHUX_LOG` names a sink.
     #[test]
     fn panic_record_is_written_synchronously_at_owner_only_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("panic-sync.log");
-        let prev = std::env::var_os(ENV_LOG_PATH);
-        unsafe { std::env::set_var(ENV_LOG_PATH, &path) };
-
-        append_panic_record_synchronously(
-            "src/thing.rs:42:7",
-            "panicked at 'kaboom'",
-            &std::backtrace::Backtrace::disabled(),
-        );
-
-        match prev {
-            Some(value) => unsafe { std::env::set_var(ENV_LOG_PATH, value) },
-            None => unsafe { std::env::remove_var(ENV_LOG_PATH) },
-        }
-
-        let contents = std::fs::read_to_string(&path).expect("crash record must exist");
-        assert!(contents.contains("src/thing.rs:42:7"), "got: {contents}");
-        assert!(contents.contains("kaboom"), "got: {contents}");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&path)
-                .expect("metadata")
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
-        }
+        let record = || {
+            append_panic_record_synchronously(
+                "src/thing.rs:42:7",
+                "panicked at 'kaboom'",
+                &std::backtrace::Backtrace::disabled(),
+            );
+        };
+        with_env(ENV_LOG_PATH, None, record);
+        assert!(!path.exists());
+        with_env(ENV_LOG_PATH, Some(path.as_os_str()), record);
+        let contents = read(&path);
+        assert!(contents.contains("src/thing.rs:42:7") && contents.contains("kaboom"));
+        assert_eq!(mode(&path), 0o600);
     }
 
-    /// Without `PHUX_LOG` the hook writes no file.
+    /// The writer creates parent and file at 0o600 (re-tightening a looser
+    /// one) and flushes on guard drop.
     #[test]
-    fn panic_record_is_skipped_when_no_log_sink_is_configured() {
-        let prev = std::env::var_os(ENV_LOG_PATH);
-        // SAFETY-NOTE: see the sibling test.
-        unsafe { std::env::remove_var(ENV_LOG_PATH) };
-        append_panic_record_synchronously("x", "y", &std::backtrace::Backtrace::disabled());
-        if let Some(value) = prev {
-            unsafe { std::env::set_var(ENV_LOG_PATH, value) };
-        }
-    }
-
-    /// The file writer creates parent and file, and flushes on guard drop.
-    #[test]
-    fn file_writer_creates_dir_and_writes_a_parseable_line() {
+    fn file_writer_creates_an_owner_only_sink_and_flushes_on_drop() {
         use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
         use tracing_subscriber::fmt::MakeWriter as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nested").join("phux-test.log");
         {
             let (writer, _guard) = file_writer(&path).expect("file writer");
-            let mut w = writer.make_writer();
-            writeln!(w, "{{\"hello\":\"world\"}}").expect("write");
-            // _guard drops here, flushing the background writer.
+            assert_eq!(mode(&path), 0o600);
+            writeln!(writer.make_writer(), "{{\"hello\":\"world\"}}").expect("write");
         }
-        let contents = std::fs::read_to_string(&path).expect("read back log");
-        assert!(contents.contains("hello"), "got: {contents}");
-        // Each line is valid JSON (the JSON-format contract).
-        let line = contents.lines().next().expect("a line");
-        let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+        let line = read(&path);
+        let parsed: serde_json::Value = serde_json::from_str(line.trim()).expect("JSON line");
         assert_eq!(parsed["hello"], "world");
-    }
 
-    /// The sink is created, or re-tightened, to mode 0o600 (ADR-0028).
-    #[cfg(unix)]
-    #[test]
-    fn file_writer_creates_sink_with_0o600_perms() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        // Fresh file: created at 0o600.
-        let fresh = dir.path().join("fresh.log");
-        let (_w, _g) = file_writer(&fresh).expect("file writer");
-        let mode = std::fs::metadata(&fresh)
-            .expect("metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "fresh sink mode was {mode:o}");
-
-        // Pre-existing world-readable file: re-tightened to 0o600.
         let loose = dir.path().join("loose.log");
         std::fs::write(&loose, b"old line\n").expect("seed file");
-        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644))
-            .expect("set loose perms");
-        let (_w2, _g2) = file_writer(&loose).expect("file writer");
-        let mode = std::fs::metadata(&loose)
-            .expect("metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "re-hardened sink mode was {mode:o}");
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let _writer = file_writer(&loose).expect("file writer");
+        assert_eq!(mode(&loose), 0o600);
     }
 
-    /// The shift plan runs highest generation first and stops at the cap.
     #[test]
     fn shift_plan_orders_highest_generation_first_within_the_cap() {
         let base = Path::new("/state/phux/server.log");
-        let plan = shift_plan(base, 4);
+        let shift = |from, to| (generation_path(base, from), generation_path(base, to));
         assert_eq!(
-            plan,
-            vec![
-                (generation_path(base, 3), generation_path(base, 4)),
-                (generation_path(base, 2), generation_path(base, 3)),
-                (generation_path(base, 1), generation_path(base, 2)),
-            ]
+            shift_plan(base, 4),
+            vec![shift(3, 4), shift(2, 3), shift(1, 2)]
         );
-    }
-
-    /// Keeping at most one generation needs no shift.
-    #[test]
-    fn shift_plan_is_empty_when_at_most_one_generation_is_kept() {
-        let base = Path::new("/state/phux/server.log");
         assert!(shift_plan(base, 1).is_empty());
         assert!(shift_plan(base, 0).is_empty());
     }
 
-    /// Below the threshold, `rotate_log` leaves everything untouched.
+    /// Below the threshold nothing moves; above it `.1` gets the content at
+    /// 0o600 and the live file is truncated in place (keeping its mode), so a `tail -f` reader
+    /// keeps its inode.
     #[test]
-    fn rotate_log_below_threshold_is_a_noop() {
+    fn rotate_log_copies_to_generation_one_and_truncates_in_place() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("server.log");
-        std::fs::write(&path, b"small\n").expect("seed");
-
-        let rotated = rotate_log(&path, 1024, 4).expect("rotate check");
-
-        assert!(!rotated);
+        std::fs::write(&path, b"pre-rotation\n").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert!(!rotate_log(&path, 1024, 4).expect("rotate check"));
         assert!(!generation_path(&path, 1).exists());
-        assert_eq!(std::fs::read_to_string(&path).expect("read"), "small\n");
-    }
+        assert_eq!(read(&path), "pre-rotation\n");
 
-    /// Over the threshold, `.1` gets the content and the live path is
-    /// truncated.
-    #[test]
-    fn rotate_log_rotates_an_oversized_file_into_generation_one() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("server.log");
-        std::fs::write(&path, b"a line of pre-rotation content\n").expect("seed");
-
-        let rotated = rotate_log(&path, 4, 4).expect("rotate");
-
-        assert!(rotated);
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("read live path after rotation"),
-            "",
-            "live path should be truncated to empty"
-        );
-        assert_eq!(
-            std::fs::read_to_string(generation_path(&path, 1)).expect("read .1"),
-            "a line of pre-rotation content\n"
-        );
-    }
-
-    /// Rotation truncates in place: the inode is unchanged and an
-    /// already-open handle sees the truncation.
-    #[cfg(unix)]
-    #[test]
-    fn rotate_log_truncates_in_place_so_open_readers_keep_the_same_inode() {
-        use std::os::unix::fs::MetadataExt as _;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("server.log");
-        std::fs::write(&path, b"a line of pre-rotation content\n").expect("seed");
-
-        // Stand-in for a `tail -f` reader opened before rotation.
         let reader = std::fs::File::open(&path).expect("open before rotation");
-        let ino_before = reader.metadata().expect("metadata").ino();
-
-        let rotated = rotate_log(&path, 4, 4).expect("rotate");
-        assert!(rotated);
-
-        let ino_after = std::fs::metadata(&path)
-            .expect("metadata after rotation")
-            .ino();
-        assert_eq!(
-            ino_before, ino_after,
-            "rotation must truncate the live path in place, not replace its inode"
-        );
-        let via_old_handle = std::fs::read_to_string(&path).expect("read via live path");
-        assert_eq!(
-            via_old_handle, "",
-            "existing reader should see the truncation"
-        );
-        drop(reader);
+        let inode = reader.metadata().expect("metadata").ino();
+        assert!(rotate_log(&path, 4, 4).expect("rotate"));
+        assert_eq!(std::fs::metadata(&path).expect("metadata").ino(), inode);
+        assert_eq!(read(&path), "");
+        assert_eq!(read(&generation_path(&path, 1)), "pre-rotation\n");
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&generation_path(&path, 1)), 0o600);
     }
 
-    /// Generations shift each rotation and the oldest drops at the cap.
     #[test]
     fn rotate_log_caps_retained_generations_dropping_the_oldest() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("server.log");
-        std::fs::write(&path, b"newest live content\n").expect("seed live");
-        let gen1 = generation_path(&path, 1);
-        let gen2 = generation_path(&path, 2);
-        std::fs::write(&gen1, b"generation one\n").expect("seed .1");
-        std::fs::write(&gen2, b"generation two (oldest, should be dropped)\n").expect("seed .2");
+        let (gen1, gen2) = (generation_path(&path, 1), generation_path(&path, 2));
+        std::fs::write(&path, b"live\n").expect("seed live");
+        std::fs::write(&gen1, b"one\n").expect("seed .1");
+        std::fs::write(&gen2, b"two\n").expect("seed .2");
 
-        let rotated = rotate_log(&path, 1, 2).expect("rotate");
-
-        assert!(rotated);
+        assert!(rotate_log(&path, 1, 2).expect("rotate"));
         assert_eq!(
-            std::fs::read_to_string(&gen2).expect("read .2"),
-            "generation one\n",
-            ".2 should now hold what was in .1"
+            (read(&gen1), read(&gen2)),
+            ("live\n".into(), "one\n".into())
         );
-        assert_eq!(
-            std::fs::read_to_string(&gen1).expect("read .1"),
-            "newest live content\n",
-            ".1 should now hold the just-rotated live content"
-        );
-        assert!(
-            !generation_path(&path, 3).exists(),
-            "max_generations=2 must never produce a .3"
-        );
+        assert!(!generation_path(&path, 3).exists());
     }
 
-    /// The rotated generation is created at mode 0o600.
-    #[cfg(unix)]
-    #[test]
-    fn rotate_log_preserves_0o600_on_the_live_file_and_the_rotated_generation() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("server.log");
-        std::fs::write(&path, b"oversized content to force rotation\n").expect("seed");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-
-        rotate_log(&path, 4, 4).expect("rotate");
-
-        let live_mode = std::fs::metadata(&path)
-            .expect("live metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(live_mode, 0o600, "live file mode was {live_mode:o}");
-        let gen1_mode = std::fs::metadata(generation_path(&path, 1))
-            .expect(".1 metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(gen1_mode, 0o600, ".1 mode was {gen1_mode:o}");
-    }
-
-    /// `rotate_server_log_if_needed` rotates the real canonical path with
-    /// production limits.
+    /// The periodic check rotates the canonical path with production limits.
     #[test]
     fn rotate_server_log_if_needed_rotates_the_canonical_path_when_oversized() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("XDG_STATE_HOME");
-        // Process-global env; nextest isolates tests, and the var is restored.
-        unsafe { std::env::set_var("XDG_STATE_HOME", dir.path()) };
-
-        let path = server_log_path();
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        let oversized_len = usize::try_from(LOG_ROTATE_THRESHOLD_BYTES + 1).expect("fits usize");
-        std::fs::write(&path, vec![b'x'; oversized_len]).expect("seed an already-oversized log");
-
-        let rotated = rotate_server_log_if_needed().expect("rotation check");
-
-        assert!(rotated, "an oversized canonical log should have rotated");
-        assert!(generation_path(&path, 1).exists());
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("live path after rotation"),
-            "",
-            "live path should be truncated after rotation"
-        );
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
-        }
+        with_env("XDG_STATE_HOME", Some(dir.path().as_os_str()), || {
+            let path = server_log_path();
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            let oversized = usize::try_from(LOG_ROTATE_THRESHOLD_BYTES + 1).expect("fits");
+            std::fs::write(&path, vec![b'x'; oversized]).expect("seed");
+            assert!(rotate_server_log_if_needed().expect("rotation check"));
+            assert!(generation_path(&path, 1).exists());
+            assert_eq!(read(&path), "");
+        });
     }
 }

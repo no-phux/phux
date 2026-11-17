@@ -1,0 +1,249 @@
+//! ssh-agent forwarding over the real sockets: the bit, the broker socket
+//! and a pane's `SSH_AUTH_SOCK` all follow `[forward] agent`; a pane's
+//! list and sign reach the offering client and nothing else does; and a
+//! client that disconnects mid-request fails it at once.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
+)]
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use phux_protocol::caps::ServerFeatureExt;
+use phux_protocol::forward::ForwardOp;
+use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ErrorCode, FrameKind};
+use phux_server::LaunchCommand;
+use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+use phux_server_testkit::{
+    SpawnedServer, assert_command_error, command, recv_until, run_local, seed_pty,
+};
+
+use crate::common::{connect_as, full_caps};
+
+const FAILURE: &[u8] = &[5];
+const LIST: &[u8] = &[11];
+/// Far below the server's 60 s request deadline: "at once".
+const PROMPT: Duration = Duration::from_secs(5);
+
+fn broker(socket: &Path) -> PathBuf {
+    socket.with_file_name("phux.sock.ssh-agent")
+}
+
+/// Run `body` against a server whose seeded pane records the
+/// `SSH_AUTH_SOCK` it was started with in `env`.
+async fn serve(agent: bool, body: impl AsyncFnOnce(&Path, PathBuf)) {
+    let tmp = TempDir::new().unwrap();
+    let env = tmp.path().join("env");
+    let mut seed = LaunchCommand::new("/bin/sh");
+    seed.arg("-c");
+    seed.arg(format!(
+        "printf %s \"${{SSH_AUTH_SOCK-unset}}\" > '{0}.tmp'; mv '{0}.tmp' '{0}'; sleep 600",
+        env.display()
+    ));
+    // What the server's own environment names is what a pane inherits.
+    seed.env("SSH_AUTH_SOCK", "/the/servers/own/agent");
+    let server = SpawnedServer::start_in(tmp, Some("main"), |cfg| {
+        cfg.forward.agent = agent;
+        seed_pty(cfg, seed);
+    });
+    body(&server.socket, env).await;
+    server.stop().await;
+}
+
+async fn client(socket: &Path, name: &str) -> (UnixStream, bool) {
+    let (stream, hello_ok) = connect_as(socket, name, full_caps()).await;
+    let FrameKind::HelloOk { server_caps, .. } = hello_ok else {
+        unreachable!()
+    };
+    let advertised = server_caps
+        .features_ext
+        .contains(ServerFeatureExt::ForwardAgent);
+    (stream, advertised)
+}
+
+async fn offer(stream: &mut UnixStream, request_id: u32) -> CommandResult {
+    let op = ForwardOp::AgentOffer;
+    command(stream, request_id, Command::Forward { op }).await
+}
+
+async fn reply(stream: &mut UnixStream, request_id: u32, id: u64, message: &[u8]) -> CommandResult {
+    let message = message.to_vec();
+    let op = ForwardOp::AgentReply { id, message };
+    command(stream, request_id, Command::Forward { op }).await
+}
+
+/// The next `agent_request` this client is sent.
+async fn request(stream: &mut UnixStream) -> (u64, Vec<u8>) {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Event {
+            terminal: None,
+            event: AgentEvent::SshAgentRequest { id, message },
+            stamp: None,
+        } => Some((id, message)),
+        _ => None,
+    })
+    .await
+}
+
+async fn pane(socket: &Path) -> UnixStream {
+    UnixStream::connect(broker(socket)).await.unwrap()
+}
+
+async fn send(pane: &mut UnixStream, message: &[u8]) {
+    let mut framed = u32::try_from(message.len()).unwrap().to_be_bytes().to_vec();
+    framed.extend(message);
+    pane.write_all(&framed).await.unwrap();
+}
+
+/// The pane's next answer, which must arrive within [`PROMPT`].
+async fn answer(pane: &mut UnixStream) -> Vec<u8> {
+    tokio::time::timeout(PROMPT, async {
+        let len = pane.read_u32().await.unwrap();
+        let mut body = vec![0; usize::try_from(len).unwrap()];
+        pane.read_exact(&mut body).await.unwrap();
+        body
+    })
+    .await
+    .expect("the broker did not answer promptly")
+}
+
+async fn seeded_env(env: &Path) -> String {
+    for _ in 0..500 {
+        if let Ok(value) = std::fs::read_to_string(env) {
+            return value;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the seeded pane never recorded its environment");
+}
+
+#[test]
+fn off_by_default_changes_nothing_for_panes() {
+    run_local(serve(false, async |socket, env| {
+        let (mut stream, advertised) = client(socket, "agent-off").await;
+        assert!(!advertised);
+        let CommandResult::Error { code, .. } = offer(&mut stream, 1).await else {
+            panic!("an offer was accepted with forwarding off");
+        };
+        assert_eq!(code, ErrorCode::Unsupported);
+        assert!(!broker(socket).exists());
+        assert_eq!(seeded_env(&env).await, "/the/servers/own/agent");
+    }));
+}
+
+#[test]
+fn on_a_pane_reaches_the_offering_client_and_only_with_list_or_sign() {
+    use std::os::unix::fs::PermissionsExt as _;
+    run_local(serve(true, async |socket, env| {
+        let (mut stream, advertised) = client(socket, "agent-on").await;
+        assert!(advertised);
+        let path = broker(socket);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(seeded_env(&env).await, path.to_str().unwrap());
+
+        // Nobody offers: an immediate failure, on a connection that stays
+        // usable.
+        let mut pane = pane(socket).await;
+        send(&mut pane, LIST).await;
+        assert_eq!(answer(&mut pane).await, FAILURE);
+
+        assert_eq!(offer(&mut stream, 1).await, CommandResult::Ok);
+        send(&mut pane, LIST).await;
+        let (first, message) = request(&mut stream).await;
+        assert_eq!(message, LIST);
+        let identities = [12, 0, 0, 0, 0];
+        assert_eq!(
+            reply(&mut stream, 2, first, &identities).await,
+            CommandResult::Ok
+        );
+        assert_eq!(answer(&mut pane).await, identities);
+        // Answered once: the id is spent.
+        let again = reply(&mut stream, 3, first, &identities).await;
+        assert_command_error(&again, ErrorCode::NotFound);
+
+        // Add (17), remove (18), remove-all (19), lock (22), add-constrained
+        // (25) and extension (27) are refused by the server alone.
+        for refused in [17, 18, 19, 22, 25, 27] {
+            send(&mut pane, &[refused, 0, 0, 0, 0]).await;
+            assert_eq!(answer(&mut pane).await, FAILURE, "type {refused}");
+        }
+
+        // The next request the client sees is the sign, with the next id:
+        // none of the refused ones was delivered.
+        let sign = [13, 0, 0, 0, 1, b'k', 0, 0, 0, 1, b'd', 0, 0, 0, 0];
+        send(&mut pane, &sign).await;
+        let (second, message) = request(&mut stream).await;
+        assert_eq!((second, message.as_slice()), (first + 1, &sign[..]));
+        assert_eq!(
+            reply(&mut stream, 4, second, &[14, 1, 2]).await,
+            CommandResult::Ok
+        );
+        assert_eq!(answer(&mut pane).await, [14, 1, 2]);
+    }));
+}
+
+/// The ordering this feature leans on: a connection that ends with a
+/// request in flight withdraws its offer as it ends, so the pane's ssh is
+/// answered then, not at the 60 s deadline, and the next request fails at
+/// once instead of going to a dead mailbox.
+#[test]
+fn a_client_that_disconnects_mid_request_fails_it_at_once() {
+    run_local(serve(true, async |socket, _env| {
+        let (mut stream, _) = client(socket, "agent-gone").await;
+        assert_eq!(offer(&mut stream, 1).await, CommandResult::Ok);
+        let mut pane = pane(socket).await;
+        send(&mut pane, LIST).await;
+        request(&mut stream).await;
+        drop(stream);
+        assert_eq!(answer(&mut pane).await, FAILURE);
+        send(&mut pane, LIST).await;
+        assert_eq!(answer(&mut pane).await, FAILURE);
+
+        // A new offer serves the same socket: nothing about the path a
+        // pane holds changed.
+        let (mut stream, _) = client(socket, "agent-back").await;
+        assert_eq!(offer(&mut stream, 1).await, CommandResult::Ok);
+        send(&mut pane, LIST).await;
+        let (id, _) = request(&mut stream).await;
+        assert_eq!(reply(&mut stream, 2, id, &[12, 0]).await, CommandResult::Ok);
+        assert_eq!(answer(&mut pane).await, [12, 0]);
+    }));
+}
+
+/// Two clients offer: the newer is asked, the older one's disconnect does
+/// not disturb it, and when the newer goes nothing falls back.
+#[test]
+fn the_newest_of_two_offers_is_asked() {
+    run_local(serve(true, async |socket, _env| {
+        let (mut old, _) = client(socket, "agent-old").await;
+        let (mut new, _) = client(socket, "agent-new").await;
+        assert_eq!(offer(&mut old, 1).await, CommandResult::Ok);
+        assert_eq!(offer(&mut new, 1).await, CommandResult::Ok);
+        let mut pane = pane(socket).await;
+
+        send(&mut pane, LIST).await;
+        let (id, _) = request(&mut new).await;
+        let stolen = reply(&mut old, 2, id, &[12, 9]).await;
+        assert_command_error(&stolen, ErrorCode::NotFound);
+        drop(old);
+        assert_eq!(reply(&mut new, 2, id, &[12, 1]).await, CommandResult::Ok);
+        assert_eq!(answer(&mut pane).await, [12, 1]);
+
+        send(&mut pane, LIST).await;
+        let (id, _) = request(&mut new).await;
+        assert_eq!(reply(&mut new, 3, id, &[12, 2]).await, CommandResult::Ok);
+        assert_eq!(answer(&mut pane).await, [12, 2]);
+
+        drop(new);
+        // The offer goes as the connection ends; until then the request
+        // is refused by the closed mailbox. Either way: a failure, now.
+        send(&mut pane, LIST).await;
+        assert_eq!(answer(&mut pane).await, FAILURE);
+    }));
+}

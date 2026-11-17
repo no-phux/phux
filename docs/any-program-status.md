@@ -26,12 +26,15 @@ also ends it). The body is `key=value` pairs separated by `:`.
 | `title` | `ZGVwbG95` | Base64 of `deploy`. The agent name. Optional. |
 
 Send `title` too. phux uses it as the pane's agent name and `app` as its kind.
-Without `title` the name equals the kind, and `%name` can't address the pane.
+Without `title` the name is the kind, made unique on the server: `%mytool`,
+then `%mytool-2` for a second pane.
 `title` is base64: `printf deploy | base64`.
 
 `clear` removes records; it is not a state phux displays. Other keys
 (`id`, `progress`, `msg`) are in the
-[protocol](./program-protocol.md#keys). A missing or unknown `state`
+[protocol](./program-protocol.md#keys). `resume` is a phux extension: a
+token that lets `phux restore` reopen what the program had open
+([Resume](./program-protocol.md#resume)). A missing or unknown `state`
 discards the report. Unknown keys are ignored.
 
 ## A shell function

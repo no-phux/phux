@@ -1,8 +1,6 @@
-//! The attach session's entry point and its frame-coalescing policy.
-//!
-//! [`main_loop`] builds the session state ([`SessionLoop`]), replays the
-//! `ATTACHED` bootstrap through it, and then turns the crank: one
-//! [`SessionLoop::step`] per wake-up until the session detaches or switches.
+//! The attach session's entry point: [`main_loop`] builds the
+//! [`SessionLoop`], replays the `ATTACHED` bootstrap, then runs one
+//! [`SessionLoop::step`] per wake-up until detach or switch.
 
 use std::collections::HashSet;
 
@@ -52,10 +50,8 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
     deferred_by_coalesce
 }
 
-/// Drive the `select!` loop until detach or a session switch. The
-/// `ATTACHED` frame [`wait_for_attached`] pulled is replayed through
-/// `handle_server_frame`; every session-scoped local is rebuilt per entry, so
-/// the outer loop can re-attach without leaving raw mode.
+/// Drive the `select!` loop until detach or a session switch, replaying the
+/// `ATTACHED` frame first; every session-scoped local is rebuilt per entry.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -129,8 +125,12 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     }
     loop {
         match session.step(conn, out, needs_resync).await? {
-            Step::Continue => {}
-            Step::Exit(exit) => return Ok(exit),
+            Step::Continue => session.report_focus(conn, false).await,
+            Step::Exit(exit) => {
+                // The pane left behind by a switch or detach hears it lost focus.
+                session.report_focus(conn, true).await;
+                return Ok(exit);
+            }
         }
     }
 }

@@ -10,12 +10,9 @@
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{
-    command, join_after_shutdown, recv_until, run_local, send_frame, spawn_server,
-};
+use phux_server_testkit::{SpawnedServer, command, recv_until, run_local};
 
 use crate::common::{connect_as, full_caps};
 
@@ -40,12 +37,10 @@ fn code(result: &CommandResult) -> ErrorCode {
 }
 
 async fn serve(body: impl AsyncFnOnce(UnixStream, FrameKind)) {
-    let tmp = TempDir::new().unwrap();
-    let socket = tmp.path().join("phux.sock");
-    let (shutdown, server) = spawn_server(socket.clone(), None);
-    let (stream, hello_ok) = connect_as(&socket, "service-http-test", full_caps()).await;
+    let server = SpawnedServer::start(None, |_| {});
+    let (stream, hello_ok) = connect_as(&server.socket, "service-http-test", full_caps()).await;
     body(stream, hello_ok).await;
-    join_after_shutdown(shutdown, server).await;
+    server.stop().await;
 }
 
 #[test]
@@ -156,25 +151,11 @@ fn live_opencode_answers_through_the_connection() {
             exchange: events.exchange,
             max_bytes: 1024,
         };
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 5,
-                command: held,
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut stream, 5, held).await;
         let close = Command::ServiceHttpClose {
             exchange: events.exchange,
         };
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 6,
-                command: close,
-            },
-        )
-        .await;
+        phux_server_testkit::send_command(&mut stream, 6, close).await;
         let mut answered = Vec::new();
         while answered.len() < 2 {
             let (request_id, result) = recv_until(&mut stream, |_, frame| match frame {

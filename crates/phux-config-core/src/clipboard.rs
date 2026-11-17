@@ -1,5 +1,6 @@
-//! `defaults.clipboard-read`, which every client applies to its own
-//! clipboard (`docs/program-sequences.md#clipboard-osc-52`).
+//! `defaults.clipboard-read` and `defaults.clipboard-write`, which every
+//! client applies to its own clipboard
+//! (`docs/program-sequences.md#clipboard-osc-52`).
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,20 @@ pub enum ClipboardRead {
     Deny,
 }
 
+/// What a client does with an OSC 52 clipboard write from a pane
+/// (`defaults.clipboard-write`, ADR-0158). Ghostty's `clipboard-write`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardWrite {
+    /// Set the host clipboard (default, as Ghostty and tmux).
+    #[default]
+    Allow,
+    /// Ask before setting it.
+    Ask,
+    /// Drop the write.
+    Deny,
+}
+
 /// The `[defaults]` keys a client reads; the rest belong to the server and
 /// the terminal UI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -24,4 +39,6 @@ pub enum ClipboardRead {
 pub struct ClientDefaults {
     /// `defaults.clipboard-read`.
     pub clipboard_read: ClipboardRead,
+    /// `defaults.clipboard-write`.
+    pub clipboard_write: ClipboardWrite,
 }

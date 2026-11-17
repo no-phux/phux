@@ -187,12 +187,7 @@ async fn run_until_transition(
 }
 
 fn timeout_secs(args: &Value, default: u64) -> Result<u64, ToolError> {
-    args.get("timeout_secs").map_or(Ok(default), |value| {
-        value
-            .as_u64()
-            .filter(|value| (1..=3600).contains(value))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
-    })
+    crate::tools::bounded_timeout_secs(args, Some(default))
 }
 
 fn bool_arg(args: &Value, key: &str) -> Result<bool, ToolError> {

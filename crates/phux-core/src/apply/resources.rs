@@ -141,6 +141,7 @@ pub(super) fn arrangement_replace(
     owner: ArrangementOwner,
     expected: Revision,
     groups: &[Group],
+    slot_tabs: bool,
 ) -> Result<Out, Refusal> {
     let ArrangementOwner::Session(session) = owner else {
         return Err(Refusal::Unsupported {
@@ -155,6 +156,14 @@ pub(super) fn arrangement_replace(
     if current != expected {
         return Err(Refusal::Conflict { current });
     }
+    let carried;
+    let groups = if slot_tabs {
+        groups
+    } else {
+        let current = existing.and_then(|k| tx.arrangement(k));
+        carried = crate::arrangement::carry_tabs(current.map_or(&[], |a| &a.groups), groups);
+        &carried
+    };
     validate_groups(groups, &s.members).map_err(|e| Refusal::invalid("groups", e.to_string()))?;
     let groups = carry_locks(existing.and_then(|k| tx.arrangement(k)), groups)?;
     let (key, revision, created) = if let Some(key) = existing {
@@ -351,7 +360,29 @@ pub(super) fn activation_ended(
         tx.remove_resource(resource);
         return Ok(Out::ok(None));
     }
+    forget_exited_program(tx, resource, outcome);
     Ok(Out::ok(revision))
+}
+
+/// Clear a normally exited program's resume token in the same durable
+/// transition as its exit. An engine's separate token drain may run after
+/// completion, when launch reports are already stale. Signals and unknown
+/// ends keep the token for recovery.
+fn forget_exited_program(tx: &mut Tx<'_>, resource: ResourceKey, outcome: Outcome) {
+    if !matches!(
+        outcome,
+        Outcome::Exit(crate::process::ExitOutcome {
+            status: Some(_),
+            ..
+        })
+    ) {
+        return;
+    }
+    if let Some(LaunchSpec::Terminal(launch)) =
+        tx.resource_mut(resource).and_then(|r| r.launch.as_mut())
+    {
+        launch.resume = None;
+    }
 }
 
 pub(super) fn activation_lost(

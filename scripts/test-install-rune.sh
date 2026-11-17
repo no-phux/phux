@@ -5,7 +5,7 @@
 # bundle, so this covers that path only as a dry run.
 set -euo pipefail
 # Never offer the host's systemd a service.
-export PHUX_NO_SERVICE=1
+export PHUX_NO_SERVICE=1 PHUX_NO_REPO=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -30,6 +30,11 @@ done
 cp "$SERVED/${url##*/}" "$out"
 EOF
 chmod 755 "$TMP/bin/curl"
+# The desktop's handler tools, recording what they were asked.
+for tool in xdg-mime update-desktop-database; do
+  printf '#!/bin/sh\necho "%s $*" >> "$SERVED/handler"\n' "$tool" > "$TMP/bin/$tool"
+  chmod 755 "$TMP/bin/$tool"
+done
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() {
@@ -51,6 +56,11 @@ pack() {
   mkdir -p "$dir"
   printf '#!/bin/sh\n# %s\necho "phux-rune %s"\n' "$marker" "$reported" > "$dir/phux-rune"
   chmod 755 "$dir/phux-rune"
+  printf '#!/bin/sh\necho "tmd 0.2.0"\n' > "$dir/tmd"
+  chmod 755 "$dir/tmd"
+  printf 'tmd license\n' > "$dir/tmd-LICENSE.txt"
+  printf 'tmd notices\n' > "$dir/tmd-THIRD-PARTY-NOTICES.md"
+  printf 'tmd 0.2.0\n' > "$dir/tmd-VERSION.txt"
   printf '%s\n' "$VERSION" > "$dir/phux-rune.release"
   printf 'license\n' > "$dir/LICENSE"
   printf 'notice\n' > "$dir/NOTICE"
@@ -115,26 +125,37 @@ grep -Fxq "sha256: $(printf 'd%.0s' {1..64})" <<<"$out" || fail "arm64 Linux dig
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 bundle="$XDG_DATA_HOME/phux-rune"
 grep -q first "$bundle/phux-rune" || fail "binary not installed"
-for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt; do
+for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt \
+  tmd tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
-grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install must say so"
+[[ "$("$bundle/tmd" --version)" == "tmd 0.2.0" ]] || fail "bundled viewer does not run"
+# One plain line; the SHA-256-only check is a detail for --verbose.
+[[ ! -s $TMP/err ]] || fail "a default install said more: $(cat "$TMP/err")"
+grep -Fxq 'Phux Rune is installed. Open Phux Rune from your apps (or run `phux-rune`).' "$TMP/out" \
+  || fail "last line: $(cat "$TMP/out")"
 [[ -L "$HOME/.local/bin/phux-rune" ]] || fail "no launcher"
 [[ "$("$HOME/.local/bin/phux-rune")" == "phux-rune $VERSION" ]] || fail "launcher does not run"
 entry="$XDG_DATA_HOME/applications/sh.phux.rune.desktop"
 real="$(cd "$bundle" && pwd -P)"
-grep -Fxq "Exec=\"$real/phux-rune\"" "$entry" || fail "Exec: $(cat "$entry")"
+grep -Fxq "Exec=\"$real/phux-rune\" %u" "$entry" || fail "Exec: $(cat "$entry")"
+grep -Fxq "MimeType=x-scheme-handler/phux;" "$entry" || fail "MimeType: $(cat "$entry")"
+grep -Fxq "update-desktop-database $XDG_DATA_HOME/applications" "$SERVED/handler" \
+  || fail "desktop database: $(cat "$SERVED/handler")"
+grep -Fxq "xdg-mime default sh.phux.rune.desktop x-scheme-handler/phux" "$SERVED/handler" \
+  || fail "phux:// handler: $(cat "$SERVED/handler")"
 grep -Fxq "Icon=$real/sh.phux.rune.png" "$entry" || fail "Icon: $(cat "$entry")"
 
 # An update replaces everything; nothing is left beside it.
 pack second
 serve
-installer >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
+installer --verbose >/dev/null 2>"$TMP/err" || fail "update: $(cat "$TMP/err")"
+grep -Fq 'without its release signature' "$TMP/err" || fail "--verbose must say the signature went unchecked"
 grep -q second "$bundle/phux-rune" || fail "not updated"
 [[ -z "$(find "$XDG_DATA_HOME" -name '.phux-desktop-install*')" ]] || fail "install litter"
 
 # --desktop, the retired GPUI desktop's flag, installs Phux Rune.
-PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop \
+PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --desktop --verbose \
   >/dev/null 2>"$TMP/err" || fail "--desktop: $(cat "$TMP/err")"
 grep -Fq 'installing Phux Rune' "$TMP/err" || fail "--desktop notice: $(cat "$TMP/err")"
 grep -Fq 'installed Phux Rune' "$TMP/err" || fail "--desktop did not install Phux Rune"

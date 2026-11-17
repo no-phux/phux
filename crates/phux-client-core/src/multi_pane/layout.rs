@@ -9,7 +9,7 @@ use super::rasterize::{
     walk_layout, walk_layout_proportional,
 };
 
-/// Result of [`compute_layout`]: per-pane rectangles plus divider cells,
+/// Result of [`compute_layout_in`]: per-pane rectangles plus divider cells,
 /// together tiling the viewport exactly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneLayout {
@@ -26,8 +26,9 @@ pub struct PaneLayout {
 
 /// Compute per-pane rectangles and divider cells for `layout` inside a
 /// `viewport_dims` viewport; empty when there is no tree or no area.
+#[cfg(test)]
 #[must_use]
-pub fn compute_layout(layout: &LayoutState, viewport_dims: (u16, u16)) -> PaneLayout {
+pub(crate) fn compute_layout(layout: &LayoutState, viewport_dims: (u16, u16)) -> PaneLayout {
     let (cols, rows) = viewport_dims;
     compute_layout_in(
         layout,
@@ -41,7 +42,7 @@ pub fn compute_layout(layout: &LayoutState, viewport_dims: (u16, u16)) -> PaneLa
     )
 }
 
-/// [`compute_layout`] tiled into `content`, a sub-rectangle left after
+/// [`compute_layout_in`] tiled into `content`, a sub-rectangle left after
 /// chrome insets. Dividers still clamp against the full `viewport_dims`.
 #[must_use]
 pub fn compute_layout_in(
@@ -87,7 +88,7 @@ pub fn compute_layout_in(
 
 /// Per-leaf rectangles for `tree` in a `viewport_dims` viewport.
 ///
-/// The same walk [`compute_layout`] paints with, so reflow sizes each PTY
+/// The same walk [`compute_layout_in`] paints with, so reflow sizes each PTY
 /// to exactly the rect it is painted into. Every leaf gets a rect.
 #[must_use]
 pub fn pane_rects(tree: &LayoutNode, viewport_dims: (u16, u16)) -> HashMap<ResourceId, Rect> {

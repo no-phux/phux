@@ -27,9 +27,18 @@ const PRIVATE_KEY_MARKER: &str = "PRIVATE KEY";
 /// certified. The key never leaves this value except through
 /// [`IssuedIdentity::store`].
 pub struct ClientRequest {
-    key: KeyPair,
+    key: RequestKey,
     public_key: Vec<u8>,
     csr_pem: String,
+}
+
+/// Where a request's private key is.
+enum RequestKey {
+    /// Generated here; stored as PEM.
+    Generated(Box<KeyPair>),
+    /// Held by the machine's hardware: the key file to store in the PEM's
+    /// place, which names the key without containing it.
+    Held(Vec<u8>),
 }
 
 impl std::fmt::Debug for ClientRequest {
@@ -57,7 +66,25 @@ impl ClientRequest {
         let csr_pem = params.serialize_request(&key)?.pem()?;
         Ok(Self {
             public_key: key.subject_public_key_info(),
-            key,
+            key: RequestKey::Generated(Box::new(key)),
+            csr_pem,
+        })
+    }
+
+    /// A request for a key the machine's hardware holds: `csr_pem` is the
+    /// CSR that key signed, and `key_file` is what [`IssuedIdentity::store`]
+    /// writes where a PEM key would go. The reply is checked against the
+    /// CSR's public key exactly as for [`Self::generate`].
+    ///
+    /// # Errors
+    ///
+    /// [`WorkloadError::Certificate`] for a CSR that does not parse or whose
+    /// self-signature does not verify.
+    pub fn held(csr_pem: String, key_file: Vec<u8>) -> Result<Self, WorkloadError> {
+        let request = rcgen::CertificateSigningRequestParams::from_pem(&csr_pem)?;
+        Ok(Self {
+            public_key: request.public_key.subject_public_key_info(),
+            key: RequestKey::Held(key_file),
             csr_pem,
         })
     }
@@ -105,10 +132,13 @@ impl ClientRequest {
                     "the issued certificate does not verify against the returned CA as a current client certificate",
                 )
             })?;
-        // Moved, not copied: the one buffer is scrubbed when the identity
-        // drops.
+        // A generated key is serialized once, into the buffer the identity
+        // scrubs when it drops; a held key file is not secret.
         Ok(IssuedIdentity {
-            key_pem: self.key.serialize_pem().into_bytes(),
+            key_pem: match &self.key {
+                RequestKey::Generated(key) => key.serialize_pem().into_bytes(),
+                RequestKey::Held(key_file) => key_file.clone(),
+            },
             chain_pem: chain_pem.to_owned(),
             credential_id: credential_id(&self.public_key),
             ca_fingerprint: credential_id(ca.as_ref()),

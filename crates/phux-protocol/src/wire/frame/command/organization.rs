@@ -230,6 +230,11 @@ macro_rules! organization_commands {
         /// The new document; at most
         /// [`MAX_ARRANGEMENT_BYTES`](super::MAX_ARRANGEMENT_BYTES) encoded.
         document: ArrangementDoc,
+        /// The document's slot tabs are as the sender means them
+        /// (`features_ext.SLOT_TABS`). Written only when set; a sender that
+        /// doesn't know tabs leaves it unset, and the server keeps each
+        /// slot's tabs as they stand.
+        slot_tabs: bool,
     },
     /// Mint a delegated agent credential on `session` (ADR-0163 §5):
     /// `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` on that session only, on behalf

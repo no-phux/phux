@@ -151,6 +151,10 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
     }
 }
 
+/// Terminal-scoped key holding the public native-agent launch recipe (a
+/// serialized `SpawnNativeAgent`) that `relaunch` replays. Stored opaquely.
+pub const RESOURCE_NATIVE_LAUNCH_KEY: &str = "phux.native-launch/v1";
+
 /// Terminal-scoped key holding freeform tags as a JSON array of unique,
 /// non-empty strings (`docs/scripting.md#organizing-panes`, ADR-0027). Stored opaquely.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
@@ -159,6 +163,13 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// `{ "target": u32, "kind": str }`; `kind` is an open enum (ADR-0027).
 /// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
+
+/// Terminal-scoped key holding the latest note posted with `phux notify`.
+///
+/// UTF-8 JSON `{ "level", "title", "body"?, "at" }`, `level` one of `info`,
+/// `warn`, `error` (`docs/scripting.md#notes`). Each note replaces the last.
+/// Stored opaquely.
+pub const RESOURCE_NOTE_KEY: &str = "phux.note/v1";
 
 /// Terminal-scoped key holding the declared agent identity and lifecycle.
 ///
@@ -186,6 +197,20 @@ pub const RESOURCE_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
 /// foreground process and available-shell answer. Clients may read and
 /// subscribe to this key but MUST NOT set or delete it.
 pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
+
+/// Server-owned Terminal-scoped record of the connection that last typed
+/// (a key or a paste) into the Terminal (`docs/building.md#who-is-typing`).
+///
+/// Value: UTF-8 JSON `{ "client", "client_name", "route", "remote" }` plus
+/// `"platform"` when the sender reported one, rewritten only when the typing
+/// connection changes and deleted when that connection closes. `client_name`
+/// and `platform` are the sender's own `HELLO` words and `route` the whoami
+/// `auth_route` word, so the record is a hint and never an authentication
+/// fact. `client_name` stays free-form. phux's own programs send
+/// `phux-tui/<version>`, `phux-cli/<version>`, or `phux-mcp/<version>`;
+/// split on the last `/`, the same parse as the older `phux-client/<version>`.
+/// Clients must not set or delete it.
+pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
 /// Server-owned OSC 7501 record index and active status (L3 §3.7.3).
 pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";

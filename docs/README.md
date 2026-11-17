@@ -44,6 +44,7 @@ unshipped experiment, and the phone apps are in testing (Android on Google Play)
 
 ## Build on phux
 
+- [Build a phux client](./build-a-client.md): show agents, their questions and answers in your own app, from `phux agent list --json` and `phux watch --json`.
 - [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x server protocol, OSC 7501, the plugin API, and the surfaces this repository does not ship.
 
 ## Build for phux
@@ -101,6 +102,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
+- [Port and ssh-agent forwarding](./forwarding.md): `phux forward -L`, a local TCP port carried to the server's loopback; `--agent`, your ssh-agent lent to its panes.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
 - [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-client-runtime` or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.

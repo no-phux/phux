@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::agent_prompt::{ApplyVerdict, supports_acknowledged_input};
+use phux_client::agent_prompt::ApplyVerdict;
 use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
 use phux_client::attach::connection::Connection;
 use phux_client::read::Verb;
@@ -318,19 +318,6 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
-        // An unknown APPLY_INPUT tag would be silence on an older server.
-        if !supports_acknowledged_input(&conn) {
-            return Refusal::new(
-                json_err::codes::SERVER_TOO_OLD,
-                "this server does not accept acknowledged input batches, which is how an \
-                 answer is delivered",
-                "nothing was typed. Upgrade the server (`phux update`), or answer the \
-                 pane manually with `phux send-keys`",
-                crate::exit_codes::EXIT_USAGE,
-            )
-            .emit(json);
-        }
-
         // The liveness read and the write are consecutive frames on one
         // connection, so nothing this client sends interleaves between them.
         // Degradation is irrelevant: the pane is already known to be local.
@@ -404,20 +391,8 @@ fn report_answered(
         outln!("answered {} on {label}: {answer}", marker.id);
         return ExitCode::SUCCESS;
     }
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "terminal": label,
-        "ask": {
-            "id": marker.id,
-            "question": marker.question,
-            "suggestions": marker.suggestions,
-        },
-        "answer": answer,
-        "source": source.as_str(),
-        "operation_id": operation.to_string(),
-        "delivered": true,
-    });
-    match serde_json::to_string_pretty(&document) {
+    match serde_json::to_string_pretty(&answered_document(label, marker, answer, source, operation))
+    {
         Ok(rendered) => {
             outln!("{rendered}");
             ExitCode::SUCCESS
@@ -432,6 +407,30 @@ fn report_answered(
             crate::exit_codes::EXIT_FAILURE,
         ),
     }
+}
+
+/// The `agent answer --json` success document. Its shape is documented in
+/// docs/build-a-client.md and checked against it by a test.
+fn answered_document(
+    label: &str,
+    marker: &AskMarker,
+    answer: &str,
+    source: AnswerSource,
+    operation: &uuid::Uuid,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal": label,
+        "ask": {
+            "id": marker.id,
+            "question": marker.question,
+            "suggestions": marker.suggestions,
+        },
+        "answer": answer,
+        "source": source.as_str(),
+        "operation_id": operation.to_string(),
+        "delivered": true,
+    })
 }
 
 #[cfg(test)]

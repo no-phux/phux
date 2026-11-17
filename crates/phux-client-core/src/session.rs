@@ -17,8 +17,7 @@ use document_stream::DocumentStream;
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineJob, EnginePresentationAdapter, EngineProjectionOrigin,
-    EngineSearchMatch, EngineStatus,
+    EngineJob, EnginePresentationAdapter, EngineSearchMatch, EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
@@ -64,16 +63,15 @@ use terminal_lane::TerminalState;
 
 pub use document_stream::DocumentLane;
 pub use effects::{
-    DocumentPublication, EffectBuffer, KernelDamage, KernelDamageKind, KernelEffect, KernelJob,
-    KernelSend, KernelStatus, TombstoneRecord,
+    DocumentPublication, EffectBuffer, KernelDamageKind, KernelEffect, KernelSend, KernelStatus,
 };
+pub use effects::{KernelDamage, KernelJob, TombstoneRecord};
 pub use error::{HistoryRejectionReason, HistoryUnavailableReason, KernelError};
 pub use kernel_input::{
     AgentSessionDeclaration, InputBlockReason, InputEligibility, KernelAction, KernelInput,
 };
-pub use replicas::{
-    ClosedReplica, LoadedHistorySearch, PublishedReplica, ReplicaKey, StagingReplica,
-};
+pub use replicas::{ClosedReplica, ReplicaKey};
+pub use replicas::{LoadedHistorySearch, PublishedReplica, StagingReplica};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GenerationId {
@@ -497,6 +495,9 @@ mod kernel_rig;
 
 #[cfg(test)]
 mod property_tests;
+
+#[cfg(test)]
+mod test_rig;
 
 #[cfg(test)]
 mod tests;

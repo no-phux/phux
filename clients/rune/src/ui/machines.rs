@@ -6,9 +6,12 @@ use super::overlay::key_hint;
 use super::settings::section;
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icons, pressable};
 use crate::desk::Desk;
+use crate::desk::machines::ssh::Offered;
 use crate::host_color;
 use crate::machines::{Host, LOCAL, Peer};
 use phux_config_core::host_color::PALETTE;
+
+mod checklist;
 
 pub fn switch(desk: &Desk, ink: &Ink) -> El {
     pressable("machine-switch", ink)
@@ -36,6 +39,14 @@ fn chip(label: &'static str, key: String, ink: &Ink, press: impl Fn(&mut Desk) +
         .radius(5.0)
         .on_press(press)
         .child(text(label).font(CAPTION).color(ink.accent))
+}
+
+/// Opens or closes the machine's What works here.
+fn works(machine: Option<String>, ink: &Ink) -> El {
+    let key = format!("machine-works-{}", machine.as_deref().unwrap_or(LOCAL));
+    chip("What works", key, ink, move |d: &mut Desk| {
+        d.toggle_checklist(machine.clone());
+    })
 }
 
 /// What the current machine's row says: how the connection is, and a way to
@@ -152,6 +163,7 @@ fn local_machine(desk: &Desk, ink: &Ink) -> El {
         .child(color_button(LOCAL, ink))
         .child(text(LOCAL).font(LABEL).color(ink.text).truncate())
         .child(el().grow(1.0))
+        .child(works(None, ink))
         .children(
             current
                 .then(|| current_state(desk, ink))
@@ -182,6 +194,7 @@ fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
                 .then(|| text("over ssh").font(CAPTION).color(ink.dim)),
         )
         .children(paused.then(|| text("paused").font(CAPTION).color(ink.dim)))
+        .children((current || !paused && !host.ssh_only).then(|| works(Some(name.clone()), ink)))
         .child(chip(
             if paused { "Resume" } else { "Pause" },
             format!("machine-pause-{name}"),
@@ -220,6 +233,26 @@ fn peer(peer: &Peer, ink: &Ink) -> El {
         )
 }
 
+fn ssh_host(alias: &str, desk: &Desk, ink: &Ink) -> El {
+    let held = alias.to_owned();
+    let (word, color) = match desk.machines.offer_state(alias) {
+        Offered::Waiting => ("Waiting".to_owned(), ink.dim),
+        Offered::Running(_) => ("Setting up…".to_owned(), ink.accent),
+        Offered::Failed(_) => ("Try again".to_owned(), ink.danger),
+        _ => ("Set up".to_owned(), ink.accent),
+    };
+    row_shell(format!("ssh-host-{alias}"), ink)
+        .on_press(move |d: &mut Desk| d.add_ssh_host(&held))
+        .child(
+            text(alias.to_owned())
+                .font(LABEL)
+                .color(ink.text)
+                .truncate(),
+        )
+        .child(el().grow(1.0))
+        .child(text(word).font(CAPTION).color(color))
+}
+
 fn field(desk: &Desk, ink: &Ink) -> El {
     row()
         .w_full()
@@ -236,6 +269,7 @@ fn field(desk: &Desk, ink: &Ink) -> El {
                 .child(
                     text_input(&desk.machines.field, TextStyle::new(13.0, 400.0).lh(18.0))
                         .key("machine-field")
+                        .label("Computer SSH address")
                         .single_line()
                         .grow(1.0)
                         .color(ink.text)
@@ -257,6 +291,44 @@ fn field(desk: &Desk, ink: &Ink) -> El {
         )
 }
 
+/// A pairing link waiting to be accepted: where it dials and the name it
+/// registers, and whether that replaces a machine already set up.
+fn offer(desk: &Desk, ink: &Ink) -> Option<El> {
+    let offer = desk.machines.offer.as_ref()?;
+    let name = &offer.request.target;
+    let mut ask = col().w_full().gap(4.0).pb(8.0).child(
+        text(format!("Pair with {} as {name}?", offer.peer))
+            .font(LABEL_STRONG)
+            .color(ink.text)
+            .wrap(),
+    );
+    if desk.machines.hosts.iter().any(|host| &host.name == name) {
+        ask = ask.child(
+            text(format!(
+                "This replaces the machine already named {name} and its credentials."
+            ))
+            .font(CAPTION)
+            .color(ink.danger)
+            .wrap(),
+        );
+    }
+    let buttons = row()
+        .gap(8.0)
+        .child(chip(
+            "Pair",
+            "machine-pair-yes".to_owned(),
+            ink,
+            Desk::accept_pairing,
+        ))
+        .child(chip(
+            "Cancel",
+            "machine-pair-no".to_owned(),
+            ink,
+            Desk::decline_pairing,
+        ));
+    Some(ask.child(buttons))
+}
+
 pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
     let list = &desk.machines;
     if !list.open {
@@ -266,12 +338,15 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .w_full()
         .padding(16.0)
         .gap(6.0)
+        .children(offer(desk, ink))
         .child(local_machine(desk, ink))
-        .children(picker(LOCAL, desk, ink));
+        .children(picker(LOCAL, desk, ink))
+        .children(checklist::checklist(None, desk, ink));
     for host in &list.hosts {
         body = body
             .child(machine(host, desk, ink))
-            .children(picker(&host.name, desk, ink));
+            .children(picker(&host.name, desk, ink))
+            .children(checklist::checklist(Some(&host.name), desk, ink));
     }
     if !list.peers.is_empty() {
         body = body
@@ -279,6 +354,15 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
             .child(section("On your tailnet", ink));
         for tailnet in &list.peers {
             body = body.child(self::peer(tailnet, ink));
+        }
+    }
+    let config: Vec<_> = list.unregistered_ssh().collect();
+    if !config.is_empty() {
+        body = body
+            .child(el().h(6.0))
+            .child(section("In your ssh config", ink));
+        for alias in config {
+            body = body.child(ssh_host(alias, desk, ink));
         }
     }
     body = body

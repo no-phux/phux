@@ -68,33 +68,6 @@ impl ServerGuard {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// Create a pane running `command` and return its local Terminal id.
-    ///
-    /// `--socket` goes BEFORE the subcommand: `spawn`'s trailing positional
-    /// would otherwise swallow it as part of the command line.
-    fn spawn_pane(&self, command: &std::path::Path) -> u32 {
-        let out = common::phux_cmd(crate::runner::phux_bin())
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(["spawn", "--json", "--"])
-            .arg(command)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux spawn");
-        assert!(
-            out.status.success(),
-            "phux spawn exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let json: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("phux spawn --json");
-        json["terminal_id"]
-            .as_u64()
-            .expect("spawn reports a terminal id")
-            .try_into()
-            .expect("terminal id fits u32")
-    }
 
     /// `phux agent show TARGET --json`, decoded.
     fn agent_show(&self, target: &str) -> serde_json::Value {

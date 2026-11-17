@@ -1,21 +1,18 @@
 # @phux/opencode
 
-OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.6` contract.
-OpenCode keeps its own shell, sessions, and permissions; phux supplies
-terminals only where a terminal is the point.
+OpenCode plugin, tested against the public `@opencode/plugin@2.2.6` contract
+and OpenCode 1.19. OpenCode keeps its own shell, sessions, and permissions;
+phux supplies terminals only where a terminal is the point.
 
 ## Install
 
 ```sh
-opencode plugin add @phux/opencode
+opencode plugin add @phux/opencode   # OpenCode 2.2 or newer
+opencode plugin @phux/opencode       # OpenCode 1.x
 ```
 
-This needs OpenCode 2.2 or newer (`npm i -g @opencode/cli`) and
-`@phux/opencode` 0.4.0 or newer; 0.3.0 and earlier are the retired OpenCode V1
-adapter. The `opencode.ai/install` script installs OpenCode 1.x, whose
-`opencode plugin @phux/opencode` installs this package without loading it. On
-1.x, register `phux mcp` as an MCP server instead
-([OpenCode 1.x](#opencode-1x)).
+`npm i -g @opencode/cli` installs OpenCode 2.x; the `opencode.ai/install`
+script installs 1.x. 0.3.0 and earlier are the retired OpenCode V1 adapter.
 
 The CLI automatically loads the terminal companion from the server plugin.
 Leave the version off so updates reach
@@ -25,21 +22,15 @@ newest release.
 
 ## OpenCode 1.x
 
-`@phux/opencode` is built for OpenCode 2.2 and newer, which installs with
-`npm i -g @opencode/cli`. The `opencode.ai/install` script installs OpenCode
-1.x, where `opencode plugin @phux/opencode` (1.x has no `add`) installs the
-package but OpenCode never loads it. On 1.x, phux still tracks the pane's
-state from its screen. Give OpenCode the phux tools by adding phux as an MCP
-server in `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": { "phux": { "type": "local", "command": ["phux", "mcp"] } }
-}
-```
-
-`opencode mcp list` should show `phux connected`.
+1.x loads the plugin's server part (`@phux/opencode` 0.10.0 or newer; older
+releases installed into 1.x but never loaded). In a phux pane it reports the
+pane's sessions to phux: working and idle, each tool call, and every
+permission or question OpenCode asks, so `phux agent list` shows the pane
+`blocked` with the question until you answer it. It also registers `phux mcp`
+as an MCP server for the phux tools, unless your `opencode.json` already
+names one `phux`; `opencode mcp list` shows `phux connected`. The terminal
+companion and the desktop UI need 2.2 or newer; on 1.x the server part does
+the companion's reporting.
 
 ## OpenCode Desktop
 

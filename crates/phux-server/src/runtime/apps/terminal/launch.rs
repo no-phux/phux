@@ -3,6 +3,7 @@
 
 use crate::state::{ServerState, SharedState};
 
+use phux_protocol::native_agent;
 use phux_terminal_api::launch as engine_launch;
 /// How a pane's process starts. Opaque to the host.
 pub(crate) use phux_terminal_api::launch::LaunchCommand;
@@ -46,9 +47,9 @@ pub(crate) fn bind_native_host(
     binding: &str,
 ) {
     command.env("PHUX_SOCKET", socket);
-    command.env("PHUX_NATIVE_AGENT_ID", agent);
-    command.env("PHUX_NATIVE_ACTIVATION", activation);
-    command.env("PHUX_NATIVE_BINDING", binding);
+    command.env(native_agent::NATIVE_AGENT_ID_ENV, agent);
+    command.env(native_agent::NATIVE_ACTIVATION_ENV, activation);
+    command.env(native_agent::NATIVE_BINDING_ENV, binding);
 }
 
 /// A named session's seed command: the request argv, else the shell. An
@@ -128,7 +129,10 @@ pub(crate) fn seed_initial_session(
 /// shell, in its cwd, with its environment and the server's `TERM`.
 pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
     let launch = launch.clone();
-    let mut cmd = argv_command((!launch.argv.is_empty()).then_some(launch.argv))
+    // A program the user allowlisted picks up where it left off; it runs
+    // as the pane's process, like any other recorded argv.
+    let argv = super::resume::argv(s, &launch).unwrap_or(launch.argv);
+    let mut cmd = argv_command((!argv.is_empty()).then_some(argv))
         .unwrap_or_else(|| engine_launch::default_shell_command(s.shell(), s.login_shell()));
     // A recorded launch directory is intent, not a hint. If it disappears
     // after validation, fail the activation rather than execute elsewhere.

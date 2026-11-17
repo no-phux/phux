@@ -215,9 +215,7 @@ pub(crate) async fn focused_pane(
         }
     };
     let first_leaf = match target_session(&snapshot, target) {
-        Ok(Some(session)) if crate::org::supported(conn) => {
-            first_arranged_leaf(conn, session.id).await
-        }
+        Ok(Some(session)) => first_arranged_leaf(conn, session.id).await,
         _ => None,
     };
     resolve_focused_pane(&snapshot, target, first_leaf.as_ref()).ok_or_else(|| {

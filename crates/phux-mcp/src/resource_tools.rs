@@ -18,9 +18,6 @@ use crate::tools::{
     ToolError, parse_selector, required_str, resolve_one, socket_or_default, strict_object,
 };
 
-/// Upper bound on `phux_resource_wait`'s `timeout_secs`, as `phux_run`.
-const WAIT_MAX_SECS: u64 = 3600;
-
 pub(crate) fn schemas() -> Vec<Value> {
     vec![show_schema(), wait_schema(), methods_schema()]
 }
@@ -65,7 +62,7 @@ fn wait_schema() -> Value {
         "Wait until a resource's process exits, race-free. Always bounded: `timeout_secs` is required (1..=3600). Returns `outcome` (exited, gone, or timed_out), the exit status or signal, whether the resource is still retained, and a `cursor`; pass the cursor back as `after` to resume without missing an exit. A timeout is a result, not a tool error. The document `phux resource wait --json` prints.",
         json!({
             "target": target_schema(),
-            "timeout_secs": { "type": "integer", "minimum": 1, "maximum": WAIT_MAX_SECS },
+            "timeout_secs": { "type": "integer", "minimum": 1, "maximum": crate::tools::MAX_TIMEOUT_SECS },
             "after": {
                 "type": "string",
                 "minLength": 3,
@@ -120,11 +117,7 @@ async fn wait(args: &Value) -> Result<Value, ToolError> {
         &["target", "timeout_secs", "after", "socket"],
         &["target", "timeout_secs"],
     )?;
-    let secs = args
-        .get("timeout_secs")
-        .and_then(Value::as_u64)
-        .filter(|secs| (1..=WAIT_MAX_SECS).contains(secs))
-        .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))?;
+    let secs = crate::tools::bounded_timeout_secs(args, None)?;
     let after = crate::tools::str_arg(args, "after")
         .map(str::parse::<Cursor>)
         .transpose()

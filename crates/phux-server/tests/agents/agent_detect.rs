@@ -174,20 +174,18 @@ impl Pane {
     }
 
     async fn subscribe(&mut self, key: &str) {
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(self.terminal.clone()),
-            key: key.to_owned(),
-        };
+        let subscribe =
+            phux_server_testkit::subscribe_metadata(Scope::Resource(self.terminal.clone()), key);
         send_frame(&mut self.stream, &subscribe).await;
     }
 
     async fn set_agent(&mut self, request_id: u32, value: &[u8]) {
-        let set = FrameKind::SetMetadata {
+        let set = phux_server_testkit::set_metadata(
             request_id,
-            scope: Scope::Resource(self.terminal.clone()),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-            value: value.to_vec(),
-        };
+            Scope::Resource(self.terminal.clone()),
+            RESOURCE_AGENT_KEY,
+            value.to_vec(),
+        );
         send_frame(&mut self.stream, &set).await;
     }
 
@@ -279,10 +277,10 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
         let agent = write_fake_agent(tmp.path(), "sleep 30");
         let mut pane = Pane::agent(&tmp, &agent).await;
         let mut watcher = wait_for_socket(&pane.socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let subscribe = FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(pane.terminal.clone()),
-            key: RESOURCE_AGENT_KEY.to_owned(),
-        };
+        let subscribe = phux_server_testkit::subscribe_metadata(
+            Scope::Resource(pane.terminal.clone()),
+            RESOURCE_AGENT_KEY,
+        );
         send_frame(&mut watcher, &subscribe).await;
 
         let record = pane.await_state("blocked", DETECT_DEADLINE).await;

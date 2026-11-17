@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::test_support::error_code;
 
 fn operation_id(byte: u8) -> InputOperationId {
     InputOperationId::new([byte; 16]).expect("non-zero operation id")
@@ -61,13 +62,7 @@ fn not_written_and_failed_map_to_distinct_error_codes() {
         completion_result(WriteCompletion::Failed),
         delivery_unknown()
     );
-    assert!(matches!(
-        not_written(),
-        CommandResult::Error {
-            code: ErrorCode::InputNotWritten,
-            ..
-        }
-    ));
+    assert_eq!(error_code(&not_written()), Some(ErrorCode::InputNotWritten));
 }
 
 /// The facade keeps the lane's reading of the shared record: a pending

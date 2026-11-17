@@ -1,26 +1,19 @@
-//! Render the client's local `libghostty_vt::Terminal` to the outer
-//! terminal as VT (ADR-0013: one replica `Terminal` per attached pane).
+//! Render a pane's local `libghostty_vt::Terminal` to the outer terminal as
+//! VT (ADR-0013).
 //!
-//! The paint is a cell diff over dirty rows: rows `RenderState` reports dirty
-//! are compared against the pane's `FrontBuffer` (what this renderer last
-//! wrote at those cells) and only changed spans are emitted, each positioned
-//! with a `CUP` or bridged by rewriting a short unchanged gap. A row the front
-//! buffer does not know is emitted whole. SGR is emitted only on a pen change.
-//!
-//! Frame-level contracts: a painted frame is one DEC 2026 transaction
-//! (`SyncOutput`, which nests, so the frame-level block around several panes
-//! is never truncated) and a clean frame emits nothing; the renderer never
-//! flushes (the end-of-frame cursor is the one flush authority, ADR-0029).
-//! The cell loop allocates nothing (see `CellScratch`). Raw mode and the alt
-//! screen belong to [`super::driver`].
+//! A paint diffs dirty rows against the pane's `FrontBuffer` and emits only
+//! changed spans; SGR only on a pen change. A painted frame is one DEC 2026
+//! transaction (`SyncOutput` nests), a clean frame emits nothing, and the
+//! renderer never flushes (ADR-0029). The cell loop allocates nothing.
 
 use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
+    color::Rgb,
     render::{CellIterator, CursorVisualStyle, Dirty, RowIteration, Snapshot},
     screen::CellWide,
-    style::{RgbColor, Style, StyleColor, Underline},
+    style::{Style, StyleColor, Underline},
 };
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
 use phux_protocol::{
@@ -61,8 +54,8 @@ struct RowBuf {
 struct OwnedRowCell {
     text: String,
     style_index: u32,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     wide: CellWide,
 }
 
@@ -78,8 +71,8 @@ struct RowCells<'buf> {
 struct RowCell<'buf> {
     text: &'buf str,
     style_index: u32,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     wide: CellWide,
 }
 
@@ -171,8 +164,8 @@ fn style_run_index(
     buf: &RowBuf,
     index: usize,
     style: &Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) -> Option<u32> {
     if index == 0 {
         return None;
@@ -204,11 +197,10 @@ use marks::{apply_mark, cell_mark};
 
 /// One pane's published replica `Terminal` paired with its generation token.
 ///
-/// The kernel REPLACES a pane's `Terminal` on republish, and the pooled
-/// render state discards its cache exactly when this token changes, even at
-/// unchanged geometry. Carrying both as one value (built only by
-/// `pane_state::published_replica`) makes a mismatch unrepresentable. Paths
-/// that only inspect the terminal use `pane_state::published_terminal`.
+/// The kernel replaces a pane's `Terminal` on republish and the pooled render
+/// state resets exactly when the token changes, so carrying both as one value
+/// (built only by `pane_state::published_replica`) makes a mismatch
+/// unrepresentable.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplicaWalk<'a, 'alloc, 'cb> {
     pub(super) terminal: &'a GhosttyTerminal<'alloc, 'cb>,
@@ -228,30 +220,21 @@ impl<'a, 'alloc, 'cb> ReplicaWalk<'a, 'alloc, 'cb> {
     }
 }
 
-/// Per-pane render scaffolding.
-///
-/// A [`RenderPool`] (the libghostty render trio, rebuilt on geometry or generation change) plus the front buffer. Walks
-/// take a [`ReplicaWalk`] so the generation token always arrives with the
-/// terminal. The dirty policy (clear each drawn row, then the snapshot bit)
-/// is this renderer's own (ADR-0086).
+/// Per-pane render scaffolding: a [`RenderPool`] (rebuilt on geometry or
+/// generation change) plus the front buffer, walked through a
+/// [`ReplicaWalk`] (ADR-0086).
 #[derive(Debug)]
 pub struct TerminalRenderer<'alloc> {
     /// Pooled render state + row/cell iterators.
     pool: RenderPool<'alloc>,
     /// The kitty images and placements the outer terminal holds for this
-    /// pane, so a paint re-sends only what changed. Forgotten with the front
-    /// buffer as a whole: on a forced paint and on every outside
-    /// [`Self::invalidate_front`].
+    /// pane, forgotten with the front buffer.
     kitty: kitty::PaneKitty<'alloc>,
-    /// Last-seen authoritative cursor position (outer-viewport coords:
-    /// pane-local cursor plus [`Self::last_origin`]). Updated at the end of
-    /// [`Self::render`]. The host-cursor restore paths read this. `None`
-    /// while the cursor is hidden.
+    /// Last authoritative cursor in outer-viewport coords, for the host
+    /// cursor restore; `None` while hidden.
     last_cursor: Option<(u16, u16)>,
-    /// Pane-local cursor `(row, col)` as of the last render, before
-    /// [`Self::last_origin`] is added: the predictive-echo anchor. Feeding
-    /// predict the outer cursor dragged a lower pane's echo mid-screen.
-    /// `None` while hidden.
+    /// Pane-local cursor `(row, col)` from the last render: the
+    /// predictive-echo anchor. `None` while hidden.
     last_cursor_local: Option<(u16, u16)>,
     /// Outer-viewport origin `(x, y)` of the last paint, added to pane-local
     /// predictions by the echo overlay.
@@ -266,27 +249,15 @@ pub struct TerminalRenderer<'alloc> {
 }
 
 /// The outer terminal's contents at this pane's cells, as this renderer last
-/// wrote them.
+/// wrote them. Diffing dirty rows against it turns libghostty's row dirt into
+/// cell dirt (~25x fewer bytes for full-screen animation).
 ///
-/// libghostty tracks dirt per ROW, so a full-screen animation dirties every
-/// row every frame; diffing dirty rows against this turns row dirt into cell
-/// dirt (~25x fewer bytes than whole-row repaints for cmatrix-like output).
-///
-/// A KNOWN row claims the outer cells hold exactly the recorded clusters and
-/// pens. Anything writing those cells behind the renderer's back must
-/// invalidate, and an unknown row falls back to the whole-row painter, so an
-/// over-eager invalidation costs bandwidth, never correctness.
-///
-/// The renderer invalidates itself on a forced paint, a moved origin or
-/// extent, a generation change, a primary/alternate screen switch, a
-/// selection change, and a kitty-graphics replay that wrote or removed a
-/// classic placement. Outside writers call
-/// [`TerminalRenderer::invalidate_front`] / `invalidate_front_rows`: the
-/// predictive-echo overlay, the full-frame and SIGWINCH clears, a stdout
-/// resync, an unshipped frame, modal overlays, and the copy-mode strip.
-///
-/// A forced paint records nothing, and a row becomes known only after its
-/// bytes reach the sink, so a failed frame cannot leave a false claim.
+/// A known row claims the outer cells hold exactly its clusters and pens, so
+/// anything writing those cells behind the renderer's back must call
+/// [`TerminalRenderer::invalidate_front`] / `invalidate_front_rows`;
+/// over-invalidating costs bandwidth, never correctness. A row becomes known
+/// only after its bytes reach the sink, so a failed frame leaves no false
+/// claim.
 #[derive(Debug, Default)]
 struct FrontBuffer {
     /// The paint identity the rows were recorded under. A paint under any
@@ -350,10 +321,8 @@ struct FrontRow {
     cells: Vec<FrontCell>,
     /// Every cell's cluster, UTF-8, back to back.
     text: Vec<u8>,
-    /// The emitted pen of each style run in the row: the cell's [`Style`]
-    /// with the copy-mode inversion already applied, plus the resolved
-    /// colours — exactly the `(style, fg, bg)` [`emit_sgr_if_changed`] is
-    /// handed, so two equal entries emit identical SGR.
+    /// The emitted pen of each style run: exactly the `(style, fg, bg)`
+    /// [`emit_sgr_if_changed`] is handed, so equal entries emit equal SGR.
     pens: Vec<EmittedStyle>,
 }
 
@@ -432,10 +401,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
         })
     }
 
-    /// Forget what this pane last emitted, so each row's next paint rewrites
-    /// it whole and its kitty images are re-sent. Call after writing over the
-    /// pane's cells outside the renderer without a following forced repaint,
-    /// or when emitted bytes may not have reached the terminal.
+    /// Forget what this pane last emitted, so its next paint rewrites rows
+    /// whole and re-sends kitty images. Call after writing over its cells.
     pub fn invalidate_front(&mut self) {
         self.front.invalidate_all();
         self.kitty.forget();
@@ -447,10 +414,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
         self.front.invalidate_rows(rows);
     }
 
-    /// Cursor (row, col) as of the most recent [`Self::render_at`] call.
-    /// Returns `None` if the cursor was hidden or no render has yet
-    /// occurred. The predictive-echo layer reads this to re-anchor its
-    /// cursor estimate after a server frame.
+    /// Cursor (row, col) as of the most recent [`Self::render_at`]; `None`
+    /// when hidden or never rendered.
     #[must_use]
     pub const fn last_cursor(&self) -> Option<(u16, u16)> {
         self.last_cursor
@@ -553,12 +518,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 
     /// Render `terminal` with its top-left at `origin = (x, y)`, clipped to
-    /// `clip = (cols, rows)`.
-    ///
-    /// The painted extent is `min(grid, clip)`: the server-authoritative
-    /// mirror may exceed the layout rect during a resize handshake and must
-    /// not spill into a divider or neighbour. The cached cursor
-    /// ([`Self::last_cursor`]) is outer-absolute.
+    /// `clip = (cols, rows)`, so a mirror larger than its rect mid-resize
+    /// never spills. [`Self::last_cursor`] is outer-absolute.
     pub fn render_at(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -583,11 +544,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 
     /// Project this pane into a region of a dense [`RenderedFrame`] instead
-    /// of emitting VT, walking the same snapshot and clipping the same way.
-    ///
-    /// A wide glyph's `SpacerTail` column is the empty grapheme so widths
-    /// reconstruct exactly. Selection inversion is not applied. Returns the
-    /// frame-absolute cursor, or `None` when off-viewport or clipped.
+    /// of emitting VT. Spacer tails are empty graphemes; selection is not
+    /// applied. Returns the frame cursor, `None` when clipped.
     pub fn render_at_cells(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -600,10 +558,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
             rows,
             cells,
         } = self.pool.begin(walk.terminal, walk.generation)?;
-        // Clip to the render rect, mirroring `render_at_inner`: a
-        // server-authoritative mirror may transiently exceed the client's
-        // layout rect during a resize handshake; confine the walk so a wider
-        // mirror never spills past the rect and a smaller one stays in-grid.
+        // Clip to the render rect, as `render_at_inner` does, so a mirror
+        // wider than its rect mid-resize never spills.
         let extent = clipped_extent(&snapshot, clip)?;
         let (cols_total, rows_total) = extent;
 
@@ -621,11 +577,9 @@ impl<'alloc> TerminalRenderer<'alloc> {
         clipped_frame_cursor(&snapshot, origin, extent)
     }
 
-    /// Render into the rect at `rect_origin` spanning `rect_clip`,
-    /// **letterboxed**: a mirror smaller than the rect on an axis is centred
-    /// with blanked margin bars (floor split, extra cell bottom/right); a
-    /// larger or equal one clamps exactly like [`Self::render_at_full`], byte
-    /// for byte. ADR-0027's single-view letterbox.
+    /// Render letterboxed into the rect (ADR-0027): a smaller mirror is
+    /// centred with blanked margins; a larger one clamps exactly like
+    /// [`Self::render_at_full`].
     pub fn render_at_letterboxed(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -639,10 +593,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
         // Bars and content are one transaction when there are bars, so the
         // blanked margins never show a beat before the content.
         let sync = lb.has_pad().then(|| SyncOutput::begin(out)).transpose()?;
-        // Blank the four margin bars first so an undersized mirror's
-        // surrounding cells are cleared before the centred content paints
-        // over the interior. Skipped entirely when there is no pad (the
-        // mirror-fills-the-rect / clamp case), keeping that path byte-identical.
+        // Blank the margin bars before the centred content paints; skipped
+        // with no pad, keeping the clamp path byte-identical.
         emit_letterbox_margins(out, lb)?;
         let dirty = self.render_at_inner(walk, out, lb.inner_origin, lb.inner_clip, force_full)?;
         if let Some(sync) = sync {
@@ -660,10 +612,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
         force_full: bool,
     ) -> Result<Dirty, RenderError> {
         let _timed = phux_client::perf::PAINT_PANE.timer();
-        // Record where this pane is anchored before any early-return: the
-        // predictive-echo overlay reads `last_origin` to place pane-local
-        // echoes, and the pane stays at this origin even on a clean (no-op)
-        // render.
+        // Record the origin before any early return: the predictive-echo
+        // overlay places echoes from it even after a clean render.
         self.last_origin = origin;
         let prepare_timer = phux_client::perf::PAINT_PREPARE.timer();
         let projected = self.pool.begin(walk.terminal, walk.generation);
@@ -740,10 +690,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 }
 
-/// The frame-level dirty verdict this paint acts on.
-///
-/// `force_full` — the full-frame path's forced redraw after its `ED2` — wins
-/// over the snapshot's own incremental tracking.
+/// The frame-level dirty verdict this paint acts on: `force_full` (after a
+/// full-frame `ED2`) wins over the snapshot's own tracking.
 fn frame_dirty(snapshot: &Snapshot<'_, '_>, force_full: bool) -> Result<Dirty, RenderError> {
     if force_full {
         return Ok(Dirty::Full);
@@ -762,10 +710,8 @@ fn clipped_extent(
     Ok((cols_total, rows_total))
 }
 
-/// Walk rows, painting each that needs redrawing (every row under
-/// `Dirty::Full`, dirty ones under `Partial`). What a visited row emits is
-/// decided against the front buffer in [`paint_row`]; `pass.record` is
-/// `false` for a forced paint, which leaves rows unknown.
+/// Walk rows, painting each that needs it (all under `Dirty::Full`). A
+/// forced paint (`pass.record == false`) leaves rows unknown.
 #[allow(
     clippy::too_many_arguments,
     reason = "one row-walk context: sink, scratch, front buffer, the libghostty trio, the clip, and the paint pass"
@@ -804,10 +750,8 @@ fn paint_dirty_rows<'alloc>(
     Ok(())
 }
 
-/// What one pane paint threads across its rows: the copy-mode marks,
-/// whether rows are recorded into the front buffer, the outer terminal's
-/// pen as the paint has left it so far, and the kitty ids placeholder cells
-/// are rewritten to.
+/// What one pane paint threads across rows: copy-mode marks, whether rows
+/// are recorded, the outer pen so far, and the placeholder kitty ids.
 #[derive(Debug)]
 struct PaintPass<'m> {
     marks: &'m CopyMarks,
@@ -822,11 +766,8 @@ impl<'m> PaintPass<'m> {
         record: bool,
         kitty: &'m mut kitty_replay::KittyResidency,
     ) -> Self {
-        // The outer pen is unknown at the start of every pane paint: chrome,
-        // another pane, or an overlay may have written anything since this
-        // pane last emitted. From here on nothing else writes until the paint
-        // ends, so the pen each span leaves carries to the next, across jumps
-        // and rows.
+        // The outer pen is unknown at the start of every pane paint; from
+        // here on nothing else writes, so each span's pen carries over.
         Self {
             marks,
             record,
@@ -896,10 +837,8 @@ fn paint_row<'alloc>(
     Ok(())
 }
 
-/// Emit one row into `buf` and make its recording the front row: a KNOWN row
-/// emits only differing cells ([`emit_row_diff`]); otherwise the whole row is
-/// emitted while recorded. The row stays unknown until [`paint_row`] sees its
-/// bytes reach the sink.
+/// Emit one row into `buf`: a known row only its differing cells
+/// ([`emit_row_diff`]), otherwise the whole row while recording it.
 fn emit_and_record(
     buf: &mut Vec<u8>,
     front_row: &mut FrontRow,
@@ -934,11 +873,8 @@ fn emit_and_record(
 }
 
 /// Emit a whole row straight from its batched read, recording nothing (the
-/// forced-paint path). A cell sharing its predecessor's [`PenKey`] skips to
-/// its glyphs; a spacer tail writes nothing.
-///
-/// Must stay byte-identical to [`record_row`]'s emitting mode;
-/// `whole_row_paints_agree_and_reconstruct_the_grid` holds the two together.
+/// forced-paint path). Must stay byte-identical to [`record_row`]'s emitting
+/// mode (`whole_row_paints_agree_and_reconstruct_the_grid`).
 fn emit_unrecorded_row(
     buf: &mut Vec<u8>,
     batch: &RowCells<'_>,
@@ -968,13 +904,9 @@ fn emit_unrecorded_row(
     })
 }
 
-/// Record one row's cells into `next`, clipped to `at.cols_total`.
-///
-/// Each pen is resolved exactly as it will be emitted (selection inversion
-/// applied). Cells sharing a [`PenKey`] with their predecessor share its pen
-/// entry, so the 72-byte [`Style`] is materialised once per run. With `emit`
-/// the row is also written as it is recorded (the whole-row paint in one
-/// pass); the caller has already written the prologue ([`begin_full_row`]).
+/// Record one row's cells into `next`, clipped to `at.cols_total`, each pen
+/// resolved as it will be emitted and shared across a [`PenKey`] run. With
+/// `emit` the row is also written (after [`begin_full_row`]'s prologue).
 fn record_row(
     next: &mut FrontRow,
     batch: &RowCells<'_>,
@@ -1064,11 +996,8 @@ fn begin_full_row(buf: &mut Vec<u8>, at: RowAt, pen: &mut SpanPen) -> io::Result
 }
 
 /// Emit only the cells of `next` that differ from `front`, as positioned
-/// spans. A span never half-writes a wide glyph (it backs onto a base and
-/// runs through a trailing tail). Between spans the cursor jumps (`CUP`) or
-/// the unchanged gap is rewritten, whichever is fewer bytes ([`bridge_gap`]).
-/// A `CUP` leaves the pen alone, so `pen` carries across jumps; only a pane
-/// paint's first cell emits a complete SGR.
+/// spans that never half-write a wide glyph. Gaps are jumped or rewritten,
+/// whichever is fewer bytes ([`bridge_gap`]); `pen` carries across jumps.
 fn emit_row_diff(
     buf: &mut Vec<u8>,
     front: &FrontRow,
@@ -1115,10 +1044,9 @@ fn span_start(front: &FrontRow, next: &FrontRow, changed: usize) -> usize {
     start
 }
 
-/// One past the last column of the span whose first changed column is
-/// `changed`: it runs while columns keep changing, and on through any spacer
-/// tail (old or new) that follows, because writing the column before a tail
-/// rewrites — or erases — the glyph that tail belongs to.
+/// One past the last column of the span starting at `changed`: it runs on
+/// through any following spacer tail, since writing before a tail rewrites
+/// the glyph it belongs to.
 fn span_end(front: &FrontRow, next: &FrontRow, changed: usize, memo: &mut PenMemo) -> usize {
     let len = next.cells.len();
     let mut end = changed + 1;
@@ -1253,8 +1181,8 @@ fn emit_sgr_absolute(
     out: &mut Vec<u8>,
     emitted: &mut Option<EmittedStyle>,
     style: Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) {
     if is_default_render(&style, fg, bg) {
         out.extend_from_slice(b"\x1b[0m");
@@ -1285,13 +1213,10 @@ impl<'buf> RowCellSource<'buf> for RowCells<'buf> {
     }
 }
 
-/// Hand every column of a row to `visit`, in order, refusing to skip one.
-///
-/// `(0..cols).zip(source.iter())` would be a trap: `iter` is a `filter_map`,
-/// so one unreadable cell would shift the rest of the row left silently. An
-/// unreadable column is a [`RenderError::UnreadableCell`] instead. The
-/// `let ... else` keeps the error construction off the hot path (`ok_or`
-/// cost ~20% of a full-dirty frame).
+/// Hand every column of a row to `visit`, in order. A `zip` over the
+/// `filter_map` iterator would silently shift the row left on one unreadable
+/// cell; that is [`RenderError::UnreadableCell`] instead. The `let ... else`
+/// keeps the error off the hot path.
 #[inline]
 fn walk_row_cells<'buf, S, F>(source: &S, cols_total: u16, mut visit: F) -> Result<(), RenderError>
 where
@@ -1489,11 +1414,10 @@ fn render_clean_frame_cursor(
     Ok(())
 }
 
-/// Project a cell's `(Style, fg, bg)` into a plain [`CellStyle`] for the
-/// rendered-frame path. Mirrors the server synthesizer's `collect_cell` and
-/// `phux-record`'s `replay::project_cell`; the cell-projection conformance
-/// test in `crates/phux/tests/conformance` holds all three to one corpus.
-fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> CellStyle {
+/// Project a cell's `(Style, fg, bg)` into a [`CellStyle`]. Mirrors the
+/// server synthesizer and `phux-record`; the conformance test in
+/// `crates/phux/tests/conformance` holds all three to one corpus.
+fn to_cell_style(style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) -> CellStyle {
     CellStyle {
         bold: style.bold,
         faint: style.faint,
@@ -1512,7 +1436,7 @@ fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> C
 /// Project a cell color to [`CellColor`], preferring the explicit per-cell
 /// [`StyleColor`] so a palette index keeps its identity, and falling back to
 /// the iteration's resolved RGB. Mirrors the synthesizer's `cell_color`.
-fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
+fn cell_color(resolved: Option<Rgb>, raw: StyleColor) -> CellColor {
     match raw {
         StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
         StyleColor::Rgb(rgb) => CellColor::Rgb {
@@ -1535,9 +1459,7 @@ pub fn write_reset(out: &mut impl Write) -> io::Result<()> {
     out.flush()
 }
 
-// CURSOR-AUTHORITY: the canonical CUP formatter. The composite end-of-frame
-// emitter (paint::end_of_frame_cursor) and the pane-interior renderer both
-// route cursor moves through this one place (ADR-0029); raw `\x1b[..H`
+// CURSOR-AUTHORITY: the canonical CUP formatter (ADR-0029); raw `\x1b[..H`
 // elsewhere under attach/ is banned.
 pub(super) fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
     let r = row.saturating_add(1);
@@ -1547,33 +1469,28 @@ pub(super) fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<
 
 /// The pen active on the outer terminal. `fg`/`bg` are the resolved RGB
 /// colours from the cell iterator, not `Style`'s palette fields.
-type EmittedStyle = (Style, Option<RgbColor>, Option<RgbColor>);
+type EmittedStyle = (Style, Option<Rgb>, Option<Rgb>);
 
-/// A cell's pen identity within ONE row read, in 20 bytes.
-///
-/// `style_index` is a style-RUN index (a returned-to style gets a fresh one),
-/// so equal indices prove adjacent members of one run and the fast path can
-/// only skip redundant work; a different index still does the full
-/// `(Style, fg, bg)` comparison. Indices never cross rows; across rows and
-/// frames pens compare by value ([`PenMemo`]).
+/// A cell's pen identity within one row read. `style_index` is a style-run
+/// index, so equal indices prove one run and only skip work; anything else
+/// compares `(Style, fg, bg)`. Across rows, pens compare by value
+/// ([`PenMemo`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PenKey {
     /// This cell's run within the row's style table — valid only within the
     /// `read_row` that produced it.
     style_index: u32,
     /// The cell's resolved foreground.
-    fg: Option<RgbColor>,
+    fg: Option<Rgb>,
     /// The cell's resolved background.
-    bg: Option<RgbColor>,
+    bg: Option<Rgb>,
     /// How copy-mode restyles this cell (selection or search hit).
     mark: CellMark,
 }
 
-/// Whether a `(style, fg, bg)` triple renders as the terminal default — no
-/// attributes and no explicit colors. Such a run needs only a plain `\x1b[0m`
-/// reset (which `emit_sgr_set` already produces), and at row start the active
-/// state is already default, so it emits nothing at all.
-fn is_default_render(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> bool {
+/// Whether a `(style, fg, bg)` triple renders as the terminal default, which
+/// needs only a reset (nothing at all at row start).
+fn is_default_render(style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) -> bool {
     fg.is_none() && bg.is_none() && *style == Style::default()
 }
 
@@ -1584,8 +1501,8 @@ fn emit_sgr_if_changed(
     out: &mut Vec<u8>,
     emitted: &mut Option<EmittedStyle>,
     style: Style,
-    fg: Option<RgbColor>,
-    bg: Option<RgbColor>,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) {
     if is_default_render(&style, fg, bg) {
         // Returning to default mid-row needs an explicit reset; at row start
@@ -1606,11 +1523,9 @@ fn emit_sgr_if_changed(
 }
 
 /// Write `\x1b[0m` followed by the SGR set for `(style, fg, bg)`.
-fn emit_sgr_set(out: &mut Vec<u8>, style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) {
-    // Encode via the shared server/client SGR emitter (phux-protocol) so the
-    // two ends cannot drift.
-    // It appends straight to the row buffer, so a style run costs no scratch
-    // allocation of its own.
+fn emit_sgr_set(out: &mut Vec<u8>, style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) {
+    // The shared server/client SGR emitter, so the two ends cannot drift;
+    // it appends straight to the row buffer.
     write_reset_and_sgr(out, style, fg, bg);
 }
 
@@ -2477,8 +2392,8 @@ mod tests {
     struct Seen {
         text: String,
         wide: CellWide,
-        fg: Option<RgbColor>,
-        bg: Option<RgbColor>,
+        fg: Option<Rgb>,
+        bg: Option<Rgb>,
         attrs: VisAttrs,
     }
 
@@ -3054,12 +2969,9 @@ mod tests {
         }
     }
 
-    /// The property: any edit sequence painted through the diff, with modals,
-    /// forgotten predictions, stray pens, and forced repaints after clears,
-    /// leaves the glass matching the whole-row painter and, whenever that
-    /// painter agrees with one, a full repaint of the final grid. (If
-    /// libghostty changes a cell without dirtying its row no dirty-bit painter
-    /// can see it; those steps re-sync and are counted.)
+    /// Any edit sequence painted through the diff (with modals, forgotten
+    /// predictions, stray pens, forced repaints) leaves the glass matching
+    /// the whole-row painter and a full repaint of the final grid.
     #[test]
     fn random_edits_through_the_diff_painter_match_a_full_repaint() {
         let mut tally = Tally::default();

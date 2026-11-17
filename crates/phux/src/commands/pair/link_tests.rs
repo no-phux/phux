@@ -58,12 +58,7 @@ fn a_larger_qr_is_wider_and_the_scale_stays_inside_the_terminal() {
     );
     let small = super::render_qr_scaled(&link, 1).expect("scale 1");
     let large = super::render_qr_scaled(&link, 2).expect("scale 2");
-    let width = |art: &str| {
-        art.lines()
-            .map(|line| line.chars().count())
-            .max()
-            .unwrap_or(0)
-    };
+    let width = super::art_width;
     assert_eq!(width(&large), width(&small) * 2);
     let columns = u16::try_from(width(&small)).unwrap();
     assert_eq!(super::qr_scale_that_fits(&link, columns), 1);

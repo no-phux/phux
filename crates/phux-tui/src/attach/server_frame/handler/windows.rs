@@ -108,13 +108,22 @@ pub(super) fn unknown_layout_leaves(
     panes: &HashMap<ResourceId, PaneSlot>,
     surface: SurfaceLeaves<'_>,
 ) -> Vec<ResourceId> {
-    incoming
+    // Hidden slot tabs keep running behind their slot, so they attach too.
+    let hidden = incoming
+        .slots
+        .iter()
+        .flat_map(|slot| slot.strip.iter().cloned());
+    let mut leaves: Vec<ResourceId> = incoming
         .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .flat_map(crate::layout::leaves)
+        .chain(hidden)
         .filter(|leaf| !panes.contains_key(leaf) && !surface.contains(leaf))
-        .collect()
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    leaves.retain(|leaf| seen.insert(leaf.clone()));
+    leaves
 }
 
 /// Reconcile a workspace whose session ownership was established by its key or
@@ -124,6 +133,7 @@ pub(in crate::attach::server_frame) fn reconcile_loaded_workspace(
     local: &ArrangementDoc,
     bootstrap_focus: Option<&ResourceId>,
 ) -> ArrangementDoc {
+    incoming.keep_shown(local);
     for window in &mut incoming.groups {
         let local_focus = local
             .groups
@@ -213,5 +223,37 @@ mod session_name_tests {
             SessionId::new(99),
         );
         assert_eq!(focused_session_name(&snapshot), "");
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use std::collections::HashMap;
+
+    use phux_protocol::ResourceId;
+
+    use crate::layout::{ArrangementDoc, Slot};
+
+    /// Hidden slot tabs keep running behind their slot, so a layout read
+    /// attaches them with its leaves, each once.
+    #[test]
+    fn hidden_slot_tabs_attach_with_the_leaves() {
+        let tid = ResourceId::local;
+        let mut doc = ArrangementDoc::single(tid(1));
+        doc.slots.push(Slot {
+            strip: vec![tid(1), tid(2), tid(3)],
+            default: 0,
+            shown: 0,
+        });
+        let leaves = crate::attach::surface_leaf::LeafBook::default();
+        let kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::caps::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let surface = crate::attach::surface_leaf::SurfaceLeaves::new(&kernel, &leaves);
+        let attach = super::unknown_layout_leaves(&doc, &HashMap::new(), surface);
+        assert_eq!(attach, [tid(1), tid(2), tid(3)]);
     }
 }

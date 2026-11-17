@@ -78,6 +78,8 @@ pub struct EngineBundle {
     pub events: phux_resource::event_sink::EventSource,
     pub agent_state: Option<mpsc::Receiver<AgentDetectEvent>>,
     pub program_status: watch::Receiver<Vec<ProgramStatusRecord>>,
+    /// The OSC 7501 `resume=` token: server-only, so not in a record.
+    pub resume: watch::Receiver<Option<phux_core::ResumeToken>>,
 }
 impl std::fmt::Debug for EngineBundle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

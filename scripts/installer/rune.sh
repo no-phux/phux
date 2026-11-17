@@ -58,15 +58,37 @@ register_desktop_entry() {
   mkdir -p "$entries" || return 1
   [ ! -d "${entries}/$2.desktop" ] || return 1
   entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
+  # The executable is replaced; the field codes after it (`%u`) stay.
   if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
-    /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
+    /^Exec=/ { codes = $0; sub(/^Exec=[^ ]*/, "", codes); print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"] codes; next }
     /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
     { print }
   ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/$2.desktop"; then
+    register_scheme_handler "$entries" "$2.desktop"
     return 0
   fi
   rm -f "$entry"
   return 1
+}
+
+# phux://connect links open the app: the entry's MimeType names the scheme,
+# and the desktop's own tools make it the handler. Without them a desktop
+# still reads the entry when it next scans; nothing here is fatal.
+register_scheme_handler() {
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$1" >/dev/null 2>&1 || true
+  fi
+  if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default "$2" x-scheme-handler/phux >/dev/null 2>&1 \
+      || phux_message warn "could not make Phux Rune open phux:// links; run: xdg-mime default $2 x-scheme-handler/phux"
+  fi
+}
+
+# Launch Services learns a bundle's schemes when it is first opened; register
+# it now so a phux://connect link opens it before then.
+register_bundle_macos() {
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ ! -x "$lsregister" ] || "$lsregister" -f "$1" >/dev/null 2>&1 || true
 }
 
 # The update feed names one version, with a digest per target. Sets build_id,
@@ -134,14 +156,16 @@ install_rune_macos() {
   unpack_rune_macos
   lock_applications
   publish_rune_macos
-  phux_message ok "installed Phux Rune ${build_id} to ${applications_dir}"
-  printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux Rune.app")"
+  register_bundle_macos "$installed"
+  detail ok "installed Phux Rune ${build_id} to ${applications_dir}"
+  rune_installed="Phux Rune is installed. Open Phux Rune from $(pretty_path "$(cd "$applications_dir" && pwd -P)")."
 }
 
 rune_member() {
   case "${1#*/}" in
     phux-rune | phux-rune.release | README.md | LICENSE | NOTICE | THIRD-PARTY-NOTICES.txt | \
     Inter-OFL.txt | JetBrainsMono-OFL.txt | \
+    tmd | tmd-LICENSE.txt | tmd-THIRD-PARTY-NOTICES.md | tmd-VERSION.txt | \
     sh.phux.rune.desktop | sh.phux.rune.png) return 0 ;;
     *) return 1 ;;
   esac
@@ -203,8 +227,9 @@ install_rune_linux() {
   fi
   register_desktop_entry "${installed}/sh.phux.rune.desktop" sh.phux.rune phux-rune sh.phux.rune.png \
     || phux_message warn "could not register the menu entry; run ${bundle}/phux-rune"
-  phux_message ok "installed Phux Rune ${build_id} to ${installed}"
-  printf 'next: %s\n' "$(shell_quote "${bundle}/phux-rune")"
+  detail ok "installed Phux Rune ${build_id} to ${installed}"
+  if [ -x "${install_dir}/phux-rune" ]; then run="phux-rune"; else run="$(shell_quote "${bundle}/phux-rune")"; fi
+  rune_installed="Phux Rune is installed. Open Phux Rune from your apps (or run \`${run}\`)."
 }
 
 # On its own feed: there is no channel to pick and nothing to pin, and the
@@ -217,7 +242,7 @@ install_rune() {
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \
     || die "the macOS build of Phux Rune installs only on macOS"
   if ! has_cli; then
-    phux_message info "phux CLI not found; installing it first"
+    detail info "phux CLI not found; installing it first"
     install_cli "" ""
   fi
   resolve_rune

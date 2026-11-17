@@ -70,7 +70,7 @@ pub fn held_identity(
 ///
 /// A target that is not QUIC, a refused ticket, or a reply that fails a
 /// check; the wording names the failure, never the ticket.
-pub async fn enroll_target(
+pub(crate) async fn enroll_target(
     target: &Target,
     ticket_hex: &str,
     signer: Arc<dyn DeviceSigner>,
@@ -122,12 +122,12 @@ pub async fn enroll_target(
     })
 }
 
-/// [`enroll_target`] on a runtime of its own, for a binding calling from a
+/// `enroll_target` on a runtime of its own, for a binding calling from a
 /// thread it owns. Blocks for at most the dial timeout.
 ///
 /// # Errors
 ///
-/// As [`enroll_target`], or no runtime.
+/// As `enroll_target`, or no runtime.
 pub fn enroll_target_blocking(
     target: &Target,
     ticket_hex: &str,
@@ -151,6 +151,18 @@ fn parse_ticket(ticket_hex: &str) -> Result<Vec<u8>, String> {
         })
         .flatten();
     bytes.ok_or_else(|| "the enrollment ticket is not 64 hex digits".to_owned())
+}
+
+/// A certificate signing request for `signer`'s key, signed by it, PEM.
+///
+/// # Errors
+///
+/// A key that is not an uncompressed P-256 point, or a signer that refused.
+#[cfg(target_os = "macos")]
+pub(crate) fn signed_csr_pem(signer: &Arc<dyn DeviceSigner>) -> Result<String, String> {
+    device_request(&DeviceKeyData::of(signer.as_ref())?, Arc::clone(signer))?
+        .pem()
+        .map_err(|err| format!("encode the enrollment request: {err}"))
 }
 
 /// The device's public key as rcgen sees it, and a signer it can call.
@@ -204,12 +216,17 @@ impl rcgen::SigningKey for CsrSigner<'_> {
 /// A CSR for the device key, signed by it. The authority takes only the
 /// public key from it, so its subject is a placeholder.
 fn device_csr(key: &DeviceKeyData, signer: Arc<dyn DeviceSigner>) -> Result<Vec<u8>, String> {
-    let params = rcgen::CertificateParams::new(Vec::<String>::new())
-        .map_err(|err| format!("build the enrollment request: {err}"))?;
-    let request = params
+    device_request(key, signer).map(|request| request.der().to_vec())
+}
+
+fn device_request(
+    key: &DeviceKeyData,
+    signer: Arc<dyn DeviceSigner>,
+) -> Result<rcgen::CertificateSigningRequest, String> {
+    rcgen::CertificateParams::new(Vec::<String>::new())
+        .map_err(|err| format!("build the enrollment request: {err}"))?
         .serialize_request(&CsrSigner { key, signer })
-        .map_err(|err| format!("the device key could not sign the enrollment request: {err}"))?;
-    Ok(request.der().to_vec())
+        .map_err(|err| format!("the device key could not sign the enrollment request: {err}"))
 }
 
 /// rustls's view of a device key: ECDSA P-256 with SHA-256 only, which is

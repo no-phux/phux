@@ -13,8 +13,8 @@ use crate::state::SharedState;
 use super::{
     ACKNOWLEDGED_COMPLETION_TIMEOUT, AcknowledgedAdmission, ActivityGate, CompletionWaiter,
     CompletionWaiterHandle, INPUT_LANE_CAPACITY, InputLaneHandle, RoutedInput, RoutedInputKind,
-    SharedOperationCache, TicketSource, is_live_input, note_input_activity, process_apply_input,
-    process_attached, process_headless, prune_closed_encoders,
+    SharedOperationCache, TicketSource, is_live_input, is_typed_input, note_input_activity,
+    note_typed, process_apply_input, process_attached, process_headless, prune_closed_encoders,
 };
 
 /// Owns the lane's OS thread for the server's lifetime; dropping it joins the
@@ -126,6 +126,7 @@ fn run_input_lane(
             }
             RoutedInputKind::Headless { event, reply } => {
                 let live = is_live_input(&event);
+                let typed = is_typed_input(&event);
                 let result = process_headless(
                     state,
                     &mut encoders,
@@ -135,6 +136,9 @@ fn run_input_lane(
                     routed.credit,
                     routed.lane_ahead,
                 );
+                if typed && matches!(result, CommandResult::Ok) {
+                    note_typed(state, routed.client_id, &routed.terminal_id);
+                }
                 if live && matches!(result, CommandResult::Ok) {
                     note_input_activity(
                         &mut activity_gate,
@@ -152,7 +156,8 @@ fn run_input_lane(
                 reply,
             } => {
                 let live = events.iter().any(is_live_input);
-                if process_apply_input(
+                let typed = events.iter().any(is_typed_input);
+                let applied = process_apply_input(
                     state,
                     &mut encoders,
                     lane_cache,
@@ -166,8 +171,11 @@ fn run_input_lane(
                     reservation,
                     reply,
                     routed.lane_ahead,
-                ) && live
-                {
+                );
+                if applied && typed {
+                    note_typed(state, routed.client_id, &routed.terminal_id);
+                }
+                if applied && live {
                     note_input_activity(
                         &mut activity_gate,
                         state,

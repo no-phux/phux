@@ -6,24 +6,13 @@ use super::*;
 #[test]
 pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
     let mut h = Harness::new();
-    let applied = h
-        .run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: shell(),
-        })
-        .expect("create");
+    let applied = h.create(None, shell(), None).expect("create");
     let r = created(&applied).1.expect("resource");
     assert_eq!(h.resource(r).session, h.inbox());
 
     let missing = SessionKey::from_bytes([7; 16]);
     assert_eq!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: Some(missing),
-            resource: shell(),
-        })
-        .err(),
+        h.create(Some(missing), shell(), None).err(),
         Some(Refusal::NotFound)
     );
     let orphan_agent = NewResource {
@@ -32,11 +21,7 @@ pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: orphan_agent,
-        }),
+        h.create(None, orphan_agent, None),
         Err(Refusal::InvalidArgument {
             field: "parent",
             ..
@@ -48,11 +33,7 @@ pub(super) fn resource_create_defaults_to_inbox_and_validates_kind() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: None,
-            resource: wrong_spec,
-        }),
+        h.create(None, wrong_spec, None),
         Err(Refusal::InvalidArgument {
             field: "launch",
             ..
@@ -113,11 +94,7 @@ pub(super) fn a_deferred_create_is_dormant_until_relaunched() {
         ..shell()
     };
     assert!(matches!(
-        h.run(Op::ResourceCreate {
-            placement: None,
-            session: Some(s),
-            resource: without_spec,
-        }),
+        h.create(Some(s), without_spec, None),
         Err(Refusal::InvalidArgument {
             field: "launch_mode",
             ..
@@ -260,6 +237,44 @@ pub(super) fn an_unobserved_end_keeps_even_a_remove_shell() {
         h.resource(sh).activation.and_then(|a| a.outcome),
         Some(Outcome::Unobserved)
     );
+}
+
+#[test]
+pub(super) fn a_resume_token_is_cleared_atomically_only_for_an_observed_normal_exit() {
+    use phux_core::{LaunchSpec, TerminalLaunch};
+
+    let token = phux_core::ResumeToken::new("demo", "session");
+    for outcome in [
+        Outcome::Exit(ExitOutcome::exited(0)),
+        Outcome::Exit(ExitOutcome::exited(7)),
+        Outcome::Exit(ExitOutcome::signaled(9)),
+        Outcome::Exit(ExitOutcome::UNKNOWN),
+        Outcome::Unobserved,
+    ] {
+        let mut h = Harness::new();
+        let resource = h.create_resource(
+            h.inbox(),
+            NewResource {
+                launch: Some(LaunchSpec::Terminal(TerminalLaunch {
+                    resume: token.clone(),
+                    ..TerminalLaunch::default()
+                })),
+                ..job()
+            },
+        );
+        let applied = h.report(ended(resource, outcome)).expect("ended");
+        let Some(LaunchSpec::Terminal(launch)) = h.resource(resource).launch else {
+            panic!("terminal launch")
+        };
+        let expected = match outcome {
+            Outcome::Exit(ExitOutcome {
+                status: Some(_), ..
+            }) => None,
+            _ => token.clone(),
+        };
+        assert_eq!(launch.resume, expected, "{outcome:?}");
+        assert!(applied.effects.is_empty(), "an exit never launches work");
+    }
 }
 
 #[test]

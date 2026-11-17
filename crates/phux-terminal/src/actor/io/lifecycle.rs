@@ -49,6 +49,11 @@ impl TerminalActor {
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
+        // The program quit on its own. A signal may be the server or the
+        // host going down, which is what the token is kept for.
+        if exit.status.is_some() {
+            self.resume.forget();
+        }
         if self.program_status.expire_active() {
             self.publish_program_status();
         }
@@ -57,7 +62,6 @@ impl TerminalActor {
     /// Return only an in-flight loan for EOF snapshots. Completed publication
     /// fences and history cuts still belong to this incarnation until close.
     pub(in crate::actor) fn land_native_capture(&mut self) {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Some(pending) = self.pending_native_bootstrap.take() {
             self.abort_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
         }
@@ -67,13 +71,10 @@ impl TerminalActor {
     /// returning the terminal to the manager. The teardown paths run outside
     /// the `!bootstrap_pending` guards, so they land the cut instead of
     /// touching a loaned terminal. EOF does not retire an incarnation and
-    /// uses `land_native_capture` instead. No-op without the native engine.
+    /// uses `land_native_capture` instead.
     pub(in crate::actor) fn land_native_cuts(&mut self) {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            let _ = self
-                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
-        }
+        let _ =
+            self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
     }
 
     /// Release a retained pane's PTY after its process exited (ADR-0124);

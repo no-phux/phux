@@ -1,11 +1,9 @@
-//! The TUI's "a newer phux is available" toast.
+//! The "a newer phux is available" toast (self-update stays explicit,
+//! ADR-0074).
 //!
-//! Self-update stays explicit (ADR-0074); the TUI only tells the user. The
-//! check shells out to `phux update --check` in the background once per
-//! attach (the `phux` crate depends on this one), is silent on failure, and
-//! is cached for `CACHE_TTL`. Opt out with `PHUX_NO_UPDATE_CHECK` set to any
-//! non-empty value: the background check does not run, and a cached notice
-//! does not paint.
+//! `phux update --check` runs in the background once per attach, silent on
+//! failure, cached for `CACHE_TTL`. `PHUX_NO_UPDATE_CHECK` turns off both the
+//! check and the notice.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -67,18 +65,14 @@ impl UpdateNotice {
     }
 }
 
-/// The version this binary was built as.
-///
-/// Matches what `phux update --check` reports as `current_version`, so a cache
-/// naming another build is stale.
+/// The version this binary was built as, as `phux update --check` reports
+/// `current_version`.
 const fn running_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Parse a `phux update --check --json` document into a notice.
-///
-/// `None` when there is nothing to announce (no update, or an unreadable
-/// document).
+/// Parse a `phux update --check --json` document; `None` when there is
+/// nothing to announce.
 #[must_use]
 pub fn notice_from_document(json: &str) -> Option<UpdateNotice> {
     let doc: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -108,10 +102,8 @@ pub fn notice_from_document(json: &str) -> Option<UpdateNotice> {
     })
 }
 
-/// Label the running version.
-///
-/// `0.45.0` plus a baked sha reads as `0.45.0+next.b0c6858`; without the sha it
-/// is just the version.
+/// Label the running version: `0.45.0+next.b0c6858` with a baked sha, else
+/// the version.
 fn label_current(version: &str, sha: Option<&str>) -> String {
     sha.filter(|sha| !sha.is_empty()).map_or_else(
         || version.to_owned(),
@@ -119,10 +111,7 @@ fn label_current(version: &str, sha: Option<&str>) -> String {
     )
 }
 
-/// Label the published version.
-///
-/// A `next.<40-hex>` tag is shortened to `next.<7>`; a stable `vX.Y.Z` is left
-/// alone.
+/// Label the published version: `next.<40-hex>` shortens to `next.<7>`.
 fn label_latest(tag: &str) -> String {
     tag.strip_prefix("next.")
         .map_or_else(|| tag.to_owned(), |sha| format!("next.{}", short_sha(sha)))
@@ -171,10 +160,8 @@ fn write_json(path: &Path, value: &serde_json::Value) {
     let _ = std::fs::rename(&tmp, path);
 }
 
-/// Kick the background check.
-///
-/// Called once by the production attach entry (`run_from_start`), never by the
-/// test seam, so no test reaches the network.
+/// Kick the background check, once, from the production attach entry (never
+/// a test).
 pub fn spawn_background_refresh() {
     if opted_out() {
         return;
@@ -243,13 +230,8 @@ async fn run_check() -> Option<String> {
         .flatten()
 }
 
-/// The notice to show now, once.
-///
-/// `None` when the process opted out (`PHUX_NO_UPDATE_CHECK`), when there is
-/// no update, when the cached answer is stale (another build wrote it, or it
-/// was already shown), or when nothing has been checked yet. Marks the
-/// version announced so it is shown once. An opt-out does not consume the
-/// cache: a later process without the variable can still announce it.
+/// The notice to show now, once: `None` when opted out, up to date, stale,
+/// or unchecked. Marks the version announced; an opt-out leaves the cache.
 #[must_use]
 pub fn take_pending_notice() -> Option<UpdateNotice> {
     take_pending_notice_at(&cache_path())

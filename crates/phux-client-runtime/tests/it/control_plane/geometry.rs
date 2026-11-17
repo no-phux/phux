@@ -12,12 +12,7 @@ fn browse(options: ControlOptions) -> ControlPlane {
 }
 
 fn confirm(plane: &mut ControlPlane, request_id: u32) {
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })
-        .unwrap();
+    plane.reply(request_id, CommandResult::Ok);
 }
 
 fn bootstrap(plane: &mut ControlPlane, id: &ResourceId, generation: u64) {
@@ -230,21 +225,15 @@ fn geometry_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
 }
 
 #[test]
-fn viewport_intent_during_attach_flushes_latest_pixels_once_after_ready() {
+fn viewport_intent_during_attach_flushes_the_latest_once_after_ready() {
     let (mut plane, attach_id) = negotiated();
-    let first = ViewportInfo::new(90, 25).with_pixels(Some(900), Some(500));
-    plane.resize_viewport_info(first);
+    let first = ViewportInfo::new(90, 25);
+    plane.resize_viewport(first.cols, first.rows);
     assert!(geometry_frames(&mut plane).is_empty());
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 1);
-    let latest = ViewportInfo::new(90, 25).with_pixels(Some(990), Some(550));
-    plane.resize_viewport_info(latest);
+    let latest = ViewportInfo::new(95, 26);
+    plane.resize_viewport(latest.cols, latest.rows);
     assert!(geometry_frames(&mut plane).is_empty());
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
     assert_eq!(
@@ -269,24 +258,22 @@ fn viewport_intent_during_attach_flushes_latest_pixels_once_after_ready() {
         .unwrap();
     bootstrap(&mut plane, &terminal(), 2);
     assert!(geometry_frames(&mut plane).is_empty());
-    let pixels_changed = ViewportInfo::new(90, 25).with_pixels(Some(1080), Some(600));
-    plane.resize_viewport_info(pixels_changed);
+    let changed = ViewportInfo::new(100, 30);
+    plane.resize_viewport(changed.cols, changed.rows);
     assert_eq!(
         geometry_frames(&mut plane),
-        vec![FrameKind::ViewportResize {
-            viewport: pixels_changed
-        }]
+        vec![FrameKind::ViewportResize { viewport: changed }]
     );
 }
 
 #[test]
-fn offline_viewport_pixels_replay_in_attach_and_same_size_can_be_reasserted() {
+fn offline_viewport_intent_replays_in_attach_and_same_size_can_be_reasserted() {
     let mut plane = ControlPlane::new(ControlOptions {
         attach: Some(AttachTarget::Last),
         ..ControlOptions::default()
     });
-    let first = ViewportInfo::new(90, 25).with_pixels(Some(990), Some(550));
-    plane.resize_viewport_info(first);
+    let first = ViewportInfo::new(90, 25);
+    plane.resize_viewport(first.cols, first.rows);
     assert!(plane.take_outbound().is_empty());
     let opening = reconnect(&mut plane);
     let attach_id = opening
@@ -302,14 +289,14 @@ fn offline_viewport_pixels_replay_in_attach_and_same_size_can_be_reasserted() {
         .expect("pre-connect viewport is carried by ATTACH");
     attach(&mut plane, attach_id, b"");
     assert!(geometry_frames(&mut plane).is_empty());
-    plane.resize_viewport_info(first);
+    plane.resize_viewport(first.cols, first.rows);
     assert_eq!(
         geometry_frames(&mut plane),
         vec![FrameKind::ViewportResize { viewport: first }]
     );
     plane.connection_lost(None);
-    let offline = ViewportInfo::new(100, 30).with_pixels(Some(1200), Some(720));
-    plane.resize_viewport_info(offline);
+    let offline = ViewportInfo::new(100, 30);
+    plane.resize_viewport(offline.cols, offline.rows);
     assert!(geometry_frames(&mut plane).is_empty());
     assert!(
         reconnect(&mut plane).iter().any(
@@ -320,19 +307,20 @@ fn offline_viewport_pixels_replay_in_attach_and_same_size_can_be_reasserted() {
 
 #[test]
 fn session_viewer_casts_viewport_vote_without_exact_subscription_fanout() {
-    let mut plane = browse(ControlOptions {
-        automatic_lifecycle: false,
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::Last),
+        attach_role: Some(RolePolicy::VIEWER),
+        viewport: (20, 4),
         ..ControlOptions::default()
     });
-    assert!(plane.attach_explicit(
-        1,
-        AttachTarget::Last,
-        ViewportInfo::new(20, 4),
-        false,
-        0,
-        Some(RolePolicy::VIEWER),
-    ));
-    attach(&mut plane, 1, b"");
+    let attach_id = reconnect(&mut plane)
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
+            _ => None,
+        })
+        .expect("ATTACH");
+    attach(&mut plane, attach_id, b"");
     plane.attach_terminal(&ResourceId::local(8));
     plane.take_outbound();
     plane.resize_viewport(90, 25);
@@ -433,13 +421,7 @@ fn browse_to_session_reconnect_defers_preserving_replay_until_inventory_is_ready
             _ => None,
         })
         .expect("current session target was queued");
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 2);
     assert!(
         resource_attaches(

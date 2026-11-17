@@ -182,7 +182,7 @@ fn polled(
         }
         Err(Failure::Throttled) => {
             source.throttled(now);
-            source.last_error = None;
+            source.clear_error();
             cached(source, identity, now)
         }
         Err(Failure::Rejected(why)) => {

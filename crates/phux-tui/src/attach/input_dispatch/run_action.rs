@@ -1,8 +1,6 @@
-//! The action interpreter and its handlers. [`run_action`] looks the
-//! action up in the registry ([`crate::attach::action_registry::ACTIONS`])
-//! and calls the handler its row names; each handler takes one
-//! [`ActionCall`] (ADR-0172). The handlers live in submodules by what they
-//! act on and are re-exported here, where the registry names them.
+//! The action interpreter: [`run_action`] calls the handler the registry
+//! row names with one [`ActionCall`] (ADR-0172). Handlers live in submodules
+//! by what they act on.
 
 use std::collections::HashMap;
 
@@ -37,8 +35,9 @@ mod worktree;
 
 pub(in crate::attach) use modes::{enter_mode, exit_mode};
 pub(in crate::attach) use panes::{
-    focus_direction, give_input, kill_focused_pane, last_pane, move_pane, next_pane, previous_pane,
-    resize_pane, set_pane, signal_terminal, split_pane, take_input, toggle_sidebar, toggle_zoom,
+    focus_direction, give_input, kill_focused_pane, last_pane, move_pane, next_pane, next_slot_tab,
+    previous_pane, previous_slot_tab, resize_pane, set_pane, signal_terminal, split_pane,
+    take_input, toggle_sidebar, toggle_zoom,
 };
 pub(in crate::attach) use plugins::{plugin_action, plugin_pane};
 pub(in crate::attach) use sessions::{
@@ -60,10 +59,8 @@ pub(in crate::attach) use windows::{
 };
 pub(in crate::attach) use worktree::new_worktree;
 
-/// Everything a handler may read or change for one action: the action, the
-/// lent driver state, the focused pane, the read-only pane slots (lent apart
-/// from `ctx` because the driver lends `panes` mutably beside it), and the
-/// effects the async pass applies.
+/// Everything a handler may read or change for one action. `panes` is lent
+/// apart from `ctx` because the driver lends it mutably beside it.
 pub(in crate::attach) struct ActionCall<'a, 'c> {
     pub(super) resolved: &'a phux_config::keybind::ResolvedAction,
     pub(super) ctx: &'a mut DispatchCtx<'c>,
@@ -101,8 +98,8 @@ pub(super) fn run_action(
 }
 
 /// ADR-0109: ask a satellite spawn to bind to the satellite's instance
-/// token, so a stranded pane can later be killed conditionally. Peers
-/// without `CONDITIONAL_KILL` skip the field; local spawns are unchanged.
+/// token, so a stranded pane can later be killed conditionally; local
+/// spawns are unchanged.
 fn bind_satellite_spawn(frame: &mut FrameKind) {
     if matches!(
         frame,

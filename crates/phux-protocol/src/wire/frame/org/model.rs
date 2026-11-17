@@ -187,6 +187,26 @@ pub struct EntryRef {
     pub entry: [u8; 16],
     /// What it shows.
     pub target: EntryTarget,
+    /// The slot's other tabs in strip order, this entry excluded
+    /// (`features_ext.SLOT_TABS`); a tab has none of its own. Trailing on
+    /// the leaf record and written only when present, so an older peer
+    /// skips them and sees the default tab alone.
+    pub tabs: Vec<Self>,
+    /// Where this entry, the slot's default tab, sits among `tabs`.
+    pub shown_at: u16,
+}
+
+impl EntryRef {
+    /// An entry showing `target`, alone in its slot.
+    #[must_use]
+    pub const fn new(entry: [u8; 16], target: EntryTarget) -> Self {
+        Self {
+            entry,
+            target,
+            tabs: Vec::new(),
+            shown_at: 0,
+        }
+    }
 }
 
 /// What an arrangement entry shows. Only a [`Self::Member`] is checked

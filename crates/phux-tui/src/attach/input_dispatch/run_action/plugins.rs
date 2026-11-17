@@ -89,7 +89,6 @@ pub(in crate::attach) fn plugin_pane(
                 zoom_on_spawn: entry.placement == HostedPlacement::Zoomed,
                 host: SplitHost::Attached,
                 adopt: None,
-                open_existing: None,
             };
             set_spawn_initial_size(&mut frame, predicted_split_size(ctx, &pending));
             effects.spawn_terminal = Some((request_id, pending, frame));

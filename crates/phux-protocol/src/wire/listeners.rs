@@ -157,10 +157,31 @@ impl RemoteListenerSlot {
         }
     }
 
-    /// Why this row is not listening, for humans: `waiting to bind (<error>)`
-    /// or `disabled (<reason>)`.
+    /// An auto-bound transport whose overlay address has not appeared yet;
+    /// the server keeps detecting and binds once it does. Older readers see
+    /// it as `no_overlay_address`.
+    #[must_use]
+    pub fn waiting_for_address(transport: RemoteListenerTransport) -> Self {
+        Self {
+            waiting: Some("no private network address yet".to_owned()),
+            ..Self::disabled(transport, None, ListenerDisabledReason::NoOverlayAddress)
+        }
+    }
+
+    /// Whether this row waits for its overlay address to appear.
+    #[must_use]
+    pub fn is_waiting_for_address(&self) -> bool {
+        self.waiting.is_some()
+            && self.disabled_reason == Some(ListenerDisabledReason::NoOverlayAddress)
+    }
+
+    /// Why this row is not listening, for humans: `waiting for a private
+    /// network address`, `waiting to bind (<error>)`, or `disabled (<reason>)`.
     #[must_use]
     pub fn unbound_label(&self) -> String {
+        if self.is_waiting_for_address() {
+            return "waiting for a private network address".to_owned();
+        }
         match (&self.waiting, self.disabled_reason) {
             (Some(error), _) => format!("waiting to bind ({error})"),
             (None, reason) => format!(
@@ -277,6 +298,29 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(old.listeners[0].unbound_label(), "disabled (bind_failed)");
+    }
+
+    #[test]
+    fn a_slot_waiting_for_its_address_says_so_and_reads_as_no_overlay_address_without_the_field() {
+        let slot = RemoteListenerSlot::waiting_for_address(RemoteListenerTransport::Wss);
+        assert!(slot.is_unhealthy() && slot.is_waiting_for_address());
+        assert_eq!(slot.addr, None);
+        assert_eq!(
+            slot.unbound_label(),
+            "waiting for a private network address"
+        );
+        let report = RemoteListenersReport::new().with_listeners(vec![slot.clone()]);
+        let back = RemoteListenersReport::from_json(&report.to_json()).expect("parse");
+        assert_eq!(back.listeners[0], slot);
+        let old = RemoteListenersReport::from_json(
+            r#"{"schema_version":1,"listeners":[{"transport":"wss","expected":true,"bound":false,"disabled_reason":"no_overlay_address"}]}"#,
+        )
+        .expect("parse");
+        assert!(!old.listeners[0].is_waiting_for_address());
+        assert_eq!(
+            old.listeners[0].unbound_label(),
+            "disabled (no_overlay_address)"
+        );
     }
 
     #[test]

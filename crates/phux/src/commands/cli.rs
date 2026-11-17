@@ -3,6 +3,7 @@
 
 mod agents;
 mod attach;
+mod credentials;
 mod machines;
 mod maintain;
 mod more;
@@ -15,9 +16,11 @@ mod recording;
 mod server;
 mod sessions;
 mod settings;
+mod slot;
 
 pub(crate) use self::agents::*;
 pub(crate) use self::attach::*;
+pub(crate) use self::credentials::*;
 pub(crate) use self::machines::*;
 pub(crate) use self::maintain::*;
 pub(crate) use self::more::*;
@@ -30,6 +33,7 @@ pub(crate) use self::recording::*;
 pub(crate) use self::server::*;
 pub(crate) use self::sessions::*;
 pub(crate) use self::settings::*;
+pub(crate) use self::slot::*;
 
 use usage::Subcommands;
 
@@ -85,6 +89,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 31)]
     SwapPane(SwapPaneArgs),
 
+    #[usage(help_heading = "Panes", display_order = 32)]
+    Slot(SlotArgs),
+
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize(ResizeArgs),
 
@@ -100,6 +107,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Agents", display_order = 35)]
     Signal(SignalArgs),
 
+    #[usage(help_heading = "Agents", display_order = 39)]
+    Notify(NotifyArgs),
+
     #[usage(help_heading = "Agents", display_order = 36)]
     Mission(MissionArgs),
 
@@ -111,6 +121,9 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Agents", display_order = 71)]
     Approvals(ApprovalsArgs),
+
+    #[usage(help_heading = "Agents", display_order = 74)]
+    Credentials(CredentialsArgs),
 
     #[usage(help_heading = "Agents", display_order = 72)]
     Approve(ApproveArgs),
@@ -160,6 +173,9 @@ pub(crate) enum Command {
 
     #[usage(help_heading = "Machines", display_order = 46)]
     Download(DownloadArgs),
+
+    #[usage(help_heading = "Machines", display_order = 47)]
+    Forward(ForwardArgs),
 
     #[usage(help_heading = "Panes", display_order = 23)]
     Paste(PasteArgs),

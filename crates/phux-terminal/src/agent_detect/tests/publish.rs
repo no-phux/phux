@@ -1,5 +1,7 @@
 use super::*;
 
+/// Attention states publish on the first tick, under the manifest's kind
+/// and name.
 #[test]
 fn attention_states_publish_on_the_first_tick() {
     for (screen, state) in [
@@ -8,7 +10,11 @@ fn attention_states_publish_on_the_first_tick() {
         ("DONE", DetectedState::Done),
     ] {
         let mut h = Harness::new().past_grace();
-        assert_eq!(published(&h.tick(screen)), state, "{screen}");
+        let DetectOutcome::Publish(report) = h.tick(screen) else {
+            panic!("{screen} must publish");
+        };
+        assert_eq!((report.state, report.kind.as_str()), (state, "t"));
+        assert_eq!(report.name, "t-agent");
     }
 }
 
@@ -52,23 +58,13 @@ fn pre_identity_hook_expires_before_an_unrelated_future_occupant() {
     assert_eq!(h.state(), None);
 }
 
-#[test]
-fn report_carries_the_manifest_kind_and_name() {
-    let mut h = Harness::new().past_grace();
-    match h.tick("WORKING") {
-        DetectOutcome::Publish(r) => {
-            assert_eq!(r.kind, "t");
-            assert_eq!(r.name, "t-agent");
-        }
-        other => panic!("expected a publish, got {other:?}"),
-    }
-}
-
-/// Ambiguous `working -> idle`: held, then released.
+/// Ambiguous `working -> idle`: held at the fast confirming cadence, then
+/// released.
 #[test]
 fn working_to_ambiguous_idle_is_held_for_three_confirmations() {
     let mut h = Harness::new().past_grace();
     assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
+    assert_eq!(h.detector.interval(), TICK_IDENTIFIED);
 
     for i in 1..IDLE_CONFIRMATIONS {
         assert_eq!(
@@ -77,26 +73,13 @@ fn working_to_ambiguous_idle_is_held_for_three_confirmations() {
             "confirmation {i} must not publish yet",
         );
         assert_eq!(h.state(), Some(DetectedState::Working), "badge still held");
+        assert_eq!(h.detector.interval(), TICK_CONFIRMING, "look again quickly");
     }
     let out = h.tick("nothing matches here");
     assert_eq!(
         published(&out),
         DetectedState::Idle,
         "released on the third"
-    );
-}
-
-/// The hold ticks at the fast confirming cadence.
-#[test]
-fn the_hold_runs_at_the_confirming_cadence() {
-    let mut h = Harness::new().past_grace();
-    h.tick("WORKING");
-    assert_eq!(h.detector.interval(), TICK_IDENTIFIED);
-    h.tick("nothing");
-    assert_eq!(
-        h.detector.interval(),
-        TICK_CONFIRMING,
-        "the detector must look again quickly while confirming",
     );
 }
 
@@ -174,32 +157,16 @@ fn an_identified_agent_with_no_matching_rule_is_idle_never_blocked() {
     assert_ne!(h.state(), Some(DetectedState::Blocked));
 }
 
-/// A long `working` run produces exactly one write.
+/// A long run of one state produces exactly one write.
 #[test]
-fn a_long_working_run_publishes_exactly_once() {
-    let mut h = Harness::new().past_grace();
-    let mut publishes = 0;
-    for _ in 0..10 {
-        if matches!(h.tick("WORKING"), DetectOutcome::Publish(_)) {
-            publishes += 1;
-        }
+fn a_long_run_publishes_exactly_once() {
+    for screen in ["WORKING", "IDLE"] {
+        let mut h = Harness::new().past_grace();
+        let publishes = (0..10)
+            .filter(|_| matches!(h.tick(screen), DetectOutcome::Publish(_)))
+            .count();
+        assert_eq!(publishes, 1, "{screen}: only the transition is an event");
     }
-    assert_eq!(
-        publishes, 1,
-        "edge-filtered: only the transition is an event"
-    );
-}
-
-#[test]
-fn a_long_idle_run_publishes_exactly_once() {
-    let mut h = Harness::new().past_grace();
-    let mut publishes = 0;
-    for _ in 0..10 {
-        if matches!(h.tick("IDLE"), DetectOutcome::Publish(_)) {
-            publishes += 1;
-        }
-    }
-    assert_eq!(publishes, 1);
 }
 
 /// A splash screen containing a blocked word does not publish in grace.
@@ -263,26 +230,18 @@ fn a_freshly_identified_pane_scans_even_with_a_clean_grid() {
     );
 }
 
-#[test]
-fn wants_screen_is_false_while_unidentified() {
-    let spec: ManifestSpec = toml::from_str(MANIFEST).expect("parses");
-    let mut set = RuleSet::default();
-    set.install(spec).expect("compiles");
-    let detector = AgentDetector::new(Rc::new(set), Instant::now());
-    assert!(!detector.wants_screen(true), "nothing to derive against");
-    assert_eq!(detector.interval(), super::super::TICK_UNIDENTIFIED);
-}
-
-/// An unidentified pane never publishes or retracts.
+/// An unidentified pane does not scan, ticks slowly, and never publishes
+/// or retracts.
 #[test]
 fn an_unidentified_pane_is_silent() {
-    let spec: ManifestSpec = toml::from_str(MANIFEST).expect("parses");
-    let mut set = RuleSet::default();
-    set.install(spec).expect("compiles");
-    let now = Instant::now();
-    let mut detector = AgentDetector::new(Rc::new(set), now);
+    let mut h = Harness::unidentified();
+    assert!(!h.detector.wants_screen(true), "nothing to derive against");
+    assert_eq!(h.detector.interval(), super::super::TICK_UNIDENTIFIED);
     for i in 0..5 {
-        let at = now + Duration::from_secs(i * 6);
-        assert_eq!(detector.tick(at, None, "", "", None), DetectOutcome::Quiet);
+        let at = h.now + Duration::from_secs(i * 6);
+        assert_eq!(
+            h.detector.tick(at, None, "", "", None),
+            DetectOutcome::Quiet
+        );
     }
 }

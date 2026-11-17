@@ -5,8 +5,8 @@
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use crate::kitchen::{Kitchen, Line, Station};
-use crate::reef::{Pt, Rgb, hash, mix};
-use crate::ui::reef::pen::Pen;
+use crate::playground::{Pt, Rgb, hash, mix};
+use crate::ui::playground::pen::Pen;
 
 pub const BLACK: Rgb = [0.0, 0.0, 0.0];
 pub const WHITE: Rgb = [255.0, 255.0, 255.0];

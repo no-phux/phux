@@ -264,6 +264,8 @@ pub fn core_launch(
                 cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
                 env: spec.env.clone(),
                 restore: spec.restore.clone(),
+                // Not an organization wire field: only PTY reports set it.
+                resume: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {
@@ -353,16 +355,7 @@ pub fn owner(o: phux_core::ArrangementOwner) -> Option<frame::ArrangementOwner> 
 
 fn node(n: &phux_core::LayoutNode<phux_core::EntryRef>) -> Option<frame::ArrangementNode> {
     Some(match n {
-        phux_core::LayoutNode::Leaf(entry) => frame::ArrangementNode::Leaf(frame::EntryRef {
-            entry: entry.entry,
-            target: match &entry.target {
-                phux_core::EntryTarget::Member(k) => frame::EntryTarget::Member(resource_key(*k)?),
-                phux_core::EntryTarget::Satellite { host, id } => frame::EntryTarget::Satellite {
-                    host: wire::SatelliteHost::new(host.clone()),
-                    id: *id,
-                },
-            },
-        }),
+        phux_core::LayoutNode::Leaf(entry) => frame::ArrangementNode::Leaf(wire_entry(entry)?),
         phux_core::LayoutNode::Split {
             dir,
             ratio,
@@ -380,21 +373,40 @@ fn node(n: &phux_core::LayoutNode<phux_core::EntryRef>) -> Option<frame::Arrange
     })
 }
 
+/// A core entry, slot tabs included, as its wire form.
+fn wire_entry(entry: &phux_core::EntryRef) -> Option<frame::EntryRef> {
+    let target = match &entry.target {
+        phux_core::EntryTarget::Member(k) => frame::EntryTarget::Member(resource_key(*k)?),
+        phux_core::EntryTarget::Satellite { host, id } => frame::EntryTarget::Satellite {
+            host: wire::SatelliteHost::new(host.clone()),
+            id: *id,
+        },
+    };
+    let mut wire = frame::EntryRef::new(entry.entry, target);
+    wire.tabs = entry.tabs.iter().map(wire_entry).collect::<Option<_>>()?;
+    wire.shown_at = entry.shown_at;
+    Some(wire)
+}
+
+/// A wire entry, slot tabs included, as its core form.
+fn core_entry(entry: &frame::EntryRef) -> Option<phux_core::EntryRef> {
+    let target = match &entry.target {
+        frame::EntryTarget::Member(k) => phux_core::EntryTarget::Member(core_resource_key(k)),
+        frame::EntryTarget::Satellite { host, id } => phux_core::EntryTarget::Satellite {
+            host: host.as_str().to_owned(),
+            id: *id,
+        },
+        _ => return None,
+    };
+    let mut core = phux_core::EntryRef::new(entry.entry, target);
+    core.tabs = entry.tabs.iter().map(core_entry).collect::<Option<_>>()?;
+    core.shown_at = entry.shown_at;
+    Some(core)
+}
+
 fn core_node(n: &frame::ArrangementNode) -> Option<phux_core::LayoutNode<phux_core::EntryRef>> {
     Some(match n {
-        frame::ArrangementNode::Leaf(entry) => phux_core::LayoutNode::Leaf(phux_core::EntryRef {
-            entry: entry.entry,
-            target: match &entry.target {
-                frame::EntryTarget::Member(k) => {
-                    phux_core::EntryTarget::Member(core_resource_key(k))
-                }
-                frame::EntryTarget::Satellite { host, id } => phux_core::EntryTarget::Satellite {
-                    host: host.as_str().to_owned(),
-                    id: *id,
-                },
-                _ => return None,
-            },
-        }),
+        frame::ArrangementNode::Leaf(entry) => phux_core::LayoutNode::Leaf(core_entry(entry)?),
         frame::ArrangementNode::Split {
             dir,
             ratio,

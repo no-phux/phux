@@ -50,6 +50,14 @@ A CLI, config, or widget change needs `just docs-gen`; a wire change needs
 the schema regenerated ([protocol](./docs/protocol.md#changing-the-wire)).
 `just docs-check` gates the hand-written docs.
 
+## Pull requests
+
+CI shares a small macOS pool, and every push to a ready PR cancels and
+requeues its lanes. Open PRs with `gh pr create --draft` (drafts skip ci),
+run `just check` until it passes, then `gh pr ready` once. Fix review or CI
+findings in one push, not one push per fix. Flows that validate before the
+first push and use `gh pr merge --auto` may open ready.
+
 ## Worktree isolation
 
 Never implement on `main` or in the primary checkout. Make a branch and a

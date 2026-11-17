@@ -10,6 +10,10 @@ export function workflowNames(): string[] {
     .sort();
 }
 
+export function actionNames(): string[] {
+  return readdirSync(repoPath(".github/actions")).sort();
+}
+
 export function workflowText(name: string): string {
   return readFileSync(repoPath(`.github/workflows/${name}`), "utf8");
 }

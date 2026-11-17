@@ -43,13 +43,7 @@ fn watch_read(frames: &[FrameKind], key: &str) -> u32 {
 
 fn attached() -> ControlPlane {
     let (mut plane, attach_id) = negotiated();
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: two_session_snapshot(false),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, two_session_snapshot(false));
     let _ = plane.take_outbound();
     let _ = plane.take_events();
     plane
@@ -174,13 +168,7 @@ fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
             _ => None,
         })
         .expect("ATTACH");
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: two_session_snapshot(false),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, two_session_snapshot(false));
     let first = watch_read(&outbound(&mut plane), KEY);
 
     // The connection drops; its subscriptions end with it. The reconnect's
@@ -196,13 +184,7 @@ fn a_watch_before_the_handshake_is_issued_at_attach_and_on_every_reattach() {
             _ => None,
         })
         .expect("second ATTACH");
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: two_session_snapshot(false),
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
+    plane.attached(attach_id, two_session_snapshot(false));
     let second = watch_read(&outbound(&mut plane), KEY);
     assert_ne!(first, second);
     plane

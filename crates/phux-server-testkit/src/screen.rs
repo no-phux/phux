@@ -5,7 +5,10 @@
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::screen::{Cell, CellWide};
-use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::{
+    point::{Coordinate as PointCoordinate, Point},
+    terminal::ScrollViewport,
+};
 use phux_protocol::render_pool::{RenderPool, RenderWalk};
 
 /// One terminal per `Screen`, so the pool identity never changes.

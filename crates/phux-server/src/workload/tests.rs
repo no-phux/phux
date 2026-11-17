@@ -7,6 +7,8 @@ use super::*;
 
 #[path = "tests/grants.rs"]
 mod grants;
+#[path = "tests/held.rs"]
+mod held;
 #[path = "tests/managed.rs"]
 mod managed;
 #[path = "tests/paired.rs"]
@@ -273,11 +275,7 @@ fn enrollment_refuses_a_bad_request_scope_expiry_or_missing_authority() {
     );
 
     let empty = tempfile::tempdir().unwrap();
-    let missing = WorkloadPaths {
-        ca_cert: empty.path().join("ca.pem"),
-        ca_key: empty.path().join("ca.key"),
-        registry: empty.path().join("keys"),
-    };
+    let missing = WorkloadPaths::in_dir(empty.path());
     assert!(matches!(
         prepare_enrollment(&missing, &request(), in_an_hour()),
         Err(WorkloadError::AuthorityMissing)

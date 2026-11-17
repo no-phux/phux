@@ -87,12 +87,6 @@ pub fn head_fits(head: &ServiceHttpHead) -> bool {
     parts_fit(&[], &head.headers)
 }
 
-/// Whether a chunk fits the wire bounds a decoder enforces.
-#[must_use]
-pub const fn chunk_fits(chunk: &ServiceHttpChunk) -> bool {
-    chunk.bytes.len() <= MAX_SERVICE_HTTP_READ_BYTES
-}
-
 /// Whether a `SERVICE_HTTP_READ` asks for no more than one chunk may carry.
 #[must_use]
 pub fn read_fits(max_bytes: u32) -> bool {

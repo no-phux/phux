@@ -31,10 +31,10 @@ fn a_document_key_survives_two_organization_batches_until_a_new_execution_arrive
             assert_eq!(focus(&rt), id(1), "temporary fallback stays usable");
             assert!(
                 client
-                    .acquire_view(rt.state.shown.as_ref().unwrap().view.unwrap())
+                    .acquire_view(rt.state.connection.shown.as_ref().unwrap().view.unwrap())
                     .is_some()
             );
-            assert_eq!(rt.state.resources.returning, Some(key(2)));
+            assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
             assert!(
                 rt.state
                     .notice
@@ -45,7 +45,7 @@ fn a_document_key_survives_two_organization_batches_until_a_new_execution_arrive
             );
             step(&mut rt);
             assert_eq!(
-                rt.state.resources.returning,
+                rt.state.connection.resources.returning,
                 Some(key(2)),
                 "polling cannot consume the key"
             );
@@ -54,8 +54,8 @@ fn a_document_key_survives_two_organization_batches_until_a_new_execution_arrive
             replace_records(&client, next);
             step(&mut rt);
             assert_eq!(focus(&rt), id(handle));
-            assert!(rt.state.shown.as_ref().unwrap().view.is_none());
-            assert!(rt.state.resources.returning.is_none());
+            assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
+            assert!(rt.state.connection.resources.returning.is_none());
         }
     }
 }
@@ -73,10 +73,10 @@ fn an_explicit_focus_request_cancels_delayed_document_restoration() {
     gap[1].live = None;
     replace_records(&client, gap);
     step(&mut rt);
-    assert_eq!(rt.state.resources.returning, Some(key(2)));
+    assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
     rt.update(|d, _| d.want(id(3)));
     step(&mut rt);
-    assert!(rt.state.resources.returning.is_none());
+    assert!(rt.state.connection.resources.returning.is_none());
     assert_eq!(focus(&rt), id(3));
     let mut next = records.to_vec();
     next[1] = replacement(9);
@@ -99,10 +99,10 @@ fn the_missing_document_guard_recovers_a_shown_document_without_its_entry() {
     let (client, mut rt) = phone_fixture(&records, &doc(three()));
     rt.update(|d, _| {
         d.focus_pane(&id(2));
-        d.resources.entries.remove(&id(2));
+        d.connection.resources.entries.remove(&id(2));
         assert!(d.restore_document(&client));
-        assert!(d.shown.is_none());
-        assert_eq!(d.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
+        assert!(d.connection.shown.is_none());
+        assert_eq!(d.connection.wanted.as_ref().map(|(id, _)| id), Some(&id(1)));
     });
     step(&mut rt);
     assert_eq!(focus(&rt), id(1));
@@ -131,7 +131,7 @@ fn another_automatic_document_fallback_does_not_cancel_a_waiting_key() {
         }
         step(&mut rt);
         assert_eq!(focus(&rt), id(3));
-        assert_eq!(rt.state.resources.returning, Some(key(2)));
+        assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
         let mut next = records.to_vec();
         next[1] = replacement(9);
         replace_records(&client, next);
@@ -154,10 +154,10 @@ fn picking_a_retained_phone_pane_cancels_a_delayed_document_return() {
         gap[1].live = None;
         replace_records(&client, gap);
         step(&mut rt);
-        assert_eq!(rt.state.resources.returning, Some(key(2)));
+        assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
         rt.update(|d, _| d.phone_pick(&id(target)));
         assert!(
-            rt.state.resources.returning.is_none(),
+            rt.state.connection.resources.returning.is_none(),
             "explicit map/picker focus cancels the return"
         );
         let mut next = records.to_vec();
@@ -182,11 +182,10 @@ fn reconnect_retirement_and_carry_preserve_the_original_waiting_document() {
     replace_records(&client, gap);
     step(&mut rt);
     assert_eq!(focus(&rt), id(1));
-    let mut next = Desk::new(&crate::launch::Resolved::offline("reconnect"));
-    rt.state.carry_document_focus(&mut next);
-    assert_eq!(next.resources.returning, Some(key(2)));
     rt.update(|d, _| d.retire_documents(&client));
-    assert_eq!(rt.state.resources.returning, Some(key(2)));
+    assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
+    rt.update(|d, _| d.replace_connection(crate::desk::link::Replacement::Retry));
+    assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
 }
 
 #[test]
@@ -209,13 +208,13 @@ fn automatic_terminal_view_reopening_preserves_a_waiting_document() {
             });
         } else {
             client
-                .destroy_view(rt.state.shown.as_ref().unwrap().view.unwrap())
+                .destroy_view(rt.state.connection.shown.as_ref().unwrap().view.unwrap())
                 .unwrap();
             rt.update(|d, _| {
                 d.drop_dead_views(&client);
             });
         }
-        assert_eq!(rt.state.resources.returning, Some(key(2)));
+        assert_eq!(rt.state.connection.resources.returning, Some(key(2)));
         let mut next = records.to_vec();
         next[1] = replacement(9);
         replace_records(&client, next);

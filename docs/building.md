@@ -4,6 +4,11 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
+There is no published SDK or client library yet. A program builds on the
+entry points below: the versioned `--json` CLI, the MCP server, the server
+protocol, or the Rust crates `phux-client-runtime` and `phux-client-ffi`,
+which are not on crates.io yet ([Not shipped](#not-shipped)).
+
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
@@ -27,6 +32,9 @@ quoted from there.
   every client draws; `[[producers]]` keeps the program running.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
   Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
+- [Build a phux client](./build-a-client.md). Read agents and their
+  questions, answer one, and follow events, with the JSON a test keeps
+  stable.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [Embed phux](./embedding.md). Read these for what a library would be,
   and for the SDK status below.
@@ -60,9 +68,81 @@ that command makes billable model calls on the operator's own agent logins.
 CI runs that harness against a stub only. A table of real Mac numbers is
 not checked in.
 
+## Who is typing
+
+Several clients can share a pane. The server records, per pane, the
+connection that last typed into it (a key or a paste, attached or through
+`phux send-keys`). A program reads that record without parsing the screen.
+
+`phux resource show --json` carries it as `controller`:
+
+```json
+{ "client": 7, "client_name": "phux-mobile", "route": "bearer-quic", "remote": true, "platform": "ios" }
+```
+
+- `client` is the server's id for the connection, the same number
+  `input_holder` and `viewers` use.
+- `client_name` is the name the client gave itself when it connected, or
+  `null` when it gave none. phux's own programs send `name/version`. Split
+  on the last `/`, the same parse as the older `phux-client/<version>`:
+  `phux-tui/<version>` is the interactive client, `phux-cli/<version>` is a
+  headless verb (`send-keys`, `paste`, `run`, and the other one-shot
+  commands), and `phux-mcp/<version>` is a connection the MCP adapter opens
+  itself. A tool that runs the `phux` binary, including the adapter's
+  `phux_run`, reports `phux-cli` because that process is the CLI. Other
+  programs keep their own words (`phux-mobile`, `phux-hub`, `phux-web`).
+  An older build still reports `phux-client/<version>`.
+- `route` is the `auth_route` word [`phux whoami`](./remote.md#who-can-do-what)
+  reports for that connection.
+- `remote` is `false` for the owner's Unix socket and the loopback
+  listeners, and `true` for every other route.
+- `platform` is the device word the client reported in its `HELLO`
+  (field 12, `PLATFORM`): 1 to 16 bytes of `[a-z0-9-]`. The usual words
+  are `macos`, `linux`, `windows`, `ios`, `ipados`, `android` and `web`;
+  the server checks the alphabet, not the vocabulary. The key is absent
+  when the client reported none (every client before the field existed)
+  or sent a word outside that alphabet.
+
+`controller` is `null` when nobody has typed, or when the connection that
+typed has closed. A `phux send-keys` run is one short connection, so its
+record is gone as soon as the command returns.
+
+Inside a pane, `phux resource show` needs no target: it reads the pane it
+runs in from `PHUX_TERMINAL_ID`. A helper that a `sudo` wrapper or a PAM
+rule can call to skip a local fingerprint prompt when the person typing is
+on another device:
+
+```sh
+remote=$(phux resource show --json | jq -r '.controller.remote')
+if [ "$remote" = true ]; then
+  exit 0   # typed from another device: do not prompt on this screen
+fi
+exit 1
+```
+
+`phux watch --json @7` prints a line when the record changes, and
+`--until controller_changed` waits for one:
+
+```json
+{"event":"controller_changed","terminal":"@7","controller":{"client":7,"client_name":"phux-mobile","route":"bearer-quic","remote":true,"platform":"ios"}}
+```
+
+The record is a hint for convenience. It is not an authentication fact. A
+client reports its own name and platform, an `ssh-stdio` route is a label
+the connecting side reported, and any client attached to the pane can type. Do not grant
+anything on the strength of it; use it to choose which prompt to show.
+
+phux's own clients report the operating system they were built for; an
+app that knows better (an iPad build compiles as `ios`) says so through
+`set_client_platform` in the mobile bindings. An older server ignores the
+field. On a pane reached through a hub, the pane's own server sees the hub
+as the client, so the record there names the hub (`phux-hub`) and the
+hub's platform, not the person's device. The record is not copied onto
+the hub.
+
 ## Not shipped
 
-There is no public SDK. [Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
+[Call phux from a program](./agent-quickstart.md#call-phux-from-a-program)
 says this repository ships no Python or JavaScript package for driving
 phux. `phux-client-core` and `phux-client-runtime` set `publish = false`.
 [Embedding](./embedding.md) says none of the embed crates is on crates.io

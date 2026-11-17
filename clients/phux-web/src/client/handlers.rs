@@ -20,26 +20,7 @@ pub(super) fn install_websocket_handlers(app: &Rc<RefCell<App>>, ws: &WebSocket)
     let onmessage = websocket_message_callback(app);
     let onerror = websocket_failure_callback(app, "WebSocket transport error");
     let onclose = websocket_failure_callback(app, "WebSocket closed by peer");
-
-    ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
-    ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-    ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-    ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-    let old = app
-        .borrow()
-        .bindings
-        .borrow_mut()
-        .websocket
-        .replace(WebSocketBindings {
-            socket: ws.clone(),
-            onopen,
-            onmessage,
-            onerror,
-            onclose,
-        });
-    if let Some(old) = old {
-        old.dispose();
-    }
+    bind_websocket(app, ws, (onopen, onmessage, onerror, onclose));
 
     if ws.ready_state() == WebSocket::OPEN && !hello_sent.replace(true) {
         send_handshake(app);
@@ -63,26 +44,27 @@ pub(super) fn install_hosted_websocket_handlers(
     );
     let onerror = hosted_error_callback(app, Rc::clone(&callback));
     let onclose = hosted_close_callback(app, callback);
+    bind_websocket(app, ws, (onopen, onmessage, onerror, onclose));
+}
 
+/// Point `ws` at its handlers and keep them alive in the app's bindings.
+fn bind_websocket(app: &Rc<RefCell<App>>, ws: &WebSocket, handlers: WebSocketHandlers) {
+    let (onopen, onmessage, onerror, onclose) = &handlers;
     ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+    let binding = WebSocketBindings {
+        socket: ws.clone(),
+        _handlers: handlers,
+    };
     let old = app
         .borrow()
         .bindings
         .borrow_mut()
         .websocket
-        .replace(WebSocketBindings {
-            socket: ws.clone(),
-            onopen,
-            onmessage,
-            onerror,
-            onclose,
-        });
-    if let Some(old) = old {
-        old.dispose();
-    }
+        .replace(binding);
+    drop(old);
 }
 
 fn websocket_open_callback(
@@ -209,37 +191,17 @@ fn emit_hosted(callback: &js_sys::Function, value: &JsValue) {
 
 fn emit_hosted_error(callback: &js_sys::Function, category: &str) {
     let event = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &event,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("error"),
-    );
-    let _ = js_sys::Reflect::set(
-        &event,
-        &JsValue::from_str("category"),
-        &JsValue::from_str(category),
-    );
+    set_js(&event, "type", "error");
+    set_js(&event, "category", category);
     emit_hosted(callback, &event);
 }
 
 fn emit_hosted_close(callback: &js_sys::Function, code: u16, was_clean: bool) {
     let event = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &event,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("close"),
-    );
-    let _ = js_sys::Reflect::set(&event, &JsValue::from_str("code"), &JsValue::from(code));
-    let _ = js_sys::Reflect::set(
-        &event,
-        &JsValue::from_str("category"),
-        &JsValue::from_str(hosted_close_category(code)),
-    );
-    let _ = js_sys::Reflect::set(
-        &event,
-        &JsValue::from_str("wasClean"),
-        &JsValue::from(was_clean),
-    );
+    set_js(&event, "type", "close");
+    set_js(&event, "code", code);
+    set_js(&event, "category", hosted_close_category(code));
+    set_js(&event, "wasClean", was_clean);
     emit_hosted(callback, &event);
 }
 

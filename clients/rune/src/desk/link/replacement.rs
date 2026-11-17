@@ -1,66 +1,101 @@
-//! Window-local state across reconnects and machine replacements.
+//! Replace a runtime namespace, not the window that happens to display it.
 use super::Desk;
 use std::time::Instant;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::desk) enum Replacement {
+    Retry,
+    Machine,
+}
 
 #[cfg(test)]
 mod tests;
 
 impl Desk {
-    /// Take down what the old connection knew; what the window itself holds
-    /// stays, so a background retry doesn't close the sheet you're in.
+    /// An ended client is replaced; a transport reconnect on the same client
+    /// keeps its replay-safe receipt namespace and never comes through here.
     pub(super) fn renew(&mut self) {
-        let mut next = Desk::open(&self.launch, self.machines.current.clone());
-        self.carry_into(&mut next);
-        std::mem::swap(&mut next.inbox, &mut self.inbox);
-        std::mem::swap(&mut next.activities, &mut self.activities);
-        std::mem::swap(&mut next.palette_query, &mut self.palette_query);
-        next.pending = self.pending.take();
-        next.notice = self.notice.take();
-        next.palette_open = self.palette_open;
-        next.palette_picked = self.palette_picked;
-        // A path search belongs to the old connection.
-        next.palette_mode = match self.palette_mode {
-            crate::palette::Mode::Paths | crate::palette::Mode::Screens => {
-                crate::palette::Mode::All
-            }
-            mode => mode,
-        };
-        next.theme_before = self.theme_before;
-        next.settings.theme = self.settings.theme;
-        next.settings_open = self.settings_open;
-        std::mem::swap(&mut next.settings_ui, &mut self.settings_ui);
-        next.sidebar_open = self.sidebar_open;
-        next.wanted = self
+        self.replace_connection(Replacement::Retry);
+    }
+
+    pub(in crate::desk) fn replace_connection(&mut self, policy: Replacement) {
+        let wanted = self
+            .connection
             .shown
             .as_ref()
             .filter(|s| s.view.is_some())
             .map(|shown| (shown.resource.clone(), Instant::now()));
-        self.carry_document_focus(&mut next);
-        *self = next;
+        let returning = self.connection.resources.returning.or_else(|| {
+            self.connection
+                .shown
+                .as_ref()
+                .and_then(|shown| self.connection.resources.entries.get(&shown.resource))
+                .map(|document| document.record.key)
+        });
+        // Releases must target the old views/client, never their replacements.
+        self.phone_interrupted();
+        self.release_capture();
+        self.end_drag();
+        self.cancel_quick_move("the main window's connection was replaced");
+        self.release_connection_views();
+        let next = self.connection.successor();
+        let mut old = std::mem::replace(&mut self.connection, next);
+        old.resources.carry_images(&mut self.connection.resources);
+        if policy == Replacement::Retry {
+            self.connection.wanted = wanted;
+            self.connection.resources.returning = returning;
+            self.connection.resources.dismissed = old.resources.dismissed;
+        } else {
+            self.leave_machine_ui();
+        }
+        self.reset_connection_interactions();
+        self.generation += 1;
     }
 
-    /// What survives any replacement of this window's connection.
-    pub(in crate::desk) fn carry_into(&mut self, next: &mut Desk) {
-        next.native = self.native.take();
-        next.phone = self.phone.take();
-        if let Some(phone) = &mut next.phone {
+    fn reset_connection_interactions(&mut self) {
+        if let Some(phone) = &mut self.phone {
             phone.reconcile(None, None);
             phone.picker = false;
+            phone.page = None;
             phone.release();
         }
-        std::mem::swap(&mut next.updater, &mut self.updater);
-        std::mem::swap(&mut next.machines, &mut self.machines);
-        std::mem::swap(&mut next.link, &mut self.link);
-        std::mem::swap(&mut next.pointer.failed, &mut self.pointer.failed);
-        next.generation = self.generation + 1;
-        next.clock = self.clock;
-        next.focused = self.focused;
-        next.waker = self.waker.clone();
-        self.resources.carry_images(&mut next.resources);
-        next.resources.images = next.resources.images.take().or_else(|| {
-            next.waker
-                .as_ref()
-                .map(|waker| rune::ImageCache::new(waker.clone()))
-        });
+        if let Some(native) = &mut self.native {
+            native.paste_requested = false;
+        }
+        // The opener's asynchronous error channel belongs to the window.
+        let failed = self.pointer.failed.clone();
+        self.pointer = super::super::links::Pointer::default();
+        self.pointer.failed = failed;
+        if matches!(
+            self.palette_mode,
+            crate::palette::Mode::Paths | crate::palette::Mode::Screens
+        ) {
+            self.palette_mode = crate::palette::Mode::All;
+        }
+        // Selected scenes can contain handles from the retired namespace.
+        self.playground = None;
+        self.galaxy = Default::default();
+        self.reef = Default::default();
+        self.pitch = Default::default();
+        self.kitchen = Default::default();
+        self.pitlane = Default::default();
+        self.hive = Default::default();
+        self.fleet = Default::default();
+        // Migration panes and outstanding CLI results cannot be inherited by
+        // a new runtime namespace. Saved onboarding progress is unaffected.
+        self.onboarding = Default::default();
+    }
+
+    fn leave_machine_ui(&mut self) {
+        self.left_server();
+        self.inbox = Default::default();
+        self.activities = Default::default();
+        self.close_palette();
+        self.palette_query.clear();
+        self.palette_picked = 0;
+        self.palette_mode = crate::palette::Mode::All;
+        self.close_settings();
+        self.settings_ui = Default::default();
+        self.notice = None;
     }
 }

@@ -8,25 +8,18 @@
 //!          \_____ TLS(server CA pin, client cert) ______/
 //! ```
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use phux_config::ConnectorConfigEntry;
-use phux_dial::quic::{DialedStream, InnerTls};
 use phux_dial::{CertTrust, DialError, QuicDial, TlsClientIdentity};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::FrameKind;
-use phux_relay::{RelayConfig, cert_fingerprint};
-use phux_server::ServerConfig;
 use phux_server::workload::WorkloadPaths;
 use phux_server_testkit::relay::RelayHarness;
-use phux_server_testkit::{WIRE_RECV_TIMEOUT, encode_frame};
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::sync::oneshot;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
+
+use crate::relay_common::{
+    RelayedServer, loopback, quic_hello, relay_config, relay_pin, write_private,
+};
 
 const ROUTE: &str = "inner-test";
 const TUNNEL_TOKEN: [u8; 32] = [0x31; 32];
@@ -35,17 +28,7 @@ struct Topology {
     _dir: TempDir,
     relay: RelayHarness,
     relay_pin: String,
-    paths: WorkloadPaths,
-    authority: String,
-    consumer_token: Vec<u8>,
-    stop_server: oneshot::Sender<()>,
-    server: tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
-}
-
-fn write_token(path: &Path, token: &[u8]) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::write(path, format!("{}\n", hex::encode(token))).expect("write token");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod token");
+    server: RelayedServer,
 }
 
 impl Topology {
@@ -61,151 +44,50 @@ impl Topology {
         )
         .expect("owner-only");
         let d = dir.path();
-        std::fs::write(
-            d.join("relay-tokens"),
-            format!("{} {ROUTE}\n", hex::encode(TUNNEL_TOKEN)),
-        )
-        .expect("relay route");
-        write_token(&d.join("connector-token"), &TUNNEL_TOKEN);
-        let consumer_token = phux_server_testkit::embedder::mint_bearer(&d.join("consumer-tokens"));
-        let paths = WorkloadPaths::with_overrides(
-            Some(d.join("workload-ca.pem")),
-            Some(d.join("workload-ca.key")),
-            Some(d.join("workload-keys")),
-        );
-        let (cert, key) = (d.join("remote-cert.pem"), d.join("remote-key.pem"));
-        phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
-            .expect("server identity");
-        let authority = phux_server::transport::tls::presented_authority(&cert)
-            .expect("chain")
-            .expect("issued by the CA");
-
-        let relay = RelayHarness::start(RelayConfig {
-            max_conns: 16,
-            ..phux_relay::config_in(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), d)
-        });
-        let relay_pin = cert_fingerprint(&d.join("relay-cert.pem")).expect("relay pin");
-        let connector = ConnectorConfigEntry {
-            relay: relay.addr.to_string(),
-            token_file: Some(d.join("connector-token")),
-            cert_fingerprint: Some(relay_pin.clone()),
-        };
-        let mut cfg = ServerConfig {
-            socket_path: d.join("phux.sock"),
-            policy_mode: paired.then_some(phux_config::PolicyMode::Paired),
-            env: phux_server::ServerEnv {
-                ws_tokens: Some(d.join("consumer-tokens")),
-                tls_cert: Some(cert),
-                tls_key: Some(key),
-                // Naming the authority without `paired` refuses to start
-                // (workload-auth §8), so only the paired server names it.
-                workload_ca: paired.then(|| paths.ca_cert.clone()),
-                workload_ca_key: paired.then(|| paths.ca_key.clone()),
-                workload_keys: paired.then(|| paths.registry.clone()),
-                ..phux_server::ServerEnv::default()
-            },
-            ..ServerConfig::with_default_socket()
-        };
-        if !paired {
-            phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
-        }
-        let (stop_server, stopped) = oneshot::channel();
-        let server = tokio::task::spawn_local(async move {
-            phux_server_testkit::terminal_server(cfg)
-                .connectors(vec![connector], None)
-                .run_async(async move {
-                    let _ = stopped.await;
-                })
-                .await
-        });
+        let relay = RelayHarness::start(relay_config(d, loopback(), ROUTE, &TUNNEL_TOKEN));
+        let relay_pin = relay_pin(d);
+        let server =
+            RelayedServer::start(d, relay.addr, &relay_pin, &TUNNEL_TOKEN, |cfg, paths| {
+                if paired {
+                    // Naming the authority without `paired` refuses to start
+                    // (workload-auth §8), so only the paired server names it.
+                    cfg.policy_mode = Some(phux_config::PolicyMode::Paired);
+                    cfg.env.workload_ca = Some(paths.ca_cert.clone());
+                    cfg.env.workload_ca_key = Some(paths.ca_key.clone());
+                    cfg.env.workload_keys = Some(paths.registry.clone());
+                } else {
+                    phux_server_testkit::embedder::embed_owner_engine(cfg);
+                }
+            });
         Self {
             _dir: dir,
             relay,
             relay_pin,
-            paths,
-            authority,
-            consumer_token,
-            stop_server,
             server,
         }
     }
 
-    fn plan(&self, inner: Option<InnerTls>) -> QuicDial {
-        QuicDial {
-            addr: self.relay.addr,
-            server_name: ROUTE.to_owned(),
-            token: Some(self.consumer_token.clone()),
-            trust: CertTrust::Pinned(self.relay_pin.clone()),
-            identity: Some(TlsClientIdentity::None),
-            inner,
-        }
+    fn plan(&self, inner: Option<phux_dial::quic::InnerTls>) -> QuicDial {
+        let token = Some(self.server.bearer.clone());
+        crate::relay_common::plan(self.relay.addr, &self.relay_pin, ROUTE, token, inner)
     }
 
     async fn stop(self) {
-        let _ = self.stop_server.send(());
-        self.server.await.expect("server task").expect("shutdown");
+        self.server.stop().await;
         self.relay.stop().await;
     }
 }
 
 /// The end-to-end session to the server behind [`ROUTE`], pinning `ca`.
-fn inner(ca: &str, identity: TlsClientIdentity) -> InnerTls {
-    InnerTls {
-        trust: CertTrust::Authority { ca: ca.to_owned() },
-        identity,
-        server_name: ROUTE.to_owned(),
-    }
-}
-
-/// HELLO through `plan`; the server's first answer, or why the dial failed.
-async fn hello(plan: &QuicDial) -> Result<FrameKind, DialError> {
-    let (_endpoint, conn, stream) = phux_dial::quic::dial_stream(plan).await?;
-    let hello = encode_frame(&FrameKind::Hello {
-        client_name: "relay-inner-tls".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
-    });
-    let io = async {
-        let (mut reader, mut writer): (
-            Box<dyn tokio::io::AsyncRead + Unpin>,
-            Box<dyn tokio::io::AsyncWrite + Unpin>,
-        ) = match stream {
-            DialedStream::Plain { send, recv } => (Box::new(recv), Box::new(send)),
-            DialedStream::Inner(stream) => {
-                let (recv, send) = tokio::io::split(*stream);
-                (Box::new(recv), Box::new(send))
-            }
-        };
-        writer.write_all(&hello).await?;
-        writer.flush().await?;
-        let mut header = [0_u8; 4];
-        reader.read_exact(&mut header).await?;
-        let mut framed = header.to_vec();
-        framed.resize(4 + u32::from_be_bytes(header) as usize, 0);
-        reader.read_exact(&mut framed[4..]).await?;
-        Ok::<_, std::io::Error>(framed)
-    };
-    let framed = timeout(WIRE_RECV_TIMEOUT, io)
-        .await
-        .map_err(|_| DialError::Connect("no answer".to_owned()))?
-        .map_err(|err| {
-            conn.close_reason().map_or_else(
-                || DialError::Connect(err.to_string()),
-                |close| phux_dial::quic::close_error(&close),
-            )
-        })?;
-    let (frame, _) =
-        FrameKind::decode(&framed).map_err(|err| DialError::Connect(err.to_string()))?;
-    Ok(frame)
+fn inner(ca: &str, identity: TlsClientIdentity) -> phux_dial::quic::InnerTls {
+    crate::relay_common::inner(ca, identity, ROUTE)
 }
 
 /// Retry until the connector holds the route.
 async fn first_answer(plan: &QuicDial) -> Result<FrameKind, DialError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let answer = hello(plan).await;
+        let answer = quic_hello(plan, "relay-inner-tls").await;
         let route_offline =
             matches!(&answer, Err(DialError::Connect(detail)) if detail.contains("route offline"));
         if !route_offline || Instant::now() > deadline {
@@ -265,7 +147,7 @@ fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
         wait_for_route(&t).await;
         // In every posture.
         assert_plain_refused(&first_answer(&t.plan(None)).await);
-        let session = inner(&t.authority, TlsClientIdentity::None);
+        let session = inner(&t.server.authority, TlsClientIdentity::None);
         let answer = first_answer(&t.plan(Some(session)))
             .await
             .expect("inner admitted");
@@ -277,7 +159,10 @@ fn an_inner_session_reaches_the_server_and_a_wrong_ca_is_refused() {
         );
         match first_answer(&t.plan(Some(wrong))).await {
             Err(DialError::AuthorityChanged(change)) => {
-                assert_eq!(change.presented.as_deref(), Some(t.authority.as_str()));
+                assert_eq!(
+                    change.presented.as_deref(),
+                    Some(t.server.authority.as_str())
+                );
             }
             other => panic!("a wrong CA must be refused by name, got {other:?}"),
         }
@@ -294,7 +179,7 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
         let t = Topology::start(true);
         wait_for_route(&t).await;
         assert_plain_refused(&first_answer(&t.plan(None)).await);
-        let bare = inner(&t.authority, TlsClientIdentity::None);
+        let bare = inner(&t.server.authority, TlsClientIdentity::None);
         assert!(
             !matches!(
                 first_answer(&t.plan(Some(bare))).await,
@@ -310,12 +195,12 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
             .expect("csr")
             .der()
             .to_vec();
-        let ticket = ticket(&t.paths);
+        let ticket = ticket(&t.server.paths);
         let enroll_dial = phux_dial::enroll::EnrollDial {
             addr: t.relay.addr,
             server_name: ROUTE.to_owned(),
             trust: CertTrust::Pinned(t.relay_pin.clone()),
-            inner: Some(inner(&t.authority, TlsClientIdentity::None)),
+            inner: Some(inner(&t.server.authority, TlsClientIdentity::None)),
         };
         let request = phux_protocol::enroll::Request {
             ticket: ticket.clone(),
@@ -327,7 +212,7 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
         phux_dial::enroll::check_issued_chain(
             &chain,
             &rcgen::PublicKeyData::subject_public_key_info(&key),
-            Some(&t.authority),
+            Some(&t.server.authority),
         )
         .expect("the reply passes the client checks");
         let replay = phux_dial::enroll::enroll(&enroll_dial, &request).await;
@@ -339,9 +224,9 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (cert, key_path) = (dir.path().join("c.pem"), dir.path().join("c.key"));
         std::fs::write(&cert, &chain).expect("chain");
-        write_key(&key_path, &key.serialize_pem());
+        write_private(&key_path, key.serialize_pem());
         let enrolled = inner(
-            &t.authority,
+            &t.server.authority,
             TlsClientIdentity::PemFiles {
                 certificate: cert,
                 private_key: key_path,
@@ -353,10 +238,4 @@ fn under_paired_only_an_enrolled_certificate_crosses_the_relay() {
         assert!(matches!(answer, FrameKind::HelloOk { .. }), "{answer:?}");
         t.stop().await;
     });
-}
-
-fn write_key(path: &PathBuf, pem: &str) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::write(path, pem).expect("key");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
 }

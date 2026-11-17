@@ -6,7 +6,7 @@
 
 use phux_core::resource::{DocumentLaunch, SurfaceLaunch, TreeLaunch};
 use phux_core::{
-    AgentLaunch, LaunchSpec, NewResource, Op, Refusal, ResourceKey, ResourceKind, SessionLifetime,
+    AgentLaunch, LaunchSpec, NewResource, Refusal, ResourceKey, ResourceKind, SessionLifetime,
 };
 
 use crate::support::{Harness, created, shell};
@@ -40,12 +40,8 @@ fn under(parent: Option<ResourceKey>, launch: LaunchSpec) -> NewResource {
 }
 
 fn create(h: &mut Harness, spec: NewResource) -> Result<ResourceKey, Refusal> {
-    h.run(Op::ResourceCreate {
-        placement: None,
-        session: None,
-        resource: spec,
-    })
-    .map(|applied| created(&applied).1.expect("a resource"))
+    h.create(None, spec, None)
+        .map(|applied| created(&applied).1.expect("a resource"))
 }
 
 fn parent_refusal(result: Result<ResourceKey, Refusal>) -> String {

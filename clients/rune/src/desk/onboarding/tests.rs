@@ -25,6 +25,18 @@ fn skills(detected: &[&str]) -> Probe<Vec<AgentSkill>> {
     )
 }
 
+/// Finishing onboarding taught the keys, so the "New here?" tip stays away;
+/// skipping it still gets the tip (`quitting_mid_way_resumes_at_the_step`).
+#[test]
+fn finishing_onboarding_skips_the_tour_tip() {
+    let mut desk = desk(Prefs::memory());
+    desk.onboarding.keep_alive = false;
+    desk.start_using();
+    desk.first_run();
+    assert!(!desk.onboarding.open);
+    assert!(desk.notice.is_none(), "no tip after onboarding");
+}
+
 #[test]
 fn quitting_mid_way_resumes_at_the_step() {
     let dir = std::env::temp_dir().join(format!("phux-rune-onb-{}", std::process::id()));
@@ -77,7 +89,7 @@ fn bringing_your_setup_shows_only_with_an_agent() {
     desk.go_to(Step::Agents);
     desk.onboarding.skills = skills(&["pi"]);
     desk.onboarding_continue();
-    assert_eq!(desk.onboarding.step, Step::Done, "no agent to do it");
+    assert_eq!(desk.onboarding.step, Step::Machines, "no agent to do it");
     desk.onboarding_back();
     assert_eq!(desk.onboarding.step, Step::Agents);
     desk.onboarding.skills = skills(&["codex"]);
@@ -88,10 +100,7 @@ fn bringing_your_setup_shows_only_with_an_agent() {
 
 #[test]
 fn keys_continue_step_back_and_skip() {
-    let key = |key| KeyEvent {
-        key,
-        mods: rune::Mods::default(),
-    };
+    let key = |key| crate::keys::plain(key);
     let mut desk = desk(Prefs::memory());
     desk.open_onboarding();
     assert!(desk.onboarding_key(&key(Key::Enter)));
@@ -171,4 +180,25 @@ fn a_missing_command_reads_as_update_phux() {
     assert_eq!(probe, Probe::Unsupported);
     let probe: Probe<()> = Probe::from(Err("timed out".into()));
     assert_eq!(probe, Probe::Failed("timed out".into()));
+}
+
+#[test]
+fn starting_an_agent_ends_onboarding_after_its_skill() {
+    let mut desk = desk(Prefs::memory());
+    desk.open_onboarding();
+    desk.go_to(Step::Done);
+    desk.onboarding.skills = skills(&["claude"]);
+    desk.start_agent("claude");
+    assert!(!desk.onboarding.open, "onboarding is over");
+    assert_eq!(desk.onboarding.starting.as_deref(), Some("claude"));
+    assert!(desk.onboarding.installing, "the skill goes in first");
+
+    let mut installed = skills(&["claude"]);
+    if let Probe::Ready(s) = &mut installed {
+        s[0].skill = Some("installed".into());
+    }
+    desk.onboarding.skills = installed;
+    desk.onboarding.starting = None;
+    desk.start_agent("claude");
+    assert_eq!(desk.onboarding.starting, None, "in place: it starts now");
 }

@@ -15,6 +15,7 @@ use crate::commands::sh_quote;
 
 mod adoption;
 mod linger;
+mod live_unit;
 mod reconcile;
 pub(crate) mod supervision;
 mod unit;
@@ -28,6 +29,7 @@ use adoption::{
     probe_unit, supervision_state, unit_is_running, unit_supervises,
 };
 pub(crate) use linger::probe_linger;
+pub(crate) use live_unit::listeners_on_resume;
 
 pub(crate) use reconcile::{Reconcile, reconcile_unit};
 use reconcile::{plist_container_end, settled};
@@ -243,24 +245,7 @@ fn reconcile_wrapper(quiet: bool) {
 /// The `PHUX_SOCKET` a unit pins, if any. Read from the unit because the
 /// question is whether the server *this unit* supervises is alive.
 fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
-    match manager {
-        Manager::Launchd => {
-            let key = body
-                .lines()
-                .position(|line| line.trim() == "<key>PHUX_SOCKET</key>")?;
-            let value = body.lines().nth(key + 1)?.trim();
-            let inner = value.strip_prefix("<string>")?.strip_suffix("</string>")?;
-            Some(PathBuf::from(xml_unescape(inner)))
-        }
-        Manager::Systemd => {
-            let value = body.lines().find_map(|line| {
-                line.trim()
-                    .strip_prefix("Environment=\"PHUX_SOCKET=")?
-                    .strip_suffix('"')
-            })?;
-            Some(PathBuf::from(systemd_unquote(value)))
-        }
-    }
+    live_unit::unit_env(manager, body, "PHUX_SOCKET").map(PathBuf::from)
 }
 
 // In-place `--hub`: `phux host add --role satellite` patches `--hub` into the
@@ -1025,7 +1010,7 @@ pub(crate) fn run_install(
     }
 
     if incumbent_live && already_supervised(manager, &plan) {
-        return ExitCode::SUCCESS;
+        return live_unit::refresh_running(manager, &plan);
     }
 
     let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
@@ -1146,10 +1131,6 @@ fn remote_entry_point(
 /// Write `[policy] mode = "paired"` into `config`, creating the file and
 /// the `[policy]` table when they are missing. Existing keys and comments
 /// stay (`phux_config::settings::write_edit`).
-///
-/// `phux service install` calls this when a unit opens a remote entry
-/// point, which is how `phux host add` settles the mode. `phux pair
-/// --enable` uses the same write.
 pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
     phux_config::settings::write_edit(
         config,
@@ -1157,7 +1138,10 @@ pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
         phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
     )
     .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
-    Ok(())
+    // A paired server refuses to start on a state directory others can write.
+    let state = phux_server::telemetry::state_dir();
+    phux_server::owner_dir::tighten(&state)
+        .map_err(|err| format!("could not make {} owner-only: {err}", state.display()))
 }
 
 /// A unit whose server opens a remote entry point starts only under
@@ -1305,8 +1289,8 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
     report_linger_for(manager);
 }
 
-/// Write the unit file (and the wrapper, when `--restore` is on), creating
-/// the directories the init system expects.
+/// Write the unit file (and the wrapper, under `--restore`), making the
+/// directories the init system expects.
 fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
     refuse_dev_on_production_credentials(plan)?;
     if let Some(parent) = unit_path.parent() {
@@ -1314,7 +1298,7 @@ fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> R
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
     if let Some(parent) = plan.log.parent() {
-        std::fs::create_dir_all(parent)
+        phux_server::owner_dir::create(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     }
 
@@ -1755,9 +1739,8 @@ mod tests {
     use super::{
         HubEnsure, Manager, Reconcile, arm_unit, config_home_from, dry_run_text,
         ensure_hub_in_unit, ensure_hub_in_wrapper, ensure_paired_policy, home_dir_from,
-        render_launchd_plist, render_systemd_unit, render_unit, render_wrapper_script,
-        report_policy_reach_with, resolve_plan, rewrite_unit_binary, status_report,
-        unit_socket_override, unit_supervises,
+        render_launchd_plist, render_unit, render_wrapper_script, report_policy_reach_with,
+        resolve_plan, rewrite_unit_binary, status_report, unit_socket_override, unit_supervises,
     };
     use std::path::Path;
     use std::path::PathBuf;
@@ -1799,127 +1782,70 @@ mod tests {
         );
     }
 
-    /// An armed unit's not-found answer is the expected state (ADR-0088): the
-    /// report stays in the armed vocabulary and forwards no tool stderr.
+    /// The status report is phux's verdict plus the probe's stdout, never its
+    /// stderr. An armed unit's not-found answer is the expected state
+    /// (ADR-0088), not a fault; armed plus running means the hand-over
+    /// completed (login bootstrap does not clear the marker), which is the
+    /// caller's cue to sweep the stale record; neither armed nor running is
+    /// the one combination that exits non-zero.
     #[test]
-    fn an_armed_units_not_found_answer_is_translated_not_reported_as_a_fault() {
-        let report = status_report(true, || {
-            Ok(probe_output(1 << 8, "", LAUNCHCTL_NOT_FOUND_STDERR))
-        })
-        .expect("the probe ran");
-
-        assert!(
-            !report.running,
-            "an armed unit is deliberately unloaded, so the probe fails — and the caller's \
-             `armed || running` verdict still exits zero, while `armed && running` leaves the \
-             marker in place"
-        );
-        assert!(report.text.contains("state armed"), "{}", report.text);
-        assert!(
-            report.text.contains(super::ARMED_SUPERVISION_EXPLANATION),
-            "the armed paragraph is the shared explanation verbatim: {}",
-            report.text
-        );
-        assert!(
-            report.text.contains("expected state, not a fault"),
-            "the not-found answer must be translated into the armed vocabulary: {}",
-            report.text
-        );
-        for leaked in [
-            "Bad request",
-            "Could not find service",
-            "installed, but the init system",
-        ] {
-            assert!(
-                !report.text.contains(leaked),
-                "leaked into the armed report: {leaked:?}\n{}",
-                report.text
-            );
-        }
-    }
-
-    /// A not-running unit gets phux's verdict plus the probe's stdout, never its
-    /// stderr.
-    #[test]
-    fn a_failed_probe_is_rendered_in_phux_vocabulary_not_the_tools_stderr() {
-        let report = status_report(false, || {
-            Ok(probe_output(
+    fn status_reports_speak_phux_vocabulary_and_drop_the_tools_stderr() {
+        let armed_text = super::ARMED_SUPERVISION_EXPLANATION;
+        for (armed, raw, stdout, stderr, running, present, absent) in [
+            (
+                true,
+                1 << 8,
+                "",
+                LAUNCHCTL_NOT_FOUND_STDERR,
+                false,
+                &["state armed", armed_text, "expected state, not a fault"][..],
+                &[
+                    "Bad request",
+                    "Could not find service",
+                    "installed, but the init system",
+                ][..],
+            ),
+            (
+                false,
                 3 << 8,
                 "Active: inactive (dead)\n",
                 LAUNCHCTL_NOT_FOUND_STDERR,
-            ))
-        })
-        .expect("the probe ran");
-
-        assert!(
-            !report.running,
-            "neither armed nor running is the one combination that exits non-zero"
-        );
-        assert!(
-            report
-                .text
-                .contains("installed, but the init system is not running it"),
-            "{}",
-            report.text
-        );
-        assert!(
-            report.text.contains("Active: inactive (dead)"),
-            "the tool's stdout is forwarded — it is the report proper: {}",
-            report.text
-        );
-        assert!(
-            !report.text.contains("Bad request"),
-            "the tool's stderr leaked: {}",
-            report.text
-        );
-    }
-
-    /// Armed plus running means the hand-over completed (login bootstrap does not
-    /// clear the marker).
-    #[test]
-    fn an_armed_marker_over_a_running_job_reports_completion_and_asks_for_a_sweep() {
-        let report = status_report(true, || {
-            Ok(probe_output(
+                false,
+                &[
+                    "installed, but the init system is not running it",
+                    "Active: inactive (dead)",
+                ],
+                &["Bad request"],
+            ),
+            (
+                true,
                 0,
                 "com.phux.server = {\n\tstate = running\n}\n",
                 "",
-            ))
-        })
-        .expect("the probe ran");
-
-        assert!(
-            report.running,
-            "a running job under an armed marker is `armed && running` — the caller's cue to \
-             sweep the stale record"
-        );
-        assert!(report.text.contains("has completed"), "{}", report.text);
-        assert!(
-            report.text.contains("state = running"),
-            "the init system's report is forwarded: {}",
-            report.text
-        );
-        assert!(
-            !report.text.contains("state armed"),
-            "a completed hand-over must not still read as armed: {}",
-            report.text
-        );
-    }
-
-    /// A running job's report is forwarded from stdout without its stderr.
-    #[test]
-    fn a_running_jobs_report_is_forwarded_without_its_stderr() {
-        let report = status_report(false, || {
-            Ok(probe_output(
+                true,
+                &["has completed", "state = running"],
+                &["state armed"],
+            ),
+            (
+                false,
                 0,
                 "com.phux.server = {\n}\n",
                 "noise on stderr\n",
-            ))
-        })
-        .expect("the probe ran");
-
-        assert!(report.running);
-        assert!(report.text.contains("com.phux.server"), "{}", report.text);
-        assert!(!report.text.contains("noise on stderr"), "{}", report.text);
+                true,
+                &["com.phux.server"],
+                &["noise on stderr"],
+            ),
+        ] {
+            let report =
+                status_report(armed, || Ok(probe_output(raw, stdout, stderr))).expect("probe ran");
+            assert_eq!(report.running, running, "{}", report.text);
+            for needle in present {
+                assert!(report.text.contains(needle), "{needle}: {}", report.text);
+            }
+            for needle in absent {
+                assert!(!report.text.contains(needle), "{needle}: {}", report.text);
+            }
+        }
     }
 
     /// A unit with a remote listener writes `paired` where no mode is set,
@@ -1992,25 +1918,24 @@ mod tests {
     /// overwrite the production unit file.
     #[test]
     fn a_non_default_profile_writes_its_unit_beside_the_default_one() {
-        let default_launchd = Manager::Launchd
-            .unit_path(None)
-            .expect("HOME is set in this test process");
-        let dev_launchd = Manager::Launchd
-            .unit_path(Some("dev"))
-            .expect("HOME is set in this test process");
-        assert!(default_launchd.ends_with("Library/LaunchAgents/com.phux.server.plist"));
-        assert!(dev_launchd.ends_with("com.phux.server.dev.plist"));
-        assert_eq!(default_launchd.parent(), dev_launchd.parent());
-
-        let default_systemd = Manager::Systemd
-            .unit_path(None)
-            .expect("HOME is set in this test process");
-        let dev_systemd = Manager::Systemd
-            .unit_path(Some("dev"))
-            .expect("HOME is set in this test process");
-        assert!(default_systemd.ends_with("systemd/user/phux.service"));
-        assert!(dev_systemd.ends_with("phux-dev.service"));
-        assert_eq!(default_systemd.parent(), dev_systemd.parent());
+        for (manager, default_name, dev_name) in [
+            (
+                Manager::Launchd,
+                "Library/LaunchAgents/com.phux.server.plist",
+                "com.phux.server.dev.plist",
+            ),
+            (
+                Manager::Systemd,
+                "systemd/user/phux.service",
+                "phux-dev.service",
+            ),
+        ] {
+            let default = manager.unit_path(None).expect("HOME is set");
+            let dev = manager.unit_path(Some("dev")).expect("HOME is set");
+            assert!(default.ends_with(default_name), "{}", default.display());
+            assert!(dev.ends_with(dev_name), "{}", dev.display());
+            assert_eq!(default.parent(), dev.parent());
+        }
     }
 
     /// Tests are dev builds: the production unit is refused to every writer,
@@ -2068,23 +1993,17 @@ mod tests {
     /// refused rather than resolved relative to the cwd.
     #[test]
     fn unit_path_errors_instead_of_writing_into_the_cwd_when_home_is_unset() {
-        let home_err = home_dir_from(None)
-            .expect_err("HOME-unset must be refused, not silently empty-then-relative");
-        assert!(home_err.contains("HOME"), "got {home_err}");
-
-        let config_err = config_home_from(None, None)
-            .expect_err("HOME-and-XDG_CONFIG_HOME-unset must be refused");
-        assert!(config_err.contains("HOME"), "got {config_err}");
-
-        // XDG_CONFIG_HOME alone is enough even with HOME unset.
-        let config = config_home_from(Some("/xdg-config".into()), None)
-            .expect("XDG_CONFIG_HOME alone must be sufficient");
-        assert_eq!(config, PathBuf::from("/xdg-config"));
-
         // An empty (but present) HOME is exactly as absent as an unset one.
-        let empty_home_err = home_dir_from(Some(std::ffi::OsString::new()))
-            .expect_err("an empty HOME must be refused the same as an unset one");
-        assert!(empty_home_err.contains("HOME"), "got {empty_home_err}");
+        for refused in [
+            home_dir_from(None),
+            home_dir_from(Some(std::ffi::OsString::new())),
+            config_home_from(None, None),
+        ] {
+            assert!(refused.expect_err("refused").contains("HOME"));
+        }
+        // XDG_CONFIG_HOME alone is enough even with HOME unset.
+        let config = config_home_from(Some("/xdg-config".into()), None);
+        assert_eq!(config, Ok(PathBuf::from("/xdg-config")));
     }
 
     #[test]
@@ -2198,36 +2117,17 @@ mod tests {
     /// escaping.
     #[test]
     fn the_socket_probed_is_the_one_the_unit_pins() {
-        assert_eq!(
-            unit_socket_override(Manager::Launchd, LEGACY_PLIST),
-            Some(PathBuf::from("/tmp/custom/phux.sock"))
-        );
-        assert_eq!(
-            unit_socket_override(Manager::Systemd, LEGACY_UNIT),
-            Some(PathBuf::from("/tmp/custom/phux.sock"))
-        );
-
-        let mut plain = plan();
-        plain.socket = None;
-        assert_eq!(
-            unit_socket_override(Manager::Launchd, &render_launchd_plist(&plain)),
-            None
-        );
-        assert_eq!(
-            unit_socket_override(Manager::Systemd, &render_systemd_unit(&plain)),
-            None
-        );
-
-        let mut awkward = plan();
-        awkward.socket = Some(PathBuf::from("/tmp/100%/$HOME/a&b/phux.sock"));
-        assert_eq!(
-            unit_socket_override(Manager::Launchd, &render_launchd_plist(&awkward)),
-            awkward.socket
-        );
-        assert_eq!(
-            unit_socket_override(Manager::Systemd, &render_systemd_unit(&awkward)),
-            awkward.socket
-        );
+        let custom = Some(PathBuf::from("/tmp/custom/phux.sock"));
+        assert_eq!(unit_socket_override(Manager::Launchd, LEGACY_PLIST), custom);
+        assert_eq!(unit_socket_override(Manager::Systemd, LEGACY_UNIT), custom);
+        for socket in [None, Some(PathBuf::from("/tmp/100%/$HOME/a&b/phux.sock"))] {
+            let mut plan = plan();
+            plan.socket.clone_from(&socket);
+            for manager in [Manager::Launchd, Manager::Systemd] {
+                let body = render_unit(manager, &plan);
+                assert_eq!(unit_socket_override(manager, &body), socket, "{manager:?}");
+            }
+        }
     }
 
     /// The installer's ambient `PATH` is never frozen into the unit; the init
@@ -2246,14 +2146,12 @@ mod tests {
             "the generated unit's environment must never carry a PATH key at all — \
              the init system supplies its own"
         );
-        assert!(
-            !render_launchd_plist(&plan).contains(&ambient_path),
-            "launchd plist captured the process's ambient PATH"
-        );
-        assert!(
-            !render_systemd_unit(&plan).contains(&ambient_path),
-            "systemd unit captured the process's ambient PATH"
-        );
+        for manager in [Manager::Launchd, Manager::Systemd] {
+            assert!(
+                !render_unit(manager, &plan).contains(&ambient_path),
+                "{manager:?}"
+            );
+        }
     }
 
     /// Only the unit that owns this socket completes a pending adoption

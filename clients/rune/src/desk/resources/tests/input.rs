@@ -3,16 +3,15 @@
 
 use super::*;
 
-#[test]
-fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
-    use phux_protocol::wire::frame::{ControlClass, DocumentInput, DocumentKey, ErrorCode};
+fn controlled_fixture() -> (Arc<Client>, Runtime<Desk>) {
+    use phux_protocol::wire::frame::ControlClass;
     let (client, mut rt) = fixture(
         &[record(1, ResourceKind::PixelSurface)],
         &doc(LayoutNode::Leaf(id(1))),
     );
     publish(&client, 1, ResourceKind::PixelSurface, PNG);
     step(&mut rt);
-    let Body::Surface(image) = &rt.state.resources.entries[&id(1)].body else {
+    let Body::Surface(image) = &rt.state.connection.resources.entries[&id(1)].body else {
         panic!("decoding the surface");
     };
     assert_eq!(image.wait(), Ok([4, 2]));
@@ -34,15 +33,18 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
         ])
         .with_resources(vec![surface]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, request, CommandValue::State(snapshot));
     step(&mut rt);
     assert_eq!(rt.state.document_input_frame(&id(1)), Some([4, 2]));
+    (client, rt)
+}
+
+#[test]
+fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
+    use phux_protocol::wire::frame::{DocumentInput, DocumentKey, ErrorCode};
+    let (client, mut rt) = controlled_fixture();
     outbound(&client);
+    assert_touch_ownership(&client, &mut rt);
     let board = rune::clipboard::memory();
     board.set_text("from this machine");
     rt.use_clipboard(&board);
@@ -102,27 +104,23 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
     // The host's clipboard lands on this machine's.
     let (copy, _) = sent[5].clone();
     let (paste, _) = sent[6].clone();
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: copy,
-            result: CommandResult::OkWith(CommandValue::Bytes(b"from the host".to_vec())),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        &client,
+        copy,
+        CommandValue::Bytes(b"from the host".to_vec()),
+    );
     step(&mut rt);
     assert_eq!(
         board.text().as_deref().map(String::as_str),
         Some("from the host")
     );
     // A paste the host could not press says why.
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: paste,
-            result: CommandResult::Error {
-                code: ErrorCode::Unavailable,
-                message: "nothing here can press the paste chord".into(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        paste,
+        ErrorCode::Unavailable,
+        "nothing here can press the paste chord",
+    );
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the paste failure is said");
     assert!(
@@ -131,24 +129,18 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         notice.text
     );
     for (request_id, _) in sent.into_iter().filter(|(id, _)| *id != copy) {
-        client
-            .feed(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::NotProducer,
-                    message: "the surface's producer is not connected".into(),
-                },
-            })
-            .unwrap();
+        crate::wire_fixture::refuse(
+            &client,
+            request_id,
+            ErrorCode::NotProducer,
+            "the surface's producer is not connected",
+        );
     }
     step(&mut rt);
     let notice = rt.state.notice.as_ref().expect("the refusal is said");
     assert!(notice.text.contains("producer is not connected"));
     assert_eq!(rt.state.document_input_frame(&id(1)), None, "view only now");
-    rt.key(KeyEvent {
-        key: Key::Text("x".into()),
-        mods: Mods::default(),
-    });
+    rt.key(crate::keys::plain(Key::Text("x".into())));
     step(&mut rt);
     let sent = outbound(&client);
     assert!(
@@ -161,4 +153,96 @@ fn a_controlled_surface_takes_a_click_and_keys_until_refused() {
         )),
         "a view-only pane sends nothing"
     );
+}
+
+#[test]
+fn a_delayed_document_paste_respects_new_surface_and_runtime_owners() {
+    use phux_protocol::wire::frame::DocumentInput;
+    for replace in [false, true] {
+        let (old, mut rt) = controlled_fixture();
+        let (new, mut next) = controlled_fixture();
+        let board = rune::clipboard::memory();
+        board.set_text("private clipboard text");
+        rt.use_clipboard(&board);
+        outbound(&old);
+        outbound(&new);
+        rt.update(|desk, tx| {
+            assert!(desk.paste_into_document(tx));
+            if replace {
+                desk.replace_connection(crate::desk::link::Replacement::Retry);
+                // The next real client has the same numeric resource handle
+                // and a fully decoded, admitted surface. It is not our owner.
+                std::mem::swap(&mut desk.connection, &mut next.state.connection);
+            } else {
+                desk.toggle_settings();
+            }
+        });
+        rt.frame(0.0);
+        for client in [&old, &new] {
+            assert!(
+                outbound(client).iter().all(|frame| !matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: Command::SendDocumentInput {
+                            intent: DocumentInput::Paste { .. },
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "a queued paste cannot address a hidden or replacement surface"
+            );
+        }
+    }
+}
+
+fn assert_touch_ownership(client: &Client, rt: &mut Runtime<Desk>) {
+    use phux_protocol::wire::frame::DocumentInput;
+    use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
+
+    let [x, y] = rt.state.connection.origins[&id(1)];
+    let [w, h] = rt.state.connection.areas[&id(1)];
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    for (lift, dx) in [
+        (Cancelled, 0.0),
+        (Cancelled, 40.0),
+        (Ended, 0.0),
+        (Ended, 40.0),
+    ] {
+        rt.touch(1, Started, x, y, 10.0);
+        rt.frame(0.65);
+        assert!(
+            document_intents(client).is_empty(),
+            "a hold is not a remote click"
+        );
+        rt.touch(1, Moved, x + dx, y, 10.7);
+        rt.frame(0.0);
+        rt.touch(1, lift, x + dx, y, 10.8);
+        rt.frame(0.0);
+        let sent = document_intents(client);
+        if lift == Cancelled {
+            assert!(
+                sent.is_empty(),
+                "a cancelled hold must never act on the host"
+            );
+        } else if dx == 0.0 {
+            assert!(matches!(sent.as_slice(), [DocumentInput::Click { .. }]));
+        } else {
+            assert!(matches!(sent.as_slice(), [DocumentInput::Drag { .. }]));
+        }
+        assert!(!rt.touching());
+    }
+}
+
+fn document_intents(client: &Client) -> Vec<phux_protocol::wire::frame::DocumentInput> {
+    outbound(client)
+        .into_iter()
+        .filter_map(|frame| match frame {
+            FrameKind::Command {
+                command: Command::SendDocumentInput { intent, .. },
+                ..
+            } => Some(intent),
+            _ => None,
+        })
+        .collect()
 }

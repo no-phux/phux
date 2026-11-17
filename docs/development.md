@@ -43,15 +43,16 @@ Nix provides it.
 ## libghostty-vt
 
 The terminal engine is Ghostty's C library. What it does in a running phux,
-and what it does not, is [libghostty in phux](./libghostty.md). The 1.0
-migration pin builds from immutable source with Zig 0.17.1, cached outside
-any `target/` directory. Older compilers are incompatible with its build API.
-No prebuilt release is required to use this pin.
-
-When verified prebuilt archives exist for a pin and target, the build script
-can download a checksummed `libghostty-vt.a` instead. Other targets,
+and what it does not, is [libghostty in phux](./libghostty.md). On Linux
+and macOS (arm64 and x86_64) the build script downloads a checksummed
+prebuilt `libghostty-vt.a` when the pinned engine declares one, so those builds
+need no Zig. The current API-boundary pin is source-only. Each
+pin's archives are published by the `prebuilt` workflow of
+[phall1/libghostty-rs](https://github.com/phall1/libghostty-rs) with Zig
+0.17.1. Other targets,
 `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline operation, and failed downloads
-use the source path. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
+build from immutable source with Zig 0.17.1, cached outside any `target/`
+directory. `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout;
 `LIBGHOSTTY_VT_SYS_LIB_DIR` links one you built. `just ghostty-pin-check`
 validates the immutable engine source and matching Zig requirement, then
 reports prebuilt versus source-only target coverage. It does not replace
@@ -281,40 +282,9 @@ server or an explicit `--socket` under a temp directory.
 
 ## CI
 
-One classifier, `bun tools/main.ts detect-changes` over
-[`tools/src/routing/routes.ts`](../tools/src/routing/routes.ts), decides
-which lanes a change can affect. `ci.yml` owns all these lanes. Unknown
-paths fail closed and run everything; handwritten docs normally run only
-guards. Docs read by tests, including `docs/agents.md` and generated
-references, also select their Rust consumers. A library change runs the
-tests of its dependents. The required `ci`
-aggregate rejects a failed or cancelled lane. `just tools-check` tests the
-routes.
-
-Release metadata alone runs guards without compile lanes. The classifier
-compares both full documents: root workspace and lock versions, release
-manifest versions, skill version lines, changelogs, and top-level `version`
-in the five integration packages listed in `release-please-config.json`.
-Any other package field, missing side, unlisted path, or workspace bump
-without all its locks keeps normal routing.
-
-`main` pushes and merge queue groups (`merge_group`) run main policy: the
-full Rust pool and every lane the diff needs. A `main` push whose tree a
-pull request or merge group already validated with the same lanes reuses
-that receipt (`tools/src/routing/receipt.ts`). With the repository variable
-`PHUX_MERGE_QUEUE=true`, a pull request that reaches Rune only through a
-root crate in its Cargo closure skips `rune / ios-native-simulator`. Its
-merge group still runs it, and its receipt never covers a `main` push.
-
-The test lanes compile once (`just test-archive`) and run the unit and e2e
-shards from that nextest archive. Pull requests restore caches and never
-save them; `main` pushes save one entry per lane under a 10 GB repository
-budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
-Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image.
-
-Workflow files carry their own comments; `.github/workflows/` is the
-reference. `just guards` lints them.
+[CI](./ci.md) covers lane routing, validation receipts, concurrency and the
+runner/cache budget. `.github/workflows/` is the executable reference;
+`just guards` lints it and `just tools-check` tests its contracts.
 
 ## Performance
 

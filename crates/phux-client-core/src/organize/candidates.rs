@@ -12,7 +12,7 @@ use super::facts::{PaneFacts, Scope, SessionFacts, insert_some};
 use super::plan::PlannedRename;
 
 /// Most options one Choice question may carry (the API allows 255).
-pub const MAX_OPTIONS: usize = 255;
+pub(crate) const MAX_OPTIONS: usize = 255;
 
 /// Member summaries shown per session in a Choice option.
 const MEMBERS_PER_OPTION: usize = 6;
@@ -95,7 +95,7 @@ pub struct Candidates {
 impl Candidates {
     /// The candidate whose option text is `option`.
     #[must_use]
-    pub fn by_option(&self, option: &str) -> Option<&Candidate> {
+    pub(crate) fn by_option(&self, option: &str) -> Option<&Candidate> {
         self.options
             .iter()
             .find(|candidate| candidate.option == option)
@@ -360,7 +360,7 @@ fn unique_name(base: &str, taken: &HashSet<String>) -> String {
 
 /// A name phux handed out rather than a person chose: a bare integer.
 #[must_use]
-pub fn generated_name(name: &str) -> bool {
+pub(crate) fn generated_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
 }
 

@@ -23,10 +23,12 @@ mod command_tasks;
 pub mod commands;
 mod committed_close;
 pub mod connections;
+mod credentials;
 pub mod delegation;
 mod directory;
 mod download;
 mod ephemeral_listener;
+pub(crate) mod forward;
 pub mod idempotent_create;
 pub mod keyed_ops;
 pub mod operation_dedupe;
@@ -47,6 +49,7 @@ pub(crate) mod session_attach;
 pub(crate) use session_attach::prepare::prepare_attach;
 mod upgrade;
 mod whoami;
+pub(crate) use whoami::route_for;
 
 #[cfg(test)]
 mod approval_matrix;

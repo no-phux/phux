@@ -84,23 +84,7 @@ fn paint(p: &mut StatusBarPainter, inset: BarInset, cols: u16, rows: u16, sessio
 }
 
 /// Strip CSI escapes (styled cells interleave SGR between glyphs).
-fn strip_csi(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next();
-            for n in chars.by_ref() {
-                if ('@'..='~').contains(&n) {
-                    break;
-                }
-            }
-        } else if c != '\x1b' {
-            out.push(c);
-        }
-    }
-    out
-}
+use crate::test_util::strip_csi;
 
 fn visible(p: &mut StatusBarPainter, cols: u16, rows: u16, session: &str) -> String {
     strip_csi(&paint(p, BarInset::NONE, cols, rows, session))

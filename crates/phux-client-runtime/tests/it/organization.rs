@@ -23,6 +23,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
+mod empty_spawn;
 mod hello;
 use hello::hello;
 

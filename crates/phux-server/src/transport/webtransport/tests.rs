@@ -77,27 +77,12 @@ async fn under_paired_only_an_inner_session_with_an_enrolled_certificate_is_admi
     use std::os::unix::fs::PermissionsExt as _;
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let paths = crate::workload::WorkloadPaths {
-        ca_cert: dir.path().join("workload-ca.pem"),
-        ca_key: dir.path().join("workload-ca.key"),
-        registry: dir.path().join("workload-keys"),
-    };
+    let paths = crate::workload::WorkloadPaths::in_dir(dir.path());
     let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
     super::super::tls::ensure_server_identity(&cert, &key, &[], &paths).unwrap();
     let client_key = rcgen::KeyPair::generate().unwrap();
-    let csr = rcgen::CertificateParams::new(Vec::<String>::new())
-        .unwrap()
-        .serialize_request(&client_key)
-        .unwrap();
-    let material =
-        crate::workload::ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
-    let expires = chrono::Utc::now().timestamp() + 3600;
-    let prepared = crate::workload::prepare_enrollment(&paths, &material, expires).unwrap();
-    let enrolled = prepared
-        .commit(&paths.registry, vec!["*@global".to_owned()], expires)
-        .unwrap();
     let (client_cert, client_key_path) = (dir.path().join("c.pem"), dir.path().join("c.key"));
-    std::fs::write(&client_cert, prepared.issued_chain_pem().unwrap()).unwrap();
+    let enrolled = paths.enroll_test_key(&client_key, &client_cert);
     std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
     std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 

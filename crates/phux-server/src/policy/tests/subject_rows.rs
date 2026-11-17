@@ -8,12 +8,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     let child = agent_child(world);
     let native = native_samples(world, &child);
     let t = world.alpha.clone();
-    let beta_group = world
-        .state
-        .find_session_by_name("beta")
-        .and_then(|session| world.state.idspace.session_wire(session))
-        .unwrap()
-        .get();
+    let beta_group = session_group_id(world, "beta");
     let s = |verbs: &str, selector: &str| format!("{verbs}@{selector}");
     let ta = format!("terminal:{}", local_id(&t));
     let tb = format!("terminal:{}", local_id(&world.beta));
@@ -583,5 +578,6 @@ fn rows(world: &mut World) -> Vec<Row> {
     ]);
     rows.extend(mirror_rows());
     rows.extend(child_spawn_rows(world));
+    rows.extend(credential_rows());
     rows
 }

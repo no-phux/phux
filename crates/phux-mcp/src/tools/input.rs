@@ -55,14 +55,8 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     )?;
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
     let command = crate::cli_adapter::bounded_string(args, "command", true)?.unwrap_or_default();
-    let timeout_secs = args
-        .get("timeout_secs")
-        .map_or(Ok(RUN_DEFAULT_TIMEOUT_SECS), |value| {
-            value
-                .as_u64()
-                .filter(|value| (1..=3600).contains(value))
-                .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
-        })?;
+    let timeout_secs =
+        crate::tools::bounded_timeout_secs(args, Some(RUN_DEFAULT_TIMEOUT_SECS))?;
     let mut argv = vec![
         "run".to_owned(),
         "--json".to_owned(),

@@ -1,8 +1,6 @@
 //! Unit tests for the live revocation judgement (`docs/remote.md#managing-credentials`).
 //! The wire-level conformance sweep lives in `runtime::revocation_conformance`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
-
 use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 
 use super::{contains_clause, covers};

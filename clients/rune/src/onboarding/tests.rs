@@ -14,10 +14,11 @@ fn shims_name_only_the_agents_now_launching_in_phux() {
 
 #[test]
 fn bringing_your_setup_is_skipped_without_an_agent() {
-    assert_eq!(Step::Agents.next(false), Some(Step::Done));
-    assert_eq!(Step::Done.back(false), Some(Step::Agents));
+    assert_eq!(Step::Agents.next(false), Some(Step::Machines));
+    assert_eq!(Step::Machines.back(false), Some(Step::Agents));
     assert_eq!(Step::Agents.next(true), Some(Step::Migrate));
-    assert_eq!(Step::Done.back(true), Some(Step::Migrate));
+    assert_eq!(Step::Machines.back(true), Some(Step::Migrate));
+    assert_eq!(Step::Machines.next(true), Some(Step::Done));
     assert_eq!(Step::Welcome.back(true), None);
     assert_eq!(Step::Done.next(true), None);
     for step in Step::ALL {
@@ -183,4 +184,38 @@ fn a_session_is_named_after_the_folder() {
     assert_eq!(session_name(Path::new("/Users/james"), &taken), "james-2");
     assert_eq!(session_name(Path::new("/home/a b@c"), &[]), "a-b-c");
     assert_eq!(session_name(Path::new("/"), &[]), "home");
+}
+
+#[test]
+fn only_a_computer_with_permissions_promises_them() {
+    for permissions in [true, false] {
+        let p = promise(permissions);
+        for words in [p.welcome, p.agents_title, p.agents_lead, p.get_started] {
+            let promises = words.contains("permission") || words.contains("access");
+            assert_eq!(promises, permissions, "{words}");
+        }
+    }
+}
+
+#[test]
+fn the_last_step_starts_agents_found_here_through_the_login_shell() {
+    let skill = |agent: &str, detected| AgentSkill {
+        agent: agent.to_owned(),
+        detected,
+        ..AgentSkill::default()
+    };
+    let found = [
+        skill("pi", true),
+        skill("codex", false),
+        skill("claude", true),
+    ];
+    assert_eq!(starters(&found), ["claude", "pi"], "tile order, found only");
+    let argv = agent_argv("echo started");
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("SHELL", "/bin/sh")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("started"));
 }

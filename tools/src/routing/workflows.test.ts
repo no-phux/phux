@@ -1,11 +1,13 @@
 // ci.yml runs the plan the way plan.ts promises: one job per lane, gated on
 // the plan's own output, running the recipes `just check` runs locally.
+// The web lane is the exception: two jobs. web-lane.test.ts checks that split.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { repoPath } from "../lib/repo.ts";
 import { capture } from "../lib/process.ts";
-import { list, str, table } from "../lib/value.ts";
+import { list, str, table, type Table } from "../lib/value.ts";
 import {
+  action,
   job,
   jobs,
   needs,
@@ -20,6 +22,16 @@ import { classifyEvent } from "./detect.ts";
 import { LANE_RECIPES, LANES, plan, planOutputs } from "./plan.ts";
 
 const CI = workflow("ci.yml");
+
+/** A job's scripts, including one level of local composite action. */
+function executed(lane: Table): string {
+  return steps(lane)
+    .flatMap((step) => {
+      const local = /^\.\/\.github\/actions\/([^/@]+)$/.exec(uses(step))?.[1];
+      return local === undefined ? [run(step)] : steps(action(local)).map(run);
+    })
+    .join("\n");
+}
 const FFI = ["ffi-xcframework.yml", "ffi-android.yml"];
 const AFTER_LANES = ["ci", "content", "prune-build-cache"];
 
@@ -81,16 +93,20 @@ test("plan declares every output the planner writes, and jobs read only those", 
   expect(read.filter((key) => !declared.includes(key ?? ""))).toEqual([]);
 });
 
-test("each lane is one job gated on its plan output that runs the lane's recipes", () => {
+test("each lane's jobs are gated on its plan output and together run its recipes", () => {
   for (const lane of LANES) {
     const gated = Object.entries(jobs(CI)).filter(([, lane_job]) =>
       (str(lane_job["if"]) ?? "").includes(`needs.plan.outputs.${lane} == 'true'`),
     );
-    const owner = gated.find(([id]) => id !== "test-build");
-    expect([lane, owner === undefined]).toEqual([lane, false]);
-    const called = uses(owner?.[1] ?? {}).replace("./.github/workflows/", "");
-    const laneJobs = called === "" ? [owner?.[1] ?? {}] : Object.values(jobs(workflow(called)));
-    const commands = laneJobs.flatMap(steps).map(run).join("\n");
+    const owners = gated.filter(([id]) => id !== "test-build");
+    expect([lane, owners.length]).toEqual([lane, lane === "web" ? 2 : 1]);
+    const commands = owners
+      .flatMap(([, laneJob]) => {
+        const called = uses(laneJob).replace("./.github/workflows/", "");
+        const laneJobs = called === "" ? [laneJob] : Object.values(jobs(workflow(called)));
+        return laneJobs.map(executed);
+      })
+      .join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);
@@ -108,7 +124,9 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
   const aggregate = job(CI, "ci");
   const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER_LANES.includes(id));
   expect(needs(aggregate).toSorted()).toEqual(lanes.toSorted());
-  const script = run(steps(aggregate)[0] ?? {});
+  const script = run(
+    steps(aggregate).find((step) => run(step).includes("scripts/ci/ci-aggregate.sh")) ?? {},
+  );
   const baseline = Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }]));
   baseline["plan"] = { result: "success" };
   for (const [id, result, code] of [
@@ -119,10 +137,13 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
     ["guards", "failure", 1],
     ["plan", "skipped", 1],
     ["plan", "failure", 1],
+    ["docs-catalog", "skipped", 0],
+    ["docs-catalog", "failure", 1],
   ] as const) {
     const results = JSON.stringify({ ...baseline, [id]: { result } });
     const exit = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
-      env: { ...process.env, RESULTS: results },
+      cwd: repoPath("."),
+      env: { ...process.env, RESULTS: results, EVENT_NAME: "pull_request" },
       stdout: "ignore",
     }).exitCode;
     expect([id, result, exit]).toEqual([id, result, code]);
@@ -130,7 +151,13 @@ test("the ci aggregate needs every lane and accepts only success or a skip", () 
 });
 
 test("pull requests and merge groups write receipts; content publishes after a green push", () => {
-  for (const step of steps(job(CI, "ci")).slice(1)) {
+  const ciSteps = steps(job(CI, "ci"));
+  const gateAt = ciSteps.findIndex((step) => run(step).includes("scripts/ci/ci-aggregate.sh"));
+  expect(gateAt).toBeGreaterThan(0);
+  expect(ciSteps.slice(0, gateAt).some((step) => uses(step).startsWith("actions/checkout@"))).toBe(
+    true,
+  );
+  for (const step of ciSteps.slice(gateAt + 1)) {
     expect(str(step["if"])).toBe(
       "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
     );
@@ -167,23 +194,69 @@ test("the merge queue gets both required checks", () => {
   expect(lint).toContain("github.event.merge_group.head_sha");
 });
 
-test("the Rune lane's iOS job follows the plan, gated on the merge queue variable", () => {
+test("ci runs Rune's Linux hosts, and rune-macos owns the Apple legs", () => {
   const rune = job(CI, "rune");
-  expect(withInput(rune, "ios")).toBe("${{ needs.plan.outputs.rune_ios == 'true' }}");
-  const planStep = steps(job(CI, "plan")).find((step) => run(step).includes("ci-plan"));
-  expect(table(planStep?.["env"])["PHUX_MERGE_QUEUE"]).toBe("${{ vars.PHUX_MERGE_QUEUE }}");
-  const build = workflow("rune-build.yml");
-  const input = table(table(table(table(build["on"])["workflow_call"])["inputs"])["ios"]);
+  expect(withInput(rune, "hosts")).toBe("linux");
+  expect(withInput(rune, "ios")).toBe(false);
+  expect(workflowText("ci.yml")).not.toContain("rune_ios");
+  const mac = workflow("rune-macos.yml");
+  const build = job(mac, "build");
+  expect(withInput(build, "hosts")).toBe("macos");
+  expect(withInput(build, "ios")).toBe("${{ needs.plan.outputs.ios == 'true' }}");
+  expect(str(build["if"])).toContain("github.event_name != 'pull_request'");
+  expect(str(job(mac, "rune-macos")["name"])).toBe("rune-macos");
+  expect(steps(job(mac, "plan")).map(run).join("\n")).toContain("rune-macos-plan");
+  expect(uses(job(CI, "queue-apple"))).toBe("./.github/workflows/rune-macos.yml");
+  expect(table(mac["on"])["workflow_call"]).toBeDefined();
+  const reusable = workflow("rune-build.yml");
+  const input = table(table(table(table(reusable["on"])["workflow_call"])["inputs"])["ios"]);
   // rune-client.yml calls it for a tag without inputs: the release keeps iOS.
   expect(input).toMatchObject({ type: "boolean", default: true });
-  expect(str(job(build, "ios-native")["if"])).toBe("inputs.ios");
+  expect(str(job(reusable, "ios-native")["if"])).toBe(
+    "inputs.ios && (inputs.hosts == 'all' || inputs.hosts == 'macos')",
+  );
+  expect(table(mac["concurrency"])["cancel-in-progress"]).toBe(
+    table(CI["concurrency"])["cancel-in-progress"],
+  );
+  const group = str(table(mac["concurrency"])["group"]) ?? "";
+  expect(group).toContain("github.event_name == 'push' && github.sha");
+  expect(group.endsWith(" || github.ref }}")).toBe(true);
+  expect(group).not.toContain("merge_group");
+});
+
+test("docs catalog is path-filtered, credential-free, and required by ci", () => {
+  const lane = job(CI, "docs-catalog");
+  expect(str(lane["if"])).toBe("needs.plan.outputs.docs_catalog == 'true'");
+  expect(str(lane["runs-on"])).toBe("ubuntu-latest");
+  expect(lane["timeout-minutes"]).toBe(5);
+  expect(needs(lane)).toEqual(["plan"]);
+  expect(needs(job(CI, "ci"))).toContain("docs-catalog");
+  const checkouts = steps(lane).filter((step) => uses(step).startsWith("actions/checkout@"));
+  expect(checkouts).toHaveLength(2);
+  const website = checkouts.find((step) => withInput(step, "repository") === "no-phux/website");
+  expect(website).toBeDefined();
+  expect(withInput(website ?? {}, "ref")).toBe("main");
+  expect(withInput(website ?? {}, "path")).toBe("website");
+  expect(withInput(website ?? {}, "sparse-checkout")).toBe("scripts/docs-catalog.ts");
+  expect(withInput(website ?? {}, "sparse-checkout-cone-mode")).toBe(false);
+  expect(withInput(website ?? {}, "persist-credentials")).toBe(false);
+  expect(withInput(website ?? {}, "token")).toBeUndefined();
+  expect(JSON.stringify(website?.["with"])).not.toMatch(/secrets\.|github\.token/);
+  for (const step of checkouts) expect(withInput(step, "persist-credentials")).toBe(false);
+  const repoCheckout = checkouts.find((step) => withInput(step, "repository") === undefined);
+  expect(withInput(repoCheckout ?? {}, "fetch-depth")).toBe(0);
+  const command = steps(lane).map(run).join("\n");
+  expect(command).toContain("bun scripts/ci/docs-catalog-new-misses.ts");
+  const guards = steps(job(CI, "guards")).map(run);
+  expect(guards).toContain("bash scripts/check-website-docs-catalog.sh");
+  expect(guards).toContain("bash scripts/check-website-docs-catalog_test.sh");
 });
 
 test("post-merge workflows follow ci on main pushes only", () => {
   // A merge group's run is on gh-readonly-queue/main/*, never `main`.
   for (const name of ["release.yml", "next.yml", "rune-auto-release.yml"]) {
     const trigger = table(table(workflow(name)["on"])["workflow_run"]);
-    expect(trigger["workflows"]).toEqual(["ci"]);
+    expect(trigger["workflows"]).toEqual(name === "next.yml" ? ["ci"] : ["ci", "rune-macos"]);
     expect(trigger["branches"]).toEqual(["main"]);
     expect(workflowText(name)).toContain("github.event.workflow_run.event == 'push'");
   }

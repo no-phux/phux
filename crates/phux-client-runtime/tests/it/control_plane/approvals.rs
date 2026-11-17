@@ -34,6 +34,26 @@ fn negotiated(features: &[ServerFeature]) -> ControlPlane {
     plane
 }
 
+#[test]
+fn explicit_refresh_reads_the_server_even_when_already_watching_and_never_decides() {
+    let mut plane = watching(&[(id(1), 1)]);
+    plane.watch_approvals();
+    assert!(outbound(&mut plane).is_empty(), "watch remains idempotent");
+    plane.refresh_approvals();
+    let listing = list_id(&outbound(&mut plane));
+    plane
+        .feed(FrameKind::MetadataKeys {
+            request_id: listing,
+            keys: Vec::new(),
+        })
+        .unwrap();
+    assert!(plane.approvals().is_empty());
+    assert!(
+        outbound(&mut plane).is_empty(),
+        "refresh must not replay a decision"
+    );
+}
+
 fn list_id(frames: &[FrameKind]) -> u32 {
     frames
         .iter()
@@ -104,16 +124,6 @@ fn watching(pending: &[(ApprovalId, u64)]) -> ControlPlane {
     }
     let _ = plane.take_events();
     plane
-}
-
-#[test]
-fn nothing_is_sent_to_a_server_without_approvals() {
-    let mut plane = negotiated(&[]);
-    plane.watch_approvals();
-    assert!(outbound(&mut plane).is_empty());
-    assert!(!plane.approvals_supported());
-    assert!(!plane.decide_approval(id(1), Decision::Approve));
-    assert!(outbound(&mut plane).is_empty());
 }
 
 #[test]

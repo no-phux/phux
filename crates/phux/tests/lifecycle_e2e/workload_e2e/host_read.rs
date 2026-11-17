@@ -308,7 +308,7 @@ fn enroll_scoped_read_key(
     if let Some(id) = replaces {
         args.extend(["--replace", id]);
     }
-    let out = phux_with(dir, &args, client.csr_pem.as_bytes(), &[]);
+    let out = phux_with(dir, &args, client.csr_pem.as_bytes(), NO_ENV);
     assert!(out.status.success(), "add-key: {}", text(&out.stderr));
     json_doc(&out)
 }

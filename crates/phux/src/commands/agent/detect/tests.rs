@@ -7,6 +7,15 @@ use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 const CLAUDE_BLOCKED: &str =
     include_str!("../../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
 
+fn record(name: &str, kind: &str, state: AgentMetaState) -> AgentRecord {
+    AgentRecord {
+        name: name.to_owned(),
+        kind: Some(kind.to_owned()),
+        state,
+        ..AgentRecord::default()
+    }
+}
+
 fn claude_blocked_pane() -> PaneEvidence {
     let lines: Vec<&str> = CLAUDE_BLOCKED.lines().collect();
     PaneEvidence::for_test("@4", None, &lines)
@@ -16,17 +25,12 @@ fn claude_blocked_pane() -> PaneEvidence {
 /// `stream` source and its state — including when the record disagrees.
 #[test]
 fn a_live_session_is_named_as_a_stream_source_even_when_it_disagrees() {
-    for (facet, record, agrees) in [
+    for (facet, declared, agrees) in [
         (AgentMetaState::Working, AgentMetaState::Working, true),
         (AgentMetaState::Working, AgentMetaState::Idle, false),
     ] {
         let mut evidence = PaneEvidence::for_test("@7", Some("Claude Code"), &[""]);
-        evidence.record = Some(AgentRecord {
-            name: "worker".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: record,
-            ..AgentRecord::default()
-        });
+        evidence.record = Some(record("worker", "claude", declared));
         evidence.agent_session = Some(SessionEvidence {
             resource: "@8".to_owned(),
             provider: "claude".to_owned(),
@@ -63,12 +67,7 @@ fn declared_record_outranks_the_title_sentinel_and_the_screen() {
         Some("phux-ask[x]:Approve??s=Yes|No"),
         &["codex blocked need approval"],
     );
-    evidence.record = Some(AgentRecord {
-        name: "Reviewer".to_owned(),
-        kind: Some("claude".to_owned()),
-        state: AgentMetaState::Working,
-        ..AgentRecord::default()
-    });
+    evidence.record = Some(record("Reviewer", "claude", AgentMetaState::Working));
 
     let state = infer_agent_state(&evidence, &[]);
 
@@ -103,12 +102,7 @@ fn the_projection_reports_the_records_state_verbatim() {
             Some("Claude Code"),
             &["do you want to continue? need approval"],
         );
-        evidence.record = Some(AgentRecord {
-            name: "worker".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: meta,
-            ..AgentRecord::default()
-        });
+        evidence.record = Some(record("worker", "claude", meta));
 
         let state = infer_agent_state(&evidence, &[]);
 
@@ -154,12 +148,7 @@ fn without_a_record_the_projection_asserts_no_state() {
 #[test]
 fn record_backed_state_carries_the_detector_rule_id_and_region() {
     let mut evidence = claude_blocked_pane();
-    evidence.record = Some(AgentRecord {
-        name: "claude".to_owned(),
-        kind: Some("claude".to_owned()),
-        state: AgentMetaState::Blocked,
-        ..AgentRecord::default()
-    });
+    evidence.record = Some(record("claude", "claude", AgentMetaState::Blocked));
 
     let state = infer_agent_state(&evidence, &[]);
 
@@ -183,12 +172,7 @@ fn record_backed_state_carries_the_detector_rule_id_and_region() {
 #[test]
 fn a_record_with_no_manifest_reports_the_record_and_says_why_there_is_no_rule() {
     let mut evidence = PaneEvidence::for_test("@9", None, &["some screen"]);
-    evidence.record = Some(AgentRecord {
-        name: "herdr-worker".to_owned(),
-        kind: Some("herdr".to_owned()),
-        state: AgentMetaState::Blocked,
-        ..AgentRecord::default()
-    });
+    evidence.record = Some(record("herdr-worker", "herdr", AgentMetaState::Blocked));
 
     let state = infer_agent_state(&evidence, &[]);
 
@@ -202,33 +186,6 @@ fn a_record_with_no_manifest_reports_the_record_and_says_why_there_is_no_rule() 
         "{}",
         state.explanation
     );
-}
-
-#[test]
-fn captured_agent_kinds_keep_first_class_json_identity_and_live_title() {
-    for (slug, json_kind) in [
-        ("grok", "grok"),
-        ("amp", "amp"),
-        ("cursor-agent", "cursor_agent"),
-        ("gemini", "gemini"),
-        ("goose", "goose"),
-        ("aider", "aider"),
-    ] {
-        let mut evidence = PaneEvidence::for_test("@6", Some("live program title"), &[]);
-        evidence.record = Some(AgentRecord {
-            name: "worker".to_owned(),
-            kind: Some(slug.to_owned()),
-            state: AgentMetaState::Working,
-            ..AgentRecord::default()
-        });
-        let report = infer_agent_state(&evidence, &[]);
-        let json = serde_json::to_value(&report).expect("serialize report");
-        assert_eq!(json["agent"]["kind"], json_kind, "{slug}");
-        assert_eq!(json["agent"]["id"], slug);
-        assert_eq!(json["agent"]["label"], "worker");
-        assert_eq!(json["title"], "live program title");
-        assert_eq!(report.state, AgentState::Working);
-    }
 }
 
 #[test]
@@ -255,31 +212,33 @@ fn captured_agent_titles_are_identity_evidence_not_state_declarations() {
     }
 }
 
+/// Every shipped detector kind keeps its own CLI identity, JSON kind, the
+/// record's label, and the live title.
 #[test]
 fn shipped_detector_kinds_have_first_class_cli_identities() {
-    for (slug, expected) in [
-        ("codex", AgentKind::Codex),
-        ("claude", AgentKind::Claude),
-        ("opencode", AgentKind::OpenCode),
-        ("pi", AgentKind::Pi),
-        ("omp", AgentKind::Omp),
-        ("grok", AgentKind::Grok),
-        ("amp", AgentKind::Amp),
-        ("cursor-agent", AgentKind::CursorAgent),
-        ("gemini", AgentKind::Gemini),
-        ("goose", AgentKind::Goose),
-        ("aider", AgentKind::Aider),
+    for (slug, expected, json_kind) in [
+        ("codex", AgentKind::Codex, "codex"),
+        ("claude", AgentKind::Claude, "claude"),
+        ("opencode", AgentKind::OpenCode, "open_code"),
+        ("pi", AgentKind::Pi, "pi"),
+        ("omp", AgentKind::Omp, "omp"),
+        ("grok", AgentKind::Grok, "grok"),
+        ("amp", AgentKind::Amp, "amp"),
+        ("cursor-agent", AgentKind::CursorAgent, "cursor_agent"),
+        ("gemini", AgentKind::Gemini, "gemini"),
+        ("goose", AgentKind::Goose, "goose"),
+        ("aider", AgentKind::Aider, "aider"),
     ] {
-        let mut evidence = PaneEvidence::for_test("@6", None, &[]);
-        evidence.record = Some(AgentRecord {
-            name: slug.to_owned(),
-            kind: Some(slug.to_owned()),
-            state: AgentMetaState::Idle,
-            ..AgentRecord::default()
-        });
-
-        let state = infer_agent_state(&evidence, &[]);
-        assert_eq!(state.agent.kind, expected, "{slug}");
+        let mut evidence = PaneEvidence::for_test("@6", Some("live program title"), &[]);
+        evidence.record = Some(record("worker", slug, AgentMetaState::Working));
+        let report = infer_agent_state(&evidence, &[]);
+        assert_eq!(report.agent.kind, expected, "{slug}");
+        assert_eq!(report.state, AgentState::Working);
+        let json = serde_json::to_value(&report).expect("serialize report");
+        assert_eq!(json["agent"]["kind"], json_kind, "{slug}");
+        assert_eq!(json["agent"]["id"], slug);
+        assert_eq!(json["agent"]["label"], "worker");
+        assert_eq!(json["title"], "live program title");
     }
 }
 
@@ -358,29 +317,22 @@ fn a_shell_foreground_outranks_agent_words_on_the_screen() {
     );
 }
 
-/// A detected `opencode` pane is named after its kind, which `%` refuses; the
-/// list column prints the command that names it rather than a bare code.
+/// A name `%` cannot use prints the command that names the pane; a partial
+/// view keeps its code.
 #[test]
-fn a_kind_constant_name_prints_the_command_that_names_the_pane() {
+fn an_unaddressable_name_prints_the_command_that_names_the_pane() {
     let mut evidence = PaneEvidence::for_test("@3", Some("OpenCode"), &["some screen"]);
-    evidence.record = Some(AgentRecord {
-        name: "opencode".to_owned(),
-        kind: Some("opencode".to_owned()),
-        state: AgentMetaState::Blocked,
-        ..AgentRecord::default()
-    });
+    evidence.record = Some(record("Code Review", "opencode", AgentMetaState::Blocked));
     let mut report = infer_agent_state(&evidence, &[]);
-    report.set_address(Some(Err("invalid_agent_name")));
-    assert_eq!(
-        report.address_column(),
-        "(name it: phux agent set @3 --name NAME --kind opencode)"
-    );
-
-    report.set_address(Some(Err("selector_not_single")));
-    assert_eq!(
-        report.address_column(),
-        "(not %-addressable: selector_not_single)"
-    );
-    report.set_address(Some(Ok("%reviewer".to_owned())));
-    assert_eq!(report.address_column(), "%reviewer");
+    for code in ["invalid_agent_name", "selector_not_single"] {
+        report.set_address(Some(Err(code)));
+        assert_eq!(
+            report.address_column(),
+            "(name it: phux agent set @3 --name NAME)"
+        );
+    }
+    report.set_address(Some(Err("partial_view")));
+    assert_eq!(report.address_column(), "(not %-addressable: partial_view)");
+    report.set_address(Some(Ok("%opencode-2".to_owned())));
+    assert_eq!(report.address_column(), "%opencode-2");
 }

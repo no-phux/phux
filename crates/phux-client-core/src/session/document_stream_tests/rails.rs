@@ -1,23 +1,30 @@
 //! The document lane keeps the agent lane's rails: shared staging ceilings,
 //! expiry, generation identity, contiguous chunks, closure, and incarnation.
 
-use phux_protocol::wire::frame::{CloseReason, TombstoneReason};
+use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::super::kernel_rig::RigAdapter;
+use super::super::test_rig::{Gen, closed};
 use super::super::{
-    EffectBuffer, KernelEffect, KernelError, KernelInput, KernelStatus,
-    MAX_BOOTSTRAP_STAGING_BYTES, MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS,
-    SessionKernel,
+    EffectBuffer, KernelEffect, KernelError, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
+    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_IDLE_MS, SessionKernel,
 };
 use super::{documents, generation, stream, surface};
-use crate::engine::CanonicalGeometry;
 
 type Kernel = SessionKernel<RigAdapter>;
 type Outcome = Result<(), KernelError<std::convert::Infallible>>;
 
 fn kernel() -> Kernel {
     SessionKernel::new(RigAdapter::default(), BootstrapProfile::SynthesizedVtRaw)
+}
+
+fn on(id: &ResourceId, ids: (StreamId, BootstrapId)) -> Gen {
+    Gen {
+        id: id.clone(),
+        s: ids.0,
+        b: ids.1,
+    }
 }
 
 fn begin_profile(
@@ -27,33 +34,18 @@ fn begin_profile(
     ids: (StreamId, BootstrapId),
     effects: &mut EffectBuffer,
 ) -> Outcome {
-    let geometry = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
-        CanonicalGeometry { cols: 80, rows: 24 }
+    let g = on(id, ids);
+    let input = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
+        g.begin(4)
     } else {
-        CanonicalGeometry { cols: 0, rows: 0 }
+        g.begin_gridless(profile, 4)
     };
-    kernel.update_at(
-        0,
-        KernelInput::BootstrapBegin {
-            terminal_id: id,
-            stream_id: ids.0,
-            bootstrap_id: ids.1,
-            profile,
-            geometry,
-            base_seq: 4,
-        },
-        effects,
-    )
+    kernel.update_at(0, input, effects)
 }
 
 fn begin(kernel: &mut Kernel, ids: (StreamId, BootstrapId), effects: &mut EffectBuffer) -> Outcome {
-    begin_profile(
-        kernel,
-        &surface(),
-        BootstrapStreamProfile::PixelSurfacePngV1,
-        ids,
-        effects,
-    )
+    let png = BootstrapStreamProfile::PixelSurfacePngV1;
+    begin_profile(kernel, &surface(), png, ids, effects)
 }
 
 fn chunk(
@@ -64,17 +56,7 @@ fn chunk(
     payload: &[u8],
     effects: &mut EffectBuffer,
 ) -> Outcome {
-    kernel.update_at(
-        0,
-        KernelInput::BootstrapChunk {
-            terminal_id: id,
-            stream_id: ids.0,
-            bootstrap_id: ids.1,
-            chunk_seq,
-            payload,
-        },
-        effects,
-    )
+    kernel.update_at(0, on(id, ids).chunk(chunk_seq, payload), effects)
 }
 
 fn ready(
@@ -83,16 +65,7 @@ fn ready(
     ids: (StreamId, BootstrapId),
     effects: &mut EffectBuffer,
 ) -> Outcome {
-    kernel.update_at(
-        now_ms,
-        KernelInput::BootstrapReady {
-            terminal_id: &surface(),
-            stream_id: ids.0,
-            bootstrap_id: ids.1,
-            history_cursor: None,
-        },
-        effects,
-    )
+    kernel.update_at(now_ms, on(&surface(), ids).ready(None), effects)
 }
 
 fn output(
@@ -101,16 +74,7 @@ fn output(
     seq: u64,
     effects: &mut EffectBuffer,
 ) -> Outcome {
-    kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &surface(),
-            stream_id: ids.0,
-            bootstrap_id: ids.1,
-            seq,
-            payload: b"frame",
-        },
-        effects,
-    )
+    kernel.update(on(&surface(), ids).output(seq, b"frame"), effects)
 }
 
 fn first() -> (StreamId, BootstrapId) {
@@ -296,18 +260,9 @@ fn live_documents_name_the_published_generation_and_move_forward() {
 
     // A recut fences the old generation: its late frames are refused.
     let recut = (stream(), generation(2));
-    kernel
-        .update(
-            KernelInput::Tombstone {
-                terminal_id: &surface(),
-                stream_id: stream(),
-                bootstrap_id: generation(1),
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 7,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    let fenced = on(&surface(), first());
+    let fence = fenced.tombstone(TombstoneReason::OutboundGap, 7);
+    kernel.update(fence, &mut effects).unwrap();
     begin(&mut kernel, recut, &mut effects).unwrap();
     ready(&mut kernel, 0, recut, &mut effects).unwrap();
     assert_eq!(documents(&effects).len(), 1);
@@ -325,17 +280,7 @@ fn closing_a_document_forgets_it_and_refuses_later_frames() {
     let id = surface();
     begin(&mut kernel, first(), &mut effects).unwrap();
     ready(&mut kernel, 0, first(), &mut effects).unwrap();
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&id), &mut effects).unwrap();
     assert!(kernel.lanes.is_empty());
     assert!(matches!(
         output(&mut kernel, first(), 5, &mut effects),

@@ -11,7 +11,7 @@ pub const MAX_CONNECT_LINK_BYTES: usize = 16 * 1024;
 /// The connect link emitted by `phux pair` and encoded in its QR.
 pub const CONNECT_URI_PREFIX: &str = "https://phux.sh/connect";
 /// The pre-`phux.sh` host, retained for saved links.
-pub const LEGACY_HOST_CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
+pub(crate) const LEGACY_HOST_CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 /// The historical app scheme, retained for saved links and CLI codes.
 pub const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 

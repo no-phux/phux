@@ -7,10 +7,9 @@
 
 use std::path::Path;
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, StateScope};
+use phux_protocol::wire::frame::{CommandResult, FrameKind};
 use phux_server::LaunchCommand as CommandBuilder;
 use tokio::net::UnixStream;
 
@@ -33,17 +32,7 @@ pub(crate) async fn connect_as(
     caps: ClientCapabilities,
 ) -> (UnixStream, FrameKind) {
     let mut stream = wait_for_raw_socket(socket, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: name.to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        },
-    )
-    .await;
+    send_frame(&mut stream, &phux_server_testkit::hello(name, caps)).await;
     let (_, hello_ok) = recv_typed(&mut stream).await;
     assert!(
         matches!(hello_ok, FrameKind::HelloOk { .. }),
@@ -79,17 +68,8 @@ pub(crate) fn gated_seed(release: &Path, script: &str) -> CommandBuilder {
 /// one connection are handled in order, so the reply proves the subscription
 /// is installed (the subscribe itself is answered with no frame).
 pub(crate) async fn subscribe_all(stream: &mut UnixStream, request_id: u32) {
-    send_frame(
-        stream,
-        &FrameKind::SubscribeEvents {
-            terminal: None,
-            after_seq: None,
-        },
-    )
-    .await;
-    let get_state = Command::GetState {
-        scope: StateScope::Server,
-    };
+    send_frame(stream, &phux_server_testkit::subscribe_events(None, None)).await;
+    let get_state = phux_server_testkit::get_state();
     let barrier = command(stream, request_id, get_state).await;
     assert!(
         !matches!(barrier, CommandResult::Error { .. }),

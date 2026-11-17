@@ -1,16 +1,11 @@
-//! Moment-based first-use guidance.
-//!
-//! The journey is profile-scoped under phux's state directory and deliberately
-//! best-effort: state failures suppress guidance rather than preventing attach.
-//! The command palette can always reopen the introduction.
+//! Moment-based first-use guidance, profile-scoped and best-effort: state
+//! failures suppress guidance rather than preventing attach.
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
 use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u8 = 1;
@@ -46,11 +41,8 @@ struct State {
     stage: Stage,
 }
 
-/// An attach moment reserved under the profile lock.
-///
-/// Dropping an uncommitted claim leaves its pending stage retryable. The open
-/// file is deliberately retained for the claim's entire lifetime: advisory
-/// `flock` ownership is tied to that file description, not a lexical syscall.
+/// An attach moment reserved under the profile lock. The open file is kept
+/// for the claim's lifetime: `flock` ownership is tied to it.
 #[derive(Debug)]
 pub(super) struct AttachClaim {
     path: PathBuf,
@@ -179,10 +171,8 @@ fn write_stage(path: &Path, stage: Stage) -> std::io::Result<()> {
     }
 }
 
-/// Compact first-attach guidance: continuity, leave, commands, and the
-/// agent glyphs. `sidebar_visible` is the attach's live sidebar flag.
-/// When the strip is already on, the copy does not tell the user to turn
-/// it on. When it is off, it names the live `toggle-sidebar` chord.
+/// Compact first-attach guidance. `sidebar_visible` decides whether the
+/// copy names the `toggle-sidebar` chord.
 pub(super) fn hint_lines(
     keybindings: Option<&KeybindingsCfg>,
     sidebar_visible: bool,
@@ -218,10 +208,7 @@ fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> V
 }
 
 fn binding_label(keybindings: Option<&KeybindingsCfg>, action: &str, fallback: &str) -> String {
-    let resolved = ResolvedAction {
-        action: action.to_owned(),
-        args: BTreeMap::new(),
-    };
+    let resolved = crate::attach::resolved(action, std::collections::BTreeMap::new());
     super::action_registry::bound_chord_for(keybindings, &resolved)
         .unwrap_or_else(|| fallback.to_owned())
 }

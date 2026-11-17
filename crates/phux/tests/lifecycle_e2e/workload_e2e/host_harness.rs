@@ -96,8 +96,7 @@ impl FarHost {
             PHUX = crate::runner::phux_bin(),
         );
         let path = dir.join("fake-ssh");
-        std::fs::write(&path, script).expect("write fake ssh");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        crate::common::write_executable(&path, script);
         path
     }
 

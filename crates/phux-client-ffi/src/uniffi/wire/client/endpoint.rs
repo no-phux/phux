@@ -1,4 +1,5 @@
-//! Classify a remote endpoint string before the runtime owns the session.
+//! Classify a remote endpoint string before the runtime owns the session,
+//! and name the device the app runs on.
 
 use super::*;
 
@@ -37,4 +38,40 @@ fn validate_quic_authority(authority: &str) -> Result<(), String> {
     Err(format!(
         "quic://{authority} needs HOST:PORT with a non-zero numeric port; bracket an IPv6 address"
     ))
+}
+
+/// Report `platform` (1 to 16 bytes of `[a-z0-9-]`, e.g. `ipados`) in every
+/// later `HELLO` of this process; `None` restores the build's own OS word
+/// (`ios`, `android`), which is what an app that never calls this reports.
+/// Call before `connect`. Returns `false`, changing nothing, for a word
+/// outside that alphabet.
+#[uniffi::export]
+pub fn set_client_platform(platform: Option<String>) -> bool {
+    let parsed = platform
+        .as_deref()
+        .map(phux_protocol::caps::ClientPlatform::parse);
+    if parsed == Some(None) {
+        return false;
+    }
+    phux_client_runtime::handshake::set_platform(parsed.flatten());
+    true
+}
+
+/// The certificate authority the phux server at `url` (`quic://HOST:PORT`)
+/// presents, for a machine on your tailnet that was never paired: pin it
+/// with `set_authority_pin` and store it, then connect with no token
+/// (`docs/config.md#tailnet-owner-devices`). Refused for a name that does
+/// not resolve to a tailnet address. Blocks for at most the dial timeout;
+/// call it off the main thread.
+///
+/// # Errors
+///
+/// Not a `quic://` URL, a host off the tailnet, or no answer.
+#[uniffi::export]
+pub fn tailnet_authority(url: String) -> Result<String, WireError> {
+    let runtime_error = |reason: String| WireError::Runtime { reason };
+    let Transport::Quic(authority) = classify_remote_endpoint(&url).map_err(runtime_error)? else {
+        return Err(runtime_error(format!("{url} is not a quic:// address")));
+    };
+    phux_client_runtime::dial::tailnet_authority_blocking(&authority).map_err(runtime_error)
 }

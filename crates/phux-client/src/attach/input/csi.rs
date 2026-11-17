@@ -167,7 +167,9 @@ fn push_mouse(action: MouseAction, raw_btn: u32, col: u32, row: u32, out: &mut V
 
 /// Decode a kitty keyboard-protocol sequence,
 /// `CSI keycode[:shifted:base][;mods[:event_type[:text...]]] u`.
-/// The level-3 alternate keys are dropped; nonzero text codepoints become
+/// A keycode with no key of its own (a non-Latin layout's letter) takes the
+/// key of its base-layout alternate, so Ctrl+С is Ctrl+C; the codepoint still
+/// travels in `unshifted_codepoint`. Nonzero text codepoints become
 /// [`KeyEvent::text`].
 fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     let groups = parse_csi_param_groups(params);
@@ -182,10 +184,16 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     let raw_mod = mod_group.and_then(|g| g.first().copied()).unwrap_or(1);
     let event_type = mod_group.and_then(|g| g.get(1).copied()).unwrap_or(1);
 
-    let Some(key) = kitty_keycode_to_physical(keycode) else {
+    let Some(mut key) = kitty_keycode_to_physical(keycode) else {
         tracing::trace!(keycode, "kitty CSI u unmapped keycode");
         return;
     };
+    if key == PhysicalKey::Unidentified
+        && let Some(base) = keycode_group.and_then(|g| g.get(2).copied())
+        && let Some(base_key) = kitty_keycode_to_physical(base)
+    {
+        key = base_key;
+    }
 
     out.push(InputEvent::Key(KeyEvent {
         action: kitty_key_action(event_type),

@@ -11,6 +11,7 @@ use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
+use crate::ui::Cover;
 
 const WIDTH: f32 = 400.0;
 const CARD_W: f32 = 340.0;
@@ -153,6 +154,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
                 .child(
                     text_input(&desk.inbox.reply, TextStyle::new(13.0, 400.0).lh(18.0))
                         .key("inbox-reply")
+                        .label("Reply to question")
                         .single_line()
                         .grow(1.0)
                         .color(ink.text)
@@ -180,6 +182,19 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
             .color(ink.dim)
             .truncate(),
     );
+    if let Some(credential) = &approval.credential {
+        for detail in inbox::credential_details(approval) {
+            card = card.child(text(detail).font(CAPTION).color(ink.text).wrap());
+        }
+        for reference in &credential.request.references {
+            card = card.child(
+                text(reference.clone())
+                    .font(CAPTION.family(Family::SystemMono))
+                    .color(ink.text)
+                    .wrap(),
+            );
+        }
+    }
     for subject in &approval.subjects {
         card = card.child(
             text(subject.clone())
@@ -305,9 +320,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
         .child(foot);
     el().key("inbox-scrim")
-        .absolute(0.0, 0.0)
-        .w_full()
-        .h_full()
+        .cover()
         .fill(Color::BLACK.alpha(0.16))
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())
@@ -315,13 +328,20 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 
+/// A visible inline question and its text-input ownership.
+pub struct AskCard {
+    pub content: El,
+    /// Only a field in the card actually shown can take the terminal's IME.
+    pub editing: bool,
+}
+
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
-pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<El> {
-    if desk.find.is_some() || desk.inbox.open {
+pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
+    if desk.connection.find.is_some() || desk.inbox.open {
         return None;
     }
-    let pane = desk.topology.as_ref()?.pane(id)?;
+    let pane = desk.connection.topology.as_ref()?.pane(id)?;
     let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let width = CARD_W.min(area[0] - 20.0);
     if width < 160.0 {
@@ -343,19 +363,29 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         .child(header(
             mark_color(Mark::Blocked, ink),
             who,
-            match (busy, ask.typed()) {
-                (true, _) => "sending…".to_owned(),
-                (false, true) => format!("{}I to reply", super::MOD),
-                (false, false) => "ACP".to_owned(),
-            },
+            ask_hint(busy, ask.typed()),
             ink,
         ))
         .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
     if !ask.typed() {
-        return Some(card.child(super::questions::panel(desk, id, &ask, ink)));
+        return Some(AskCard {
+            editing: desk.inbox.questions.field_focused(id, &ask.id),
+            content: card.child(super::questions::panel(desk, id, &ask, ink)),
+        });
     }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(id, &ask, false, busy, ink));
     }
-    Some(card)
+    Some(AskCard {
+        content: card,
+        editing: false,
+    })
+}
+
+fn ask_hint(busy: bool, typed: bool) -> String {
+    match (busy, typed) {
+        (true, _) => "sending…".to_owned(),
+        (false, true) => format!("{}I to reply", super::MOD),
+        (false, false) => "ACP".to_owned(),
+    }
 }

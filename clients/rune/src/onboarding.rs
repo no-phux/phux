@@ -23,15 +23,17 @@ pub enum Step {
     Look,
     Agents,
     Migrate,
+    Machines,
     Done,
 }
 
 impl Step {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Welcome,
         Self::Look,
         Self::Agents,
         Self::Migrate,
+        Self::Machines,
         Self::Done,
     ];
 
@@ -42,6 +44,7 @@ impl Step {
             Self::Look => "look",
             Self::Agents => "agents",
             Self::Migrate => "migrate",
+            Self::Machines => "machines",
             Self::Done => "done",
         }
     }
@@ -76,12 +79,68 @@ impl Step {
 /// Whether this computer has the privacy panes the permissions card is about.
 pub const PERMISSIONS: bool = cfg!(target_os = "macos");
 
+/// What the steps promise, naming permissions only where there are some.
+#[derive(Debug, Clone, Copy)]
+pub struct Promise {
+    pub welcome: &'static str,
+    pub agents_title: &'static str,
+    pub agents_lead: &'static str,
+    /// Settings → Get started.
+    pub get_started: &'static str,
+}
+
+pub const PROMISE: Promise = promise(PERMISSIONS);
+
+pub const fn promise(permissions: bool) -> Promise {
+    if permissions {
+        Promise {
+            welcome: "Pick a look, give your agents the phux skill and the permissions they \
+                      need, bring your key bindings with you and add your other machines.",
+            agents_title: "Agents & permissions",
+            agents_lead: "Give your agents the phux skill, and phux the access they ask for.",
+            get_started: "The look, the phux agent skill, permissions, your key bindings and \
+                          your other machines, step by step.",
+        }
+    } else {
+        Promise {
+            welcome: "Pick a look, give your agents the phux skill, bring your key bindings \
+                      with you and add your other machines.",
+            agents_title: "Agents",
+            agents_lead: "Give your agents the phux skill so they can drive phux.",
+            get_started: "The look, the phux agent skill, your key bindings and your other \
+                          machines, step by step.",
+        }
+    }
+}
+
 /// Whether the server outlives logout and reboot only as a systemd user
 /// service (`phux service install`), so the last step offers one.
 pub const KEEP_ALIVE: bool = cfg!(target_os = "linux");
 
 /// The agents the migration can hand the work to, in tile order.
 pub const MIGRATORS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// The agents the last step can start, in tile order.
+pub const STARTERS: [&str; 4] = ["claude", "codex", "opencode", "pi"];
+
+/// The agents found on this computer that the last step can start.
+pub fn starters(skills: &[AgentSkill]) -> Vec<&'static str> {
+    found(&STARTERS, skills)
+}
+
+fn found(ids: &[&'static str], skills: &[AgentSkill]) -> Vec<&'static str> {
+    ids.iter()
+        .copied()
+        .filter(|id| skills.iter().any(|s| s.detected && s.agent == *id))
+        .collect()
+}
+
+/// A pane's argv running `agent` the way a terminal would: through the
+/// user's login shell, so it finds the agent and the keys set up there.
+pub fn agent_argv(agent: &str) -> Vec<String> {
+    let script = r#"exec "${SHELL:-/bin/sh}" -lic "$0""#;
+    ["/bin/sh", "-c", script, agent].map(str::to_owned).to_vec()
+}
 
 /// An agent's name as people say it.
 pub fn agent_name(id: &str) -> String {
@@ -206,10 +265,7 @@ pub fn parse_shims(bytes: &[u8]) -> Result<Vec<String>, String> {
 
 /// The agents found on this computer that can bring a setup over.
 pub fn migrators(skills: &[AgentSkill]) -> Vec<&'static str> {
-    MIGRATORS
-        .into_iter()
-        .filter(|id| skills.iter().any(|s| s.detected && s.agent == *id))
-        .collect()
+    found(&MIGRATORS, skills)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

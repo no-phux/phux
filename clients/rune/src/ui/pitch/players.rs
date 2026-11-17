@@ -8,7 +8,7 @@ use crate::pitch::{
     AMBER, Ball, Boots, GOLD, HAIRS, MINT, Mood, Pitch, Player, Pt, Rgb, SKINS, grey, kit, lerp,
 };
 
-use super::super::reef::pen::Pen;
+use super::super::playground::pen::Pen;
 
 /// Where a player was drawn, for its label, ring and press target.
 pub struct Spot {

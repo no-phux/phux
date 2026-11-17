@@ -73,7 +73,7 @@ test.each<[string[], Surface[]]>([
   [["crates/phux/build.rs"], ["phux", "web", "native"]],
   [["Cargo.toml"], ["phux", "web", "native", "rune"]],
   [["Cargo.lock"], ["phux", "web", "native"]],
-  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native"]],
+  [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "rune"]],
   [["scripts/install-zig.sh"], ["web_engine", "native", "rune"]],
   [["scripts/setup-rust.sh"], ["native", "rune"]],
   [["scripts/install-windows.ps1"], []],
@@ -127,6 +127,7 @@ test.each<[string[], Surface[]]>([
   [["clients/rune/README.md"], []],
   [["just/rune.just"], ["rune"]],
   [[".github/workflows/rune-build.yml"], ["rune"]],
+  [[".github/workflows/rune-macos.yml"], ["rune"]],
   [[".github/workflows/rune-client.yml"], []],
   [["crates/phux-client-runtime/src/lib.rs"], ["phux", "web", "rune"]],
   [["docs/development.md", "scripts/doctor.sh"], ["native"]],
@@ -165,9 +166,6 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/tests/stress/stress_churn.rs"])[1]).toBe(
     "phux-server:stress:stress",
   );
-  expect(plan(["crates/phux-client-ffi/tests/connected_flood.rs"])[1]).toBe(
-    "phux-client-ffi:connected_flood:measure",
-  );
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
@@ -177,7 +175,8 @@ test("the unit plan narrows to the integration test a diff touches", () => {
 
 test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
   const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
-  const decided = plan(classified, "pull_request");
+  const paths = ["scripts/plugin-index/src/lib.rs"];
+  const decided = plan(classified, "pull_request", { scope: { kind: "diff", paths } });
   expect(decided.lanes.has("guards")).toBe(true);
   expect(decided.lanes.has("lint")).toBe(true);
   expect(decided.lanes.has("tests")).toBe(false);
@@ -280,7 +279,7 @@ test("UniFFI qualification skips only known unrelated crate inputs", () => {
   expectField("uniffiNeeded", [
     [[], true],
     [["crates/phux-client-ffi/src/lib.rs"], true],
-    [["crates/phux-client-ffi/tests/connected.rs"], true],
+    [["crates/phux-client-ffi/examples/rig_seed.rs"], true],
     [["crates/phux-core/src/lib.rs"], true],
     [["crates/phux-server/src/lib.rs"], true],
     [["crates/phux-testkit/src/lib.rs"], true],
@@ -304,7 +303,6 @@ test("the mobile FFI artifacts rebuild on their crate closure only", () => {
     // Reached through phux-client-ffi's dependencies, not listed anywhere.
     [["crates/phux-core/src/lib.rs"], true],
     [["crates/phux-config-core/src/lib.rs"], true],
-    [["crates/phux-config/src/lib.rs"], true],
     [["crates/quictun/src/lib.rs"], true],
     [["scripts/build-mobile-ffi-android.sh"], true],
     [[".github/workflows/ffi-xcframework.yml"], true],

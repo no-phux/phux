@@ -59,9 +59,8 @@ and `set-clipboard` become `[defaults]` and `[status]` settings, written only
 where they differ from phux's. `set-clipboard off` becomes
 `defaults.clipboard-write = "deny"`;
 `on` keeps phux's default `"allow"`. `external` becomes `"deny"` too:
-in the TUI, pane programs cannot write the host clipboard, but manual copy
-still works because it bypasses the pane-write policy. This guarantee is
-TUI-specific: Rune's current pane clipboard path does not enforce this setting.
+pane programs cannot write the host clipboard, in the TUI or Rune, but
+manual copy still works because it bypasses the pane-write policy.
 A trailing flag-free `display`/`display-message` with one literal message
 is cosmetic and can be dropped. Flags, targets and formats are not dropped.
 Ghostty keybinds become [global bindings](./keys.md#binding-a-key).

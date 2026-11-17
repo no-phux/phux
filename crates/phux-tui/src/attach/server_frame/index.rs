@@ -8,13 +8,9 @@ use phux_protocol::ids::ResourceId;
 use crate::attach::pane_state::PaneSlot;
 use phux_client::agent_meta::{AgentRecord, parse_agent_record};
 
-/// ADR-0040 (`phux-3ert`): the driver-held index of `phux.agent/v1` records.
-///
-/// `records` is what the window chrome reads (structured agent labels for
-/// the sidebar/tab strip); `pending` correlates in-flight `GET_METADATA`
-/// request ids to the Terminal they asked about; `subscribed` tracks which
-/// Terminals already have a live `SUBSCRIBE_METADATA` so the driver's
-/// subscription sweep is idempotent.
+/// ADR-0040: the driver-held index of `phux.agent/v1` records: `records` for
+/// the chrome, `pending` GET correlation, `subscribed` for an idempotent
+/// subscription sweep.
 #[derive(Debug, Default)]
 pub(in crate::attach) struct AgentMetaIndex {
     /// Terminal → its decoded agent record (absent = no declared agent).
@@ -25,30 +21,21 @@ pub(in crate::attach) struct AgentMetaIndex {
     /// [`Self::pending`]: the value is the byte `1`, which is not an agent
     /// record and must not clear one (ADR-0136).
     pub(in crate::attach) asked_pending: HashMap<u32, ResourceId>,
+    /// In-flight `GET_METADATA` of `phux.pane-occupant/v1`, whose
+    /// foreground lands on the pane's slot.
+    pub(in crate::attach) occupant_pending: HashMap<u32, ResourceId>,
     /// Terminals with a live `SUBSCRIBE_METADATA` on the agent key.
     pub(in crate::attach) subscribed: std::collections::HashSet<ResourceId>,
-    /// Terminal → when its record last actually changed. The attention
-    /// ladder's tiebreak: rows of equal rank sort most-recently-changed
-    /// first, so the agent that just flipped to `blocked` sits above one that
-    /// has been blocked for an hour.
-    ///
-    /// Lives HERE, driver-side, and never inside
-    /// [`crate::render::chrome::sidebar::AgentEntry`]: that struct is the
-    /// sidebar painter's content-cache key, and a timestamp in it would miss
-    /// the cache on every frame and repaint the strip forever. This map
-    /// influences only the row ORDER.
+    /// Terminal to when its record last changed: the attention ladder's
+    /// tiebreak. Kept out of `AgentEntry`, the sidebar painter's cache key,
+    /// where a timestamp would repaint the strip every frame.
     pub(in crate::attach) change_at: HashMap<ResourceId, std::time::Instant>,
 }
 
 impl AgentMetaIndex {
-    /// Apply a metadata value for `terminal` (a `GET` reply or a
-    /// `METADATA_CHANGED` broadcast; `None` bytes = tombstone). Returns
-    /// `true` when the stored record actually changed, so the driver only
-    /// repaints chrome for real transitions.
-    ///
-    /// A real change also stamps [`Self::change_at`]; a tombstone clears it,
-    /// so a retracted record (the agent exited) leaves nothing behind to sort
-    /// by.
+    /// Apply a metadata value for `terminal` (`None` bytes = tombstone);
+    /// `true` when the record actually changed. A change stamps
+    /// [`Self::change_at`]; a tombstone clears it.
     pub(super) fn apply(&mut self, terminal: &ResourceId, bytes: Option<&[u8]>) -> bool {
         let changed = match bytes.and_then(parse_agent_record) {
             Some(record) => self.records.insert(terminal.clone(), record.clone()) != Some(record),
@@ -66,15 +53,9 @@ impl AgentMetaIndex {
     }
 }
 
-/// Fold a real agent-record change into the attention ladder's per-pane
-/// bookkeeping.
-///
-/// A NEW state on a pane the user is not currently looking at is UNSEEN — even
-/// if they visited that pane an hour ago. That is precisely the signal the
-/// sidebar's "finished but unreviewed" tier is built on: the pane went `done`
-/// while the user's attention was elsewhere, so it must climb above the agents
-/// that are merely still working. A change on the FOCUSED pane is seen by
-/// definition — the user is watching it happen — so it never re-arms.
+/// Fold an agent-record change into the attention bookkeeping: a new state
+/// on an unfocused pane is unseen (it climbs the ladder); one on the focused
+/// pane is seen by definition.
 pub(super) fn note_agent_change(
     panes: &mut HashMap<ResourceId, PaneSlot>,
     focused_resource: Option<&ResourceId>,

@@ -68,6 +68,15 @@ impl Desk {
         tx.instant();
     }
 
+    /// A filter starts at its first result, not the old inventory's offset.
+    /// Shared by drawn, hardware and UIKit editing.
+    pub fn phone_search_edited(&mut self, tx: &mut Tx) {
+        if self.phone_page() == Some(Page::Sessions) {
+            tx.scroll_to_instant("phone-session-list", 0.0, 0.0);
+            tx.instant();
+        }
+    }
+
     pub fn phone_navigation_key(&mut self, event: &KeyEvent) -> bool {
         if event.key == Key::Escape {
             self.close_phone_navigation();
@@ -78,17 +87,18 @@ impl Desk {
 
     pub(super) fn phone_navigation_soft(&mut self, soft: Soft, tx: &mut Tx) {
         let Some(phone) = &mut self.phone else { return };
-        let event = KeyEvent {
-            key: phone.for_field(soft),
-            mods: rune::Mods::default(),
-        };
+        let event = crate::keys::plain(phone.for_field(soft));
         if self.phone_navigation_key(&event) {
             return;
         }
         if let Some(phone) = &mut self.phone
             && phone.query.focused
         {
+            let before = phone.query.text.clone();
             let outcome = phone.query.key(&event, None);
+            if phone.query.text != before {
+                self.phone_search_edited(tx);
+            }
             if outcome.submit || outcome.blur {
                 self.blur_phone_search(tx);
             }

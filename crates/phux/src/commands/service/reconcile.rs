@@ -170,9 +170,9 @@ pub(super) fn plist_value_end(lines: &[&str], start: usize) -> Option<usize> {
 
 /// Where a section's owned policy lines go: in place of the first owned key,
 /// else after the section's last directive, else right after its header.
+/// A section is present once its header was read (`head`).
 #[derive(Default)]
 struct SectionSplice {
-    seen: bool,
     anchor: Option<usize>,
     tail: Option<usize>,
     head: Option<usize>,
@@ -181,6 +181,36 @@ struct SectionSplice {
 impl SectionSplice {
     fn insert_at(&self) -> Option<usize> {
         self.anchor.or(self.tail).or(self.head)
+    }
+}
+
+/// The two systemd sections whose policy lines this reconciles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PolicySection {
+    Unit,
+    Service,
+}
+
+impl PolicySection {
+    /// The section a header line opens, or `None` for any other section.
+    fn from_header(header: &str) -> Option<Self> {
+        match header {
+            "[Unit]" => Some(Self::Unit),
+            "[Service]" => Some(Self::Service),
+            _ => None,
+        }
+    }
+}
+
+/// The splice that collects `which` section's lines.
+const fn splice_for<'a>(
+    which: PolicySection,
+    unit: &'a mut SectionSplice,
+    service: &'a mut SectionSplice,
+) -> &'a mut SectionSplice {
+    match which {
+        PolicySection::Unit => unit,
+        PolicySection::Service => service,
     }
 }
 
@@ -194,34 +224,28 @@ fn reconcile_systemd(body: &str) -> Reconcile {
     let mut kept: Vec<String> = Vec::with_capacity(lines.len() + 4);
     let mut unit = SectionSplice::default();
     let mut service = SectionSplice::default();
-    // `Some(true)` inside `[Unit]`, `Some(false)` inside `[Service]`.
-    let mut in_unit: Option<bool> = None;
+    let mut current: Option<PolicySection> = None;
 
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_unit = match trimmed {
-                "[Unit]" => Some(true),
-                "[Service]" => Some(false),
-                _ => None,
-            };
-            if let Some(is_unit) = in_unit {
-                let section = if is_unit { &mut unit } else { &mut service };
-                if section.seen {
+            current = PolicySection::from_header(trimmed);
+            if let Some(which) = current {
+                let section = splice_for(which, &mut unit, &mut service);
+                if section.head.is_some() {
                     return Reconcile::Unrecognized("it repeats a [Unit] or [Service] header");
                 }
-                section.seen = true;
                 section.head = Some(kept.len() + 1);
             }
-        } else if let Some(is_unit) = in_unit {
-            let section = if is_unit { &mut unit } else { &mut service };
+        } else if let Some(which) = current {
+            let section = splice_for(which, &mut unit, &mut service);
             let key = trimmed.split('=').next().unwrap_or_default().trim();
             let unit_key = SYSTEMD_UNIT_POLICY_KEYS.contains(&key);
             let service_key = SYSTEMD_POLICY_KEYS.contains(&key);
             if trimmed.contains('=') && (unit_key || service_key) {
                 // Owned here: remember the slot. Misplaced: drop it; it is
                 // re-emitted in the section systemd actually reads it from.
-                if unit_key == is_unit {
+                if unit_key == (which == PolicySection::Unit) {
                     let _ = section.anchor.get_or_insert(kept.len());
                 }
                 continue;

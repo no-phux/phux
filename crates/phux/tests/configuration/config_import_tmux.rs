@@ -4,7 +4,6 @@
 #![cfg(unix)]
 #![allow(clippy::expect_used, reason = "test harness")]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Output;
 
@@ -26,12 +25,7 @@ case "$*" in
   *) exit 43;;
 esac
 "#;
-    std::fs::write(dir.path().join("tmux"), script).expect("script");
-    std::fs::set_permissions(
-        dir.path().join("tmux"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .expect("chmod");
+    crate::common::write_executable(dir.path().join("tmux"), script);
     dir
 }
 

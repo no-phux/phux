@@ -163,3 +163,14 @@ fn a_document_in_an_unknown_codec_is_refused_rather_than_misread() {
             if message.contains("codec 0x77") && message.contains("cannot decode")
     ));
 }
+
+#[test]
+fn a_document_the_server_would_drop_the_connection_over_is_refused_here() {
+    assert!(super::check_publish_size(1).is_ok());
+    assert!(super::check_publish_size(MAX_PUBLISH_BYTES).is_ok());
+    assert!(matches!(
+        super::check_publish_size(MAX_PUBLISH_BYTES + 1),
+        Err(TreeError::Invalid(_))
+    ));
+    assert!(super::check_publish_size(0).is_err());
+}

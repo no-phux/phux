@@ -5,7 +5,7 @@ use super::key::ModSet;
 
 /// What the mouse did. Wire `u32`; values match libghostty's `mouse::Action`.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, int_enum::IntEnum)]
 pub enum MouseAction {
     /// Button pressed.
     Press = 0,
@@ -15,21 +15,9 @@ pub enum MouseAction {
     Motion = 2,
 }
 
-impl TryFrom<u32> for MouseAction {
-    type Error = u32;
-    fn try_from(v: u32) -> Result<Self, u32> {
-        match v {
-            0 => Ok(Self::Press),
-            1 => Ok(Self::Release),
-            2 => Ok(Self::Motion),
-            other => Err(other),
-        }
-    }
-}
-
 /// Which mouse button. Wire `u32`; values match libghostty's `mouse::Button`.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, int_enum::IntEnum)]
 #[expect(missing_docs, reason = "button identities are self-explanatory")]
 pub enum MouseButton {
     Unknown = 0,
@@ -44,27 +32,6 @@ pub enum MouseButton {
     Nine = 9,
     Ten = 10,
     Eleven = 11,
-}
-
-impl TryFrom<u32> for MouseButton {
-    type Error = u32;
-    fn try_from(v: u32) -> Result<Self, u32> {
-        Ok(match v {
-            0 => Self::Unknown,
-            1 => Self::Left,
-            2 => Self::Right,
-            3 => Self::Middle,
-            4 => Self::Four,
-            5 => Self::Five,
-            6 => Self::Six,
-            7 => Self::Seven,
-            8 => Self::Eight,
-            9 => Self::Nine,
-            10 => Self::Ten,
-            11 => Self::Eleven,
-            other => return Err(other),
-        })
-    }
 }
 
 /// A mouse input event. `x`/`y` are pane-local surface pixels, not cells

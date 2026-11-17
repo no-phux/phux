@@ -1,16 +1,8 @@
 //! The read-only `phux.whoami/v1` Global metadata key
-//! (`docs/remote.md#who-can-do-what`, ADR-0106).
-//!
-//! `GET_METADATA` on the key is answered from the asking connection's own
-//! identity, stamped by the accepting transport, rather than from the
-//! metadata store: the principal and credential id of a bearer connection,
-//! the kernel peer uid of a Unix-socket one, the route it authenticated by,
-//! and the OS user and host this server runs as. Nothing is ever stored
-//! under the key and a client write of it is refused (`client.rs`,
-//! `is_server_owned_key`).
-//!
-//! The server never switches users, so the serving user is also the user
-//! every pane runs as. Reporting it changes nothing.
+//! (`docs/remote.md#who-can-do-what`, ADR-0106): answered from the asking
+//! connection's own transport-stamped identity, never stored, and a client
+//! write is refused. The serving user is every pane's user, so reporting it
+//! changes nothing.
 
 use std::sync::OnceLock;
 
@@ -107,15 +99,9 @@ fn grant_entries(authority: &Authority) -> Vec<GrantEntry> {
         .collect()
 }
 
-/// Record the ssh origin a HELLO carried, when its sender may make the claim.
-///
-/// `phux stdio-bridge` stamps the field, and the bridge is always a
-/// Unix-socket client running as the serving user. The value is only what the
-/// connecting side reported, so it is kept as a label and never trusted.
-/// Anything else is ignored:
-/// a network peer, another uid (root reaching the owner-only socket), or the
-/// in-process transport. Accepting it changes only the route whoami reports.
-/// Authentication and authorization have already run and never read it.
+/// Record the ssh origin a HELLO carried, when its sender may make the claim:
+/// only a Unix-socket client of the serving uid (`phux stdio-bridge`). It is
+/// a label, never trusted; authentication and authorization never read it.
 pub(super) fn admit_ssh_origin(
     s: &mut ServerState,
     client_id: ClientId,
@@ -198,11 +184,7 @@ fn build_record(
     host: &ServingHost,
 ) -> WhoamiRecord {
     let ssh_origin = ssh_origin.filter(|_| matches!(peer.transport, TransportType::UnixSocket));
-    let route = if ssh_origin.is_some() {
-        AUTH_ROUTE_SSH_STDIO
-    } else {
-        auth_route(peer.transport, credential.is_some())
-    };
+    let route = route_word(peer, credential.is_some(), ssh_origin.is_some());
     WhoamiRecord {
         schema_version: WHOAMI_SCHEMA_VERSION,
         principal: credential.map(|credential| credential.principal.clone()),
@@ -217,6 +199,31 @@ fn build_record(
             port: origin.client.port(),
         }),
     }
+}
+
+/// The `auth_route` word for a connection; an admitted ssh origin relabels
+/// a Unix-socket route.
+const fn route_word(peer: &PeerIdentity, bearer: bool, ssh: bool) -> &'static str {
+    if ssh && matches!(peer.transport, TransportType::UnixSocket) {
+        AUTH_ROUTE_SSH_STDIO
+    } else {
+        auth_route(peer.transport, bearer)
+    }
+}
+
+/// The `auth_route` word whoami would report for `client_id`; `None` when
+/// the transport stamped no identity.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module shared with the state layer; pub would violate unreachable_pub"
+)]
+pub(crate) fn route_for(s: &ServerState, client_id: ClientId) -> Option<&'static str> {
+    let peer = s.peer_identity(client_id)?;
+    Some(route_word(
+        peer,
+        s.authenticated_credential(client_id).is_some(),
+        s.ssh_origin(client_id).is_some(),
+    ))
 }
 
 /// The peer uid, when it came from the kernel's socket credentials. A

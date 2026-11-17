@@ -118,6 +118,8 @@ fn the_qr_defaults_on_only_for_a_terminal() {
 
     // A link printed into a pipe stays text; `--no-qr` says so explicitly.
     let host = format!("wss://{}", server.wss_addr);
+    // The link names this machine, so the phone lists it by name (#2399).
+    let name = format!("&name={}&", phux_config::instance::local_host_name());
     for args in [
         ["pair", "--no-enroll", "--host", host.as_str()].as_slice(),
         ["pair", "--no-qr", "--no-enroll", "--host", host.as_str()].as_slice(),
@@ -127,6 +129,7 @@ fn the_qr_defaults_on_only_for_a_terminal() {
         assert!(out.status.success(), "`phux {}`", args.join(" "));
         assert!(
             stdout.contains(&format!("https://phux.sh/connect?url={host}&"))
+                && stdout.contains(&name)
                 && !stdout.contains("Scan to pair:"),
             "`phux {}`: stdout={stdout}",
             args.join(" ")

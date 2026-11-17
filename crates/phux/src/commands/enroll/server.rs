@@ -7,6 +7,15 @@ use super::identity::{ClientIdentityFiles, EnrollRequest};
 use super::pair::{PairReport, candidate_endpoints, probe};
 use super::ssh::{COMMAND_NOT_FOUND, SSH_FAILED, ssh_hostname, ssh_run};
 
+/// Leads the far `phux service install`: the state directory it makes must
+/// be owner-only for paired mode, and a released phux takes the login's umask
+/// (002 on stock Ubuntu). The remote shell runs ssh's joined words.
+const OWNER_ONLY: &str = "umask 077;";
+
+/// What `phux service install --adopt` prints over the server its unit
+/// already runs.
+const SERVICE_ALREADY_RUNNING: &str = "phux service already running";
+
 /// Make sure a server is running on `ssh_host` and, under
 /// [`ServicePolicy::Install`], that it keeps running. Confirms `phux` first so a
 /// lost install is reported as that.
@@ -38,7 +47,14 @@ pub(super) fn ensure_remote_server_after_version(
         ServicePolicy::Install => {
             let install = ssh_run(
                 ssh_host,
-                &[remote_phux, "service", "install", "--quic", &quic_bind],
+                &[
+                    OWNER_ONLY,
+                    remote_phux,
+                    "service",
+                    "install",
+                    "--quic",
+                    &quic_bind,
+                ],
             )?;
             if install.status.success() {
                 return Ok(Supervision::Service);
@@ -47,6 +63,7 @@ pub(super) fn ensure_remote_server_after_version(
                 let adopt = ssh_run(
                     ssh_host,
                     &[
+                        OWNER_ONLY,
                         remote_phux,
                         "service",
                         "install",
@@ -56,7 +73,12 @@ pub(super) fn ensure_remote_server_after_version(
                     ],
                 )?;
                 if adopt.status.success() {
-                    return Ok(Supervision::Adopted);
+                    // The incumbent was the unit's own server: nothing armed.
+                    return Ok(if adopt.stdout.contains(SERVICE_ALREADY_RUNNING) {
+                        Supervision::Service
+                    } else {
+                        Supervision::Adopted
+                    });
                 }
                 Some(adopt.failure_detail())
             } else {

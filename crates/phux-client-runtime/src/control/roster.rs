@@ -7,14 +7,15 @@
 //! declaration ([`Event::AgentMetadata`]), the server-owned
 //! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md),
 //! and the server-owned `phux.pane-occupant/v1` record's background flag
-//! ([`Event::BackgroundWork`]).
+//! ([`Event::BackgroundWork`]) and foreground name, which names the pane
+//! (`PaneDescriptor::label`).
 //! `AgentAsked` only announces a question; the flag is the level that says
 //! whether one is still pending, so it is what retracts a question after a
 //! gap or a reconnect instead of leaving it to resurrect.
 
 use phux_protocol::caps::Layer;
 use phux_protocol::wire::frame::{
-    RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, Scope,
+    RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, RESOURCE_PANE_OCCUPANT_KEY, Scope,
 };
 
 use super::{
@@ -63,18 +64,21 @@ enum RosterKey {
     Agent,
     /// `phux.agent.asked/v1`.
     Asked,
-    /// `phux.pane-occupant/v1`, for its `background` flag.
+    /// `phux.pane-occupant/v1`, for its `background` flag and foreground.
     Occupant,
+    /// `phux.note/v1`: only a live change is news; a read is the baseline.
+    Note,
 }
 
 impl RosterKey {
-    const ALL: [Self; 3] = [Self::Agent, Self::Asked, Self::Occupant];
+    const ALL: [Self; 4] = [Self::Agent, Self::Asked, Self::Occupant, Self::Note];
 
     const fn wire(self) -> &'static str {
         match self {
             Self::Agent => RESOURCE_AGENT_KEY,
             Self::Asked => RESOURCE_ASKED_KEY,
             Self::Occupant => RESOURCE_PANE_OCCUPANT_KEY,
+            Self::Note => RESOURCE_NOTE_KEY,
         }
     }
 
@@ -84,7 +88,9 @@ impl RosterKey {
     /// subscription to it with an `UNSUPPORTED_SATELLITE_ROUTE` push that a
     /// consumer would surface as a refused request on every connect.
     const fn federates(self) -> bool {
-        !matches!(self, Self::Occupant)
+        // ponytail: a hub doesn't mirror notes; a satellite pane's notes show
+        // when its own server is attached.
+        !matches!(self, Self::Occupant | Self::Note)
     }
 
     fn from_wire(key: &str) -> Option<Self> {
@@ -259,8 +265,16 @@ impl ControlPlane {
         terminal_id: ResourceId,
         key: RosterKey,
         value: Option<Vec<u8>>,
+        live: bool,
     ) {
         let event = match key {
+            RosterKey::Note => Event::Note {
+                terminal_id,
+                note: value
+                    .as_deref()
+                    .and_then(phux_client_core::note::parse_note),
+                live,
+            },
             RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
             RosterKey::Asked => {
                 // The server writes `1` while a question is pending and deletes
@@ -272,13 +286,30 @@ impl ControlPlane {
                 }
                 Event::AgentAskedState { terminal_id, asked }
             }
-            RosterKey::Occupant => Event::BackgroundWork {
-                terminal_id,
-                running: value
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .and_then(|record| record["background"].as_bool())
-                    .unwrap_or(false),
-            },
+            RosterKey::Occupant => {
+                let record = value
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                let field = |key: &str| record.as_ref().map(|record| &record[key]);
+                let foreground = field("foreground")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+                    .map(str::to_owned);
+                if let Some(pane) = self
+                    .topology
+                    .as_mut()
+                    .and_then(|topology| topology.pane_mut(&terminal_id))
+                {
+                    // Names the pane (`PaneDescriptor::label`); bindings
+                    // re-read the topology on this event.
+                    pane.foreground = foreground;
+                }
+                Event::BackgroundWork {
+                    terminal_id,
+                    running: field("background")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                }
+            }
         };
         self.push_event(event);
     }
@@ -326,7 +357,7 @@ impl ControlPlane {
             read.superseded = true;
             read.repeat = false;
         }
-        self.publish_roster_value(terminal_id.clone(), key, value.clone());
+        self.publish_roster_value(terminal_id.clone(), key, value.clone(), true);
     }
 
     fn resolve_agent_metadata(&mut self, request_id: u32, value: Option<Vec<u8>>) {
@@ -339,7 +370,7 @@ impl ControlPlane {
         if read.repeat {
             self.read_agent_metadata(read.terminal_id, read.key);
         } else if !read.superseded {
-            self.publish_roster_value(read.terminal_id, read.key, value);
+            self.publish_roster_value(read.terminal_id, read.key, value, false);
         }
     }
 

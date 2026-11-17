@@ -188,7 +188,9 @@ export class OpenCodeLifecycle {
     const pane = projection.agents.find((candidate) => candidate.sources.some((source) => {
       if (source.kind !== "agent_record") return false;
       const owner = parseOwner(source.observed);
-      return owner?.name === "opencode" && owner.kind === "opencode" && owner.session === binding.owner;
+      // phux stores a second pane's name as `opencode-2`.
+      return /^opencode(-\d+)?$/.test(owner?.name ?? "") && owner?.kind === "opencode"
+        && owner.session === binding.owner;
     }));
     if (pane === undefined) return;
     // Clear the canonical pane selector `agent show` resolved.

@@ -1,9 +1,9 @@
-//! History projection bounds, search, and anchors.
+//! History bounds, search, and anchors.
 
 use super::*;
 
 #[test]
-fn native_history_bounds_every_projection_under_page_granular_storage() {
+fn native_history_stays_bounded_under_page_granular_storage() {
     let captured = capture_snapshot();
     let mut adapter = native_adapter();
     let mut replica = adapter
@@ -37,10 +37,6 @@ fn native_history_bounds_every_projection_under_page_granular_storage() {
                 .scrollback_rows()
                 .expect("scrollback rows"),
         );
-        let projection = adapter
-            .project_history(&mut replica, 80, EngineProjectionOrigin::Tail, 2)
-            .expect("bounded projection");
-        assert!(projection.rows.len() <= 2);
     }
     assert!(physical_high_water <= crate::history::MAX_HISTORY_PAGE_ROWS as usize);
     assert!(discarded_page);
@@ -90,7 +86,7 @@ fn search_keeps_sparse_cells_at_soft_wraps_but_not_hard_line_padding() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn native_projection_search_and_anchors_remain_engine_owned() {
+fn native_search_and_anchors_remain_engine_owned() {
     let captured = capture_snapshot();
     let mut adapter = native_adapter();
     let mut replica = adapter
@@ -104,23 +100,6 @@ fn native_projection_search_and_anchors_remain_engine_owned() {
         .finish_bootstrap(&mut replica, &mut effects)
         .expect("protocol READY");
     apply_history(&mut adapter, &mut replica, &captured, &mut effects);
-
-    let projection = adapter
-        .project_history(&mut replica, 12, EngineProjectionOrigin::Tail, 3)
-        .expect("bounded projection");
-    assert_eq!(projection.width, 12);
-    assert_eq!(projection.rows.len(), 3);
-    assert!(projection.has_older);
-    let narrow = adapter
-        .project_history(&mut replica, 1, EngineProjectionOrigin::Tail, 3)
-        .expect("minimum-width projection");
-    assert_eq!(narrow.width, 2);
-    assert!(
-        narrow
-            .rows
-            .iter()
-            .all(|row| row.text.chars().count() <= usize::from(narrow.width))
-    );
 
     let found = adapter
         .search_loaded(&mut replica, "line 2990", 1)
@@ -202,108 +181,4 @@ fn native_projection_search_and_anchors_remain_engine_owned() {
     adapter.release_document_anchor(&mut replica, found[0].end);
     assert!(replica.anchors.is_empty());
     assert!(other.anchors.is_empty());
-}
-
-#[test]
-fn projection_extends_anchor_to_complete_soft_wrapped_line() {
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
-        .expect("synthesized replica");
-    let mut effects = EngineEffectBuffer::new();
-    let mut output = vec![b'x'; 320];
-    output.extend_from_slice(b"\r\none\r\ntwo\r\nthree\r\nfour\r\n");
-    adapter
-        .apply_output(&mut replica, &output, &mut effects)
-        .expect("wrapped output");
-    let anchor = adapter
-        .track_document_anchor(
-            &mut replica,
-            DocumentPoint {
-                space: DocumentSpace::History,
-                x: 1,
-                y: 2,
-            },
-        )
-        .expect("anchor inside wrapped line");
-    let projection = adapter
-        .project_history(&mut replica, 320, EngineProjectionOrigin::Anchor(anchor), 1)
-        .expect("complete logical line");
-    assert_eq!(projection.width, 320);
-    assert_eq!(projection.rows.len(), 1);
-    assert_eq!(projection.rows[0].text, "x".repeat(320));
-    assert!(!projection.has_older);
-}
-
-fn projected(text: &str, width: usize) -> ProjectedCell {
-    ProjectedCell {
-        text: text.to_owned(),
-        width,
-        empty_default: false,
-    }
-}
-
-#[test]
-fn projection_trims_only_trailing_default_cells() {
-    let rows = rewrap_history_rows(
-        vec![(
-            vec![
-                projected("a", 1),
-                ProjectedCell {
-                    text: String::new(),
-                    width: 1,
-                    empty_default: true,
-                },
-                projected("b", 1),
-                ProjectedCell {
-                    text: String::new(),
-                    width: 1,
-                    empty_default: true,
-                },
-            ],
-            false,
-        )],
-        8,
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].text, "a b");
-    assert!(!rows[0].soft_wrapped);
-}
-
-#[test]
-fn projection_joins_soft_rows_and_keeps_wide_graphemes_atomic() {
-    let rows = rewrap_history_rows(
-        vec![
-            (
-                vec![
-                    projected("a", 1),
-                    projected("e\u{301}", 1),
-                    projected("界", 2),
-                ],
-                true,
-            ),
-            (vec![projected("z", 1)], false),
-        ],
-        3,
-    );
-    assert_eq!(
-        rows.iter()
-            .map(|row| (row.text.as_str(), row.soft_wrapped))
-            .collect::<Vec<_>>(),
-        vec![("ae\u{301}", true), ("界z", false)]
-    );
-}
-
-#[test]
-fn minimum_projection_width_keeps_leading_cjk_within_row() {
-    let rows = rewrap_history_rows(
-        vec![(vec![projected("界", 2), projected("a", 1)], false)],
-        2,
-    );
-    assert_eq!(
-        rows.iter()
-            .map(|row| (row.text.as_str(), row.soft_wrapped))
-            .collect::<Vec<_>>(),
-        vec![("界", true), ("a", false)]
-    );
 }

@@ -312,7 +312,7 @@ class QualificationTests(unittest.TestCase):
             lane.require_alive = Mock()
 
             def simctl(*args, **kwargs):
-                if args[0] == "launch" and args[-1] == "com.apple.Preferences":
+                if args[0] == "launch" and args[-1] == "com.apple.springboard":
                     (documents / "rune-background.json").write_text('{"background_frames":4}')
                 if args[0] == "launch" and args[-1] == qualify.BUNDLE_ID:
                     (documents / "rune-lifecycle.json").write_text(json.dumps({"background_frames":4,

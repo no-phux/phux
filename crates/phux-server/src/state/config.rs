@@ -14,6 +14,10 @@ pub(super) struct ServerConfig {
     pub(super) agent_log_bytes: u32,
     /// `[voice]` transcriber settings behind `TRANSCRIBE`.
     pub(super) voice: phux_config::VoiceCfg,
+    /// `[restore]`: the commands a relaunch may resume a program with.
+    pub(super) restore: phux_config::RestoreCfg,
+    /// `[forward]`: whether `FORWARD_*` is served and what it may dial.
+    pub(super) forward: phux_config::ForwardCfg,
     /// Largest stored L3 metadata value (`limits.metadata-value-bytes`,
     /// ADR-0129).
     pub(super) metadata_value_bytes: u32,
@@ -41,6 +45,8 @@ pub(super) struct ServerConfig {
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
     /// The startup authorization posture (`docs/remote.md#who-can-connect`).
     pub(super) policy_posture: crate::policy::PolicyPosture,
+    /// `[policy] tailnet-owner` under `paired` (`docs/config.md#tailnet-owner-devices`).
+    pub(super) tailnet_owner: bool,
     /// Whether an attach-time `CreateIfMissing` seeds a real PTY pane
     /// (tests default to the cheaper PTY-less actor).
     pub(super) attach_create_seeds_pty: bool,
@@ -61,6 +67,8 @@ impl Default for ServerConfig {
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             voice: phux_config::VoiceCfg::default(),
+            restore: phux_config::RestoreCfg::default(),
+            forward: phux_config::ForwardCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
@@ -72,6 +80,7 @@ impl Default for ServerConfig {
             keep_awake: phux_config::KeepAwake::default(),
             policy_engine: std::sync::Arc::new(crate::policy::ScopedPolicy::local()),
             policy_posture: crate::policy::PolicyPosture::Local,
+            tailnet_owner: false,
             attach_create_seeds_pty: false,
             pre_seeded_session: None,
             retain: super::retained::RetainPolicy::default(),

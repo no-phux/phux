@@ -1,7 +1,6 @@
 //! What the user does to the shown terminal: keys and shortcuts, paste and
 //! copy, history scrolling, and selection.
 
-use phux_client_core::layout::{Direction, SplitDir};
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::{ControlPlane, DeliveryOutcome};
 use phux_client_runtime::engine::Scroll;
@@ -15,6 +14,7 @@ use crate::keys::{self, Shortcut, Typed};
 mod echo;
 mod modal;
 pub(super) mod selection;
+mod shortcuts;
 pub use modal::Modal;
 
 /// What the window says while keys can't reach the terminal; the next key
@@ -38,41 +38,34 @@ pub fn paste_needs_confirmation(bracketed: bool, text: &str) -> bool {
 }
 
 impl Desk {
+    /// Recheck queued clipboard work against today's foreground owner.
+    /// A paste must never replace a held question or address a hidden pane.
+    pub(super) fn pastes_allowed(&self) -> bool {
+        self.modal()
+            .is_none_or(|modal| modal.allows(Shortcut::Paste))
+    }
+
     /// What has the keyboard instead of the terminal, if anything: the one
     /// rule for keys, the input method and the IME's anchor in the grid.
     pub fn modal(&self) -> Option<Modal> {
-        [
-            (self.pointer.menu.is_some(), Modal::ContextMenu),
-            (self.inbox.open, Modal::Inbox),
-            (self.galaxy.open, Modal::Galaxy),
-            (self.reef.open, Modal::Reef),
-            (self.pitch.open, Modal::Pitch),
-            (self.kitchen.open, Modal::Kitchen),
-            (self.pitlane.open, Modal::PitLane),
-            (self.hive.open, Modal::Hive),
-            (self.machines.open, Modal::Machines),
-            (self.news.open, Modal::News),
-            (self.changes.open, Modal::Changes),
-            (self.settings_open, Modal::Settings),
-            (self.tabs.renaming.is_some(), Modal::Rename),
-            (self.phone_page().is_some(), Modal::PhoneNavigation),
-            (self.palette_open, Modal::Palette),
-            // A question outranks the field: the bar says what its keys do.
-            (self.pending.is_some(), Modal::Confirm),
-            (self.popup.command().is_some(), Modal::Popup),
-            (
-                self.phone.as_ref().is_some_and(|phone| phone.picker),
-                Modal::PhonePicker,
-            ),
-            // The migration's agent pane beside it takes typing.
-            (
-                self.onboarding.open && !self.onboarding.migrating(),
-                Modal::Onboarding,
-            ),
-            (self.find_query.focused, Modal::FindField),
-        ]
-        .into_iter()
-        .find_map(|(open, modal)| open.then_some(modal))
+        self.foreground().or_else(|| {
+            [
+                // A question outranks the field: the bar says what its keys do.
+                (self.pending.is_some(), Modal::Confirm),
+                (
+                    self.phone.as_ref().is_some_and(|phone| phone.picker),
+                    Modal::PhonePicker,
+                ),
+                // The migration's agent pane beside it takes typing.
+                (
+                    self.onboarding.open && !self.onboarding.migrating(),
+                    Modal::Onboarding,
+                ),
+                (self.connection.find_query.focused, Modal::FindField),
+            ]
+            .into_iter()
+            .find_map(|(open, modal)| open.then_some(modal))
+        })
     }
 
     /// Every key nothing else took. True consumes it.
@@ -111,40 +104,77 @@ impl Desk {
         action: Option<Shortcut>,
         tx: &mut Tx,
     ) {
-        let escape = event.key == rune::Key::Escape;
-        if modal == Modal::PhoneNavigation {
-            self.phone_navigation_key(event);
+        if event.key == rune::Key::Escape && self.dismiss_surface(modal) {
             return;
         }
+        if self.modal_content_key(modal, event, action, tx)
+            || self.navigation_sheet_key(modal, event)
+            || self.modal_field_key(modal, event, action, tx)
+        {
+            return;
+        }
+        if let Some(action) = action {
+            self.modal_command(modal, action, tx);
+        }
+    }
+
+    fn dismiss_surface(&mut self, modal: Modal) -> bool {
         match modal {
-            Modal::ContextMenu if escape => self.close_menu(),
-            Modal::Rename if escape => self.cancel_rename(),
-            Modal::News if escape => self.close_news(),
+            Modal::ContextMenu => self.close_menu(),
+            Modal::Rename => self.cancel_rename(),
+            Modal::News => self.close_news(),
+            _ => return false,
+        }
+        true
+    }
+
+    fn modal_content_key(
+        &mut self,
+        modal: Modal,
+        event: &rune::KeyEvent,
+        action: Option<Shortcut>,
+        tx: &mut Tx,
+    ) -> bool {
+        match modal {
+            Modal::PhoneNavigation => {
+                self.phone_navigation_key(event);
+            }
             Modal::Changes => self.changes_key(event, tx),
             Modal::Popup if action.is_none() => {
                 self.type_key(event, tx);
             }
-            Modal::Inbox if self.inbox_key(event, tx) => {}
-            Modal::Onboarding if self.onboarding_key(event) => {}
-            _ if self.navigation_sheet_key(modal, event) => {}
+            Modal::Inbox => return self.inbox_key(event, tx),
+            Modal::Onboarding => return self.onboarding_key(event),
+            _ => return false,
+        }
+        true
+    }
+
+    fn modal_field_key(
+        &mut self,
+        modal: Modal,
+        event: &rune::KeyEvent,
+        action: Option<Shortcut>,
+        tx: &mut Tx,
+    ) -> bool {
+        match modal {
             Modal::Machines => {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => {
-                if self.clipboard_read_key(event, tx).is_none() {
+                if self.clipboard_read_key(event, tx).is_none()
+                    && self.clipboard_write_key(event, tx).is_none()
+                {
                     self.confirm_key(event);
                 }
             }
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
-            _ => {
-                if let Some(action) = action {
-                    self.modal_command(modal, action, tx);
-                }
-            }
+            _ => return false,
         }
+        true
     }
 
     /// A command while `modal` has the keyboard, from a chord or a menu pick.
@@ -200,7 +230,8 @@ impl Desk {
     pub(super) fn send_input(&mut self, send: impl FnOnce(&mut ControlPlane, &ResourceId) -> bool) {
         self.stop_coast();
         self.leave_copy_mode(false);
-        let (Some(client), Some((terminal, Some(view)))) = (self.client.clone(), self.keyboard())
+        let (Some(client), Some((terminal, Some(view)))) =
+            (self.connection.client.clone(), self.keyboard())
         else {
             return;
         };
@@ -242,16 +273,22 @@ impl Desk {
     /// Plain characters arrive as keys instead. While something else has the
     /// keyboard none of it is the terminal's.
     pub fn ime(&mut self, event: &rune::Ime) -> bool {
-        if self.modal().is_some() || self.shown.as_ref().is_none_or(|s| s.view.is_none()) {
-            self.preedit = None;
+        if self.modal().is_some()
+            || self
+                .connection
+                .shown
+                .as_ref()
+                .is_none_or(|s| s.view.is_none())
+        {
+            self.connection.preedit = None;
             return false;
         }
         match event {
             rune::Ime::Preedit(text, ..) => {
-                self.preedit = Some(text.clone()).filter(|t| !t.is_empty());
+                self.connection.preedit = Some(text.clone()).filter(|t| !t.is_empty());
             }
             rune::Ime::Commit(text) => {
-                self.preedit = None;
+                self.connection.preedit = None;
                 self.restart_blink();
                 self.send_input(|control, terminal| control.send_text(terminal, text));
             }
@@ -260,82 +297,6 @@ impl Desk {
             _ => return false,
         }
         true
-    }
-
-    pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
-        match action {
-            Shortcut::Copy => self.copy(tx),
-            Shortcut::SelectAll => self.select_all(tx),
-            Shortcut::Paste => self.paste_clipboard(tx),
-            Shortcut::NewTerminal => self.new_tab(),
-            Shortcut::Tab(index) => self.select_tab(usize::from(index)),
-            Shortcut::RenameSession => self.rename_selected_session(),
-            Shortcut::RenameTab => self.rename_active_tab(),
-            Shortcut::LockTab => self.toggle_tab_lock(),
-            Shortcut::CloseSession => self.close_session(),
-            Shortcut::NewSession => self.new_session(),
-            Shortcut::NextTerminal => self.cycle(1),
-            Shortcut::PreviousTerminal => self.cycle(-1),
-            Shortcut::NextTerminalInSession => self.cycle_in_session(1),
-            Shortcut::PreviousTerminalInSession => self.cycle_in_session(-1),
-            Shortcut::NextSession => self.step_session(1),
-            Shortcut::PreviousSession => self.step_session(-1),
-            Shortcut::ZoomIn => self.zoom(Some(self.font_size + 1.0)),
-            Shortcut::ZoomOut => self.zoom(Some(self.font_size - 1.0)),
-            Shortcut::ZoomReset => self.zoom(None),
-            Shortcut::ScrollTop => self.scroll(Scroll::Top),
-            Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
-            Shortcut::PromptUp => self.scroll(Scroll::Prompt(-1)),
-            Shortcut::PromptDown => self.scroll(Scroll::Prompt(1)),
-            Shortcut::Palette => self.toggle_palette(),
-            Shortcut::ToggleSidebar => self.toggle_sidebar(),
-            Shortcut::Inbox => self.toggle_inbox(),
-            Shortcut::Changes => self.open_changes(),
-            Shortcut::Popup => self.ask_popup(),
-            Shortcut::Galaxy => self.toggle_galaxy(),
-            Shortcut::Reef => self.toggle_reef(),
-            Shortcut::Pitch => self.toggle_pitch(),
-            Shortcut::Kitchen => self.toggle_kitchen(),
-            Shortcut::PitLane => self.toggle_pitlane(),
-            Shortcut::Hive => self.toggle_hive(),
-            Shortcut::Settings => self.toggle_settings(),
-            Shortcut::ChangeTheme => self.open_themes(),
-            Shortcut::SwitchSession => self.switch_sessions(),
-            Shortcut::InsertPath => self.open_paths(),
-            Shortcut::CheckForUpdates => self.updater.check_now(),
-            Shortcut::InstallUpdate => self.install_update(tx),
-            Shortcut::Machines => self.toggle_machines(),
-            Shortcut::PairPhone => self.open_pairing(),
-            Shortcut::RetryConnection => self.reconnect(),
-            Shortcut::CopyDiagnostics => {
-                self.copy_diagnostics(tx);
-                self.say(NoticeKind::Info, "Diagnostics copied.");
-            }
-            Shortcut::ToggleFullScreen => tx.toggle_full_screen(),
-            Shortcut::KeyboardShortcuts => self.show_shortcuts(),
-            Shortcut::EssentialShortcuts => self.show_essentials(),
-            Shortcut::GetStarted => self.open_onboarding(),
-            Shortcut::JumpToAttention => self.jump_to_attention(),
-            Shortcut::SplitRight => self.split(SplitDir::Horizontal),
-            Shortcut::SplitDown => self.split(SplitDir::Vertical),
-            Shortcut::ZoomPane => self.toggle_zoom(),
-            Shortcut::CloseTerminal => self.close_terminal(),
-            Shortcut::CloseTab => self.close_active_tab(),
-            Shortcut::NextTab => self.step_tab(1),
-            Shortcut::PreviousTab => self.step_tab(-1),
-            Shortcut::FocusLeft => self.focus_toward(Direction::Left),
-            Shortcut::FocusRight => self.focus_toward(Direction::Right),
-            Shortcut::FocusUp => self.focus_toward(Direction::Up),
-            Shortcut::FocusDown => self.focus_toward(Direction::Down),
-            Shortcut::Find => self.open_find(),
-            Shortcut::FindNext => self.step_find(-1),
-            Shortcut::FindPrevious => self.step_find(1),
-            Shortcut::FindSelection => self.find_selection(),
-            Shortcut::CopyMode => self.toggle_copy_mode(),
-            Shortcut::CopyConfig => self.copy_config(tx),
-            Shortcut::RestoreSessions => self.restore_sessions(),
-            Shortcut::Bare => self.toggle_bare(),
-        }
     }
 
     /// The user's paste into `terminal`. One that would type line breaks into
@@ -347,7 +308,7 @@ impl Desk {
         if text.is_empty() {
             return;
         }
-        let Some(client) = &self.client else {
+        let Some(client) = &self.connection.client else {
             return;
         };
         let bracketed = client
@@ -364,20 +325,20 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
             Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
-            // Answered through `confirm_pending_tx`, which can read the clipboard.
-            Some(Pending::ClipboardRead(..)) => {}
+            // Answered through `confirm_pending_tx`, which can reach the clipboard.
+            Some(Pending::ClipboardRead(..) | Pending::ClipboardWrite(..)) => {}
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
                 let terminals = terminals
                     .into_iter()
                     .filter(|id| !self.is_document(id))
                     .collect();
-                if let Some(client) = &self.client {
+                if let Some(client) = &self.connection.client {
                     let _ = client.close_terminals(terminals);
                 }
             }
             Some(Pending::CloseSession(key, _)) => {
-                if let Some(client) = &self.client
+                if let Some(client) = &self.connection.client
                     && let Err(error) = client.kill_session(key)
                 {
                     self.say(NoticeKind::Error, format!("Session not closed: {error}"));
@@ -391,28 +352,9 @@ impl Desk {
         self.pending = None;
     }
 
-    fn active_tab(&self) -> Option<usize> {
-        self.tabs.list.iter().position(|tab| tab.active)
-    }
-
-    fn close_active_tab(&mut self) {
-        if let Some(index) = self.active_tab() {
-            self.close_tab(index);
-        }
-    }
-
-    /// The tab `step` along from the active one, wrapping.
-    fn step_tab(&mut self, step: isize) {
-        let count = self.tabs.list.len() as isize;
-        if let Some(index) = self.active_tab() {
-            let next = (index as isize + step).rem_euclid(count) as usize;
-            self.select_tab(next);
-        }
-    }
-
     /// To the terminal it was meant for, wherever the keyboard went since.
     fn send_paste(&mut self, terminal: &ResourceId, text: &str) {
-        if self.topology.is_some() && !self.lists(terminal) {
+        if self.connection.topology.is_some() && !self.lists(terminal) {
             self.say(
                 NoticeKind::Error,
                 "That terminal closed; nothing was pasted.",
@@ -430,7 +372,7 @@ impl Desk {
         if self.is_document(terminal) {
             return false;
         }
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.connection.client.clone() else {
             return false;
         };
         if !client.input_ready(terminal) {
@@ -439,7 +381,7 @@ impl Desk {
         // The server brackets it per DEC 2004 and classifies it. A paste too
         // large for acknowledged input goes as one atomic event, unreceipted.
         let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
-        self.pastes.extend(receipt);
+        self.connection.pastes.extend(receipt);
         self.reclaim_fits();
         client.wake();
         true
@@ -448,7 +390,7 @@ impl Desk {
     /// One acknowledged write resolved. Unknown is never retried: only the
     /// person can see whether it landed.
     pub(super) fn paste_delivered(&mut self, delivery: u64, outcome: DeliveryOutcome) -> bool {
-        if !self.pastes.remove(&delivery) {
+        if !self.connection.pastes.remove(&delivery) {
             return false;
         }
         match outcome {
@@ -465,7 +407,7 @@ impl Desk {
     }
 
     fn scroll(&mut self, scroll: Scroll) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+        let (Some(client), Some(shown)) = (&self.connection.client, &self.connection.shown) else {
             return;
         };
         let Some(view) = shown.view else { return };
@@ -475,7 +417,8 @@ impl Desk {
 
     /// Back to the live tail of a pane scrolled into history.
     pub fn follow_live(&mut self, terminal: &ResourceId) {
-        let (Some(client), Some(view)) = (self.client.clone(), self.view_of(terminal)) else {
+        let (Some(client), Some(view)) = (self.connection.client.clone(), self.view_of(terminal))
+        else {
             return;
         };
         let _ = client.with_control(|control| control.scroll_view(view, Scroll::Bottom));
@@ -484,10 +427,10 @@ impl Desk {
 
     /// The view showing `terminal`, focused or not.
     pub fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
-        match &self.shown {
+        match &self.connection.shown {
             Some(shown) if &shown.resource == terminal => shown.view,
-            _ => (self.others.get(terminal).copied().flatten())
-                .or_else(|| self.popup.view_of(terminal)),
+            _ => (self.connection.others.get(terminal).copied().flatten())
+                .or_else(|| self.connection.popup.view_of(terminal)),
         }
     }
 }

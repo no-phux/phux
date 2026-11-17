@@ -5,13 +5,7 @@ mod retirement;
 
 fn native(d: &mut Desk) {
     d.phone = Some(super::super::phone::Phone::default());
-    d.native = Some(crate::mobile::Platform {
-        target: phux_client_runtime::Target::uds("/tmp/not-used"),
-        active: true,
-        connection_requested: false,
-        paste_requested: false,
-        away_since: None,
-    });
+    d.native = Some(crate::mobile::Platform::test());
 }
 
 fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
@@ -39,7 +33,7 @@ fn tap(rt: &mut Runtime<Desk>, key: &str, at: f64) {
 fn system_keyboard_consumes_the_drawn_accessory_latches_once() {
     use phux_protocol::input::key::{ModSet, PhysicalKey};
     use phux_protocol::wire::frame::FrameKind;
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     native(&mut rt.state);
     rt.set_viewport((393.0, 852.0), 2.0);
     rt.frame(0.0);
@@ -127,11 +121,11 @@ fn native_accessory_escape_cancels_rename_without_typing_behind_it() {
     rt.set_viewport((393.0, 852.0), 2.0);
     rt.frame(0.0);
     tap(&mut rt, "phone-key-Escape", 1.0);
-    assert!(rt.state.tabs.renaming.is_none());
+    assert!(rt.state.connection.tabs.renaming.is_none());
     no_terminal_input(&client);
     rt.update(|d, tx| {
-        d.tabs.renaming = Some(super::super::Renaming::Tab([1; 16]));
-        d.tabs.rename_field.focused = true;
+        d.connection.tabs.renaming = Some(super::super::Renaming::Tab([1; 16]));
+        d.connection.tabs.rename_field.focused = true;
         tx.instant();
     });
     rt.frame(0.0);
@@ -140,10 +134,10 @@ fn native_accessory_escape_cancels_rename_without_typing_behind_it() {
     assert!(rt.find("phone-native-done").is_some());
     tap(&mut rt, "phone-native-done", 2.0);
     assert!(
-        rt.state.tabs.renaming.is_some(),
+        rt.state.connection.tabs.renaming.is_some(),
         "Done must edit focus, not hit the rename scrim"
     );
-    assert!(!rt.state.tabs.rename_field.focused);
+    assert!(!rt.state.connection.tabs.rename_field.focused);
     assert!(
         rt.state.phone.as_ref().unwrap().keyboard,
         "a sheet's Done leaves the terminal's keyboard choice alone"
@@ -166,17 +160,18 @@ fn no_terminal_input(client: &phux_client_runtime::Client) {
 
 #[test]
 fn native_terminal_candidate_geometry_follows_the_real_grid_cursor() {
-    let (_, mut rt) = crate::grid::budget::input_fixture();
-    let shown = rt.state.shown.as_ref().unwrap();
+    let (_, mut rt) = crate::test_support::input_fixture();
+    let shown = rt.state.connection.shown.as_ref().unwrap();
     let terminal = shown.resource.clone();
     let frame = rt
         .state
+        .connection
         .client
         .as_ref()
         .unwrap()
         .acquire_view(shown.view.unwrap())
         .unwrap();
-    rt.state.origins.insert(terminal, [12.0, 34.0]);
+    rt.state.connection.origins.insert(terminal, [12.0, 34.0]);
     let metrics = rt.state.metrics();
     let expected = [
         12.0 + f32::from(frame.cursor.col) * metrics.cell_w,
@@ -226,9 +221,8 @@ fn a_native_connection_replacement_keeps_its_host_and_trust() {
     })
     .unwrap();
     state.native.as_mut().unwrap().active = false;
-    let mut next = Desk::new(&crate::launch::Resolved::embedded(None));
-    state.carry_into(&mut next);
-    let native = next.native.as_ref().unwrap();
+    state.replace_connection(super::super::link::Replacement::Retry);
+    let native = state.native.as_ref().unwrap();
     assert!(!native.active);
     assert_eq!(native.target.cert_fingerprint, Some("11".repeat(32)));
     assert_eq!(native.target.token, Some("22".repeat(32)));
@@ -236,14 +230,14 @@ fn a_native_connection_replacement_keeps_its_host_and_trust() {
         native.target.transport,
         phux_client_runtime::Transport::Quic("localhost:8788".into())
     );
-    assert!(!next.launch.can_ensure());
+    assert!(!state.launch.can_ensure());
 }
 
 #[test]
 fn a_confirm_bar_has_priority_over_a_still_focused_find_field() {
     let (_, mut rt, mut bridge) = field("find-query");
     rt.state.pending = Some(super::super::Pending::Paste(
-        rt.state.shown.as_ref().unwrap().resource.clone(),
+        rt.state.connection.shown.as_ref().unwrap().resource.clone(),
         "two\nlines".into(),
     ));
     assert_eq!(bridge.snapshot(&rt).kind, "control");
@@ -253,7 +247,7 @@ fn a_confirm_bar_has_priority_over_a_still_focused_find_field() {
 fn identical_acp_questions_in_new_activations_retire_the_owner() {
     use phux_protocol::ids::ResourceId;
     use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion, NativeView};
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     native(&mut rt.state);
     let question = NativeQuestion {
         id: "q".into(),
@@ -264,7 +258,7 @@ fn identical_acp_questions_in_new_activations_retire_the_owner() {
         questions: vec![],
         fields: serde_json::Value::Null,
     };
-    let terminal = rt.state.shown.as_ref().unwrap().resource.clone();
+    let terminal = rt.state.connection.shown.as_ref().unwrap().resource.clone();
     let view = NativeView {
         activation: "first".into(),
         backend: "acp".into(),
@@ -330,7 +324,7 @@ fn field(
     Runtime<Desk>,
     Bridge,
 ) {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.prefs = rune::prefs::Prefs::memory();
     rt.update(|d, tx| {
         tx.instant();
@@ -346,8 +340,8 @@ fn field(
                 d.focus_settings_search();
             }
             "rename-field" => {
-                d.tabs.renaming = Some(super::super::Renaming::Tab([1; 16]));
-                d.tabs.rename_field.focused = true;
+                d.connection.tabs.renaming = Some(super::super::Renaming::Tab([1; 16]));
+                d.connection.tabs.rename_field.focused = true;
             }
             "machine-field" => {
                 d.machines.open = true;
@@ -397,6 +391,11 @@ fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
         "machine-field",
     ] {
         let (client, mut rt, mut bridge) = field(key);
+        let editor = crate::ui::element(&rt, key);
+        assert!(
+            editor.label.is_some_and(|label| !label.is_empty()),
+            "{key} needs a name, not just a placeholder"
+        );
         assert!(replace(&mut bridge, &mut rt, "a🦀c", 3, 1).unwrap());
         let snap = bridge.snapshot(&rt);
         assert_eq!(snap.text, "a🦀c", "{key}");
@@ -405,6 +404,36 @@ fn native_fields_edit_synchronously_and_never_reach_the_terminal() {
         assert!(replace(&mut bridge, &mut rt, "a🦀c", 2, 2).is_err());
         assert_eq!(bridge.snapshot(&rt).text, "a🦀c");
     }
+}
+
+#[test]
+fn native_session_filter_returns_to_the_first_result_after_scrolling() {
+    use phux_client_runtime::control::Topology;
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+
+    let (client, mut rt, mut bridge) = field("phone-session-query");
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(
+            (1..=20)
+                .map(|n| SessionInfo::new(SessionId::new(n), format!("session {n}")))
+                .collect(),
+        );
+    rt.update(|d, _| d.connection.topology = Some(Topology::from_snapshot(&snapshot)));
+    rt.frame(0.0);
+    rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 500.0));
+    rt.frame(0.0);
+    assert!(replace(&mut bridge, &mut rt, "session", 7, 7).unwrap());
+    rt.settle_all();
+    rt.frame(1.0);
+    let list = rt.presented("phone-session-list").unwrap().0;
+    let first = rt.presented("phone-session-1").unwrap().0;
+    assert!(
+        first[1] >= list[1] && first[1] - list[1] < 8.0,
+        "{first:?} vs {list:?}"
+    );
+    assert_eq!(bridge.snapshot(&rt).text, "session");
+    no_terminal_input(&client);
 }
 
 #[test]
@@ -451,10 +480,11 @@ fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
     let (client, mut rt, mut bridge) = field("rename-field");
     let snap = bridge.snapshot(&rt);
     rt.state
+        .connection
         .tabs
         .rename_field
         .ime(&rune::Ime::Preedit("held".into(), None, Vec::new()));
-    rt.state.tabs.renaming = Some(super::super::Renaming::Tab([2; 16]));
+    rt.state.connection.tabs.renaming = Some(super::super::Renaming::Tab([2; 16]));
     assert!(
         !bridge
             .apply(
@@ -472,8 +502,8 @@ fn a_rename_retarget_and_closed_field_reject_held_callbacks() {
             )
             .unwrap()
     );
-    assert!(rt.state.tabs.rename_field.text.is_empty());
-    assert!(!rt.state.tabs.rename_field.is_composing());
+    assert!(rt.state.connection.tabs.rename_field.text.is_empty());
+    assert!(!rt.state.connection.tabs.rename_field.is_composing());
     let snap = bridge.snapshot(&rt);
     rt.state.cancel_rename();
     assert!(
@@ -528,16 +558,10 @@ fn changed_text_or_revision_and_invalid_selection_are_atomic_rejections() {
 
 #[test]
 fn a_native_shell_uses_the_full_available_stage_without_drawn_keys() {
-    let (client, mut rt) = crate::grid::budget::input_fixture();
+    let (client, mut rt) = crate::test_support::input_fixture();
     rt.state.prefs = rune::prefs::Prefs::memory();
     rt.state.phone = Some(super::super::phone::Phone::default());
-    rt.state.native = Some(crate::mobile::Platform {
-        target: phux_client_runtime::Target::uds("/tmp/not-used"),
-        active: true,
-        connection_requested: false,
-        paste_requested: false,
-        away_since: None,
-    });
+    rt.state.native = Some(crate::mobile::Platform::test());
     rt.set_viewport((393.0, 600.0), 2.0);
     for _ in 0..120 {
         rt.frame(1.0 / 60.0);

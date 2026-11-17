@@ -1,15 +1,9 @@
-//! Anchored context menu overlay (ADR-0058): a small [`Modal`] pinned to the
-//! pointer cell, whose rows commit [`ResolvedAction`]s through `run_action`.
+//! Anchored context menu overlay (ADR-0058): a [`Modal`] pinned to the
+//! pointer cell whose rows commit [`ResolvedAction`]s.
 //!
-//! The box's top-left corner sits on the anchor (flipping left/up to stay
-//! inside the pane content rect, never over the sidebar or bar), so the
-//! pointer rests on the border: a click-and-release leaves the menu up while
-//! press-drag-release commits the row under the pointer, with no mode flag.
-//!
-//! Up/`k`/`C-p` and Down/`j`/`C-n` move (skipping separators, wrapping),
-//! Home/End jump, the wheel steps, Enter commits, Esc/`q` dismisses. A press
-//! on a row commits, outside dismisses (consumed). Motion hover-tracks, with
-//! the driver raising any-motion reporting while a menu is open.
+//! The top-left corner sits on the anchor (flipping to stay inside the pane
+//! area), so a click-and-release leaves the menu up while press-drag-release
+//! commits the row under the pointer, with no mode flag.
 
 use phux_config::keybind::ResolvedAction;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -400,10 +394,7 @@ mod tests {
     }
 
     fn action(name: &str) -> ResolvedAction {
-        ResolvedAction {
-            action: name.to_owned(),
-            args: std::collections::BTreeMap::new(),
-        }
+        crate::attach::resolved(name, std::collections::BTreeMap::new())
     }
 
     /// split-pane, toggle-zoom, a separator, kill-pane.
@@ -438,17 +429,7 @@ mod tests {
         mouse(MouseAction::Press, MouseButton::Left, x, y)
     }
 
-    fn key(k: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key: k,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
+    use crate::test_util::press as key;
 
     fn committed(cmd: OverlayCommand) -> String {
         match cmd {

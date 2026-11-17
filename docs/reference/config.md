@@ -36,7 +36,8 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 | `[organize]` | Who judges where panes belong for `phux organize`: `TypeSafe`'s Jev with a key, else repository matching. |
-| `[restore]` | Whether a starting server relaunches the panes the last server stop ended, as `phux restore` does by hand. |
+| `[restore]` | Whether a starting server relaunches the panes the last server stop ended, as `phux restore` does by hand, and the `[[restore.program]]` commands a relaunch may resume a program with. |
+| `[forward]` | What `phux forward` may reach from this server: whether it serves TCP forwarding at all, the targets a client may reach besides the server's own loopback, and whether it brokers ssh-agent requests from its panes. |
 | `[rune]` | Settings the Rune desktop app reads at launch; a key set here wins over the choice saved in the app. |
 | `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 
@@ -74,6 +75,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.term` | `"xterm-256color"` |
 | `defaults.window-size` | `"smallest"` |
 | `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
+| `forward.agent` | `false` |
+| `forward.tcp` | `true` |
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
@@ -87,6 +90,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `organize.jev-key-command` | unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is the key, run when the variable is unset |
 | `organize.offline` | `false` |
 | `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
+| `policy.tailnet-owner` | `false` |
 | `restore.on-start` | `false` |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
@@ -273,6 +277,11 @@ which-key-delay-ms = 400
 "o" = "next-pane"
 ";" = "previous-pane"
 "=" = "last-pane"
+
+# Tabs inside one split (`phux slot add` makes them): } and { show the
+# focused slot's next or previous tab, in this client only.
+"}" = "next-slot-tab"
+"{" = "previous-slot-tab"
 
 # Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"

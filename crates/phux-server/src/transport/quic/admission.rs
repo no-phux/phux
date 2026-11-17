@@ -15,6 +15,7 @@ pub(super) async fn admit_connection(
     enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
     refusals: Arc<super::super::RefusalWarnings>,
     satellites: Option<(crate::hub::adopt::SatelliteAdopter, quinn::Endpoint)>,
+    tailnet_owner: Option<std::net::IpAddr>,
 ) -> Option<QuicAccepted> {
     let remote = incoming.remote_address();
     let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
@@ -35,17 +36,17 @@ pub(super) async fn admit_connection(
     // not require, a certificate (ADR-0154), so this is the check that
     // refuses a certificate-less or unenrolled peer, before any stream is
     // read: no bearer preamble and no phux byte.
-    let workload_credential = match &workload_registry {
+    let (workload_credential, owner_device) = match &workload_registry {
         Some(registry) => {
-            let Some(credential) = workload_credential(&conn, registry) else {
+            let Some(admitted) = certificate_or_owner(&conn, registry, tailnet_owner).await else {
                 debug!(%remote, "quic mTLS client identity refused");
                 crate::audit::refused(crate::audit::Transport::Quic, remote.ip(), "certificate");
                 conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                 return None;
             };
-            Some(credential)
+            admitted
         }
-        None => None,
+        None => (None, None),
     };
 
     let (send, mut recv) = match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
@@ -66,7 +67,11 @@ pub(super) async fn admit_connection(
         admission => {
             let preamble = tokio::time::timeout(
                 ADMISSION_DEADLINE,
-                admit_unless_managed(&mut recv, admission, workload_credential.as_ref()),
+                admit_unless_managed(
+                    &mut recv,
+                    admission,
+                    workload_credential.as_ref().or(owner_device.as_ref()),
+                ),
             )
             .await;
             let Ok(Some(credential)) = preamble else {
@@ -90,7 +95,7 @@ pub(super) async fn admit_connection(
     };
 
     let bearer = bearer_admission(&admission, credential.as_ref());
-    let credential = workload_credential.or(credential);
+    let credential = workload_credential.or(owner_device).or(credential);
     let peer = PeerIdentity {
         uid: 0,
         pid: None,
@@ -114,6 +119,30 @@ pub(super) async fn admit_connection(
             bearer,
         },
     ))
+}
+
+/// The workload credential the peer's certificate maps to, else, under
+/// `[policy] tailnet-owner` (the listener's tailnet address in
+/// `tailnet_owner`), the owner device credential of a peer that presented no
+/// certificate at all: one that presented any is judged by it, so a revoked
+/// device stays out. `None` refuses.
+async fn certificate_or_owner(
+    conn: &quinn::Connection,
+    registry: &crate::workload::ReloadingWorkloadRegistry,
+    tailnet_owner: Option<std::net::IpAddr>,
+) -> Option<(
+    Option<crate::auth::AuthenticatedCredential>,
+    Option<crate::auth::AuthenticatedCredential>,
+)> {
+    if let Some(credential) = workload_credential(conn, registry) {
+        return Some((Some(credential), None));
+    }
+    let local = tailnet_owner.filter(|_| conn.peer_identity().is_none())?;
+    let check = crate::auth::admit_tailnet_owner(local, conn.remote_address().ip());
+    let owner = tokio::time::timeout(ADMISSION_DEADLINE, check)
+        .await
+        .ok()??;
+    Some((None, Some(owner)))
 }
 
 /// Hand a connection that negotiated anything but the terminal ALPN to what
@@ -174,18 +203,21 @@ pub(super) async fn admit(
 /// [`admit`], except for a workload credential an organization manages under
 /// the pairing store: the organization's CA and the registry entry are its
 /// authority (`docs/remote.md#managed-by-an-organization`), so its client's
-/// preamble is read and the value ignored. `None` refuses; `Some(None)`
-/// admits with no bearer.
+/// preamble is read and the value ignored. So is a tailnet owner device's,
+/// empty from a client with no token: the tailnet is its authority. `None`
+/// refuses; `Some(None)` admits with no bearer.
 async fn admit_unless_managed(
     recv: &mut quinn::RecvStream,
     admission: &QuicAdmission,
     workload: Option<&crate::auth::AuthenticatedCredential>,
 ) -> Option<Option<crate::auth::AuthenticatedCredential>> {
-    let managed = workload.is_some_and(|credential| credential.managed.is_some());
+    let managed = workload.is_some_and(|credential| {
+        credential.managed.is_some() || crate::auth::is_tailnet_owner(credential)
+    });
     if managed && matches!(admission, QuicAdmission::Store(_)) {
-        return read_length_prefixed(recv, MAX_TOKEN_PREAMBLE)
+        return read_length_prefixed_or_empty(recv, MAX_TOKEN_PREAMBLE)
             .await
-            .map(|_| None);
+            .map(|()| None);
     }
     admit(recv, admission).await.map(Some)
 }
@@ -203,6 +235,20 @@ pub(super) fn bearer_admission(
         )),
         _ => None,
     }
+}
+
+/// Read a preamble that may be empty (`len` 0), discarding its body.
+async fn read_length_prefixed_or_empty(recv: &mut quinn::RecvStream, max: usize) -> Option<()> {
+    let mut len_buf = [0u8; LENGTH_PREFIX];
+    if !read_exact_quic(recv, &mut len_buf).await.ok()? {
+        return None;
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > max {
+        return None;
+    }
+    let mut body = vec![0u8; len];
+    read_exact_quic(recv, &mut body).await.ok()?.then_some(())
 }
 
 /// Read `len: u32 BE` then that many bytes, or `None` when missing, empty,

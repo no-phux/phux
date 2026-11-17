@@ -104,6 +104,19 @@ impl HostRow {
     }
 }
 
+impl HostRow {
+    /// Where the client key is: `file` for a PEM key, `hardware` for one
+    /// this machine's Secure Enclave holds, `None` with no key.
+    pub(super) fn key_kind(&self) -> Option<&'static str> {
+        let key = self.client_key.as_deref()?;
+        Some(if phux_client_runtime::hardware_key::is_hardware_key(key) {
+            "hardware"
+        } else {
+            "file"
+        })
+    }
+}
+
 /// One host name, one colour: a name registered as both a remote and a
 /// satellite with an override on only one role takes it in both; a role
 /// with its own override keeps it.
@@ -149,6 +162,7 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
             "local": {
                 "name": phux_config::instance::local_host_name(),
                 "color": super::color::local_color(),
+                "cert_fingerprint": local_fingerprint(),
             },
         }));
     }
@@ -158,6 +172,15 @@ pub(super) fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
     }
     out!("{}", render_table(&rows));
     ExitCode::SUCCESS
+}
+
+/// The certificate pin this machine's server presents, as `phux pair` prints
+/// it; `None` until a certificate exists. Public: a paired device already
+/// holds it, which is how a handoff names this machine to one.
+fn local_fingerprint() -> Option<String> {
+    use phux_server::transport::tls;
+    let (cert, _) = tls::operator_tls_paths(|var| std::env::var_os(var));
+    tls::cert_fingerprint(&cert.unwrap_or_else(tls::default_cert_path)).ok()
 }
 
 /// Merged ordering: by name, remotes before satellites on a name shared by
@@ -207,16 +230,17 @@ pub(super) fn auth_display(endpoint: &str, has_token: bool, has_pin: bool) -> &'
     }
 }
 
-/// The human table: NAME / ROLE / ENDPOINT / STATE / AUTH, one header line,
-/// one row per entry.
+/// The human table: NAME / ROLE / ENDPOINT / STATE / AUTH / KEY, one header
+/// line, one row per entry. KEY is where the client key is (`file`,
+/// `hardware`), or `-` with none.
 pub(super) fn render_table(rows: &[HostRow]) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:<16} {:<10} {:<40} {:<9} AUTH",
-        "NAME", "ROLE", "ENDPOINT", "STATE"
+        "{:<16} {:<10} {:<40} {:<9} {:<9} KEY",
+        "NAME", "ROLE", "ENDPOINT", "STATE", "AUTH"
     );
     for row in rows {
         let state = match row.enabled {
@@ -232,10 +256,11 @@ pub(super) fn render_table(rows: &[HostRow]) -> String {
         );
         let _ = writeln!(
             out,
-            "{:<16} {:<10} {:<40} {state:<9} {auth}",
+            "{:<16} {:<10} {:<40} {state:<9} {auth:<9} {}",
             row.name,
             row.role.as_str(),
-            row.endpoint
+            row.endpoint,
+            row.key_kind().unwrap_or("-")
         );
     }
     out
@@ -258,6 +283,7 @@ pub(super) fn row_json(row: &HostRow) -> serde_json::Value {
         // Paths only, like the token file: the key bytes never appear.
         "client_cert": row.client_cert.as_ref().map(|p| p.display().to_string()),
         "client_key": row.client_key.as_ref().map(|p| p.display().to_string()),
+        "client_key_kind": row.key_kind(),
         "color": phux_config::host_color::resolve(&row.name, row.color.as_deref()),
     })
 }

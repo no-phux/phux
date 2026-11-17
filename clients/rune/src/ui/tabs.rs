@@ -134,7 +134,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
     };
     let roomy = width >= ROOMY;
     let grab = Grab::Tab(tab.id);
-    let target = desk.reorder.target() == Some(grab);
+    let target = desk.connection.reorder.target() == Some(grab);
     let base = pressable(format!("tab-{index}"), ink)
         .h(HEIGHT)
         .pl(if roomy { 10.0 } else { 7.0 })
@@ -151,7 +151,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
         })
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
-            d.reorder.laid_out(grab, rect);
+            d.connection.reorder.laid_out(grab, rect);
             tx.live_only();
         });
     let base = if tab.active {
@@ -199,13 +199,13 @@ fn divider(shown: bool, ink: &Ink) -> El {
 }
 
 pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
-    let tabs = &desk.tabs.list;
+    let tabs = &desk.connection.tabs.list;
     if tabs.len() < 2 {
         return None;
     }
-    let width = share(desk.tabs.room, tabs.len());
+    let width = share(desk.connection.tabs.room, tabs.len());
     let mut line = row().key("tabs").shrink().min_w(0.0).items_center();
-    if crowded(desk.tabs.room, tabs.len()) {
+    if crowded(desk.connection.tabs.room, tabs.len()) {
         // More tabs than the bar holds fade out at its end, never over it.
         line = line.clip_fade(0.0, 0.0, 14.0, 0.0);
     }
@@ -231,7 +231,7 @@ pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
 }
 
 pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
-    let title = match desk.tabs.renaming.as_ref()? {
+    let title = match desk.connection.tabs.renaming.as_ref()? {
         Renaming::Session(_) => "Rename session",
         Renaming::Tab(_) => "Rename tab",
     };
@@ -243,14 +243,15 @@ pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .fill(ink.separator)
         .child(
             text_input(
-                &desk.tabs.rename_field,
+                &desk.connection.tabs.rename_field,
                 TextStyle::new(14.0, 400.0).lh(20.0),
             )
             .key("rename-field")
+            .label("New name")
             .single_line()
             .grow(1.0)
             .color(ink.text)
-            .on_edit(|d: &mut Desk| &mut d.tabs.rename_field)
+            .on_edit(|d: &mut Desk| &mut d.connection.tabs.rename_field)
             .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
             .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
         );
@@ -313,9 +314,9 @@ mod tests {
     }
 
     fn laid_out(count: u8, active: u8, window: (f32, f32)) -> rune::Runtime<Desk> {
-        let mut desk = Desk::settings_test_fixture();
+        let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
-        desk.tabs.list = named(count, active);
+        desk.connection.tabs.list = named(count, active);
         let mut rt = rune::Runtime::new(desk, crate::ui::view, window, rune::Env::new(false, 1.0));
         // The bar reports its room on the first frame; the tabs fit it after.
         for frame in 0..4 {
@@ -332,13 +333,18 @@ mod tests {
             (30, (640.0, 400.0)),
         ] {
             let rt = laid_out(count, 1, window);
-            assert!(rt.state.tabs.room > 0.0, "the bar reported its room");
+            assert!(
+                rt.state.connection.tabs.room > 0.0,
+                "the bar reported its room"
+            );
             let add = rt.presented("tab-new").expect("the new-tab button").0;
             let bell = rt.presented("news-button").expect("the bell").0;
             // Every tab is inside the strip, which ends before the button:
             // none is drawn past its own box.
             let last = rt.presented(&format!("tab-{}", count - 1));
-            if let Some((last, ..)) = last.filter(|_| !crowded(rt.state.tabs.room, count.into())) {
+            if let Some((last, ..)) =
+                last.filter(|_| !crowded(rt.state.connection.tabs.room, count.into()))
+            {
                 assert!(
                     last[0] + last[2] <= add[0] + 0.5,
                     "{count} tabs: the last ends at {}, new-tab starts at {}",

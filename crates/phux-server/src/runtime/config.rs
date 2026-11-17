@@ -57,6 +57,10 @@ pub struct ServerConfig {
     pub keep_awake: phux_config::KeepAwake,
     /// `[voice]`: the transcriber behind `TRANSCRIBE`.
     pub voice: phux_config::VoiceCfg,
+    /// `[restore]`: the `[[restore.program]]` commands a relaunch may run.
+    pub restore: phux_config::RestoreCfg,
+    /// `[forward]`: whether `FORWARD_*` is served and what it may dial.
+    pub forward: phux_config::ForwardCfg,
     /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
     /// stored at one key.
     pub metadata_value_bytes: u32,
@@ -77,6 +81,10 @@ pub struct ServerConfig {
     /// which refuses to start (ADR-0179); with an injected
     /// [`Self::policy_engine`] it leaves that engine in charge.
     pub policy_mode: Option<phux_config::PolicyMode>,
+    /// `[policy] tailnet-owner` (`docs/config.md#tailnet-owner-devices`):
+    /// under `paired`, the tailnet QUIC listener admits the owner's own
+    /// devices with no token or certificate.
+    pub tailnet_owner: bool,
     /// Event-hook catalog; empty means no dispatcher task runs.
     pub hook_catalog: crate::hooks::HookCatalog,
     /// Exit once no client connection has been open for this long
@@ -160,12 +168,15 @@ impl ServerConfig {
             window_size: phux_config::WindowSize::default(),
             keep_awake: phux_config::KeepAwake::default(),
             voice: phux_config::VoiceCfg::default(),
+            restore: phux_config::RestoreCfg::default(),
+            forward: phux_config::ForwardCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             approval_ttl_secs: phux_config::DEFAULT_APPROVAL_TTL_SECS,
             approval_max_pending: phux_config::DEFAULT_APPROVAL_MAX_PENDING,
             approval_max_pending_total: phux_config::DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             policy_engine: None,
             policy_mode: None,
+            tailnet_owner: false,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
             env: ServerEnv::default(),

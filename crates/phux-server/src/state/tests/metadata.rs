@@ -34,210 +34,86 @@ fn unattached_l3_client(
     (cid, tx, rx)
 }
 
-/// Pull every queued frame off `rx` and return the inner frames.
-fn drain_frames(rx: &mut mpsc::Receiver<Outbound>) -> Vec<FrameKind> {
+/// Every queued `METADATA_CHANGED` on `rx`, as `(scope, key, value)`.
+fn changes(rx: &mut mpsc::Receiver<Outbound>) -> Vec<(Scope, String, Option<Vec<u8>>)> {
     let mut out = Vec::new();
     while let Ok(msg) = rx.try_recv() {
-        let Outbound::Frame(f) = msg else {
-            panic!("unexpected terminal outbound sentinel")
+        let Outbound::Frame(FrameKind::MetadataChanged {
+            scope, key, value, ..
+        }) = msg
+        else {
+            panic!("expected METADATA_CHANGED, got {msg:?}")
         };
-        out.push(f);
+        out.push((scope, key, value));
     }
     out
 }
 
 #[test]
-fn metadata_subscribe_then_set_broadcasts_matching_key() {
+fn metadata_set_broadcasts_only_the_subscribed_scope_and_key() {
     let mut s = ServerState::new();
     let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let scope = Scope::Group(DEFAULT_GROUP_ID);
+    let key = "phux.tui.layout/v1";
+    let group = Scope::Group(DEFAULT_GROUP_ID);
+    s.metadata_subscribe(cid, group.clone(), key.to_owned(), tx);
 
-    s.metadata_subscribe(cid, scope.clone(), "phux.tui.layout/v1".to_owned(), tx);
-    let delivered = s.metadata_set(&scope, "phux.tui.layout/v1", b"value-1".to_vec());
-
-    assert_eq!(delivered, vec![cid]);
-    let frames = drain_frames(&mut rx);
-    assert_eq!(frames.len(), 1);
-    match &frames[0] {
-        FrameKind::MetadataChanged {
-            scope: s2,
-            key,
-            value,
-            ..
-        } => {
-            assert_eq!(s2, &scope);
-            assert_eq!(key, "phux.tui.layout/v1");
-            assert_eq!(value.as_deref(), Some(b"value-1".as_slice()));
-        }
-        other => panic!("expected MetadataChanged, got {other:?}"),
+    let terminal = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
+    for other in [terminal, Scope::Global] {
+        assert!(s.metadata_set(&other, key, b"t".to_vec()).is_empty());
     }
-}
-
-/// An unattached subscriber (`phux watch`) still receives fanout.
-#[test]
-fn metadata_broadcast_reaches_a_subscriber_that_never_attached() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = unattached_l3_client(&mut s);
-    let scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
-    let key = phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
-    s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
-    let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
-    let delivered = s.metadata_set(&scope, key, record.clone());
-
-    assert_eq!(
-        delivered,
-        vec![cid],
-        "a subscriber with no `attached` entry must still be a fanout target",
+    assert!(
+        s.metadata_set(&group, "phux.b/v1", b"x".to_vec())
+            .is_empty()
     );
-    let frames = drain_frames(&mut rx);
-    assert_eq!(frames.len(), 1);
-    match &frames[0] {
-        FrameKind::MetadataChanged {
-            scope: s2,
-            key: k,
-            value,
-            ..
-        } => {
-            assert_eq!(s2, &scope);
-            assert_eq!(k, key);
-            assert_eq!(value.as_deref(), Some(record.as_slice()));
-        }
-        other => panic!("expected MetadataChanged, got {other:?}"),
-    }
+    assert_eq!(s.metadata_set(&group, key, b"value-1".to_vec()), vec![cid]);
+    let expected = (group.clone(), key.to_owned(), Some(b"value-1".to_vec()));
+    assert_eq!(changes(&mut rx), vec![expected]);
+    assert!(
+        s.metadata_set(&group, key, b"value-1".to_vec()).is_empty(),
+        "unchanged value"
+    );
+    assert!(changes(&mut rx).is_empty());
 }
 
-/// ...including DELETE tombstones.
+/// An unattached subscriber (`phux watch`) still receives fanout, tombstones
+/// included; deleting a missing key is silent.
 #[test]
-fn metadata_tombstone_reaches_a_subscriber_that_never_attached() {
+fn metadata_set_and_tombstone_reach_a_subscriber_that_never_attached() {
     let mut s = ServerState::new();
     let (cid, tx, mut rx) = unattached_l3_client(&mut s);
     let scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
     let key = phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
     s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
-    s.metadata_set(&scope, key, br#"{"name":"claude"}"#.to_vec());
-    drain_frames(&mut rx);
 
-    let delivered = s.metadata_delete(&scope, key);
-    assert_eq!(delivered, vec![cid]);
-    let frames = drain_frames(&mut rx);
-    assert_eq!(frames.len(), 1);
-    assert!(matches!(
-        &frames[0],
-        FrameKind::MetadataChanged { value: None, .. }
-    ));
+    assert!(s.metadata_delete(&scope, key).is_empty());
+    let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
+    assert_eq!(s.metadata_set(&scope, key, record.clone()), vec![cid]);
+    assert_eq!(s.metadata_delete(&scope, key), vec![cid]);
+    assert_eq!(
+        changes(&mut rx),
+        vec![
+            (scope.clone(), key.to_owned(), Some(record)),
+            (scope, key.to_owned(), None)
+        ]
+    );
 }
 
-/// Detach forgets the captured mailbox, bounding the map.
+/// Detach forgets the subscription and its captured mailbox, attached or not.
 #[test]
-fn detach_forgets_the_captured_metadata_mailbox() {
+fn detach_drops_metadata_subscriptions_and_their_mailboxes() {
     let mut s = ServerState::new();
-    let (cid, tx, mut rx) = unattached_l3_client(&mut s);
+    let (attached, attached_tx, mut attached_rx) = attach_l3_client(&mut s);
+    let (headless, headless_tx, mut headless_rx) = unattached_l3_client(&mut s);
     let scope = Scope::Global;
-    s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
-
-    s.detach(cid);
-
-    let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    assert!(delivered.is_empty());
-    assert!(drain_frames(&mut rx).is_empty());
-}
-
-#[test]
-fn metadata_set_on_different_key_does_not_fan_to_subscriber() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let scope = Scope::Group(DEFAULT_GROUP_ID);
-
-    s.metadata_subscribe(cid, scope.clone(), "phux.a/v1".to_owned(), tx);
-    let delivered = s.metadata_set(&scope, "phux.b/v1", b"x".to_vec());
-
-    assert!(delivered.is_empty(), "no subscriber for the b/v1 key");
-    assert!(drain_frames(&mut rx).is_empty());
-}
-
-#[test]
-fn metadata_scope_isolation_terminal_vs_group_vs_global() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let key = "phux.same/v1";
-    let t_scope = Scope::Resource(phux_protocol::ids::ResourceId::local(7));
-    let c_scope = Scope::Group(DEFAULT_GROUP_ID);
-    let g_scope = Scope::Global;
-
-    // Only subscribe to Group.
-    s.metadata_subscribe(cid, c_scope.clone(), key.to_owned(), tx);
-
-    // Writes to Terminal and Global must NOT fire the subscriber.
-    assert!(s.metadata_set(&t_scope, key, b"t".to_vec()).is_empty());
-    assert!(s.metadata_set(&g_scope, key, b"g".to_vec()).is_empty());
-
-    // Write to Group MUST fire it.
-    let delivered = s.metadata_set(&c_scope, key, b"c".to_vec());
-    assert_eq!(delivered, vec![cid]);
-
-    // And the receiver MUST see exactly one frame (for Group).
-    let frames = drain_frames(&mut rx);
-    assert_eq!(frames.len(), 1);
-    match &frames[0] {
-        FrameKind::MetadataChanged { scope, value, .. } => {
-            assert_eq!(scope, &c_scope);
-            assert_eq!(value.as_deref(), Some(b"c".as_slice()));
-        }
-        other => panic!("expected MetadataChanged, got {other:?}"),
-    }
-}
-
-#[test]
-fn metadata_delete_emits_tombstone_only_if_key_existed() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let scope = Scope::Global;
-
-    s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
-
-    // Deleting a missing key is idempotent and silent.
-    let delivered = s.metadata_delete(&scope, "phux.k/v1");
-    assert!(delivered.is_empty());
-    assert!(drain_frames(&mut rx).is_empty());
-
-    // After a SET, DELETE fires the tombstone.
-    s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    drain_frames(&mut rx); // consume the SET broadcast
-
-    let delivered = s.metadata_delete(&scope, "phux.k/v1");
-    assert_eq!(delivered, vec![cid]);
-    let frames = drain_frames(&mut rx);
-    assert_eq!(frames.len(), 1);
-    match &frames[0] {
-        FrameKind::MetadataChanged {
-            value: None,
-            key,
-            scope: s2,
-            ..
-        } => {
-            assert_eq!(key, "phux.k/v1");
-            assert_eq!(s2, &scope);
-        }
-        other => panic!("expected tombstone MetadataChanged, got {other:?}"),
-    }
-}
-
-#[test]
-fn metadata_set_unchanged_value_does_not_broadcast() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let scope = Scope::Global;
-    s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
-
-    let first = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    assert_eq!(first, vec![cid]);
-    drain_frames(&mut rx);
-
-    let second = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    assert!(second.is_empty(), "no broadcast on identical write");
-    assert!(drain_frames(&mut rx).is_empty());
+    s.metadata_subscribe(attached, scope.clone(), "phux.k/v1".to_owned(), attached_tx);
+    s.metadata_subscribe(headless, scope.clone(), "phux.k/v1".to_owned(), headless_tx);
+    s.detach(attached);
+    s.detach(headless);
+    assert!(
+        s.metadata_set(&scope, "phux.k/v1", b"v".to_vec())
+            .is_empty()
+    );
+    assert!(changes(&mut attached_rx).is_empty() && changes(&mut headless_rx).is_empty());
 }
 
 #[test]
@@ -253,24 +129,9 @@ fn non_l3_consumer_does_not_receive_metadata_changed() {
     s.metadata_subscribe(l1_cid, scope.clone(), "phux.k/v1".to_owned(), l1_tx);
 
     let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    // Only the L3 client makes it through.
     assert_eq!(delivered, vec![l3_cid]);
-    assert_eq!(drain_frames(&mut l3_rx).len(), 1);
-    assert!(drain_frames(&mut l1_rx).is_empty());
-}
-
-#[test]
-fn detach_drops_metadata_subscriptions() {
-    let mut s = ServerState::new();
-    let (cid, tx, mut rx) = attach_l3_client(&mut s);
-    let scope = Scope::Global;
-    s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
-
-    s.detach(cid);
-
-    let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
-    assert!(delivered.is_empty());
-    assert!(drain_frames(&mut rx).is_empty());
+    assert_eq!(changes(&mut l3_rx).len(), 1);
+    assert!(changes(&mut l1_rx).is_empty());
 }
 
 /// `detach` keeps connection-scoped state (negotiated layers, peer
@@ -286,37 +147,22 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
             ssh_origin: None,
             bearer: None,
             peer: phux_protocol::policy::PeerIdentity {
-                uid: 0,
-                pid: None,
-                exe_path: None,
                 mcp_host_key: Some("credential-id".to_owned()),
-                transport: phux_protocol::policy::TransportType::WebSocket,
-                source_addr: None,
+                ..crate::test_support::peer(phux_protocol::policy::TransportType::WebSocket)
             },
             credential: Some(crate::auth::AuthenticatedCredential {
-                id: "credential-id".to_owned(),
                 principal: "device:cockpit".to_owned(),
-                scopes: vec![crate::auth::TERMINAL_CONTROL_SCOPE.to_owned()],
-                issued_at: chrono::Utc::now(),
                 expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                 generation: 7,
-                registry_instance: None,
-                subject: None,
-                managed: None,
+                ..crate::test_support::credential(
+                    "credential-id",
+                    &[crate::auth::TERMINAL_CONTROL_SCOPE],
+                )
             }),
         },
     );
-    s.set_peer_identity(
-        l1_cid,
-        phux_protocol::policy::PeerIdentity {
-            uid: 501,
-            pid: Some(4242),
-            exe_path: None,
-            mcp_host_key: None,
-            transport: phux_protocol::policy::TransportType::UnixSocket,
-            source_addr: None,
-        },
-    );
+    let unix = phux_protocol::policy::TransportType::UnixSocket;
+    s.set_peer_identity(l1_cid, crate::test_support::peer(unix));
 
     s.detach(cid);
     s.detach(l1_cid);
@@ -346,17 +192,8 @@ fn detach_keeps_negotiated_layers_and_peer_identity() {
 fn forget_connection_drops_negotiated_layers_and_peer_identity() {
     let mut s = ServerState::new();
     let (cid, _tx, _rx) = attach_l1_only_client_seeded(&mut s);
-    s.set_peer_identity(
-        cid,
-        phux_protocol::policy::PeerIdentity {
-            uid: 501,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: None,
-            transport: phux_protocol::policy::TransportType::UnixSocket,
-            source_addr: None,
-        },
-    );
+    let unix = phux_protocol::policy::TransportType::UnixSocket;
+    s.set_peer_identity(cid, crate::test_support::peer(unix));
 
     s.forget_connection(cid);
 
@@ -376,29 +213,16 @@ fn attach_l1_only_client_seeded(
 }
 
 #[test]
-fn metadata_list_returns_keys_sorted_and_scope_isolated() {
+fn metadata_get_and_list_are_scope_isolated_and_sorted() {
     let mut s = ServerState::new();
-    let scope_a = Scope::Group(DEFAULT_GROUP_ID);
-    let scope_b = Scope::Global;
-
-    s.metadata_set(&scope_a, "zeta", b"z".to_vec());
-    s.metadata_set(&scope_a, "alpha", b"a".to_vec());
-    s.metadata_set(&scope_a, "mu", b"m".to_vec());
-    s.metadata_set(&scope_b, "global-only", b"g".to_vec());
-
-    let keys_a = s.metadata().list(&scope_a);
-    assert_eq!(keys_a, vec!["alpha", "mu", "zeta"]);
-    let keys_b = s.metadata().list(&scope_b);
-    assert_eq!(keys_b, vec!["global-only"]);
-}
-
-#[test]
-fn metadata_get_returns_stored_value_or_none() {
-    let mut s = ServerState::new();
-    let scope = Scope::Group(DEFAULT_GROUP_ID);
-    s.metadata_set(&scope, "k", b"v".to_vec());
-    assert_eq!(s.metadata().get(&scope, "k"), Some(b"v".to_vec()));
-    assert_eq!(s.metadata().get(&scope, "missing"), None);
-    // Wrong scope: same key returns None.
-    assert_eq!(s.metadata().get(&Scope::Global, "k"), None);
+    let (group, global) = (Scope::Group(DEFAULT_GROUP_ID), Scope::Global);
+    for key in ["zeta", "alpha", "mu"] {
+        s.metadata_set(&group, key, key.as_bytes().to_vec());
+    }
+    s.metadata_set(&global, "global-only", b"g".to_vec());
+    assert_eq!(s.metadata().list(&group), vec!["alpha", "mu", "zeta"]);
+    assert_eq!(s.metadata().list(&global), vec!["global-only"]);
+    assert_eq!(s.metadata().get(&group, "mu"), Some(b"mu".to_vec()));
+    assert_eq!(s.metadata().get(&group, "missing"), None);
+    assert_eq!(s.metadata().get(&global, "mu"), None);
 }

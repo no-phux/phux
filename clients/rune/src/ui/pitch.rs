@@ -11,8 +11,7 @@
 
 use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
 
-use super::reef::pen::Pen;
-use super::reef::rgba;
+use super::playground::pen::{Pen, rgba};
 use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
 use crate::creature;
 use crate::desk::Desk;

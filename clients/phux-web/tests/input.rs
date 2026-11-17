@@ -19,6 +19,18 @@ fn key<'a>(key: &'a str, code: &'a str) -> BrowserKey<'a> {
     }
 }
 
+/// `key` at `code` with the `+`-joined modifiers in `mods` held.
+fn chord<'a>(mods: &str, key: &'a str, code: &'a str) -> BrowserKey<'a> {
+    let held = |name| mods.split('+').any(|m| m == name);
+    BrowserKey {
+        ctrl: held("ctrl"),
+        shift: held("shift"),
+        alt: held("alt"),
+        meta: held("meta"),
+        ..self::key(key, code)
+    }
+}
+
 #[wasm_bindgen_test]
 fn function_numpad_and_intl_codes_reach_their_physical_keys() {
     for (code, expected) in [
@@ -72,42 +84,20 @@ fn ime_dead_and_unidentified_keystrokes_stay_with_the_browser() {
 
 #[wasm_bindgen_test]
 fn platform_shortcuts_and_paste_chords_stay_with_the_browser() {
-    let command_f = BrowserKey {
-        meta: true,
-        ..key("f", "KeyF")
-    };
-    assert!(
-        route_key(&command_f).is_none(),
-        "Command+F is the browser's"
-    );
-    let command_v = BrowserKey {
-        meta: true,
-        ..key("v", "KeyV")
-    };
-    assert!(route_key(&command_v).is_none(), "Command+V raises paste");
-    let ctrl_shift_v = BrowserKey {
-        ctrl: true,
-        shift: true,
-        ..key("V", "KeyV")
-    };
-    assert!(
-        route_key(&ctrl_shift_v).is_none(),
-        "Ctrl+Shift+V raises paste"
-    );
-    let shift_insert = BrowserKey {
-        shift: true,
-        ..key("Insert", "Insert")
-    };
-    assert!(
-        route_key(&shift_insert).is_none(),
-        "Shift+Insert raises paste"
-    );
+    for browser in [
+        chord("meta", "f", "KeyF"),
+        chord("meta", "v", "KeyV"),
+        chord("ctrl+shift", "V", "KeyV"),
+        chord("shift", "Insert", "Insert"),
+    ] {
+        assert!(
+            route_key(&browser).is_none(),
+            "{browser:?} is the browser's"
+        );
+    }
 
     // Plain Ctrl+V stays the terminal's literal-next.
-    let ctrl_v = BrowserKey {
-        ctrl: true,
-        ..key("v", "KeyV")
-    };
+    let ctrl_v = chord("ctrl", "v", "KeyV");
     let event = route_key(&ctrl_v).expect("Ctrl+V is terminal input");
     assert_eq!(event.key, PhysicalKey::V);
     assert_eq!(event.mods, ModSet::CTRL);
@@ -116,10 +106,7 @@ fn platform_shortcuts_and_paste_chords_stay_with_the_browser() {
 
 #[wasm_bindgen_test]
 fn printable_keys_carry_text_and_the_modifiers_spent_producing_it() {
-    let shifted = BrowserKey {
-        shift: true,
-        ..key("A", "KeyA")
-    };
+    let shifted = chord("shift", "A", "KeyA");
     let event = route_key(&shifted).unwrap();
     assert_eq!(event.text.as_deref(), Some("A"));
     assert_eq!(event.mods, ModSet::SHIFT);
@@ -138,19 +125,13 @@ fn printable_keys_carry_text_and_the_modifiers_spent_producing_it() {
     assert_eq!(event.mods, ModSet::empty());
 
     // macOS Option composes "å": Alt was spent, so no ESC prefix.
-    let option_a = BrowserKey {
-        alt: true,
-        ..key("\u{e5}", "KeyA")
-    };
+    let option_a = chord("alt", "\u{e5}", "KeyA");
     let event = route_key(&option_a).unwrap();
     assert_eq!(event.text.as_deref(), Some("\u{e5}"));
     assert_eq!(event.consumed_mods, ModSet::ALT);
 
     // Alt with an ASCII letter stays a Meta chord.
-    let alt_b = BrowserKey {
-        alt: true,
-        ..key("b", "KeyB")
-    };
+    let alt_b = chord("alt", "b", "KeyB");
     let event = route_key(&alt_b).unwrap();
     assert_eq!(event.mods, ModSet::ALT);
     assert_eq!(event.consumed_mods, ModSet::empty());
@@ -220,48 +201,20 @@ fn clipboard_paste_is_trusted_and_bounded() {
 }
 
 #[wasm_bindgen_test]
-fn command_c_and_ctrl_shift_c_are_copy_chords() {
-    let command_c = BrowserKey {
-        meta: true,
-        ..key("c", "KeyC")
-    };
-    assert!(is_copy_chord(&command_c));
-    let ctrl_shift_c = BrowserKey {
-        ctrl: true,
-        shift: true,
-        ..key("C", "KeyC")
-    };
-    assert!(is_copy_chord(&ctrl_shift_c));
-    let ctrl_c = BrowserKey {
-        ctrl: true,
-        ..key("c", "KeyC")
-    };
-    assert!(!is_copy_chord(&ctrl_c), "Ctrl+C stays the interrupt");
-}
-
-#[wasm_bindgen_test]
-fn command_f_and_ctrl_shift_f_open_find() {
-    let command_f = BrowserKey {
-        meta: true,
-        ..key("f", "KeyF")
-    };
-    assert!(is_find_chord(&command_f));
-    let ctrl_shift_f = BrowserKey {
-        ctrl: true,
-        shift: true,
-        ..key("F", "KeyF")
-    };
-    assert!(is_find_chord(&ctrl_shift_f));
-    let ctrl_f = BrowserKey {
-        ctrl: true,
-        ..key("f", "KeyF")
-    };
-    assert!(!is_find_chord(&ctrl_f), "Ctrl+F stays the terminal's");
-    let command_shift_f = BrowserKey {
-        shift: true,
-        ..command_f
-    };
-    assert!(!is_find_chord(&command_shift_f));
+fn command_and_ctrl_shift_chords_copy_and_find() {
+    for (chord, copy, find) in [
+        (chord("meta", "c", "KeyC"), true, false),
+        (chord("ctrl+shift", "C", "KeyC"), true, false),
+        // Ctrl+C stays the interrupt, and Ctrl+F the terminal's.
+        (chord("ctrl", "c", "KeyC"), false, false),
+        (chord("meta", "f", "KeyF"), false, true),
+        (chord("ctrl+shift", "F", "KeyF"), false, true),
+        (chord("ctrl", "f", "KeyF"), false, false),
+        (chord("meta+shift", "f", "KeyF"), false, false),
+    ] {
+        assert_eq!(is_copy_chord(&chord), copy, "{chord:?}");
+        assert_eq!(is_find_chord(&chord), find, "{chord:?}");
+    }
 }
 
 #[wasm_bindgen_test]
@@ -403,11 +356,7 @@ fn a_ctrl_chord_drops_the_text_so_the_server_sends_the_control_byte() {
     assert_eq!(c.mods, ModSet::CTRL);
     assert_eq!(c.consumed_mods, ModSet::empty());
     assert_eq!(c.text, None);
-    let shifted = route_key(&BrowserKey {
-        shift: true,
-        ..key("C", "KeyC")
-    })
-    .unwrap();
+    let shifted = route_key(&chord("shift", "C", "KeyC")).unwrap();
     let chord = with_ctrl(shifted);
     assert_eq!(chord.mods, ModSet::CTRL | ModSet::SHIFT);
     assert_eq!(chord.text, None);

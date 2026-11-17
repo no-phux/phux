@@ -40,6 +40,8 @@ Darwin)
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$app/Contents/MacOS/phux-rune"
     notices aarch64-apple-darwin "$app/Contents/Resources"
+    python3 "$here/scripts/bundle_tmd.py" "$app/Contents/MacOS" "$app/Contents/Resources"
+    codesign --force --sign - --timestamp=none "$app/Contents/MacOS/tmd"
     # CFBundleVersion takes only dot-separated integers: drop a prerelease.
     sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/${version%%-*}/g" \
         "$here/packaging/Info.plist" > "$app/Contents/Info.plist"
@@ -71,6 +73,7 @@ Linux)
     cp "$binary" "$here/README.md" "$here/packaging/sh.phux.rune.desktop" "$dir/"
     cp "$here/packaging/AppIcon.png" "$dir/sh.phux.rune.png"
     notices "$arch-unknown-linux-gnu" "$dir"
+    python3 "$here/scripts/bundle_tmd.py" "$dir" "$dir"
     # Marks a packaged install: only those update themselves.
     printf '%s\n' "$version" > "$dir/phux-rune.release"
     archive="phux-rune-$version-linux-$arch.tar.gz"

@@ -65,8 +65,16 @@ impl PerTerminalMouseEncoder {
         terminal: &GhosttyTerminal<'_, '_>,
         cell_px: (u16, u16),
     ) -> Result<&[u8], Error> {
-        let options = libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)?;
+        let options = self.options_from_terminal(terminal)?;
         self.encode_with_options(event, options, terminal.cols()?, terminal.rows()?, cell_px)
+    }
+
+    pub(crate) fn options_from_terminal(
+        &mut self,
+        terminal: &GhosttyTerminal<'_, '_>,
+    ) -> Result<libghostty_vt::mouse::EncoderOptions, Error> {
+        self.encoder.set_options_from_terminal(terminal);
+        self.encoder.options()
     }
 
     /// Encode from exact terminal-derived mode and geometry snapshots.

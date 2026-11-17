@@ -11,11 +11,6 @@ use std::process::ExitCode;
 pub(crate) const NOT_CONFIRMED: u8 = 2;
 
 /// Whether the verb may go ahead: `--yes`, or a "y" at a terminal prompt.
-///
-/// # Errors
-///
-/// [`NOT_CONFIRMED`] when stdin is not a terminal and `yes` is unset, or
-/// when the prompt's answer is anything but yes.
 pub(crate) fn confirmed(yes: bool, action: &str) -> Result<(), ExitCode> {
     confirmed_for(false, yes, action)
 }

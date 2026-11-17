@@ -8,6 +8,7 @@ mod hook_transcript;
 mod list;
 mod model;
 mod native_host;
+mod notify;
 mod offline;
 mod prompt;
 mod record;
@@ -38,6 +39,7 @@ use self::model::{AgentStateReport, PaneEvidence};
 use self::record::{run_agent_clear, run_agent_set};
 
 pub(crate) use self::action::AgentAction;
+pub(crate) use self::notify::run_notify;
 pub(crate) use self::record::fetch_agent_index;
 pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
 
@@ -428,13 +430,18 @@ fn window_label(snapshot: &SessionSnapshot, pane: &ResourceInfo, in_session: boo
         .map_or_else(|| "unknown".to_owned(), |w| format!("window-{}", w.index))
 }
 
+/// The `agent list --json` / `agent show --json` document. Its shape is
+/// documented in docs/build-a-client.md and checked against it by a test.
+fn agents_document(states: &[AgentStateReport]) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "agents": states,
+    })
+}
+
 fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) -> ExitCode {
     if json {
-        let value = serde_json::json!({
-            "schema_version": 1,
-            "agents": states,
-        });
-        return match serde_json::to_string_pretty(&value) {
+        return match serde_json::to_string_pretty(&agents_document(states)) {
             Ok(rendered) => {
                 outln!("{rendered}");
                 ExitCode::SUCCESS
@@ -475,6 +482,9 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod client_contract;
 
 #[cfg(test)]
 mod tests {

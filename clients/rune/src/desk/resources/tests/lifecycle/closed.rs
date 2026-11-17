@@ -33,21 +33,24 @@ fn document_wire_closures_skip_dead_siblings_in_either_order_before_organization
         rt.update(|d, tx| {
             d.observe(&client, observation, tx);
             assert_eq!(
-                d.wanted.as_ref().map(|(id, _)| id),
+                d.connection.wanted.as_ref().map(|(id, _)| id),
                 Some(&id(1)),
                 "only a live terminal can reach create_view"
             );
         });
         step(&mut rt);
         assert_eq!(focus(&rt), id(1));
-        assert!(rt.state.wanted.is_none(), "no grace-period stall");
+        assert!(
+            rt.state.connection.wanted.is_none(),
+            "no grace-period stall"
+        );
         rt.update(|d, _| {
             d.refresh_resources(&client);
         });
         step(&mut rt);
         assert!(!rt.state.is_document(&id(2)));
         assert!(!rt.state.is_document(&id(3)));
-        assert!(rt.state.others.is_empty());
+        assert!(rt.state.connection.others.is_empty());
         assert_eq!(stored(&client), before);
         no_arrangement_or_document_admission(&client, &[id(2), id(3)]);
     }
@@ -68,7 +71,10 @@ fn closing_every_document_cannot_reopen_one_from_the_stale_organization() {
         let observation = client.take_activity();
         rt.update(|d, tx| {
             d.observe(&client, observation, tx);
-            assert!(d.wanted.is_none(), "no closed target reaches create_view");
+            assert!(
+                d.connection.wanted.is_none(),
+                "no closed target reaches create_view"
+            );
             assert!(d.target(&client).is_none());
         });
         step(&mut rt);
@@ -76,10 +82,10 @@ fn closing_every_document_cannot_reopen_one_from_the_stale_organization() {
             d.refresh_resources(&client);
         });
         step(&mut rt);
-        assert!(rt.state.shown.is_none());
-        assert!(rt.state.wanted.is_none());
-        assert!(rt.state.resources.entries.is_empty());
-        assert!(rt.state.others.is_empty());
+        assert!(rt.state.connection.shown.is_none());
+        assert!(rt.state.connection.wanted.is_none());
+        assert!(rt.state.connection.resources.entries.is_empty());
+        assert!(rt.state.connection.others.is_empty());
         assert_eq!(stored(&client), before);
         no_arrangement_or_document_admission(&client, &[id(1), id(2)]);
     }
@@ -109,13 +115,13 @@ fn a_closed_execution_fence_allows_a_new_execution_of_the_same_key() {
         step(&mut rt);
         assert!(rt.state.is_document(&id(handle)));
         assert!(
-            rt.state.resources.closed.is_empty(),
+            rt.state.connection.resources.closed.is_empty(),
             "obsolete fence is reclaimed"
         );
         rt.update(|d, _| d.want(id(handle)));
         step(&mut rt);
         assert_eq!(focus(&rt), id(handle));
-        assert!(rt.state.shown.as_ref().unwrap().view.is_none());
+        assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
     }
 }
 
@@ -128,18 +134,18 @@ fn document_close_fences_are_reclaimed_by_inventory_and_connection_retirement() 
     let (client, mut rt) = phone_fixture(&records, &doc(split(1, 2)));
     close(&client, 2);
     step(&mut rt);
-    assert_eq!(rt.state.resources.closed.len(), 1);
+    assert_eq!(rt.state.connection.resources.closed.len(), 1);
     replace_records(&client, vec![records[0].clone()]);
     step(&mut rt);
-    assert!(rt.state.resources.closed.is_empty());
+    assert!(rt.state.connection.resources.closed.is_empty());
     replace_records(&client, records.to_vec());
     step(&mut rt);
     assert!(rt.state.is_document(&id(2)));
     close(&client, 2);
     step(&mut rt);
-    assert_eq!(rt.state.resources.closed.len(), 1);
+    assert_eq!(rt.state.connection.resources.closed.len(), 1);
     rt.update(|d, _| d.retire_documents(&client));
-    assert!(rt.state.resources.closed.is_empty());
+    assert!(rt.state.connection.resources.closed.is_empty());
 }
 
 #[test]
@@ -149,15 +155,15 @@ fn a_closed_pending_target_cannot_drop_a_different_live_shown_view() {
         record(2, ResourceKind::AccessibilityTree),
     ];
     let (client, mut rt) = phone_fixture(&records, &doc(split(1, 2)));
-    let shown = rt.state.shown.as_ref().unwrap().view;
+    let shown = rt.state.connection.shown.as_ref().unwrap().view;
     rt.update(|d, _| d.want(id(2)));
     close(&client, 2);
     step(&mut rt);
     assert_eq!(focus(&rt), id(1));
     assert_eq!(
-        rt.state.shown.as_ref().unwrap().view,
+        rt.state.connection.shown.as_ref().unwrap().view,
         shown,
         "live view is retained"
     );
-    assert!(rt.state.wanted.is_none());
+    assert!(rt.state.connection.wanted.is_none());
 }

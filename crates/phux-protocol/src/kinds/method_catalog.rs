@@ -51,6 +51,15 @@ pub enum FeatureGate {
 }
 
 impl FeatureGate {
+    /// The gate on a `server_caps.features_ext` bit.
+    #[must_use]
+    pub const fn ext(feature: ServerFeatureExt) -> Self {
+        Self::FeaturesExt {
+            mask: feature.mask(),
+            wire_name: feature.wire_name(),
+        }
+    }
+
     /// Whether this bit is advertised in its own negotiated caps word.
     /// Zero masks are never advertised; unknown bits have already been
     /// removed by the typed feature sets. This is not authorization.
@@ -179,397 +188,165 @@ impl MethodSpec {
     }
 }
 
-/// One `AgentEvent` variant (L1 §7.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EventSpec {
-    /// The spec's name for the event, e.g. `cwd_changed`.
-    pub name: &'static str,
-    /// The event's wire tag inside `EVENT`.
-    pub tag: u8,
-}
-
-/// One resource kind and its facet (L1 §1.1): the methods, events, and
-/// resource-scoped metadata keys only that kind answers, and the contracts
-/// its stream and its spawn keep.
-#[derive(Debug, Clone, Copy)]
-pub struct KindSpec {
-    /// The kind.
-    pub kind: ResourceKind,
-    /// The spec's name for the kind, e.g. `TERMINAL`.
-    pub name: &'static str,
-    /// The lower-case stable name, e.g. `agent_session`
-    /// ([`ResourceKind::as_str`]).
-    pub key: &'static str,
-    /// The feature bit that says the server serves this kind, if any.
-    pub gate: Option<FeatureGate>,
-    /// Whether a resource of this kind can occupy an arrangement leaf
-    /// ([`ResourceKind::can_occupy_leaf`]).
-    pub leaf: bool,
-    /// Its bootstrap stream.
-    pub stream: StreamContract,
-    /// Its `SPAWN_RESOURCE` field rules.
-    pub spawn: SpawnContract,
-    /// The facet methods.
-    pub methods: &'static [MethodSpec],
-    /// The facet events.
-    pub events: &'static [EventSpec],
-    /// Conventional metadata keys scoped to a resource of this kind.
-    pub metadata_keys: &'static [&'static str],
-}
-
 /// `INPUT_RAW`'s frame type: allocated in L1 §2 but spec-only, so the codec
 /// declares no constant for it.
 const INPUT_RAW_RESERVED_TYPE: u8 = 0x13;
 
-macro_rules! method {
-    ($name:expr, $carrier:expr, [$($rule:ident),+ $(,)?], $gate:expr) => {
-        MethodSpec {
+/// A method table, one entry per method: its name, its carrier, every row
+/// an instance can land on, then modifiers. `feature(BIT)` and `ext(BIT)`
+/// gate it on a `features` or `features_ext` bit, `served_by(KIND)` sets
+/// [`MethodSpec::served_by`], `dangerous` [`MethodSpec::dangerous`], and
+/// `unshipped` marks a spec-only allocation.
+macro_rules! methods {
+    ($(
+        $name:expr => $carrier:ident($tag:expr) [$($rule:ident),+ $(,)?]
+        $($modifier:ident $(($($arg:tt)*))?)*;
+    )*) => {
+        &[$(methods!(@apply MethodSpec {
             name: $name,
-            carrier: $carrier,
+            carrier: Carrier::$carrier($tag),
             rules: &[$(&$rule),+],
-            gate: $gate,
+            gate: None,
             shipped: true,
             dangerous: false,
             served_by: None,
-        }
+        }; $($modifier $(($($arg)*))?)*)),*]
     };
-    ($name:expr, $carrier:expr, [$($rule:ident),+ $(,)?]) => {
-        method!($name, $carrier, [$($rule),+], None)
+    (@apply $spec:expr;) => {
+        $spec
+    };
+    (@apply $spec:expr; feature($bit:ident) $($rest:tt)*) => {
+        methods!(@apply MethodSpec {
+            gate: Some(FeatureGate::Features(ServerFeature::$bit)),
+            ..$spec
+        }; $($rest)*)
+    };
+    (@apply $spec:expr; ext($bit:ident) $($rest:tt)*) => {
+        methods!(@apply MethodSpec {
+            gate: Some(FeatureGate::ext(ServerFeatureExt::$bit)),
+            ..$spec
+        }; $($rest)*)
+    };
+    (@apply $spec:expr; served_by($kind:ident) $($rest:tt)*) => {
+        methods!(@apply MethodSpec { served_by: Some(ResourceKind::$kind), ..$spec }; $($rest)*)
+    };
+    (@apply $spec:expr; dangerous $($rest:tt)*) => {
+        methods!(@apply MethodSpec { dangerous: true, ..$spec }; $($rest)*)
+    };
+    (@apply $spec:expr; unshipped $($rest:tt)*) => {
+        methods!(@apply MethodSpec { shipped: false, ..$spec }; $($rest)*)
     };
 }
 
-/// Host-addressed `method` served by `kind`'s app ([`MethodSpec::served_by`]).
-const fn served_by(kind: ResourceKind, method: MethodSpec) -> MethodSpec {
-    MethodSpec {
-        served_by: Some(kind),
-        ..method
-    }
+/// An event table, one `name => tag;` entry per event.
+macro_rules! events {
+    ($($name:literal => $tag:ident;)*) => {
+        &[$(EventSpec { name: $name, tag: $tag }),*]
+    };
 }
-
-/// `method` marked [`MethodSpec::dangerous`].
-const fn dangerous(method: MethodSpec) -> MethodSpec {
-    MethodSpec {
-        dangerous: true,
-        ..method
-    }
-}
-
-/// The gate on `MIRROR` and `MIRROR_PROVIDE`.
-const MIRRORS: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
-    mask: ServerFeatureExt::Mirrors.mask(),
-    wire_name: ServerFeatureExt::Mirrors.wire_name(),
-});
 
 /// Methods addressed to the server or the connection, not to one resource.
 ///
 /// These are the handshake, session attach, server lifecycle, telemetry,
 /// and the Global metadata keys with entries of their own
 /// ([`Carrier::Metadata`]).
-pub static SERVER_METHODS: &[MethodSpec] = &[
-    method!("GET_CREATION", Carrier::Command(crate::wire::frame::COMMAND_TAG_GET_CREATION), [C_GET_CREATION],
-        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
-    method!("DESCRIBE_API", Carrier::Command(crate::wire::frame::COMMAND_TAG_DESCRIBE_API), [C_API_DESCRIBE],
-        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
+pub static SERVER_METHODS: &[MethodSpec] = methods! {
+    "CREDENTIALS" => Command(COMMAND_TAG_CREDENTIALS) [C_CREDENTIALS] ext(Credentials) dangerous;
+    "GET_CREATION" => Command(COMMAND_TAG_GET_CREATION) [C_GET_CREATION] ext(ApiDescription);
+    "DESCRIBE_API" => Command(COMMAND_TAG_DESCRIBE_API) [C_API_DESCRIBE] ext(ApiDescription);
     // The macOS privacy grants the server holds; owner socket only.
-    method!("PRIVACY_STATUS", Carrier::Command(crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS), [C_PRIVACY_STATUS],
-        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::PrivacyStatus.mask(), wire_name: ServerFeatureExt::PrivacyStatus.wire_name() })),
+    "PRIVACY_STATUS" => Command(COMMAND_TAG_PRIVACY_STATUS) [C_PRIVACY_STATUS] ext(PrivacyStatus);
     // What works on the host, with reasons and fixes.
-    method!("HOST_CHECKLIST", Carrier::Command(crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST), [C_HOST_CHECKLIST],
-        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::HostChecklist.mask(), wire_name: ServerFeatureExt::HostChecklist.wire_name() })),
-    method!("HELLO", Carrier::Frame(TYPE_HELLO), [F_HELLO]),
-    method!("PING", Carrier::Frame(TYPE_PING), [F_PING]),
-    method!(
-        "ATTACH",
-        Carrier::Frame(TYPE_ATTACH),
-        [F_ATTACH, F_ATTACH_CREATE]
-    ),
-    method!("DETACH", Carrier::Frame(TYPE_DETACH), [F_DETACH]),
-    method!(
-        "VIEWPORT_RESIZE",
-        Carrier::Frame(TYPE_VIEWPORT_RESIZE),
-        [F_VIEWPORT_RESIZE]
-    ),
-    method!("COMMAND", Carrier::Frame(TYPE_COMMAND), [F_COMMAND]),
-    method!(
-        "LIST_DIRECTORY",
-        Carrier::Frame(TYPE_LIST_DIRECTORY),
-        [F_LIST_DIRECTORY],
-        Some(FeatureGate::Features(ServerFeature::ListDirectory))
-    ),
-    method!(
-        "PATH_QUERY",
-        Carrier::Frame(TYPE_PATH_QUERY),
-        [F_PATH_QUERY],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::PathQuery.mask(),
-            wire_name: ServerFeatureExt::PathQuery.wire_name(),
-        })
-    ),
+    "HOST_CHECKLIST" => Command(COMMAND_TAG_HOST_CHECKLIST) [C_HOST_CHECKLIST] ext(HostChecklist);
+    "HELLO" => Frame(TYPE_HELLO) [F_HELLO];
+    "PING" => Frame(TYPE_PING) [F_PING];
+    "ATTACH" => Frame(TYPE_ATTACH) [F_ATTACH, F_ATTACH_CREATE];
+    "DETACH" => Frame(TYPE_DETACH) [F_DETACH];
+    "VIEWPORT_RESIZE" => Frame(TYPE_VIEWPORT_RESIZE) [F_VIEWPORT_RESIZE];
+    "COMMAND" => Frame(TYPE_COMMAND) [F_COMMAND];
+    "LIST_DIRECTORY" => Frame(TYPE_LIST_DIRECTORY) [F_LIST_DIRECTORY] feature(ListDirectory);
+    "PATH_QUERY" => Frame(TYPE_PATH_QUERY) [F_PATH_QUERY] ext(PathQuery);
     // A host's screen mirrors: list, start, stop; Rune's macOS runner
     // reports its targets and learns its mirrors through MIRROR_PROVIDE.
     // Addressed to the host, served by the app of the surfaces they make.
-    served_by(
-        ResourceKind::PixelSurface,
-        method!("MIRROR", Carrier::Command(COMMAND_TAG_MIRROR), [C_MIRROR], MIRRORS),
-    ),
-    served_by(
-        ResourceKind::PixelSurface,
-        method!(
-            "MIRROR_PROVIDE",
-            Carrier::Command(COMMAND_TAG_MIRROR_PROVIDE),
-            [C_MIRROR_PROVIDE],
-            MIRRORS
-        ),
-    ),
-    method!(
-        "GET_FILE",
-        Carrier::Command(COMMAND_TAG_GET_FILE),
-        [C_GET_FILE],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::FileDownload.mask(),
-            wire_name: ServerFeatureExt::FileDownload.wire_name(),
-        })
-    ),
-    method!(
-        "SERVICE_HTTP_OPEN",
-        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_OPEN),
-        [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
-    ),
-    method!(
-        "SERVICE_HTTP_READ",
-        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_READ),
-        [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
-    ),
-    method!(
-        "SERVICE_HTTP_CLOSE",
-        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_CLOSE),
-        [C_SERVICE_HTTP],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::HostServiceHttp.mask(),
-            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-        })
-    ),
-    dangerous(method!(
-        "UPGRADE",
-        Carrier::Command(COMMAND_TAG_UPGRADE),
-        [C_UPGRADE]
-    )),
-    dangerous(method!(
-        "SHUTDOWN",
-        Carrier::Command(COMMAND_TAG_SHUTDOWN),
-        [C_SHUTDOWN],
-        Some(FeatureGate::Features(ServerFeature::Shutdown))
-    )),
-    dangerous(method!(
-        "OPEN_LISTENER",
-        Carrier::Command(COMMAND_TAG_OPEN_LISTENER),
-        [C_OPEN_LISTENER],
-        Some(FeatureGate::Features(ServerFeature::OpenListener))
-    )),
-    dangerous(method!(
-        "DETACH_CLIENTS",
-        Carrier::Command(COMMAND_TAG_DETACH_CLIENTS),
-        [C_DETACH_CLIENTS_SESSION, C_DETACH_CLIENTS_ALL]
-    )),
-    method!(
-        "GET_PERF",
-        Carrier::Command(COMMAND_TAG_GET_PERF),
-        [C_GET_PERF, C_GET_PERF_RESET],
-        Some(FeatureGate::Features(ServerFeature::GetPerf))
-    ),
-    method!(
-        "PERF_CONTROL",
-        Carrier::Command(COMMAND_TAG_PERF_CONTROL),
-        [C_PERF_CONTROL],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::PerfControl.mask(),
-            wire_name: ServerFeatureExt::PerfControl.wire_name(),
-        })
-    ),
-    method!(
-        SESSION_CREATE_KEY,
-        Carrier::Metadata(SESSION_CREATE_KEY),
-        [F_SESSION_CREATE]
-    ),
+    "MIRROR" => Command(COMMAND_TAG_MIRROR) [C_MIRROR] ext(Mirrors) served_by(PixelSurface);
+    "MIRROR_PROVIDE" => Command(COMMAND_TAG_MIRROR_PROVIDE) [C_MIRROR_PROVIDE]
+        ext(Mirrors) served_by(PixelSurface);
+    "GET_FILE" => Command(COMMAND_TAG_GET_FILE) [C_GET_FILE] ext(FileDownload);
+    "SERVICE_HTTP_OPEN" => Command(COMMAND_TAG_SERVICE_HTTP_OPEN) [C_SERVICE_HTTP]
+        ext(HostServiceHttp);
+    "SERVICE_HTTP_READ" => Command(COMMAND_TAG_SERVICE_HTTP_READ) [C_SERVICE_HTTP]
+        ext(HostServiceHttp);
+    "SERVICE_HTTP_CLOSE" => Command(COMMAND_TAG_SERVICE_HTTP_CLOSE) [C_SERVICE_HTTP]
+        ext(HostServiceHttp);
+    // TCP port forwarding (`docs/forwarding.md`).
+    "FORWARD_OPEN" => Command(COMMAND_TAG_FORWARD_OPEN) [C_FORWARD] ext(ForwardTcp);
+    "FORWARD_READ" => Command(COMMAND_TAG_FORWARD_READ) [C_FORWARD] ext(ForwardTcp);
+    "FORWARD_WRITE" => Command(COMMAND_TAG_FORWARD_WRITE) [C_FORWARD] ext(ForwardTcp);
+    "FORWARD_CLOSE" => Command(COMMAND_TAG_FORWARD_CLOSE) [C_FORWARD] ext(ForwardTcp);
+    // ssh-agent forwarding (`docs/forwarding.md#ssh-agent`).
+    "AGENT_OFFER" => Command(COMMAND_TAG_AGENT_OFFER) [C_FORWARD] ext(ForwardAgent);
+    "AGENT_REPLY" => Command(COMMAND_TAG_AGENT_REPLY) [C_FORWARD] ext(ForwardAgent);
+    "UPGRADE" => Command(COMMAND_TAG_UPGRADE) [C_UPGRADE] dangerous;
+    "SHUTDOWN" => Command(COMMAND_TAG_SHUTDOWN) [C_SHUTDOWN] feature(Shutdown) dangerous;
+    "OPEN_LISTENER" => Command(COMMAND_TAG_OPEN_LISTENER) [C_OPEN_LISTENER]
+        feature(OpenListener) dangerous;
+    "DETACH_CLIENTS" => Command(COMMAND_TAG_DETACH_CLIENTS)
+        [C_DETACH_CLIENTS_SESSION, C_DETACH_CLIENTS_ALL] dangerous;
+    "GET_PERF" => Command(COMMAND_TAG_GET_PERF) [C_GET_PERF, C_GET_PERF_RESET] feature(GetPerf);
+    "PERF_CONTROL" => Command(COMMAND_TAG_PERF_CONTROL) [C_PERF_CONTROL] ext(PerfControl);
+    SESSION_CREATE_KEY => Metadata(SESSION_CREATE_KEY) [F_SESSION_CREATE];
     // Session rename is server-intercepted, but §6 gives it no row of its
     // own: a write lands on the ordinary metadata-write row (BIND on Global).
-    method!(
-        SESSION_NAME_KEY,
-        Carrier::Metadata(SESSION_NAME_KEY),
-        [F_METADATA_WRITE]
-    ),
-    method!(
-        SESSION_KEEP_EMPTY_KEY,
-        Carrier::Metadata(SESSION_KEEP_EMPTY_KEY),
-        [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER],
-        Some(FeatureGate::Features(ServerFeature::KeepEmptySessions))
-    ),
+    SESSION_NAME_KEY => Metadata(SESSION_NAME_KEY) [F_METADATA_WRITE];
+    SESSION_KEEP_EMPTY_KEY => Metadata(SESSION_KEEP_EMPTY_KEY)
+        [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER] feature(KeepEmptySessions);
     // A TUI doorbell: the server stores the nonce like any value, and §6
     // classifies the write as SIGNAL because it makes consumers reload.
-    dangerous(method!(
-        CONFIG_RELOAD_KEY,
-        Carrier::Metadata(CONFIG_RELOAD_KEY),
-        [F_CONFIG_RELOAD]
-    )),
+    CONFIG_RELOAD_KEY => Metadata(CONFIG_RELOAD_KEY) [F_CONFIG_RELOAD] dangerous;
     // A decision is server-intercepted and stored nowhere. Approving one
     // releases a held SIGNAL action, so it is dangerous; denying releases
     // nothing (`frame_is_dangerous`).
-    dangerous(method!(
-        APPROVAL_DECIDE_KEY_PREFIX,
-        Carrier::Metadata(APPROVAL_DECIDE_KEY_PREFIX),
-        [F_APPROVAL_DECIDE, F_APPROVAL_DECIDE_OTHER],
-        Some(FeatureGate::Features(ServerFeature::Approvals))
-    )),
-    method!(
-        WHOAMI_KEY,
-        Carrier::Metadata(WHOAMI_KEY),
-        [F_WHOAMI],
-        Some(FeatureGate::Features(ServerFeature::Whoami))
-    ),
+    APPROVAL_DECIDE_KEY_PREFIX => Metadata(APPROVAL_DECIDE_KEY_PREFIX)
+        [F_APPROVAL_DECIDE, F_APPROVAL_DECIDE_OTHER] feature(Approvals) dangerous;
+    WHOAMI_KEY => Metadata(WHOAMI_KEY) [F_WHOAMI] feature(Whoami);
     // The organization commands (L1 §5.7): records named by keys, edited
     // under expected revisions, answered with receipts or refusals.
-    method!(
-        "GET_ORGANIZATION",
-        Carrier::Command(COMMAND_TAG_GET_ORGANIZATION),
-        [C_GET_ORGANIZATION],
-        ORGANIZATION
-    ),
-    method!(
-        "SESSION_CREATE",
-        Carrier::Command(COMMAND_TAG_SESSION_CREATE),
-        [C_SESSION_CREATE],
-        ORGANIZATION
-    ),
-    method!(
-        "SESSION_RENAME",
-        Carrier::Command(COMMAND_TAG_SESSION_RENAME),
-        [C_SESSION_ORGANIZE],
-        ORGANIZATION
-    ),
-    method!(
-        "SESSION_SET_LIFETIME",
-        Carrier::Command(COMMAND_TAG_SESSION_SET_LIFETIME),
-        [C_SESSION_ORGANIZE],
-        ORGANIZATION
-    ),
-    dangerous(method!(
-        "SESSION_DELETE",
-        Carrier::Command(COMMAND_TAG_SESSION_DELETE),
-        [C_SESSION_DELETE],
-        ORGANIZATION
-    )),
-    method!(
-        "RESOURCE_CREATE",
-        Carrier::Command(COMMAND_TAG_RESOURCE_CREATE),
-        [C_RESOURCE_CREATE, C_RESOURCE_CREATE_PLACED],
-        ORGANIZATION
-    ),
-    method!(
-        "RESOURCE_MOVE",
-        Carrier::Command(COMMAND_TAG_RESOURCE_MOVE),
-        [C_RESOURCE_MOVE],
-        ORGANIZATION
-    ),
-    method!(
-        "RESOURCE_MOVE_MANY",
-        Carrier::Command(COMMAND_TAG_RESOURCE_MOVE_MANY),
-        [C_RESOURCE_MOVE],
-        ORGANIZATION
-    ),
-    method!(
-        "RESOURCE_RENAME",
-        Carrier::Command(COMMAND_TAG_RESOURCE_RENAME),
-        [C_RESOURCE_RENAME],
-        ORGANIZATION
-    ),
-    dangerous(method!(
-        "RESOURCE_TERMINATE",
-        Carrier::Command(COMMAND_TAG_RESOURCE_TERMINATE),
-        [C_RESOURCE_TERMINATE],
-        ORGANIZATION
-    )),
-    dangerous(method!(
-        "RESOURCE_REMOVE",
-        Carrier::Command(COMMAND_TAG_RESOURCE_REMOVE),
-        [C_RESOURCE_REMOVE],
-        ORGANIZATION
-    )),
-    method!(
-        "RESOURCE_RELAUNCH",
-        Carrier::Command(COMMAND_TAG_RESOURCE_RELAUNCH),
-        [C_RESOURCE_RELAUNCH],
-        ORGANIZATION
-    ),
-    method!(
-        "INBOX_RESOLVE",
-        Carrier::Command(COMMAND_TAG_INBOX_RESOLVE),
-        [C_SESSION_ORGANIZE],
-        ORGANIZATION
-    ),
-    method!(
-        "ORGANIZATION_UNDO",
-        Carrier::Command(COMMAND_TAG_ORGANIZATION_UNDO),
-        [C_ORGANIZATION_UNDO],
-        ORGANIZATION
-    ),
-    method!(
-        "ARRANGEMENT_GET",
-        Carrier::Command(COMMAND_TAG_ARRANGEMENT_GET),
-        [C_ARRANGEMENT_GET],
-        ORGANIZATION
-    ),
-    method!(
-        "ARRANGEMENT_REPLACE",
-        Carrier::Command(COMMAND_TAG_ARRANGEMENT_REPLACE),
-        [C_ARRANGEMENT_REPLACE],
-        ORGANIZATION
-    ),
+    "GET_ORGANIZATION" => Command(COMMAND_TAG_GET_ORGANIZATION) [C_GET_ORGANIZATION]
+        ext(Organization);
+    "SESSION_CREATE" => Command(COMMAND_TAG_SESSION_CREATE) [C_SESSION_CREATE] ext(Organization);
+    "SESSION_RENAME" => Command(COMMAND_TAG_SESSION_RENAME) [C_SESSION_ORGANIZE] ext(Organization);
+    "SESSION_SET_LIFETIME" => Command(COMMAND_TAG_SESSION_SET_LIFETIME) [C_SESSION_ORGANIZE]
+        ext(Organization);
+    "SESSION_DELETE" => Command(COMMAND_TAG_SESSION_DELETE) [C_SESSION_DELETE]
+        ext(Organization) dangerous;
+    "RESOURCE_CREATE" => Command(COMMAND_TAG_RESOURCE_CREATE)
+        [C_RESOURCE_CREATE, C_RESOURCE_CREATE_PLACED] ext(Organization);
+    "RESOURCE_MOVE" => Command(COMMAND_TAG_RESOURCE_MOVE) [C_RESOURCE_MOVE] ext(Organization);
+    "RESOURCE_MOVE_MANY" => Command(COMMAND_TAG_RESOURCE_MOVE_MANY) [C_RESOURCE_MOVE]
+        ext(Organization);
+    "RESOURCE_RENAME" => Command(COMMAND_TAG_RESOURCE_RENAME) [C_RESOURCE_RENAME] ext(Organization);
+    "RESOURCE_TERMINATE" => Command(COMMAND_TAG_RESOURCE_TERMINATE) [C_RESOURCE_TERMINATE]
+        ext(Organization) dangerous;
+    "RESOURCE_REMOVE" => Command(COMMAND_TAG_RESOURCE_REMOVE) [C_RESOURCE_REMOVE]
+        ext(Organization) dangerous;
+    "RESOURCE_RELAUNCH" => Command(COMMAND_TAG_RESOURCE_RELAUNCH) [C_RESOURCE_RELAUNCH]
+        ext(Organization);
+    "INBOX_RESOLVE" => Command(COMMAND_TAG_INBOX_RESOLVE) [C_SESSION_ORGANIZE] ext(Organization);
+    "ORGANIZATION_UNDO" => Command(COMMAND_TAG_ORGANIZATION_UNDO) [C_ORGANIZATION_UNDO]
+        ext(Organization);
+    "ARRANGEMENT_GET" => Command(COMMAND_TAG_ARRANGEMENT_GET) [C_ARRANGEMENT_GET] ext(Organization);
+    "ARRANGEMENT_REPLACE" => Command(COMMAND_TAG_ARRANGEMENT_REPLACE) [C_ARRANGEMENT_REPLACE]
+        ext(Organization);
     // Delegated agent credentials (ADR-0163 §5): the owner hands an agent a
     // grant narrower than its own. New, so no stored grant reached them
     // before; served whatever `ORGANIZATION` says.
-    method!(
-        "DELEGATE_AGENT",
-        Carrier::Command(COMMAND_TAG_DELEGATE_AGENT),
-        [C_DELEGATION]
-    ),
-    method!(
-        "REVOKE_DELEGATION",
-        Carrier::Command(COMMAND_TAG_REVOKE_DELEGATION),
-        [C_DELEGATION]
-    ),
-    dangerous(method!(
-        "SESSION_KILL",
-        Carrier::Command(COMMAND_TAG_SESSION_KILL),
-        [C_SESSION_DELETE],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::SessionKill.mask(),
-            wire_name: ServerFeatureExt::SessionKill.wire_name(),
-        })
-    )),
-    method!(
-        "SESSION_SET_PROJECT",
-        Carrier::Command(COMMAND_TAG_SESSION_SET_PROJECT),
-        [C_SESSION_ORGANIZE],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::SessionProject.mask(),
-            wire_name: ServerFeatureExt::SessionProject.wire_name(),
-        })
-    ),
-    method!(
-        "ARRANGEMENT_LOCK",
-        Carrier::Command(COMMAND_TAG_ARRANGEMENT_LOCK),
-        [C_ARRANGEMENT_REPLACE],
-        Some(FeatureGate::FeaturesExt {
-            mask: ServerFeatureExt::TabLock.mask(),
-            wire_name: ServerFeatureExt::TabLock.wire_name(),
-        })
-    ),
-];
+    "DELEGATE_AGENT" => Command(COMMAND_TAG_DELEGATE_AGENT) [C_DELEGATION];
+    "REVOKE_DELEGATION" => Command(COMMAND_TAG_REVOKE_DELEGATION) [C_DELEGATION];
+    "SESSION_KILL" => Command(COMMAND_TAG_SESSION_KILL) [C_SESSION_DELETE]
+        ext(SessionKill) dangerous;
+    "SESSION_SET_PROJECT" => Command(COMMAND_TAG_SESSION_SET_PROJECT) [C_SESSION_ORGANIZE]
+        ext(SessionProject);
+    "ARRANGEMENT_LOCK" => Command(COMMAND_TAG_ARRANGEMENT_LOCK) [C_ARRANGEMENT_REPLACE]
+        ext(TabLock);
+};

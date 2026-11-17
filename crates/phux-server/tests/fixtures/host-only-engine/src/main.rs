@@ -17,6 +17,7 @@ impl TerminalEngineFactory for FakeEngine {
             phux_terminal_api::actor::TerminalHandle::detached_for_test(request.cols, request.rows);
         let handle = facet.into_resource(None, channels.output);
         let (_, program_status) = tokio::sync::watch::channel(Vec::new());
+        let (_, resume) = tokio::sync::watch::channel(None);
         let (_, events) = phux_resource::event_sink::event_sink(request.reports.event_capacity);
         Ok(EngineBundle {
             handle,
@@ -29,6 +30,7 @@ impl TerminalEngineFactory for FakeEngine {
             events,
             agent_state: None,
             program_status,
+            resume,
         })
     }
     fn bootstrap_capabilities(&self) -> phux_protocol::caps::BootstrapCapabilities {

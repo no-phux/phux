@@ -19,29 +19,29 @@ impl Desk {
         client: &Client,
         observation: &mut Observation,
     ) -> bool {
-        let mut changed = observation.status != self.status;
-        if observation.connection_epoch != self.epoch {
+        let mut changed = observation.status != self.connection.status;
+        if observation.connection_epoch != self.connection.epoch {
             self.retire_documents(client);
             self.first_contact();
-            self.epoch = observation.connection_epoch;
-            self.focus_told = None;
+            self.connection.epoch = observation.connection_epoch;
+            self.connection.focus_told = None;
             changed |= self.reopen_after_reconnect(client);
         }
-        self.status = observation.status;
+        self.connection.status = observation.status;
         let failure = observation.last_error.take();
-        if let Some(error) = failure.filter(|_| self.status.is_terminal()) {
-            changed |= self.error.as_ref() != Some(&error);
+        if let Some(error) = failure.filter(|_| self.connection.status.is_terminal()) {
+            changed |= self.connection.error.as_ref() != Some(&error);
             self.failed_with(&error);
-            self.error = Some(error);
+            self.connection.error = Some(error);
         }
         if let Some(topology) = observation.topology.take()
-            && self.topology.as_ref() != Some(&topology)
+            && self.connection.topology.as_ref() != Some(&topology)
         {
-            self.topology = Some(topology);
+            self.connection.topology = Some(topology);
             changed = true;
         }
-        if self.server.is_none() {
-            self.server = client.server().map(|info| format!("{info:?}"));
+        if self.connection.server.is_none() {
+            self.connection.server = client.server().map(|info| format!("{info:?}"));
         }
         if changed || observation.events.iter().any(changes_resources) {
             changed |= self.refresh_resources(client);
@@ -82,9 +82,14 @@ impl Desk {
 
     /// The terminals in front of the person.
     pub(super) fn on_screen(&self) -> Vec<ResourceId> {
-        match &self.layout {
+        match &self.connection.layout {
             Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.resource.clone()).collect(),
+            None => self
+                .connection
+                .shown
+                .iter()
+                .map(|s| s.resource.clone())
+                .collect(),
         }
     }
 
@@ -116,20 +121,22 @@ impl Desk {
                     | self.resource_closed(client, &terminal_id, exit_status)
             }
             Event::OrganizationOperation { operation, outcome } => {
-                self.layout_outcome(client, operation, outcome)
+                self.quick_move_outcome(client, operation, &outcome)
+                    | self.sidebar_move_outcome(client, operation, &outcome)
+                    | self.layout_outcome(client, operation, outcome)
             }
-            // OSC 52 only from the terminal on screen, while the window has
-            // focus; never retained for later.
-            Event::ClipboardWrite { terminal_id, text }
-                if self.terminal_has_keyboard(&terminal_id) =>
-            {
-                tx.copy(text.0);
-                false
+            Event::ClipboardWrite { terminal_id, text } => {
+                self.clipboard_write(terminal_id, text.0, tx)
             }
             Event::ClipboardRead {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::Note {
+                terminal_id,
+                note: Some(note),
+                live: true,
+            } => self.note_posted(&terminal_id, &note),
             Event::CommandResult {
                 request_id,
                 ref result,
@@ -173,7 +180,7 @@ impl Desk {
                 true
             }
             Event::OrganizationUnavailable { .. } => {
-                self.link.org_unavailable = Some(self.epoch);
+                self.link.org_unavailable = Some(self.connection.epoch);
                 true
             }
             Event::InputDelivery {
@@ -181,9 +188,11 @@ impl Desk {
                 outcome,
                 ..
             } => self.paste_delivered(delivery_id, outcome),
+            // A new foreground renames the pane in the sidebar.
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
+            | Event::BackgroundWork { .. }
             | Event::Attached { .. } => true,
             other => self.apply_document_subscription(client, other),
         }
@@ -196,7 +205,7 @@ impl Desk {
                     || self.document_subscription_result(client, request_id, result)
             }
             Event::TopologySnapshot { snapshot, .. } => {
-                self.resources.input.note_snapshot(&snapshot);
+                self.connection.resources.input.note_snapshot(&snapshot);
                 true
             }
             Event::TerminalDetached {
@@ -218,23 +227,26 @@ impl Desk {
         if self.popup_spawned(client, request, id.as_ref(), error.as_deref()) {
             return true;
         }
-        let source = self.resources.starting.remove(&request);
+        let source = self.connection.resources.starting.remove(&request);
         if let Some((new, source)) = id.as_ref().zip(source) {
-            self.resources.producers.insert(new.clone(), source);
+            self.connection
+                .resources
+                .producers
+                .insert(new.clone(), source);
         }
         if let Some(new) = &id
-            && let Some(placement) = self.pending_splits.remove(&request)
+            && let Some((session, placement)) = self.connection.pending_splits.remove(&request)
         {
-            self.place_split(client, new, placement);
+            self.place_split(client, new, placement, session);
             return true;
         }
-        let ours =
-            self.pending_spawns.contains(&request) || self.pending_splits.contains_key(&request);
+        let ours = self.connection.pending_spawns.contains(&request)
+            || self.connection.pending_splits.contains_key(&request);
         if !ours {
             return false;
         }
-        self.pending_spawns.retain(|id| *id != request);
-        self.pending_splits.remove(&request);
+        self.connection.pending_spawns.retain(|id| *id != request);
+        self.connection.pending_splits.remove(&request);
         match id {
             Some(id) => self.want(id),
             None => {
@@ -253,10 +265,21 @@ impl Desk {
         let producer = self.producer_ended(id, exit);
         let document = self.forget_document(client, id);
         let pending_phone = self.phone.is_some()
-            && self.shown.is_none()
-            && self.wanted.as_ref().is_some_and(|(wanted, _)| wanted == id);
-        if self.shown.as_ref().is_some_and(|s| &s.resource == id) || pending_phone {
+            && self.connection.shown.is_none()
+            && self
+                .connection
+                .wanted
+                .as_ref()
+                .is_some_and(|(wanted, _)| wanted == id);
+        if self
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| &s.resource == id)
+            || pending_phone
+        {
             let next = self
+                .connection
                 .layout
                 .as_ref()
                 .filter(|_| self.phone.is_none())
@@ -267,11 +290,15 @@ impl Desk {
             }
             return true;
         }
-        let other = self.others.remove(id);
+        let other = self.connection.others.remove(id);
         if let Some(view) = other.flatten() {
             let _ = client.destroy_view(view);
         }
-        let cancelled = self.wanted.take_if(|(wanted, _)| wanted == id).is_some();
+        let cancelled = self
+            .connection
+            .wanted
+            .take_if(|(wanted, _)| wanted == id)
+            .is_some();
         producer || document || other.is_some() || cancelled
     }
 }

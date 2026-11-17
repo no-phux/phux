@@ -65,23 +65,33 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Getting started.** An installed app's first connection walks through
   five steps in the terminal area: **Welcome**; **Look** (colour scheme,
   sidebar, themes and, on macOS, a Glass slider from solid to Liquid Glass
-  behind the window chrome, all applied live); **Agents & permissions** (`phux skill
-  setup --json`, and on macOS a sheet that opens each privacy pane with
+  behind the window chrome, all applied live); **Agents** (`phux skill
+  setup --json`; on macOS also permissions, with a sheet that opens each privacy pane with
   `phux server permissions --open SERVICE`, offers the server's app to drag
   in, and polls until it is granted); **Bring your setup**, shown only with
   Claude Code, Codex or OpenCode installed (`phux migrate --json --agent ID`
   opens the agent's pane beside it; key bindings move, themes and fonts
-  don't); and **All set**, with three keys from the keymap. Enter
+  don't); and **All set**, which starts an agent it found (**Start Claude
+  Code here**, after `phux skill setup`) in a session of its own through
+  your login shell, or offers the keys tour when none is installed, with
+  three keys from the keymap. Enter
   continues; Escape goes back. A quit resumes at the same step. An older
   phux reads **Update phux to enable this**. **Get Started** in the palette
   or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
-  keep running wherever they are. **Add a machine** takes `me@host` or a
-  machine from your tailnet and runs `phux host add --install` over the ssh
-  access you already have. A window shows one machine at a time. On a new
+  keep running wherever they are. **Add a machine** takes `me@host`, a
+  machine from your tailnet or a host from `~/.ssh/config`, and runs
+  `phux host add --install` over the ssh access you already have.
+  Onboarding offers the same hosts to tick and sets them up one by one. A window shows one machine at a time. On a new
   computer the local server is empty, so sessions living elsewhere appear
-  only once that machine is added.
+  only once that machine is added. Opening a `phux://connect?...` or
+  `https://phux.sh/connect?...` link from `phux pair` (relay links too)
+  opens Machines asking to pair with where it dials; **Pair** runs
+  `phux host add NAME --code -` and moves the window there, and a bad or
+  spent link says why. On Linux a later plain launch, or one a link
+  starts, goes to the running window instead of opening another; runs
+  given `--session`, `--socket` or `--phux` still open their own.
 - **Pair a phone.** Settings → **Remote Hosts**, **Pair a Phone** in the
   palette, or the card on onboarding's last step shows a QR and a copyable
   link from `phux pair --json --enroll`, with its expiry counting down and
@@ -120,13 +130,26 @@ session (or `--session NAME`). It never creates a session on its own.
   what it is doing: a declared agent's name and state (working pulses,
   blocked or asking needs you, done waits until you look), a running
   command, a long command that finished or failed while you were elsewhere,
-  and a bell. Session headers count what needs you; ⌘J jumps to the next.
-  ⌘B folds the sidebar.
+  and a bell. Every session has a separate header with its resource count,
+  disclosure arrow and visible **×** close button, including empty sessions.
+  Closing asks before ending the named session and its running work; it does
+  not first switch away from the session you are using. Click a header to
+  open it, double-click its name to rename it, or drag its name to reorder.
+  Drag a terminal or document row onto another session's header or resource
+  rows to move it there; an empty or collapsed session accepts drops too.
+  Dragging a tab onto a session moves its members together. Moves stay on the
+  same machine and take effect after the server accepts them; dropping outside
+  the session list or cancelling leaves them alone. Disclosure is independent
+  of selection, so navigating does not unfold sessions you have tucked away.
+  The machine picker and Inbox share the traffic-light row; machine identity
+  stays in its labelled dot rather than a window-wide colour strip.
+  Session badges count what needs you; ⌘J jumps to the next. ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
   action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
   worth learning first, each row runnable, with every chord one row further;
   the first time a window connects, a tip offers it. Hovering **+ Terminal**
-  or **+ Session** at the foot of the sidebar shows the keys that do the same.
+  or **+ Session** at the foot of the sidebar shows their keys in a tooltip,
+  without shifting either button.
 - **Changes.** **Show Changes** in the palette opens what Git says changed
   in the focused terminal's checkout: the branch, each staged, unstaged and
   untracked file, and the picked file's diff. ↑ and ↓ pick a file, `r` or
@@ -140,7 +163,10 @@ session (or `--session NAME`). It never creates a session on its own.
   this window, and hides it again; so does clicking away. Recording a new
   chord applies at once, and a chord something else holds is refused with
   who holds it, when that's known. It holds the `quick` session on this
-  computer, which the sidebar and palette leave out. `quick-terminal-size`
+  computer. Rune reserves that session name: an existing session named
+  `quick` is reused, and sessions with that name are left out of the main
+  window's sidebar and palette even when the quick terminal is off. Rename
+  unrelated sessions to keep them listed. `quick-terminal-size`
   and `quick-terminal-edge` size it and pick the top or bottom of the
   display. **Move to a Tab** in its palette moves the terminal into this
   window's session. While the chord is on, closing this window keeps the app
@@ -158,7 +184,10 @@ session (or `--session NAME`). It never creates a session on its own.
   underlines, box and block glyphs, wide characters, cursor (with blink) and
   selection, on device-pixel cells. Each pane follows its own size. Programs
   that track the mouse get it; the wheel scrolls history, or sends arrows in
-  full-screen programs. Input methods compose at the cursor.
+  full-screen programs that keep DEC 1007 on (a setting turns that off).
+  Input methods compose at the cursor. Kitty images draw over their cells
+  (under the text for a negative z), placeholders included, with one upload
+  per image or frame.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
@@ -168,7 +197,10 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the title bar; ⌘-click opens it. On the phone form a
   tap on a link opens it, and a drag across one still selects. URLs wrapped
-  across rows count. Only `http`, `https` and `mailto` open.
+  across rows count. Paths to files that exist count too, absolute, `~/` or
+  relative to the pane's directory, with or without a `:line:col` suffix;
+  ⌘-click opens the file with its default app. A pane on another machine
+  never links paths, so a click can't open a local file that shares one.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
 - **Settings.** The sliders button at the right of the desktop title bar
@@ -183,8 +215,10 @@ session (or `--session NAME`). It never creates a session on its own.
   restores the old theme, both returning to Settings. **Font** steps through
   the system monospace, the bundled JetBrains Mono and two the platform ships;
   `font_family` in Rune's prefs can name any installed family, and one that
-  isn't installed shows the system's. Font, text size, notifications,
-  Option as Meta (macOS), copy on select, and close confirmation are remembered
+  isn't installed shows the system's. **Interface size** (Appearance, 80% to
+  200%) scales the sidebar, tabs, palette and Settings and leaves the
+  terminal's text alone. Font, text size, interface size, notifications,
+  Option as Meta (macOS), copy on select, wheel arrows, and close confirmation are remembered
   immediately. A `[rune]` table in `config.toml` overrides any of them
   ([config](../../docs/config.md#rune)). Diagnostics stays available in development builds; update errors
   and protocol warnings remain visible during search. A program's own OSC
@@ -229,7 +263,9 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘-click | Open the link under it |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
+| ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
 | ⌘← / ⌘→ | Previous / next terminal in the session |
+| ⌘⇧← / ⌘⇧→ | Previous / next tab in the split |
 | ⌘↑ / ⌘↓ | Previous / next session |
 | ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
@@ -242,13 +278,16 @@ In a text field, use the native editing keys: ⌘C/V/A on macOS, plain
 Ctrl+C/V/A on Linux. Terminal clipboard chords never act on the terminal
 behind a focused Find field.
 
+On macOS, **Option as Meta** makes Option chords reach the terminal instead
+of composing layout characters. Native text fields keep normal Option input.
+
 A paste with line breaks into a program without bracketed paste would run
 each line; the window asks first (Return pastes, Esc cancels).
 
 ## Known gaps
 
 - One window, and the server has no call to rename a single terminal.
-- No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
+- The only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
@@ -270,6 +309,11 @@ each line; the window asks first (Return pastes, Esc cancels).
   has already replaced the files by then.
 
 ## Read-only mirrors
+
+Markdown documents render with bundled [tmd](https://github.com/jtnk/tmd),
+with a source switch and a [replaceable renderer](../../docs/config.md#markdown-viewer).
+The first adapter uses print mode in the native document pane, not a second
+terminal or browser runtime.
 
 The palette opens AccessibilityTree and PixelSurface resources beside
 terminals, and can start a page, tree or surface producer.

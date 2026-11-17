@@ -267,6 +267,11 @@ pub enum Op {
         expected: Revision,
         /// The new document.
         groups: Vec<Group>,
+        /// The document's slot tabs are as the sender means them; when
+        /// unset, each slot keeps the tabs it has (a sender that doesn't
+        /// know tabs can't drop them).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        slot_tabs: bool,
     },
     /// Lock or unlock one group of an owner's arrangement. Last writer
     /// wins.

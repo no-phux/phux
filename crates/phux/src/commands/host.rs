@@ -8,47 +8,10 @@
 //! ([`super::enroll::enroll_over_ssh`]); `NAME ENDPOINT` or an endpoint URI
 //! registers credentials minted elsewhere.
 //!
-//! `host ls --json` emits one stable document (`schema_version` 1):
-//!
-//! ```json
-//! {
-//!   "schema_version": 1,
-//!   "hosts": [
-//!     {
-//!       "name": "mini",
-//!       "role": "remote",
-//!       "endpoint": "quic://mini:8788",
-//!       "enabled": null,
-//!       "token_file": "/path/to/token",
-//!       "cert_fingerprint": "ab..64 hex..",
-//!       "session": null,
-//!       "ssh": "me@mini",
-//!       "direct": null,
-//!       "client_cert": "/path/to/mini.client.0123456789abcdef.pem",
-//!       "client_key": "/path/to/mini.client.0123456789abcdef.key",
-//!       "color": {"id": "magenta", "hex": "#D9629F", "override": false}
-//!     }
-//!   ],
-//!   "local": {
-//!     "name": "studio",
-//!     "color": {"id": "violet", "hex": "#9A78E8", "override": true}
-//!   }
-//! }
-//! ```
-//!
-//! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
-//! and `client_key` are `null` for satellites. `color` is the host's resolved
-//! palette colour ([`phux_config::host_color`]); `override` says a `color`
-//! key chose it rather than the name hash. A name in both registries with a
-//! `color` on only one role reports that colour in both.
-//! `local` is this machine under its short host name, coloured by
-//! `[host] color`. `phux host color` sets any of them. The client identity is named
-//! by path only; the key bytes never appear. `host add --json` and `host
-//! renew --json` wrap one such object under `"host"`, beside an
-//! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,
-//! `previous_credential_id`, `previous_revoked`, `warnings`; documented in
-//! `docs/reference/cli.md#phux-host-add`) saying what happened to the workload client
-//! certificate.
+//! `host ls --json` emits `{"schema_version":1,"hosts":[...],"local":{...}}`;
+//! each host carries its endpoint, pins, credential paths (never key bytes),
+//! and resolved `color` (built in `list.rs`). `host add --json` and `host
+//! renew --json` wrap one host under `"host"` beside an `"enrollment"` object.
 //! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
 //!
 //! `phux host renew NAME` enrolls a fresh workload client certificate for a
@@ -65,6 +28,7 @@ use std::process::ExitCode;
 use usage::ValueEnum;
 
 mod add;
+mod add_code;
 mod add_ssh;
 mod args;
 mod color;
@@ -150,8 +114,9 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
         HostAction::Renew {
             name,
             remote_phux,
+            hardware_key,
             json,
-        } => run_renew(name, remote_phux, json.json),
+        } => run_renew(name, remote_phux, *hardware_key, json.json),
         HostAction::Upgrade { name, json } => run_upgrade(name.as_deref(), json.json),
         HostAction::Attach { name } => run_attach(name),
         HostAction::Enable { name, json } => run_enabled(name, true, json.json),

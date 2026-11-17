@@ -20,10 +20,6 @@ pub fn layout_key(session: SessionId) -> String {
 /// Group 1 is the v0.x layout metadata scope (`docs/organization.md`).
 pub const LAYOUT_METADATA_GROUP: GroupId = GroupId::new(1);
 
-/// Spec-recommended per-key cap (`docs/protocol.md#commands-events-resources`), also the reference
-/// server's `limits.metadata-value-bytes` default.
-pub const MAX_LAYOUT_METADATA_BYTES: usize = 256 * 1024;
-
 /// Parse the session a `<prefix>.layout/v1/<session-id>` key names.
 ///
 /// `None` when `key` does not match the grammar. The `<session-id>` segment

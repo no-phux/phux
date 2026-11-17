@@ -1,6 +1,9 @@
-**Phux Rune 0.1.22**: 4 changes since 0.1.21.
+**Phux Rune 0.1.35**: 7 changes since 0.1.34.
 
-- Set the quick terminal's chord in Settings, size it, and move it to a tab (#2438)
-- A character no font has no longer turns later symbols into boxes (#2435)
-- Wake the key's echo wait on publish; key-to-pixels bench against Ghostty (#2439)
-- Show an indeterminate bar while phux installs and starts (#2437)
+- Retain phone downloads during partial XML publication (#2630)
+- Make markdown viewers swappable and bundle tmd (#2623)
+- An interface size that scales the chrome, not the terminal (#2627)
+- Add a permanent private phone download page (#2624)
+- The wheel sends arrows only under DEC 1007, with a setting (#2593)
+- Phux notify posts a note for a pane (#2595)
+- ⌘-click opens file paths printed in a pane (#2592)

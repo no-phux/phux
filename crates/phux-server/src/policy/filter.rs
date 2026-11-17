@@ -198,15 +198,33 @@ pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
 ///
 /// See `docs/authority.md#relayed-identity`: the owner (an `ssh://` or uplink hub reaches the owner socket), or a grant
 /// holding every verb at Global, the full-control ceiling `phux host add`
-/// pairs a hub with. An automation key or a narrowed grant is not.
+/// pairs a hub with. A person's device paired before scope schema v2 holds
+/// the legacy six-verb ceiling instead and is believed too. An automation key
+/// or a narrowed grant is not.
 #[must_use]
 pub fn vouches_for_relay(s: &ServerState, client: ClientId) -> bool {
-    let grant = s.connection_grant(client);
-    let view = View::of(grant);
-    grant.is_some()
-        && Verb::ALL
+    let Some(grant) = s.connection_grant(client) else {
+        return false;
+    };
+    let view = View::of(Some(grant));
+    let holds = |ceiling: View<'_>| {
+        Verb::ALL
             .iter()
+            .filter(|verb| ceiling.admits(**verb, &Point::Global))
             .all(|verb| view.admits(*verb, &Point::Global))
+    };
+    holds(View::All)
+        || (grant.kind() == phux_core::actor::PrincipalKind::Human
+            && legacy_pairing_ceiling().is_some_and(|legacy| holds(View::of(Some(&legacy)))))
+}
+
+/// The pre-v2 full-control pairing ceiling, as a grant to compare against.
+fn legacy_pairing_ceiling() -> Option<ConnectionGrant> {
+    let set = phux_protocol::scope::TerminalScopeSet::parse_all(&[
+        crate::workload::LEGACY_PAIRED_DEVICE_SCOPE,
+    ])
+    .ok()?;
+    ConnectionGrant::scoped(set, None).ok()
 }
 
 /// Whether `client` may read satellite `host` with `verb`: a hub asks only

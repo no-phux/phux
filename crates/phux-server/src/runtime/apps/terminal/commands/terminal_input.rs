@@ -88,6 +88,10 @@ pub(crate) fn with_attached_input_destination<R>(
         // The host checked before dispatch; the input lane may have waited.
         // Recheck the same authority under the lock held through delivery.
         let (pane, resource) = attached_input_resource(s, client_id, wire_terminal_id)?;
+        // Typing only: a focus report or another view's pointer is not it.
+        if matches!(frame_label, "INPUT_KEY" | "INPUT_PASTE") {
+            s.note_controller(wire_terminal_id, client_id);
+        }
         let touched_session = s.attached().get(&client_id).map(|c| c.session);
         if let Some(session) = touched_session {
             s.touch_session(session);
@@ -182,22 +186,6 @@ fn dispatch_input(
             false
         }
     }
-}
-
-/// Discard a client terminal-engine reply (docs/protocol.md#terminal-queries): the canonical
-/// terminal already answered the query once, and a second answer reaches
-/// the child as typed input.
-pub(crate) fn handle_terminal_reply(
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    bytes: &[u8],
-) {
-    trace!(
-        ?client_id,
-        ?wire_terminal_id,
-        bytes = bytes.len(),
-        "terminal reply discarded: the canonical terminal answers queries",
-    );
 }
 
 /// Route an inbound `FRAME_ACK` to the pane's actor for per-consumer cache

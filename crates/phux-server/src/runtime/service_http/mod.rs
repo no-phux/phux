@@ -1,18 +1,7 @@
 //! HTTP exchanges with a named service on this host (`SERVICE_HTTP_*`,
-//! behind `features_ext.HOST_SERVICE_HTTP`).
-//!
-//! The one service is `opencode`, the host's `OpenCode` background service.
-//! The server owns its origin and credential; the client sends
-//! a request and pulls the body. All three commands are `INPUT` on the
-//! server: a consumer that can type into a shell here can already run
-//! `OpenCode`. A request naming a satellite is relayed to it, and the hub maps
-//! the satellite's exchange to one of its own.
-//!
-//! Every command is admitted on the dispatcher (a slot reserved, a body
-//! leased, a slot removed) and then runs on its own task, so neither a slow
-//! open nor a read held open for an event stream delays other commands or
-//! occupies the bulk lane. The connection's exchange slots bound that work:
-//! one open or one read per slot.
+//! behind `features_ext.HOST_SERVICE_HTTP`). The one service is `opencode`;
+//! the server owns its origin and credential. Commands are `INPUT`, admitted
+//! on the dispatcher, then run on their own task; satellite requests relay.
 
 #![expect(
     clippy::redundant_pub_crate,

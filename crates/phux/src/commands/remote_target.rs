@@ -20,6 +20,8 @@
 mod code;
 mod quic_upgrade;
 
+pub(crate) use code::pair_from_code;
+
 use std::process::ExitCode;
 
 use super::attach;
@@ -293,27 +295,6 @@ pub(crate) fn resolve(
     })
 }
 
-/// Read back the entry just registered, so a write that did not round-trip
-/// fails here; falls back to the synthesized entry if the config is unreadable.
-fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEntry {
-    find_entry(target).unwrap_or_else(|| RemoteEntry {
-        index: 0,
-        name: new.name.clone(),
-        endpoint: new.endpoint.clone(),
-        token_file: new.token_file.clone(),
-        cert_fingerprint: new.cert_fingerprint.clone(),
-        tls_server_name: new.tls_server_name.clone(),
-        session: None,
-        ssh: None,
-        direct: new.direct.clone(),
-        remote_phux: new.remote_phux.clone(),
-        client_cert: new.client_cert.clone(),
-        client_key: new.client_key.clone(),
-        color: None,
-        paused: false,
-    })
-}
-
 /// Set the far end up over ssh, register the result, and return the entry to
 /// dial. A repaired entry keeps its name; a cold target registers the typed
 /// spelling.
@@ -342,10 +323,7 @@ fn register_over_ssh(
         previous_token: previous.token.as_deref(),
         previous_fingerprint: previous.fingerprint.as_deref(),
         previous_identity: previous.identity.as_ref(),
-        workload: Some(enroll::WorkloadEnrollment {
-            dir: &remotes_dir,
-            name: &name,
-        }),
+        workload: Some(previous.held.replacement(&remotes_dir, &name, false)),
     };
     let (entry, outcome) = host::enroll_remote_over_ssh(
         &name,

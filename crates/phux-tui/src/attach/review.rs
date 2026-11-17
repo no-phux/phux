@@ -1,7 +1,6 @@
-//! Connection-lifetime, per-identity agent review state (survives the
-//! session-loop rebuilds that reset `PaneSlot.seen`). Identical observations
-//! do not re-arm; an uninterpretable switch-drain frame marks a gap, since
-//! equality cannot recover a missed done-working-done cycle.
+//! Connection-lifetime, per-identity agent review state that survives
+//! session-loop rebuilds. Identical observations do not re-arm; an
+//! uninterpretable switch-drain frame marks a gap.
 
 use std::collections::HashMap;
 

@@ -44,12 +44,10 @@ fn checkout_requires_the_capability_and_correlates_typed_answers() {
         branch: Some("main".to_owned()),
         ..CheckoutStatus::default()
     });
-    plane
-        .feed(FrameKind::CommandResult {
-            request_id: id,
-            result: CommandResult::OkWith(CommandValue::Checkout(Box::new(answer.clone()))),
-        })
-        .unwrap();
+    plane.reply(
+        id,
+        CommandResult::OkWith(CommandValue::Checkout(Box::new(answer.clone()))),
+    );
     let answers = plane.take_checkout_answers();
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0].request_id, id);

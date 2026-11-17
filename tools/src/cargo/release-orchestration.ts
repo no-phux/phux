@@ -18,6 +18,7 @@ export const TRAINS = [ROOT_TRAIN] as const;
 
 /** Locks that record the root path crates outside the root workspace. */
 export const STANDALONE_LOCKS = [
+  "clients/phux-vt-web/Cargo.lock",
   "clients/phux-web/Cargo.lock",
   "clients/rune/Cargo.lock",
   "crates/phux-server/tests/fixtures/host-only-engine/Cargo.lock",

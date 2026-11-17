@@ -5,7 +5,6 @@ use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
 use phux_agent_session::session::AgentSessionActor;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::native_agent::NATIVE_HOST_SPEC_ENV;
 use phux_protocol::native_agent::NativeCapabilities;
 use phux_protocol::native_agent::NativeRequest;
 use phux_protocol::native_agent::NativeRequestPayload;
@@ -13,6 +12,7 @@ use phux_protocol::native_agent::NativeView;
 use phux_protocol::native_agent::SpawnNativeAgent;
 use phux_protocol::native_agent::SpawnedNativeAgent;
 use phux_protocol::native_agent::validate_payload;
+use phux_protocol::native_agent::{NATIVE_HOST_SPEC_ENV, is_reserved_native_env};
 use phux_protocol::wire::frame::AgentEvent;
 use phux_protocol::wire::frame::CommandResult;
 use phux_protocol::wire::frame::ErrorCode;
@@ -157,10 +157,7 @@ fn validate_spawn_spec(spec: &SpawnNativeAgent) -> Result<(), CommandResult> {
             "native backend/provider/executable is unsupported or absent",
         ));
     }
-    if spec.env.keys().any(|key| {
-        key.starts_with("PHUX_NATIVE_")
-            || matches!(key.as_str(), "PHUX_SOCKET" | "PHUX_TERMINAL_ID")
-    }) {
+    if spec.env.keys().any(|key| is_reserved_native_env(key)) {
         return Err(refusal(
             "native launch environment cannot override private host binding",
         ));
@@ -384,7 +381,7 @@ fn create_native_resources(
         let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
-            "phux.native-launch/v1",
+            phux_protocol::wire::frame::RESOURCE_NATIVE_LAUNCH_KEY,
             public_spec.as_bytes().to_vec(),
         );
         Ok(NativeSpawnResources {

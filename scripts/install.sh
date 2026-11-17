@@ -25,6 +25,10 @@ die() {
   phux_message error "$*"
   exit 1
 }
+# A step worth knowing about only with --verbose: versions, places, checks.
+detail() {
+  [ "${verbose:-0}" -eq 0 ] || phux_message "$@"
+}
 
 usage() {
   cat <<'EOF'
@@ -43,6 +47,10 @@ only when none is found.
   --install-dir <dir>             Where phux, phux-mcp and the phux-rune launcher go
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
+  --no-repo                       On Debian, Ubuntu, Fedora and RHEL, install the release
+                                  archive instead of adding phux's apt or dnf repository
+                                  (also $PHUX_NO_REPO=1). The repository is the default for
+                                  the stable channel, so phux updates with the system.
   --service, --no-service         On Linux, run (or skip) `phux service install` without
                                   asking: a systemd user unit plus linger, so sessions
                                   survive logout and reboot. Default: ask on a terminal,
@@ -55,12 +63,22 @@ only when none is found.
   --os <darwin|linux>, --arch <arm64|x86_64>
                                   Override platform detection.
   --dry-run                       Print what would be downloaded and where it would go.
+  --verbose                       Also say what was installed where, and how it was checked.
   --help                          Show this help.
 
 With minisign on PATH, the release checksum's signature, and the channel
 manifest's (required on lts), are verified against the phux release keys. Set PHUX_REQUIRE_SIGNATURE=1 to refuse to install
 without that check (0, the default, falls back to the SHA-256 alone).
 EOF
+}
+
+# PATH for reading: ~ for HOME. Not for a command line; shell_quote is.
+pretty_path() {
+  # shellcheck disable=SC2088 # a ~ to read, never expanded
+  case "${HOME:-}:$1" in
+    ?*:"${HOME:-}"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # POSIX stand-in for `printf %q`: bare when no shell treats a character
@@ -291,7 +309,7 @@ verify_signature() {
   if ! command -v minisign >/dev/null 2>&1; then
     [ "${PHUX_REQUIRE_SIGNATURE:-0}" = 0 ] \
       || die "PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH; nothing was installed"
-    phux_message info "minisign not found; checking the SHA-256 without its release signature"
+    detail info "minisign not found; checking the SHA-256 without its release signature"
     return 0
   fi
   download "${asset_url}.sha256" "${work}/signed.sha256" \
@@ -331,6 +349,136 @@ trap_signals() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+}
+
+# --- Linux package repositories ----------------------------------------------
+
+# On Debian, Ubuntu, Fedora and RHEL the stable CLI comes from phux's signed
+# apt or dnf repository, so it updates with the system. The signing key is
+# repo_key, embedded by scripts/generate-install.sh from packaging/phux.asc:
+# it is as trusted as this script, and nothing else is fetched to trust it.
+# Packages stay on their releases; the signed metadata is the `repodata`
+# release (docs/runbooks/linux-packages.md).
+REPO_URL="${PHUX_REPO_URL:-https://github.com/no-phux/phux/releases/download}"
+
+# apt or dnf when this host is one phux's repositories serve, and the
+# installer can act as root: as root, or through sudo that needs no password
+# or has a terminal to ask on.
+repo_manager() {
+  [ "$(uname -s)" = Linux ] && [ -r "${PHUX_OS_RELEASE:-/etc/os-release}" ] || return 1
+  # shellcheck disable=SC1090,SC1091
+  ids="$(. "${PHUX_OS_RELEASE:-/etc/os-release}" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")"
+  case "$ids" in
+    *' debian '* | *' ubuntu '*) manager=apt tool=apt-get ;;
+    *' fedora '* | *' rhel '* | *' centos '*) manager=dnf tool=dnf ;;
+    *) return 1 ;;
+  esac
+  command -v "$tool" >/dev/null 2>&1 || return 1
+  if [ "$(id -u)" != 0 ]; then
+    command -v sudo >/dev/null 2>&1 || return 1
+    sudo -n true 2>/dev/null || { : </dev/tty; } 2>/dev/null || return 1
+  fi
+  printf '%s\n' "$manager"
+}
+
+# Under curl | sh, stdin is the rest of this script: nothing may read it.
+# sudo asks for a password on the terminal, not stdin.
+as_root() {
+  if [ "$(id -u)" = 0 ]; then "$@" </dev/null; else sudo "$@" </dev/null; fi
+}
+
+# Add the repository for MANAGER and install phux from it. Every step is
+# chained: a caller's `if` turns off set -e.
+install_repo() {
+  phux_message info "adding the phux $1 repository, so phux updates with the system (opt out: --no-repo)"
+  repo_key > "${work}/phux.asc" || return 1
+  case "$1" in
+    apt)
+      printf 'deb [signed-by=/etc/apt/keyrings/phux.asc] %s repodata/\n' "$REPO_URL" > "${work}/phux.list" \
+        && as_root install -d -m 755 /etc/apt/keyrings \
+        && as_root install -m 644 "${work}/phux.asc" /etc/apt/keyrings/phux.asc \
+        && as_root install -m 644 "${work}/phux.list" /etc/apt/sources.list.d/phux.list \
+        && as_root apt-get update -qq -o Dir::Etc::sourcelist=sources.list.d/phux.list \
+          -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 \
+        && as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq phux
+      ;;
+    dnf)
+      printf '[phux]\nname=phux\nbaseurl=%s\nenabled=1\ngpgcheck=1\nrepo_gpgcheck=1\nmetadata_expire=1h\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-phux\n' \
+        "$REPO_URL" > "${work}/phux.repo" \
+        && as_root install -D -m 644 "${work}/phux.asc" /etc/pki/rpm-gpg/RPM-GPG-KEY-phux \
+        && as_root install -m 644 "${work}/phux.repo" /etc/yum.repos.d/phux.repo \
+        && as_root rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-phux \
+        && as_root dnf install -y -q phux
+      ;;
+  esac
+}
+repo_key() {
+  cat <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQINBGr4zb8BEAClpZpRRTXio8eVaYzm8SOwJ4EaGUC8eS2RtN4ipM2bEmGr0+Nc
+ztWmyfhigSKtcnpPm711Df1C3B7cgGnFFTp0HvxsUBVx3ynyZkLP76vrhCQPGWwf
+kQEV1EZkSRAl87/TRsy8GIEAcxRnYd87yx1DxUaBn4rm1yGe6YSiZJEpmAtd1A6n
+V5QLlPGWYx2zs26FMEtjfkyo7c3LP9W6Z+mMNeQxehtRwawpeWu5egFRsSTFSJU8
+F2D45taksnXDtHdBUsjNMRGn1PzBxuXIIcRlpHNjZa3WB4vNuvJ5udtFYf+HhU+O
+dd3KreLB1RaQYODjC3I1W2t/lyiRRK++WbkWprnNcyFPO2lEEMCkmeaForomKoZJ
+5sZ/+p1NMJDyh7dQvw5QhCxVZtx7QBN0U8TYP6iWJTt7/AwIHIDjwQ5OFIcbQ/Sz
+IxblFZmUQGckU1NTfEHU5vs6AuL2QuX3z2sGOfowx74eLH/Ab70RsM0sDWg/9g2Y
+EOA5AU0adAAwOG+7iETnjxYRXUU/w+GkQ0G/lLlEJ/6VsaJXJIZ7Zs+F8m/zeYGu
+jUrLan0bZ91HkYjxT6D+1ZK1LTXXGGmu+ABGRPHNQj1o4NoOpwnGCODQFtinJdE4
+EezsNdJb2D7OBJmRUbxe2MxcVmBGRX4jlMzB00mZc1gEIUiSfLrBFCm0qwARAQAB
+tBhwaHV4IHBhY2thZ2Ugc2lnbmluZyBrZXmJAm0EEwEIAFcWIQQPPUBG5y0MsjeE
+pYsEOhjf1NGk1QUCavjNvxsUgAAAAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMCGwEF
+CwkIBwICIgIGFQoJCAsCBBYCAwECHgcCF4AACgkQBDoY39TRpNUX1BAAgUDTpHcB
+fgP82Zx7sro2zZZSVUhM1l+O+QTajYiTrqMZ38oNZ5sTZl1Qogu6NL+rjjeK98zq
+eJeojG3u16O/v5TPHeD4FKbx5e1Tjcnyg2vCLpDnyC6j4bPl/f5RaHuF/3NsMoAk
+WGJr19UgIQ06reOrkgayYiJNqYZXp/wu/9PRudOQx8lqWtDW0y7Gzltq2MUqeLTc
+RI9k3AbR6Kev4ry8o33BsGAKHWpG3px8J3nj7z4Xj186YgUvEkmqYbl7vJYZoOEg
+bEmlw2lLpiWJ1pk5YXq4/Y4cp+pr53dFNh3TiWuAq9PabH0Wo4MdgVIJmEZdptO/
+kfeUOOKvzZaLd4j/hRSIs/OKg274+U5p28/KAxOCjNbFct3/QStxJhgzjCAdhheC
+lOge+TfSZZWXRXcwxSzoyvwYavoW0BDPxXQBi1Q9NDhZaQjtD2tugzObLaRbzHIc
+L3d2v3KzxW8np0UdJvYxcNQc+fpK3kgmfNVkbDrUH5rcJ5CncdvQYTymOYo97Fsm
+uAmo1WlNsGdgH4oxEccQa4aXHrZ4HE4ORoiswV3WsOuSHqbKIkOgLRvbelQmkU6k
+6ZfBpzy4mWDP5sbtFEm6EGTibTBA5cwq193FF+TSeZuLZ0KOC7eU5QpakCFIyiaF
+bGvGDF24btyhIY2sEE0ATGiq1mwV+CP66gu5Ag0EavjNwQEQAMwhKkVoCHO9YhyN
+IJWiZ/+eNgi92A6I0kaCiQFca95yPlBE0ISeOIBEH62TtcF3m8hAPYT6w2E7H/SQ
+4WmU0sGlOs0/GJ8/lbeTWAsCAnaEyG69XnmUghhgiyKKJnfYIVehDVCSBS9UIopW
+rDlO30ER8UuJltUnQ28NlPP7I1U7IFeu9wf8cGFPF9R4yE5sewt3s7lMM0NRP1K8
+hjpqSuhRRNKiUjIKSToWzhsxRQ9EZ+ra1WCXQXisw2rU1wfi7Id0fqlXdZOD8H41
+Q/sXps2cvojt45qNyRJ69jV7Qbv8FX+DfmxBi9IcSL+T+FPaTowpObkSWP2R43GB
+SLDtdjHN3jFbUhFo9qVKtnD8iK1nWS6Rwd4lI4PNaudGLsDgOQTwf+1RkR/KEbmP
+Us+rxad8n5dNOU2lsob/c3zHciSS55LDdxOSDWrpmmWjem0UYPtnDylRVpAlSSKT
+eD4FuQX6+OwdbJSQV62RZtfG8n6238APV9Strh3o69KGa9nppASRK6Uj5CwmcKL7
+o86EMG3WBqJ1zZg8G3V2XfLEWmeuBrTamRasXJMFRDjQLIzE7zMGF2KmPEbXgou+
+eg6OlQEPDpPMaVko0IreMD/eo1Tynd0VGtSDelUAAQ+ddU3alAVXu7WuyahOigOf
+GDKFn8lBU9ZbU0BK6D4lGtPqnQlJABEBAAGJBIgEGAEIADwWIQQPPUBG5y0MsjeE
+pYsEOhjf1NGk1QUCavjNwRsUgAAAAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMCGwIC
+QAkQBDoY39TRpNXBdCAEGQEIAB0WIQR/8sxYUBB8SHUYh6oNkwiyhd3o4QUCavjN
+wQAKCRANkwiyhd3o4YY0D/95qInjIRjRfVJT/xxDFiDwDeLTo1+QNIG+8Rd6v7MR
+s0PhK1ad9imNRnBbezOpJ31hHt8iqF0UbOgf+Tt+ZTyGdLE6wmmQAOE4mvx6lXnP
+i9SjrZoqRak83Pk34mgTreiaoYQste5JgPgyZ+kpWNb18o4TAP6IzcBVvaOBlmMk
+qxdPf3GgQAS+OLZnpsRb/ndd54DcTq7Zin18WSGG9ebdAPcaESh7sC5Pzevf6n3e
+8FHEci+A7hvFi7tKOj2D0jjxfIrYrs3KD8tx1CgYZdagFUUJj2IHgSG3O+U0m/i5
+ijD2oTePgbmMVi62sF9UXWpbS8qjGAosyN5YkWIauBz6MSDTwlGgU3HSrKKqLtMj
+GJEA2nIQGtj94DBjnJV97Xp6OhlPEBcCzqcupWOAv4PSFWwPOqF9RkdCMhVVWdwD
+L/KcOdh1WjDdi11tiaR7HIpxR/OKMwWjTc/SYd8Tn9ztNu+SIF+QxlHZ4w4wYEHy
+k42RcXJQOhV5zjeHQ0W8NMbQ7zU0Kmneg2BGxqJF+avbLJmwCeZKAfbiTq30j6LU
+1sPSV2jT+E5rBsbG/wT8h05rNn6ZMn0iPIp+ZzwGcG2zZz/Mj7eTC8OtLpwaoUbp
++B0f8f+HP72NNb6XQY+Xw2cXxDRmy97AQJqvsAlALbess4tG31e1zc5Fl20eq0t0
+N94ID/9iqMUPuteIzH4dWYx33c/43l9Fim7DZRrvLjHSTLkmwD3L5dOwZ53l9OVt
+pTF89QQj8UhKbsS1ac35tfYRdLk+McTnOG3cW//PhkBRCoVNZdjzQ6wufwExQ209
+5wMSwmTGyTNj7PUyw5wcJM23JBnsB9Lc4yoD+8yioxGtAMH8Ajl+kfXY6H34iGhQ
+9XtJNF/Eyz0vPbkCUkvPIPUmBlXF9CBXElK9zNqwLRe/41N6r6tr/c3V6H+WiGv9
+no869l3kbgU3OhjkRnsuH3jdLLx2OgzReT+aBAoP8AU0bkOE8SRWxCKi/7PtIrxq
+N5KGg694rKfxgG1in7mgm6UKxZpFNRU7U5UoqRaZ04aTW9m4h6wxWw5FHLcz9lJE
+0P6ulV7n6Z9xl7w4JZK2qcZrrWV9eGB2l4O9dzHPLO069LgqLVTHPSld/sV0TSyq
+k27lXv7AX7+KSmiT8pkcYA6JJ2PprKkwJnUisgBKTdd7li7nIiumlpehjwRL+QH3
+R1XsPBd/MJT/Wq77Vy7WqXksMRlftIPHwoto2/Mik9Ewjx/su3zIwO+ePBUf6ezq
+N8SgUGX8cUBGMJWmaL5V5cZA01Vgh631mzUVU2fZpK/19jv5gEVLqSuCW04ksznW
+SdTrwIj26qgQCmxRNwFnZ62aaQ0WbwhDt0FjbKqowgH3meclyw==
+=2OAY
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
 }
 
 # --- the CLI -----------------------------------------------------------------
@@ -439,14 +587,15 @@ add_to_profile() {
   printf '%s\n' "$profile"
 }
 
+# The installer's last words: that phux is in, and the one thing to do next.
 report_path() {
   dir="$(cd "$install_dir" && pwd -P)"
   found="$(command -v phux 2>/dev/null || true)"
   if [ "${found#/}" != "$found" ] && [ "$(cd "$(dirname "$found")" && pwd -P)/phux" = "${dir}/phux" ]; then
-    echo "next: phux"
+    # shellcheck disable=SC2016 # backticks mark the command, not a substitution
+    echo 'phux is installed. Run `phux` to start.'
     return
   fi
-  printf 'next: %s\n' "$(shell_quote "${dir}/phux")"
   on_path=0
   old_ifs="$IFS"
   IFS=:
@@ -456,11 +605,16 @@ report_path() {
   done
   set +f
   IFS="$old_ifs"
-  if [ "$on_path" -eq 0 ] && [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
-    printf 'added %s to PATH in %s; new terminals find phux\n' "$(shell_quote "$dir")" "$(shell_quote "$profile")"
+  # shellcheck disable=SC2016 # backticks mark a command; the PATH line expands when it runs
+  if [ "$on_path" -eq 1 ]; then
+    printf 'phux is installed in %s, but %s comes first on PATH. Run %s, or move %s first on PATH.\n' \
+      "$(pretty_path "$dir")" "$found" "$(shell_quote "${dir}/phux")" "$(pretty_path "$dir")"
+  elif [ "$modify_path" -eq 1 ] && profile="$(add_to_profile "$dir")"; then
+    printf 'phux is installed. Open a new terminal and run `phux` (%s now adds it to PATH).\n' "$(pretty_path "$profile")"
+  else
+    printf 'phux is installed in %s. Add it to PATH with export PATH=%s:"$PATH", then run `phux`.\n' \
+      "$(pretty_path "$dir")" "$(shell_quote "$dir")"
   fi
-  # shellcheck disable=SC2016 # the remedy expands when the user runs it
-  printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$dir")"
 }
 
 # On Linux a plain server is not restarted after a reboot and often ends at
@@ -492,6 +646,18 @@ offer_service() {
 
 # PIN and PIN_SHA256 pin the CLI; empty follows the channel.
 install_cli() {
+  if [ "$repo" -eq 1 ] && [ "$channel" = stable ] && [ -z "$1" ] && manager="$(repo_manager)"; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'product: phux\nchannel: stable\nrepository: %s %s\ndestination: /usr/bin\n' "$manager" "$REPO_URL"
+      return
+    fi
+    if install_repo "$manager"; then
+      [ "$rune" -eq 1 ] || install_dir=/usr/bin
+      detail ok "installed phux from the phux $manager repository; $manager keeps it updated"
+      return
+    fi
+    phux_message warn "the $manager repository did not install phux; installing the release archive instead"
+  fi
   resolve phux "$target" "$1" "$2"
   name_asset phux "$target"
   if [ "$dry_run" -eq 1 ]; then
@@ -501,7 +667,7 @@ install_cli() {
   fetch_verified
   unpack_cli
   publish_cli
-  phux_message ok "installed phux ${build_id} for ${target} to ${install_dir}"
+  detail ok "installed phux ${build_id} for ${target} to ${install_dir}"
   if [ "$target" = aarch64-apple-darwin ] && [ "$channel" != next ]; then
     # Best effort, in a subshell so a failure cannot undo the CLI install.
     (install_server_app) || phux_message warn "phux Server.app was not installed; the server runs from ${install_dir}/phux"
@@ -556,7 +722,7 @@ install_server_app() {
       *) rm -rf "$entry" ;;
     esac
   done
-  phux_message ok "installed phux Server.app ${build_id} to ${versions}/Current"
+  detail ok "installed phux Server.app ${build_id} to ${versions}/Current"
 }
 
 # --- Phux Rune ---------------------------------------------------------------
@@ -618,15 +784,37 @@ register_desktop_entry() {
   mkdir -p "$entries" || return 1
   [ ! -d "${entries}/$2.desktop" ] || return 1
   entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
+  # The executable is replaced; the field codes after it (`%u`) stay.
   if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
-    /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
+    /^Exec=/ { codes = $0; sub(/^Exec=[^ ]*/, "", codes); print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"] codes; next }
     /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
     { print }
   ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/$2.desktop"; then
+    register_scheme_handler "$entries" "$2.desktop"
     return 0
   fi
   rm -f "$entry"
   return 1
+}
+
+# phux://connect links open the app: the entry's MimeType names the scheme,
+# and the desktop's own tools make it the handler. Without them a desktop
+# still reads the entry when it next scans; nothing here is fatal.
+register_scheme_handler() {
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$1" >/dev/null 2>&1 || true
+  fi
+  if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default "$2" x-scheme-handler/phux >/dev/null 2>&1 \
+      || phux_message warn "could not make Phux Rune open phux:// links; run: xdg-mime default $2 x-scheme-handler/phux"
+  fi
+}
+
+# Launch Services learns a bundle's schemes when it is first opened; register
+# it now so a phux://connect link opens it before then.
+register_bundle_macos() {
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ ! -x "$lsregister" ] || "$lsregister" -f "$1" >/dev/null 2>&1 || true
 }
 
 # The update feed names one version, with a digest per target. Sets build_id,
@@ -694,14 +882,16 @@ install_rune_macos() {
   unpack_rune_macos
   lock_applications
   publish_rune_macos
-  phux_message ok "installed Phux Rune ${build_id} to ${applications_dir}"
-  printf 'next: open %s\n' "$(shell_quote "$(cd "$applications_dir" && pwd -P)/Phux Rune.app")"
+  register_bundle_macos "$installed"
+  detail ok "installed Phux Rune ${build_id} to ${applications_dir}"
+  rune_installed="Phux Rune is installed. Open Phux Rune from $(pretty_path "$(cd "$applications_dir" && pwd -P)")."
 }
 
 rune_member() {
   case "${1#*/}" in
     phux-rune | phux-rune.release | README.md | LICENSE | NOTICE | THIRD-PARTY-NOTICES.txt | \
     Inter-OFL.txt | JetBrainsMono-OFL.txt | \
+    tmd | tmd-LICENSE.txt | tmd-THIRD-PARTY-NOTICES.md | tmd-VERSION.txt | \
     sh.phux.rune.desktop | sh.phux.rune.png) return 0 ;;
     *) return 1 ;;
   esac
@@ -763,8 +953,9 @@ install_rune_linux() {
   fi
   register_desktop_entry "${installed}/sh.phux.rune.desktop" sh.phux.rune phux-rune sh.phux.rune.png \
     || phux_message warn "could not register the menu entry; run ${bundle}/phux-rune"
-  phux_message ok "installed Phux Rune ${build_id} to ${installed}"
-  printf 'next: %s\n' "$(shell_quote "${bundle}/phux-rune")"
+  detail ok "installed Phux Rune ${build_id} to ${installed}"
+  if [ -x "${install_dir}/phux-rune" ]; then run="phux-rune"; else run="$(shell_quote "${bundle}/phux-rune")"; fi
+  rune_installed="Phux Rune is installed. Open Phux Rune from your apps (or run \`${run}\`)."
 }
 
 # On its own feed: there is no channel to pick and nothing to pin, and the
@@ -777,7 +968,7 @@ install_rune() {
   [ "$target" != aarch64-apple-darwin ] || [ "$dry_run" -eq 1 ] || [ "$(uname -s)" = Darwin ] \
     || die "the macOS build of Phux Rune installs only on macOS"
   if ! has_cli; then
-    phux_message info "phux CLI not found; installing it first"
+    detail info "phux CLI not found; installing it first"
     install_cli "" ""
   fi
   resolve_rune
@@ -802,12 +993,17 @@ install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
 rune=0
 dry_run=0
+verbose=0
 os=""
 arch=""
 modify_path=1
 case "${PHUX_NO_MODIFY_PATH:-}" in '' | 0) ;; *) modify_path=0 ;; esac
 service=ask
 case "${PHUX_NO_SERVICE:-}" in '' | 0) ;; *) service=0 ;; esac
+# A chosen place or platform means the archive; so does PHUX_NO_REPO.
+repo=1
+case "${PHUX_NO_REPO:-}" in '' | 0) ;; *) repo=0 ;; esac
+[ -z "${PHUX_INSTALL_DIR:-}" ] || repo=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -823,23 +1019,25 @@ while [ "$#" -gt 0 ]; do
       ;;
     --revision) pin="$2" pinned_flag=--revision ;;
     --sha256) pin_sha256="$2" ;;
-    --install-dir) install_dir="$2" ;;
+    --install-dir) install_dir="$2" repo=0 ;;
     --applications-dir) applications_dir="$2" ;;
-    --os) os="$2" ;;
-    --arch) arch="$2" ;;
+    --os) os="$2" repo=0 ;;
+    --arch) arch="$2" repo=0 ;;
     --desktop)
       phux_message info "the GPUI desktop is retired; installing Phux Rune"
       rune=1
       ;;
     --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
+    --verbose) verbose=1 ;;
     --no-modify-path) modify_path=0 ;;
+    --no-repo) repo=0 ;;
     --service) service=1 ;;
     --no-service) service=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --rune | --dry-run | --no-modify-path | --service | --no-service) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --verbose | --no-modify-path | --no-repo | --service | --no-service) shift ;; *) shift 2 ;; esac
 done
 
 if [ "$rune" -eq 1 ]; then
@@ -897,10 +1095,17 @@ cleanup() {
 trap cleanup EXIT
 trap_signals
 
+rune_installed=""
 if [ "$rune" -eq 1 ]; then
   install_rune
 else
   install_cli "$pin" "$pin_sha256"
-  [ "$dry_run" -eq 1 ] || report_path
 fi
 [ "$dry_run" -eq 1 ] || offer_service
+if [ "$dry_run" -eq 1 ]; then
+  :
+elif [ -n "$rune_installed" ]; then
+  printf '%s\n' "$rune_installed"
+else
+  report_path
+fi

@@ -6,7 +6,10 @@ use phux_terminal_api::{
 #[derive(Debug, Default)]
 pub struct TerminalEngine;
 
-fn command(intent: &phux_terminal_api::launch::LaunchCommand) -> portable_pty::CommandBuilder {
+/// The PTY spawn of launch `intent`, exactly as a fresh pane gets it.
+pub(crate) fn command(
+    intent: &phux_terminal_api::launch::LaunchCommand,
+) -> portable_pty::CommandBuilder {
     let mut command = portable_pty::CommandBuilder::from_argv(intent.get_argv().clone());
     // portable-pty supplies SHELL from passwd when it was not inherited. Preserve
     // that fallback, but never resurrect an explicitly removed environment key.
@@ -97,6 +100,7 @@ impl TerminalEngineFactory for TerminalEngine {
             source
         });
         let program_status = actor.subscribe_program_status();
+        let resume = actor.subscribe_resume();
         Ok(EngineBundle {
             handle,
             token,
@@ -106,17 +110,11 @@ impl TerminalEngineFactory for TerminalEngine {
             events,
             agent_state,
             program_status,
+            resume,
         })
     }
     fn bootstrap_capabilities(&self) -> phux_protocol::caps::BootstrapCapabilities {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            crate::native_state::native_bootstrap_capabilities()
-        }
-        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-        {
-            phux_protocol::caps::BootstrapCapabilities::new()
-        }
+        crate::native_state::native_bootstrap_capabilities()
     }
     fn metrics(&self) -> &'static [phux_perf::Metric] {
         crate::perf::TABLE

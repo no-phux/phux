@@ -1,6 +1,6 @@
 //! Kernel-side performance telemetry, shared by every frontend.
 //!
-//! The ratatui client, the native cockpit (through `phux-client-ffi`), and the
+//! The ratatui client, the mobile bridge (through `phux-client-ffi`), and the
 //! web client all drive the same [`crate::session::SessionKernel`], so the
 //! kernel is where a frontend-neutral view of "how fast is this client"
 //! lives: frames applied and their bytes, the time libghostty took to apply
@@ -23,12 +23,12 @@ pub static OUTPUT_FRAMES: Counter = Counter::new();
 /// Payload bytes those frames carried.
 pub static OUTPUT_BYTES: Counter = Counter::new();
 /// Microseconds the engine took to apply one output frame (native only).
-pub static KERNEL_APPLY: Histogram = Histogram::new();
+pub(crate) static KERNEL_APPLY: Histogram = Histogram::new();
 /// Microseconds from a key or paste being handed to the frontend for sending
 /// until the first output frame for that terminal arrived (native only).
 pub static ECHO_RTT: Histogram = Histogram::new();
 /// Key and paste events routed through the kernel.
-pub static INPUT_SENT: Counter = Counter::new();
+pub(crate) static INPUT_SENT: Counter = Counter::new();
 
 /// The kernel's metric table, in render order.
 pub static TABLE: &[Metric] = &[
@@ -61,7 +61,7 @@ pub fn report(uptime: core::time::Duration) -> PerfReport {
 /// Output frames are the flood. No sample is armed until a key or paste, and
 /// [`Self::observe`] returns before the map in that case.
 #[derive(Debug, Default)]
-pub struct EchoProbe {
+pub(crate) struct EchoProbe {
     #[cfg(not(target_arch = "wasm32"))]
     armed: core::cell::RefCell<std::collections::HashMap<ResourceId, std::time::Instant>>,
     /// Terminals with an open echo sample.
@@ -73,7 +73,7 @@ impl EchoProbe {
     /// Record that input which a program is expected to answer just left
     /// for `terminal_id`. A re-arm before the reply keeps the earlier mark,
     /// so a burst of typing measures from its first key.
-    pub fn arm(&self, terminal_id: &ResourceId) {
+    pub(crate) fn arm(&self, terminal_id: &ResourceId) {
         INPUT_SENT.incr();
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -88,7 +88,7 @@ impl EchoProbe {
     }
 
     /// Output arrived for `terminal_id`: close any open sample.
-    pub fn observe(&self, terminal_id: &ResourceId) {
+    pub(crate) fn observe(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.open.get() == 0 {
@@ -108,7 +108,7 @@ impl EchoProbe {
     }
 
     /// The terminal is gone; forget any open sample.
-    pub fn forget(&self, terminal_id: &ResourceId) {
+    pub(crate) fn forget(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.open.get() == 0 {
@@ -123,7 +123,7 @@ impl EchoProbe {
     }
 }
 
-/// A drop guard timing one engine apply into [`KERNEL_APPLY`].
+/// A drop guard timing one engine apply into `KERNEL_APPLY`.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn apply_timer() -> phux_perf::Timer {

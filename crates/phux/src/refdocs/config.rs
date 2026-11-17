@@ -174,7 +174,17 @@ const SECTIONS: &[Section] = &[
         key: "restore",
         header: "[restore]",
         summary: "Whether a starting server relaunches the panes the last \
-                  server stop ended, as `phux restore` does by hand.",
+                  server stop ended, as `phux restore` does by hand, and \
+                  the `[[restore.program]]` commands a relaunch may resume \
+                  a program with.",
+    },
+    Section {
+        key: "forward",
+        header: "[forward]",
+        summary: "What `phux forward` may reach from this server: whether \
+                  it serves TCP forwarding at all, the targets a client \
+                  may reach besides the server's own loopback, and whether \
+                  it brokers ssh-agent requests from its panes.",
     },
     Section {
         key: "rune",

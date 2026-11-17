@@ -25,10 +25,8 @@ fn sent_set_metadata(frames: &[FrameKind]) -> bool {
         .any(|frame| matches!(frame, FrameKind::SetMetadata { .. }))
 }
 
-/// #1475: `close-view` and `reopen-views` edit the arrangement. While the
-/// initial layout read is outstanding that edit must not land on the
-/// fallback workspace, and it must not be dropped: it is queued, applied
-/// to the adopted workspace, and that result is what gets saved.
+/// #1475: arrangement edits pressed while the initial layout read is out are
+/// queued, applied to the adopted workspace, and saved.
 #[tokio::test(flavor = "current_thread")]
 async fn hidden_view_actions_wait_for_the_layout_read_fence() {
     use tracing::instrument::WithSubscriber;

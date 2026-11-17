@@ -188,6 +188,7 @@ pub(super) fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
                 arrangement: arrangement(),
                 expected: rev(1),
                 document: document(),
+                slot_tabs: false,
             }),
         ),
         (

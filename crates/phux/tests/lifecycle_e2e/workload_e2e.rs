@@ -6,10 +6,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
+use crate::{common, listeners};
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -19,61 +16,13 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use crate::hermetic::{hermetic_env, prepare_dirs};
+use crate::hermetic::{
+    NO_ENV, READY_DEADLINE, Server, await_success, hermetic_env, json_doc, phux, phux_with,
+    prepare_dirs, server_command, start_server, text,
+};
 
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
-
-/// How long a freshly started server has to answer its first dial.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
-
-/// A running `phux server`, killed on drop.
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// Run `phux ARGS` in `dir` with `stdin` piped in and `extra` environment.
-/// The working directory is the test's own, so a relative path an argument
-/// names can never land in the source tree.
-fn phux_with(dir: &Path, args: &[&str], stdin: &[u8], extra: &[(&str, &Path)]) -> Output {
-    let mut child = common::phux_cmd(crate::runner::phux_bin())
-        .envs(hermetic_env(dir))
-        .envs(extra.iter().copied())
-        .current_dir(dir)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn phux");
-    // A refused invocation may exit before reading; a broken pipe is fine.
-    let _ = child.stdin.take().expect("stdin").write_all(stdin);
-    child.wait_with_output().expect("wait for phux")
-}
-
-fn phux(dir: &Path, args: &[&str]) -> Output {
-    phux_with(dir, args, b"", &[])
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn json_doc(out: &Output) -> serde_json::Value {
-    let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&out.stdout);
-    assert!(
-        parsed.is_ok(),
-        "expected one JSON document: {}{}",
-        text(&out.stdout),
-        text(&out.stderr)
-    );
-    parsed.expect("checked above")
-}
 
 /// A workload's private key and a CSR for it, generated the way a workload
 /// would, outside phux.
@@ -157,7 +106,7 @@ fn enroll(dir: &Path, client: &ClientKey, cert_out: &Path, scopes: &[&str]) -> S
     for scope in scopes {
         args.extend(["--scope", scope]);
     }
-    let out = phux_with(dir, &args, client.csr_pem.as_bytes(), &[]);
+    let out = phux_with(dir, &args, client.csr_pem.as_bytes(), NO_ENV);
     assert!(out.status.success(), "add-key: {}", text(&out.stderr));
     json_doc(&out)["credential_id"]
         .as_str()
@@ -193,47 +142,6 @@ fn paired(dir: &Path) {
     .expect("write paired config");
 }
 
-fn server_command(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> std::process::Command {
-    let mut command = common::phux_cmd(crate::runner::phux_bin());
-    command
-        .envs(hermetic_env(dir))
-        .envs(env.iter().copied())
-        .current_dir(dir)
-        .arg("server")
-        .arg("--socket")
-        .arg(dir.join("s.sock"))
-        .args(extra)
-        .stdin(Stdio::null());
-    command
-}
-
-fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
-    let child = server_command(dir, extra, env)
-        .args(["--exit-after-idle", "120"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn phux server");
-    Server(child)
-}
-
-fn await_success(dir: &Path, args: &[&str], extra: &[(&str, &Path)]) -> Output {
-    let start = Instant::now();
-    loop {
-        let out = phux_with(dir, args, b"", extra);
-        if out.status.success() {
-            return out;
-        }
-        assert!(
-            start.elapsed() < READY_DEADLINE,
-            "`phux {}` never succeeded: {}",
-            args.join(" "),
-            text(&out.stderr)
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 // Lexical shards retain test paths and private helper access without widening
 // visibility. Keep whole items (including docs and attributes) together.
 include!("workload_e2e/authority.rs");
@@ -245,6 +153,7 @@ include!("workload_e2e/host_harness.rs");
 include!("workload_e2e/raw_session.rs");
 include!("workload_e2e/host_enrollment.rs");
 include!("workload_e2e/renewal.rs");
+include!("workload_e2e/hardware_key.rs");
 include!("workload_e2e/host_read.rs");
 include!("workload_e2e/narrow_read.rs");
 include!("workload_e2e/short_lived_identity.rs");

@@ -29,6 +29,7 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
         }
     };
     let now = chrono::Utc::now();
+    let tailnet_owner = tailnet_owner_mode();
     if json {
         let credentials: Vec<serde_json::Value> = rows
             .iter()
@@ -49,8 +50,12 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
             "schema_version": 1,
             "operation": "ls",
             "tokens_path": tokens.display().to_string(),
+            "tailnet_owner": tailnet_owner,
             "credentials": credentials,
         }));
+    }
+    if tailnet_owner {
+        outln!("Your own tailnet devices connect without a token ([policy] tailnet-owner = true).");
     }
     if rows.is_empty() {
         outln!("No credentials in {}.", tokens.display());
@@ -81,6 +86,14 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+/// Whether `[policy] tailnet-owner` is on in this machine's config: the
+/// owner's own tailnet devices need no credential from this list. An
+/// unreadable config reads as off; `phux doctor` reports it.
+fn tailnet_owner_mode() -> bool {
+    phux_config::loader::load_from(&phux_config::loader::config_path())
+        .is_ok_and(|config| config.policy.tailnet_owner)
 }
 
 /// `revoked`, `expired`, `unused` (never admitted), or `active`, and the

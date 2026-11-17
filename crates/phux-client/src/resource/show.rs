@@ -39,6 +39,9 @@ pub struct ResourceDetails {
     pub agent: Option<AgentRecord>,
     /// OSC 7501 active record and record-id index; absent on older servers.
     pub program_status: Option<Value>,
+    /// The `phux.controller/v1` record: the connection that last typed into
+    /// the Terminal. `None` when none has, or it has since closed.
+    pub controller: Option<Value>,
     /// Degradation notices collected along the way.
     pub unreachable: Vec<String>,
 }
@@ -67,6 +70,7 @@ impl ResourceDetails {
             "tags": self.tags,
             "agent": self.agent,
             "program_status": self.program_status,
+            "controller": self.controller,
             "agent_session": info.agent.as_ref().map(|facet| json!({
                 "provider": facet.provider,
                 "native_id": facet.native_id,
@@ -98,10 +102,28 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
     } else {
         None
     };
-    let program_status = if is_terminal {
-        read_program_status(&mut conn, resource, &mut unreachable).await?
+    let (program_status, controller) = if is_terminal {
+        use phux_protocol::wire::frame::{RESOURCE_CONTROLLER_KEY, RESOURCE_PROGRAM_STATUS_KEY};
+        (
+            read_json(
+                &mut conn,
+                resource,
+                4,
+                RESOURCE_PROGRAM_STATUS_KEY,
+                &mut unreachable,
+            )
+            .await?,
+            read_json(
+                &mut conn,
+                resource,
+                5,
+                RESOURCE_CONTROLLER_KEY,
+                &mut unreachable,
+            )
+            .await?,
+        )
     } else {
-        None
+        (None, None)
     };
     drop(conn);
     Ok(ResourceDetails {
@@ -111,6 +133,7 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
         tags,
         agent,
         program_status,
+        controller,
         unreachable,
     })
 }
@@ -185,16 +208,20 @@ async fn read_agent(
     Ok(answer.ok().flatten())
 }
 
-async fn read_program_status(
+/// One server-owned JSON record of `resource`, or `None` when it is absent,
+/// refused, or unreadable.
+async fn read_json(
     conn: &mut Connection,
     resource: &ResourceId,
+    request_id: u32,
+    key: &str,
     notices: &mut Vec<String>,
 ) -> Result<Option<Value>, AttachError> {
     let (answer, interleaved) = conn
         .request_metadata(
-            4,
+            request_id,
             Scope::Resource(resource.clone()),
-            phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY.to_owned(),
+            key.to_owned(),
         )
         .await?
         .into_parts();
@@ -263,6 +290,9 @@ mod tests {
             .metadata(|_, key| match key {
                 RESOURCE_TAGS_KEY => Some(br#"["build"]"#.to_vec()),
                 RESOURCE_AGENT_KEY => Some(br#"{"name":"reviewer","state":"idle"}"#.to_vec()),
+                phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY => {
+                    Some(br#"{"client":4,"remote":true}"#.to_vec())
+                }
                 _ => None,
             });
         let details = show_against(spec, ResourceId::local(7))
@@ -283,6 +313,7 @@ mod tests {
         assert_eq!(doc["process"]["cwd"], "/repo");
         assert_eq!(doc["tags"], json!(["build"]));
         assert_eq!(doc["agent"]["name"], "reviewer");
+        assert_eq!(doc["controller"]["remote"], true);
         assert!(doc["agent_session"].is_null());
     }
 

@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::layout::SplitDir;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResource, SpawnResult,
@@ -29,12 +28,6 @@ pub(crate) struct SpawnDurability {
 }
 
 impl SpawnDurability {
-    /// Neither flag was given: the spawn is the plain one every server
-    /// understands.
-    const fn is_plain(self) -> bool {
-        self.retain_secs.is_none() && self.idempotency_key.is_none()
-    }
-
     /// The spawn fields that carry it, or `None` for a plain spawn, which
     /// keeps the bytes a server without either feature always received.
     fn resource(self) -> Option<Box<SpawnResource>> {
@@ -82,48 +75,6 @@ pub(crate) fn parse_key_arg(
         })
 }
 
-/// Refuse a request whose durability flag the server would silently ignore:
-/// it does not advertise `missing`. Exit 2 with `unsupported_server`.
-pub(crate) fn unsupported_server(json: bool, missing: ServerFeature) -> ExitCode {
-    let flag = match missing {
-        ServerFeature::RetainOnExit => "--retain",
-        _ => "--idempotency-key",
-    };
-    let name = missing.snake_name();
-    json_err::emit(
-        json,
-        &CliError::new(
-            codes::UNSUPPORTED_SERVER,
-            format!("this server does not support {flag}: it does not advertise {name}"),
-            "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
-        ),
-        EXIT_USAGE,
-    )
-}
-
-/// The refusal for a spawn whose durability fields the server would skip,
-/// or `None` when it can be sent. A plain spawn costs no extra connection.
-fn refuse_unsupported(
-    socket_path: &Path,
-    durability: SpawnDurability,
-    frame: &FrameKind,
-    json: bool,
-) -> Option<ExitCode> {
-    if durability.is_plain() {
-        return None;
-    }
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return Some(code),
-    };
-    let features = match rt.block_on(phux_client::spawn::server_features(socket_path)) {
-        Ok(features) => features,
-        Err(err) => return Some(json_err::report_no_server(json, &err, socket_path, "spawn")),
-    };
-    let missing = phux_client::spawn::missing_spawn_feature(frame, features)?;
-    Some(unsupported_server(json, missing))
-}
-
 /// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`, L1
 /// §3.1); never auto-starts a server. With placement the new leaf goes beside
 /// the target Terminal; without, it joins the most recently active session.
@@ -167,9 +118,6 @@ pub(crate) fn run_spawn(
         initial_size: None,
         resource: durability.resource(),
     };
-    if let Some(code) = refuse_unsupported(&socket_path, durability, &frame, json) {
-        return code;
-    }
     let result = match target {
         Some(target) => dispatch_spawn_placed(
             &socket_path,

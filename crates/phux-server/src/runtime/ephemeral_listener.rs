@@ -1,20 +1,9 @@
 //! On-demand listeners: `OPEN_LISTENER` (`docs/remote.md#attaching-over-ssh`, ADR-0120).
 //!
-//! `phux attach --ssh HOST` runs `phux bootstrap` on the far end, which asks
-//! the server there for a door that exists for one attach: a QUIC listener on
-//! the wildcard address that admits only a token minted for it and held in
-//! memory. Everything after the door opens is the ordinary QUIC transport;
-//! this module owns only opening the door and closing it again.
-//!
-//! **Lifetime.** A listener closes once its linger passes with no connection
-//! open through it: before the first connection (the ssh round trip is over
-//! and nobody came) or after the last one (the client's reconnect window,
-//! which is shorter, has run out). Closing cancels the token its accept loop
-//! runs under. No connection is live at that moment, so nothing is cut off.
-//!
-//! The listener is deliberately not a `RuntimeFlags` entry, so a graceful
-//! upgrade (ADR-0032) drops it. A door opened for one attach must never
-//! become a door the server re-opens on every restart.
+//! `phux attach --ssh HOST` asks the far server for a one-attach QUIC door
+//! that admits only a token minted for it. It closes once its linger passes
+//! with no connection open through it. It is deliberately not a
+//! `RuntimeFlags` entry, so an upgrade drops it rather than re-opening it.
 
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};

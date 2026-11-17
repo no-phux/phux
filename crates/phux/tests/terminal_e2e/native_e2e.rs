@@ -5,8 +5,7 @@
     clippy::panic,
     reason = "PTY acceptance tests"
 )]
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 use common::{PtyAttach, ServerGuard};
 use phux_client::{attach::connection::Connection, org};
 use phux_protocol::{ids::ResourceId, wire::frame::OrgFilter};

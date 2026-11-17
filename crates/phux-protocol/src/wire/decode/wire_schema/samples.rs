@@ -1,13 +1,11 @@
-//! Encoded samples of every frame variant: shared builders, the connection and input frames, and the sample collector.
+//! Encoded samples of every frame variant: shared builders, the server's
+//! connection frames, and the sample collector.
 
 use super::{
-    ActorRef, AttachTarget, BootstrapId, BootstrapLimits, BootstrapProfile, Bytes, BytesMut,
-    ClientCapabilities, ClientId, Compression, CompressionSet, DetachReason, ErrorCode,
-    FRAME_COMPRESSED, FocusEvent, FrameKind, IdempotencyKey, KeyAction, KeyEvent, ModSet,
-    MouseAction, MouseButton, MouseEvent, PasteEvent, PasteTrust, PhysicalKey, ResourceId,
-    RolePolicy, ServerCapabilities, SessionId, SessionSnapshot, SshOrigin, StreamId, ViewportInfo,
-    WindowId, decodes, frame_entry, host_samples, lifecycle_samples, metadata_samples,
-    spawn_samples, stream_samples,
+    ActorRef, BootstrapId, BootstrapLimits, BootstrapProfile, Bytes, BytesMut, ClientId,
+    Compression, DetachReason, ErrorCode, FRAME_COMPRESSED, FrameKind, IdempotencyKey, ResourceId,
+    ServerCapabilities, SessionId, SessionSnapshot, StreamId, WindowId, decodes, frame_entry,
+    host_samples, lifecycle_samples, metadata_samples, spawn_samples, stream_samples,
 };
 
 pub(super) fn terminal() -> ResourceId {
@@ -33,10 +31,17 @@ pub(super) fn actor() -> ActorRef {
 }
 
 /// Every [`FrameKind`] variant at least once; every optional field both
-/// present and absent where the encoder can omit it.
+/// present and absent where the encoder can omit it. Client frames come
+/// from the classifier's per-variant samples, less those the decoder
+/// refuses (a spawn whose kind contradicts its binding), which show nothing
+/// about presence.
 pub(super) fn frame_samples() -> Vec<FrameKind> {
-    let mut samples = connection_samples();
-    samples.extend(input_samples());
+    let mut samples: Vec<FrameKind> = crate::kinds::samples::frame_samples()
+        .into_iter()
+        .map(|(frame, _)| frame)
+        .filter(|frame| decodes(&encoded(frame)))
+        .collect();
+    samples.extend(connection_samples());
     samples.extend(stream_samples());
     samples.extend(metadata_samples());
     samples.extend(host_samples());
@@ -45,17 +50,7 @@ pub(super) fn frame_samples() -> Vec<FrameKind> {
     samples
 }
 
-pub(super) fn hello(client_caps: ClientCapabilities) -> FrameKind {
-    FrameKind::Hello {
-        client_name: "schema".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 9,
-        protocol_patch: 0,
-        client_caps,
-    }
-}
-
-pub(super) fn hello_ok(server_caps: ServerCapabilities) -> FrameKind {
+fn hello_ok(server_caps: ServerCapabilities) -> FrameKind {
     FrameKind::HelloOk {
         protocol_major: 0,
         protocol_minor: 9,
@@ -67,37 +62,12 @@ pub(super) fn hello_ok(server_caps: ServerCapabilities) -> FrameKind {
     }
 }
 
-pub(super) fn attach(role_policy: Option<RolePolicy>) -> FrameKind {
-    FrameKind::Attach {
-        attach_id: 1,
-        target: AttachTarget::ByName("work".to_owned()),
-        viewport: ViewportInfo::new(80, 24),
-        request_scrollback: true,
-        scrollback_limit_lines: 100,
-        role_policy,
-    }
-}
-
-pub(super) fn connection_samples() -> Vec<FrameKind> {
-    let origin = SshOrigin {
-        client: "192.0.2.1:50000".parse().unwrap(),
-        server: Some("192.0.2.2:22".parse().unwrap()),
-    };
+/// The server's handshake, attach, and error frames.
+fn connection_samples() -> Vec<FrameKind> {
     vec![
-        hello(ClientCapabilities::new()),
-        hello(
-            ClientCapabilities::new()
-                .with_compression(CompressionSet::from_bits(CompressionSet::DEFLATE))
-                .with_ssh_origin(origin)
-                .with_quic_streams(true),
-        ),
         hello_ok(ServerCapabilities::new()),
         hello_ok(ServerCapabilities::new().with_compression(Compression::Deflate)),
-        FrameKind::Ping { nonce: 1 },
         FrameKind::Pong { nonce: 1 },
-        attach(None),
-        attach(Some(RolePolicy::PRIMARY)),
-        FrameKind::Detach,
         FrameKind::Attached {
             attach_id: 1,
             snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal()),
@@ -121,68 +91,6 @@ pub(super) fn connection_samples() -> Vec<FrameKind> {
             request_id: Some(9),
             code: ErrorCode::InvalidCommand,
             message: "bad".to_owned(),
-        },
-    ]
-}
-
-pub(super) fn input_samples() -> Vec<FrameKind> {
-    vec![
-        FrameKind::InputKey {
-            terminal_id: terminal(),
-            event: KeyEvent {
-                action: KeyAction::Press,
-                key: PhysicalKey::A,
-                mods: ModSet::empty(),
-                consumed_mods: ModSet::empty(),
-                composing: false,
-                text: Some("a".to_owned()),
-                unshifted_codepoint: Some(u32::from('a')),
-            },
-        },
-        FrameKind::InputMouse {
-            terminal_id: terminal(),
-            event: MouseEvent {
-                action: MouseAction::Press,
-                button: MouseButton::Left,
-                mods: ModSet::empty(),
-                x: 1.0,
-                y: 2.0,
-            },
-        },
-        FrameKind::InputFocus {
-            terminal_id: terminal(),
-            event: FocusEvent::Gained,
-        },
-        FrameKind::InputPaste {
-            terminal_id: terminal(),
-            event: PasteEvent {
-                trust: PasteTrust::Trusted,
-                data: b"paste".to_vec(),
-            },
-        },
-        FrameKind::InputTerminalReply {
-            terminal_id: terminal(),
-            bytes: Bytes::from_static(b"\x1b[0n"),
-        },
-        FrameKind::ClipboardReply {
-            terminal_id: terminal(),
-            selection: b'c',
-            text: crate::input::paste::ClipboardData("clip".to_owned()),
-        },
-        FrameKind::ViewportResize {
-            viewport: ViewportInfo::new(80, 24),
-        },
-        FrameKind::ResizeTerminal {
-            terminal_id: terminal(),
-            cols: 80,
-            rows: 24,
-            cell_px: None,
-        },
-        FrameKind::ResizeTerminal {
-            terminal_id: terminal(),
-            cols: 80,
-            rows: 24,
-            cell_px: Some((8, 16)),
         },
     ]
 }

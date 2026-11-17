@@ -1,30 +1,16 @@
-//! Dedicated input lane (ADR-0044).
-//!
-//! The server's one current-thread runtime also runs every pane actor, so a
-//! large output broadcast and a keystroke compete for one core. This lane
-//! moves input routing and encoding onto its own OS thread: each pane supplies
-//! a `Send` input port, which creates its local [`LaneEncoder`] on that thread.
-//! The lane keeps one encoder per engine generation and submits prepared input
-//! through the engine's bounded ordered-write interface. Every handoff
-//! spends a pane input credit (ADR-0144, the `credit` submodule), so that
-//! `try_send` has room: senders wait for credits, the lane never does.
-//!
-//! Ordering and authority:
+//! Dedicated input lane (ADR-0044): input routing and encoding on its own OS
+//! thread, so a large output broadcast and a keystroke do not compete for the
+//! runtime's one core. Every handoff spends a pane input credit (ADR-0144),
+//! so the lane's `try_send` always has room.
 //!
 //! * A client's `INPUT_*`, `ROUTE_INPUT`, and `APPLY_INPUT` share one FIFO,
 //!   so they reach a pane in wire order.
-//! * The subscription and input-lease gates (ADR-0033) are re-checked under
-//!   the state lock at delivery time. `ACQUIRE_INPUT` / `RELEASE_INPUT` still
-//!   run inline, so a key racing its sender's own release is delivered or
-//!   dropped; either is a legal fire-and-forget outcome (SPEC §12.2), and
-//!   cross-client exclusion never weakens.
-//! * `APPLY_INPUT` owes its caller a PTY verdict, but the lane never waits
-//!   for it: see the `acknowledged` submodule.
-//! * Only local ids reach the lane; satellite ids are hub forwards and stay
-//!   on the main thread.
+//! * Subscription and input-lease gates (ADR-0033) are re-checked under the
+//!   state lock at delivery; `ACQUIRE_INPUT`/`RELEASE_INPUT` run inline.
+//! * `APPLY_INPUT`'s PTY verdict is awaited off-lane (`acknowledged`).
+//! * Only local ids reach the lane; satellite ids stay on the main thread.
 //! * Accepted key, mouse, and paste input emits an unjournaled
-//!   `input_activity` to the pane's other subscribers, at most once per
-//!   250 ms per pane (leading edge). Focus does not. The sender is excluded.
+//!   `input_activity` to other subscribers, at most once per 250 ms per pane.
 
 mod acknowledged;
 mod credit;
@@ -104,6 +90,21 @@ const fn is_live_terminal_input(input: &TerminalInput) -> bool {
         input,
         TerminalInput::Focus(_) | TerminalInput::ClipboardReply { .. }
     )
+}
+
+/// Whether `event` is typing, which names the pane's controller.
+const fn is_typed_input(event: &InputEvent) -> bool {
+    matches!(event, InputEvent::Key(_) | InputEvent::Paste(_))
+}
+
+/// Record `client_id` as the connection typing into the pane
+/// (`phux.controller/v1`); a no-op unless it changed.
+fn note_typed(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) {
+    state.with_mut(|server| server.note_controller(terminal_id, client_id));
 }
 
 fn note_input_activity(

@@ -311,22 +311,10 @@ fn probe_output(command: &mut Command, stdin: Option<&mut File>) -> Result<Outpu
     probe_within(command, stdin, PROBE_TIMEOUT)
 }
 
-/// [`probe_output`] with an explicit budget for the whole probe, retries
-/// included. A candidate past it is killed and reaped, and the upgrade is
-/// refused with the panes still ours.
-///
-/// Another thread's `fork` (a pane spawn, a parallel test) can inherit the
-/// snapshot's write descriptor for the instant before its own `exec`, and
-/// executing the file then fails with ETXTBSY; that window is microseconds,
-/// so retry briefly before giving up.
-///
-/// macOS also has a narrower, kernel-level race: the first `exec` of a file
-/// that was just written or copied can be killed with SIGKILL ("Code
-/// Signature Invalid") while AMFI's validation cache catches up, even for a
-/// binary whose signature is fine (a regular file copy of a signed image,
-/// moments after `write`/`copy` returns). A second attempt after a short
-/// delay reliably succeeds, so this is retried the same way as ETXTBSY
-/// rather than surfacing a spurious validation failure.
+/// [`probe_output`] with a budget for the whole probe, retries included; a
+/// candidate past it is killed and the upgrade refused. Retries briefly on
+/// ETXTBSY (another thread's `fork` can hold the write descriptor for an
+/// instant) and on macOS's first-exec AMFI SIGKILL of a freshly copied file.
 pub(super) fn probe_within(
     command: &mut Command,
     mut stdin: Option<&mut File>,

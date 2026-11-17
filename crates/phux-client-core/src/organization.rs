@@ -51,56 +51,6 @@ fn blank_to_none(value: Option<&str>) -> Option<String> {
     value.filter(|text| !text.is_empty()).map(ToOwned::to_owned)
 }
 
-/// One session row a picker can group.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionLine {
-    /// Session name.
-    pub name: String,
-    /// Host the session lives on. `None` is the attached server.
-    pub host: Option<String>,
-    /// Shared project tag. `None` and `""` are untagged.
-    pub project: Option<String>,
-}
-
-/// Sessions that share one project tag.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectGroup {
-    /// `None` is the untagged group, which sorts last.
-    pub project: Option<String>,
-    /// Member sessions, in input order.
-    pub sessions: Vec<SessionLine>,
-}
-
-/// Group `sessions` by project tag. Tags sort ascending. Untagged is last.
-/// Order inside a group is the input order.
-#[must_use]
-pub fn group_by_project(sessions: &[SessionLine]) -> Vec<ProjectGroup> {
-    let mut tags: Vec<Option<String>> = Vec::new();
-    for session in sessions {
-        let tag = blank_to_none(session.project.as_deref());
-        if tags.iter().all(|existing| existing != &tag) {
-            tags.push(tag);
-        }
-    }
-    tags.sort_by(|left, right| match (left, right) {
-        (None, None) => std::cmp::Ordering::Equal,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (Some(left), Some(right)) => left.cmp(right),
-    });
-    tags.into_iter()
-        .map(|tag| ProjectGroup {
-            sessions: sessions
-                .iter()
-                .filter(|session| blank_to_none(session.project.as_deref()) == tag)
-                .cloned()
-                .collect(),
-            project: tag,
-        })
-        .filter(|group| !group.sessions.is_empty())
-        .collect()
-}
-
 /// The session `step` away from `current` in `names`, wrapping.
 /// `step` `1` is next and `-1` is previous. One name, or an empty list,
 /// returns `None`.
@@ -170,8 +120,8 @@ pub fn organization_lines(sessions: &[OrganizedSession]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OrganizedSession, Place, PlaceSource, SessionLine, adjacent_name, group_by_project,
-        last_name, organization_lines, place_for,
+        OrganizedSession, Place, PlaceSource, adjacent_name, last_name, organization_lines,
+        place_for,
     };
 
     fn focused() -> Place {
@@ -208,48 +158,6 @@ mod tests {
                 host: Some("edge".to_owned()),
                 directory: Some("/other".to_owned()),
             }
-        );
-    }
-
-    #[test]
-    fn group_by_project_sorts_tags_and_keeps_untagged_last() {
-        let sessions = [
-            SessionLine {
-                name: "b".to_owned(),
-                host: None,
-                project: Some("zeta".to_owned()),
-            },
-            SessionLine {
-                name: "a".to_owned(),
-                host: Some("edge".to_owned()),
-                project: Some("alpha".to_owned()),
-            },
-            SessionLine {
-                name: "c".to_owned(),
-                host: None,
-                project: None,
-            },
-            SessionLine {
-                name: "d".to_owned(),
-                host: None,
-                project: Some("alpha".to_owned()),
-            },
-        ];
-        let groups = group_by_project(&sessions);
-        assert_eq!(
-            groups
-                .iter()
-                .map(|group| group.project.as_deref())
-                .collect::<Vec<_>>(),
-            vec![Some("alpha"), Some("zeta"), None]
-        );
-        assert_eq!(
-            groups[0]
-                .sessions
-                .iter()
-                .map(|session| session.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["a", "d"]
         );
     }
 

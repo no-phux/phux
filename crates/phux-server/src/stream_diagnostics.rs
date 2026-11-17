@@ -570,12 +570,6 @@ impl Drop for QueueTicket {
 }
 
 impl WriteGuard {
-    /// Finish the write now. Dropping without calling this method has the same
-    /// cancellation-safe accounting behavior.
-    pub fn finish(mut self) {
-        self.finish_at(Instant::now());
-    }
-
     fn finish_at(&mut self, now: Instant) {
         if self.finished {
             return;
@@ -655,20 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_ticket_removes_queued_bytes() {
-        let diagnostics = StreamDiagnostics::new();
-        let registration = diagnostics.register(context(1));
-        let tracker = registration.tracker();
-        let ticket = tracker.enqueue(42);
-        assert_eq!(diagnostics.snapshot().streams[0].queue_bytes, 42);
-
-        drop(ticket);
-        let stream = &diagnostics.snapshot().streams[0];
-        assert_eq!(stream.queue_items, 0);
-        assert_eq!(stream.queue_bytes, 0);
-    }
-
-    #[test]
     fn queue_age_and_out_of_order_ticket_drop_are_exact() {
         let diagnostics = StreamDiagnostics::new();
         let registration = diagnostics.register(context(2));
@@ -676,6 +656,7 @@ mod tests {
         let epoch = Instant::now();
         let oldest = tracker.enqueue_at(10, epoch);
         let newest = tracker.enqueue_at(20, epoch + Duration::from_millis(3));
+        assert_eq!(diagnostics.snapshot().streams[0].queue_bytes, 30);
 
         drop(newest);
         let snapshot = diagnostics.snapshot_at(epoch + Duration::from_millis(8));
@@ -684,7 +665,8 @@ mod tests {
         assert_eq!(snapshot.streams[0].queue_oldest_age_us, Some(8_000));
 
         drop(oldest);
-        assert_eq!(diagnostics.snapshot().streams[0].queue_items, 0);
+        let stream = &diagnostics.snapshot().streams[0];
+        assert_eq!((stream.queue_items, stream.queue_bytes), (0, 0));
     }
 
     #[test]

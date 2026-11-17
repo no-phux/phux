@@ -5,18 +5,13 @@ fn run_maybe_xdg(args: &[&str], xdg: Option<&std::path::Path>) -> (i32, String, 
 }
 
 /// The `no_server` contract, with the socket named in the message.
-fn assert_no_server_json_contract(
-    verb: &str,
-    args: &[&str],
-    xdg: Option<&std::path::Path>,
-    sock: &str,
-) {
-    let doc = assert_json_error_contract(verb, args, xdg, "no_server", 1);
+fn assert_no_server_json_contract(args: &[&str], xdg: Option<&std::path::Path>, sock: &str) {
+    let doc = assert_json_error_contract(args, xdg, "no_server", 1);
     assert!(
         doc["error"]["message"]
             .as_str()
             .is_some_and(|m| m.contains(sock)),
-        "{verb}: the message names the socket; got {doc}"
+        "{args:?}: the message names the socket; got {doc}"
     );
 }
 
@@ -49,60 +44,23 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
         .canonicalize()
         .expect("demo plugin config");
 
-    let cases: &[(&str, Vec<&str>, Option<&std::path::Path>)] = &[
-        ("ls", vec!["ls", "--json", "--socket", sock], None),
-        (
-            "snapshot",
-            vec!["snapshot", "--json", "work", "--socket", sock],
-            None,
-        ),
-        (
-            "wait",
-            vec!["wait", "--json", "--socket", sock, "work"],
-            None,
-        ),
-        (
-            "run",
-            vec!["run", "--json", "--socket", sock, "work", "true"],
-            None,
-        ),
-        (
-            "watch",
-            vec!["watch", "--json", "--socket", sock, "work"],
-            None,
-        ),
-        (
-            "resize",
-            vec!["resize", "work", "80x24", "--json", "--socket", sock],
-            None,
-        ),
-        ("spawn", vec!["spawn", "--json", "--socket", sock], None),
-        (
-            "launch",
-            vec!["launch", "codex", "--json", "--socket", sock],
-            Some(&demo_xdg),
-        ),
-        ("play", vec!["play", cast, "--json", "--socket", sock], None),
-        (
-            "rec",
-            vec!["rec", "--json", "-o", out, "--socket", sock],
-            None,
-        ),
-        (
-            "ask",
-            vec!["ask", "work", "--json", "--socket", sock, "hello?"],
-            None,
-        ),
-        (
-            "tag",
-            vec!["tag", "ls", "work", "--json", "--socket", sock],
-            None,
-        ),
-    ];
-
-    for (verb, args, xdg) in cases {
-        assert_no_server_json_contract(verb, args, *xdg, sock);
+    for args in [
+        &["ls", "--json", "--socket", sock][..],
+        &["snapshot", "--json", "work", "--socket", sock],
+        &["wait", "--json", "--socket", sock, "work"],
+        &["run", "--json", "--socket", sock, "work", "true"],
+        &["watch", "--json", "--socket", sock, "work"],
+        &["resize", "work", "80x24", "--json", "--socket", sock],
+        &["spawn", "--json", "--socket", sock],
+        &["play", cast, "--json", "--socket", sock],
+        &["rec", "--json", "-o", out, "--socket", sock],
+        &["ask", "work", "--json", "--socket", sock, "hello?"],
+        &["tag", "ls", "work", "--json", "--socket", sock],
+    ] {
+        assert_no_server_json_contract(args, None, sock);
     }
+    let launch = ["launch", "codex", "--json", "--socket", sock];
+    assert_no_server_json_contract(&launch, Some(&demo_xdg), sock);
     assert!(
         !std::path::Path::new(out).exists(),
         "a capture that never started must not leave an empty cast behind"
@@ -113,12 +71,12 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
 /// ONE stderr line parsing as the contract document with the expected
 /// `error.code`, matching `exit_code`, and a non-empty remedy.
 fn assert_json_error_contract(
-    verb: &str,
     args: &[&str],
     xdg: Option<&std::path::Path>,
     expected_code: &str,
     expected_exit: i32,
 ) -> serde_json::Value {
+    let verb = args[0];
     let (code, stdout, stderr) = run_maybe_xdg(args, xdg);
     assert_eq!(
         code,
@@ -155,7 +113,6 @@ fn new_refuses_an_unaddressable_session_name_before_dialing() {
     let socket = dead_socket();
     for name in ["x:y", "@3", ""] {
         let doc = assert_json_error_contract(
-            "new",
             &["new", "-s", name, "--json", "--socket", &socket],
             None,
             "invalid_session_name",
@@ -173,16 +130,6 @@ fn new_refuses_an_unaddressable_session_name_before_dialing() {
         "a refused name must not auto-spawn a server"
     );
 }
-
-/// One registry-table case: (verb, argv, `XDG_CONFIG_HOME` override,
-/// expected `error.code`, expected exit code).
-type RegistryCase<'a> = (
-    &'a str,
-    Vec<&'a str>,
-    Option<&'a std::path::Path>,
-    &'a str,
-    i32,
-);
 
 /// The registry table: one provocable local failure per `--json`-bearing
 /// registry verb, each emitting the contract with its family's code.
@@ -211,56 +158,18 @@ fn json_error_contract_holds_across_registry_verbs() {
     std::fs::create_dir_all(&not_repo).expect("create dir");
     let not_repo = not_repo.to_str().expect("utf-8 temp path");
 
-    let cases: &[RegistryCase<'_>] = &[
-        // `tag`'s selector parse error needs no server at all.
-        (
-            "tag",
-            vec!["tag", "ls", "work:1.x", "--json"],
-            None,
-            "invalid_selector",
-            1,
-        ),
-        (
-            "plugin",
-            vec!["plugin", "unlink", "no.such.plugin", "--json"],
-            Some(&empty_xdg),
-            "registry",
-            1,
-        ),
-        (
-            "host",
-            vec!["host", "ls", "--json"],
-            Some(&broken_xdg),
-            "registry",
-            1,
-        ),
-        (
-            "worktree",
-            vec!["worktree", "list", not_repo, "--json"],
-            None,
-            "workspace",
-            1,
-        ),
-        (
-            "project inspect",
-            vec!["project", "inspect", not_repo, "--json"],
-            None,
-            "workspace",
-            1,
-        ),
-        // `config check` keeps its distinct exit 2 for "could not check at
-        // all", in the document and the process alike.
-        (
-            "config check",
-            vec!["config", "check", broken_toml, "--json"],
-            Some(&empty_xdg),
-            "invalid_config",
-            2,
-        ),
+    // `tag`'s selector parse error needs no server at all; `config check`
+    // keeps its distinct exit 2 for "could not check at all".
+    let cases: [(&[&str], Option<&std::path::Path>, &str, i32); 6] = [
+        (&["tag", "ls", "work:1.x", "--json"], None, "invalid_selector", 1),
+        (&["plugin", "unlink", "no.such.plugin", "--json"], Some(&empty_xdg), "registry", 1),
+        (&["host", "ls", "--json"], Some(&broken_xdg), "registry", 1),
+        (&["worktree", "list", not_repo, "--json"], None, "workspace", 1),
+        (&["project", "inspect", not_repo, "--json"], None, "workspace", 1),
+        (&["config", "check", broken_toml, "--json"], Some(&empty_xdg), "invalid_config", 2),
     ];
-
-    for (verb, args, xdg, code, exit) in cases {
-        let _ = assert_json_error_contract(verb, args, *xdg, code, *exit);
+    for (args, xdg, code, exit) in cases {
+        let _ = assert_json_error_contract(args, xdg, code, exit);
     }
 }
 

@@ -1,12 +1,9 @@
 //! Registry resolution for a remote host: rung 1 of the CLI's `phux --remote`
 //! ladder (ADR-0093), for native embedders.
 //!
-//! Reads the `[[remote]]` registry (ADR-0055) through the CLI's own
-//! `phux-config` schema. The target grammar, registry match order, and
-//! token-file rule here are the ones the CLI uses too
-//! (`crates/phux/src/commands/remote_target.rs`); only the error wording
-//! differs, through [`RemoteTarget::parse_labeled`]. Pairing (rungs 2-4) is
-//! operator-present and stays in the CLI.
+//! Reads the `[[remote]]` registry (ADR-0055) with the CLI's grammar, match
+//! order, and token-file rule; only error wording differs
+//! ([`RemoteTarget::parse_labeled`]). Pairing stays in the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -393,8 +390,8 @@ pub struct Resolved {
     /// host: a relay route when the endpoint is a relay (ADR-0149).
     pub tls_server_name: Option<String>,
     /// The workload client certificate the entry enrolled (ADR-0116), or
-    /// [`TlsClientIdentity::None`]. Only paths: the key is read by the TLS
-    /// stack at dial time, and the environment is never consulted.
+    /// [`TlsClientIdentity::None`]. A PEM key is read by the TLS stack at
+    /// dial time, a hardware key is held; the environment is not consulted.
     pub client_identity: TlsClientIdentity,
 }
 
@@ -464,16 +461,13 @@ impl AuthorityPin {
 /// # Errors
 ///
 /// Half an identity or a relative path (see
-/// [`RemoteConfigEntry::client_identity`]).
-pub fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
-    Ok(entry
+/// [`RemoteConfigEntry::client_identity`]), or an unusable hardware key.
+pub(crate) fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
+    entry
         .client_identity()?
-        .map_or(TlsClientIdentity::None, |(certificate, private_key)| {
-            TlsClientIdentity::PemFiles {
-                certificate,
-                private_key,
-            }
-        }))
+        .map_or(Ok(TlsClientIdentity::None), |(certificate, private_key)| {
+            crate::hardware_key::identity(certificate, private_key, false)
+        })
 }
 
 /// Resolve `raw` against the registry at `config_path`, or at the CLI's own
@@ -500,7 +494,7 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
 /// # Errors
 ///
 /// An endpoint no embedder can dial ([`classify`]), a malformed client
-/// identity ([`entry_identity`]), or a TLS server name that is not a DNS
+/// identity (`entry_identity`), or a TLS server name that is not a DNS
 /// name ([`validate_tls_server_name`]).
 pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result<Resolved, String> {
     if entry.paused {

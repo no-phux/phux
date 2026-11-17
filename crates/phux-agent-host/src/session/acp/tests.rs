@@ -2,14 +2,26 @@ use super::*;
 use phux_protocol::native_agent::{NativeOption, NativeQuestion};
 use serde_json::json;
 
+/// Every transcript row queued on `callback`'s sink, in order.
+fn transcript_rows(
+    callback: &Callback,
+) -> Vec<phux_client_core::session::agent_transcript::TranscriptEntry> {
+    let backlog = callback.sink.0.backlog.lock();
+    backlog
+        .rows
+        .iter()
+        .filter_map(|(output, _)| {
+            let crate::session::Output::Update(NativeUpdate::Transcript { entry }) = output else {
+                return None;
+            };
+            phux_client_core::session::agent_transcript::TranscriptEntry::from_data(entry)
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn unsupported_client_execution_callbacks_fail_explicitly() {
-    let callback = Callback {
-        sink: crate::session::tests::sink(),
-        provider: "custom".into(),
-        waiting: Mutex::new(BTreeMap::new()),
-        rows: Mutex::new(Rows::default()),
-    };
+    let callback = Callback::new(crate::session::tests::sink(), "custom");
     let session = sdk::SessionId::new("session");
     let read = callback
         .request(sdk::AgentRequest::ReadTextFileRequest(
@@ -60,12 +72,7 @@ fn ended_prompt_releases_turn_and_callbacks_without_disconnect() {
 }
 #[test]
 fn loaded_history_and_prompt_without_user_echo_have_distinct_rows() {
-    let callback = Callback {
-        sink: crate::session::tests::sink(),
-        provider: "custom".into(),
-        waiting: Mutex::new(BTreeMap::new()),
-        rows: Mutex::new(Rows::default()),
-    };
+    let callback = Callback::new(crate::session::tests::sink(), "custom");
     callback
         .chunk(TranscriptRole::Assistant, "historical".into())
         .unwrap();
@@ -74,18 +81,9 @@ fn loaded_history_and_prompt_without_user_echo_have_distinct_rows() {
         .chunk(TranscriptRole::Assistant, "fresh reply".into())
         .unwrap();
     callback.flush_text().unwrap();
-    let backlog = callback.sink.0.backlog.lock();
-    let final_rows: Vec<_> = backlog
-        .rows
-        .iter()
-        .filter_map(|(output, _)| {
-            let crate::session::Output::Update(NativeUpdate::Transcript { entry }) = output else {
-                return None;
-            };
-            let row =
-                phux_client_core::session::agent_transcript::TranscriptEntry::from_data(entry)?;
-            row.is_final.then_some(row)
-        })
+    let final_rows: Vec<_> = transcript_rows(&callback)
+        .into_iter()
+        .filter(|row| row.is_final)
         .collect();
     assert_eq!(
         final_rows
@@ -95,20 +93,12 @@ fn loaded_history_and_prompt_without_user_echo_have_distinct_rows() {
         ["historical", "new user", "fresh reply"]
     );
     assert_ne!(final_rows[0].id, final_rows[2].id);
-    drop(backlog);
 }
 
 #[test]
 fn chunks_preserve_row_identity_until_role_changes() {
-    let callback = Callback {
-        sink: crate::session::tests::sink(),
-        provider: "cursor".into(),
-        waiting: Mutex::new(BTreeMap::new()),
-        rows: Mutex::new(Rows {
-            prompt_user_id: Some("acp-prompt:7".into()),
-            ..Rows::default()
-        }),
-    };
+    let callback = Callback::new(crate::session::tests::sink(), "cursor");
+    callback.rows.lock().prompt_user_id = Some("acp-prompt:7".into());
     callback
         .chunk(TranscriptRole::User, "first".into())
         .unwrap();
@@ -119,17 +109,7 @@ fn chunks_preserve_row_identity_until_role_changes() {
         .chunk(TranscriptRole::Assistant, "reply".into())
         .unwrap();
     callback.flush_text().unwrap();
-    let backlog = callback.sink.0.backlog.lock();
-    let rows: Vec<_> = backlog
-        .rows
-        .iter()
-        .filter_map(|(output, _)| {
-            let crate::session::Output::Update(NativeUpdate::Transcript { entry }) = output else {
-                return None;
-            };
-            phux_client_core::session::agent_transcript::TranscriptEntry::from_data(entry)
-        })
-        .collect();
+    let rows = transcript_rows(&callback);
     assert_eq!(rows.len(), 5);
     assert_eq!(rows[0].id, "acp-prompt:7");
     assert_eq!(rows[1].id, rows[0].id);
@@ -143,17 +123,11 @@ fn chunks_preserve_row_identity_until_role_changes() {
     assert_eq!(rows[4].id, rows[3].id);
     assert_eq!(rows[4].text, "reply");
     assert!(rows[4].is_final);
-    drop(backlog);
 }
 
 #[tokio::test]
 async fn question_wait_requires_matching_explicit_answer() {
-    let callback = Callback {
-        sink: crate::session::tests::sink(),
-        provider: "cursor".into(),
-        waiting: Mutex::new(BTreeMap::new()),
-        rows: Mutex::new(Rows::default()),
-    };
+    let callback = Callback::new(crate::session::tests::sink(), "cursor");
     let question = NativeQuestion {
         id: "permission".into(),
         kind: "permission".into(),

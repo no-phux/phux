@@ -1,8 +1,5 @@
-//! Prompt overlay: a single-line text input committing `action { arg_key:
-//! <text> }` through `run_action` on Enter ([`OverlayCommand::Commit`]); Esc
-//! cancels.
-//!
-//! Editing is the shared [`LineEdit`] (the readline keys).
+//! Prompt overlay: a [`LineEdit`] committing `action { arg_key: <text> }`
+//! on Enter; Esc cancels.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use super::line_edit::LineEdit;
-use super::widgets::{Modal, centered_panel};
+use super::widgets::Modal;
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -120,20 +117,11 @@ impl PromptOverlay {
             self.arg_key.clone(),
             toml::Value::String(self.input.as_str().to_owned()),
         );
-        ResolvedAction {
-            action: self.action.clone(),
-            args,
-        }
+        crate::attach::resolved(&self.action, args)
     }
 
-    /// A small centered modal: 50% width (min 20), fixed 3 rows (border
-    /// + one input line).
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        // Centered width, a fixed three-row height (border + input line).
-        let wide = centered_panel(outer, 5, 20, 3, bp);
-        let h = 3.min(outer.height);
-        let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-        Rect::new(wide.x, y, wide.width, h)
+        super::confirm::lines_modal_area(outer, 1, bp)
     }
 }
 
@@ -193,19 +181,8 @@ impl RenderOverlay for PromptOverlay {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::test_util::{key_event, press_text as press, rendered};
     use phux_protocol::input::key::ModSet;
-
-    fn press(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: text.map(ToOwned::to_owned),
-            unshifted_codepoint: None,
-        }
-    }
 
     fn typ(p: &mut PromptOverlay, ch: char) -> OverlayCommand {
         // PhysicalKey is irrelevant for text input; the buffer reads `text`.
@@ -215,19 +192,7 @@ mod tests {
     /// The border legend names what Enter does in each prompt.
     #[test]
     fn the_legend_names_the_verb() {
-        let rendered = |p: &PromptOverlay| {
-            let area = Rect::new(0, 0, 60, 10);
-            let mut buf = Buffer::empty(area);
-            p.render(area, &mut buf);
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buf[(x, y)].symbol().to_owned())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        let rendered = |p: &PromptOverlay| rendered(p, 60, 10);
         let theme = Theme::default();
         assert!(rendered(&PromptOverlay::rename_window("a", &theme)).contains("⏎ rename · esc"));
         assert!(rendered(&PromptOverlay::rename_session("a", &theme)).contains("⏎ rename · esc"));
@@ -259,30 +224,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn backspace_edits_buffer() {
-        let mut p = PromptOverlay::rename_window("ab", &Theme::default());
-        assert_eq!(
-            p.handle_key(&press(PhysicalKey::Backspace, None)),
-            OverlayCommand::Stay
-        );
-        let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None)) else {
-            panic!("expected Commit");
-        };
-        assert_eq!(
-            action.args.get("name"),
-            Some(&toml::Value::String("a".to_owned()))
-        );
-    }
-
     /// The session prompts ignored `C-u`, `C-w`, `C-a`/`C-e`: a pre-filled
     /// name had to be erased one Backspace at a time.
     #[test]
     fn readline_keys_edit_the_prompt() {
-        let ctrl = |key| KeyEvent {
-            mods: ModSet::CTRL,
-            ..press(key, None)
-        };
+        let ctrl = |key| key_event(key, ModSet::CTRL, None);
         let committed = |p: &mut PromptOverlay| {
             let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None))
             else {
@@ -313,33 +259,34 @@ mod tests {
         );
     }
 
+    /// Backspace edits; Esc, an empty Enter, and an Enter after only
+    /// control text (which never enters the buffer) all cancel.
     #[test]
-    fn escape_cancels() {
-        let mut p = PromptOverlay::rename_window("x", &Theme::default());
+    fn backspace_edits_and_empty_or_escape_cancels() {
+        let mut p = PromptOverlay::rename_window("ab", &Theme::default());
         assert_eq!(
-            p.handle_key(&press(PhysicalKey::Escape, None)),
+            p.handle_key(&press(PhysicalKey::Backspace, None)),
+            OverlayCommand::Stay
+        );
+        let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None)) else {
+            panic!("expected Commit");
+        };
+        assert_eq!(
+            action.args.get("name"),
+            Some(&toml::Value::String("a".to_owned()))
+        );
+
+        let theme = Theme::default();
+        let mut escaped = PromptOverlay::rename_window("x", &theme);
+        assert_eq!(
+            escaped.handle_key(&press(PhysicalKey::Escape, None)),
             OverlayCommand::Dismiss
         );
-    }
-
-    #[test]
-    fn empty_enter_cancels_rather_than_committing_blank() {
-        let mut p = PromptOverlay::rename_window("", &Theme::default());
+        let mut empty = PromptOverlay::rename_window("", &theme);
+        assert_eq!(typ(&mut empty, '\t'), OverlayCommand::Stay);
         assert_eq!(
-            p.handle_key(&press(PhysicalKey::Enter, None)),
+            empty.handle_key(&press(PhysicalKey::Enter, None)),
             OverlayCommand::Dismiss
-        );
-    }
-
-    #[test]
-    fn control_text_is_ignored() {
-        let mut p = PromptOverlay::rename_window("", &Theme::default());
-        // A control char in `text` must not enter the buffer.
-        assert_eq!(typ(&mut p, '\t'), OverlayCommand::Stay);
-        assert_eq!(
-            p.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Dismiss,
-            "buffer should still be empty → Enter cancels"
         );
     }
 }

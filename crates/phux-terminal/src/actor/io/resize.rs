@@ -45,11 +45,8 @@ impl TerminalActor {
             self.install_cell_px(cell_w, cell_h);
             return false;
         }
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        {
-            self.reflow_tombstoned = self
-                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
-        }
+        self.reflow_tombstoned =
+            self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
         self.cols = applied.0;
         self.rows = applied.1;
         self.install_cell_px(cell_w, cell_h);

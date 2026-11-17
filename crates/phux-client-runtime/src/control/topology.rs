@@ -83,6 +83,10 @@ pub struct PaneDescriptor {
     pub activation: Option<ActivationId>,
     /// The current activation's state, from the organization replica.
     pub exec: Option<ExecState>,
+    /// The foreground program's name, from the server-owned
+    /// `phux.pane-occupant/v1` record; `None` until it is read, and for a
+    /// satellite pane, whose record stays on its own server.
+    pub foreground: Option<String>,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -219,6 +223,7 @@ impl Topology {
                     name: None,
                     activation: None,
                     exec: None,
+                    foreground: None,
                 }
             })
             .collect();
@@ -334,7 +339,7 @@ impl Topology {
 
     /// The first live pane of session `session_id`, in the server's order.
     #[must_use]
-    pub fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
+    pub(crate) fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
         self.panes
             .iter()
             .find(|pane| pane.session_id == session_id)

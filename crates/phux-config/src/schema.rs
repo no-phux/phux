@@ -76,23 +76,19 @@ pub struct Config {
     /// `[restore]`: whether a starting server relaunches what the last one
     /// ended.
     pub restore: RestoreCfg,
-}
-
-/// `[restore]` table: bringing panes back after a reboot or a crash.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
-pub struct RestoreCfg {
-    /// Run `phux restore` when the server starts: relaunch every pane a
-    /// server stop ended, and resume agents whose integration supports it.
-    /// Nothing is typed into a relaunched program.
-    pub on_start: bool,
+    /// `[forward]`: what `phux forward` may reach from this server.
+    pub forward: ForwardCfg,
 }
 
 mod defaults;
+mod forward;
 mod keybindings;
+mod restore;
 
 pub use defaults::*;
+pub use forward::*;
 pub use keybindings::*;
+pub use restore::*;
 
 // ---------------------------------------------------------------------------
 // [status] / [sidebar] / [chrome]
@@ -384,6 +380,10 @@ pub struct PolicyCfg {
     /// Unset is `local`, and a configured remote entry point or workload
     /// authority location then refuses to start (ADR-0179).
     pub mode: Option<PolicyMode>,
+    /// Under `paired`, admit this machine's owner's own tailnet devices over
+    /// the tailnet QUIC listener with no token or certificate, on the local
+    /// Tailscale client's word (`docs/config.md#tailnet-owner-devices`).
+    pub tailnet_owner: bool,
 }
 
 /// The two closed policy modes (`docs/remote.md#who-can-connect`).

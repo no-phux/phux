@@ -126,6 +126,19 @@ mod tests {
         (state, core, wire)
     }
 
+    /// The kill is refused on its precondition, and the pane is kept.
+    fn assert_refused(
+        state: &ServerState,
+        wire: &phux_protocol::ids::ResourceId,
+        precondition: &KillPrecondition,
+    ) {
+        assert!(matches!(
+            state.admit_conditional_kill(wire, precondition),
+            Err(KillIfRefusal::Precondition(_))
+        ));
+        assert!(state.resource_from_wire(wire).is_some(), "kept");
+    }
+
     fn untouched(state: &ServerState) -> KillPrecondition {
         KillPrecondition::spawned_and_unattached(state.idspace.instance())
     }
@@ -146,22 +159,14 @@ mod tests {
         state.subscribe_resource(ClientId(2), core, None);
         state.unsubscribe_resource(ClientId(2), core);
         let precondition = untouched(&state);
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &precondition),
-            Err(KillIfRefusal::Precondition(_))
-        ));
-        assert_eq!(state.resource_from_wire(&wire), Some(core), "kept");
+        assert_refused(&state, &wire, &precondition);
     }
 
     #[test]
     fn a_pane_no_client_spawned_is_never_unattached_since_spawn() {
-        let (state, core, wire) = state_with_pane();
+        let (state, _, wire) = state_with_pane();
         let precondition = untouched(&state);
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &precondition),
-            Err(KillIfRefusal::Precondition(_))
-        ));
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
+        assert_refused(&state, &wire, &precondition);
     }
 
     #[test]
@@ -171,10 +176,7 @@ mod tests {
         let mut other = *state.idspace.instance().as_bytes();
         other[0] ^= 0xFF;
         let old_token = KillPrecondition::spawned_and_unattached(ServerInstance::new(other));
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &old_token),
-            Err(KillIfRefusal::Precondition(_))
-        ));
+        assert_refused(&state, &wire, &old_token);
         let absent = phux_protocol::ids::ResourceId::local(999);
         assert!(
             matches!(
@@ -183,7 +185,6 @@ mod tests {
             ),
             "a stale token wins over a missing id"
         );
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -233,11 +234,7 @@ mod tests {
             "the spawner's own use"
         );
         state.note_resource_use(&wire, ClientId(2));
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &precondition),
-            Err(KillIfRefusal::Precondition(_))
-        ));
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
+        assert_refused(&state, &wire, &precondition);
     }
 
     #[test]
@@ -248,11 +245,7 @@ mod tests {
             instance: None,
             conditions: KillConditions::UNATTACHED_SINCE_SPAWN,
         };
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &no_token),
-            Err(KillIfRefusal::Precondition(_))
-        ));
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
+        assert_refused(&state, &wire, &no_token);
     }
 
     #[test]
@@ -265,11 +258,7 @@ mod tests {
             state: None,
         };
         state.new_agent_session(core, &facet).expect("child");
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &untouched(&state)),
-            Err(KillIfRefusal::Precondition(_))
-        ));
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
+        assert_refused(&state, &wire, &untouched(&state));
     }
 
     #[test]
@@ -280,15 +269,11 @@ mod tests {
             instance: None,
             conditions: KillConditions::from_bits(0x80),
         };
-        assert!(matches!(
-            state.admit_conditional_kill(&wire, &unknown),
-            Err(KillIfRefusal::Precondition(_))
-        ));
+        assert_refused(&state, &wire, &unknown);
         let absent = phux_protocol::ids::ResourceId::local(999);
         assert_eq!(
             state.admit_conditional_kill(&absent, &untouched(&state)),
             Err(KillIfRefusal::NotFound)
         );
-        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 }

@@ -82,7 +82,7 @@ test: worktree-claim && (worktree-verify "test")
 [group('test')]
 [doc('Run every unit test to the end and report only unexplained failures.')]
 test-report *ARGS: worktree-claim && (worktree-verify "test-report")
-    bash scripts/test-report.sh {{ARGS}}
+    PHUX_TEST_FEATURES='{{TEST_FEATURES}}' bash scripts/test-report.sh {{ARGS}}
 
 
 # `phux-server/measure` builds the e2e lane's `perf` target, which a
@@ -153,12 +153,12 @@ e2e: worktree-claim && (worktree-verify "e2e")
     fi
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e)'
+      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::upload_e2e) + binary_id(phux::download_e2e) + binary_id(phux::credentials_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf)'
 
-E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test perf --test discovery"
+E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test upload_e2e --test download_e2e --test credentials_e2e --test perf --test discovery"
 
 
 # The release soak gate (soak.yml; lts.yml requires its pass). The e2e lane,

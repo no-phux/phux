@@ -129,6 +129,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::ServiceHttpOpen { .. }
         | Command::ServiceHttpRead { .. }
         | Command::ServiceHttpClose { .. } => &C_SERVICE_HTTP,
+        Command::Forward { .. } => &C_FORWARD,
         Command::DetachClients { session: Some(_) } => &C_DETACH_CLIENTS_SESSION,
         Command::DetachClients { session: None } => &C_DETACH_CLIENTS_ALL,
         Command::Shutdown => &C_SHUTDOWN,
@@ -145,6 +146,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,
         Command::PrivacyStatus => &C_PRIVACY_STATUS,
+        Command::Credentials { .. } => &C_CREDENTIALS,
         Command::HostChecklist => &C_HOST_CHECKLIST,
         Command::GetCreation { .. } => &C_GET_CREATION,
         Command::SessionCreate { .. } => &C_SESSION_CREATE,
@@ -281,9 +283,10 @@ fn is_session_create_result(key: &str) -> bool {
 }
 
 /// Keys the server owns and no client may set or delete, in any scope: the
-/// pane occupant, whoami, and the approval records (ADR-0128).
+/// pane occupant, the controller, whoami, and the approval records (ADR-0128).
 fn is_read_only_server_key(key: &str) -> bool {
     key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == crate::wire::frame::RESOURCE_CONTROLLER_KEY
         || key == crate::wire::frame::RESOURCE_PROGRAM_STATUS_KEY
         || key.starts_with(crate::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)
         || key == WHOAMI_KEY

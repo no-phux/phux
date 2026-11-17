@@ -4,34 +4,11 @@ use super::*;
 fn window(client: &Arc<Client>) -> Runtime<Desk> {
     let mut desk = Desk::new(&Resolved::offline("review fixture"));
     desk.link.heard = true;
-    desk.client = Some(Arc::clone(client));
-    desk.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
+    desk.connection.client = Some(Arc::clone(client));
+    desk.connection.resources.images = Some(rune::ImageCache::new(Arc::new(|| {})));
     let mut rt = Runtime::new(desk, crate::ui::view, (800.0, 600.0), Env::new(true, 1.0));
     rt.on_key = Some(Desk::key);
     rt
-}
-
-fn attached(client: &Client, attach_id: u32, records: &[ResourceRecord]) {
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), id(1))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_key(Some(session())),
-        ])
-        .with_resources(
-            records
-                .iter()
-                .map(|r| {
-                    ResourceInfo::resource(r.live.clone().unwrap(), r.kind)
-                        .with_session(Some(SessionId::new(1)))
-                })
-                .collect(),
-        );
-    client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
-        .unwrap();
 }
 
 #[test]
@@ -68,7 +45,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         let records = [record(2, ResourceKind::AccessibilityTree).with_live(Some(id(1)))];
         let attach_id = seed(&client, &records).unwrap();
         install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
-        attached(&client, attach_id, &records);
+        attach_records(&client, attach_id, &records);
         publish(
             &client,
             1,
@@ -93,7 +70,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         rt.update(|d, tx| {
             d.observe(&client, observation, tx);
         }); // ONE observation owns all stages.
-        let document = &rt.state.resources.entries[&id(1)];
+        let document = &rt.state.connection.resources.entries[&id(1)];
         assert_eq!(document.record.key, key(2));
         assert_eq!(
             document.seq,
@@ -104,7 +81,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
             matches!(&document.body, Body::Tree(json) if json.contains("latest") && !json.contains("old"))
         );
         step(&mut rt);
-        assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(1));
+        assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(1));
     }
 }
 
@@ -122,7 +99,7 @@ fn first_connection_cut_before_attach_ready_survives_server_identity_establishme
     let records = [record(1, ResourceKind::AccessibilityTree)];
     let attach_id = seed(&client, &records).unwrap();
     install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
-    attached(&client, attach_id, &records);
+    attach_records(&client, attach_id, &records);
     publish(
         &client,
         1,
@@ -130,11 +107,11 @@ fn first_connection_cut_before_attach_ready_survives_server_identity_establishme
         b"{\"first_cut\":true}",
     );
     step(&mut rt); // drain BootstrapReady, before the first AttachReady.
-    assert_eq!(rt.state.resources.pending.len(), 1);
+    assert_eq!(rt.state.connection.resources.pending.len(), 1);
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
     step(&mut rt); // no second publication is sent.
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("first_cut"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("first_cut"))
     );
 }
 
@@ -157,12 +134,11 @@ fn foreign_fixture() -> (Arc<Client>, Runtime<Desk>) {
                 .with_live(Some(SessionId::new(2))),
         ])
         .with_resources(vec![record(1, ResourceKind::AccessibilityTree), second]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(
+        &client,
+        request,
+        CommandValue::OrganizationPage(Box::new(page)),
+    );
     // GET_STATE advertises B's session/resource without subscribing its pump.
     // The home ATTACHED snapshot above intentionally contained only A.
     let refresh = client.with_control(ControlPlane::refresh_topology).unwrap();
@@ -177,12 +153,7 @@ fn foreign_fixture() -> (Arc<Client>, Runtime<Desk>) {
             ResourceInfo::resource(id(2), ResourceKind::AccessibilityTree)
                 .with_session(Some(SessionId::new(2))),
         ]);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: refresh,
-            result: CommandResult::OkWith(CommandValue::State(snapshot)),
-        })
-        .unwrap();
+    crate::wire_fixture::answer(&client, refresh, CommandValue::State(snapshot));
     step(&mut rt);
     outbound(&client);
     (client, rt)
@@ -222,8 +193,8 @@ fn open_foreign(client: &Client, rt: &mut Runtime<Desk>) -> u32 {
     let (request, target, role) = &subscriptions[0];
     assert_eq!(target, &id(2));
     assert_eq!(*role, Some(phux_protocol::wire::frame::RolePolicy::VIEWER));
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(2));
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
     *request
 }
 
@@ -250,9 +221,9 @@ fn opening_never_viewed_foreign_document_subscribes_and_adopts_existing_cut() {
         .unwrap();
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(2)].body, Body::Tree(json) if json.contains("existing_B"))
+        matches!(&rt.state.connection.resources.entries[&id(2)].body, Body::Tree(json) if json.contains("existing_B"))
     );
-    assert!(rt.state.shown.as_ref().unwrap().view.is_none());
+    assert!(rt.state.connection.shown.as_ref().unwrap().view.is_none());
     client.with_control(|control| control.resize_viewport(90, 30));
     assert!(!outbound(&client).iter().any(|frame| matches!(frame, FrameKind::ResizeTerminal { terminal_id, .. } if *terminal_id == id(2))), "viewer subscription stays outside terminal geometry voting");
 }
@@ -261,18 +232,15 @@ fn opening_never_viewed_foreign_document_subscribes_and_adopts_existing_cut() {
 fn foreign_subscription_refusal_is_visible_and_only_explicit_reopen_retries() {
     let (client, mut rt) = foreign_fixture();
     let request = open_foreign(&client, &mut rt);
-    client
-        .feed(FrameKind::CommandResult {
-            request_id: request,
-            result: CommandResult::Error {
-                code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                message: "viewer refused".to_owned(),
-            },
-        })
-        .unwrap();
+    crate::wire_fixture::refuse(
+        &client,
+        request,
+        phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+        "viewer refused",
+    );
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(2)].body, Body::Invalid(text) if text.contains("viewer refused"))
+        matches!(&rt.state.connection.resources.entries[&id(2)].body, Body::Invalid(text) if text.contains("viewer refused"))
     );
     assert!(
         outbound(&client).is_empty(),
@@ -294,7 +262,7 @@ fn foreign_subscription_refusal_is_visible_and_only_explicit_reopen_retries() {
         .unwrap();
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(2)].body, Body::Tree(json) if json.contains("retried"))
+        matches!(&rt.state.connection.resources.entries[&id(2)].body, Body::Tree(json) if json.contains("retried"))
     );
 }
 
@@ -318,17 +286,12 @@ fn native_json_selection_and_copy_shortcuts_copy_plain_text_without_remote_input
     rt.use_clipboard(&clipboard);
     outbound(&client);
     let key = text_key(&id(2));
-    let rect = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key.as_str()))
-        .unwrap()
-        .rect;
+    let rect = crate::ui::element(&rt, key.as_str()).rect;
     rt.pointer_down(rect[0] + 5.0, rect[1] + 5.0);
     rt.pointer_up(rect[0] + 5.0, rect[1] + 5.0);
     rt.frame(0.0);
     assert_eq!(
-        rt.state.shown.as_ref().unwrap().resource,
+        rt.state.connection.shown.as_ref().unwrap().resource,
         id(2),
         "selecting a secondary JSON pane gives it keyboard focus"
     );
@@ -342,7 +305,7 @@ fn native_json_selection_and_copy_shortcuts_copy_plain_text_without_remote_input
         });
         rt.frame(0.0);
     }
-    let Body::Tree(json) = &rt.state.resources.entries[&id(2)].body else {
+    let Body::Tree(json) = &rt.state.connection.resources.entries[&id(2)].body else {
         panic!("native JSON")
     };
     assert_eq!(rt.selected_text().as_deref(), Some(json.as_str()));
@@ -391,12 +354,7 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
     step(&mut rt);
     outbound(&client);
     let key = text_key(&id(2));
-    let rect = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key.as_str()))
-        .unwrap()
-        .rect;
+    let rect = crate::ui::element(&rt, key.as_str()).rect;
     rt.pointer_down(rect[0] + 1.0, rect[1] + 5.0);
     rt.pointer_move(rect[0] + 100.0, rect[1] + 20.0);
     rt.frame(0.0);
@@ -404,7 +362,7 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
         rt.selected_text().is_some(),
         "a real native text drag selected characters"
     );
-    assert_eq!(rt.state.shown.as_ref().unwrap().resource, id(2));
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, id(2));
     rt.pointer_up(rect[0] + 100.0, rect[1] + 20.0);
     rt.frame(0.0);
     assert!(outbound(&client).is_empty());
@@ -437,10 +395,10 @@ fn a_stale_document_wake_reads_nothing_and_the_newer_wake_applies() {
     rt.update(|d, tx| applied = d.apply(&client, stale, tx));
     assert!(!applied, "a stale wake changes nothing");
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("cut"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("cut"))
     );
     step(&mut rt);
     assert!(
-        matches!(&rt.state.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("live"))
+        matches!(&rt.state.connection.resources.entries[&id(1)].body, Body::Tree(json) if json.contains("live"))
     );
 }

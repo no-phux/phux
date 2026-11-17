@@ -11,6 +11,8 @@ use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+mod addr_events;
+mod discover;
 pub(super) mod remote;
 mod retry;
 
@@ -163,7 +165,9 @@ fn bind_quic(
     // The configured listener adopts satellites that dial in (ADR-0182); it
     // offers their ALPN only when it verifies workload certificates.
     listener.map(|listener| {
-        listener.with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+        listener
+            .with_satellites(state.with(crate::state::ServerState::satellite_adopter))
+            .with_tailnet_owner(state.with(crate::state::ServerState::tailnet_owner))
     })
 }
 
@@ -281,18 +285,6 @@ pub(in crate::runtime) const fn auto_overlay_gate_open(
     !disabled && default_profile
 }
 
-/// The overlay IP to auto-bind. `detect` shells out to `tailscale`, so it
-/// must not run at all when the gate is closed.
-pub(in crate::runtime) fn resolve_auto_overlay_ip(
-    gate_open: bool,
-    detect: impl FnOnce() -> Vec<std::net::IpAddr>,
-) -> Option<std::net::IpAddr> {
-    if !gate_open {
-        return None;
-    }
-    detect().into_iter().next()
-}
-
 /// Which auto-bound overlay ports no explicit address claimed.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::runtime) struct AutoOverlayPorts {
@@ -309,14 +301,11 @@ impl AutoOverlayPorts {
     }
 }
 
-/// Detect the overlay address and serve the auto-bound listeners (ADR-0081)
-/// as a peer of the other accept loops. Detection shells out to `tailscale`
-/// (a wedged daemon costs ~2s), so it runs on a blocking thread after the
-/// accept loops are live: a slow overlay delays this listener, never the
-/// server (`tests/lifecycle/overlay_startup.rs`).
-///
-/// With nothing to bind it parks on cancellation, so the enclosing
-/// `select_all` still reads a first completion as "an accept loop ended".
+/// Detect the overlay address and serve the auto-bound listeners (ADR-0081).
+/// Detection shells out to `tailscale` on a blocking thread after the accept
+/// loops are live, and keeps retrying until an address appears (#2430). With
+/// nothing to bind it parks on cancellation, so `select_all` still reads a
+/// first completion as "an accept loop ended".
 pub(in crate::runtime) async fn serve_auto_overlay_listeners(
     gate_open: bool,
     ports: AutoOverlayPorts,
@@ -325,29 +314,37 @@ pub(in crate::runtime) async fn serve_auto_overlay_listeners(
     root_token: CancellationToken,
     input_lane: Option<InputLane>,
 ) -> Result<(), ServerError> {
-    let detected = tokio::select! {
-        () = root_token.cancelled() => return Ok(()),
-        joined = tokio::task::spawn_blocking(move || resolve_auto_overlay_ip(gate_open, detect)) => {
-            joined.unwrap_or_else(|err| {
-                warn!(error = %err, "overlay detection task failed; no auto-bound remote listener");
-                None
-            })
+    if !gate_open {
+        root_token.cancelled().await;
+        return Ok(());
+    }
+    let record_waiting_for_address = || {
+        info!("no overlay address yet; the overlay listeners start once one appears");
+        for (free, transport) in [
+            (ports.ws, RemoteListenerTransport::Wss),
+            (ports.quic, RemoteListenerTransport::Quic),
+        ] {
+            if free {
+                let slot = RemoteListenerSlot::waiting_for_address(transport);
+                state.with_mut(|s| s.record_remote_listener(slot));
+            }
         }
+    };
+    let Some(ip) =
+        discover::detect_until_found(detect, record_waiting_for_address, &root_token).await
+    else {
+        return Ok(());
     };
 
     let remote = RemoteListeners::bind(
-        detected
-            .filter(|_| ports.ws)
-            .map(|ip| SocketAddr::new(ip, DEFAULT_WS_PORT)),
-        detected
-            .filter(|_| ports.quic)
-            .map(|ip| SocketAddr::new(ip, DEFAULT_QUIC_PORT)),
+        ports.ws.then(|| SocketAddr::new(ip, DEFAULT_WS_PORT)),
+        ports.quic.then(|| SocketAddr::new(ip, DEFAULT_QUIC_PORT)),
         &state,
     )
     .await;
     let accepts = remote.accept_loops(&state, &root_token, input_lane.as_ref());
     if accepts.is_empty() {
-        debug!("no auto-bound overlay listener; nothing detected or nothing to bind");
+        debug!("no auto-bound overlay listener; nothing to bind");
         root_token.cancelled().await;
         return Ok(());
     }

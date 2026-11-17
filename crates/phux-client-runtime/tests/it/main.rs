@@ -8,5 +8,6 @@ mod embedded;
 
 mod control_plane;
 mod e2e_uds;
+mod forward_live;
 mod organization;
 mod organization_bulk;

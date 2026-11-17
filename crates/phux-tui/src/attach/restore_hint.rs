@@ -39,7 +39,6 @@ pub(in crate::attach) fn job(dial: Option<&Dial>) -> Option<Job> {
         let waiting = phux_client::org::fetch_from_socket(&socket)
             .await
             .ok()
-            .flatten()
             .map_or(0, |inventory| inventory.restorable(None).len());
         offer(waiting).map_or_else(JobDone::quiet, JobDone::toast)
     }))

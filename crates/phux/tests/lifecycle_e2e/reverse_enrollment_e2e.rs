@@ -12,32 +12,19 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/ambient.rs"]
-mod common;
-#[path = "../common/listeners.rs"]
-mod listeners;
+use crate::{common, listeners};
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use crate::hermetic::{hermetic_env, prepare_dirs};
+use crate::hermetic::{Server, hermetic_env, prepare_dirs};
 
 /// How long the uplink has to come up after `join` or `host enable`; the
 /// satellite's redial backoff caps at 30 s.
 const LINK_DEADLINE: Duration = Duration::from_secs(60);
-
-/// A running `phux server`, killed on drop.
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn socket(dir: &Path) -> PathBuf {
     dir.join("s.sock")

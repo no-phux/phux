@@ -8,8 +8,9 @@ use std::f32::consts::{PI, TAU};
 
 use super::Label;
 use super::forms::{self, Ctx, Tint};
-use super::pen::{Pen, Xf, clip_convex, cubic, quad};
-use crate::reef::{Fish, Mood, Pal, Pattern, Pt, Reef, mix};
+use crate::playground::{Mood, Pt, mix};
+use crate::reef::{Fish, Pal, Pattern, Reef};
+use crate::ui::playground::pen::{Pen, Xf, clip_convex, clip_half, cubic, quad};
 
 const WHITE: [f32; 3] = [255.0, 255.0, 255.0];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
@@ -221,7 +222,7 @@ fn reef_fish(pen: &mut Pen, cx: &Ctx<'_>, nt: f32) {
     pen.fill(&xf.all(&outline), shaded(h), 1.0);
     for band in (1..8).rev() {
         let y = -h + 2.0 * h * band as f32 / 8.0;
-        let cut = super::pen::clip_half(&outline, y);
+        let cut = clip_half(&outline, y);
         pen.fill(&xf.all(&cut), shaded(y - h / 8.0), 1.0);
     }
     let inside = |poly: &[Pt]| xf.all(&clip_convex(poly, &outline));

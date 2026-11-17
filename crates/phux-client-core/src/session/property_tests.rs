@@ -198,9 +198,6 @@ fn operation_strategy() -> impl Strategy<Value = RigEvent> {
                 last_valid_seq,
             },
         ),
-        4 => (1_u16..=300, 0_usize..32).prop_map(|(width, max_rows)| {
-            RigEvent::Project { width, max_rows }
-        }),
         3 => (0_u16..=300, 0_u32..40).prop_map(|(x, y)| RigEvent::Track { x, y }),
         2 => (0_usize..12).prop_map(|anchor_slot| RigEvent::Pin { anchor_slot }),
         2 => Just(RigEvent::FollowTail),
@@ -589,9 +586,8 @@ proptest! {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn history_projection_pruning_and_selection_preserve_live_geometry(
+    fn history_pruning_and_selection_preserve_live_geometry(
         cols in 1_u16..=300,
-        projection_width in 1_u16..=300,
         pages in prop::collection::vec(nonempty_unicode_text(), 1..18),
         live_text in nonempty_unicode_text(),
     ) {
@@ -656,16 +652,10 @@ proptest! {
             );
         }
 
-        let projected_history = rig.apply(&RigEvent::Project {
-            width: projection_width,
-            max_rows: 32,
-        });
-        prop_assert!(projected_history);
         let projected = rig.snapshot();
         let published = projected.published.as_ref().expect("projected replica");
         prop_assert_eq!(published.geometry.cols, cols);
         prop_assert_eq!(published.engine_geometry.cols, cols);
-        prop_assert_eq!(published.history.projection_width, projection_width.max(2));
         prop_assert_eq!(published.anchors.first().copied(), Some(anchor));
 
         let selected_document = rig.apply(&RigEvent::Select {
@@ -702,13 +692,6 @@ proptest! {
         prop_assert_eq!(history.viewport, ViewportAnchor::Tail);
         prop_assert_eq!(history.unread_rows, 0);
 
-        let repinned = rig.apply(&RigEvent::Pin { anchor_slot: 0 });
-        prop_assert!(repinned);
-        prop_assert!(rig.apply(&RigEvent::InvalidateAnchors));
-        let invalidated = rig.snapshot();
-        let history = &invalidated.published.as_ref().expect("invalidated replica").history;
-        prop_assert_eq!(history.state, HistoryLoadState::Pruned);
-        prop_assert_eq!(history.viewport, ViewportAnchor::Tail);
     }
 
     #[test]

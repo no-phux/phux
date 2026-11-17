@@ -17,6 +17,7 @@ mod lifecycle;
 mod persist;
 mod reloading;
 mod store;
+mod tailnet_owner;
 
 pub use self::credential::*;
 pub use self::lifecycle::*;
@@ -25,6 +26,10 @@ use self::persist::credential_lock_path;
 use self::persist::{AtomicWriteFault, atomic_write, atomic_write_with_fault, with_store_lock};
 pub use self::reloading::*;
 pub use self::store::*;
+pub(crate) use self::tailnet_owner::admit as admit_tailnet_owner;
+#[cfg(test)]
+pub(crate) use self::tailnet_owner::test_credential as tailnet_owner_test_credential;
+pub use self::tailnet_owner::{TAILNET_OWNER_PRINCIPAL, is_tailnet_owner};
 
 #[cfg(test)]
 mod tests;

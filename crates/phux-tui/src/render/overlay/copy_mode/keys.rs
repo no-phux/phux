@@ -75,7 +75,7 @@ fn translate(keys: &Remap, event: &KeyEvent) -> Option<KeyEvent> {
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use phux_protocol::input::key::{ModSet, PhysicalKey};
 
     use super::*;
 
@@ -100,15 +100,7 @@ mod tests {
         let (keys, problems) = read(Some(&table));
         assert_eq!(problems, ["copy-mode: C-x needs a `key` that is a chord"]);
 
-        let press = |key, mods| KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods,
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        };
+        let press = |key, mods| crate::test_util::press_mods(key, mods);
         let down = translate(&keys, &press(PhysicalKey::N, ModSet::CTRL)).expect("C-n");
         assert_eq!((down.key, down.mods), (PhysicalKey::J, ModSet::empty()));
         assert_eq!(down.text.as_deref(), Some("j"));

@@ -188,14 +188,6 @@ impl Judge {
         }
     }
 
-    /// [`Self::configured`] with the `[organize]` table of the user's
-    /// config file (defaults when it does not load).
-    #[must_use]
-    pub fn from_config_file(offline: bool) -> (Self, Option<String>) {
-        let config = phux_config_core::loader::load_client().unwrap_or_default();
-        Self::configured(&config.organize, offline)
-    }
-
     /// Which kind of judge this is.
     #[must_use]
     pub const fn kind(&self) -> JudgeKind {
@@ -237,7 +229,7 @@ pub enum PlanError {
 ///
 /// [`PlanError::NoSuchSession`] for an unknown scope; [`PlanError::Jev`]
 /// when Jev fails.
-pub fn plan_with(facts: &Facts, options: &Options) -> Result<Plan, PlanError> {
+pub(crate) fn plan_with(facts: &Facts, options: &Options) -> Result<Plan, PlanError> {
     let scope = facts
         .scope(options.session.as_deref())
         .ok_or_else(|| PlanError::NoSuchSession(options.session.clone().unwrap_or_default()))?;
@@ -258,7 +250,7 @@ pub fn plan_with(facts: &Facts, options: &Options) -> Result<Plan, PlanError> {
     ))
 }
 
-/// [`plan_with`], falling back to the heuristic when Jev fails: the plan,
+/// `plan_with`, falling back to the heuristic when Jev fails: the plan,
 /// and why Jev was not used when it was asked for.
 ///
 /// # Errors

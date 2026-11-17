@@ -4,7 +4,7 @@ use super::shell_quote;
 
 /// What ssh prints when it refuses a host key: a changed or revoked one, or
 /// under `BatchMode` one it has never seen.
-pub const HOST_KEY_REFUSED: &str = "Host key verification failed";
+pub(in crate::connection) const HOST_KEY_REFUSED: &str = "Host key verification failed";
 
 /// The fix for ssh refusing `destination`'s host key, read from ssh's
 /// stderr, or `None` when that is not why it failed.

@@ -68,6 +68,7 @@ pub(crate) fn dispatch(
         })) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
         Some(Command::Organize(args)) => sessions::organize(args, socket),
         Some(Command::SwapPane(args)) => panes::swap_pane(args, socket),
+        Some(Command::Slot(args)) => panes::slot(args, socket),
         Some(Command::Resize(commands::ResizeArgs {
             target,
             geometry,
@@ -80,9 +81,24 @@ pub(crate) fn dispatch(
             commands::supervise::run_give(&target, json.json, socket)
         }
         Some(Command::Signal(args)) => panes::signal(args, socket),
+        Some(Command::Notify(commands::NotifyArgs {
+            title,
+            body,
+            level,
+            pane,
+            json,
+        })) => commands::agent::run_notify(
+            &title,
+            body.as_deref(),
+            level,
+            pane.as_deref(),
+            json.json,
+            socket,
+        ),
         Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
             commands::approvals::run_approvals(json.json, socket)
         }
+        Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
         Some(Command::Approve(commands::ApproveArgs { id, yes, json })) => {
             commands::approvals::run_approve(&id, yes, json.json, socket)
         }
@@ -122,6 +138,10 @@ pub(crate) fn dispatch(
         }
         Some(Command::Upload(args)) => panes::upload(args, socket),
         Some(Command::Download(args)) => machines::download(args, socket),
+        Some(Command::Forward(args)) => {
+            let spec = args.remote.with_socket(socket);
+            commands::forward::run(args.local.as_deref(), args.yes, spec)
+        }
         Some(Command::Paste(commands::PasteArgs {
             target,
             text,
@@ -223,9 +243,10 @@ pub(crate) fn dispatch(
             flush,
             text,
         }) => commands::idea::run(private, flush, text.as_deref()),
-        Some(Command::Doctor(commands::DoctorArgs { json })) => {
-            commands::doctor::run_doctor(json, socket)
-        }
+        Some(Command::Doctor(commands::DoctorArgs { json, remote })) => match remote.remote {
+            Some(_) => commands::doctor::other_host::run(json, remote.with_socket(socket)),
+            None => commands::doctor::run_doctor(json, socket),
+        },
         Some(Command::Logs(commands::LogsArgs {
             server,
             client,

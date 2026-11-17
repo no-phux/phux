@@ -7,22 +7,22 @@ use phux_client_core::engine::{
 use phux_protocol::caps::BootstrapStreamProfile;
 
 /// Bytes one headless replica retains before it refuses more.
-pub const HEADLESS_BUFFER_CAP: usize = 1 << 20;
+pub(crate) const HEADLESS_BUFFER_CAP: usize = 1 << 20;
 
 /// An adapter that keeps the raw synthesized-VT bytes of each replica.
 #[derive(Debug, Default)]
-pub struct ByteAdapter;
+pub(crate) struct ByteAdapter;
 
 /// One headless replica.
 #[derive(Debug, Default)]
-pub struct ByteReplica {
+pub(crate) struct ByteReplica {
     /// Every byte applied since the replica started, up to the cap.
     pub bytes: Vec<u8>,
 }
 
 /// Why the headless adapter refused.
 #[derive(Debug, thiserror::Error)]
-pub enum ByteAdapterError {
+pub(crate) enum ByteAdapterError {
     /// Only synthesized VT streams have bytes a headless lane can keep.
     #[error("headless adapter only accepts synthesized VT streams")]
     UnsupportedProfile,

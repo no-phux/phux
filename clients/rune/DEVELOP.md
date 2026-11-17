@@ -15,7 +15,7 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
 twice a day.
 
-Keep all Rune dependencies and the four `[patch.crates-io]` entries on the
+Keep all Rune dependencies and the five `[patch.crates-io]` entries on the
 same revision: Cargo does not inherit Rune's workspace patches. The `tooling`
 feature is required in release builds too: packaged qualification and the
 updater's GPU launch check use headless rendering. Desktop startup opts into
@@ -131,14 +131,46 @@ do about a bad release.
 | `launch` | command line, finding the CLI, `phux server --ensure` |
 | `updates` | the feed, staging and swapping a verified build, the phux CLI |
 | `diag` | local logs, the panic hook, and the report Copy diagnostics makes |
-| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, tabs, frames and fit, input, mouse, find, links, palette, sessions, inbox, settings, attachments |
+| `desk` | the window's preferences, platform services and composition; `desk/connection` owns a runtime client's workspace, view leases and request namespace |
+| `desk/surfaces`, `ui` | one back-to-front surface order for painting, keyboard, paste and native editing; playground scenes share one active slot |
+| `features/changes` | checkout presentation, feature-owned state transitions, view and tests; `desk/changes` supplies focus and window effects |
+| `desk/fleet` | cross-machine agent projection, ordering, identity and navigation, independent of any scene |
+| `playground`, `ui/playground/*` | deterministic scene support and shared drawing; each scene keeps its own geometry and simulation |
+| `test_support` | isolated window preferences and configurable embedded clients, shared by feature tests and renderer budgets |
 | `links` | OSC 8 hyperlinks and written URLs under a cell |
 | `activity` | per-terminal agent state, questions, commands and bells, and what needs you |
 | `inbox` | what is waiting on you, most urgent first |
-| `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
+| `alerts`, `dock` | system notifications, their clicks, and the Dock count |
+| `handoff` | the pane in front as an `NSUserActivity` (`sh.phux.pane`) the phone app continues; advertised only from the signed bundle |
 | `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
 | `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
 | `ui` | window composition; `ui/*`: sidebar, tabs, panes, pane overlays (find, history), inbox, settings, palette |
+
+## Ownership
+
+`Desk` is Rune's single root state, not a second terminal runtime. Its
+`Connection` holds handles, view leases, layout, resource publications and
+request correlations from one runtime client. Preferences, native trust,
+window geometry, update workers and quick-terminal registration stay on the
+window.
+
+A transport reconnect on the same client retains replay-safe correlations.
+Replacing an ended client retires the old views and popup command before
+resetting its namespace. A retry restores terminal focus or a document's stable
+key and keeps window-local Settings and drafts. A machine switch also clears
+machine-bound confirmations, navigation and activity. Neither path constructs
+another window or reloads its preferences. Image-cache admission accounting
+survives resource retirement together with its cache.
+
+Painting and input use the same ordered surfaces on desktop and phone.
+Settings and its theme palette may nest; playground scenes are exclusive.
+Queued clipboard and native editing callbacks are fenced to their originating
+runtime namespace and incarnation, not just a numeric pane handle.
+
+Keep feature state transitions with the feature, with small `Desk` adapters
+for window effects. Pure presentation and the Rune view remain separate
+responsibilities inside that module. Shared chrome belongs in `ui`; test
+fixtures belong in `test_support`, not a benchmark or another feature.

@@ -54,24 +54,10 @@ fn input_activity_uses_a_fallback_label_and_drops_when_full() {
     state.clients.set_connection_identity(
         sender,
         crate::auth::ConnectionIdentity {
-            peer: phux_protocol::policy::PeerIdentity {
-                uid: 0,
-                pid: None,
-                exe_path: None,
-                mcp_host_key: None,
-                transport: phux_protocol::policy::TransportType::Quic,
-                source_addr: None,
-            },
+            peer: crate::test_support::peer(phux_protocol::policy::TransportType::Quic),
             credential: Some(crate::auth::AuthenticatedCredential {
-                id: "cred-NEVER-ON-WIRE".to_owned(),
                 principal: "ada".to_owned(),
-                scopes: Vec::new(),
-                issued_at: chrono::Utc::now(),
-                expires_at: None,
-                generation: 1,
-                registry_instance: None,
-                subject: None,
-                managed: None,
+                ..crate::test_support::credential("cred-NEVER-ON-WIRE", &[])
             }),
             ssh_origin: None,
             bearer: None,

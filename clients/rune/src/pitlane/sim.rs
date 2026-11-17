@@ -11,7 +11,7 @@ use std::f32::consts::{PI, TAU};
 
 use super::{Bit, Car, Driver, Ember, GOLD, MINT, Mode, PitLane, at};
 use crate::creature;
-use crate::reef::{self, Mood, Rng, hash};
+use crate::playground::{self, Mood, Rng, hash};
 
 /// One fixed step of scene time: the same race whatever the frame rate.
 pub const DT: f32 = 1.0 / 60.0;
@@ -240,7 +240,7 @@ impl PitLane {
     }
 
     /// Confetti as a finished car parks.
-    fn burst(&mut self, at: [f32; 2], kit: reef::Rgb) {
+    fn burst(&mut self, at: [f32; 2], kit: playground::Rgb) {
         let cols = [MINT, MINT, [255.0; 3], kit, GOLD, [20.0, 20.0, 24.0]];
         for i in 0..30 {
             let r = &mut self.rng;
@@ -267,11 +267,11 @@ impl PitLane {
                 self.next_firework = 2.5 + r.next() * 4.0;
                 let (x, y) = (gs[0] + r.next() * gs[2], gs[1] + r.next() * gs[3]);
                 let kinds = [
-                    reef::CLAUDE,
-                    reef::CODEX,
-                    reef::OPENCODE,
-                    reef::GEMINI,
-                    reef::OTHER,
+                    playground::CLAUDE,
+                    playground::CODEX,
+                    playground::OPENCODE,
+                    playground::GEMINI,
+                    playground::OTHER,
                 ];
                 let col = kinds[((r.next() * 5.0) as usize).min(4)].body;
                 for i in 0..46 {

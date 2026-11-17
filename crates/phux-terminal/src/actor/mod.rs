@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use bytes::Bytes;
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::terminal::SizeReportSize;
+use libghostty_vt::report::SizeReportSize;
 use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{
     AgentEvent, ControlAction, FrameKind, ResourceLifecycle, TerminalSignal,
@@ -57,6 +57,7 @@ pub mod program_status;
 #[cfg(any(test, feature = "test-support"))]
 mod pty_fixture;
 pub mod requests;
+mod resume;
 mod run_loop;
 pub mod spawn;
 pub mod sync;
@@ -85,9 +86,6 @@ pub use tick::*;
 /// Line half of [`DEFAULT_SCROLLBACK`]: a tmux-style mid-range value.
 const DEFAULT_MAX_SCROLLBACK: u32 = 10_000;
 
-/// Finite history replay for resource attachment and replacement generations.
-pub const DEFAULT_REPLAY_SCROLLBACK_LINES: u32 = 1_000;
-
 /// Scrollback bounds for the no-config constructors; the runtime passes the
 /// configured `defaults.history-limit`/`history-bytes` (ADR-0094).
 const DEFAULT_SCROLLBACK: phux_config::ScrollbackLimits =
@@ -100,9 +98,7 @@ const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
 
 /// Maximum native history cuts retained per terminal (a hard memory bound;
 /// the release contract exercises eight clients).
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_HISTORY_CLIENTS: usize = 8;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_REPLAY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Max ready PTY chunks coalesced into one `vt_write` + broadcast per pump
@@ -144,9 +140,7 @@ const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20)
 /// has no `SIGCHLD` handler), and a late bridge thread is detached until its
 /// descriptor closes.
 const PANE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_CAPTURE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// The Terminal engine: one per-pane actor.
 ///
@@ -183,23 +177,15 @@ pub struct TerminalActor {
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
     /// Native checkpoint bindings keyed by `(owner, stream_id)`.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners: HashMap<NativeCursorKey, NativeCursorOwner>,
     /// Native pumps the last reflow tombstoned, owed a resync.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     reflow_tombstoned: Vec<phux_resource::ResyncTarget>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_bootstrap: Option<PendingNativeBootstrap>,
     /// Where native captures take their host bytes.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_alloc: NativeAlloc,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_bootstrap_backlog: VecDeque<NativeBootstrapRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pending_native_history: Option<PendingNativeHistory>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_history_backlog: VecDeque<PendingNativeHistory>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_publications:
         HashMap<crate::native_state::OpaqueHistoryCursor, NativePublicationGeneration>,
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,
@@ -249,6 +235,8 @@ pub struct TerminalActor {
     program_status: program_status::ProgramStatus,
     /// Latest-state publication coalesces bursts without dropping a clear.
     program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
+    /// The OSC 7501 `resume=` token, kept out of the records above.
+    resume: resume::Resume,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,
@@ -256,7 +244,7 @@ pub struct TerminalActor {
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
     /// handed to the detector when [`Self::run`] builds it.
-    live_session_probe: Option<crate::agent_detect::live_session::LiveSessionProbe>,
+    live_session_probe: Option<phux_terminal_api::agent_detect::LiveSessionProbe>,
     /// The bound `AgentSession` child's producer channel. With one bound, a
     /// hook report is appended to its stream (ADR-0103 §6); a closed channel
     /// behaves like no child.

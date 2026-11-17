@@ -1,17 +1,9 @@
-//! The `opencode` service: the host's `OpenCode` background service, reached
-//! on loopback with a session token this server mints for itself.
-//!
-//! Only two CLI outputs are read, both typed contracts: `opencode service
-//! status` prints exactly the service origin (a line without `://`, such as
-//! `stopped`, means it is not running; any origin but loopback is refused),
-//! and `opencode api server.pair` prints the pairing JSON. The code is
-//! exchanged at `GET {origin}/auth/connect/{code}` for a session token used
-//! as the Basic password of user `opencode`. Origin and token are cached for
-//! the process behind one mutex, which also serializes discovery: concurrent
-//! opens wait for one `service start` rather than each running it. A connect
-//! failure rediscovers the origin, and a Basic `401` re-mints the token at
-//! most once per [`REMINT_COOLDOWN`] (see `super::upstream`). Clients never
-//! reach the pairing endpoints themselves ([`OpenCode::proxies`]).
+//! The `opencode` service, reached on loopback with a session token this
+//! server mints. Only two typed CLI outputs are read: `opencode service
+//! status` (the origin; non-loopback is refused) and `opencode api
+//! server.pair` (a code exchanged for the token). Origin and token are cached
+//! behind one mutex that also serializes discovery; a `401` re-mints at most
+//! once per [`REMINT_COOLDOWN`]. Clients never reach pairing endpoints.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};

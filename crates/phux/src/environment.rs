@@ -17,6 +17,22 @@ pub(crate) struct EnvVarSpec {
     pub(crate) lines: &'static [&'static str],
 }
 
+/// The variable the server injects into every pane: that pane's local wire
+/// id, written as bare digits (`5`) so shell hooks can prefix `@` themselves.
+pub(crate) const TERMINAL_ID_ENV: &str = "PHUX_TERMINAL_ID";
+
+/// The pane this process runs in, from [`TERMINAL_ID_ENV`]; `None` outside a
+/// pane. Reads both the canonical `5` and the `@5` spelling older guardians
+/// wrote, and never the reserved id 0.
+pub(crate) fn own_terminal_id() -> Option<u32> {
+    parse_terminal_id(&std::env::var(TERMINAL_ID_ENV).ok()?)
+}
+
+fn parse_terminal_id(raw: &str) -> Option<u32> {
+    let digits = raw.strip_prefix('@').unwrap_or(raw);
+    digits.parse::<u32>().ok().filter(|id| *id != 0)
+}
+
 /// Every environment variable the binary reads, in the order the topic
 /// lists them: the socket first, then the remote listeners, then the
 /// helper programs, then logging.
@@ -246,6 +262,20 @@ mod tests {
         }
         for line in section.lines() {
             assert!(line.len() <= 80, "wider than 80 columns: {line:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_id_tests {
+    use super::parse_terminal_id;
+
+    #[test]
+    fn terminal_id_reads_bare_and_at_prefixed_ids_only() {
+        assert_eq!(parse_terminal_id("5"), Some(5));
+        assert_eq!(parse_terminal_id("@5"), Some(5));
+        for invalid in ["", "@", "0", "@0", "x", "@@5", "5x", "host/@5"] {
+            assert_eq!(parse_terminal_id(invalid), None, "{invalid:?}");
         }
     }
 }

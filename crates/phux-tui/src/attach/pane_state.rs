@@ -1,14 +1,11 @@
-//! Per-pane frontend state and the client-local indices built over it:
-//! `PaneSlot`, the session-kernel alias, the VCS index, and the attention
-//! helpers. Shared vocabulary the driver and its siblings read; this module
-//! reads nothing back from them (only [`super::outcome`] and
-//! [`super::render`]).
+//! Per-pane frontend state and the client-local indices built over it,
+//! shared by the driver and its siblings; it reads nothing back from them.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::terminal::Mode;
+use libghostty_vt::mode::Mode;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 #[cfg(test)]
 use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
@@ -36,11 +33,8 @@ pub(super) fn published_terminal<'a>(
     kernel.published_engine(terminal_id)?.terminal()
 }
 
-/// A pane's published replica `Terminal` paired with its generation token.
-/// Every renderer walk fetches through here: the kernel replaces the
-/// `Terminal` on republish and the renderer drops its pooled cache exactly
-/// when the token changes. Read-only inspection may use
-/// [`published_terminal`].
+/// A pane's published replica `Terminal` with its generation token, for
+/// every renderer walk. Read-only inspection may use [`published_terminal`].
 pub(super) fn published_replica<'a>(
     kernel: &'a AttachKernel,
     terminal_id: &ResourceId,
@@ -116,6 +110,12 @@ pub(super) struct PaneSlot {
     /// The cached OSC 0/2 title (empty ⇒ none): the only identity a plain
     /// agent CLI emits, diffed so a change refreshes the chrome.
     pub last_title: String,
+    /// This pane's place among its slot's tabs, `(position, count)` from 1,
+    /// refreshed at each paint; `None` outside a slot with tabs.
+    pub slot_tab: Option<(usize, usize)>,
+    /// The foreground program (`phux.pane-occupant/v1`), which names an
+    /// auto-numbered window after what runs in it.
+    pub foreground: Option<String>,
     /// The attention ladder's "looked at" bit: set while focused, cleared when
     /// an unfocused pane's agent record changes, so "finished, unread" ranks
     /// above "working" until visited.
@@ -123,10 +123,8 @@ pub(super) struct PaneSlot {
     /// The satellite link is down: the leaf stays grey and input is dropped
     /// until an inventory says the host answers again.
     pub satellite_down: bool,
-    /// Progressive history for the published replica is unavailable (pruned,
-    /// tombstoned, rejected): only the scrollback this client already holds
-    /// remains. Cleared when a fresh replica publishes or the cache reports
-    /// a healthy state again; the focused pane badges it.
+    /// Progressive history for the published replica is unavailable: only the
+    /// scrollback already held remains. The focused pane badges it.
     pub history_degraded: bool,
     /// ADR-0147: `Some(title)` for the floating plugin overlay pane, which is
     /// in no layout window and paints in a box over the pane area.
@@ -192,6 +190,8 @@ impl PaneSlot {
             cwd: None,
             last_exit: None,
             last_title: String::new(),
+            slot_tab: None,
+            foreground: None,
             seen: false,
             satellite_down: false,
             history_degraded: false,
@@ -261,6 +261,7 @@ pub(super) fn pane_label<'a>(
     let (key, slot) = panes.get_key_value(id)?;
     Some(crate::render::chrome::dividers::PaneLabel {
         text: slot.last_title.as_str(),
+        slot_tab: slot.slot_tab,
         agent: None,
         attention: slot.attention,
         seen: slot.seen,
@@ -310,7 +311,8 @@ pub(in crate::attach) fn cwd_basename(cwd: &str) -> Option<String> {
 
 /// What a window is called wherever the chrome names it (the tab bar, the
 /// tab picker): a user-given name as is; an auto-numbered one prefers
-/// context, from the focused pane's agent, its title, then its cwd.
+/// context, from the focused pane's agent, then the label every client
+/// gives the pane (what runs in it and where, else its title or cwd).
 pub(in crate::attach) fn display_window_name(
     name: &str,
     focus: Option<&ResourceId>,
@@ -325,13 +327,14 @@ pub(in crate::attach) fn display_window_name(
         .and_then(|fid| agent_meta.get(fid))
         .map(|record| record.name.clone())
         .or_else(|| {
-            slot.map(|slot| slot.last_title.trim())
-                .filter(|title| !title.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
-            slot.and_then(|slot| slot.cwd.as_deref())
-                .and_then(cwd_basename)
+            slot.and_then(|slot| {
+                phux_client_core::pane_label::pane_label(
+                    None,
+                    Some(slot.last_title.as_str()),
+                    slot.foreground.as_deref(),
+                    slot.cwd.as_deref(),
+                )
+            })
         })
         .unwrap_or_else(|| name.to_owned())
 }

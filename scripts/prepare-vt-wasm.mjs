@@ -50,12 +50,10 @@ for (const name of [
   'ghostty_render_state_row_cells_get', 'ghostty_unicode_codepoint_width',
   'ghostty_snapshot_encode_alloc', 'ghostty_snapshot_decoder_new', 'ghostty_snapshot_decoder_free',
   'ghostty_snapshot_decoder_set', 'ghostty_snapshot_decoder_get', 'ghostty_snapshot_decoder_ready',
-  'ghostty_snapshot_decoder_next', 'ghostty_snapshot_decoder_next_staged',
-  'ghostty_snapshot_validate_records',
+  'ghostty_snapshot_decoder_next',
 ]) assert.equal(typeof e[name], 'function', `export ${name}`);
 assert.equal(e.ghostty_formatter_terminal_new.length, 3, '1.0 formatter constructor');
-assert.equal(e.ghostty_snapshot_decoder_next_staged.length, 2, 'bounded staged decoder');
-assert.equal(e.ghostty_snapshot_validate_records.length, 2, 'preapply record CRC validation');
+assert.equal(e.ghostty_snapshot_decoder_next.length, 1, 'stock incremental decoder');
 const jsonPtr = e.ghostty_type_json();
 const jsonBytes = new Uint8Array(e.memory.buffer);
 const { abi, types } = JSON.parse(new TextDecoder().decode(jsonBytes.subarray(jsonPtr, jsonBytes.indexOf(0, jsonPtr))));

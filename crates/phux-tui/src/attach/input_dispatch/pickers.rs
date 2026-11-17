@@ -78,10 +78,7 @@ fn append_move_destinations(
             rows.push(
                 SelectItem::new(
                     format!("{} · pane {}", window.name, pane_index + 1),
-                    phux_config::keybind::ResolvedAction {
-                        action: "move-pane".to_owned(),
-                        args,
-                    },
+                    crate::attach::resolved("move-pane", args),
                 )
                 .secondary(session_name.to_owned()),
             );
@@ -90,12 +87,10 @@ fn append_move_destinations(
 }
 
 /// The grouped window picker: one header per session (current first, then
-/// in the stored session order, then by name). Current-session windows commit `select-window { index }`; a
-/// peer with a cached layout lists one-step `switch-session { name, window }`
-/// rows, else a single "switch to this session" row. The caller bells when
-/// only headers result. `terminals` counts each session's terminals in the
-/// cached graph (`PeerInputs::terminal_counts`), `Some` only when that graph
-/// reports each resource's session (`PeerInputs::reports_sessions`).
+/// stored order, then name). Current windows commit `select-window`; a peer
+/// with a cached layout lists `switch-session { name, window }` rows, else
+/// one "switch to this session" row. `terminals` is `Some` only when the
+/// cached graph reports each resource's session.
 pub(super) fn window_picker_items(
     workspace: &ArrangementDoc,
     names: &WindowNames<'_>,
@@ -142,10 +137,7 @@ pub(super) fn window_picker_items(
             items.push(
                 SelectItem::new(
                     "switch to this session",
-                    phux_config::keybind::ResolvedAction {
-                        action: "switch-session".to_owned(),
-                        args,
-                    },
+                    crate::attach::resolved("switch-session", args),
                 )
                 .secondary(windows)
                 .indented(),
@@ -181,15 +173,9 @@ impl WindowNames<'_> {
     }
 }
 
-/// How many tabs a peer session with no cached arrangement opens as.
-///
-/// When the cached graph reports each resource's session (an
-/// `ORGANIZATION` server, ADR-0161 §7), the server's window count is
-/// synthesized (one per non-empty session) and attaching gives each of the
-/// session's terminals a tab of its own, so the terminal count is the tab
-/// count; a session the graph lists no terminal for opens empty, as its
-/// synthesized count of 0 said. Before such a graph is cached, or from an
-/// older server, the reported window count is all there is.
+/// How many tabs a peer session with no cached arrangement opens as: one per
+/// terminal once the resource graph reports sessions (ADR-0161), else the
+/// reported window count.
 fn session_tab_count(
     session: &phux_protocol::wire::info::SessionInfo,
     terminals: Option<&HashMap<phux_protocol::ids::SessionId, usize>>,
@@ -228,15 +214,9 @@ pub(super) fn current_session_window_rows(
             // the only one that can fire in practice.
             let idx_i64 = i64::try_from(index).unwrap_or(i64::MAX);
             args.insert("index".to_owned(), toml::Value::Integer(idx_i64));
-            SelectItem::new(
-                label,
-                phux_config::keybind::ResolvedAction {
-                    action: "select-window".to_owned(),
-                    args,
-                },
-            )
-            .secondary(secondary)
-            .indented()
+            SelectItem::new(label, crate::attach::resolved("select-window", args))
+                .secondary(secondary)
+                .indented()
         })
         .collect()
 }
@@ -268,15 +248,9 @@ pub(super) fn foreign_session_window_rows(
             // the only one that can fire in practice.
             let idx_i64 = i64::try_from(index).unwrap_or(i64::MAX);
             args.insert("window".to_owned(), toml::Value::Integer(idx_i64));
-            SelectItem::new(
-                label,
-                phux_config::keybind::ResolvedAction {
-                    action: "switch-session".to_owned(),
-                    args,
-                },
-            )
-            .secondary(secondary)
-            .indented()
+            SelectItem::new(label, crate::attach::resolved("switch-session", args))
+                .secondary(secondary)
+                .indented()
         })
         .collect()
 }
@@ -299,10 +273,7 @@ pub(super) fn window_holding(
 pub(super) fn new_session_item() -> SelectItem {
     SelectItem::new(
         "+ New session…".to_owned(),
-        phux_config::keybind::ResolvedAction {
-            action: "new-session".to_owned(),
-            args: std::collections::BTreeMap::new(),
-        },
+        crate::attach::resolved("new-session", std::collections::BTreeMap::new()),
     )
     .secondary("create".to_owned())
 }
