@@ -243,9 +243,10 @@ pub(crate) fn dispatch(
             flush,
             text,
         }) => commands::idea::run(private, flush, text.as_deref()),
-        Some(Command::Doctor(commands::DoctorArgs { json })) => {
-            commands::doctor::run_doctor(json, socket)
-        }
+        Some(Command::Doctor(commands::DoctorArgs { json, remote })) => match remote.remote {
+            Some(_) => commands::doctor::other_host::run(json, remote.with_socket(socket)),
+            None => commands::doctor::run_doctor(json, socket),
+        },
         Some(Command::Logs(commands::LogsArgs {
             server,
             client,

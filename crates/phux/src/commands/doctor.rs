@@ -16,6 +16,7 @@ mod agents;
 mod audit;
 mod checklist;
 mod credentials;
+pub(crate) mod other_host;
 mod permissions;
 mod remote;
 mod remote_cert;
