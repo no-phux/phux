@@ -2,7 +2,7 @@
 // gh function. No fixture can dispatch a build, read credentials, or publish.
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capture } from "../lib/process.ts";
@@ -91,8 +91,11 @@ function fixture(
   const stepEnv = Object.fromEntries(
     Object.entries(table(decision(name)["env"])).map(([key, value]) => [key, String(value)]),
   );
+  // A file, not /dev/stdout: Linux cannot reopen a socket stdout by path.
+  const outputFile = join(dir, "github-output");
+  writeFileSync(outputFile, "");
   try {
-    const output = capture(["bash", "-c", MOCK_GH], {
+    capture(["bash", "-c", MOCK_GH], {
       env: {
         ...process.env,
         ...stepEnv,
@@ -102,7 +105,7 @@ function fixture(
         COMMIT_INPUT: "",
         GITHUB_SHA: PIN,
         GITHUB_RUN_ID: "2",
-        GITHUB_OUTPUT: "/dev/stdout",
+        GITHUB_OUTPUT: outputFile,
         GITHUB_STEP_SUMMARY: "/dev/null",
         RUNNER_TEMP: dir,
         TMPDIR: dir,
@@ -130,6 +133,7 @@ function fixture(
       },
       timeoutMs: 10_000,
     });
+    const output = readFileSync(outputFile, "utf8");
     expect(output).toMatch(/skip=(true|false)/);
     return output.includes("skip=true");
   } finally {
