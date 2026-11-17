@@ -175,11 +175,15 @@ class QualificationTests(unittest.TestCase):
             qualify.simulator_pair([], types)
 
     def test_marker_not_in_echo_but_printf_outputs_it(self):
-        command = qualify.marker_command()
-        self.assertNotIn(qualify.MARKER, command)
-        result = subprocess.run(["/bin/sh", "-c", command], check=True,
-                                capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.stdout, qualify.MARKER + "\n")
+        for marker in (qualify.MARKER, qualify.MARKER + "_RESUMED"):
+            with self.subTest(marker=marker):
+                command = qualify.marker_command(marker)
+                self.assertNotIn(marker, command)
+                self.assertNotIn("[", command)
+                self.assertNotIn("]", command)
+                result = subprocess.run(["/bin/sh", "-c", command], check=True,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.stdout, "[[" + marker + "]]\n")
 
     def test_report_rejects_missing_false_wrong_type_and_error(self):
         qualify.validate_report(valid_report())
@@ -300,13 +304,16 @@ class QualificationTests(unittest.TestCase):
             self.assertEqual(lane.run.call_count, qualify.CONTAINER_ATTEMPTS)
 
     def test_report_collection_copies_evidence_and_checks_process_after_dwell(self):
+        from test_ios_evidence import paired_evidence
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             container = root / "container"
             documents = container / "Documents"
             documents.mkdir(parents=True)
-            (documents / "rune-qualification.json").write_text(json.dumps(valid_report()))
-            (documents / "rune-tree.json").write_text(json.dumps({"title": qualify.SESSION}))
+            tree, report = paired_evidence()
+            (documents / "rune-qualification.json").write_text(json.dumps(report))
+            (documents / "rune-tree.json").write_text(json.dumps(tree))
             lane = self.lane(root)
             lane.documents = documents
             lane.require_alive = Mock()
@@ -323,7 +330,7 @@ class QualificationTests(unittest.TestCase):
 
             lane.simctl = Mock(side_effect=simctl)
             with patch.object(qualify.time, "sleep") as sleep:
-                self.assertEqual(lane.collect_report(123), valid_report())
+                self.assertEqual(lane.collect_report(123), report)
             sleep.assert_called_once_with(3)
             self.assertEqual(lane.require_alive.call_count, 3)
             self.assertTrue((root / "rune-lifecycle.json").is_file())

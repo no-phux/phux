@@ -191,8 +191,13 @@ fn native_png_headless_renderer_smoke() {
     assert!(accessibility.contains("Read-only mirror"));
     if let Some(path) = std::env::var_os("RUNE_RESOURCE_SNAP") {
         let path = std::path::PathBuf::from(path);
-        rune::render::write_png(&path, 800, 600, &pixels).unwrap();
-        std::fs::write(path.with_extension("json"), accessibility).unwrap();
+        crate::test_support::visual::write(
+            &path,
+            &rt,
+            (800, 600),
+            &pixels,
+            "mixed-native-resources",
+        );
         eprintln!("native resource frame: {}", path.display());
     }
     assert!(
