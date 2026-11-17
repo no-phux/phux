@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::scope::ScopeGrant;
 
 use super::WorkloadRegistry;
@@ -53,7 +53,9 @@ impl WorkloadRegistry {
                 .iter_mut()
                 .find(|credential| credential.id == id)
                 .ok_or_else(|| WorkloadError::NotFound(id.to_owned()))?;
-            if !credential.is_active_at(Utc::now().timestamp()) || credential.satellite.is_some() {
+            if !credential.is_active_at(Timestamp::now().as_second())
+                || credential.satellite.is_some()
+            {
                 return Err(WorkloadError::Malformed(
                     "only an active device or workload credential takes a scope; a satellite's holds none".to_owned(),
                 ));

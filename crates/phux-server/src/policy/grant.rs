@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_core::actor::PrincipalKind;
 use phux_protocol::kinds::Verb;
@@ -52,7 +52,7 @@ pub struct ConnectionGrant {
     /// The registry generation that minted a scoped grant.
     pub registry_generation: u64,
     /// When a scoped grant's credential expires, if it does.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     /// When this connection was last sent an uncorrelated denial.
     last_denial_error: Option<Instant>,
     /// Set once the connection's authority was withdrawn while it was live;
@@ -147,7 +147,7 @@ impl ConnectionGrant {
         granted: TerminalScopeSet,
         principal: PrincipalId,
         on_behalf_of: PrincipalId,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     ) -> Result<Self, ScopeError> {
         let mut grant = Self::scoped(granted, None)?;
         grant.principal = principal;
@@ -214,7 +214,7 @@ impl ConnectionGrant {
 
     /// Whether the credential behind this grant has expired at `now`.
     #[must_use]
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: Timestamp) -> bool {
         self.expires_at.is_some_and(|expiry| expiry <= now)
     }
 

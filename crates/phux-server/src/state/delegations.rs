@@ -1,7 +1,7 @@
 //! Minting, admitting, and withdrawing delegated agent credentials
 //! (ADR-0163 §5); the ledger and its rules are [`crate::delegation`].
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_core::ids::SessionId;
 use phux_protocol::kinds::{Verb, Verbs};
@@ -49,7 +49,7 @@ impl ServerState {
         launcher: ClientId,
         session: SessionId,
         request: DelegationRequest,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<DelegatedCredential, DelegationError> {
         let grant = self
             .connection_grant(launcher)
@@ -75,7 +75,7 @@ impl ServerState {
         {
             return Err(DelegationError::LauncherLacks(verb));
         }
-        let lifetime = chrono::Duration::from_std(request.lifetime.min(MAX_LIFETIME))
+        let lifetime = jiff::SignedDuration::try_from(request.lifetime.min(MAX_LIFETIME))
             .map_err(|_| DelegationError::Lifetime)?;
         let expires_at = [Some(now + lifetime), grant.expires_at]
             .into_iter()
@@ -110,7 +110,7 @@ impl ServerState {
     /// The grant a connection presenting delegated credential `id` gets at
     /// `now`; `None` once it is withdrawn or lapsed.
     #[must_use]
-    pub fn delegated_grant(&self, id: &str, now: DateTime<Utc>) -> Option<ConnectionGrant> {
+    pub fn delegated_grant(&self, id: &str, now: Timestamp) -> Option<ConnectionGrant> {
         let credential = self.delegations.live(id, now)?;
         ConnectionGrant::delegated(
             credential.scopes(),
@@ -190,7 +190,7 @@ impl ServerState {
     pub fn restore_delegation(
         &mut self,
         carried: &DelegationBlob,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<DelegatedCredential, UnrestoredDelegation> {
         let verbs = Verbs::of(
             &Verb::ALL
@@ -208,7 +208,8 @@ impl ServerState {
         {
             return Err(UnrestoredDelegation::Malformed);
         }
-        let expires_at = DateTime::from_timestamp_millis(carried.expires_at_ms)
+        let expires_at = Timestamp::from_millisecond(carried.expires_at_ms)
+            .ok()
             .ok_or(UnrestoredDelegation::Malformed)?;
         if expires_at <= now {
             return Err(UnrestoredDelegation::Expired);
@@ -242,7 +243,7 @@ impl ServerState {
     /// Whether `principal` still holds a credential at `now`: the owner
     /// always does; a delegate while its credential is live; a registry
     /// credential while the registry admits it.
-    fn principal_holds_credential(&self, principal: &PrincipalId, now: DateTime<Utc>) -> bool {
+    fn principal_holds_credential(&self, principal: &PrincipalId, now: Timestamp) -> bool {
         match principal {
             PrincipalId::Owner => true,
             PrincipalId::System => false,
@@ -268,7 +269,7 @@ impl ServerState {
     pub fn delegation_minted_by(
         &self,
         operation: &[u8; 16],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Option<&DelegatedCredential> {
         let id = self.delegations.minted_by(operation)?;
         self.delegations.live(id, now)

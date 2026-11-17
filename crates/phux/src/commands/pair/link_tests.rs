@@ -72,7 +72,7 @@ fn a_larger_qr_is_wider_and_the_scale_stays_inside_the_terminal() {
 /// `--reusable` still says it never expires.
 #[test]
 fn the_expiry_line_states_a_single_use_deadline_plainly() {
-    let deadline = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+    let deadline = jiff::Timestamp::from_second(1_800_000_000).ok().unwrap();
     let mut secret = super::HumanSecret {
         credential_id: "cred",
         token: "ab",

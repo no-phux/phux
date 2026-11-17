@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, UnixTime};
 use serde::Deserialize;
@@ -40,7 +40,7 @@ struct Entry {
     subject: Option<String>,
     /// Clamped to the leaf's notAfter; the leaf's notAfter when absent.
     #[serde(default)]
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 }
 
 /// What [`WorkloadRegistry::sync_managed`] changed.
@@ -198,7 +198,7 @@ fn managed_credential(
     let not_after = parsed.validity().not_after.timestamp();
     let expires_at = entry
         .expires_at
-        .map_or(not_after, |at| at.timestamp().min(not_after));
+        .map_or(not_after, |at| at.as_second().min(not_after));
     validate_expiry(expires_at)?;
     let public_key = parsed.tbs_certificate.subject_pki.raw.to_vec();
     Ok(WorkloadCredential {

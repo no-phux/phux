@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -237,7 +237,7 @@ impl WorkloadRegistry {
     }
 
     fn find_active(&self, id: &str) -> Option<&WorkloadCredential> {
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         self.credentials.iter().find(|credential| {
             bool::from(credential.id.as_bytes().ct_eq(id.as_bytes()))
                 && credential.is_active_at(now)

@@ -89,11 +89,13 @@ fn workload_authority_reports_fingerprint_and_generation() {
 fn cert_expiring_in(dir: &std::path::Path, file: &str, days: i64) -> PathBuf {
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).unwrap();
-    let at = chrono::Utc::now() + chrono::Duration::days(days);
+    let at = (jiff::Timestamp::now() + jiff::SignedDuration::from_hours(24 * days))
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date();
     params.not_after = rcgen::date_time_ymd(
-        chrono::Datelike::year(&at),
-        u8::try_from(chrono::Datelike::month(&at)).unwrap(),
-        u8::try_from(chrono::Datelike::day(&at)).unwrap(),
+        i32::from(at.year()),
+        u8::try_from(at.month()).unwrap(),
+        u8::try_from(at.day()).unwrap(),
     );
     let path = dir.join(file);
     std::fs::write(&path, params.self_signed(&key).unwrap().pem()).unwrap();
@@ -129,7 +131,7 @@ fn remote(
 #[test]
 fn client_certificates_due_for_renewal_warn_with_the_remedy() {
     let dir = tempfile::tempdir().unwrap();
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let fresh = cert_expiring_in(dir.path(), "fresh.pem", 80);
     let soon = cert_expiring_in(dir.path(), "soon.pem", 5);
     let gone = cert_expiring_in(dir.path(), "gone.pem", -3);

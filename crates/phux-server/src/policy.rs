@@ -27,7 +27,7 @@ mod tests;
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 #[cfg(test)]
 use phux_protocol::policy::PeerIdentity;
 use phux_protocol::wire::frame::DetachReason;
@@ -130,7 +130,7 @@ pub struct RegistryStamp {
     /// The registry generation.
     pub generation: u64,
     /// The credential's expiry in that state.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 /// One live connection as the revocation watcher sees it.

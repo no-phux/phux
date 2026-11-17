@@ -1,6 +1,6 @@
 //! `phux.whoami/v1` record assembly and admission of the ssh origin.
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::frame::{Scope, ServingUser, SshClient, WHOAMI_KEY, WhoamiRecord};
@@ -66,7 +66,7 @@ fn a_delegated_key_reports_on_behalf_of() {
             TerminalScopeSet::parse_all(&["observe@group:1"]).expect("scope"),
             PrincipalId::Credential("delegated:00".to_owned()),
             by,
-            Utc::now() + chrono::Duration::hours(1),
+            Timestamp::now() + jiff::SignedDuration::from_hours(1),
         )
         .expect("grant")
     };
@@ -185,7 +185,7 @@ fn credential() -> AuthenticatedCredential {
         id: "0123abcd".to_owned(),
         principal: "phone".to_owned(),
         scopes: vec!["terminal.control".to_owned()],
-        issued_at: Utc::now(),
+        issued_at: Timestamp::now(),
         expires_at: None,
         generation: 1,
         registry_instance: None,

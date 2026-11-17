@@ -126,7 +126,7 @@ fn run_pair(
         return ExitCode::FAILURE;
     }
     let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
-    let expires_at = expires_for.map(|duration| chrono::Utc::now() + duration);
+    let expires_at = expires_for.map(|duration| jiff::Timestamp::now() + duration);
     let first_use_by = lifetime.first_use_by(expires_at.is_some(), json, &door);
     let output = LinkOutput {
         name: name.as_deref(),

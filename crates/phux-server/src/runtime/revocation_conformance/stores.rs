@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
 
@@ -56,7 +56,7 @@ fn phone_identity(store: &Arc<ReloadingTokenStore>) -> ConnectionIdentity {
         id: TOKEN_ID.to_owned(),
         principal: "test-principal".to_owned(),
         scopes: vec![crate::auth::TERMINAL_CONTROL_SCOPE.to_owned()],
-        issued_at: Utc::now(),
+        issued_at: Timestamp::now(),
         expires_at: None,
         generation: 1,
         registry_instance: None,
@@ -194,7 +194,7 @@ async fn a_same_generation_hand_edit_is_still_judged() {
 
         // `revoked_at` written by hand, the generation untouched.
         hand_edit_registry(&fx.registry, |doc| {
-            doc["credentials"][0]["revoked_at"] = Utc::now().timestamp().into();
+            doc["credentials"][0]["revoked_at"] = Timestamp::now().as_second().into();
         });
         fx.sweep();
         agent

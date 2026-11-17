@@ -7,8 +7,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(test)]
-use chrono::Duration;
-use chrono::{DateTime, Utc};
+use jiff::SignedDuration;
+use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -37,7 +37,7 @@ mod tests;
 pub struct ListenerToken {
     verifier: [u8; 32],
     id: String,
-    issued_at: DateTime<Utc>,
+    issued_at: Timestamp,
 }
 
 impl std::fmt::Debug for ListenerToken {
@@ -65,7 +65,7 @@ impl ListenerToken {
         let token = Self {
             verifier,
             id: format!("listener:{id}"),
-            issued_at: Utc::now(),
+            issued_at: Timestamp::now(),
         };
         Ok((token, secret))
     }
@@ -165,7 +165,7 @@ pub(crate) fn write_test_credential(path: &Path, secret: &[u8; TOKEN_LEN]) {
             verifier: verifier(secret),
             principal: "test-principal".to_owned(),
             scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
-            issued_at: Utc::now() - Duration::seconds(1),
+            issued_at: Timestamp::now() - SignedDuration::from_secs(1),
             expires_at: None,
             revoked_at: None,
             generation: 1,

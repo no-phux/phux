@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use super::{
     AuthError, AuthenticatedCredential, STABLE_READ_ATTEMPTS, Standing, TokenStore,
@@ -91,7 +91,7 @@ const NO_VERDICT_WARN_INTERVAL_SECS: i64 = 60;
 static LAST_NO_VERDICT_WARNING: AtomicI64 = AtomicI64::new(i64::MIN);
 
 fn no_verdict_warning_due() -> bool {
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     let last = LAST_NO_VERDICT_WARNING.load(Ordering::Relaxed);
     now.saturating_sub(last) >= NO_VERDICT_WARN_INTERVAL_SECS
         && LAST_NO_VERDICT_WARNING
@@ -247,7 +247,7 @@ impl ReloadingTokenStore {
     #[must_use]
     pub fn standing(&self, id: &str, generation: u64) -> Option<Standing> {
         self.watch_snapshot()
-            .map(|store| store.standing_at(id, generation, Utc::now()))
+            .map(|store| store.standing_at(id, generation, Timestamp::now()))
     }
 
     /// Authenticate against the current readable generation.

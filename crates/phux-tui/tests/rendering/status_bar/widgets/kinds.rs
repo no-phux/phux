@@ -107,10 +107,10 @@ fn invalid_option_values_are_rejected_naming_the_kind() {
             vec![("format", toml::Value::Integer(1))],
         ),
         (
-            // %Q is not a valid strftime directive.
+            // %J is not a valid strftime directive.
             "invalid strftime format",
             "time",
-            vec![("format", toml::Value::String("%Q".to_owned()))],
+            vec![("format", toml::Value::String("%J".to_owned()))],
         ),
         (
             "non-string time format",

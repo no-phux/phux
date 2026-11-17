@@ -264,7 +264,7 @@ impl HostReadKey {
         assert_eq!(enrolled["scopes"], serde_json::json!(scopes));
         assert_eq!(enrolled["replaced"], replaces.is_some());
         let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
-        let skew = (expires_at - (chrono::Utc::now().timestamp() + expires_in)).abs();
+        let skew = (expires_at - (jiff::Timestamp::now().as_second() + expires_in)).abs();
         assert!(
             skew < 120,
             "expires_at {expires_at} is not ~{expires_in}s out"

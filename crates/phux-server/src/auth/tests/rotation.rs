@@ -12,9 +12,9 @@ fn rotation_has_bounded_ab_overlap_and_preserves_identity() {
     )
     .unwrap();
     let first_secret = secret(&first);
-    let now = Utc::now() + Duration::seconds(1);
+    let now = Timestamp::now() + SignedDuration::from_secs(1);
     let second = with_lock(&path, |held| {
-        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+        rotate_credential_at(&path, &first.id, SignedDuration::from_mins(5), now, held)
     })
     .unwrap();
     let second_secret = secret(&second);
@@ -32,12 +32,12 @@ fn rotation_has_bounded_ab_overlap_and_preserves_identity() {
     assert_eq!(current.generation, 2);
     assert!(
         store
-            .authenticate_at(&first_secret, now + Duration::minutes(5))
+            .authenticate_at(&first_secret, now + SignedDuration::from_mins(5))
             .is_none()
     );
     assert!(
         store
-            .authenticate_at(&second_secret, now + Duration::minutes(5))
+            .authenticate_at(&second_secret, now + SignedDuration::from_mins(5))
             .is_some()
     );
 }
@@ -46,8 +46,8 @@ fn rotation_has_bounded_ab_overlap_and_preserves_identity() {
 fn rotation_preserves_absolute_expiry_for_new_and_overlap_generations() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
-    let now = Utc::now() + Duration::seconds(1);
-    let expiry = now + Duration::minutes(2);
+    let now = Timestamp::now() + SignedDuration::from_secs(1);
+    let expiry = now + SignedDuration::from_mins(2);
     let first = mint_credential(
         &path,
         Some("device:expiring"),
@@ -57,7 +57,7 @@ fn rotation_preserves_absolute_expiry_for_new_and_overlap_generations() {
     .unwrap();
     let first_secret = secret(&first);
     let second = with_lock(&path, |held| {
-        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+        rotate_credential_at(&path, &first.id, SignedDuration::from_mins(5), now, held)
     })
     .unwrap();
     let second_secret = secret(&second);
@@ -74,18 +74,18 @@ fn rotation_preserves_absolute_expiry_for_new_and_overlap_generations() {
 fn rotation_rejects_an_already_expired_credential_without_changing_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
-    let now = Utc::now() + Duration::minutes(1);
+    let now = Timestamp::now() + SignedDuration::from_mins(1);
     let first = mint_credential(
         &path,
         Some("device:expired"),
         &[TERMINAL_CONTROL_SCOPE.to_owned()],
-        Some(now - Duration::seconds(1)),
+        Some(now - SignedDuration::from_secs(1)),
     )
     .unwrap();
     let before = fs::read(&path).unwrap();
 
     let result = with_lock(&path, |held| {
-        rotate_credential_at(&path, &first.id, Duration::minutes(5), now, held)
+        rotate_credential_at(&path, &first.id, SignedDuration::from_mins(5), now, held)
     });
 
     assert!(matches!(result, Err(AuthError::CredentialExpired(id)) if id == first.id));
@@ -105,7 +105,13 @@ fn fault_injected_rotation_is_old_or_new_at_each_atomic_commit_stage() {
             mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
         let _armed = fault::inject(stage);
         let result = with_lock(&path, |held| {
-            rotate_credential_at(&path, &first.id, Duration::minutes(5), Utc::now(), held)
+            rotate_credential_at(
+                &path,
+                &first.id,
+                SignedDuration::from_mins(5),
+                Timestamp::now(),
+                held,
+            )
         });
         assert!(result.is_err());
         let store = TokenStore::load(&path).unwrap();
@@ -122,7 +128,13 @@ fn fault_injected_rotation_is_old_or_new_at_each_atomic_commit_stage() {
     let first = mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
     let _armed = fault::inject(WriteFault::AfterRenameBeforeDirectorySync);
     let rotated = with_lock(&path, |held| {
-        rotate_credential_at(&path, &first.id, Duration::minutes(5), Utc::now(), held)
+        rotate_credential_at(
+            &path,
+            &first.id,
+            SignedDuration::from_mins(5),
+            Timestamp::now(),
+            held,
+        )
     })
     .unwrap();
     assert!(!rotated.is_durable(), "post-rename ambiguity is explicit");

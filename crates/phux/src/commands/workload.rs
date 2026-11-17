@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 use phux_server::workload::{self, MaterialError, WorkloadError, WorkloadPaths};
 use usage::{Subcommands, ValueEnum};
 
@@ -326,10 +326,9 @@ fn cli_error(error: &WorkloadError) -> CliError {
 }
 
 fn timestamp(seconds: i64) -> String {
-    DateTime::from_timestamp(seconds, 0).map_or_else(
-        || seconds.to_string(),
-        |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true),
-    )
+    Timestamp::from_second(seconds)
+        .ok()
+        .map_or_else(|| seconds.to_string(), |at: Timestamp| format!("{at:.0}"))
 }
 
 /// Run `phux workload` as parsed.

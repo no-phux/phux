@@ -322,7 +322,7 @@ fn a_delegated_connection_audits_on_behalf_of() {
         TerminalScopeSet::parse_all(&["observe@group:1"]).expect("scope"),
         PrincipalId::Credential("delegated:00".to_owned()),
         PrincipalId::Owner,
-        chrono::Utc::now() + chrono::Duration::hours(1),
+        jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1),
     )
     .expect("grant");
     state.set_connection_grant(client, delegated);

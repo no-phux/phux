@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind, InputMode, Scope};
@@ -39,10 +39,10 @@ const TEST_GRACE: Duration = Duration::from_millis(300);
 const KEY: &[u8] = b"revocation-conformance-key";
 
 /// Mints a scoped grant over `set` that expires `ttl` after its HELLO.
-fn expiring(set: TerminalScopeSet, ttl: chrono::Duration) -> FnPolicy {
+fn expiring(set: TerminalScopeSet, ttl: jiff::SignedDuration) -> FnPolicy {
     FnPolicy::new(move |_, credential| {
         let mut grant = scoped_grant(&set, credential)?;
-        grant.expires_at = Some(Utc::now() + ttl);
+        grant.expires_at = Some(Timestamp::now() + ttl);
         Ok(grant)
     })
 }
@@ -83,7 +83,7 @@ impl Fixture {
     }
 
     /// An engine whose grants over `*@global` lapse `ttl` after HELLO.
-    fn expiring(ttl: chrono::Duration) -> Self {
+    fn expiring(ttl: jiff::SignedDuration) -> Self {
         let engine = Arc::new(expiring(parse_scopes(&["*@global"]), ttl));
         let credential_id = format!("sha256:{}", "e".repeat(64));
         Self::with_engine(

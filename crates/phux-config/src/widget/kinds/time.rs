@@ -2,8 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::format::{Item, StrftimeItems};
-
 use crate::widget::{
     WidgetError, WidgetKindSpec, WidgetOptSpec, invalid, reject_unknown_opts, string_opt,
 };
@@ -47,11 +45,29 @@ pub fn parse(opts: &BTreeMap<String, toml::Value>) -> Result<TimeOpts, WidgetErr
 
 /// Refuse a strftime spec carrying an invalid directive.
 fn check_format(format: &str) -> Result<(), WidgetError> {
-    if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
+    let sample = jiff::Timestamp::UNIX_EPOCH.to_zoned(jiff::tz::TimeZone::UTC);
+    if jiff::fmt::strtime::format(format, &sample).is_err() {
         return Err(invalid(
             KIND,
             format!("invalid strftime format: {format:?}"),
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// The kind's default and the shipped bar's clock render as they did
+    /// under chrono: 2027-01-15 08:05 UTC is a Friday.
+    #[test]
+    fn shipped_clock_formats_render_unchanged() {
+        let at = jiff::Timestamp::from_second(1_800_000_300)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC);
+        for (format, shown) in [("%H:%M", "08:05"), (" %a %H:%M ", " Fri 08:05 ")] {
+            super::check_format(format).unwrap();
+            assert_eq!(jiff::fmt::strtime::format(format, &at).unwrap(), shown);
+        }
+        assert!(super::check_format("%J").is_err());
+    }
 }

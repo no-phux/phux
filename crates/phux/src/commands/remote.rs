@@ -105,7 +105,8 @@ impl RemoteEntry {
         let Some(cert) = self.client_cert.as_deref() else {
             return;
         };
-        let Some(detail) = super::enroll::renewal_due(cert, chrono::Utc::now().timestamp()) else {
+        let Some(detail) = super::enroll::renewal_due(cert, jiff::Timestamp::now().as_second())
+        else {
             return;
         };
         let first = WARNED

@@ -533,8 +533,7 @@ fn report_joined(joined: &Joined, reload: &HubReload, json: bool) -> ExitCode {
 }
 
 fn rfc3339(seconds: i64) -> String {
-    chrono::DateTime::from_timestamp(seconds, 0).map_or_else(
-        || format!("unix {seconds}"),
-        |stamp| stamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    )
+    jiff::Timestamp::from_second(seconds)
+        .ok()
+        .map_or_else(|| format!("unix {seconds}"), |stamp| format!("{stamp:.0}"))
 }

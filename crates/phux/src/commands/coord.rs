@@ -332,7 +332,7 @@ fn absolutes(json: bool, paths: &[String]) -> Result<Vec<String>, ExitCode> {
 }
 
 fn print_claims(claims: &[Claim]) {
-    let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0);
+    let now = u64::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
     for claim in claims {
         outln!(
             "{}  {}  {} fence {}  {}m left{}",

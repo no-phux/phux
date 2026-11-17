@@ -3,9 +3,6 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use chrono::format::StrftimeItems;
-use chrono::{DateTime, Local};
-
 use phux_config::widget::kinds::time::{TimeOpts, parse};
 
 use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
@@ -20,10 +17,8 @@ pub struct TimeWidget {
 
 impl StatusWidget for TimeWidget {
     fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
-        let dt: DateTime<Local> = ctx.now.into();
-        let text = StrftimeItems::new(&self.format)
-            .parse()
-            .map(|items| dt.format_with_items(items.iter()).to_string())
+        let text = jiff::Zoned::try_from(ctx.now)
+            .and_then(|now| jiff::fmt::strtime::format(&self.format, &now))
             .unwrap_or_default();
         WidgetCells::from_text(&text)
     }

@@ -47,7 +47,7 @@ async fn revoking_a_key_terminates_its_live_connections_with_authorization_revok
 #[tokio::test(flavor = "current_thread")]
 async fn expiry_terminates_with_authorization_expired_and_releases_leases() {
     local(async {
-        let fx = Fixture::expiring(chrono::Duration::milliseconds(750));
+        let fx = Fixture::expiring(jiff::SignedDuration::from_millis(750));
         spawn_revocation_watcher(&fx.state, &fx.root);
         let agent = fx.workload().await;
         agent.attach(1).await;

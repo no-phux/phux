@@ -3,7 +3,6 @@
 
 use std::process::ExitCode;
 
-use chrono::{Local, TimeZone};
 use phux_plugin::PluginActionOutcome;
 use phux_plugin::run_log::{self, RunKind, RunRecord};
 
@@ -92,10 +91,14 @@ fn print_run(run: &RunRecord) {
 fn timestamp(at_unix_ms: u64) -> String {
     i64::try_from(at_unix_ms)
         .ok()
-        .and_then(|ms| Local.timestamp_millis_opt(ms).single())
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
         .map_or_else(
             || "-".to_owned(),
-            |at| at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            |at| {
+                at.to_zoned(jiff::tz::TimeZone::system())
+                    .strftime("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            },
         )
 }
 

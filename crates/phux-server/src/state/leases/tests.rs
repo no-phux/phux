@@ -44,7 +44,7 @@ fn world_with_devices() -> (ServerState, ResourceId) {
         every_verb(),
         PrincipalId::Credential("delegated:00000000000000000000000000000005".to_owned()),
         PrincipalId::Credential(agent_id(PHONE)),
-        chrono::Utc::now() + chrono::Duration::hours(1),
+        jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1),
     )
     .unwrap();
     state.set_connection_grant(DELEGATE, delegate);

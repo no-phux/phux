@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -24,7 +24,7 @@ pub fn mint_credential(
     path: &Path,
     principal: Option<&str>,
     scopes: &[String],
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 ) -> Result<MintedCredential, AuthError> {
     with_lock(path, |held| {
         mint_credential_unlocked(path, principal, scopes, expires_at, held)
@@ -35,7 +35,7 @@ pub(super) fn mint_credential_unlocked(
     path: &Path,
     principal: Option<&str>,
     scopes: &[String],
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
     held: &HeldLock<'_>,
 ) -> Result<MintedCredential, AuthError> {
     let mut file = load_file_for_update(path)?;
@@ -46,7 +46,7 @@ pub(super) fn mint_credential_unlocked(
         verifier: verifier(&secret),
         principal,
         scopes: scopes.to_vec(),
-        issued_at: Utc::now(),
+        issued_at: Timestamp::now(),
         expires_at,
         revoked_at: None,
         generation: 1,
@@ -66,18 +66,18 @@ pub(super) fn mint_credential_unlocked(
 pub fn rotate_credential(
     path: &Path,
     id: &str,
-    overlap: Duration,
+    overlap: SignedDuration,
 ) -> Result<MintedCredential, AuthError> {
     with_lock(path, |held| {
-        rotate_credential_at(path, id, overlap, Utc::now(), held)
+        rotate_credential_at(path, id, overlap, Timestamp::now(), held)
     })
 }
 
 pub(super) fn rotate_credential_at(
     path: &Path,
     id: &str,
-    overlap: Duration,
-    now: DateTime<Utc>,
+    overlap: SignedDuration,
+    now: Timestamp,
     held: &HeldLock<'_>,
 ) -> Result<MintedCredential, AuthError> {
     let mut file = load_file_for_update(path)?;
@@ -91,11 +91,11 @@ pub(super) fn rotate_credential_at(
     if latest.revoked_at.is_some() {
         return Err(AuthError::CredentialRevoked(id.to_owned()));
     }
-    let lapsed = |at: Option<DateTime<Utc>>| at.is_some_and(|at| now >= at);
+    let lapsed = |at: Option<Timestamp>| at.is_some_and(|at| now >= at);
     if lapsed(latest.expires_at) || lapsed(latest.first_use_by) {
         return Err(AuthError::CredentialExpired(id.to_owned()));
     }
-    let overlap_until = now + overlap.max(Duration::zero());
+    let overlap_until = now + overlap.max(SignedDuration::ZERO);
     for record in file.credentials.iter_mut().filter(|record| record.id == id) {
         if record.revoked_at.is_none() {
             record.expires_at = Some(
@@ -139,13 +139,13 @@ pub(super) fn rotate_credential_at(
 pub fn mint_terminal_credential(
     path: &Path,
     replacing: Option<&str>,
-    expires_at: Option<DateTime<Utc>>,
-    first_use_by: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
+    first_use_by: Option<Timestamp>,
 ) -> Result<MintedCredential, AuthError> {
     with_lock(path, |held| {
         let previous = replacing.map(decode_secret).transpose()?;
         let mut file = load_file_for_update(path)?;
-        let now = Utc::now();
+        let now = Timestamp::now();
         if let Some(previous) = previous
             && let Some(id) = credential_id_for_secret(&file, &previous)
         {
@@ -186,11 +186,11 @@ pub fn list_credentials(path: &Path) -> Result<Vec<CredentialSummary>, AuthError
 
 /// Revoke every live credential unused for `unused_for` (`last_seen`, else
 /// `issued_at`).
-pub fn prune_unused(path: &Path, unused_for: Duration) -> Result<PruneOutcome, AuthError> {
+pub fn prune_unused(path: &Path, unused_for: SignedDuration) -> Result<PruneOutcome, AuthError> {
     with_lock(path, |held| {
         let mut file = load_file_for_update(path)?;
-        let now = Utc::now();
-        let cutoff = now - unused_for.max(Duration::zero());
+        let now = Timestamp::now();
+        let cutoff = now - unused_for.max(SignedDuration::ZERO);
         let mut revoked_ids = Vec::new();
         for summary in summarize_credentials(&file) {
             if summary.revoked {
@@ -277,14 +277,14 @@ fn credential_id_for_secret(file: &CredentialFile, secret: &[u8; TOKEN_LEN]) -> 
 /// a minute per credential.
 pub fn record_credential_seen(path: &Path, id: &str) {
     let _ = with_lock(path, |held| {
-        record_credential_seen_unlocked(path, id, Utc::now(), held)
+        record_credential_seen_unlocked(path, id, Timestamp::now(), held)
     });
 }
 
 fn record_credential_seen_unlocked(
     path: &Path,
     id: &str,
-    now: DateTime<Utc>,
+    now: Timestamp,
     held: &HeldLock<'_>,
 ) -> Result<(), AuthError> {
     let mut file = load_file_for_update(path)?;
@@ -313,7 +313,7 @@ fn record_credential_seen_unlocked(
     if !claimed
         && record
             .last_seen
-            .is_some_and(|seen| now - seen < Duration::seconds(60))
+            .is_some_and(|seen| now.duration_since(seen) < SignedDuration::from_secs(60))
     {
         return Ok(());
     }
@@ -326,7 +326,7 @@ fn record_credential_seen_unlocked(
 pub fn revoke_credential(path: &Path, id: &str) -> Result<CommitOutcome, AuthError> {
     with_lock(path, |held| {
         let mut file = load_file_for_update(path)?;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut found = false;
         for record in file.credentials.iter_mut().filter(|record| record.id == id) {
             record.revoked_at = Some(now);

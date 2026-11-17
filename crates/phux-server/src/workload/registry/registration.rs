@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use super::{RegisteredCredential, RegistryFile, RegistryRecord, Revocation, WorkloadRegistry};
 use crate::secure_file;
@@ -73,7 +73,7 @@ impl WorkloadRegistry {
             {
                 return Err(WorkloadError::AlreadyRegistered(id.clone()));
             }
-            let now = Utc::now().timestamp();
+            let now = Timestamp::now().as_second();
             let revoked_predecessor = replaces
                 .and_then(|old| {
                     registry
@@ -134,7 +134,7 @@ impl WorkloadRegistry {
             {
                 return Err(WorkloadError::AlreadyRegistered(id.clone()));
             }
-            let now = Utc::now().timestamp();
+            let now = Timestamp::now().as_second();
             let replaced = registry.revoke_satellite_records(name, now) > 0;
             registry.credentials.push(WorkloadCredential {
                 id: id.clone(),
@@ -165,7 +165,7 @@ impl WorkloadRegistry {
     pub fn revoke_satellite(path: &Path, name: &str) -> Result<usize, WorkloadError> {
         secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
-            let revoked = registry.revoke_satellite_records(name, Utc::now().timestamp());
+            let revoked = registry.revoke_satellite_records(name, Timestamp::now().as_second());
             if revoked > 0 {
                 registry.commit(path, held)?;
             }
@@ -198,7 +198,7 @@ impl WorkloadRegistry {
         }
         secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
-            let now = Utc::now().timestamp();
+            let now = Timestamp::now().as_second();
             let credential = registry
                 .credentials
                 .iter_mut()

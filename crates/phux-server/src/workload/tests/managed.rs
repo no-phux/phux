@@ -1,6 +1,5 @@
 //! `sync-managed`: one organization's records, and nothing else.
 
-use chrono::Datelike as _;
 use rcgen::PublicKeyData as _;
 
 use super::*;
@@ -130,18 +129,19 @@ fn the_expiry_is_clamped_to_the_leaf_and_the_org_must_match() {
         &org.leaf(&KeyPair::generate().unwrap()),
         &["observe@global"],
     );
-    let leaf_expiry = Utc::now() + chrono::Duration::days(3);
-    entry["expires_at"] = (Utc::now() + chrono::Duration::days(365))
-        .to_rfc3339()
+    let leaf_expiry = Timestamp::now() + jiff::SignedDuration::from_hours(72);
+    entry["expires_at"] = (Timestamp::now() + jiff::SignedDuration::from_hours(8760))
+        .to_string()
         .into();
     // The test leaf is valid until rcgen's default far-future date, so
     // clamp against a leaf with a near notAfter instead.
     let key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::new(vec!["device".to_owned()]).unwrap();
+    let leaf_date = leaf_expiry.to_zoned(jiff::tz::TimeZone::UTC).date();
     params.not_after = rcgen::date_time_ymd(
-        leaf_expiry.year(),
-        u8::try_from(leaf_expiry.month()).unwrap(),
-        u8::try_from(leaf_expiry.day()).unwrap(),
+        i32::from(leaf_date.year()),
+        u8::try_from(leaf_date.month()).unwrap(),
+        u8::try_from(leaf_date.day()).unwrap(),
     );
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     entry["certificate"] = org.sign(&params, &key).into();
@@ -149,7 +149,7 @@ fn the_expiry_is_clamped_to_the_leaf_and_the_org_must_match() {
     sync(&fx, &org, &[entry]);
     let registry = WorkloadRegistry::load(&fx.paths.registry).unwrap();
     let expires_at = registry.credentials()[0].expires_at.unwrap();
-    assert!(expires_at <= leaf_expiry.timestamp(), "{expires_at}");
+    assert!(expires_at <= leaf_expiry.as_second(), "{expires_at}");
 
     let error = WorkloadRegistry::sync_managed(&fx.paths.registry, "other-org", &org.document(&[]))
         .unwrap_err();

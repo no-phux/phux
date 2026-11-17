@@ -64,7 +64,7 @@ impl Fixture {
                     .iter()
                     .map(ToString::to_string)
                     .collect(),
-                issued_at: chrono::Utc::now(),
+                issued_at: jiff::Timestamp::now(),
                 expires_at: Some(delegation.credential.expires_at),
                 generation: 0,
                 registry_instance: None,

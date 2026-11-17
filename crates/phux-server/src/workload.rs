@@ -43,7 +43,7 @@ pub use server_identity::{
 use std::io;
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 // Names `tests` reaches through `use super::*`.
@@ -244,7 +244,7 @@ impl WorkloadPaths {
             .serialize_request(key)
             .unwrap();
         let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
-        let expires = chrono::Utc::now().timestamp() + 3600;
+        let expires = jiff::Timestamp::now().as_second() + 3600;
         let prepared = prepare_enrollment(self, &material, expires).unwrap();
         std::fs::write(chain_out, prepared.issued_chain_pem().unwrap()).unwrap();
         prepared
@@ -411,10 +411,10 @@ impl WorkloadCredential {
             id: self.id.clone(),
             principal: self.id.clone(),
             scopes: self.scopes.clone(),
-            issued_at: Utc::now(),
+            issued_at: Timestamp::now(),
             expires_at: self
                 .expires_at
-                .and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
+                .and_then(|seconds| Timestamp::from_second(seconds).ok()),
             generation: registry.generation(),
             registry_instance: registry.instance_id().map(str::to_owned),
             subject: self.subject.clone(),
@@ -485,7 +485,7 @@ pub(crate) fn managed_entry(leaf: &str, scopes: &[&str]) -> serde_json::Value {
         "scopes": scopes,
         "principal": "human",
         "subject": "dev@example.com",
-        "expires_at": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        "expires_at": (Timestamp::now() + jiff::SignedDuration::from_hours(1)).to_string(),
     })
 }
 

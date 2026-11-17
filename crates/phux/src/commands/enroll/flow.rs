@@ -191,7 +191,7 @@ pub(super) fn client_identity_for(
         && !wants_hardware
         && let Some(previous) = req.previous_identity
     {
-        match previous.renewal_due(chrono::Utc::now().timestamp()) {
+        match previous.renewal_due(jiff::Timestamp::now().as_second()) {
             None => return (Some(previous.clone()), CertificateStatus::Kept),
             Some(detail) => on_event(EnrollEvent::CertificateRenewalDue { detail }),
         }
