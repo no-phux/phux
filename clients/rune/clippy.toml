@@ -1,0 +1,25 @@
+# Clippy does not merge configs, so this copies the root clippy.toml's keys
+# (scripts/test_style_literals.py asserts they agree) and adds the design
+# language's raw-style ratchet (docs/design-language.md).
+msrv = "1.99"
+avoid-breaking-exported-api = false
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+cognitive-complexity-threshold = 23
+
+# Views style with `Tokens` (src/ui/tokens.rs). Unconverted modules carry an
+# outer `#[allow(clippy::disallowed_methods)]` on their `mod` item, which
+# each lane deletes as it converts; owner and art modules keep theirs.
+disallowed-methods = [
+    { path = "rune::el::El::shadow", reason = "use Tokens::elevate" },
+    { path = "rune::el::El::box_shadow", reason = "use Tokens::elevate" },
+    { path = "rune::tok::TextStyle::new", reason = "use a type role: tokens.ty.* or kit.ty.*" },
+    { path = "rune_kit::kit::Kit::neutral", reason = "use Tokens::kit" },
+    { path = "rune::color::Color::alpha", reason = "use a wash role or Tokens::alpha" },
+    { path = "rune::color::Color::from_oklab", reason = "use a colour role" },
+    { path = "rune::color::Color::mix", reason = "use a colour role" },
+    { path = "rune::color::oklch", reason = "use a colour role" },
+    { path = "rune::color::oklcha", reason = "use a colour role" },
+    { path = "rune::color::hex", reason = "use a colour role" },
+]

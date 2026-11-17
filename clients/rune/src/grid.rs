@@ -28,11 +28,16 @@ use crate::theme::Selection;
 mod glyphs;
 mod missing;
 
-/// Inter, which replacing Rune's built-in fonts has to name again, and a
-/// Nerd Font, for the private-use icons no system face has.
+/// Inter, which replacing Rune's built-in fonts has to name again; a Nerd
+/// Font, for the private-use icons no system face has; and Paper Mono, the
+/// chrome's mono face for machine nouns (`tokens::MONO`) at the three
+/// weights the type roles use. The grid keeps the user's terminal font.
 pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Inter.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/PaperMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/PaperMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/PaperMono-SemiBold.ttf"),
 ];
 /// The sans and mono slots. `ui-monospace` puts the system's faces first in
 /// the mono slot, so the Nerd Font only ever fills in missing glyphs.

@@ -33,3 +33,31 @@ pub fn offscreen(
     renderer.submit(&gpu.queue, encoder);
     target.read(&gpu.device)
 }
+
+/// `rt`'s last frame as the app paints it: blended in sRGB (`App::srgb_blend`,
+/// on by default) into a non-sRGB target, so translucent washes land as
+/// the brand composited them. The runtime must have built that frame with
+/// `Runtime::set_srgb_blend(true)`.
+pub fn offscreen_as_app(
+    gpu: &rune::render::Gpu,
+    rt: &mut rune::Runtime<Desk>,
+    size: (u32, u32),
+) -> Vec<u8> {
+    let format = rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix();
+    let mut renderer = rune::render::Renderer::new(&gpu.device, format);
+    renderer.set_srgb_blend(true);
+    let target = rune::render::Offscreen::with_format(&gpu.device, size.0, size.1, format);
+    renderer.upload_images(&gpu.device, &gpu.queue, &mut rt.images);
+    renderer.prepare(
+        &gpu.device,
+        &gpu.queue,
+        &mut rt.text.atlas,
+        &rt.instances,
+        size,
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.draw(&mut encoder, &target.view, rt.clear_color());
+    target.copy(&mut encoder);
+    renderer.submit(&gpu.queue, encoder);
+    target.read(&gpu.device)
+}

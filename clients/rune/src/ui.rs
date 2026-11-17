@@ -1,42 +1,85 @@
 //! The window: a session sidebar, the terminal, and a status line.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use rune::tok;
-use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
+use rune::{Color, Cx, El, TextStyle, col, el, row};
 
 use crate::desk::Desk;
 use crate::desk::surfaces::Surface;
 use crate::features::changes;
-use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
+use crate::theme::{Marks, Selection, Theme};
 
+// The lanes adopt these as they convert; until then only tests read some.
+#[allow(dead_code, reason = "adopted by the converting lanes")]
+mod badge;
+#[allow(clippy::disallowed_methods)] // converted in the values commit
+mod controls;
+pub(crate) use controls::{
+    Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, tip,
+};
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod documents;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod galaxy;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod hive;
 mod icons;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod inbox;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod kitchen;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod machines;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod news;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod onboarding;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod overlay;
 pub(crate) use overlay::key_hint;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod pair;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod palette;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod panes;
 pub(crate) use panes::DIVIDER;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod pitch;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod pitlane;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod playground;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod popup;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod questions;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod reef;
+#[allow(dead_code, reason = "adopted by the converting lanes")]
+pub(crate) mod rows;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod settings;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod sidebar;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod spatial;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod status;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod tabs;
+#[allow(dead_code, reason = "adopted by the converting lanes")]
+#[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
+pub(crate) mod tokens;
+#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod updates;
+
+pub(crate) use tokens::Tokens;
 
 #[cfg(test)]
 mod gallery_tests;
@@ -60,10 +103,14 @@ const CARD_GAP: f32 = 8.0;
 const CARD_RADIUS: f32 = 12.0;
 /// How far a frosted surface blurs what it floats over, in points.
 const FROST: f32 = 18.0;
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
 /// A sidebar row's name.
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 pub(crate) const NAME: TextStyle = TextStyle::new(12.5, 500.0);
 
 pub(crate) struct Ink {
@@ -91,76 +138,50 @@ pub(crate) struct Ink {
     pub(crate) selection: Selection,
     /// The shadow a floating card casts on the window.
     pub(crate) shade: Color,
+    /// The tokens these fields were filled from: what a converted view
+    /// reads instead (`Ink` is deleted once every view has converted).
+    pub(crate) tokens: Rc<Tokens>,
 }
 
-/// A card's shadow: deep on a dark ground, soft on a light one.
-fn shade(ground: Color) -> Color {
-    let dark = on_fill(ground) == Color::WHITE;
-    Color::BLACK.alpha(if dark { 0.38 } else { 0.13 })
-}
-
+/// The ink for a theme, or the system appearance with none: the lane-period
+/// shim over [`Tokens`]. Equal arguments share one cached `Tokens`.
 fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
-    if let Some(theme) = theme {
-        let roles = theme.roles();
-        return Ink {
-            bg: crate::theme::color(theme.background),
-            raised: theme.raised(),
-            sidebar: theme.surface(0.045),
-            text: roles.text,
-            dim: roles.dim,
-            separator: roles.text.alpha(0.13),
-            selected: crate::theme::color(theme.accent).alpha(SELECTED_WASH),
-            current: roles.text.alpha(0.1),
-            hover: roles.text.alpha(0.07),
-            accent: roles.accent,
-            host: roles.accent,
-            on_accent: roles.on_accent,
-            danger: roles.danger,
-            edge: roles.edge,
-            marks: roles.marks,
-            selection: roles.selection,
-            shade: shade(crate::theme::color(theme.background)),
-        };
-    }
-    let t = tok::theme(dark);
-    // Neutral, so no chrome tints the terminal's own colours.
-    let (sidebar, raised, edge) = if dark {
-        (0x141517, 0x1e1f22, 0x2b2c30)
-    } else {
-        (0xf1f1f2, 0xfbfbfc, 0xdcdcdf)
-    };
-    Ink {
-        bg: t.bg,
-        raised: crate::theme::color(raised),
-        sidebar: crate::theme::color(sidebar),
-        text: t.text,
-        dim: t.text_secondary,
-        separator: t.separator,
-        selected: accent.alpha(SELECTED_WASH),
-        current: t.text.alpha(0.1),
-        hover: t.hover,
-        accent,
-        host: accent,
-        on_accent: on_fill(accent),
-        danger: Theme::system_danger(dark),
-        edge: crate::theme::color(edge),
-        marks: Theme::system_marks(dark),
-        selection: Selection::system(),
-        shade: shade(t.bg),
-    }
+    Tokens::resolve(&tokens::Inputs {
+        theme: theme.copied(),
+        ..tokens::Inputs::system(dark, accent)
+    })
+    .ink()
 }
 
+thread_local! {
+    /// Kit overlays (menus, selects, popovers, toast regions) a view built
+    /// this run, mounted above the window by [`rune_kit::root`].
+    static KIT_LAYER: RefCell<Vec<El>> = const { RefCell::new(Vec::new()) };
+}
+
+#[allow(dead_code, reason = "the kit overlays' lanes call it")]
+/// Mount `overlay` in the kit layer above the window (§4.1.4). Call it
+/// from a view that runs every frame, never from inside a `memo`, whose
+/// closure does not run when its version holds.
+pub(crate) fn kit_overlay(overlay: El) {
+    KIT_LAYER.with_borrow_mut(|layer| layer.push(overlay));
+}
+
+/// The window and phone roots: phux's own surfaces in `base`, the kit's
+/// overlays above them, the root carrying the kit's hover curves.
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
+    KIT_LAYER.with_borrow_mut(Vec::clear);
+    let base = window(desk, cx);
+    rune_kit::root(base, KIT_LAYER.with_borrow_mut(std::mem::take))
+}
+
+fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let dark = crate::theme::system_dark(cx.system_dark());
     desk.follow_appearance(dark);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
-    let p = ink(dark, cx.accent(), desk.settings.theme);
-    let p = Ink {
-        host: crate::host_color::on(desk.machines.label(), p.sidebar),
-        ..p
-    };
+    let p = Tokens::for_window(desk, cx).ink();
     // Native fields inherit a readable caret and selection in light themes too.
     cx.foreground(p.text);
     cx.help_look(tooltip(&p, dark));
@@ -235,6 +256,7 @@ const GLASS_TINT_FLOOR: f32 = 0.18;
 /// The window's ground: solid `tint`, or at `glass` above 0 the system's
 /// Liquid Glass under that tint, thinned as glass rises. The material replaces
 /// a node's own fill, so the tint is its first child.
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
     if glass <= 0.0 {
         return root.fill(tint);
@@ -246,6 +268,7 @@ fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
 
 /// A tooltip in the chrome's own colours, its chord in keycaps, on every
 /// platform: quick to follow the pointer along a row of buttons.
+#[allow(clippy::disallowed_methods)] // converted in the values commit
 fn tooltip(p: &Ink, dark: bool) -> rune::HelpLook {
     rune::HelpLook::system(dark)
         .fill(p.raised)
@@ -302,6 +325,8 @@ fn surface_view(surface: Surface, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<De
             .pointer
             .menu
             .map(|at| palette::context_menu(desk, at, p)),
+        // Kit overlays mount in the kit layer (`kit_overlay`), not here.
+        Surface::Menu(_) | Surface::Select(_) | Surface::Toasts => None,
     }
 }
 
@@ -327,230 +352,12 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
     floating(root, desk, p, band_h, cx)
 }
 
-/// A modal sheet: scrim, header with a close button, scrolling body, footer.
-pub(crate) struct Sheet {
-    pub(crate) key: &'static str,
-    pub(crate) title: &'static str,
-    pub(crate) width: f32,
-    /// Where the sheet sits when the window has room for that.
-    pub(crate) top: f32,
-    /// How dark the scrim is.
-    pub(crate) scrim: f32,
-    pub(crate) close: fn(&mut Desk),
-}
-
-impl Sheet {
-    /// `body` scrolls when the window can't hold it; the header and `foot`
-    /// always show, down to the smallest window.
-    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Ink) -> El {
-        const MARGIN: f32 = 16.0;
-        const MAX_H: f32 = 620.0;
-        let line = || rune::rule(1.0, p.separator).w_full();
-        let header = row()
-            .w_full()
-            .h(44.0)
-            .pl(18.0)
-            .pr(10.0)
-            .gap(10.0)
-            .items_center()
-            .child(text(self.title).font(LABEL_STRONG).color(p.text))
-            .child(el().grow(1.0))
-            .children(aside)
-            .child(overlay::icon_button(
-                &icons::CLOSE,
-                "Close",
-                format!("{}-close", self.key),
-                p,
-                self.close,
-            ));
-        let panel = col()
-            .key(self.key)
-            // A narrow window (the phone form) takes what it has.
-            .w_full()
-            .max_w(self.width)
-            .max_h(MAX_H)
-            .shrink()
-            .min_h(0.0)
-            .radius(12.0)
-            .clip_rounded(12.0)
-            .fill(p.raised)
-            .border(1.0, p.separator)
-            .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-            .transition(Transition::scale(0.97).combined(Transition::opacity()))
-            .child(header)
-            .child(line().key("sheet-header-rule"))
-            .child(
-                col()
-                    .w_full()
-                    .shrink()
-                    .min_h(0.0)
-                    .scroll(rune::ScrollSpec {
-                        stick_bottom: false,
-                    })
-                    .child(body),
-            )
-            .child(line().key("sheet-footer-rule"))
-            .child(el().w_full().px(14.0).py(10.0).child(foot));
-        col()
-            .key(format!("{}-scrim", self.key))
-            .cover()
-            .py(MARGIN)
-            .px(MARGIN)
-            .items_center()
-            .fill(Color::BLACK.alpha(self.scrim))
-            .transition(Transition::opacity())
-            .modal(true, self.close)
-            .label(self.title)
-            .child(el().grow(1.0).max_h(self.top - MARGIN))
-            .child(panel)
-    }
-}
-
-/// A quiet square button around an icon; `name` is what a screen reader
-/// says for it.
-pub(crate) fn icon_press(
-    glyph: &'static rune::Icon,
-    name: &'static str,
-    key: impl Into<String>,
-    p: &Ink,
-    press: impl Fn(&mut Desk) + 'static,
-) -> El {
-    pressable(key, p)
-        .size(26.0, 26.0)
-        .radius(7.0)
-        .center()
-        .label(name)
-        .on_press(press)
-        .child(
-            rune::icon(glyph, 16.0)
-                .color(p.dim)
-                .group_color(p.text)
-                .a11y_hidden(),
-        )
-        .hover_group()
-}
-
-/// Covering the whole of its parent, over what came before it.
-pub(crate) trait Cover {
-    fn cover(self) -> Self;
-}
-
-impl Cover for El {
-    fn cover(self) -> El {
-        self.absolute(0.0, 0.0).w_full().h_full()
-    }
-}
-
-/// Something to press: a wash under the pointer that deepens while held, and
-/// the pointer. Key errors name the caller, not this.
-#[track_caller]
-pub(crate) fn pressable(key: impl Into<String>, p: &Ink) -> El {
-    el().key(key)
-        .hover(p.hover)
-        .press(p.hover)
-        .cursor(rune::Cursor::Pointer)
-}
-
-/// Where you are in the chrome: a row or tab lifted a shade off its ground,
-/// lit from the top as the terminal cards are.
-pub(crate) fn lifted(el: El, p: &Ink) -> El {
-    el.fill(p.current)
-        .border_gradient(1.0, p.text.alpha(0.14), p.text.alpha(0.03))
-}
-
-/// A key as the chrome draws one, wherever it names a chord.
-pub(crate) fn keycap(key: impl Into<String>, p: &Ink) -> El {
-    const KEY: TextStyle = TextStyle::new(10.5, 600.0);
-    el().h(16.0)
-        .min_w(16.0)
-        .px(4.0)
-        .radius(4.0)
-        .center()
-        .fill(p.text.alpha(0.07))
-        .border_gradient(1.0, p.text.alpha(0.2), p.text.alpha(0.1))
-        .child(text(key).font(KEY).color(p.dim).a11y_hidden())
-}
-
-/// A tooltip for `el`: what pressing it does, and the chord that does the
-/// same from the keyboard.
-pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcut) -> El {
-    let keys = crate::keys::command(action).map_or_else(Vec::new, |command| command.keycaps());
-    el.help(words).help_keys(keys)
-}
-
-pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
-    pressable(key, p)
-        .grow(1.0)
-        .py(6.0)
-        .radius(6.0)
-        .center()
-        .border(1.0, p.separator)
-        .on_press(press)
-        .child(text(label).font(CAPTION).color(p.text))
-}
-
-/// `on_drag` for a surface floating over panes. Taking the press stops it,
-/// and the wheel with it, reaching the pane underneath, without calling the
-/// surface a button as `on_press` would.
-pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
-
 #[cfg(test)]
 mod test_support;
 
 #[cfg(test)]
-pub use test_support::{element, offscreen};
+pub use test_support::{element, offscreen, offscreen_as_app};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
-
-    #[test]
-    fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
-        let mut desk = crate::test_support::settings_window();
-        desk.settings_open = false;
-        let mut rt = rune::Runtime::new(desk, view, (900.0, 600.0), rune::Env::new(false, 1.0));
-        rt.frame(0.0);
-        assert!(rt.presented("sidebar-toggle").is_some());
-        rt.update(|d, _| d.bare = Some(crate::desk::bare::Bare::test("tui", "work")));
-        rt.frame(1.0);
-        assert!(rt.presented("sidebar-toggle").is_none(), "no title bar");
-        assert!(rt.presented("sidebar-host").is_none(), "no sidebar");
-        let stage = rt.presented("stage").expect("the pane").0;
-        assert!(stage[2] >= 900.0 - 0.5, "edge to edge: {stage:?}");
-        rt.update(|d, _| d.settings_open = true);
-        rt.frame(2.0);
-        assert!(
-            rt.presented("settings-close").is_some(),
-            "sheets still show"
-        );
-        // With nothing connected, the chord again simply leaves.
-        rt.update(|d, _| d.toggle_bare());
-        rt.frame(3.0);
-        assert!(rt.presented("sidebar-toggle").is_some());
-    }
-
-    #[test]
-    fn the_system_appearance_clears_the_bars_too() {
-        for dark in [true, false] {
-            let p = ink(dark, rune::oklch(0.6, 0.15, 250.0), None);
-            let marks = p.marks;
-            let readable = [
-                ("text", p.text),
-                ("danger", p.danger),
-                ("alert", marks.alert),
-                ("done", marks.done),
-                ("bell", marks.bell),
-                ("working", marks.working),
-                ("good", marks.good),
-            ];
-            for ground in [p.bg, p.sidebar, p.raised] {
-                assert!(contrast(p.dim, ground) >= DIM_BAR, "dim, dark {dark}");
-                for (role, ink) in readable {
-                    let got = contrast(ink, ground);
-                    assert!(got >= TEXT_BAR, "{role}, dark {dark}: {got}");
-                }
-            }
-        }
-    }
-}
+#[allow(clippy::disallowed_methods)]
+mod tests;

@@ -9,11 +9,13 @@ mod alerts;
 mod askpass;
 mod connect;
 mod creature;
+#[allow(clippy::disallowed_methods)] // unconverted: A2 asks lane A to remove this
 mod desk;
 mod diag;
 mod dock;
 mod features;
 mod galaxy;
+#[allow(clippy::disallowed_methods)] // unconverted grid fills
 mod grid;
 mod handoff;
 mod hive;
@@ -43,6 +45,7 @@ mod session_color;
 mod ssh_config;
 mod standing;
 mod system_settings;
+#[allow(clippy::disallowed_methods)] // owner path: theme adapters and catalog
 mod theme;
 mod ui;
 mod updates;
@@ -134,7 +137,7 @@ pub fn run_desktop() {
     // frame (GNOME), Rune takes its bar away and adds the caption buttons;
     // KDE, Hyprland and X11 keep theirs.
     #[cfg(target_os = "linux")]
-    let app = app.titlebar(rune::Titlebar::new(ui::TITLEBAR_H));
+    let app = app.titlebar(rune::Titlebar::new(phux_design::tokens::SPACE.titlebar_h));
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);

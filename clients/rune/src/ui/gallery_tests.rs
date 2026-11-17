@@ -1,8 +1,9 @@
-//! The chrome's gallery: the window's main surfaces with a populated
-//! sidebar, painted through Rune's real renderer in dark and light, on the
-//! desktop and the phone. `RUNE_GALLERY_SNAP=DIR` writes each as
-//! `DIR/NAME.png`; without it the frames are still built and painted, so a
-//! surface that stops drawing fails here.
+//! The chrome's gallery (§5.2): the window's main surfaces with a populated
+//! sidebar, painted through Rune's real renderer, on the desktop and the
+//! phone, over the design fixture: six themes, the accessibility modes,
+//! three locales and a page of forced states. `RUNE_GALLERY_SNAP=DIR` writes
+//! each as `DIR/NAME.png`; without it the frames are still built and
+//! painted, so a surface that stops drawing fails here.
 
 use phux_client_runtime::control::Event;
 use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor};
@@ -10,8 +11,16 @@ use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Env, Runtime};
 
 use crate::desk::Desk;
+use crate::theme::Theme;
+
+mod fixture;
+mod states;
+
+use fixture::{Locale, Look};
 
 const SCALE: f32 = 2.0;
+const DESKTOP: (f32, f32) = (1280.0, 800.0);
+const PHONE: (f32, f32) = (393.0, 852.0);
 
 fn session(id: u32, name: &str, key: u8) -> SessionDescriptor {
     SessionDescriptor {
@@ -71,13 +80,29 @@ test ui::gallery_tests::the_gallery_paints ... \x1b[32mok\x1b[0m\r\n\
 test result: \x1b[32mok\x1b[0m. 1412 passed; 0 failed; 3 ignored\r\n\r\n\
 \x1b[38;5;214m?\x1b[0m Commit these changes? \x1b[2m(y/n)\x1b[0m ";
 
-/// A window attached to a populated server: three sessions, agents in every
-/// state, the first terminal on screen with real output.
-fn window(size: (f32, f32), dark: bool, theme: Option<&str>) -> Runtime<Desk> {
+/// A window attached to a populated server: three sessions, agents in
+/// every state the wire carries, the first terminal on screen with real
+/// output, named in `locale`.
+fn window(
+    size: (f32, f32),
+    dark: bool,
+    theme: Option<&'static Theme>,
+    locale: Locale,
+) -> Runtime<Desk> {
+    window_on(size, dark, theme, locale, false)
+}
+
+fn window_on(
+    size: (f32, f32),
+    dark: bool,
+    theme: Option<&'static Theme>,
+    locale: Locale,
+    phone: bool,
+) -> Runtime<Desk> {
     let mut replica = crate::test_support::terminal::Replica::new(120, 40, 1);
     replica.feed(SCREEN.to_owned());
-    let mut desk = crate::test_support::window();
-    desk.settings.theme = theme.and_then(crate::theme::find);
+    let mut desk = crate::test_support::window().with_phone(phone);
+    desk.settings.theme = theme;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
     desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
@@ -86,18 +111,20 @@ fn window(size: (f32, f32), dark: bool, theme: Option<&str>) -> Runtime<Desk> {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
     });
+    let t = |s: &str| locale.say(s);
     let (phux, site, mobile) = (
-        session(1, "phux", 1),
-        session(2, "website", 2),
-        session(3, "phux-mobile", 3),
+        session(1, &t("phux"), 1),
+        session(2, &t("website"), 2),
+        session(3, &t("phux-mobile"), 3),
     );
     let panes = vec![
-        pane(1, &phux, "restyle sidebar", "~/workspace/phux"),
-        pane(2, &phux, "cargo test", "~/workspace/phux"),
-        pane(3, &phux, "review #2617", "~/workspace/phux"),
-        pane(4, &site, "docs build", "~/workspace/website"),
+        pane(1, &phux, &t("restyle sidebar"), "~/workspace/phux"),
+        pane(2, &phux, &t("cargo test"), "~/workspace/phux"),
+        pane(3, &phux, &t("review #2617"), "~/workspace/phux"),
+        pane(4, &site, &t("docs build"), "~/workspace/website"),
         pane(5, &site, "zsh", "~/workspace/website"),
-        pane(6, &mobile, "ios snapshots", "~/workspace/phux-mobile"),
+        pane(6, &mobile, &t("ios snapshots"), "~/workspace/phux-mobile"),
+        pane(7, &mobile, &t("android build"), "~/workspace/phux-mobile"),
     ];
     let mut topology = crate::desk::topology(vec![phux, site, mobile], panes);
     topology.resources = (topology.panes.iter())
@@ -122,6 +149,7 @@ fn window(size: (f32, f32), dark: bool, theme: Option<&str>) -> Runtime<Desk> {
             agent(3, "codex", "blocked"),
             agent(4, "claude", "done"),
             agent(6, "opencode", "working"),
+            agent(7, "gemini", "idle"),
         ] {
             d.activities.apply(&event, &[]);
         }
@@ -135,11 +163,12 @@ fn settle(rt: &mut Runtime<Desk>) {
     }
 }
 
+/// The frame as the app shows it: blended in sRGB, as every window is.
 fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name: &str) {
+    rt.set_srgb_blend(true);
     settle(rt);
     let (w, h) = ((size.0 * SCALE) as u32, (size.1 * SCALE) as u32);
-    let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
-    let pixels = crate::ui::offscreen(gpu, &mut renderer, rt, (w, h));
+    let pixels = crate::ui::offscreen_as_app(gpu, rt, (w, h));
     assert!(
         pixels.as_chunks::<4>().0.iter().any(|p| p[0] != p[1]),
         "{name} painted nothing but grey"
@@ -151,33 +180,127 @@ fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name
     }
 }
 
+/// The window, then its palette, settings and inbox over it.
+fn surfaces(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, tag: &str) {
+    settle(rt);
+    let rows = (rt.elements().into_iter())
+        .filter(|e| e.key.as_deref().is_some_and(|k| k.starts_with("pane-")))
+        .count();
+    assert!(rows >= 6, "{tag}: the sidebar lists every terminal: {rows}");
+    paint(gpu, rt, DESKTOP, &format!("window-{tag}"));
+    rt.update(|d, _| d.toggle_palette());
+    paint(gpu, rt, DESKTOP, &format!("palette-{tag}"));
+    rt.update(|d, _| {
+        d.close_palette();
+        d.settings_open = true;
+    });
+    paint(gpu, rt, DESKTOP, &format!("settings-{tag}"));
+    rt.update(|d, _| {
+        d.settings_open = false;
+        d.toggle_inbox();
+    });
+    paint(gpu, rt, DESKTOP, &format!("inbox-{tag}"));
+}
+
 #[test]
 fn the_gallery_paints() {
-    const DESKTOP: (f32, f32) = (1280.0, 800.0);
     let gpu = rune::render::Gpu::headless();
-    for (dark, theme, tag) in [
-        (true, None, "dark"),
-        (false, None, "light"),
-        (true, Some("catppuccin-mocha"), "mocha"),
-    ] {
-        let mut rt = window(DESKTOP, dark, theme);
-        settle(&mut rt);
-        let rows = (rt.elements().into_iter())
-            .filter(|e| e.key.as_deref().is_some_and(|k| k.starts_with("pane-")))
-            .count();
-        assert!(rows >= 6, "the sidebar lists every terminal: {rows}");
-        paint(&gpu, &mut rt, DESKTOP, &format!("window-{tag}"));
+    for look in Look::ALL {
+        let mut rt = window(DESKTOP, look.dark(), look.theme(), Locale::En);
+        surfaces(&gpu, &mut rt, look.tag());
+    }
+    // Rune's one built-in Catppuccin, kept so the before-and-after set
+    // still lines up.
+    let mocha = crate::theme::find("catppuccin-mocha");
+    let mut rt = window(DESKTOP, true, mocha, Locale::En);
+    surfaces(&gpu, &mut rt, "mocha");
+}
+
+#[test]
+fn the_gallery_paints_the_phone() {
+    let gpu = rune::render::Gpu::headless();
+    for look in [Look::HouseDark, Look::HouseLight] {
+        let mut rt = window_on(PHONE, look.dark(), look.theme(), Locale::En, true);
+        paint(&gpu, &mut rt, PHONE, &format!("phone-{}", look.tag()));
+    }
+}
+
+#[test]
+fn the_gallery_paints_every_mode() {
+    let gpu = rune::render::Gpu::headless();
+    for look in [Look::HouseDark, Look::HouseLight] {
+        let tag = look.tag();
+        let fresh = || window(DESKTOP, look.dark(), look.theme(), Locale::En);
+
+        let mut rt = fresh();
+        rt.set_system_increased_contrast(true);
+        paint(&gpu, &mut rt, DESKTOP, &format!("mode-contrast-more-{tag}"));
         rt.update(|d, _| d.toggle_palette());
-        paint(&gpu, &mut rt, DESKTOP, &format!("palette-{tag}"));
-        rt.update(|d, _| {
-            d.close_palette();
-            d.settings_open = true;
-        });
-        paint(&gpu, &mut rt, DESKTOP, &format!("settings-{tag}"));
-        rt.update(|d, _| {
-            d.settings_open = false;
-            d.toggle_inbox();
-        });
-        paint(&gpu, &mut rt, DESKTOP, &format!("inbox-{tag}"));
+        paint(
+            &gpu,
+            &mut rt,
+            DESKTOP,
+            &format!("mode-contrast-more-palette-{tag}"),
+        );
+
+        let mut rt = fresh();
+        rt.set_system_contrast(Some(fixture::forced_colors(look.dark())));
+        paint(&gpu, &mut rt, DESKTOP, &format!("mode-forced-colors-{tag}"));
+
+        let mut rt = fresh();
+        rt.update(|d, _| d.settings.glass = 100);
+        crate::ui::tokens::overrides::set(true, 1.0);
+        paint(
+            &gpu,
+            &mut rt,
+            DESKTOP,
+            &format!("mode-reduce-transparency-{tag}"),
+        );
+        crate::ui::tokens::overrides::set(false, 1.0);
+
+        let mut rt = fresh();
+        rt.set_system_reduced_motion(true);
+        paint(&gpu, &mut rt, DESKTOP, &format!("mode-reduce-motion-{tag}"));
+
+        crate::ui::tokens::overrides::set(false, fixture::LARGEST_TEXT);
+        let mut rt = fresh();
+        paint(&gpu, &mut rt, DESKTOP, &format!("mode-largest-text-{tag}"));
+        crate::ui::tokens::overrides::set(false, 1.0);
+    }
+}
+
+#[test]
+fn the_gallery_paints_every_locale() {
+    let gpu = rune::render::Gpu::headless();
+    for locale in [Locale::PseudoLong, Locale::Arabic] {
+        for look in [Look::HouseDark, Look::HouseLight] {
+            let mut rt = window(DESKTOP, look.dark(), look.theme(), locale);
+            paint(
+                &gpu,
+                &mut rt,
+                DESKTOP,
+                &format!("locale-{}-{}", locale.tag(), look.tag()),
+            );
+        }
+    }
+}
+
+#[test]
+fn the_gallery_paints_the_states_page() {
+    let gpu = rune::render::Gpu::headless();
+    for look in Look::ALL {
+        for (more, suffix) in [(false, ""), (true, "-contrast-more")] {
+            let mut rt = states::page(look.dark(), look.theme());
+            if more {
+                rt.set_system_increased_contrast(true);
+            }
+            paint(
+                &gpu,
+                &mut rt,
+                states::SIZE,
+                &format!("states-{}{suffix}", look.tag()),
+            );
+            states::assert_marks(&rt);
+        }
     }
 }

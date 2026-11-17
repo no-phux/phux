@@ -29,6 +29,25 @@ impl Playground {
     }
 }
 
+/// Who opened a kit menu (`rune_kit::Menu`, `context_menu`): its open
+/// state lives in `Desk`, and its keys reach the menu, not the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuOwner {
+    /// A terminal's context menu.
+    Pane,
+    /// A tab's context menu.
+    Tab,
+    /// A sidebar row's context menu.
+    Sidebar,
+}
+
+/// Which kit select (`rune_kit::Select`) is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectOwner {
+    /// Settings' terminal font.
+    Font,
+}
+
 /// Only floating surfaces belong here. In-pane find, confirmation and the
 /// onboarding stage keep their own layout and are considered below these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +63,19 @@ pub enum Surface {
     Rename,
     Palette,
     ContextMenu,
+    /// A kit menu, drawn in the kit layer.
+    Menu(MenuOwner),
+    /// A kit select's popup list, drawn in the kit layer.
+    Select(SelectOwner),
+    /// The toast region: painted, but never the keyboard's owner.
+    Toasts,
 }
 
 impl Surface {
-    pub(super) const fn modal(self) -> Modal {
-        match self {
+    /// The input owner this surface is, if any: toasts never take the
+    /// keyboard from the terminal.
+    pub(super) const fn modal(self) -> Option<Modal> {
+        Some(match self {
             Self::PhoneNavigation => Modal::PhoneNavigation,
             Self::Inbox => Modal::Inbox,
             Self::Playground(scene) => scene.modal(),
@@ -59,8 +86,9 @@ impl Surface {
             Self::Popup => Modal::Popup,
             Self::Rename => Modal::Rename,
             Self::Palette => Modal::Palette,
-            Self::ContextMenu => Modal::ContextMenu,
-        }
+            Self::ContextMenu | Self::Menu(_) | Self::Select(_) => Modal::ContextMenu,
+            Self::Toasts => return None,
+        })
     }
 }
 
@@ -105,12 +133,12 @@ impl Desk {
     }
 
     pub(super) fn foreground(&self) -> Option<Modal> {
-        let surface = self.surfaces().next_back()?;
+        let surface = self.surfaces().rev().find(|s| s.modal().is_some())?;
         // A popup asks inside its own box, above its terminal, not behind it.
         if surface == Surface::Popup && self.pending.is_some() {
             return Some(Modal::Confirm);
         }
-        Some(surface.modal())
+        surface.modal()
     }
 
     pub(super) fn close_playground(&mut self, scene: Playground) {

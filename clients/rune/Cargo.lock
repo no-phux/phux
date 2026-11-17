@@ -2660,6 +2660,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-design"
+version = "0.155.0"
+
+[[package]]
 name = "phux-dial"
 version = "0.155.0"
 dependencies = [
@@ -2716,6 +2720,7 @@ dependencies = [
  "phux-client-core",
  "phux-client-runtime",
  "phux-config-core",
+ "phux-design",
  "phux-perf",
  "phux-protocol",
  "png 0.17.16",
