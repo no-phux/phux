@@ -21,6 +21,9 @@ impl Viewer {
             _ if cfg!(target_os = "ios") => Self::Source,
             Some([]) => Self::Source,
             Some(argv) => Self::Command(argv.to_vec()),
+            // If current_exe failed, never interpret the empty fallback as
+            // permission to execute a document directory's ./tmd.
+            None if !executable.is_absolute() => Self::Source,
             None => {
                 let sibling = executable.parent().unwrap_or(Path::new(".")).join("tmd");
                 // Installed apps never select a different binary from PATH.

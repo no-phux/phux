@@ -42,6 +42,13 @@ fn mime_routing_is_exact_and_source_is_an_adapter() {
 }
 
 #[test]
+fn an_unresolved_app_path_never_selects_a_working_directory_executable() {
+    for path in ["", "phux-rune", "./phux-rune"] {
+        assert_eq!(Viewer::configured(None, Path::new(path)), Viewer::Source);
+    }
+}
+
+#[test]
 fn configured_argv_gets_only_stdin_data_and_width_not_shell_expansion() {
     let source = "# $(touch /never) `echo nope`\n";
     let output = process::render(&argv(&["/bin/cat"]), source, 72).unwrap();
