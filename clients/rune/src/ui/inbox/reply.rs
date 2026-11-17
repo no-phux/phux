@@ -42,34 +42,33 @@ fn send_reply(desk: &Desk, t: &Tokens) -> El {
     let busy = (desk.picked_index(&items))
         .and_then(|i| items.get(i))
         .is_some_and(|item| matches!(item, Item::Terminal(w) if desk.answering(&w.terminal)));
+    // Off, it takes the kit's disabled look (§1.10), never an opacity.
+    let off = busy || desk.inbox.reply.text.trim().is_empty();
+    let (fill, ink) = if off {
+        (r.layer.sidebar.paint(), r.text.faint.paint())
+    } else {
+        (r.accent.accent.paint(), r.accent.on_accent.paint())
+    };
     let mut send = pressable("inbox-send", t)
         .role("button")
         .label(if busy { "Sending answer" } else { "Send reply" })
         .size(s.touch_min, s.touch_min)
         .radius(s.touch_min / 2.0)
         .center()
-        .fill(r.accent.accent.paint())
+        .fill(fill)
         .preserve_focus_on_press(true)
         .on_press(|d: &mut Desk| d.send_picked_reply());
-    send = if busy {
-        send.child(
-            Spinner::new()
-                .size(t.icon.size.md)
-                .color(r.accent.on_accent.paint())
-                .build(&t.kit)
-                .a11y_hidden(),
-        )
-    } else {
-        send.child(
-            rune::icon(&icons::ARROW_UP, t.icon.size.md)
-                .color(r.accent.on_accent.paint())
-                .a11y_hidden(),
-        )
-    };
-    if busy || desk.inbox.reply.text.trim().is_empty() {
-        send = send.disabled(true).opacity(0.45);
+    if off {
+        send = send
+            .disabled(true)
+            .border(s.hairline, r.border.muted.paint());
     }
-    send
+    let glyph = if busy {
+        Spinner::new().size(t.icon.size.md).color(ink).build(&t.kit)
+    } else {
+        rune::icon(&icons::ARROW_UP, t.icon.size.md).color(ink)
+    };
+    send.child(glyph.a11y_hidden())
 }
 
 /// On a phone the picked question's reply stays pinned above the keyboard
