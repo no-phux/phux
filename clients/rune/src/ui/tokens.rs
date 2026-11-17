@@ -19,6 +19,7 @@ use crate::desk::Desk;
 use crate::theme::Theme;
 
 mod kit;
+pub(crate) mod phone;
 mod status;
 #[cfg(test)]
 mod tests;
