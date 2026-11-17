@@ -64,6 +64,21 @@ class DownloadTests(unittest.TestCase):
         self.publish("simulator", "0.1.99", "6", platform=["iPhoneSimulator"])
         self.assertEqual(self.latest()["url"], BASE + "scheduled/usable/")
 
+    def test_truncated_xml_manifest_and_embedded_info_keep_the_usable_build(self):
+        self.publish("usable")
+        truncated = b'<?xml version="1.0"?><plist version="1.0"><dict>'
+        for target in ("manifest", "info"):
+            with self.subTest(target=target):
+                child = self.publish("broken-" + target, "0.1.99", "9")
+                if target == "manifest":
+                    (child / "manifest.plist").write_bytes(truncated)
+                else:
+                    with zipfile.ZipFile(child / "PhuxRune.ipa", "w") as archive:
+                        archive.writestr(downloads.INFO, truncated)
+                self.assertEqual(self.latest()["url"], BASE + "scheduled/usable/")
+                # Isolate the next parser case from this malformed candidate.
+                (child / "manifest.plist").unlink()
+
     def test_external_asset_addresses_and_symlinked_files_are_not_install_candidates(self):
         self.publish("usable")
         external = self.publish("external", "0.1.99", "2")

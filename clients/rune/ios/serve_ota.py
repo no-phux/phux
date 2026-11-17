@@ -14,6 +14,7 @@ from pathlib import Path
 import plistlib
 import re
 import urllib.parse
+from xml.parsers.expat import ExpatError
 import zipfile
 
 from package_ota import BUNDLE_ID, checked_base_url
@@ -72,7 +73,7 @@ def latest_release(directory, base_url):
                 "install": "itms-services://?action=download-manifest&url="
                            + urllib.parse.quote(public + "manifest.plist", safe=""),
             }))
-        except (OSError, ValueError, KeyError, TypeError, IndexError, zipfile.BadZipFile):
+        except (OSError, ValueError, KeyError, TypeError, IndexError, ExpatError, zipfile.BadZipFile):
             # An incomplete copy must not replace the last usable download.
             continue
     return max(releases, key=lambda release: release[:2])[2] if releases else None

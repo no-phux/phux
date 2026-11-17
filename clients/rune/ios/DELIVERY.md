@@ -151,9 +151,10 @@ Old versioned installation pages, manifests and IPA URLs remain unchanged.
 
 The page reads published children on each request and disables HTML caching.
 It selects the highest numeric marketing version, then numeric build number,
-from matching Rune device IPA/manifest metadata. Missing or incomplete copies,
-wrong bundles/platforms, mismatched versions, external asset URLs and symlinked
-candidates do not replace the last usable build. This is discovery of already
+from matching Rune device IPA/manifest metadata. Missing or incomplete copies
+(including truncated XML manifests or embedded app metadata), wrong bundles/platforms,
+mismatched versions, external asset URLs and symlinked candidates do not replace
+the last usable build. This is discovery of already
 published artifacts, not a replacement for the signing, qualification and
 complete HTTPS digest checks above. Publish only approved immutable sites.
 
