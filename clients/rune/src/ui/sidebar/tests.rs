@@ -210,3 +210,28 @@ fn a_retheme_under_the_same_id_repaints_the_rows() {
     };
     assert_ne!(version(a), version(b));
 }
+
+#[test]
+fn twins_with_an_agent_still_name_their_pane() {
+    let ink = tokens(true, None);
+    let id = phux_protocol::ids::ResourceId::local(90);
+    let detail = |place: Option<&str>| {
+        super::Row {
+            id: &id,
+            session: "rune-3",
+            name: "Shopify inventory sync to Meta".to_owned(),
+            place: place.map(str::to_owned),
+            key: None,
+            agent: Some("claude"),
+            mark: crate::activity::Mark::Done,
+            selected: false,
+            host: ("mini", 0),
+            color: None,
+            state: Forced::Rest,
+        }
+        .detail(&ink)
+        .map(|(words, _)| words)
+    };
+    assert_eq!(detail(Some("@90")).as_deref(), Some("claude · done · @90"));
+    assert_eq!(detail(None).as_deref(), Some("claude · done"));
+}

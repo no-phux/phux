@@ -11,6 +11,11 @@ use rune::{Key, Runtime};
 
 use crate::desk::Desk;
 
+mod delivery;
+mod scene;
+
+use scene::Scene;
+
 const QUESTION: &str = "release-review";
 const WORDS: &str = "The arm64 build is ready. Should I run the native input checks before publishing the phone update?";
 const ANSWERS: [&str; 3] = [
@@ -19,125 +24,6 @@ const ANSWERS: [&str; 3] = [
     "Wait",
 ];
 const APPROVAL_ID: &str = "0123456789abcdef0123456789abcdef";
-
-#[derive(Clone, Copy)]
-enum Scene {
-    Question,
-    Reply,
-    Approval,
-    Empty,
-    Scrolled,
-    NativeReply,
-    Inline,
-    InlineNoChoices,
-}
-
-impl Scene {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Question => "question",
-            Self::Reply => "reply",
-            Self::Approval => "approval",
-            Self::Empty => "empty",
-            Self::Scrolled => "scrolled",
-            Self::NativeReply => "native-reply",
-            Self::Inline => "inline",
-            Self::InlineNoChoices => "inline-no-choices",
-        }
-    }
-
-    fn populate(self, desk: &mut Desk) {
-        match self {
-            Self::Empty => {}
-            Self::Approval | Self::Scrolled => {
-                question(desk, &ANSWERS);
-                desk.inbox.approvals.push(approval());
-                if matches!(self, Self::Scrolled) {
-                    for index in 1..6 {
-                        let mut approval = approval();
-                        approval.id = format!("{index:032x}");
-                        desk.inbox.approvals.push(approval);
-                    }
-                }
-            }
-            Self::Question | Self::Reply | Self::NativeReply | Self::Inline => {
-                question(desk, &ANSWERS)
-            }
-            Self::InlineNoChoices => question(desk, &[]),
-        }
-        if matches!(self, Self::Inline | Self::InlineNoChoices) {
-            desk.phone.as_mut().unwrap().keyboard = matches!(self, Self::Inline);
-            return;
-        }
-        if matches!(self, Self::NativeReply) {
-            desk.native = Some(crate::mobile::Platform::test());
-        }
-        desk.toggle_inbox();
-        desk.inbox.reply.focused = false;
-        if let Some(phone) = desk.phone.as_mut() {
-            phone.keyboard = matches!(self, Self::Reply);
-        }
-    }
-
-    fn check(self, rt: &mut Runtime<Desk>) {
-        match self {
-            Self::Reply | Self::NativeReply => {
-                assert!(rt.accessibility_action(
-                    "inbox-reply",
-                    rune::accesskit::Action::Focus,
-                    None
-                ));
-                rt.key(crate::keys::plain(Key::Text(
-                    "Please keep the existing pairing and run the checks.".into(),
-                )));
-                settle(rt);
-                assert!(rt.state.inbox.reply.text.contains("existing pairing"));
-            }
-            Self::Scrolled => {
-                let key = format!(
-                    "chip-{}-Wait",
-                    rt.state.connection.shown.as_ref().unwrap().resource
-                );
-                rt.update(|_, tx| tx.scroll_into_view(&key));
-                settle(rt);
-                let [_, y, _, h] = rt.presented(&key).unwrap().0;
-                assert!(y >= 0.0 && y + h <= rt.viewport.1);
-                assert_eq!(rt.state.inbox_items().len(), 7);
-            }
-            Self::Inline | Self::InlineNoChoices => {
-                let id = rt.state.connection.shown.as_ref().unwrap().resource.clone();
-                assert!(
-                    rt.find(&format!("ask-{id}")).is_some(),
-                    "actual pane owns the inline question"
-                );
-            }
-            Self::Question => {
-                assert!(
-                    rt.elements()
-                        .iter()
-                        .any(|e| e.text.as_deref() == Some(WORDS))
-                );
-                assert_eq!(rt.state.inbox_items().len(), 1);
-            }
-            Self::Approval => {
-                assert_eq!(rt.state.inbox_items().len(), 2);
-                assert!(
-                    rt.accessibility_json()
-                        .to_string()
-                        .contains("Signal terminal")
-                );
-            }
-            Self::Empty => {
-                assert!(rt.state.inbox_items().is_empty());
-                assert!(
-                    rt.accessibility_json()
-                        .to_string()
-                        .contains("Nothing needs you")
-                );
-            }
-        }
-    }
-}
 
 fn fixture(size: (u32, u32), phone: bool, scale: f32) -> (Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture_showing(
@@ -233,6 +119,9 @@ fn render_case(
     scene: Scene,
 ) {
     let (_, mut rt) = fixture(size, phone, scale as f32);
+    if phone && size.1 <= 420 {
+        rt.state.native = Some(crate::mobile::Platform::test());
+    }
     prepare(&mut rt, scene, light);
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
     let pixels = (size.0 * scale, size.1 * scale);
@@ -275,6 +164,12 @@ fn phone_inbox_visual_review_frames() {
                 Scene::Approval,
                 Scene::Empty,
                 Scene::Scrolled,
+                Scene::Sending,
+                Scene::Delivered,
+                Scene::Refused,
+                Scene::Unknown,
+                Scene::NewDraft,
+                Scene::OtherQuestion,
             ] {
                 render_case(&gpu, phone, size, scale, light, scene);
             }
@@ -283,6 +178,16 @@ fn phone_inbox_visual_review_frames() {
     for size in [(393, 420), (320, 280)] {
         for light in [false, true] {
             render_case(&gpu, true, size, 1, light, Scene::NativeReply);
+            for scene in [
+                Scene::Sending,
+                Scene::Delivered,
+                Scene::Refused,
+                Scene::Unknown,
+                Scene::NewDraft,
+                Scene::OtherQuestion,
+            ] {
+                render_case(&gpu, true, size, 1, light, scene);
+            }
         }
     }
     for size in [(393, 852), (320, 568)] {

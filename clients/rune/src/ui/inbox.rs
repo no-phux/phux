@@ -5,17 +5,18 @@ use crate::ui::tokens::Voice;
 use phux_client_runtime::approvals::{Approval, Decision};
 use phux_design::{State, Tone};
 use phux_protocol::ids::ResourceId;
-use rune::{Cursor, Edge, El, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{Cursor, Edge, El, TextStyle, Transition, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Card, ControlSize, Spinner};
 
 use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words};
 use super::tokens::{Paint, Tier, Tokens};
 use super::{MOD, badge, icons, lifted, pressable};
 use crate::activity::{Ask, Mark};
-use crate::desk::Desk;
+use crate::desk::{Desk, NoticeKind};
 use crate::inbox::{self, Item, Waiting};
 
 mod inline;
+mod reply;
 pub use inline::ask_card;
 
 /// What an ask says: the label role on the desktop, the body role on a
@@ -271,27 +272,9 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El 
     }
     // A phone pins the reply under the list, above the keyboard.
     if picked && !phone {
-        body = body.child(reply(desk, t));
+        body = body.child(reply::reply(desk, t));
     }
     card(body, tone, t)
-}
-
-/// The picked question's reply field.
-fn reply(desk: &Desk, t: &Tokens) -> El {
-    let r = &t.roles;
-    let phone = desk.phone.is_some();
-    let font = t.ty.body;
-    let input = text_input(&desk.inbox.reply, font)
-        .key("inbox-reply")
-        .label("Reply to question")
-        .single_line()
-        .grow(1.0)
-        .color(r.text.text.paint())
-        .placeholder("Reply…", r.text.faint.paint())
-        .on_edit(|d: &mut Desk| &mut d.inbox.reply)
-        .on_input_key(|d: &mut Desk, event, tx| d.inbox_key(event, tx))
-        .on_submit(|d: &mut Desk, tx| d.submit_picked(tx));
-    field_shell(touch_input(input, font, phone, t), t, true)
 }
 
 /// The kit card: a rule in the item's tone beside its content.
@@ -444,6 +427,8 @@ fn footer(desk: &Desk, empty: bool, t: &Tokens) -> El {
     let s = &t.space;
     let foot = row().w_full().px(s.s3).py(s.s2).gap(s.s3).items_center();
     match &desk.notice {
+        // A phone's confirmation sits in the fixed header (`title`).
+        Some(notice) if desk.phone.is_some() && notice.kind == NoticeKind::Info => el(),
         Some(notice) => foot.child(notice_words(notice, t)),
         None if desk.phone.is_some() => el(),
         // Only the hints that apply: nothing to move to or open when empty.
@@ -492,23 +477,27 @@ fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
             d.close_inbox();
             tx.blur();
         });
-    title
-        .child(row().gap(s.s2).items_center().child(heading).child(count))
-        .child(close)
-}
-
-/// On a phone the picked question's reply stays pinned above the keyboard
-/// while the questions scroll.
-fn phone_reply(desk: &Desk, items: &[Item], picked: Option<usize>, t: &Tokens) -> Option<El> {
-    desk.phone.as_ref()?;
-    let Item::Terminal(waiting) = items.get(picked?)? else {
-        return None;
-    };
-    if !waiting.ask.as_ref()?.typed() {
-        return None;
+    let mut leading = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(s.s1)
+        .child(row().gap(s.s2).items_center().child(heading).child(count));
+    // Confirmations stay in the fixed header, so they do not displace the
+    // question above a keyboard; errors wrap in the footer.
+    if let Some(notice) = &desk.notice
+        && notice.kind == NoticeKind::Info
+    {
+        leading = leading.child(
+            text(notice.text.clone())
+                .key("inbox-receipt-status")
+                .role("status")
+                .font(t.ty.caption)
+                .color(r.text.text.paint())
+                .w_full()
+                .truncate(),
+        );
     }
-    let s = &t.space;
-    Some(col().w_full().px(s.s3).py(s.s2).child(reply(desk, t)))
+    title.gap(s.s2).child(leading).child(close)
 }
 
 /// The drawer, on the trailing edge: it slides in on the drawer spring and
@@ -556,7 +545,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                 .child(list),
         )
         .child(rule("inbox-footer-rule"))
-        .children(phone_reply(desk, &items, picked, t))
+        .children(reply::phone_reply(desk, &items, picked, t))
         .child(footer(desk, items.is_empty(), t));
     let drawer = t.elevate(
         glass(

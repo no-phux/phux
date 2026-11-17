@@ -34,12 +34,14 @@ pub struct AlertInputs {
 pub struct Inbox {
     pub open: bool,
     pub reply: TextEdit,
+    /// Separates drafts even when a reopened editor contains identical text.
+    reply_epoch: u64,
     /// The row the keyboard is on, by identity: rows move as work arrives,
     /// and a draft or a decision must never slide onto another one.
     pub picked: Option<ItemKey>,
     pub approvals: Vec<Approval>,
     /// Answers on their way, to report how each ended.
-    pub answers: HashMap<u64, ResourceId>,
+    pub answers: HashMap<u64, Answer>,
     pub alerts: Alerts,
     /// What the alerts last synced from.
     pub synced: Option<AlertInputs>,
@@ -49,6 +51,32 @@ pub struct Inbox {
     pub clocks: Vec<String>,
     /// ACP agents' questions, answered over the protocol.
     pub questions: super::questions::Questions,
+}
+
+/// A receipt can retire only the untouched draft submitted for this question.
+pub struct Answer {
+    terminal: ResourceId,
+    reply_epoch: u64,
+    draft: Option<(crate::activity::Ask, TextEdit)>,
+}
+
+impl Answer {
+    fn owns_reply(&self, desk: &Desk) -> bool {
+        let Some((ask, draft)) = &self.draft else {
+            return false;
+        };
+        matches!(desk.picked_item(), Some(Item::Terminal(w))
+            if w.terminal == self.terminal && w.ask.as_ref() == Some(ask))
+            && desk.inbox.reply_epoch == self.reply_epoch
+            && &desk.inbox.reply == draft
+    }
+}
+
+impl Inbox {
+    fn clear_reply(&mut self) {
+        self.reply_epoch = self.reply_epoch.wrapping_add(1);
+        self.reply.clear();
+    }
 }
 
 impl Desk {
@@ -83,7 +111,7 @@ impl Desk {
     fn keep_pick(&mut self, items: &[Item]) {
         if self.inbox.picked.is_some() && self.picked_index(items).is_none() {
             self.inbox.picked = None;
-            self.inbox.reply.clear();
+            self.inbox.clear_reply();
         }
         if self.inbox.picked.is_none() {
             self.inbox.picked = items.first().map(Item::key);
@@ -99,13 +127,13 @@ impl Desk {
         self.inbox.open = true;
         self.inbox.picked = None;
         self.keep_pick(&self.inbox_items());
-        self.inbox.reply.clear();
+        self.inbox.clear_reply();
         self.inbox.reply.focused = true;
     }
 
     pub fn close_inbox(&mut self) {
         self.inbox.open = false;
-        self.inbox.reply.clear();
+        self.inbox.clear_reply();
         self.inbox.reply.focused = false;
     }
 
@@ -115,7 +143,7 @@ impl Desk {
             return;
         };
         if self.inbox.picked.as_ref() != Some(&key) {
-            self.inbox.reply.clear();
+            self.inbox.clear_reply();
         }
         self.inbox.picked = Some(key);
         self.inbox.reply.focused = true;
@@ -176,6 +204,20 @@ impl Desk {
         }
     }
 
+    /// The Send control never uses Return's empty-draft "open terminal" fallback.
+    pub fn send_picked_reply(&mut self) {
+        let Some(Item::Terminal(waiting)) = self.picked_item() else {
+            return;
+        };
+        let Some(ask) = waiting.ask.filter(|ask| ask.typed()) else {
+            return;
+        };
+        let draft = self.inbox.reply.text.trim().to_owned();
+        if !draft.is_empty() {
+            self.answer(&waiting.terminal, &ask.id, &draft);
+        }
+    }
+
     fn answer_suggestion(&mut self, index: usize) {
         let Some(Item::Terminal(waiting)) = self.picked_item() else {
             return;
@@ -194,15 +236,32 @@ impl Desk {
         let Some(client) = &self.connection.client else {
             return;
         };
-        if self.inbox.answers.values().any(|t| t == terminal) {
+        if self.answering(terminal) {
             return;
         }
+        let draft = match self.picked_item() {
+            Some(Item::Terminal(w))
+                if &w.terminal == terminal && self.inbox.reply.text.trim() == text =>
+            {
+                w.ask
+                    .filter(|ask| ask.id == question)
+                    .map(|ask| (ask, self.inbox.reply.clone()))
+            }
+            _ => None,
+        };
         let delivery = client.apply_answer(terminal, question, text);
-        self.inbox.answers.insert(delivery, terminal.clone());
+        self.inbox.answers.insert(
+            delivery,
+            Answer {
+                terminal: terminal.clone(),
+                reply_epoch: self.inbox.reply_epoch,
+                draft,
+            },
+        );
     }
 
     pub fn answering(&self, terminal: &ResourceId) -> bool {
-        self.inbox.answers.values().any(|t| t == terminal)
+        self.inbox.answers.values().any(|a| &a.terminal == terminal)
     }
 
     fn decide_picked(&mut self, decision: Decision) {
@@ -276,24 +335,36 @@ impl Desk {
                 outcome,
                 message,
                 ..
-            } if self.inbox.answers.remove(delivery_id).is_some() => {
-                match outcome {
-                    DeliveryOutcome::Delivered => {
-                        self.inbox.reply.clear();
-                        self.dismiss_notice();
-                    }
-                    DeliveryOutcome::Refused => {
-                        self.say(NoticeKind::Error, format!("Answer not sent: {message}"));
-                    }
-                    DeliveryOutcome::Unknown => self.say(
-                        NoticeKind::Error,
-                        "The answer may not have landed; read the pane first.",
-                    ),
-                }
-                true
-            }
+            } => self.answer_delivered(*delivery_id, *outcome, message),
             _ => false,
         }
+    }
+
+    fn answer_delivered(&mut self, delivery: u64, outcome: DeliveryOutcome, message: &str) -> bool {
+        let Some(answer) = self.inbox.answers.remove(&delivery) else {
+            return false;
+        };
+        match outcome {
+            DeliveryOutcome::Delivered => {
+                if answer.owns_reply(self) {
+                    self.inbox.clear_reply();
+                }
+                let text = if self.inbox.reply.text.is_empty() {
+                    "Answer sent."
+                } else {
+                    "Answer sent; current draft kept."
+                };
+                self.say(NoticeKind::Info, text);
+            }
+            DeliveryOutcome::Refused => {
+                self.say(NoticeKind::Error, format!("Answer not sent: {message}"));
+            }
+            DeliveryOutcome::Unknown => self.say(
+                NoticeKind::Error,
+                "The answer may not have landed; read the pane first.",
+            ),
+        }
+        true
     }
 
     fn alert_inputs(&self) -> AlertInputs {
@@ -429,6 +500,8 @@ fn decision_notice(outcome: &DecisionOutcome) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod delivery;
 
     #[test]
     fn a_decision_takes_the_platforms_exact_chord() {
