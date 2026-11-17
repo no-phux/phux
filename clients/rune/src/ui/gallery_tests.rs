@@ -180,40 +180,44 @@ fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name
     }
 }
 
-/// The window, then its palette, settings and inbox over it.
-fn surfaces(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, tag: &str) {
-    settle(rt);
+/// A surface page: its name and how the window opens it.
+type Page = (&'static str, fn(&mut Desk));
+
+/// The window, then its palette, settings and inbox over it. Each page
+/// paints from a fresh runtime: a new renderer per frame would otherwise
+/// miss the glyphs an earlier frame already uploaded to its atlas.
+fn surfaces(gpu: &rune::render::Gpu, make: impl Fn() -> Runtime<Desk>, tag: &str) {
+    let mut rt = make();
+    settle(&mut rt);
     let rows = (rt.elements().into_iter())
         .filter(|e| e.key.as_deref().is_some_and(|k| k.starts_with("pane-")))
         .count();
     assert!(rows >= 6, "{tag}: the sidebar lists every terminal: {rows}");
-    paint(gpu, rt, DESKTOP, &format!("window-{tag}"));
-    rt.update(|d, _| d.toggle_palette());
-    paint(gpu, rt, DESKTOP, &format!("palette-{tag}"));
-    rt.update(|d, _| {
-        d.close_palette();
-        d.settings_open = true;
-    });
-    paint(gpu, rt, DESKTOP, &format!("settings-{tag}"));
-    rt.update(|d, _| {
-        d.settings_open = false;
-        d.toggle_inbox();
-    });
-    paint(gpu, rt, DESKTOP, &format!("inbox-{tag}"));
+    paint(gpu, &mut rt, DESKTOP, &format!("window-{tag}"));
+    let pages: [Page; 3] = [
+        ("palette", Desk::toggle_palette),
+        ("settings", |d| d.settings_open = true),
+        ("inbox", Desk::toggle_inbox),
+    ];
+    for (page, open) in pages {
+        let mut rt = make();
+        settle(&mut rt);
+        rt.update(|d, _| open(d));
+        paint(gpu, &mut rt, DESKTOP, &format!("{page}-{tag}"));
+    }
 }
 
 #[test]
 fn the_gallery_paints() {
     let gpu = rune::render::Gpu::headless();
     for look in Look::ALL {
-        let mut rt = window(DESKTOP, look.dark(), look.theme(), Locale::En);
-        surfaces(&gpu, &mut rt, look.tag());
+        let make = || window(DESKTOP, look.dark(), look.theme(), Locale::En);
+        surfaces(&gpu, make, look.tag());
     }
     // Rune's one built-in Catppuccin, kept so the before-and-after set
     // still lines up.
     let mocha = crate::theme::find("catppuccin-mocha");
-    let mut rt = window(DESKTOP, true, mocha, Locale::En);
-    surfaces(&gpu, &mut rt, "mocha");
+    surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
 }
 
 #[test]
