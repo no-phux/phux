@@ -22,7 +22,7 @@ pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey, _ink: &
     };
     let grab = Grab::Resource(id, session);
     handle
-        .help("Open resource · drag to another session")
+        .help("Open resource · drag to another session, or onto a pane as a tab")
         .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
             d.connection.reorder.laid_out(grab, rect);

@@ -72,6 +72,16 @@ impl ControlPlane {
             .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
     }
 
+    /// Whether the connected server advertises `SLOT_TABS`, so an
+    /// arrangement write carries slot tabs instead of the server keeping its
+    /// own (`docs/organization.md#slot-tabs`).
+    #[must_use]
+    pub fn slot_tabs_supported(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::SlotTabs))
+    }
+
     /// Whether the connected server advertises `SESSION_PROJECT`, so
     /// [`Self::set_session_project`] can be sent.
     #[must_use]

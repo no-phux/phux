@@ -211,6 +211,12 @@ impl Client {
         self.inner.with(|control| control.tab_lock_supported())
     }
 
+    /// Whether the connected server keeps slot tabs a write carries.
+    #[must_use]
+    pub fn slot_tabs_supported(&self) -> bool {
+        self.inner.with(|control| control.slot_tabs_supported())
+    }
+
     /// Replace a session's arrangement with a handle-space document.
     ///
     /// # Errors

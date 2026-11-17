@@ -18,14 +18,17 @@ pub fn outbound(client: &Client) -> Vec<FrameKind> {
         .collect()
 }
 
-/// Server `server`'s hello, with the organization feature when `organized`.
+/// Server `server`'s hello, with the organization features when `organized`.
 pub fn hello(server: u8, organized: bool) -> FrameKind {
     let hello = HelloOk::new(vec![server; 16], ServerCapabilities::new());
     if !organized {
         return hello.build();
     }
     hello
-        .features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .features_ext(ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SlotTabs,
+        ]))
         .build()
 }
 
