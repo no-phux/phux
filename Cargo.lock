@@ -3204,6 +3204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-design"
+version = "0.155.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "phux-dial"
 version = "0.155.0"
 dependencies = [

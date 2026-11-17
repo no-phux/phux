@@ -1,0 +1,103 @@
+# Design language
+
+One schema, one house look, and derived themes. Every phux client (the
+desktop and phone app on Rune, the TUI, phux-web, phux-mobile and the
+website) draws its chrome from the same tokens, published by the private
+`no-phux/phux-brand` library and pinned here like any other
+[brand asset](./brand-assets.md). This page states the contract. The values
+live in the tokens; no number is restated here.
+
+## Where the tokens are
+
+`brand.config.json` maps each token export to one destination, and
+`brand.lock.json` pins the release. A token change is a brand release, synced
+with `just brand-sync`; `just brand-check` refuses a hand edit.
+
+| Export | Destination | Read by |
+| --- | --- | --- |
+| `tokens/rust/phux_tokens.rs` | `crates/phux-design/src/generated/tokens.rs` | `phux_design::tokens` |
+| `tokens/phux.tokens.json` | `crates/phux-design/tokens/phux.tokens.json` | the resolved document, for tests and tools |
+| `tokens/derive-vectors.json` | `crates/phux-design/tokens/derive-vectors.json` | `crates/phux-design/tests/vectors.rs` |
+| `tokens/themes.json` | `crates/phux-design/tokens/themes.json` | `phux_design::catalog()` |
+| `tokens/vocabulary.json` | `crates/phux-design/tokens/vocabulary.json` | status words and plurals |
+| `tokens/css/phux-tokens.css` | `clients/phux-web/assets/phux-tokens.css` | phux-web |
+| `tokens/ios/AccentColor.colorset/Contents.json` | `clients/rune/ios/Assets/AccentColor.colorset/Contents.json` | the Rune iOS shell |
+
+The JSON destinations are marked `linguist-generated` in `.gitattributes`,
+and the code exports carry an `@generated` header.
+
+## The house look and derived themes
+
+The house look is authored in phux-brand and must pass `verify` with no
+errors in both modes, as must its increased-contrast and reader variants.
+With no theme picked, a client draws the house look in the system
+appearance, and the house terminal palette ships as the catalog theme `phux`
+(`phux-light`).
+
+A theme the person picks is *derived*: `phux_design::derive` turns its
+terminal palette (background, foreground, the 16 ANSI colours, an optional
+accent and selection) into every role. The solver keeps the ground, steps
+the layers toward the ink, and then moves each word-carrying ink toward
+white or black only as far as it must to read on every surface it can land
+on, washes included. `verify` then reports what still falls short. A derived
+theme with warnings still ships, because the person chose it.
+
+The solver exists once per language and every port matches the brand's
+golden vectors exactly: colours as `#RRGGBBAA` strings, contrast within
+1e-12, `verify` lists check for check. Luminance goes through the shipped
+table, never `pow`, and arithmetic is IEEE-754 binary64 with no fused
+multiply-add. A port that drifts fails its vectors test.
+
+## Roles
+
+Clients name roles, never colours. The groups:
+
+- `layer`: `ground`, `sidebar`, `raised`, `overlay` (opaque, back to front)
+  and the one `scrim`.
+- `text`: `text`, `dim`, `faint`, `inverse`. Text is never dimmed with
+  opacity, and `faint` never sits on a wash.
+- `border`: translucent `muted`, `base`, `strong`; opaque `control` (field
+  and toggle outlines) and `focus` (the keyboard ring).
+- `wash`: `hover`, `press` (which replaces hover), `current`, `selected`.
+- `accent`: the one primary fill per view, its ink, and accent as text.
+- `status`: the seven tones, each with a `_wash`, `_edge` and `_glow`
+  companion whose alpha is in the colour.
+- `match`, `diff`, `syntax`: search hits, diffs and code, which never borrow
+  a status tone.
+- `selection`, and `flat`: each translucent role composited over each layer,
+  for renderers that cannot blend.
+
+Colour means state or identity, nothing else: accent marks focus and the
+primary action, tones mark agent state, host and session colours mark
+identity.
+
+## Status
+
+Status is colour, word and mark together, so it reads in monochrome too.
+`phux_design::tone_of` is the one mapping from pane facts (agent state,
+attention, exit code, transport, crash, visited) to a ladder state. The
+ladder, its marks, ASCII fallbacks and ranks are `tokens::STATUS`; the words
+and ICU plurals are `tokens::VOCABULARY` (`phux_design::word`,
+`phux_design::plural`). The canonical word for an agent waiting on you is
+"needs you". GUI clients draw the marks as vector icons; the TUI and the CLI
+use the Unicode glyphs, or the ASCII column for the whole ladder in a CJK or
+non-UTF-8 locale.
+
+## Everything else
+
+Type (seven roles per form factor), radius, space, icon sizes, layout,
+haptics, elevation (tier stacks of at most four shadow layers, glow the only
+coloured one), motion (spring pairs, curves and loops) and materials (glass
+and metal) are token groups too. Off-scale values are bugs. Each platform
+has a raw-style-literal check whose baseline only shrinks.
+
+Accessibility modes are part of the schema: increased contrast (a solved
+variant with higher floors), forced colours, reduce transparency, reduce
+motion, dynamic type, localisation and right-to-left layout, flash safety
+and touch targets.
+
+## Changing the design
+
+Change the tokens in phux-brand, review its preview, release, then sync each
+consumer. Never edit a generated file here. A role a client needs and the
+schema lacks is a schema change in phux-brand, not a local colour.

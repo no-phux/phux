@@ -1,0 +1,20 @@
+[package]
+name = "phux-design"
+description = "The phux design language: phux-brand's tokens, the one theme-to-roles solver, verify, the status mapping and the theme catalog."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# No dependencies, so the desktop, the browser (wasm32) and the TUI share it
+# without growing their graphs. The catalog is read by a small hand parser.
+[dependencies]
+
+[dev-dependencies]
+serde_json.workspace = true

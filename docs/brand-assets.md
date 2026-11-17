@@ -21,6 +21,8 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
+Design tokens arrive the same way; see [Design language](./design-language.md).
+
 ## Wordmark surfaces
 
 Brand release **1.5.0** supplies the original PHUX Grid wordmark. It is artwork,

@@ -69,6 +69,7 @@ Cargo manifests define the actual edges.
 | `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty by default |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
+| `phux-design` | [design tokens](./design-language.md), solver |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
 | `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and the branch's pull request; behind the server's `CHECKOUT` methods |
 | `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
@@ -217,7 +218,7 @@ ownership recommendation. No keeper bootload service exists today.
 | input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
 | the wire | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
-| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
+| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs`, `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
 | config | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen` |
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-terminal/src/agent_detect/` |
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |

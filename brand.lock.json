@@ -41,14 +41,42 @@
       "destination": "clients/rune/assets/brand/fox/still.png",
       "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
     },
+    "tokens/css/phux-tokens.css": {
+      "destination": "clients/phux-web/assets/phux-tokens.css",
+      "sha256": "ed2a32faea5811d074b6ae25c054c5e91e0b0891cb043bd6ea7d968964746fbb"
+    },
+    "tokens/derive-vectors.json": {
+      "destination": "crates/phux-design/tokens/derive-vectors.json",
+      "sha256": "9e02f317f4ce4d16e9da11220837d6a0f4fc6b29f06393406b404ecba7503044"
+    },
+    "tokens/ios/AccentColor.colorset/Contents.json": {
+      "destination": "clients/rune/ios/Assets/AccentColor.colorset/Contents.json",
+      "sha256": "f30c65d08246111295503c0c31842627c51f35e8bd6951a81d08e1d0553d0156"
+    },
+    "tokens/phux.tokens.json": {
+      "destination": "crates/phux-design/tokens/phux.tokens.json",
+      "sha256": "9edb93077cd5c763284b7efd3126188d03953f5b2325db9877fe39e8d7529587"
+    },
+    "tokens/rust/phux_tokens.rs": {
+      "destination": "crates/phux-design/src/generated/tokens.rs",
+      "sha256": "29968dc39158007780594eb4f24a7e5017ed656b068039bb0efc345c8dce2954"
+    },
+    "tokens/themes.json": {
+      "destination": "crates/phux-design/tokens/themes.json",
+      "sha256": "ccaf7cc773caeb5ba89b3a18140dbc46109aed0ea57b1d138655943c421ac51c"
+    },
+    "tokens/vocabulary.json": {
+      "destination": "crates/phux-design/tokens/vocabulary.json",
+      "sha256": "9834329807ad96296861b02157f414610b4a8cf65c78ae7b39201d114d8b5079"
+    },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
-      "sha256": "7c1b9f2253ce695d65748b10ea2b2a0cf9a22c45f0d2d2d45001dc289a603e1d"
+      "sha256": "c8b49c7cfe3c0e1fb7fc57e540b231880984f80844340a8b8af3e4b1e800419b"
     }
   },
   "schema": 1,
-  "sha256": "7f2b7cf8d031e3852de4603c625524bb3f875f9569eea81d37f498cd090ba098",
-  "source_revision": "9b3a5b4233f846cbfc9b1942b186ce2273f5e6e4",
-  "url": "https://phux.sh/brand/releases/1.6.0/phux-brand.zip",
-  "version": "1.6.0"
+  "sha256": "e82668ca59542ba3d4afd0cbcd3a5fa72f4e279a956bd8672339281addef02f9",
+  "source_revision": "2beae1fadad94eab91247b19a775890f1016ce92",
+  "url": "https://phux.sh/brand/releases/1.7.0/phux-brand.zip",
+  "version": "1.7.0"
 }

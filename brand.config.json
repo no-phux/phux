@@ -12,6 +12,13 @@
     "playground/fox/idle.png": "clients/rune/assets/brand/fox/idle.png",
     "playground/fox/celebrate.png": "clients/rune/assets/brand/fox/celebrate.png",
     "playground/fox/still.png": "clients/rune/assets/brand/fox/still.png",
-    "playground/fox/atlas.json": "clients/rune/assets/brand/fox/atlas.json"
+    "playground/fox/atlas.json": "clients/rune/assets/brand/fox/atlas.json",
+    "tokens/rust/phux_tokens.rs": "crates/phux-design/src/generated/tokens.rs",
+    "tokens/phux.tokens.json": "crates/phux-design/tokens/phux.tokens.json",
+    "tokens/derive-vectors.json": "crates/phux-design/tokens/derive-vectors.json",
+    "tokens/themes.json": "crates/phux-design/tokens/themes.json",
+    "tokens/vocabulary.json": "crates/phux-design/tokens/vocabulary.json",
+    "tokens/css/phux-tokens.css": "clients/phux-web/assets/phux-tokens.css",
+    "tokens/ios/AccentColor.colorset/Contents.json": "clients/rune/ios/Assets/AccentColor.colorset/Contents.json"
   }
 }
