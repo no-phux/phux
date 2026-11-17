@@ -63,6 +63,7 @@ impl Desk {
         client.with_control(|control| control.release_terminal(id));
         document.subscription = Subscription::Refused;
         document.invalidate_surface();
+        document.viewer = None;
         document.seq = None;
         let reason = match result {
             CommandResult::Error { message, .. } => message,
@@ -81,6 +82,7 @@ impl Desk {
         };
         document.subscription = Subscription::Unrequested;
         document.invalidate_surface();
+        document.viewer = None;
         document.seq = None;
         document.body = Body::Pending;
         true

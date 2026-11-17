@@ -29,7 +29,7 @@ fn json_is_pretty_printed_and_invalid_json_says_so() {
 }
 
 #[test]
-fn text_and_structured_suffixes_are_source_never_rendered() {
+fn text_decoding_preserves_source_for_native_viewers() {
     for content_type in [
         "text/markdown",
         "text/html",
@@ -42,6 +42,117 @@ fn text_and_structured_suffixes_are_source_never_rendered() {
     }
     let (body, _) = typed("text/plain", b"\xff\xfe");
     assert!(matches!(body, Body::Invalid(error) if error.starts_with("Invalid UTF-8")));
+}
+
+#[test]
+fn markdown_wire_publications_render_in_the_native_pane_and_copy_what_is_shown() {
+    let (client, mut rt) = fixture(
+        &[record(1, ResourceKind::Document)],
+        &doc(LayoutNode::Leaf(id(1))),
+    );
+    rt.state.file.markdown_viewer = Some(vec!["/usr/bin/tr".into(), "a-z".into(), "A-Z".into()]);
+    let payload =
+        phux_protocol::wire::frame::typed_document::encode_bootstrap("text/markdown", b"# hello");
+    for frame in bootstrap_frames(
+        &id(1),
+        [1, 1],
+        BootstrapStreamProfile::DocumentTypedV1,
+        [0, 0],
+        &payload,
+    ) {
+        client.feed(frame).unwrap();
+    }
+    let started = Instant::now();
+    loop {
+        step(&mut rt);
+        let viewer = rt.state.connection.resources.entries[&id(1)]
+            .viewer
+            .as_ref()
+            .unwrap();
+        if viewer.text("# hello") == "# HELLO" {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let clipboard = rune::clipboard::memory();
+    rt.use_clipboard(&clipboard);
+    rt.update(|d, tx| d.shortcut(crate::keys::Shortcut::SelectAll, tx));
+    rt.frame(1.0);
+    rt.update(|d, tx| d.shortcut(crate::keys::Shortcut::Copy, tx));
+    assert_eq!(
+        clipboard.text().map(|s| s.to_string()),
+        Some("# HELLO".into())
+    );
+    let pane_before = crate::ui::element(&rt, "document-@1").rect;
+    let button = crate::ui::element(&rt, "document-source-@1").rect;
+    rt.pointer_down(button[0] + 5.0, button[1] + 5.0);
+    rt.pointer_up(button[0] + 5.0, button[1] + 5.0);
+    step(&mut rt);
+    let viewer = rt.state.connection.resources.entries[&id(1)]
+        .viewer
+        .as_ref()
+        .unwrap();
+    assert!(viewer.source);
+    assert_eq!(viewer.text("# hello"), "# hello");
+    assert_eq!(crate::ui::element(&rt, "document-@1").rect, pane_before);
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: id(1),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: b"# newer".to_vec().into(),
+        })
+        .unwrap();
+    step(&mut rt);
+    let document = &rt.state.connection.resources.entries[&id(1)];
+    assert_eq!(text(&document.body), "# newer");
+    assert!(document.viewer.as_ref().unwrap().source);
+    assert!(
+        !outbound(&client)
+            .iter()
+            .any(|frame| matches!(frame, FrameKind::ResizeTerminal { .. }))
+    );
+}
+
+#[test]
+fn only_markdown_gets_a_viewer_and_source_choice_survives_new_publications() {
+    let mut d = Document::new(record(1, ResourceKind::Document));
+    let mut decodes = surface::Decodes::default();
+    assert!(d.publish(
+        &publication(1, "Text/Markdown; charset=utf-8", b"# hi".to_vec()),
+        None,
+        &mut decodes
+    ));
+    d.viewer.as_mut().expect("Markdown viewer").toggle();
+    assert!(d.publish(
+        &publication(2, "text/markdown", b"# newer".to_vec()),
+        None,
+        &mut decodes
+    ));
+    assert!(d.viewer.as_ref().unwrap().source);
+    assert!(!d.publish(
+        &publication(1, "text/plain", b"stale".to_vec()),
+        None,
+        &mut decodes
+    ));
+    assert!(
+        d.viewer.is_some(),
+        "stale publications don't replace a viewer"
+    );
+    assert!(d.publish(
+        &publication(3, "text/html", b"<b>source</b>".to_vec()),
+        None,
+        &mut decodes
+    ));
+    assert!(d.viewer.is_none(), "HTML never executes or renders");
+    assert!(d.publish(
+        &publication(4, "text/markdown", b"\xff".to_vec()),
+        None,
+        &mut decodes
+    ));
+    assert!(d.viewer.is_none(), "invalid UTF-8 stays an error");
 }
 
 #[test]

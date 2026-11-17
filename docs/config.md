@@ -285,6 +285,31 @@ recent-first = true     # list the session you used last first
 **Copy Settings as TOML** in Rune's command palette puts your current
 choices on the clipboard as this table. Rune reads the file at launch.
 
+### Markdown viewer
+
+Desktop Markdown documents use the bundled [tmd](https://github.com/jtnk/tmd)
+renderer by default. **Source** switches to the original Markdown;
+**Rendered** switches back. Other document types keep their native viewers.
+To replace the renderer, set an argv (not a shell command):
+
+```toml
+[rune]
+markdown-viewer = ["/absolute/path/to/renderer", "--width", "{width}"]
+# markdown-viewer = []  # source only, no renderer process
+```
+
+The renderer receives UTF-8 Markdown on stdin and must write plain UTF-8
+text to stdout, then exit successfully. Only `{width}` in arguments expands
+(10–100 columns, following the pane); document text is never substituted.
+It runs locally, including for documents published by remote hosts, on at
+most two workers per window. A three-second deadline, 2 MiB output limit
+and visible source fallback bound failures. The command is trusted local
+configuration, not a sandbox; choose a renderer that never executes document
+code or fetches assets automatically. The built-in adapter uses `tmd --print`
+with images and pixel headings disabled: tables and text layout, not tmd's
+interactive terminal UI, colours, clickable links or inline images.
+HTML remains source; the iOS default remains source too.
+
 `quick-terminal` names a global chord that drops a terminal over whatever
 app is in front, on the current Space, without switching to Rune's window.
 The same chord, or clicking away, hides it. It shows a session of its own

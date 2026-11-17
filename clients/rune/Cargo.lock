@@ -2729,6 +2729,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "skrifa",
+ "tempfile",
  "tiny-skia",
  "tokio",
  "url",

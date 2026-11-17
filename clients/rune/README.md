@@ -307,6 +307,11 @@ each line; the window asks first (Return pastes, Esc cancels).
 
 ## Read-only mirrors
 
+Markdown documents render with bundled [tmd](https://github.com/jtnk/tmd),
+with a source switch and a [replaceable renderer](../../docs/config.md#markdown-viewer).
+The first adapter uses print mode in the native document pane, not a second
+terminal or browser runtime.
+
 The palette opens AccessibilityTree and PixelSurface resources beside
 terminals, and can start a page, tree or surface producer.
 [MIRRORS.md](./MIRRORS.md) covers live and read-only mirrors and starting a
