@@ -9,7 +9,7 @@ use rune::{Color, Cx, El, TextStyle, col, el, row};
 use crate::desk::Desk;
 use crate::desk::surfaces::Surface;
 use crate::features::changes;
-use crate::theme::{Marks, Selection, Theme};
+use crate::theme::{Marks, Selection};
 
 // The lanes adopt these as they convert; until then only tests read some.
 #[allow(dead_code, reason = "adopted by the converting lanes")]
@@ -45,7 +45,6 @@ mod palette;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod panes;
 pub(crate) use panes::DIVIDER;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
@@ -66,7 +65,6 @@ pub(crate) mod rows;
 mod settings;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod sidebar;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod spatial;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod status;
@@ -144,8 +142,10 @@ pub(crate) struct Ink {
 /// The ink for a theme, or the system appearance with none: the lane-period
 /// shim over [`Tokens`]. Equal arguments share one cached `Tokens`.
 /// The system accent no longer colours the chrome: the house look has its
-/// own, and a theme names one.
-fn ink(dark: bool, _accent: Color, theme: Option<&Theme>) -> Ink {
+/// own, and a theme names one. Only tests build one this way now: views
+/// take their tokens' `ink()`.
+#[cfg(test)]
+fn ink(dark: bool, _accent: Color, theme: Option<&crate::theme::Theme>) -> Ink {
     Tokens::resolve(&tokens::Inputs {
         theme: theme.copied(),
         ..tokens::Inputs::system(dark)

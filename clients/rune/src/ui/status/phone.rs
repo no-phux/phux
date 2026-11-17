@@ -4,13 +4,28 @@
 
 use rune::El;
 
-use super::super::phone::TOP_BAR;
+use phux_design::tokens::SPACE;
+
+use super::super::phone::top_bar_height;
 use super::{Ink, TITLEBAR_H, action, server_behind};
 use crate::desk::Desk;
 use crate::desk::link::Standing;
 
 /// A held confirmation on a phone, with the gap under it.
-const CONFIRMATION: f32 = 68.0;
+fn confirmation() -> f32 {
+    SPACE.s16 + SPACE.s1
+}
+
+/// A desktop banner's top: under the title bar, and under a held
+/// confirmation's bar when there is one.
+fn desktop_top(held: bool) -> f32 {
+    let top = TITLEBAR_H + SPACE.s1 + SPACE.s0_5;
+    if held {
+        top + SPACE.s12 + SPACE.s1
+    } else {
+        top
+    }
+}
 
 /// The phone app's title and detail for `standing`, where they differ from
 /// a desktop's: its computer by name, nothing to run in a shell.
@@ -56,7 +71,7 @@ pub(super) fn pair_again(key: &'static str, p: &Ink) -> El {
 pub(super) fn banner_top(desk: &Desk) -> f32 {
     let held = desk.pending.is_some();
     if desk.phone.is_none() {
-        return if held { 96.0 } else { 44.0 };
+        return desktop_top(held);
     }
     // UIKit keeps the native surface inside the safe area; a desktop's
     // preview of the phone starts under its own title bar.
@@ -65,5 +80,5 @@ pub(super) fn banner_top(desk: &Desk) -> f32 {
     } else {
         TITLEBAR_H
     };
-    inset + TOP_BAR + 4.0 + if held { CONFIRMATION } else { 0.0 }
+    inset + top_bar_height() + SPACE.s1 + if held { confirmation() } else { 0.0 }
 }
