@@ -94,7 +94,6 @@ fn the_histogram_counts_only_what_asks_for_you() {
 
 /// A window with one session of four terminals in different states.
 fn listed(dark: bool) -> rune::Runtime<Desk> {
-    use phux_client_runtime::control::Event;
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     let mut rt = rune::Runtime::new(
@@ -139,29 +138,12 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);
-    topology.resources = (topology.panes.iter())
-        .map(|p| phux_client_runtime::control::ResourceDescriptor {
-            id: p.terminal_id.clone(),
-            kind: phux_protocol::ids::ResourceKind::Terminal,
-            session_id: p.session_id,
-            parent: None,
-            title: p.title.clone(),
-            cells: Some((120, 40)),
-        })
-        .collect();
+    crate::test_support::server::terminal_resources(&mut topology);
     rt.update(move |d, _| {
         d.connection.topology = Some(topology);
         for (id, state) in [(1, "working"), (2, "blocked"), (3, "done"), (4, "idle")] {
-            d.activities.apply(
-                &Event::AgentMetadata {
-                    terminal_id: ResourceId::local(id),
-                    value: Some(
-                        format!(r#"{{"name":"claude","kind":"claude","state":"{state}"}}"#)
-                            .into_bytes(),
-                    ),
-                },
-                &[],
-            );
+            let event = crate::test_support::server::agent(id, "claude", state);
+            d.activities.apply(&event, &[]);
         }
     });
     for t in [0.0, 1.0] {

@@ -5,12 +5,10 @@
 //! each as `DIR/NAME.png`; without it the frames are still built and
 //! painted, so a surface that stops drawing fails here.
 
-use phux_client_runtime::control::Event;
-use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor};
-use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Env, Runtime};
 
 use crate::desk::Desk;
+use crate::test_support::server::{self, agent, pane, session, settle};
 use crate::theme::Theme;
 
 mod fixture;
@@ -21,53 +19,6 @@ use fixture::{Locale, Look};
 const SCALE: f32 = 2.0;
 const DESKTOP: (f32, f32) = (1280.0, 800.0);
 const PHONE: (f32, f32) = (393.0, 852.0);
-
-fn session(id: u32, name: &str, key: u8) -> SessionDescriptor {
-    SessionDescriptor {
-        id,
-        name: name.to_owned(),
-        attached_client_count: 1,
-        keep_empty: true,
-        created_at_unix_secs: 0,
-        key: SessionKey::new([key; 16]),
-        touched: Some(u64::from(100 - id)),
-        lifetime: None,
-        revision: None,
-        members: 0,
-        arrangement: None,
-        awaiting_organization: false,
-        project: None,
-        project_link: None,
-    }
-}
-
-fn pane(id: u32, session: &SessionDescriptor, title: &str, cwd: &str) -> PaneDescriptor {
-    PaneDescriptor {
-        terminal_id: ResourceId::local(id),
-        session_id: session.id,
-        session_name: session.name.clone(),
-        cols: 120,
-        rows: 40,
-        title: Some(title.to_owned()),
-        cwd: Some(cwd.to_owned()),
-        is_focused: id == 1,
-        key: None,
-        revision: None,
-        name: Some(title.to_owned()),
-        activation: None,
-        exec: None,
-        foreground: None,
-    }
-}
-
-fn agent(id: u32, kind: &str, state: &str) -> Event {
-    Event::AgentMetadata {
-        terminal_id: ResourceId::local(id),
-        value: Some(
-            format!(r#"{{"name":"{kind}","kind":"{kind}","state":"{state}"}}"#).into_bytes(),
-        ),
-    }
-}
 
 const SCREEN: &str = "\x1b[2J\x1b[H\x1b[1;38;5;208m✻\x1b[0m Welcome to \x1b[1mClaude Code\x1b[0m\r\n\r\n\
 \x1b[2m> \x1b[0mrestyle the sidebar on rune-kit\r\n\r\n\
@@ -113,30 +64,21 @@ fn window_on(
     });
     let t = |s: &str| locale.say(s);
     let (phux, site, mobile) = (
-        session(1, &t("phux"), 1),
-        session(2, &t("website"), 2),
-        session(3, &t("phux-mobile"), 3),
+        session(1, t("phux"), 1),
+        session(2, t("website"), 2),
+        session(3, t("phux-mobile"), 3),
     );
     let panes = vec![
-        pane(1, &phux, &t("restyle sidebar"), "~/workspace/phux"),
-        pane(2, &phux, &t("cargo test"), "~/workspace/phux"),
-        pane(3, &phux, &t("review #2617"), "~/workspace/phux"),
-        pane(4, &site, &t("docs build"), "~/workspace/website"),
-        pane(5, &site, "zsh", "~/workspace/website"),
-        pane(6, &mobile, &t("ios snapshots"), "~/workspace/phux-mobile"),
-        pane(7, &mobile, &t("android build"), "~/workspace/phux-mobile"),
+        pane(1, &phux, t("restyle sidebar"), Some("~/workspace/phux")),
+        pane(2, &phux, t("cargo test"), Some("~/workspace/phux")),
+        pane(3, &phux, t("review #2617"), Some("~/workspace/phux")),
+        pane(4, &site, t("docs build"), Some("~/workspace/website")),
+        pane(5, &site, "zsh", Some("~/workspace/website")),
+        pane(6, &mobile, t("ios snapshots"), Some("~/workspace/phux-mobile")),
+        pane(7, &mobile, t("android build"), Some("~/workspace/phux-mobile")),
     ];
     let mut topology = crate::desk::topology(vec![phux, site, mobile], panes);
-    topology.resources = (topology.panes.iter())
-        .map(|p| phux_client_runtime::control::ResourceDescriptor {
-            id: p.terminal_id.clone(),
-            kind: phux_protocol::ids::ResourceKind::Terminal,
-            session_id: p.session_id,
-            parent: None,
-            title: p.title.clone(),
-            cells: Some((120, 40)),
-        })
-        .collect();
+    server::terminal_resources(&mut topology);
     let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, SCALE));
     rt.on_key = Some(Desk::key);
     // The embedded client reports its own one-terminal graph on the first
@@ -157,28 +99,9 @@ fn window_on(
     rt
 }
 
-fn settle(rt: &mut Runtime<Desk>) {
-    for t in [0.0, 0.5, 1.0, 2.0, 3.0] {
-        rt.frame(t);
-    }
-}
-
-/// The frame as the app shows it: blended in sRGB, as every window is.
+/// The frame as the app shows it, under `RUNE_GALLERY_SNAP`.
 fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name: &str) -> Vec<u8> {
-    rt.set_srgb_blend(true);
-    settle(rt);
-    let (w, h) = ((size.0 * SCALE) as u32, (size.1 * SCALE) as u32);
-    let pixels = crate::ui::offscreen_as_app(gpu, rt, (w, h));
-    assert!(
-        pixels.as_chunks::<4>().0.iter().any(|p| p[0] != p[1]),
-        "{name} painted nothing but grey"
-    );
-    if let Some(dir) = std::env::var_os("RUNE_GALLERY_SNAP") {
-        let dir = std::path::Path::new(&dir);
-        std::fs::create_dir_all(dir).unwrap();
-        rune::render::write_png(&dir.join(format!("{name}.png")), w, h, &pixels).unwrap();
-    }
-    pixels
+    server::paint(gpu, rt, size, SCALE, "RUNE_GALLERY_SNAP", name)
 }
 
 /// A surface page: its name and how the window opens it.

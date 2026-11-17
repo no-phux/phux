@@ -7,11 +7,12 @@
 //! fails here.
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_runtime::control::{Event, PaneDescriptor, SessionDescriptor};
+use phux_client_runtime::control::Event;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Env, Runtime};
 
 use crate::desk::{Desk, Pending, Tab};
+use crate::test_support::server::{self, agent, pane, session};
 
 /// The pixel scale every page paints at.
 fn scale() -> f32 {
@@ -49,57 +50,10 @@ impl Words {
     }
 }
 
-fn session(id: u32, name: String) -> SessionDescriptor {
-    SessionDescriptor {
-        id,
-        name,
-        attached_client_count: 1,
-        keep_empty: true,
-        created_at_unix_secs: 0,
-        key: SessionKey::new([u8::try_from(id).unwrap_or(1); 16]),
-        touched: Some(u64::from(100 - id)),
-        lifetime: None,
-        revision: None,
-        members: 0,
-        arrangement: None,
-        awaiting_organization: false,
-        project: None,
-        project_link: None,
-    }
-}
-
-fn pane(id: u32, session: &SessionDescriptor, title: String) -> PaneDescriptor {
-    PaneDescriptor {
-        terminal_id: ResourceId::local(id),
-        session_id: session.id,
-        session_name: session.name.clone(),
-        cols: 120,
-        rows: 40,
-        title: Some(title.clone()),
-        cwd: Some("~/workspace/phux".to_owned()),
-        is_focused: id == 1,
-        key: None,
-        revision: None,
-        name: Some(title),
-        activation: None,
-        exec: None,
-        foreground: None,
-    }
-}
-
-fn agent(id: u32, kind: &str, state: &str) -> Event {
-    Event::AgentMetadata {
-        terminal_id: ResourceId::local(id),
-        value: Some(
-            format!(r#"{{"name":"{kind}","kind":"{kind}","state":"{state}"}}"#).into_bytes(),
-        ),
-    }
-}
-
 /// The fixture's sessions, terminals and tabs, named in `words`.
 fn named(words: Words) -> (phux_client_runtime::control::Topology, Vec<Tab>) {
     let t = |s: &str| words.say(s);
-    let (work, site) = (session(1, t("phux")), session(2, t("website")));
+    let (work, site) = (session(1, t("phux"), 1), session(2, t("website"), 2));
     let names = [
         "restyle sidebar",
         "review",
@@ -114,20 +68,11 @@ fn named(words: Words) -> (phux_client_runtime::control::Topology, Vec<Tab>) {
         .zip(names)
         .map(|(id, name)| {
             let home = if id <= 5 { &work } else { &site };
-            pane(id, home, t(name))
+            pane(id, home, t(name), None)
         })
         .collect();
     let mut topology = crate::desk::topology(vec![work, site], panes);
-    topology.resources = (topology.panes.iter())
-        .map(|p| phux_client_runtime::control::ResourceDescriptor {
-            id: p.terminal_id.clone(),
-            kind: phux_protocol::ids::ResourceKind::Terminal,
-            session_id: p.session_id,
-            parent: None,
-            title: p.title.clone(),
-            cells: Some((120, 40)),
-        })
-        .collect();
+    server::terminal_resources(&mut topology);
     let tab = |id: u8, name: &str, resources: &[u32], active: bool, locked: bool| Tab {
         id: [id; 16],
         name: t(name),
@@ -211,26 +156,7 @@ fn finish(rt: &mut Runtime<Desk>) {
 }
 
 fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, name: &str) {
-    rt.set_srgb_blend(true);
-    for t in [0.0, 0.5, 1.0, 2.0, 3.0] {
-        rt.frame(t);
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a fixed size"
-    )]
-    let (w, h) = ((SIZE.0 * scale()) as u32, (SIZE.1 * scale()) as u32);
-    let pixels = crate::ui::offscreen_as_app(gpu, rt, (w, h));
-    assert!(
-        pixels.as_chunks::<4>().0.iter().any(|p| p[0] != p[1]),
-        "{name} painted nothing but grey"
-    );
-    if let Some(dir) = std::env::var_os("RUNE_GALLERY_SNAP") {
-        let dir = std::path::Path::new(&dir);
-        std::fs::create_dir_all(dir).unwrap();
-        rune::render::write_png(&dir.join(format!("{name}.png")), w, h, &pixels).unwrap();
-    }
+    server::paint(gpu, rt, SIZE, scale(), "RUNE_GALLERY_SNAP", name);
 }
 
 /// What every page must show: the ladder's rows, the tabs, the danger

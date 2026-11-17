@@ -3,62 +3,14 @@
 //! keyboard, and recorded by the motion gate. `RUNE_GALLERY_SNAP=DIR`
 //! writes each frame as `DIR/overlay-NAME.png`.
 
-use phux_client_runtime::control::{Event, PaneDescriptor, SessionDescriptor};
-use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Env, Key, KeyEvent, Mods, PointerPress, Runtime};
 
 use crate::desk::{Desk, NoticeKind};
+use crate::test_support::server::{self, agent, pane, session, settle};
 use crate::theme::Theme;
 
 use crate::test_support::SCALE;
 const DESKTOP: (f32, f32) = (1280.0, 800.0);
-
-fn session(id: u32, name: &str, key: u8) -> SessionDescriptor {
-    SessionDescriptor {
-        id,
-        name: name.to_owned(),
-        attached_client_count: 1,
-        keep_empty: true,
-        created_at_unix_secs: 0,
-        key: SessionKey::new([key; 16]),
-        touched: Some(u64::from(100 - id)),
-        lifetime: None,
-        revision: None,
-        members: 0,
-        arrangement: None,
-        awaiting_organization: false,
-        project: None,
-        project_link: None,
-    }
-}
-
-fn pane(id: u32, session: &SessionDescriptor, title: &str) -> PaneDescriptor {
-    PaneDescriptor {
-        terminal_id: ResourceId::local(id),
-        session_id: session.id,
-        session_name: session.name.clone(),
-        cols: 120,
-        rows: 40,
-        title: Some(title.to_owned()),
-        cwd: Some("~/workspace/phux".to_owned()),
-        is_focused: id == 1,
-        key: None,
-        revision: None,
-        name: Some(title.to_owned()),
-        activation: None,
-        exec: None,
-        foreground: None,
-    }
-}
-
-fn agent(id: u32, kind: &str, state: &str) -> Event {
-    Event::AgentMetadata {
-        terminal_id: ResourceId::local(id),
-        value: Some(
-            format!(r#"{{"name":"{kind}","kind":"{kind}","state":"{state}"}}"#).into_bytes(),
-        ),
-    }
-}
 
 const SCREEN: &str = "\x1b[2J\x1b[H\x1b[1;38;5;208m✻\x1b[0m Welcome to \x1b[1mClaude Code\x1b[0m\r\n\r\n\
 \x1b[2m> \x1b[0mrestyle the overlays on tokens\r\n\r\n\
@@ -84,10 +36,10 @@ fn window(dark: bool, theme: Option<&'static Theme>, waiting: bool) -> Runtime<D
     });
     let (phux, site) = (session(1, "phux", 1), session(2, "website", 2));
     let panes = vec![
-        pane(1, &phux, "restyle overlays"),
-        pane(2, &phux, "cargo test"),
-        pane(3, &phux, "review #2617"),
-        pane(4, &site, "docs build"),
+        pane(1, &phux, "restyle overlays", None),
+        pane(2, &phux, "cargo test", None),
+        pane(3, &phux, "review #2617", None),
+        pane(4, &site, "docs build", None),
     ];
     let topology = crate::desk::topology(vec![phux, site], panes);
     let mut rt = Runtime::new(desk, crate::ui::view, DESKTOP, Env::new(dark, SCALE));
@@ -108,26 +60,11 @@ fn window(dark: bool, theme: Option<&'static Theme>, waiting: bool) -> Runtime<D
     rt
 }
 
-fn settle(rt: &mut Runtime<Desk>) {
-    for t in [0.0, 0.5, 1.0, 2.0, 3.0] {
-        rt.frame(t);
-    }
-}
-
 /// The frame as the app shows it, blended in sRGB; written out under
 /// `RUNE_GALLERY_SNAP`. The pixels come back for the checks.
 fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, name: &str) -> Vec<u8> {
-    rt.set_srgb_blend(true);
-    settle(rt);
-    let (w, h) = ((DESKTOP.0 * SCALE) as u32, (DESKTOP.1 * SCALE) as u32);
-    let pixels = crate::ui::offscreen_as_app(gpu, rt, (w, h));
-    if let Some(dir) = std::env::var_os("RUNE_GALLERY_SNAP") {
-        let dir = std::path::Path::new(&dir);
-        std::fs::create_dir_all(dir).unwrap();
-        let path = dir.join(format!("overlay-{name}.png"));
-        rune::render::write_png(&path, w, h, &pixels).unwrap();
-    }
-    pixels
+    let file = format!("overlay-{name}");
+    server::paint(gpu, rt, DESKTOP, SCALE, "RUNE_GALLERY_SNAP", &file)
 }
 
 /// The pixel at window point `(x, y)`.
