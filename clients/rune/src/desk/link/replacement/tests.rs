@@ -72,7 +72,7 @@ fn replacing_a_runtime_does_not_reload_window_preferences_or_geometry() {
         desk.connection.pending_spawns.push(7);
         desk.connection
             .uploads
-            .push((8, phux_protocol::ids::ResourceId::local(1)));
+            .push((8, phux_protocol::ids::ResourceId::local(1), None));
         desk.connection.pastes.insert(9);
         desk.connection.preedit = Some("composition".into());
         desk.replace_connection(policy);

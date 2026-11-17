@@ -59,6 +59,7 @@ pub mod reef;
 mod reorder;
 pub mod resources;
 mod scene_host;
+mod screenshot;
 mod sessions;
 mod settings;
 mod shown;
@@ -336,6 +337,7 @@ impl Desk {
             | self.tick_fleet()
             | self.pump_link()
             | self.pump_links()
+            | self.finish_screenshot()
             | self.pump_settings(tx)
             | self.pump_onboarding(tx)
             | self.expire_notice(tx);

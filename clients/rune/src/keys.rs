@@ -97,6 +97,9 @@ pub enum Shortcut {
     SwitchSession,
     /// A path on the pane's host, inserted at its prompt.
     InsertPath,
+    /// A region of the screen, picked with the system's own tool, sent to
+    /// the focused terminal the way a pasted image is.
+    Screenshot,
     /// Preview the file a path in the output names.
     QuickLook,
     /// The tab at this index.
