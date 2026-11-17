@@ -154,6 +154,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
+    cx.zoom(desk.ui_zoom());
     let p = ink(dark, cx.accent(), desk.settings.theme);
     let p = Ink {
         host: crate::host_color::on(desk.machines.label(), p.sidebar),

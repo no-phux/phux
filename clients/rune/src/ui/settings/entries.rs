@@ -10,6 +10,7 @@ use crate::desk::{Desk, SettingsCategory as Category};
 pub(super) enum Entry {
     Theme,
     HoverToolbar,
+    InterfaceSize,
     TextSize,
     Font,
     CopySelect,
@@ -27,9 +28,10 @@ pub(super) enum Entry {
 }
 
 impl Entry {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Theme,
         Self::HoverToolbar,
+        Self::InterfaceSize,
         Self::TextSize,
         Self::Font,
         Self::CopySelect,
@@ -48,7 +50,7 @@ impl Entry {
 
     const fn category(self) -> Category {
         match self {
-            Self::Theme | Self::HoverToolbar => Category::Appearance,
+            Self::Theme | Self::HoverToolbar | Self::InterfaceSize => Category::Appearance,
             Self::TextSize
             | Self::Font
             | Self::CopySelect
@@ -68,6 +70,7 @@ impl Entry {
         match self {
             Self::Theme => "Theme",
             Self::HoverToolbar => "Show toolbar on hover",
+            Self::InterfaceSize => "Interface size",
             Self::TextSize => "Text size",
             Self::Font => "Font",
             Self::CopySelect => "Copy on select",
@@ -93,6 +96,10 @@ impl Entry {
             Self::HoverToolbar => {
                 "Tabs and buttons stay hidden until the pointer reaches the top of the window, so \
                  the terminal fills it."
+            }
+            Self::InterfaceSize => {
+                "The sidebar, tabs, palette and Settings from 80% to 200%. The terminal's text \
+                 keeps its own size."
             }
             Self::TextSize => "Terminal text from 8 to 32 points.",
             Self::Font => "Terminal font. One that isn't installed shows the system's.",
@@ -134,6 +141,7 @@ impl Entry {
         let on = |value| if value { "On" } else { "Off" }.to_owned();
         match self {
             Self::Theme => desk.settings.theme.map_or("System", |t| t.name).to_owned(),
+            Self::InterfaceSize => format!("{}%", desk.interface_size),
             Self::TextSize => format!("{:.0} pt", desk.font_size),
             Self::Font => match desk.font_family.as_str() {
                 "" => "System".to_owned(),
@@ -183,6 +191,7 @@ impl Entry {
         match self {
             Self::Theme => "colors colours appearance palette",
             Self::HoverToolbar => "titlebar tab bar hide reveal edge to edge full window chrome",
+            Self::InterfaceSize => "ui scale zoom bigger larger sidebar accessibility",
             Self::TextSize => "font zoom typography",
             Self::Font => "typeface family monospace",
             Self::CopySelect => "clipboard selection",
@@ -215,7 +224,8 @@ impl Entry {
                 Desk::settings_themes,
                 ink,
             ),
-            Self::TextSize => controls::stepper(desk, ink),
+            Self::InterfaceSize => controls::interface_size(desk, ink),
+            Self::TextSize => controls::text_size(desk, ink),
             Self::Font => self.link(
                 "settings-font",
                 desk,

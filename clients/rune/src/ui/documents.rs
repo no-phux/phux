@@ -1,7 +1,7 @@
 //! Native read-only document presentation, never a browser or terminal grid.
 
 use phux_protocol::ids::ResourceId;
-use rune::{El, col, el, text};
+use rune::{El, col, el, row, text};
 
 use super::{CAPTION, Ink, LABEL, PAD};
 use crate::desk::Desk;
@@ -15,7 +15,14 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let label = document.record.name.as_deref().unwrap_or("Document");
     let detail = document.detail.as_deref().map(|d| format!("{d} · "));
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
-    let content = body(&document.body, area, ink, id);
+    let shown = match (&document.body, &document.viewer) {
+        (Body::Tree(source), Some(viewer)) => Some(viewer.text(source)),
+        _ => None,
+    };
+    let content = match shown {
+        Some(words) => source_text(words, ink, id),
+        None => body(&document.body, area, ink, id),
+    };
     let interactive = desk.document_input_frame(id).is_some();
     let state = match desk.document_input_refused(id) {
         Some(reason) => format!("View only: {reason}"),
@@ -54,11 +61,61 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
             .font(CAPTION)
             .color(ink.dim),
         )
+        .children(viewer_controls(desk, id, ink))
         .child(if interactive {
             takes_input(surface, id, area)
         } else {
             surface
         })
+}
+
+fn viewer_controls(desk: &Desk, id: &ResourceId, ink: &Ink) -> Option<El> {
+    if !matches!(
+        desk.connection.resources.entries.get(id)?.body,
+        Body::Tree(_)
+    ) {
+        return None;
+    }
+    let viewer = desk.connection.resources.entries.get(id)?.viewer.as_ref()?;
+    let target = id.clone();
+    let enabled = !cfg!(target_os = "ios")
+        && desk
+            .file
+            .markdown_viewer
+            .as_ref()
+            .is_none_or(|argv| !argv.is_empty());
+    let button = enabled.then(|| {
+        super::pressable(format!("document-source-{id}"), ink)
+            .w(100.0)
+            .h(26.0)
+            .center()
+            .label(if viewer.source {
+                "Show rendered Markdown"
+            } else {
+                "Show Markdown source"
+            })
+            .on_press(move |d: &mut Desk| d.toggle_document_source(&target))
+            .child(
+                text(if viewer.source { "Rendered" } else { "Source" })
+                    .font(CAPTION)
+                    .color(ink.text),
+            )
+    });
+    Some(
+        row()
+            .w_full()
+            .h(28.0)
+            .items_center()
+            .gap(8.0)
+            .child(
+                text(viewer.status().to_owned())
+                    .font(CAPTION)
+                    .color(ink.dim)
+                    .grow(1.0)
+                    .min_w(0.0),
+            )
+            .children(button),
+    )
 }
 
 /// A surface whose producer takes input: a press clicks the frame pixel
@@ -102,23 +159,26 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
         Body::Decoding => message("Decoding image…", ink),
         Body::Empty => message("Empty document · waiting for the next publication", ink),
         Body::Invalid(error) => message(error.clone(), ink),
-        Body::Tree(json) => el()
-            .w_full()
-            .h_full()
-            .min_h(0.0)
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(
-                text(json.clone())
-                    .key(crate::desk::resources::text_key(id))
-                    .selectable(true)
-                    .wrap_anywhere()
-                    .font(rune::TextStyle::new(12.0, 400.0).mono())
-                    .color(ink.text),
-            ),
+        Body::Tree(json) => source_text(json, ink, id),
         Body::Surface(image) => surface(image, area, ink),
     }
+}
+
+fn source_text(words: &str, ink: &Ink, id: &ResourceId) -> El {
+    el().w_full()
+        .h_full()
+        .min_h(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(
+            text(words.to_owned())
+                .key(crate::desk::resources::text_key(id))
+                .selectable(true)
+                .wrap_anywhere()
+                .font(rune::TextStyle::new(12.0, 400.0).mono())
+                .color(ink.text),
+        )
 }
 
 fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {

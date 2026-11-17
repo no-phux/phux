@@ -48,6 +48,8 @@ pub struct Resources {
     pub(super) pasting: Option<u32>,
     /// The screen and window picker.
     pub screens: screens::Screens,
+    /// Admission survives connection replacement, including retired jobs.
+    viewers: crate::document_viewer::Pool,
     /// OSC 52 reads: this window's grants and recent questions.
     pub(super) clipboard_reads: super::clipboard_read::ClipboardReads,
 }
@@ -63,6 +65,7 @@ pub struct Document {
     pub body: Body,
     /// A typed document's content type, and what is shown of it.
     pub detail: Option<String>,
+    pub viewer: Option<crate::document_viewer::Presentation>,
     surface: surface::Surface,
     subscription: Subscription,
 }
@@ -98,6 +101,7 @@ impl Document {
             seq: None,
             body: Body::Pending,
             detail: None,
+            viewer: None,
             surface: surface::Surface::default(),
             subscription: Subscription::Unrequested,
         }
@@ -128,6 +132,66 @@ fn same_execution(a: &ResourceRecord, b: &ResourceRecord) -> bool {
 }
 
 impl Desk {
+    pub fn toggle_document_source(&mut self, id: &ResourceId) {
+        if let Some(viewer) = self
+            .connection
+            .resources
+            .entries
+            .get_mut(id)
+            .and_then(|d| d.viewer.as_mut())
+        {
+            viewer.toggle();
+            self.generation += 1;
+        }
+    }
+
+    pub(super) fn finish_document_viewers(&mut self, tx: &mut rune::Tx) -> bool {
+        if !self
+            .connection
+            .resources
+            .entries
+            .values()
+            .any(|d| d.viewer.is_some())
+        {
+            return false;
+        }
+        let executable = std::env::current_exe().unwrap_or_default();
+        let adapter = crate::document_viewer::Viewer::configured(
+            self.file.markdown_viewer.as_deref(),
+            &executable,
+        );
+        let widths: HashMap<_, _> = self
+            .connection
+            .resources
+            .entries
+            .keys()
+            .filter_map(|id| {
+                let [width, _] = self.pane_area(id)?;
+                (width > 0.0).then(|| (id.clone(), (width / 7.5).floor().clamp(10.0, 100.0) as u16))
+            })
+            .collect();
+        let resources = &mut self.connection.resources;
+        let mut changed = false;
+        let mut pending = false;
+        for (id, document) in &mut resources.entries {
+            let (Some(viewer), Body::Tree(source), Some(width)) =
+                (&mut document.viewer, &document.body, widths.get(id))
+            else {
+                continue;
+            };
+            let (updated, waiting) = viewer.poll(&mut resources.viewers, &adapter, source, *width);
+            changed |= updated;
+            pending |= waiting;
+        }
+        if pending {
+            tx.wake_after(std::time::Duration::from_millis(25));
+        }
+        if changed {
+            self.generation += 1;
+        }
+        changed
+    }
+
     pub(super) fn finish_document_images(&mut self) -> bool {
         self.connection.resources.decodes.reap();
         let mut changed = false;

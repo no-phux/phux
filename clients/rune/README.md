@@ -213,7 +213,9 @@ session (or `--session NAME`). It never creates a session on its own.
   restores the old theme, both returning to Settings. **Font** steps through
   the system monospace, the bundled JetBrains Mono and two the platform ships;
   `font_family` in Rune's prefs can name any installed family, and one that
-  isn't installed shows the system's. Font, text size, notifications,
+  isn't installed shows the system's. **Interface size** (Appearance, 80% to
+  200%) scales the sidebar, tabs, palette and Settings and leaves the
+  terminal's text alone. Font, text size, interface size, notifications,
   Option as Meta (macOS), copy on select, wheel arrows, and close confirmation are remembered
   immediately. A `[rune]` table in `config.toml` overrides any of them
   ([config](../../docs/config.md#rune)). Diagnostics stays available in development builds; update errors
@@ -259,6 +261,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘-click | Open the link under it |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
+| ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
 | ⌘← / ⌘→ | Previous / next terminal in the session |
 | ⌘↑ / ⌘↓ | Previous / next session |
 | ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
@@ -303,6 +306,11 @@ each line; the window asks first (Return pastes, Esc cancels).
   has already replaced the files by then.
 
 ## Read-only mirrors
+
+Markdown documents render with bundled [tmd](https://github.com/jtnk/tmd),
+with a source switch and a [replaceable renderer](../../docs/config.md#markdown-viewer).
+The first adapter uses print mode in the native document pane, not a second
+terminal or browser runtime.
 
 The palette opens AccessibilityTree and PixelSurface resources beside
 terminals, and can start a page, tree or surface producer.

@@ -12,6 +12,7 @@ mod creature;
 mod desk;
 mod diag;
 mod dock;
+mod document_viewer;
 mod features;
 mod galaxy;
 mod grid;

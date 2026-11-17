@@ -27,8 +27,9 @@ supplies the concrete engine ([architecture](./architecture.md#where-to-look)).
 Phux Rune discovers tree/surface resources before the first frame,
 renders plain JSON or letterboxed PNG or JPEG frames, and distinguishes pending, empty and invalid
 documents. It draws a Document by its content type: PNG, JPEG, GIF and
-WebP as images, JSON pretty-printed, text and `+xml`/`+json` as source
-(Markdown and HTML are not rendered), anything else as its size and type.
+WebP as images, JSON pretty-printed, Markdown through the
+[desktop viewer](./config.md#markdown-viewer), other text and `+xml`/`+json`
+as source (HTML is not rendered), anything else as its size and type.
 A tree or surface is named for what it observes (`--app Safari`, `--window
 display`, a mirrored page's title) and a typed document for its `--name`;
 that name is the tab title in Rune, `name` in `phux ls --json`
@@ -161,8 +162,7 @@ A kind supplies:
 
 - its state and a codec for it (VT bytes, a record, a whole document);
 - the frames and commands it owns, through its `ResourceApp`;
-- if a client drives it (a Terminal), its `InteractiveApp`: launch,
-  `ATTACH` presentation and consumers; a producer-fed kind has none;
+- an `InteractiveApp` (launch, `ATTACH`) only if a client drives it;
 - what of it crosses `phux upgrade`, which the same app writes into the
   upgrade blob at the cut and rebuilds on resume;
 - its row in the kind catalog (`KindSpec`): gate, methods, events,
