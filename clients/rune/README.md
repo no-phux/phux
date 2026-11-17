@@ -191,9 +191,8 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
-- **Images and files.** Paste an image and it uploads to the server and types
-  its path, for agents that read images. Files pasted or dropped on a pane
-  type as quoted paths.
+- **Images and files.** Paste an image, paste or drop files, or take a
+  screenshot straight into a pane ([IMAGES.md](./IMAGES.md)).
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the title bar; ⌘-click opens it. On the phone form a
   tap on a link opens it, and a drag across one still selects. URLs wrapped

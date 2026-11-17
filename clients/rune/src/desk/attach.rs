@@ -116,7 +116,9 @@ impl Desk {
             return;
         };
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
-        self.connection.uploads.push((transfer, terminal.clone()));
+        self.connection
+            .uploads
+            .push((transfer, terminal.clone(), None));
         self.say(NoticeKind::Info, "Uploading image…");
     }
 
@@ -142,16 +144,20 @@ impl Desk {
                 .connection
                 .uploads
                 .iter()
-                .position(|(transfer, _)| *transfer == receipt.transfer_id)
+                .position(|(transfer, _, _)| *transfer == receipt.transfer_id)
             else {
                 continue;
             };
-            let (_, terminal) = self.connection.uploads.remove(at);
+            let (_, terminal, destination) = self.connection.uploads.remove(at);
             match (receipt.outcome, receipt.path) {
                 (FileUploadOutcome::Completed, Some(path)) => {
                     self.end_uploading_notice();
                     let line = format!("{} ", quoted(Path::new(&path)));
-                    if !self.deliver_paste(&terminal, &line) {
+                    let sent = match destination {
+                        Some(destination) => self.deliver_private_image(&destination, &line),
+                        None => self.deliver_paste(&terminal, &line),
+                    };
+                    if !sent {
                         self.say(
                             NoticeKind::Error,
                             format!("Image saved at {path}; not pasted."),
@@ -266,7 +272,9 @@ mod tests {
     #[test]
     fn uploading_stays_until_the_last_upload_ends() {
         let mut desk = desk();
-        desk.connection.uploads.push((2, ResourceId::local(1)));
+        desk.connection
+            .uploads
+            .push((2, ResourceId::local(1), None));
         desk.say(NoticeKind::Info, "Uploading image…");
         desk.end_uploading_notice();
         assert!(desk.notice.is_some(), "one is still on its way");

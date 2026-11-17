@@ -10,13 +10,13 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use phux_client_core::layout::LayoutNode;
-use phux_client_runtime::control::{Status, Topology};
+use phux_client_runtime::control::{PrivateUploadDestination, Status, Topology};
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 
 use super::{
     Fitted, Painted, Placement, Shown, SplitPath, copy_mode, events, find, mouse, palette, popup,
-    quick, reorder, resources, splits, tabs,
+    quick, reorder, resources, screenshot, splits, tabs,
 };
 
 pub struct Connection {
@@ -48,8 +48,12 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
-    /// Image uploads on their way, and each upload's destination.
-    pub(super) uploads: Vec<(u64, ResourceId)>,
+    /// A screenshot being taken for a terminal on this client. Replacing the
+    /// connection drops it, which cancels the picker and reaps its worker.
+    pub(super) capture: Option<screenshot::Capture>,
+    /// Image uploads on their way, and each upload's destination: a private
+    /// image also carries the execution it was captured for.
+    pub(super) uploads: Vec<(u64, ResourceId, Option<PrivateUploadDestination>)>,
     /// User pastes whose delivery has not settled.
     pub(super) pastes: HashSet<u64>,
     /// The input method's composition at the terminal cursor.
@@ -117,6 +121,7 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
             preedit: None,

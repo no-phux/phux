@@ -39,6 +39,7 @@ mod reef;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod scheme;
+mod screenshot;
 mod services;
 mod session_color;
 mod ssh_config;
@@ -154,6 +155,7 @@ pub fn run_desktop() {
         // app for the chord; the Dock brings the window back.
         .keep_running()
         .on_close(|desk: &mut Desk, tx| {
+            desk.cancel_screenshot();
             if !desk.keeps_running() {
                 tx.quit();
             }
