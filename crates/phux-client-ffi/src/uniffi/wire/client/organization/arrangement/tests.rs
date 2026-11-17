@@ -274,3 +274,54 @@ fn disconnected_clients_hold_no_arrangement_and_refuse_edits() {
         0
     );
 }
+
+#[test]
+fn slot_edits_make_tabs_and_describe_them() {
+    let mut doc = document();
+    apply_edit(
+        &mut doc,
+        &ArrangementEdit::SlotAdd {
+            pane: "local:3".to_owned(),
+            to: "local:2".to_owned(),
+        },
+    )
+    .unwrap();
+    let slots = describe_slots(&doc);
+    assert_eq!(
+        slots,
+        vec![SlotDescriptor {
+            tabs: vec!["local:2".to_owned(), "local:3".to_owned()],
+            default_tab: 0,
+        }]
+    );
+    apply_edit(
+        &mut doc,
+        &ArrangementEdit::SlotStep {
+            pane: "local:2".to_owned(),
+            delta: -1,
+        },
+    )
+    .unwrap();
+    assert_eq!(describe_slots(&doc)[0].default_tab, 1, "wraps backwards");
+    apply_edit(
+        &mut doc,
+        &ArrangementEdit::SlotOut {
+            pane: "local:3".to_owned(),
+            dir: WireSplitDir::Stacked,
+            ratio: 0.5,
+        },
+    )
+    .unwrap();
+    assert!(describe_slots(&doc).is_empty(), "one tab left is no slot");
+    assert_eq!(
+        word(apply_edit(
+            &mut doc,
+            &ArrangementEdit::SlotOut {
+                pane: "local:1".to_owned(),
+                dir: WireSplitDir::Stacked,
+                ratio: 0.5,
+            },
+        )),
+        "not_a_tab"
+    );
+}
