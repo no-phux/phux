@@ -10,12 +10,13 @@
 //! players and balls by depth, confetti, and the shell's overlays: shirt
 //! numbers, the selection ring, name pills, press targets and the readout.
 
+use crate::ui::Paint;
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::Tokens;
 use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels;
 use super::playground::pen::{Pen, rgba};
-use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::pitch::{MINT, Mood, Pitch, Pt, RANKS, mix};
@@ -27,9 +28,11 @@ use players::Spot;
 const BOARD: TextStyle = TextStyle::new(10.5, 600.0).mono();
 const BENCH: TextStyle = TextStyle::new(9.5, 500.0).mono();
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = &p.tokens;
-    desk.pitch.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.pitch
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.pitch.still.set(cx.is_reduced_motion());
     let r = &desk.pitch.scene;
     let count = |m: Mood| r.players.iter().filter(|q| q.who.mood == m).count();
@@ -47,7 +50,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_pitch)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.pitch_laid_out(rect[2], rect[3]));

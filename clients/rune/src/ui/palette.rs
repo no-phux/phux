@@ -13,8 +13,8 @@ use crate::palette::{Hit, Mode, Target};
 use crate::ui::Cover;
 
 /// `top` is the room above the panel; a short window scrolls its rows.
-pub fn view(desk: &Desk, p: &impl AsRef<Tokens>, top: f32) -> El {
-    let t = p.as_ref();
+pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     let hits = desk.palette_hits();
@@ -207,8 +207,8 @@ const fn group(action: Shortcut) -> u8 {
 /// at the press, flips to stay inside the window, takes the keyboard
 /// (arrows, Home and End, Return, Escape) and gives focus back on close.
 /// The menu mounts in the kit layer; what this returns marks its place.
-pub fn context_menu(desk: &Desk, at: PointerPress, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn context_menu(desk: &Desk, at: PointerPress, p: &Tokens) -> El {
+    let t = p;
     let actions: &[Shortcut] = if desk.pointer.tab_menu {
         &TAB_MENU
     } else {

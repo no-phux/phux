@@ -9,18 +9,15 @@ use rune::{Color, Cx, El, Key, Phase, PointerButton, Transition, col, el, row};
 
 use super::status::placeholder;
 use super::tokens::Tier;
-use super::{Ink, PAD, Paint, Tokens, overlay};
+use super::{PAD, Paint, Tokens, overlay};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
 use crate::ui::Cover;
 use crate::{grid, perf};
+use phux_design::tokens::SPACE;
 
-/// The gutter between two cards, all of it the divider's hit area: the
-/// card gap token, which the split math reads too.
-pub(crate) const DIVIDER: f32 = phux_design::tokens::SPACE.card_gap;
-
-pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = ink.as_ref();
+pub fn view(desk: &Desk, ink: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = ink;
     desk.scale.set(cx.env().scale);
     desk.connection.painted.replace(None);
     let area = el()
@@ -46,7 +43,7 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     let several = matches!(tree, LayoutNode::Split { .. });
     let floor = pane_floor(desk, &tree);
     area.child(node(desk, &tree, &mut Vec::new(), several, floor, ink))
-        .children(perf::hud(t.roles.text.dim.paint()))
+        .children(perf::hud(t))
 }
 
 /// The fewest cells a pane is squeezed to while its window has room: a
@@ -63,9 +60,9 @@ fn least(tree: &LayoutNode, leaf: [f32; 2]) -> [f32; 2] {
         } => {
             let (a, b) = (least(left, leaf), least(right, leaf));
             if *dir == SplitDir::Horizontal {
-                [a[0] + b[0] + DIVIDER, a[1].max(b[1])]
+                [a[0] + b[0] + SPACE.card_gap, a[1].max(b[1])]
             } else {
-                [a[0].max(b[0]), a[1] + b[1] + DIVIDER]
+                [a[0].max(b[0]), a[1] + b[1] + SPACE.card_gap]
             }
         }
     }
@@ -102,7 +99,7 @@ fn node(
     path: &mut SplitPath,
     several: bool,
     floor: [f32; 2],
-    ink: &Ink,
+    ink: &Tokens,
 ) -> El {
     let (dir, ratio, left, right) = match tree {
         LayoutNode::Leaf(id) => return pane(desk, id, several, ink),
@@ -138,7 +135,7 @@ fn node(
         .min_w(0.0)
         .min_h(0.0)
         .child(share(el().w_full().h_full().child(first), ratio, left))
-        .child(divider(here, horizontal, ratio, ink.as_ref()))
+        .child(divider(here, horizontal, ratio, ink))
         .child(share(
             el().w_full().h_full().child(second),
             1.0 - ratio,
@@ -162,9 +159,9 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
         grip.radius(t.radius.full).inert()
     };
     let host = if horizontal {
-        el().w(DIVIDER).h_full()
+        el().w(SPACE.card_gap).h_full()
     } else {
-        el().w_full().h(DIVIDER)
+        el().w_full().h(SPACE.card_gap)
     };
     let stepped = path.clone();
     host.key(format!("divider-{path:?}"))
@@ -242,8 +239,8 @@ pub(super) enum Lit {
 /// its second drop when it has the keyboard, and edged with a top-lit
 /// hairline rim. `content` is clipped to the corners; the rim draws over
 /// it and never takes the pointer.
-pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &impl AsRef<Tokens>) -> El {
-    let t = ink.as_ref();
+pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
+    let t = ink;
     let r = t.radius.lg;
     let (top, bottom) = match lit {
         Lit::Resting => (t.roles.border.strong, t.roles.border.muted),
@@ -285,7 +282,7 @@ fn float(id: &ResourceId, card: El, t: &Tokens) -> El {
         ))
 }
 
-pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
+pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> El {
     let focused = desk
         .connection
         .shown
@@ -297,7 +294,7 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
         } else {
             Lit::Resting
         };
-        let t: &Tokens = ink.as_ref();
+        let t = ink;
         let ground = t.roles.layer.ground.paint();
         return float(
             id,
@@ -308,8 +305,8 @@ pub(super) fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El
     terminal_pane(desk, id, several, ink)
 }
 
-fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
-    let t: &Tokens = ink.as_ref();
+fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> El {
+    let t = ink;
     let focused = desk.keyboard().is_some_and(|(has, _)| has == id);
     let view = desk.view_of(id);
     perf::RENDERS.incr();
@@ -388,9 +385,9 @@ fn terminal_layer(
     frame: &phux_client_runtime::publication::GridFrame,
     focused: bool,
     editing: bool,
-    ink: &Ink,
+    ink: &Tokens,
 ) -> El {
-    let t: &Tokens = ink.as_ref();
+    let t = ink;
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
     let mut layer = el()
@@ -399,7 +396,7 @@ fn terminal_layer(
             keyboard,
             desk.blink_on,
             &metrics,
-            ink.selection,
+            ink.selection(),
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && desk.modal().is_none() && !editing {
@@ -535,9 +532,13 @@ mod tests {
         );
         assert_eq!(
             least(&tree, [100.0, 40.0]),
-            [200.0 + DIVIDER, 80.0 + DIVIDER]
+            [200.0 + SPACE.card_gap, 80.0 + SPACE.card_gap]
         );
-        assert_eq!(least(&tree, [0.0; 2]), [DIVIDER, DIVIDER], "gutters alone");
+        assert_eq!(
+            least(&tree, [0.0; 2]),
+            [SPACE.card_gap, SPACE.card_gap],
+            "gutters alone"
+        );
     }
 
     #[test]

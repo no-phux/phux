@@ -120,10 +120,11 @@ pub fn eased(rgb: u32, ground: Color) -> Color {
 
 /// A short bar in `color` down the selected row's leading edge: the fill
 /// stays the theme's, so its text reads as before.
-pub fn stripe(color: Color) -> El {
-    el().pin(Some(0.0), Some(7.0), None, Some(7.0))
-        .w(3.0)
-        .radius(1.5)
+pub fn stripe(color: Color, t: &crate::ui::Tokens) -> El {
+    let inset = Some(t.space.s2);
+    el().pin(Some(0.0), inset, None, inset)
+        .w(t.space.s0_5)
+        .radius(t.radius.full)
         .fill(color)
         .inert()
         .a11y_hidden()

@@ -14,7 +14,7 @@ use rune_kit::{Button, ButtonVariant, Dialog};
 use super::rows::State as Forced;
 use super::sidebar::{Face, face, state_of, weighted};
 use super::tokens::Tier;
-use super::{Cover, Ink, Paint, Tokens, icon_press, icons, lifted, tip};
+use super::{Cover, Paint, Tokens, icon_press, icons, lifted, tip};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab, Renaming, Tab};
 use crate::keys::{self, Shortcut};
@@ -316,8 +316,8 @@ fn divider(shown: bool, t: &Tokens) -> El {
         })
 }
 
-pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
-    let t: &Tokens = ink.as_ref();
+pub fn strip(desk: &Desk, ink: &Tokens) -> Option<El> {
+    let t = ink;
     let tabs = &desk.connection.tabs.list;
     if tabs.len() < 2 {
         return None;
@@ -386,8 +386,8 @@ fn rename_field(desk: &Desk, t: &Tokens) -> El {
 }
 
 /// Renaming a tab or session: a short question, so the kit's fitted dialog.
-pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
-    let t: &Tokens = ink.as_ref();
+pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
+    let t = ink;
     let s = &t.space;
     let title = match desk.connection.tabs.renaming.as_ref()? {
         Renaming::Session(_) => "Rename session",

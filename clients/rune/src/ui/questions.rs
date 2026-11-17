@@ -28,8 +28,8 @@ struct At<'a> {
 }
 
 /// An ACP ask on `terminal`: its question's controls, or why there are none.
-pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
+    let t = p;
     let questions = &desk.inbox.questions;
     let Some((view, draft)) = questions.open(terminal, &ask.id) else {
         let known = questions.views.contains_key(terminal);

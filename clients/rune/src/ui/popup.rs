@@ -3,16 +3,16 @@
 
 use rune::{El, Transition, col, el, row, text};
 
-use super::overlay::{EXTENTS, icon_button, pop, strong};
+use super::overlay::{EXTENTS, pop, strong};
 use super::tokens::{Paint, Tier};
-use super::{Ink, PAD, icons, panes, status};
+use super::{PAD, Tokens, icon_press, icons, panes, status};
 use crate::desk::Desk;
 use crate::ui::Cover;
 
-/// `p` stays the lane-period `Ink`: the pane and the question bar inside
-/// the box still take it.
-pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
-    let t = &*p.tokens;
+/// A command's popup: its terminal in a box over the window, with the
+/// question bar inside it when the command asks.
+pub fn view(desk: &Desk, t: &Tokens) -> Option<El> {
+    let p = t;
     let s = &t.space;
     let r = &t.roles;
     let command = desk.connection.popup.command()?;
@@ -47,13 +47,16 @@ pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
                 .grow(1.0)
                 .min_w(0.0),
         )
-        .child(icon_button(
-            &icons::CLOSE,
-            "Close",
-            "popup-close",
-            t,
-            Desk::dismiss_popup,
-        ));
+        .child(
+            icon_press(
+                &icons::CLOSE,
+                "Close",
+                "popup-close",
+                t,
+                Desk::dismiss_popup,
+            )
+            .help("Close"),
+        );
     let share = EXTENTS.popup_share;
     let panel = col()
         .key("popup")

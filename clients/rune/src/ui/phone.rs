@@ -15,7 +15,7 @@ use rune::{Color, Cursor, Cx, El, TextStyle, col, el};
 
 use super::tokens::phone::{self as form, Scale};
 use super::tokens::{Paint, Tier, Tokens, Type};
-use super::{Ink, TITLEBAR_H, badge, icons, news, overlay, panes, settings, spatial, status};
+use super::{badge, icons, news, overlay, panes, settings, spatial, status};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::desk::phone::Phone;
@@ -45,16 +45,6 @@ impl Look {
         }
     }
 
-    /// The look of the tokens behind `ink`, for a surface handed the shim.
-    pub(super) fn of(ink: &Ink) -> Self {
-        Self::new(Rc::clone(&ink.tokens))
-    }
-
-    /// The shim `Ink` the surfaces the phone hosts still take.
-    pub(super) fn ink(&self) -> Ink {
-        self.t.ink()
-    }
-
     /// A round touch target's diameter.
     pub(super) fn round(&self) -> f32 {
         self.space.touch_min
@@ -65,12 +55,6 @@ impl Deref for Look {
     type Target = Tokens;
     fn deref(&self) -> &Tokens {
         &self.t
-    }
-}
-
-impl AsRef<Tokens> for Look {
-    fn as_ref(&self) -> &Tokens {
-        self
     }
 }
 
@@ -100,7 +84,6 @@ pub(super) fn top_bar_height() -> f32 {
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     form::observe(cx);
     let p = page_look(desk);
-    let ink = p.ink();
     let fallback = Phone::default();
     let phone = desk.phone.as_ref().unwrap_or(&fallback);
     let keyboard_visible = desk.phone_keyboard_visible();
@@ -118,7 +101,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     cx.caption_color(p.roles.text.text.paint());
     let ring = p.space.focus_ring;
     cx.focus_ring(ring.width, ring.offset, p.roles.border.focus.paint());
-    let stage = phone_stage(desk, &p, &ink, cx);
+    let stage = phone_stage(desk, &p, cx);
     let top = top_inset(desk, &p, cx);
     let screen = col()
         .key("phone-screen")
@@ -141,12 +124,12 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let content = overlays(
         el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
         desk,
-        &ink,
+        &p,
         top,
         cx,
     );
     let root = col().key("phone").w_full().h_full();
-    super::chrome_ground(root, desk.glass(), fill)
+    super::glassed(root, fill, p.glass_tint_alpha(desk.glass()))
         .child(content)
         .children(bar)
         .children(
@@ -179,10 +162,10 @@ pub(super) fn terminal_ground(desk: &Desk) -> Color {
 /// chosen theme's tokens, or with none the terminal ground's mode, never
 /// the system appearance: a light-mode phone would otherwise open white
 /// sheets over a dark terminal. Pages are free of the grid's text cap.
-fn page_look(desk: &Desk) -> Look {
+pub(super) fn page_look(desk: &Desk) -> Look {
     let theme = desk.settings.theme;
     let dark = theme.map_or_else(|| Tokens::dark_ground(terminal_ground(desk)), |t| t.dark);
-    Look::new(Tokens::for_phone(dark, theme, Scale::Free))
+    Look::new(Tokens::for_phone(desk, dark, theme, Scale::Free))
 }
 
 /// The controls beside the terminal: their mode is the ground's, so they
@@ -191,6 +174,7 @@ fn page_look(desk: &Desk) -> Look {
 pub(super) fn ground_look(desk: &Desk) -> Look {
     let dark = Tokens::dark_ground(terminal_ground(desk));
     Look::new(Tokens::for_phone(
+        desk,
         dark,
         desk.settings.theme,
         Scale::GridCapped,
@@ -216,7 +200,7 @@ pub(crate) fn edge_color(desk: &Desk) -> Color {
 /// Sheets, then the kit's overlays (menus, selects, toasts) this run built,
 /// all inside the content box, so the phone's keyboards stay after them
 /// (§4.1.4). The window root's kit layer is then empty on the phone.
-fn overlays(root: El, desk: &Desk, ink: &Ink, top: f32, cx: &mut Cx<Desk>) -> El {
+fn overlays(root: El, desk: &Desk, ink: &Tokens, top: f32, cx: &mut Cx<Desk>) -> El {
     let root = root.children(status::banner(desk, ink));
     let root = super::floating_surfaces(root, desk, ink, top, cx);
     root.children(super::KIT_LAYER.with_borrow_mut(std::mem::take))
@@ -228,14 +212,14 @@ fn top_inset(desk: &Desk, p: &Look, cx: &Cx<Desk>) -> f32 {
     if desk.native.is_some() {
         0.0
     } else if cx.titlebar_inset() > 0.0 {
-        TITLEBAR_H
+        p.space.titlebar_h
     } else {
         p.space.s3
     }
 }
 
 /// Modals precede the drawn keyboard so its keys belong to their fields.
-fn phone_stage(desk: &Desk, p: &Look, ink: &Ink, cx: &mut Cx<Desk>) -> El {
+fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
     col()
         .key("phone-stage")
         .grow(1.0)
@@ -244,12 +228,12 @@ fn phone_stage(desk: &Desk, p: &Look, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         .min_w(0.0)
         .px(if desk.settings_open { 0.0 } else { p.space.s1 })
         .child(if desk.settings_open {
-            settings::view(desk, ink)
+            settings::view(desk, p)
         } else {
-            panes::view(desk, ink, cx)
+            panes::view(desk, p, cx)
         })
-        .children(status::confirm_bar(desk, ink))
-        .children(overlay::toast(desk, ink))
+        .children(status::confirm_bar(desk, p))
+        .children(overlay::toast(desk, p))
 }
 
 /// An opaque control surface over the terminal's ground: the raised layer
@@ -285,15 +269,7 @@ pub(super) fn glyph(icon: &'static rune::Icon, size: f32, color: Color) -> El {
 /// What the phone shows of a terminal's mark: the status ladder's state,
 /// none for a plain shell. The bell is its own tone and mark.
 pub(super) fn state_of(mark: Mark) -> Option<State> {
-    Some(match mark {
-        Mark::Blocked | Mark::Bell => State::NeedsYou,
-        Mark::Done => State::Done,
-        Mark::Failed => State::Failed,
-        Mark::Working | Mark::Running | Mark::Background => State::Working,
-        Mark::Succeeded => State::DoneSeen,
-        Mark::Idle => State::Idle,
-        Mark::None => return None,
-    })
+    (mark != Mark::None).then(|| super::sidebar::state_of(mark))
 }
 
 /// `mark`'s word from the vocabulary (§1.3), empty for a plain shell.

@@ -272,7 +272,6 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
 /// The dock is the phone's one glass, and only where glass may draw.
 #[test]
 fn the_phone_paints_the_design_fixture() {
-    use crate::ui::tokens::phone::{Traits, content_scale, set_traits};
     let gpu = rune::render::Gpu::headless();
     let themes = [
         ("dark", None),
@@ -280,7 +279,6 @@ fn the_phone_paints_the_design_fixture() {
         ("solarized-light", crate::theme::find("solarized-light")),
         ("windows-98", crate::theme::find("windows-98")),
     ];
-    let largest = content_scale("UICTContentSizeCategoryAccessibilityXXXL");
     for (tag, theme) in themes {
         assert!(tag == "dark" || theme.is_some(), "{tag} is in the catalog");
         for mode in [
@@ -294,11 +292,13 @@ fn the_phone_paints_the_design_fixture() {
             let mut renderer = app_renderer(&gpu);
             rt.set_viewport((393.0, 852.0), 1.0);
             rt.set_system_increased_contrast(mode == "contrast-more");
-            set_traits(Traits {
-                scale: if mode == "largest-text" { largest } else { 1.0 },
-                reduce_transparency: mode == "reduce-transparency",
-            });
             rt.update(|d, tx| {
+                let size = if mode == "largest-text" {
+                    "UICTContentSizeCategoryAccessibilityXXXL"
+                } else {
+                    "UICTContentSizeCategoryL"
+                };
+                d.set_accessibility(mode == "reduce-transparency", size);
                 d.settings.theme = theme;
                 tx.instant();
             });
@@ -330,7 +330,6 @@ fn the_phone_paints_the_design_fixture() {
                 (393, 852),
                 &format!("{name}-sessions"),
             );
-            set_traits(Traits::DEFAULT);
         }
     }
 }

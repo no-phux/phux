@@ -8,8 +8,8 @@ use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 use crate::desk::resources::Body;
 
-pub fn view(desk: &Desk, id: &ResourceId, p: &impl AsRef<Tokens>) -> El {
-    let ink = p.as_ref();
+pub fn view(desk: &Desk, id: &ResourceId, p: &Tokens) -> El {
+    let ink = p;
     let focused = id.clone();
     let selected = id.clone();
     let measured = id.clone();

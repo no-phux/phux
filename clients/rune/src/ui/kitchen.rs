@@ -9,12 +9,13 @@
 //! canvas, the stations, pass, chefs, air and night in another, then the
 //! line signs, the neon, name pills, the chefs' press targets and the readout.
 
+use crate::ui::Paint;
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::Tokens;
 use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels::{self, Label, pill};
 use super::playground::pen::{Pen, rgba};
-use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
@@ -28,9 +29,11 @@ use chef::{AMBER, MINT, pool};
 /// The night's darkness is worked out on a grid this many points across.
 const CELL: f32 = 4.0;
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = &p.tokens;
-    desk.kitchen.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.kitchen
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.kitchen.still.set(cx.is_reduced_motion());
     let k = &desk.kitchen.scene;
     let count = |m: Mood| k.chefs.iter().filter(|c| c.who.mood == m).count();
@@ -48,7 +51,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_kitchen)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.kitchen_laid_out(rect[2], rect[3]));

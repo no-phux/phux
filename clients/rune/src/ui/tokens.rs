@@ -14,7 +14,6 @@ use phux_design::tokens as tok;
 use phux_design::{Mode, Rgb8, Rgba8, Roles};
 use rune::{Color, Cx, El, Family, Spring, SpringPair, TextStyle};
 
-use super::Ink;
 use crate::desk::Desk;
 use crate::theme::Theme;
 
@@ -72,18 +71,13 @@ pub(crate) struct Type {
     pub(crate) mono: TextStyle,
 }
 
-/// A role at its desktop size and `weight`, for the lane-period constants
-/// (`ui::LABEL`, `ui::CAPTION`, …) that cannot follow the text scale.
-const fn fixed(role: tok::TypeRole, weight: f32) -> TextStyle {
-    TextStyle::new(role.size, weight)
-        .lh(role.line_height)
-        .tracking(role.tracking_em * role.size)
-}
+/// Space between the terminal area's edge and its grid: the terminal's
+/// own inset, not chrome spacing.
+pub(crate) const TERMINAL_PAD: f32 = 10.0;
 
-pub(crate) const LABEL: TextStyle = fixed(tok::TYPE.role.label, 400.0);
-pub(crate) const LABEL_STRONG: TextStyle = fixed(tok::TYPE.role.label, 600.0);
-pub(crate) const CAPTION: TextStyle = fixed(tok::TYPE.role.caption, 500.0);
-pub(crate) const NAME: TextStyle = fixed(tok::TYPE.role.label, 500.0);
+/// The tallest a sheet grows before its body scrolls: layout geometry,
+/// which no token group holds (§1.6 `layout`).
+pub(crate) const SHEET_MAX_H: f32 = 620.0;
 
 /// The chrome's mono face (bundled in `grid::FONTS`).
 pub(crate) const MONO: Family = Family::Named("Paper Mono");
@@ -265,19 +259,6 @@ pub(crate) struct Tokens {
 }
 
 mod forced;
-mod ink;
-
-impl AsRef<Self> for Tokens {
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-impl AsRef<Tokens> for Ink {
-    fn as_ref(&self) -> &Tokens {
-        &self.tokens
-    }
-}
 
 /// The house look's mode: the theme's own, else the system appearance.
 fn mode_of(inputs: &Inputs) -> Mode {
@@ -437,27 +418,18 @@ impl Tokens {
             glass: desk.glass(),
             increased_contrast: cx.system_increased_contrast(),
             forced: cx.system_contrast().map(forced::Forced::from),
-            reduce_transparency: overrides::reduce_transparency(),
-            type_scale: overrides::type_scale(),
+            reduce_transparency: desk.reduce_transparency(),
+            type_scale: desk.type_scale(),
             ..Inputs::system(dark)
         })
     }
 
-    /// The phone's tokens for a terminal ground (§4.1.5): the selected
-    /// theme when its mode matches the ground's, else the house look in
-    /// the ground's mode.
-    pub(crate) fn for_ground(ground: Color, theme: Option<&Theme>) -> Rc<Self> {
-        let dark = crate::theme::on_fill(ground) == Color::WHITE;
-        Self::resolve(&Inputs {
-            theme: theme.filter(|t| t.dark == dark).copied(),
-            ..Inputs::system(dark)
-        })
-    }
-
-    /// The lane-period shim: the `Ink` views still read, filled from these
-    /// tokens. Deleted with `Ink`.
-    pub(crate) fn ink(self: &Rc<Self>) -> Ink {
-        ink::of(Rc::clone(self))
+    /// The terminal's selection colours, as the grid paints them.
+    pub(crate) fn selection(&self) -> crate::theme::Selection {
+        crate::theme::Selection {
+            foreground: self.roles.selection.fg.paint(),
+            background: self.roles.selection.bg.paint(),
+        }
     }
 
     /// `e` lifted to `tier`: its shadow layers, rings already coloured.
@@ -500,33 +472,5 @@ impl Tokens {
         let min = tok::MATERIAL.glass.tint_min;
         let floor = if self.dark() { min.dark } else { min.light };
         1.0 - g.clamp(0.0, 1.0) * (1.0 - floor)
-    }
-}
-
-/// Test and platform overrides for inputs Rune has no API for yet:
-/// reduce transparency (phux's own macOS/iOS read lands in `Desk`) and the
-/// text scale (`Settings` gains a text size). A view reads them through
-/// `Tokens::for_window`.
-pub(crate) mod overrides {
-    use std::cell::Cell;
-
-    thread_local! {
-        static REDUCE_TRANSPARENCY: Cell<bool> = const { Cell::new(false) };
-        static TYPE_SCALE: Cell<f32> = const { Cell::new(1.0) };
-    }
-
-    pub(crate) fn reduce_transparency() -> bool {
-        REDUCE_TRANSPARENCY.get()
-    }
-
-    pub(crate) fn type_scale() -> f32 {
-        TYPE_SCALE.get()
-    }
-
-    /// Set both for this thread; the gallery's mode pages use it.
-    #[cfg(test)]
-    pub(crate) fn set(reduce_transparency: bool, type_scale: f32) {
-        REDUCE_TRANSPARENCY.set(reduce_transparency);
-        TYPE_SCALE.set(type_scale);
     }
 }

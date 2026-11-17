@@ -21,8 +21,8 @@ pub fn bell_name(desk: &Desk) -> &'static str {
 
 /// The bell's own dot while a note is unread, `size` across at `at`: the
 /// bell's tone, and no word, since the bell's name says it.
-pub fn unread_dot(desk: &Desk, p: &impl AsRef<Tokens>, at: (f32, f32), size: f32) -> Option<El> {
-    let t = p.as_ref();
+pub fn unread_dot(desk: &Desk, p: &Tokens, at: (f32, f32), size: f32) -> Option<El> {
+    let t = p;
     desk.news.unread.then(|| {
         el().absolute(at.0, at.1)
             .w(size)
@@ -34,8 +34,8 @@ pub fn unread_dot(desk: &Desk, p: &impl AsRef<Tokens>, at: (f32, f32), size: f32
 }
 
 /// The title bar's bell.
-pub fn bell(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn bell(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let s = &t.space;
     // Over the button's top-right corner, cut out of the bar by a ring of
     // its ground.
@@ -55,8 +55,8 @@ pub fn bell(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
     )
 }
 
-pub fn view(_desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn view(_desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     let body = col()
@@ -87,7 +87,6 @@ pub fn view(_desk: &Desk, p: &impl AsRef<Tokens>) -> El {
         title: "What's new",
         width: EXTENTS.news_w,
         top: s.s12 + s.s12,
-        scrim: 0.0,
         close: Desk::close_news,
     };
     sheet.build(None, body, key_hint("esc", "close", p), p)

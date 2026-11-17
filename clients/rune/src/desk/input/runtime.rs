@@ -116,7 +116,14 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
             rt.frame(0.0);
             let field = crate::ui::element(&rt, "palette-query");
             let caret = field.caret.expect("focused caret");
-            let ink = theme.roles().text;
+            let ink = {
+                use crate::ui::Paint;
+                let input = crate::ui::tokens::theme_input(theme);
+                phux_design::derive(&input, &phux_design::Params::house())
+                    .text
+                    .text
+                    .paint()
+            };
             let drawn = rt
                 .instances
                 .iter()

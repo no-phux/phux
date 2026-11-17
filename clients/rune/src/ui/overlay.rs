@@ -7,13 +7,12 @@ use phux_client_runtime::publication::GridFrame;
 use phux_design::{Rgba8, State};
 use phux_protocol::ids::ResourceId;
 use rune::{Edge, El, TextStyle, Transition, col, el, row, text, text_input};
-use rune_kit::{
-    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, SegmentedControl,
-    ToastRegion,
-};
+use rune_kit::toast_stack::{ToastEntry, VISIBLE};
+use rune_kit::{Button, ButtonVariant, ControlSize, SegmentedControl, ToastRegion};
 
 use super::tokens::{MONO, Paint, Tier, Tokens};
-use super::{PAD, badge, icons, keep_from_pane};
+use super::{PAD, badge, icon_press, icons, keep_from_pane};
+use crate::desk::notice::ToastInput;
 use crate::desk::{Desk, Notice, NoticeKind};
 use crate::grid::Metrics;
 use crate::host_color::{dot, named};
@@ -134,13 +133,8 @@ pub(super) fn readout(t: &Tokens) -> TextStyle {
 
 /// The held-⌘ link's underline, in grid points: a hairline of the accent's
 /// text ink.
-pub fn link_underline(
-    desk: &Desk,
-    id: &ResourceId,
-    m: &Metrics,
-    p: &impl AsRef<Tokens>,
-) -> Vec<El> {
-    let t = p.as_ref();
+pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, p: &Tokens) -> Vec<El> {
+    let t = p;
     let Some((_, link)) = desk.pointer.hover.as_ref().filter(|(t, _)| t == id) else {
         return Vec::new();
     };
@@ -161,27 +155,9 @@ pub fn link_underline(
         .collect()
 }
 
-/// An icon to press (kit `IconButton`, ghost); `name` is what a screen
-/// reader says for it and what its tooltip shows.
-pub(crate) fn icon_button(
-    glyph: &'static rune::Icon,
-    name: &'static str,
-    key: impl Into<String>,
-    p: &impl AsRef<Tokens>,
-    press: fn(&mut Desk),
-) -> El {
-    IconButton::new(glyph)
-        .variant(IconButtonVariant::Ghost)
-        .label(name)
-        .help(name)
-        .on_press(press)
-        .build(&p.as_ref().kit)
-        .key(key)
-}
-
 /// A key and what it does, as a sheet's footer lists them.
-pub(crate) fn key_hint(key: &'static str, what: &'static str, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub(crate) fn key_hint(key: &'static str, what: &'static str, p: &Tokens) -> El {
+    let t = p;
     row()
         .gap(t.space.s1)
         .items_center()
@@ -225,14 +201,85 @@ pub(super) fn notice_words(notice: &Notice, t: &Tokens) -> El {
     }
 }
 
-/// The current notice, bottom left (top on a phone), clear of the live
-/// pill, in the kit's notifications region. The inbox's footer says it
-/// instead while the drawer is open. Opaque: the house look keeps glass off
-/// toasts (§1.9 `where`).
-pub fn toast(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
-    let t = p.as_ref();
-    let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
+/// The toasts, bottom left (top on a phone), clear of the live pill, in
+/// the kit's notifications region: the front one alone while the stack is
+/// collapsed, and up to [`VISIBLE`] of them, newest nearest the edge,
+/// while the pointer holds it open (`Desk::toasts`). Timers pause while
+/// it is open. The inbox's footer says the front one instead while the
+/// drawer is open. Opaque: the house look keeps glass off toasts (§1.9
+/// `where`).
+pub fn toast(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
+    if desk.inbox.open {
+        return None;
+    }
+    let toasts = desk.toasts();
+    let front = toasts.front()?;
     let s = &t.space;
+    let phone = desk.phone.is_some();
+    let shown: Vec<_> = if toasts.expanded() {
+        toasts.entries().iter().rev().take(VISIBLE).collect()
+    } else {
+        vec![front]
+    };
+    // Newest nearest the window's edge: the foot on a desktop, the top on
+    // a phone.
+    let lines = shown.into_iter().map(|entry| {
+        let line = row()
+            .w_full()
+            .child(toast_card(desk, entry, entry.id == front.id, t));
+        if phone { line.center() } else { line }
+    });
+    let lines: Vec<_> = if phone {
+        lines.collect()
+    } else {
+        let mut v: Vec<_> = lines.collect();
+        v.reverse();
+        v
+    };
+    let stack = col()
+        .key("toast-stack")
+        .w_full()
+        .gap(s.s2)
+        .on_hover_change(|d: &mut Desk, inside: bool, tx: &mut rune::Tx| {
+            let input = if inside {
+                ToastInput::PointerOver
+            } else {
+                ToastInput::PointerLeft
+            };
+            d.toast_input(input, tx);
+        })
+        .children(lines);
+    // A phone's prompt sits on the stage's last row, so a notice there goes
+    // to the top instead, centred, where it is a passing word, not a place
+    // to act.
+    let (top, bottom) = if phone {
+        (Some(s.s3), None)
+    } else {
+        (None, Some(s.s3))
+    };
+    let region =
+        ToastRegion::new()
+            .toast(stack)
+            .build(&t.kit)
+            .pin(Some(s.s3), top, Some(s.s3), bottom);
+    Some(region)
+}
+
+/// One toast: its words (with the machine's dot when it names one), its
+/// offer and its close. The front toast keeps the plain keys
+/// (`toast`, `toast-offer`, `toast-close`); those behind it add their id.
+fn toast_card(desk: &Desk, entry: &ToastEntry<Notice>, front: bool, t: &Tokens) -> El {
+    let notice = &entry.options;
+    let id = entry.id;
+    let s = &t.space;
+    let key = |base: &str| {
+        if front {
+            base.to_owned()
+        } else {
+            format!("{base}-{id}")
+        }
+    };
     let edge = match notice.kind {
         NoticeKind::Info | NoticeKind::Tip => t.roles.border.base,
         NoticeKind::Error => t.roles.status.failed_edge,
@@ -240,7 +287,7 @@ pub fn toast(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
     let phone = desk.phone.is_some();
     let ground = t.roles.layer.overlay.paint();
     let toast = row()
-        .key("toast")
+        .key(key("toast"))
         .on_drag(keep_from_pane)
         .shrink()
         .max_w(EXTENTS.toast_w)
@@ -267,48 +314,29 @@ pub fn toast(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
             Button::new(label)
                 .variant(ButtonVariant::Neutral)
                 .control_size(ControlSize::Small)
-                .on_press(Desk::take_offer)
+                .on_press(move |d: &mut Desk| d.take_offer_of(id))
                 .build(&t.kit)
-                .key("toast-offer"),
+                .key(key("toast-offer")),
         ),
         None => toast,
     };
-    let toast = toast.child(icon_button(
-        &icons::CLOSE,
-        "Dismiss",
-        "toast-close",
-        p,
-        Desk::dismiss_notice,
-    ));
-    // The host gives the words a width to wrap at. A phone's prompt sits on
-    // the stage's last row, so a notice there goes to the top instead,
-    // centred, where it is a passing word, not a place to act.
-    let (top, bottom) = if phone {
-        (Some(s.s3), None)
-    } else {
-        (None, Some(s.s3))
-    };
-    // A row gives the words the line's width to wrap at.
-    let line = row().w_full().child(toast);
-    let line = if phone { line.center() } else { line };
-    let region =
-        ToastRegion::new()
-            .toast(line)
-            .build(&t.kit)
-            .pin(Some(s.s3), top, Some(s.s3), bottom);
-    Some(region)
+    toast.child(
+        icon_press(
+            &icons::CLOSE,
+            "Dismiss",
+            key("toast-close"),
+            t,
+            move |d: &mut Desk| d.dismiss_toast(id),
+        )
+        .help("Dismiss"),
+    )
 }
 
 /// The find bar, top right of the pane find belongs to: a field, the
 /// match count, case and the steps. A query that matches nothing is the
 /// field's invalid state (§1.10).
-pub fn find_bar(
-    desk: &Desk,
-    id: &ResourceId,
-    area: [f32; 2],
-    p: &impl AsRef<Tokens>,
-) -> Option<El> {
-    let t = p.as_ref();
+pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Option<El> {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     let find = desk
@@ -360,27 +388,28 @@ pub fn find_bar(
         .child(field)
         .child(text(status).font(readout(t)).color(count.paint()))
         .child(case)
-        .child(icon_button(
-            &icons::ARROW_UP,
-            "Older match",
-            "find-older",
-            p,
-            |d| d.step_find(-1),
-        ))
-        .child(icon_button(
-            &icons::ARROW_DOWN,
-            "Newer match",
-            "find-newer",
-            p,
-            |d| d.step_find(1),
-        ))
-        .child(icon_button(
-            &icons::CLOSE,
-            "Close find",
-            "find-close",
-            p,
-            Desk::close_find,
-        ));
+        .child(
+            icon_press(&icons::ARROW_UP, "Older match", "find-older", p, |d| {
+                d.step_find(-1)
+            })
+            .help("Older match"),
+        )
+        .child(
+            icon_press(&icons::ARROW_DOWN, "Newer match", "find-newer", p, |d| {
+                d.step_find(1)
+            })
+            .help("Newer match"),
+        )
+        .child(
+            icon_press(
+                &icons::CLOSE,
+                "Close find",
+                "find-close",
+                p,
+                Desk::close_find,
+            )
+            .help("Close find"),
+        );
     let bar = glass(
         bar,
         t,
@@ -408,9 +437,9 @@ pub fn history(
     id: &ResourceId,
     frame: &GridFrame,
     area: [f32; 2],
-    p: &impl AsRef<Tokens>,
+    p: &Tokens,
 ) -> Vec<El> {
-    let t = p.as_ref();
+    let t = p;
     let s = &t.space;
     let bar = frame.scrollbar;
     if bar.at_tail() || bar.total == 0 {

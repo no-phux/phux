@@ -248,24 +248,26 @@ fn the_gallery_paints_every_mode() {
         paint(&gpu, &mut rt, DESKTOP, &format!("mode-forced-colors-{tag}"));
 
         let mut rt = fresh();
-        rt.update(|d, _| d.settings.glass = 100);
-        crate::ui::tokens::overrides::set(true, 1.0);
+        rt.update(|d, _| {
+            d.settings.glass = 100;
+            d.set_reduce_transparency(true);
+        });
         paint(
             &gpu,
             &mut rt,
             DESKTOP,
             &format!("mode-reduce-transparency-{tag}"),
         );
-        crate::ui::tokens::overrides::set(false, 1.0);
 
         let mut rt = fresh();
         rt.set_system_reduced_motion(true);
         paint(&gpu, &mut rt, DESKTOP, &format!("mode-reduce-motion-{tag}"));
 
-        crate::ui::tokens::overrides::set(false, fixture::LARGEST_TEXT);
         let mut rt = fresh();
+        rt.update(|d, _| {
+            d.set_text_scale(fixture::LARGEST_TEXT);
+        });
         paint(&gpu, &mut rt, DESKTOP, &format!("mode-largest-text-{tag}"));
-        crate::ui::tokens::overrides::set(false, 1.0);
     }
 }
 

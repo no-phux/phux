@@ -5,13 +5,12 @@ use phux_design::State;
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 
+use super::Tokens;
 use super::sidebar::{strong, weighted};
 use super::tokens::{MONO, Tier};
-// The phone's half of this module reads `TITLEBAR_H` through here.
-use super::{Ink, TITLEBAR_H};
-use super::{Paint, Tokens, badge, button, icon_press, icons, keep_from_pane, tabs, tip};
+use super::{Paint, badge, button, icon_press, icons, keep_from_pane, tabs, tip};
 use crate::desk::link::{Banner, Standing};
-use crate::desk::{Desk, Notice, NoticeKind, Pending};
+use crate::desk::{Desk, Pending};
 use crate::keys::Shortcut;
 use crate::launch::INSTALL;
 
@@ -34,30 +33,6 @@ fn touchable(desk: &Desk, button: El) -> El {
     } else {
         button
     }
-}
-
-/// A notice's words, wrapping; with none it draws nothing. An error is in
-/// the failed tone.
-pub fn notice_line(notice: Option<&Notice>, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
-    let (line, kind) = notice.map_or((String::new(), NoticeKind::Error), |notice| {
-        (notice.text.clone(), notice.kind)
-    });
-    let color = match kind {
-        NoticeKind::Info | NoticeKind::Tip => t.roles.text.text.paint(),
-        NoticeKind::Error => t.roles.status.failed.paint(),
-    };
-    text(line)
-        // A screen reader reads a notice when it comes: an error at once.
-        .role(match kind {
-            NoticeKind::Info | NoticeKind::Tip => "status",
-            NoticeKind::Error => "alert",
-        })
-        .font(t.ty.caption)
-        .color(color)
-        .wrap()
-        .grow(1.0)
-        .min_w(0.0)
 }
 
 /// The refusal says the server is the one behind.
@@ -175,15 +150,10 @@ fn install_line(t: &Tokens) -> El {
 
 /// One of the window's own actions: the shared outlined button, sized to
 /// its words, a Tab stop.
-fn action(
-    label: &'static str,
-    key: &'static str,
-    p: &impl AsRef<Tokens>,
-    press: fn(&mut Desk),
-) -> El {
+fn action(label: &'static str, key: &'static str, p: &Tokens, press: fn(&mut Desk)) -> El {
     button(label, key, p, press)
         .grow(0.0)
-        .px(p.as_ref().space.s3)
+        .px(p.space.s3)
         .focusable(true)
         .role("button")
         .label(label)
@@ -205,7 +175,7 @@ fn said(desk: &Desk, standing: &Standing) -> (String, String) {
 
 /// The one thing to do about `standing`, when there is one. `updates` is
 /// whether this computer's can fix it.
-fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
+fn remedy(standing: &Standing, updates: bool, p: &Tokens) -> Option<El> {
     Some(match standing {
         Standing::Starting | Standing::Installing | Standing::Connecting(_) | Standing::Opening => {
             return None;
@@ -233,7 +203,7 @@ fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
     })
 }
 
-fn retry(p: &Ink) -> El {
+fn retry(p: &Tokens) -> El {
     action("Retry", "placeholder-retry", p, Desk::reconnect)
 }
 
@@ -262,8 +232,8 @@ fn title_line(title: String, failed: bool, t: &Tokens) -> El {
         )
 }
 
-pub fn placeholder(desk: &Desk, p: &Ink) -> El {
-    let t: &Tokens = p.as_ref();
+pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let standing = desk.standing();
     let native = desk.native.is_some();
     let (title, detail) = said(desk, &standing);
@@ -327,8 +297,8 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
 
 /// Over panes that have stopped updating: what happened, and a way to act.
 /// It floats, so it never resizes a terminal. On the raised tier, opaque.
-pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
-    let t: &Tokens = p.as_ref();
+pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
     let s = &t.space;
     let banner = desk.banner()?;
     let machine = desk.machines.label();

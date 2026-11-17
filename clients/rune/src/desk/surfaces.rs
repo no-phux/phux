@@ -62,8 +62,7 @@ pub enum Surface {
     Popup,
     Rename,
     Palette,
-    ContextMenu,
-    /// A kit menu, drawn in the kit layer.
+    /// A kit menu (a terminal's or a tab's context menu among them), drawn in the kit layer.
     Menu(MenuOwner),
     /// A kit select's popup list, drawn in the kit layer.
     Select(SelectOwner),
@@ -86,7 +85,7 @@ impl Surface {
             Self::Popup => Modal::Popup,
             Self::Rename => Modal::Rename,
             Self::Palette => Modal::Palette,
-            Self::ContextMenu | Self::Menu(_) | Self::Select(_) => Modal::ContextMenu,
+            Self::Menu(_) | Self::Select(_) => Modal::ContextMenu,
             Self::Toasts => return None,
         })
     }
@@ -126,10 +125,10 @@ impl Desk {
                 .as_ref()
                 .map(|_| Surface::Rename),
             self.palette_open.then_some(Surface::Palette),
-            self.pointer.menu.map(|_| Surface::ContextMenu),
         ]
         .into_iter()
         .flatten()
+        .chain(self.kit_surfaces())
     }
 
     pub(super) fn foreground(&self) -> Option<Modal> {

@@ -117,8 +117,8 @@ fn diff_pane(diff: Option<&Result<Diff, String>>, t: &Tokens) -> El {
     }
 }
 
-pub fn view(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn view(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     let changes = &desk.connection.changes;
@@ -178,7 +178,6 @@ pub fn view(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
         title: "Changes",
         width: EXTENTS.width,
         top: s.s16,
-        scrim: 0.0,
         close: Desk::close_changes,
     };
     sheet.build(Some(refresh), body, foot, t)

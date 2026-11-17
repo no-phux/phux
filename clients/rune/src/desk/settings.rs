@@ -233,7 +233,7 @@ impl Desk {
     /// terminal. Unknown (before the first layout) counts as wide.
     pub fn sidebar_narrow(&self) -> bool {
         const MIN_STAGE: f32 = 420.0;
-        self.window_w > 0.0 && self.window_w < crate::ui::SIDEBAR_W + MIN_STAGE
+        self.window_w > 0.0 && self.window_w < phux_design::tokens::SPACE.sidebar_w + MIN_STAGE
     }
 
     /// Whether the sidebar is drawn.

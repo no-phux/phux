@@ -12,7 +12,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize};
 use super::badge::tone_badge;
 use super::settings::{grown, medium, semibold};
 use super::tokens::{Paint, Tier, Tokens};
-use super::{Ink, icons, panes};
+use super::{icons, panes};
 use crate::desk::Desk;
 use crate::desk::onboarding::{Migrate, Probe};
 use crate::keys::{self, Shortcut};
@@ -77,13 +77,13 @@ const GEOMETRY: Geometry = Geometry {
 
 /// The terminal area: the step when onboarding is open, the panes otherwise,
 /// and both while the migration's agent works.
-pub fn stage(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+pub fn stage(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
     // The grant sheet moves the window in device pixels.
     desk.scale.set(cx.env().scale);
     if !desk.onboarding.open || desk.bare.is_some() {
         return panes::view(desk, p, cx);
     }
-    let t: &Tokens = p.as_ref();
+    let t = p;
     desk.onboarding.fox.still.set(cx.is_reduced_motion());
     let ground = t.roles.layer.ground.paint();
     let step = panes::card(

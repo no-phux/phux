@@ -31,9 +31,13 @@ fn window(size: (f32, f32), phone: bool, dark: bool, mode: Mode) -> Runtime<Desk
         Mode::LargestText => f32::from(LARGEST) / 100.0,
         _ => 1.0,
     };
-    crate::ui::tokens::overrides::set(false, scale);
     let mut desk = crate::test_support::settings_window().with_phone(phone);
     desk.settings.theme = None;
+    // The desktop's chrome text size, and the phone's nearest iOS size.
+    desk.set_text_scale(scale);
+    if scale > 1.0 {
+        desk.set_accessibility(false, "UICTContentSizeCategoryXXXL");
+    }
     let mut rt = Runtime::new(desk, crate::ui::view, size, Env::new(dark, 1.0));
     rt.on_key = Some(Desk::key);
     rt.set_srgb_blend(true);
@@ -98,14 +102,12 @@ fn settings_render_in_every_mode_and_size() {
             }
         }
     }
-    crate::ui::tokens::overrides::set(false, 1.0);
 }
 
 /// The kit switch is a switch with its state, every row a Tab stop, and the
 /// increased-contrast tokens reach the window (§1.11).
 #[test]
 fn increased_contrast_reaches_settings_and_rows_stay_switches() {
-    crate::ui::tokens::overrides::set(false, 1.0);
     let mut rt = window((1100.0, 720.0), false, false, Mode::ContrastMore);
     rt.update(|d, tx| {
         tx.instant();

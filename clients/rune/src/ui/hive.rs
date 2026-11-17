@@ -11,15 +11,16 @@
 //! the vignette; then the selection ring, name pills, the bees' press
 //! targets and the readout.
 
+use crate::ui::Paint;
 use std::f32::consts::TAU;
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::Tokens;
 use super::playground::edges::edges;
 use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels;
 use super::playground::pen::{Pen, clip_convex, rgba};
-use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::hive::{Hive, RANKS, place_pills};
@@ -69,9 +70,11 @@ fn hgrad(pen: &mut Pen, x: f32, y: f32, w: f32, h: f32, n: usize, at: impl Fn(f3
     }
 }
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = &p.tokens;
-    desk.hive.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.hive
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.hive.still.set(cx.is_reduced_motion());
     let h = &desk.hive.scene;
     let count = |m: Mood| h.bees.iter().filter(|b| b.who.mood == m).count();
@@ -89,7 +92,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .clip_rounded(0.0)
         .modal(false, Desk::close_hive)
         .label(summary)

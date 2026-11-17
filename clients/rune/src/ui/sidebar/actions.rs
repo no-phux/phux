@@ -43,7 +43,7 @@ mod tests {
     }
 
     fn header(_: &Desk, _: &mut Cx<Desk>) -> El {
-        let ink = crate::ui::ink(true, rune::Color::WHITE, None);
+        let ink = crate::ui::tokens_for(true, None);
         let t: &Tokens = ink.as_ref();
         let header = row()
             .size(t.space.sidebar_w, t.space.row_h)
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn a_satellite_exposes_no_close_button() {
         fn satellite(_: &Desk, _: &mut Cx<Desk>) -> El {
-            let ink = crate::ui::ink(true, rune::Color::WHITE, None);
+            let ink = crate::ui::tokens_for(true, None);
             session_controls(None, "satellite", ink.as_ref())
         }
         let desk = crate::test_support::window();

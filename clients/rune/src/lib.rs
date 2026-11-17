@@ -9,7 +9,6 @@ mod alerts;
 mod askpass;
 mod connect;
 mod creature;
-#[allow(clippy::disallowed_methods)] // unconverted: A2 asks lane A to remove this
 mod desk;
 mod diag;
 mod dock;

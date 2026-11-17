@@ -10,6 +10,10 @@ use crate::desk::Desk;
 /// A forced interaction state (§1.10). `Rest` is the live row: it shows
 /// hover and press itself. The others paint that state still, for the
 /// gallery's `states` page.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the gallery's states page forces each look")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) enum State {
     #[default]
@@ -21,6 +25,10 @@ pub(crate) enum State {
     Invalid,
 }
 
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the gallery's states page forces each look")
+)]
 impl State {
     pub(crate) const ALL: [Self; 6] = [
         Self::Rest,
@@ -45,13 +53,12 @@ impl State {
 
 type Press = Box<dyn Fn(&mut Desk)>;
 
-/// One row: an optional leading mark, a title, a detail, a trailing slot.
+/// One row: an optional leading mark, a title and a detail.
 pub(crate) struct Row {
     key: String,
     title: String,
     detail: Option<String>,
     leading: Option<El>,
-    trailing: Option<El>,
     selected: bool,
     current: bool,
     mono: bool,
@@ -66,7 +73,6 @@ impl Row {
             title: title.into(),
             detail: None,
             leading: None,
-            trailing: None,
             selected: false,
             current: false,
             mono: false,
@@ -86,12 +92,11 @@ impl Row {
         self
     }
 
-    pub(crate) fn trailing(mut self, slot: El) -> Self {
-        self.trailing = Some(slot);
-        self
-    }
-
     /// The selected row: the one §1.10 treatment.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the gallery's states page forces each look")
+    )]
     pub(crate) const fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
@@ -109,11 +114,19 @@ impl Row {
         self
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the gallery's states page forces each look")
+    )]
     pub(crate) const fn state(mut self, state: State) -> Self {
         self.state = state;
         self
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the gallery's states page forces each look")
+    )]
     pub(crate) fn on_press(mut self, press: impl Fn(&mut Desk) + 'static) -> Self {
         self.press = Some(Box::new(press));
         self
@@ -158,8 +171,7 @@ impl Row {
                     .shrink()
                     .a11y_hidden()
             }))
-            .child(el().grow(1.0))
-            .children(self.trailing);
+            .child(el().grow(1.0));
         e = wash(e, t, self.selected, self.current, self.state);
         if disabled {
             return e.disabled(true);

@@ -498,8 +498,8 @@ fn desktop(desk: &Desk, t: &Tokens) -> El {
         .child(t.elevate(panel, Tier::Overlay))
 }
 
-pub fn view(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn view(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     match desk.phone {
         Some(_) => phone(desk, t),
         None => desktop(desk, t),

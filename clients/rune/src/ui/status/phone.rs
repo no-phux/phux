@@ -7,7 +7,7 @@ use rune::El;
 use phux_design::tokens::SPACE;
 
 use super::super::phone::top_bar_height;
-use super::{Ink, TITLEBAR_H, action, server_behind};
+use super::{Tokens, action, server_behind};
 use crate::desk::Desk;
 use crate::desk::link::Standing;
 
@@ -19,7 +19,7 @@ fn confirmation() -> f32 {
 /// A desktop banner's top: under the title bar, and under a held
 /// confirmation's bar when there is one.
 fn desktop_top(held: bool) -> f32 {
-    let top = TITLEBAR_H + SPACE.s1 + SPACE.s0_5;
+    let top = SPACE.titlebar_h + SPACE.s1 + SPACE.s0_5;
     if held {
         top + SPACE.s12 + SPACE.s1
     } else {
@@ -62,7 +62,7 @@ pub(super) fn slow_dial(desk: &Desk, standing: &Standing) -> bool {
 }
 
 /// Back to the host's pairing, which is where the phone's computers are.
-pub(super) fn pair_again(key: &'static str, p: &Ink) -> El {
+pub(super) fn pair_again(key: &'static str, p: &Tokens) -> El {
     action("Pair again", key, p, Desk::toggle_machines)
 }
 
@@ -78,7 +78,7 @@ pub(super) fn banner_top(desk: &Desk) -> f32 {
     let inset = if desk.native.is_some() {
         0.0
     } else {
-        TITLEBAR_H
+        SPACE.titlebar_h
     };
     inset + top_bar_height() + SPACE.s1 + if held { confirmation() } else { 0.0 }
 }

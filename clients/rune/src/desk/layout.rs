@@ -240,7 +240,7 @@ impl Desk {
         self.connection.split_sizes
             .get(path)
             // The divider's own width is not either side's.
-            .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - crate::ui::DIVIDER)
+            .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - phux_design::tokens::SPACE.card_gap)
     }
 
     /// A divider drag: preview the ratio locally, and write it on release.

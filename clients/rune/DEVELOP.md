@@ -181,8 +181,9 @@ The chrome draws only from `ui::tokens::Tokens`, built per appearance from
 phux-brand's tokens through `phux_design` ([design language](../../docs/design-language.md)).
 `Tokens::for_window` gives the window's (the chosen theme derived, or the
 house look in the system appearance; the increased-contrast variant and
-forced colours when the system asks); `Tokens::for_ground` gives the phone's,
-from the terminal's own ground. Memos key on `tokens.version`, never on a
+forced colours when the system asks); `Tokens::for_phone` gives the phone's,
+in the terminal ground's mode at the iOS text size. Both read reduce
+transparency and the text size from `Desk`. Memos key on `tokens.version`, never on a
 theme id: Omarchy swaps palettes under one id.
 
 - Colours are roles (`t.roles.layer.raised`, `t.roles.status.needs_you_wash`),
@@ -197,16 +198,15 @@ theme id: Omarchy swaps palettes under one id.
 - Kit overlays mount above the window through `ui::kit_overlay`, and their
   open state is a `Surface` (`Menu`, `Select`, `Toasts`).
 
-`Ink` stays, filled from the tokens and carrying them (`p.tokens`), until
-every view has converted; Lane A's last commit deletes it.
-
 Two guards keep raw styling out. `clippy.toml` disallows the raw calls
-(`El::shadow`, `TextStyle::new`, `Color::alpha`, …); unconverted modules
-carry an outer `#[allow(clippy::disallowed_methods)]` on their `mod` item,
-which goes when the module converts. `scripts/style_literals.py` counts raw
-literals per file against `scripts/style_literals.baseline.json`; a count
-may fall and never rise. Owner paths (`src/ui/tokens*`, `src/theme*`) and
-the scene art are exempt. `just rune-gallery DIR` paints every snapshot
+(`El::shadow`, `TextStyle::new`, `Color::alpha`, …); only owner and art
+modules carry an outer `#[allow(clippy::disallowed_methods)]` on their
+`mod` item (`ui::tokens`, `theme`, `grid`, the scenes, the onboarding
+windows). `scripts/style_literals.py` counts raw literals per file against
+`scripts/style_literals.baseline.json`, which is empty: a new literal fails.
+Owner paths (`src/ui/tokens*`, `src/theme*`, the terminal's own `src/grid*`),
+the scene art and test fixtures are exempt, and a literal `const` counts
+only in a view (`src/ui*`, `src/features/`). `just rune-gallery DIR` paints every snapshot
 suite, the design fixture included, blended in sRGB as the app is.
 
 ### Kit deviations
@@ -230,6 +230,15 @@ The gallery's states page paints each, so a kit bump is reviewed.
 | No spacing scale in the kit; `INDENT` 16 is a constant | Kit settings are set from `t.space` | kit `Space` tokens |
 | `SplitView`'s 48 pt band and opaque root | Not adopted | `band_height`, a ground-fill option |
 | No kit slider | Settings' glass slider is phux's own | a kit `Slider` |
-| No reduce-transparency, low-power or layout-direction API on `Cx` | Reduce transparency reaches tokens through `tokens::overrides` until `Desk` reads the platform; the `ar` gallery page shows the script, not mirrored chrome | `cx.reduced_transparency()`, `cx.low_power()`, a layout direction |
+| No reduce-transparency, low-power or layout-direction API on `Cx` | `Desk` reads reduce transparency itself (macOS `NSWorkspace`, the iOS bridge's `phux_rune_ios_traits`) with the iOS text size, and `Tokens` hashes both into `version`; the `ar` gallery page shows the script, not mirrored chrome | `cx.reduced_transparency()`, `cx.low_power()`, a layout direction |
 | `SystemMaterial` has no iOS implementation | Phone glass is `backdrop_blur` only | `SystemMaterial` on iOS |
-| `cx.web_focus()` (every pressable a Tab stop) | Not yet on: with it, Enter no longer blurs Settings search and the update card's action joins Tab order; the lanes that own those switch it on with their focus changes | — |
+| `cx.web_focus()` (every pressable a Tab stop) | Off: it moves a modal's first focus onto its first control and focuses a control on press, so Enter no longer blurs Settings search (phone and window), the phone's top buttons and browser take focus, and a pointer-opened context menu walks from a different item. Rows, tabs and kit controls are focusable without it, and the update card's action is a Tab stop | a web-focus mode that leaves a modal's first focus to `El::autofocus` |
+| Kit `TextInput` keys its editor `input` | Fields stay Rune `text_input` in a control-outline shell (`border.control`, `radius.sm`, the invalid state): native IME and tests find `palette-query`, `find-query`, `inbox-reply`, `settings-query`, `machine-field`, `rename-field` and the ACP fields by their own keys | `TextInput` takes an editor key |
+| Kit `DiffView` tints from status tones and solves its own syntax hues | The changes diff is phux's own on `diff.*` and `syntax.*` (D8) | `DiffView` takes explicit diff and syntax roles |
+| Kit `Toast` view: fixed width 320, truncated title, close named "Close", unkeyed actions | The toast is phux's own on tokens inside the kit `ToastRegion`, drawing the desk's kit `ToastStack` | `Toast` width, wrap and keys |
+| `SegmentedControl` fixed height 28 | Find's case toggle is a one-segment control; the update channel is phux's own 44 pt radio group (touch minimum) | a height setting |
+| Kit `Sidebar` puts every child in one `focus_follows` group and owns the scroll | The window's sidebar is phux's own list (`sidebar-list`, a following focus group) with other machines in their own non-following group of kit `SidebarRow`s; buttons inside rows are pointer-only, with reasons | a Sidebar section that does not follow focus |
+| Kit button heights are fixed | Kit buttons get `.min_h(line + pad)` so they grow with the text size | buttons that size from their type |
+| Kit `Switch` carries no row semantics | The setting row carries the switch role, name, description and state; the kit control inside it is `focusable(false)` and hidden from assistive tech | a switch row |
+| Kit `Checkbox` label uses the kit's small type | Accepted | label type from `k.ty` roles |
+| Kit `Select` needs its own open state | `Desk` holds it (`select_open`, `toggle_select`); the font setting stays a cycling row until it adopts one | — |

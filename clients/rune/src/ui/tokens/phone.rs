@@ -15,13 +15,10 @@ use rune::{Color, Cx};
 
 use super::{Inputs, Tokens, Type, forced, style};
 use crate::desk::Desk;
+use crate::desk::accessibility::ContentSize;
 use crate::theme::Theme;
 
 const SOURCE: &str = include_str!("../../../../../crates/phux-design/tokens/phux.tokens.json");
-
-/// Chrome beside the terminal grid stops growing here, so the grid keeps
-/// its rows at the largest text sizes (`ChromeScale.gridCapped`, §1.4).
-pub(crate) const GRID_CAP: f32 = 1.35;
 
 /// The phone's values from the brand document.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,44 +85,6 @@ pub(crate) fn page_margin() -> f32 {
     form().page_margin
 }
 
-/// The factor iOS `UIFontMetrics` applies to body text at a
-/// `UIContentSizeCategory` (its raw value), against Large, the default.
-/// An unknown category reads as Large.
-pub(crate) fn content_scale(category: &str) -> f32 {
-    let body = match category.strip_prefix("UICTContentSizeCategory") {
-        Some("XS") => 14.0,
-        Some("S") => 15.0,
-        Some("M") => 16.0,
-        Some("XL") => 19.0,
-        Some("XXL") => 21.0,
-        Some("XXXL") => 23.0,
-        Some("AccessibilityM") => 28.0,
-        Some("AccessibilityL") => 33.0,
-        Some("AccessibilityXL") => 40.0,
-        Some("AccessibilityXXL") => 47.0,
-        Some("AccessibilityXXXL") => 53.0,
-        _ => 17.0,
-    };
-    body / 17.0
-}
-
-/// What the phone's host reports that Rune has no API for: the system text
-/// size and Reduce Transparency (§4.1.6). Main-thread state, as every host
-/// call is; the bridge sets it, the phone's tokens read it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Traits {
-    /// [`content_scale`] of the reported category.
-    pub(crate) scale: f32,
-    pub(crate) reduce_transparency: bool,
-}
-
-impl Traits {
-    pub(crate) const DEFAULT: Self = Self {
-        scale: 1.0,
-        reduce_transparency: false,
-    };
-}
-
 /// The system contrast the phone's view read on its latest run, for the
 /// surfaces it hosts that have no `Cx` (and the host's edge colour).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -135,17 +94,7 @@ struct System {
 }
 
 thread_local! {
-    static TRAITS: Cell<Traits> = const { Cell::new(Traits::DEFAULT) };
     static SYSTEM: Cell<System> = Cell::new(System::default());
-}
-
-pub(crate) fn traits() -> Traits {
-    TRAITS.get()
-}
-
-/// Record what the host reported. Returns whether anything changed.
-pub(crate) fn set_traits(traits: Traits) -> bool {
-    TRAITS.replace(traits) != traits
 }
 
 /// Note the system contrast for this run of the phone's view; every
@@ -165,28 +114,33 @@ pub(crate) enum Scale {
 }
 
 impl Scale {
-    pub(crate) fn of(self, traits: Traits) -> f32 {
+    /// The factor for the reported `size`.
+    pub(crate) fn of(self, size: ContentSize) -> f32 {
         match self {
-            Self::Free => traits.scale,
-            Self::GridCapped => traits.scale.min(GRID_CAP),
+            Self::Free => size.factor(),
+            Self::GridCapped => size.grid_capped(),
         }
     }
 }
 
 impl Tokens {
     /// The phone's tokens (§4.1.5): `theme` when its mode is `dark`'s, else
-    /// the house look in that mode, at the reported text size, with the
-    /// observed system contrast and the host's Reduce Transparency. Cached
-    /// as every `Tokens` is.
-    pub(crate) fn for_phone(dark: bool, theme: Option<&Theme>, scale: Scale) -> Rc<Self> {
-        let traits = traits();
+    /// the house look in that mode, at the text size the host reported,
+    /// with the observed system contrast and the host's Reduce
+    /// Transparency (both in `Desk`). Cached as every `Tokens` is.
+    pub(crate) fn for_phone(
+        desk: &Desk,
+        dark: bool,
+        theme: Option<&Theme>,
+        scale: Scale,
+    ) -> Rc<Self> {
         let system = SYSTEM.get();
         Self::resolve(&Inputs {
             theme: theme.filter(|t| t.dark == dark).copied(),
             increased_contrast: system.increased_contrast,
             forced: system.forced,
-            reduce_transparency: traits.reduce_transparency,
-            type_scale: scale.of(traits),
+            reduce_transparency: desk.reduce_transparency(),
+            type_scale: scale.of(desk.content_size()),
             ..Inputs::system(dark)
         })
     }
@@ -229,17 +183,12 @@ mod tests {
 
     #[test]
     fn text_size_follows_ios_and_caps_beside_the_grid() {
-        assert!((content_scale("UICTContentSizeCategoryL") - 1.0).abs() < f32::EPSILON);
-        assert!((content_scale("not a category") - 1.0).abs() < f32::EPSILON);
-        let ax5 = content_scale("UICTContentSizeCategoryAccessibilityXXXL");
-        assert!(ax5 > 3.0);
-        assert!(content_scale("UICTContentSizeCategoryXS") < 1.0);
-        let traits = Traits {
-            scale: ax5,
-            reduce_transparency: false,
-        };
-        assert!((Scale::Free.of(traits) - ax5).abs() < f32::EPSILON);
-        assert!((Scale::GridCapped.of(traits) - GRID_CAP).abs() < f32::EPSILON);
-        assert!((ty(ax5).body.size - 14.0 * ax5).abs() < 0.01);
+        use crate::desk::accessibility::GRID_CAP;
+        let ax5 = ContentSize::from_category("UICTContentSizeCategoryAccessibilityXXXL");
+        assert!(ax5.factor() > 3.0);
+        assert!((Scale::Free.of(ax5) - ax5.factor()).abs() < f32::EPSILON);
+        assert!((Scale::GridCapped.of(ax5) - GRID_CAP).abs() < f32::EPSILON);
+        assert!((Scale::Free.of(ContentSize::Large) - 1.0).abs() < f32::EPSILON);
+        assert!((ty(ax5.factor()).body.size - 14.0 * ax5.factor()).abs() < 0.01);
     }
 }

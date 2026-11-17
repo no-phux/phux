@@ -63,14 +63,11 @@ pub fn set_accessibility(
     reduce_transparency: bool,
     content_size: &str,
 ) {
-    use crate::ui::tokens::phone::{Traits, content_scale, set_traits};
-    let changed = set_traits(Traits {
-        scale: content_scale(content_size),
-        reduce_transparency,
+    rt.update(|state, tx| {
+        if state.set_accessibility(reduce_transparency, content_size) {
+            tx.instant();
+        }
     });
-    if changed {
-        rt.update(|_, tx| tx.instant());
-    }
 }
 
 /// One step of text size from the host's pinch, kept like any other.

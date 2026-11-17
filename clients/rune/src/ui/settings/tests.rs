@@ -12,7 +12,7 @@ mod overflow;
 mod quick;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let ink = super::super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let ink = super::super::tokens_for(cx.system_dark(), desk.settings.theme);
     view(desk, &ink)
 }
 

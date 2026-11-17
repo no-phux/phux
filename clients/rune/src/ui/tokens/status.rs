@@ -29,7 +29,6 @@ pub(crate) struct StateInk {
     /// for unknown, which shows the provider's name.
     pub(crate) word: Option<&'static str>,
     pub(crate) bold: bool,
-    pub(crate) rank: u32,
 }
 
 /// Every tone of the window's roles.
@@ -85,7 +84,6 @@ impl StatusInk {
             icon: icon(state),
             word: state.word(),
             bold: mark.bold,
-            rank: mark.rank,
         }
     }
 }

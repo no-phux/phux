@@ -10,7 +10,7 @@ use rune::{Cursor, El, Key, col, el, row, text};
 
 use super::phone::{Look, ground_look, medium, touchable};
 use super::tokens::{Paint, Tier};
-use super::{Ink, panes};
+use super::{Tokens, panes};
 use crate::desk::Desk;
 use crate::desk::phone::{
     Phone,
@@ -23,7 +23,7 @@ fn map_size(p: &Look) -> (f32, f32) {
     (p.space.s12 * 2.0, p.space.s16)
 }
 
-pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
+pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
     let Some(shown) = desk.connection.shown.as_ref() else {
         return area;
     };
@@ -33,7 +33,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Ink, area: El) -> El {
     let Some((_, focus)) = all.iter().find(|(id, _)| id == &shown.resource) else {
         return area;
     };
-    let page = Look::of(ink);
+    let page = super::phone::page_look(desk);
     let content = canvas(desk, phone, &all, *focus, ink, &page);
     let content = if desk.phone_content_blocked() {
         content.inert()
@@ -117,7 +117,7 @@ fn canvas(
     phone: &Phone,
     all: &[(ResourceId, Rect)],
     focus: Rect,
-    ink: &Ink,
+    ink: &Tokens,
     p: &Look,
 ) -> El {
     let fallback = spatial::camera_fallback(focus, phone.stage);

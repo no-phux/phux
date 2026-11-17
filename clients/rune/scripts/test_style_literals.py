@@ -53,8 +53,14 @@ class Patterns(unittest.TestCase):
             ".w(0.0)",
             "// .radius(7.0) in a comment",
             "const MAX: usize = 4;",
+            "const GAP: f32 = SPACE.s3;",
         ]:
             self.assertEqual(style_literals.count(snippet), 0, snippet)
+
+    def test_a_constant_outside_a_view_is_not_style(self):
+        self.assertEqual(style_literals.count("const SLOP: f32 = 8.0;", "src/desk/touch.rs"), 0)
+        self.assertEqual(style_literals.count("const R: f32 = 7.0;", "src/ui/sidebar.rs"), 1)
+        self.assertEqual(style_literals.count(".radius(7.0)", "src/desk/touch.rs"), 1)
 
     def test_owner_and_art_paths_are_exempt(self):
         self.assertTrue(style_literals.exempt("src/ui/tokens.rs", ""))
@@ -63,6 +69,9 @@ class Patterns(unittest.TestCase):
         self.assertTrue(style_literals.exempt("src/pitch/ground.rs", ""))
         self.assertTrue(style_literals.exempt("src/ui/galaxy/sky.rs", ""))
         self.assertTrue(style_literals.exempt("src/ui/x.rs", "//! style-literals: illustration\n"))
+        self.assertTrue(style_literals.exempt("src/grid.rs", ""))
+        self.assertTrue(style_literals.exempt("src/ui/sidebar/tests.rs", ""))
+        self.assertTrue(style_literals.exempt("src/ui/gallery_tests/fixture.rs", ""))
         self.assertFalse(style_literals.exempt("src/ui/sidebar.rs", ""))
 
     def test_the_check_refuses_growth_and_new_files(self):
@@ -73,6 +82,11 @@ class Patterns(unittest.TestCase):
 
 
 class Tree(unittest.TestCase):
+    def test_the_baseline_is_empty(self):
+        # §5.1's end state: no raw style literal outside owner and art paths.
+        baseline = json.loads(style_literals.BASELINE.read_text(encoding="utf-8"))
+        self.assertEqual(baseline, {})
+
     def test_the_tree_is_within_its_baseline(self):
         baseline = json.loads(style_literals.BASELINE.read_text(encoding="utf-8"))
         self.assertEqual(style_literals.check(style_literals.scan(), baseline), [])

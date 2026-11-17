@@ -28,21 +28,6 @@ pub fn watch(waker: rune::Waker) {
     portal::watch(waker);
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the lanes' contrast tests read it")
-)]
-/// What a word-carrying ink clears on every surface it lands on: WCAG AA
-/// (`text_floor`, §2.4).
-pub const TEXT_BAR: f32 = 4.5;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the lanes' contrast tests read it")
-)]
-/// The bar for what is not text: marks, outlines, the focus ring, host
-/// colours (WCAG 1.4.11's 3:1).
-pub const DIM_BAR: f32 = 3.0;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub id: &'static str,
@@ -73,23 +58,13 @@ pub fn contrast(a: Color, b: Color) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
-/// Black or white, whichever reads on `fill`. One always clears `TEXT_BAR`.
+/// Black or white, whichever reads on `fill`. One always clears WCAG AA.
 pub fn on_fill(fill: Color) -> Color {
     if contrast(Color::WHITE, fill) >= contrast(Color::BLACK, fill) {
         Color::WHITE
     } else {
         Color::BLACK
     }
-}
-
-/// The agent marks, which double as words in the inbox and sidebar.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Marks {
-    pub alert: Color,
-    pub done: Color,
-    pub bell: Color,
-    pub working: Color,
-    pub good: Color,
 }
 
 /// The terminal's selection colours.
@@ -126,63 +101,11 @@ impl Selection {
     }
 }
 
-/// A theme's chrome inks as views read them before `Tokens`: the lane
-/// period's shim over the derived roles. Deleted with `Ink`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Roles {
-    pub text: Color,
-    pub dim: Color,
-    pub accent: Color,
-    pub on_accent: Color,
-    pub danger: Color,
-    /// The rule between the window's regions, opaque over the ground.
-    pub edge: Color,
-    pub marks: Marks,
-    pub selection: Selection,
-}
-
-impl Roles {
-    /// The legacy view of `roles`.
-    pub fn of(r: &phux_design::Roles) -> Self {
-        use crate::ui::tokens::Paint;
-        Self {
-            text: r.text.text.paint(),
-            dim: r.text.dim.paint(),
-            accent: r.accent.accent_text.paint(),
-            on_accent: phux_design::solve::on_fill(
-                r.accent.accent_text.rgb(),
-                phux_design::Params::house().srgb_lut,
-            )
-            .paint(),
-            danger: r.status.failed.paint(),
-            edge: r.flat.ground.border.base.paint(),
-            marks: Marks {
-                alert: r.status.failed.paint(),
-                done: r.status.done.paint(),
-                bell: r.status.bell.paint(),
-                working: r.status.working.paint(),
-                good: r.status.done.paint(),
-            },
-            selection: Selection {
-                foreground: r.selection.fg.paint(),
-                background: r.selection.bg.paint(),
-            },
-        }
-    }
-}
-
 impl Theme {
     /// The house terminal palette for the system appearance: the grid
     /// matches the chrome with no theme picked.
     pub fn system_terminal(dark: bool) -> Option<TerminalTheme> {
         Some(builtin::required(if dark { "phux" } else { "phux-light" }).terminal())
-    }
-
-    /// This theme's roles, solved by `phux_design` (§2): the lane-period
-    /// shim for views not yet on `Tokens`.
-    pub fn roles(&self) -> Roles {
-        let input = crate::ui::tokens::theme_input(self);
-        Roles::of(&phux_design::derive(&input, &phux_design::Params::house()))
     }
 
     /// The engine's defaults for every replica.

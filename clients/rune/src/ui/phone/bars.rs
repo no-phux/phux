@@ -105,7 +105,7 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
     )
     .expanded(desk.news.open)
     .on_press(Desk::toggle_news)
-    .children(news::unread_dot(desk, &p.ink(), dot, s.s2));
+    .children(news::unread_dot(desk, p, dot, s.s2));
     row()
         .key("phone-top")
         .w_full()

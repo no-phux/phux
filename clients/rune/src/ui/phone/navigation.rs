@@ -14,15 +14,15 @@ use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
 use crate::keys::{self, Shortcut};
 use crate::ui::tokens::{Paint, Tier};
-use crate::ui::{Ink, badge, icons, pressable};
+use crate::ui::{badge, icons, pressable};
 
 mod resource;
 use crate::ui::Cover;
 use resource::resource_row;
 
-pub(in crate::ui) fn view(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
+pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let page = desk.phone_page()?;
-    let p = &Look::of(ink);
+    let p = &super::page_look(desk);
     let s = &p.space;
     let title = match page {
         Page::Sessions => "Sessions",

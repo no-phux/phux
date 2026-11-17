@@ -1,12 +1,11 @@
 //! The chrome's shared controls under their long-standing names: sheets,
 //! presses, keycaps, tooltips, buttons. Each takes anything that holds the
-//! window's [`Tokens`] (`Ink` during the lanes, `Tokens` after) and is
-//! built only from tokens and the kit.
+//! window's [`Tokens`] and is built only from tokens and the kit.
 
 use rune::{El, Transition, col, el, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Keybind};
 
-use super::tokens::{Paint, Tier, Tokens};
+use super::tokens::{Paint, SHEET_MAX_H, Tier, Tokens};
 use crate::desk::Desk;
 
 /// A modal sheet (§4.1.3 OWN): scrim, header with a close button,
@@ -19,21 +18,14 @@ pub(crate) struct Sheet {
     pub(crate) width: f32,
     /// Where the sheet sits when the window has room for that.
     pub(crate) top: f32,
-    /// Unused: every modal draws the one `layer.scrim` (§1.2). Kept until
-    /// the lanes stop setting it.
-    #[allow(dead_code, reason = "the lanes still set it")]
-    pub(crate) scrim: f32,
     pub(crate) close: fn(&mut Desk),
 }
-
-/// The tallest a sheet grows before its body scrolls.
-const MAX_H: f32 = 620.0;
 
 impl Sheet {
     /// `body` scrolls when the window can't hold it; the header and `foot`
     /// always show, down to the smallest window.
-    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &impl AsRef<Tokens>) -> El {
-        let t = p.as_ref();
+    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Tokens) -> El {
+        let t = p;
         let s = &t.space;
         let line = || rune::rule(s.hairline, t.roles.border.base.paint()).w_full();
         let header = row()
@@ -62,7 +54,7 @@ impl Sheet {
             // A narrow window (the phone form) takes what it has.
             .w_full()
             .max_w(self.width)
-            .max_h(MAX_H)
+            .max_h(SHEET_MAX_H)
             .shrink()
             .min_h(0.0)
             .radius(t.radius.lg)
@@ -109,14 +101,14 @@ pub(crate) fn icon_press(
     glyph: &'static rune::Icon,
     name: &'static str,
     key: impl Into<String>,
-    p: &impl AsRef<Tokens>,
+    p: &Tokens,
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
     IconButton::new(glyph)
         .variant(IconButtonVariant::Ghost)
         .label(name)
         .on_press(press)
-        .build(&p.as_ref().kit)
+        .build(&p.kit)
         .key(key)
 }
 
@@ -135,22 +127,21 @@ impl Cover for El {
 /// its place while held (§1.10), and the pointer. Key errors name the
 /// caller, not this.
 #[track_caller]
-pub(crate) fn pressable(key: impl Into<String>, p: &impl AsRef<Tokens>) -> El {
-    p.as_ref()
-        .kit
+pub(crate) fn pressable(key: impl Into<String>, p: &Tokens) -> El {
+    p.kit
         .interactive(el().key(key))
         .cursor(rune::Cursor::Pointer)
 }
 
 /// The selected row or tab: §1.10's one treatment.
-pub(crate) fn lifted(el: El, p: &impl AsRef<Tokens>) -> El {
-    super::rows::lifted(el, p.as_ref())
+pub(crate) fn lifted(el: El, p: &Tokens) -> El {
+    super::rows::lifted(el, p)
 }
 
 /// A key as the chrome draws one, wherever it names a chord (kit `Keybind`).
-pub(crate) fn keycap(key: impl Into<String>, p: &impl AsRef<Tokens>) -> El {
+pub(crate) fn keycap(key: impl Into<String>, p: &Tokens) -> El {
     let key: String = key.into();
-    Keybind::new(&[key]).build(&p.as_ref().kit).a11y_hidden()
+    Keybind::new(&[key]).build(&p.kit).a11y_hidden()
 }
 
 /// A tooltip for `el`: what pressing it does, and the chord that does the
@@ -164,10 +155,10 @@ pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcu
 pub(crate) fn button(
     label: &'static str,
     key: &'static str,
-    p: &impl AsRef<Tokens>,
+    p: &Tokens,
     press: fn(&mut Desk),
 ) -> El {
-    let t = p.as_ref();
+    let t = p;
     pressable(key, p)
         .grow(1.0)
         .min_h(t.space.pointer_min)

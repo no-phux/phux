@@ -39,12 +39,20 @@ PATTERNS = {
     "border": r"\.border\(\s*[0-9]",
     "hex": r"0x[0-9a-fA-F]{6}\b",
     "color_struct": r"Color\s*\{\s*r\s*:",
-    "const": r"const\s+\w+\s*:\s*(?:f32|TextStyle|Color)\b",
+    # A local style constant with a literal value: `const R: f32 = 7.0;`
+    # then `.radius(R)`. A constant naming a token (`= SPACE.s3`) is fine.
+    "const": r"const\s+\w+\s*:\s*(?:f32|TextStyle|Color)\s*=\s*(?:-?[0-9]|TextStyle::new|Color\s*\{)",
 }
 COMPILED = {name: re.compile(p) for name, p in PATTERNS.items()}
 
-# Where literals are legal: the token definitions.
-OWNERS = ("src/ui/tokens.rs", "src/ui/tokens/", "src/theme.rs", "src/theme/")
+# Local style constants are a view's bypass; elsewhere (gesture slop, font
+# size limits, timing) a constant is not style.
+VIEWS = ("src/ui.rs", "src/ui/", "src/features/")
+
+# Where literals are legal: the token definitions, and the terminal's own
+# drawing (`src/grid*`: cell geometry, the cursor and SGR underlines are VT
+# content, not chrome).
+OWNERS = ("src/ui/tokens.rs", "src/ui/tokens/", "src/theme.rs", "src/theme/", "src/grid.rs", "src/grid/")
 # Illustration art: scenes, their painters and the onboarding windows.
 SCENES = ("pitch", "reef", "hive", "kitchen", "galaxy", "pitlane")
 ART = tuple(
@@ -55,8 +63,15 @@ ART = tuple(
 )
 
 
+def is_test(rel):
+    """Test fixtures lay out at whatever size the case needs."""
+    *dirs, name = rel.split("/")
+    in_tests = any(d == "tests" or d.endswith("_tests") for d in dirs)
+    return in_tests or name in ("tests.rs", "test_support.rs") or name.endswith("_tests.rs")
+
+
 def exempt(rel, text):
-    return rel.startswith(OWNERS) or rel.startswith(ART) or HEADER in text[:2000]
+    return rel.startswith(OWNERS) or rel.startswith(ART) or is_test(rel) or HEADER in text[:2000]
 
 
 def strip_comments(text):
@@ -64,9 +79,12 @@ def strip_comments(text):
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
-def count(text):
+def count(text, rel=None):
+    """Raw literals in `text`; local style constants only in a view (`rel`
+    of None counts as one)."""
     body = strip_comments(text)
-    return sum(len(rx.findall(body)) for rx in COMPILED.values())
+    view = rel is None or rel.startswith(VIEWS)
+    return sum(len(rx.findall(body)) for name, rx in COMPILED.items() if view or name != "const")
 
 
 def scan(root=ROOT):
@@ -76,7 +94,7 @@ def scan(root=ROOT):
         text = path.read_text(encoding="utf-8")
         if exempt(rel, text):
             continue
-        n = count(text)
+        n = count(text, rel)
         if n:
             counts[rel] = n
     return counts
@@ -105,7 +123,7 @@ def main(argv=None):
             path = Path(f) if Path(f).is_absolute() else ROOT / f
             rel = path.resolve().relative_to(ROOT).as_posix()
             text = path.read_text(encoding="utf-8")
-            n = 0 if exempt(rel, text) else count(text)
+            n = 0 if exempt(rel, text) else count(text, rel)
             total += n
             print(f"{n}\t{rel}")
         print(f"{total}\ttotal")

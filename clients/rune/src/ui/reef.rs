@@ -9,12 +9,13 @@
 //! in one canvas, the caustics as a scrolling tile, the rest in another,
 //! then labels, the fish's press targets and the readout.
 
+use crate::ui::Paint;
 use rune::{Cx, El, canvas, el};
 
+use super::Tokens;
 use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels::{Label, pill};
 use super::playground::pen::Pen;
-use super::{Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::playground::Mood;
@@ -33,9 +34,11 @@ impl Pen {
     }
 }
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = &p.tokens;
-    desk.reef.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.reef
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.reef.still.set(cx.is_reduced_motion());
     let r = &desk.reef.scene;
     let count = |m: Mood| r.fish.iter().filter(|f| f.who.mood == m).count();
@@ -53,7 +56,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_reef)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.reef_laid_out(rect[2], rect[3]));

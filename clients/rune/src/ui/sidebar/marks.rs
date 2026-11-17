@@ -52,8 +52,8 @@ pub(in crate::ui) fn face(mark: Mark, t: &Tokens) -> Face {
 }
 
 /// A mark's colour: its tone's (§1.3), never a decoration.
-pub(in crate::ui) fn mark_color(mark: Mark, ink: &impl AsRef<Tokens>) -> Color {
-    face(mark, ink.as_ref()).ink
+pub(in crate::ui) fn mark_color(mark: Mark, ink: &Tokens) -> Color {
+    face(mark, ink).ink
 }
 
 /// `style` at one of the type scale's weights.

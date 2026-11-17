@@ -4,7 +4,7 @@
 
 use rune::{Cx, El};
 
-use super::{Ink, galaxy, hive, kitchen, pitch, pitlane, reef};
+use super::{Tokens, galaxy, hive, kitchen, pitch, pitlane, reef};
 use crate::desk::Desk;
 use crate::desk::surfaces::Playground;
 
@@ -18,11 +18,11 @@ pub(super) mod pen;
 mod tests;
 
 /// A playground view: whether it is open, how it draws, how it closes.
-type View = (fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
+type View = (fn(&Desk, &Tokens, &mut Cx<Desk>) -> El, fn(&mut Desk));
 
 /// The open playground view, if any, with the way out every one of them
 /// shows. A new view is one more row here.
-pub(super) fn open(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
+pub(super) fn open(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> Option<El> {
     let (view, close): View = match desk.playground? {
         Playground::Galaxy => (galaxy::view, Desk::close_galaxy),
         Playground::Reef => (reef::view, Desk::close_reef),
@@ -33,5 +33,5 @@ pub(super) fn open(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
     };
     // A child of the view: the view is modal, so anything beside it is inert.
     let right = cx.chrome_insets().trailing;
-    Some(view(desk, p, cx).child(hud::esc_chip(&p.tokens, close, right)))
+    Some(view(desk, p, cx).child(hud::esc_chip(p, close, right)))
 }

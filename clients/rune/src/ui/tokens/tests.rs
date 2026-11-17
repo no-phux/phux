@@ -155,19 +155,6 @@ fn every_state_has_a_mark_and_the_quiet_pair_differ_by_word() {
 }
 
 #[test]
-fn ink_is_filled_from_the_roles() {
-    let t = system(false);
-    let p = t.ink();
-    assert_eq!(p.bg, t.roles.layer.ground.paint());
-    assert_eq!(p.sidebar, t.roles.layer.sidebar.paint());
-    assert_eq!(p.dim, t.roles.text.dim.paint());
-    assert_eq!(p.separator, t.roles.border.base.paint());
-    assert_eq!(p.danger, t.roles.status.failed.paint());
-    assert_eq!(p.selection.background, t.roles.selection.bg.paint());
-    assert!(Rc::ptr_eq(&p.tokens, &t));
-}
-
-#[test]
 fn forced_colors_draw_every_role_in_the_system_colours() {
     let sc = rune::SystemContrast {
         window: rune::Color::BLACK,

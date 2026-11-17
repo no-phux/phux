@@ -1,68 +1,54 @@
 //! The window: a session sidebar, the terminal, and a status line.
 
 use std::cell::RefCell;
+#[cfg(test)]
 use std::rc::Rc;
 
-use rune::tok;
-use rune::{Color, Cx, El, TextStyle, col, el, row};
+use rune::{Color, Cx, El, col, el, row};
 
 use crate::desk::Desk;
-use crate::desk::surfaces::Surface;
+use crate::desk::surfaces::{MenuOwner, Surface};
 use crate::features::changes;
-use crate::theme::{Marks, Selection};
 
-// The lanes adopt these as they convert; until then only tests read some.
-#[allow(dead_code, reason = "adopted by the converting lanes")]
 mod badge;
 mod controls;
 pub(crate) use controls::{
     Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, tip,
 };
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod documents;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod galaxy;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod hive;
 mod icons;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod inbox;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod kitchen;
 mod machines;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod news;
 mod onboarding;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod overlay;
 pub(crate) use overlay::key_hint;
 mod pair;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod palette;
 mod panes;
-pub(crate) use panes::DIVIDER;
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod pitch;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod pitlane;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod playground;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod popup;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod questions;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
+#[allow(clippy::disallowed_methods)] // illustration art (§5.1)
 mod reef;
-#[allow(dead_code, reason = "adopted by the converting lanes")]
 pub(crate) mod rows;
 mod settings;
 mod sidebar;
 mod spatial;
 mod status;
 mod tabs;
-#[allow(dead_code, reason = "adopted by the converting lanes")]
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
 pub(crate) mod tokens;
 mod updates;
@@ -80,66 +66,17 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
 } else {
     "Ctrl+Shift+"
 };
-// Lane-period names for token values, so unconverted views keep compiling;
-// converted views read `Tokens` (`t.space`, `t.radius`, `t.ty`) instead.
-pub(crate) const SIDEBAR_W: f32 = phux_design::tokens::SPACE.sidebar_w;
-/// The band the macOS traffic lights sit in when they draw over content,
-/// and the titlebar Rune frames on Linux where the compositor draws none.
-pub(crate) const TITLEBAR_H: f32 = phux_design::tokens::SPACE.titlebar_h;
-/// Space between the terminal area's edge and its grid: the terminal's
-/// own inset, not chrome spacing.
-pub(crate) const PAD: f32 = 10.0;
-/// The gap around and between the terminal cards.
-const CARD_GAP: f32 = phux_design::tokens::SPACE.card_gap;
-/// How far a frosted surface blurs what it floats over, in points.
-const FROST: f32 = phux_design::tokens::MATERIAL.glass.blur.floating;
-pub(crate) const LABEL: TextStyle = tokens::LABEL;
-pub(crate) const LABEL_STRONG: TextStyle = tokens::LABEL_STRONG;
-pub(crate) const CAPTION: TextStyle = tokens::CAPTION;
+/// Space between the terminal area's edge and its grid.
+pub(crate) use tokens::TERMINAL_PAD as PAD;
 
-pub(crate) struct Ink {
-    pub(crate) bg: Color,
-    pub(crate) raised: Color,
-    pub(crate) sidebar: Color,
-    pub(crate) text: Color,
-    pub(crate) dim: Color,
-    pub(crate) separator: Color,
-    pub(crate) selected: Color,
-    /// Where you are in the chrome: a row or tab, without the accent's colour.
-    pub(crate) current: Color,
-    pub(crate) hover: Color,
-    pub(crate) accent: Color,
-    /// The window's machine colour: what marks this window, its sessions and
-    /// its terminals. The accent until a window knows its machine.
-    #[allow(dead_code, reason = "converted views read `Tokens::host`")]
-    pub(crate) host: Color,
-    /// Text and marks on an accent fill.
-    pub(crate) on_accent: Color,
-    pub(crate) danger: Color,
-    /// The rule between the window's regions.
-    pub(crate) edge: Color,
-    pub(crate) marks: Marks,
-    /// The terminal's selection.
-    pub(crate) selection: Selection,
-    /// The shadow a floating card casts on the window.
-    pub(crate) shade: Color,
-    /// The tokens these fields were filled from: what a converted view
-    /// reads instead (`Ink` is deleted once every view has converted).
-    pub(crate) tokens: Rc<Tokens>,
-}
-
-/// The ink for a theme, or the system appearance with none: the lane-period
-/// shim over [`Tokens`]. Equal arguments share one cached `Tokens`.
-/// The system accent no longer colours the chrome: the house look has its
-/// own, and a theme names one. Only tests build one this way now: views
-/// take their tokens' `ink()`.
+/// The tokens for a theme, or the system appearance with none, as a
+/// window with no machine, glass or accessibility setting has them.
 #[cfg(test)]
-fn ink(dark: bool, _accent: Color, theme: Option<&crate::theme::Theme>) -> Ink {
+fn tokens_for(dark: bool, theme: Option<&crate::theme::Theme>) -> Rc<Tokens> {
     Tokens::resolve(&tokens::Inputs {
         theme: theme.copied(),
         ..tokens::Inputs::system(dark)
     })
-    .ink()
 }
 
 thread_local! {
@@ -148,7 +85,6 @@ thread_local! {
     static KIT_LAYER: RefCell<Vec<El>> = const { RefCell::new(Vec::new()) };
 }
 
-#[allow(dead_code, reason = "the kit overlays' lanes call it")]
 /// Mount `overlay` in the kit layer above the window (§4.1.4). Call it
 /// from a view that runs every frame, never from inside a `memo`, whose
 /// closure does not run when its version holds.
@@ -176,6 +112,10 @@ fn wire(t: &Tokens, cx: &mut Cx<Desk>) {
     cx.focus_ring(ring.width, ring.offset, t.roles.border.focus.paint());
     cx.help_look(tooltip(t));
     cx.titlebar_height(t.space.titlebar_h);
+    // `cx.web_focus()` (every pressable a Tab stop, §1.10) stays off: it
+    // moves a modal's first focus and focuses controls on press, which
+    // changes Settings search and the context menu's keyboard walk
+    // (DEVELOP.md, "Kit deviations"). Rows and kit controls are focusable.
 }
 
 fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
@@ -186,18 +126,15 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
-    // `cx.web_focus()` (every pressable a Tab stop, §1.10) waits for the
-    // lanes that own focus: with it, Enter no longer blurs Settings search
-    // and the update card's action joins Tab order (DEVELOP.md, "Kit
-    // deviations"). Rows and controls built here are focusable already.
-    let p = t.ink();
+    let p = &*t;
+    let s = &t.space;
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let insets = cx.chrome_insets();
     let lights = cx.titlebar_inset().max(insets.leading);
-    let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
+    let band = if lights > 0.0 { s.titlebar_h } else { s.s3 };
     if desk.bare.is_some() || desk.quick.is_some() {
-        return bare(desk, &p, lights.max(insets.height), band, cx);
+        return bare(desk, p, lights.max(insets.height), band, cx);
     }
     let main = row()
         .key("main")
@@ -205,11 +142,12 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .h_full()
         .child(
             el().key("sidebar-host")
-                .w(if desk.sidebar_shown() { SIDEBAR_W } else { 0.0 })
+                .w(if desk.sidebar_shown() { s.sidebar_w } else { 0.0 })
                 .h_full()
                 .clip_rounded(0.0)
-                .motion(tok::motion::SNAPPY)
-                .child(sidebar::view(desk, &p, TITLEBAR_H, lights)),
+                // §1.8 drawer; Rune holds it still under reduced motion.
+                .motion(t.motion.drawer.enter)
+                .child(sidebar::view(desk, p, s.titlebar_h, lights)),
         )
         .child(
             col()
@@ -219,7 +157,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_h(0.0)
                 .children(
                     (!desk.settings.hover_toolbar)
-                        .then(|| status::title_bar(desk, &p, lights, insets.trailing)),
+                        .then(|| status::title_bar(desk, p, lights, insets.trailing)),
                 )
                 .child(
                     col()
@@ -227,9 +165,13 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         .w_full()
                         .min_w(0.0)
                         .min_h(0.0)
-                        .pl(if desk.sidebar_shown() { 0.0 } else { CARD_GAP })
-                        .pr(CARD_GAP)
-                        .pb(CARD_GAP)
+                        .pl(if desk.sidebar_shown() {
+                            0.0
+                        } else {
+                            s.card_gap
+                        })
+                        .pr(s.card_gap)
+                        .pb(s.card_gap)
                         .child(
                             // What floats here never takes rows from a terminal.
                             col()
@@ -238,12 +180,12 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .child(onboarding::stage(desk, &p, cx))
-                                .children(status::confirm_bar(desk, &p))
-                                .children(overlay::toast(desk, &p)),
+                                .child(onboarding::stage(desk, p, cx))
+                                .children(status::confirm_bar(desk, p))
+                                .children(overlay::toast(desk, p)),
                         ),
                 )
-                .children(status::hover_toolbar(desk, &p, lights, insets.trailing)),
+                .children(status::hover_toolbar(desk, p, lights, insets.trailing)),
         );
     // No root paste hook: it would read the clipboard before anything here
     // saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead, which
@@ -251,7 +193,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let root = ground(el().w_full().h_full(), desk.glass(), &t)
         .on_layout(|d: &mut Desk, rect| d.window_laid_out(rect[2]))
         .child(main);
-    floating(root, desk, &p, band, cx)
+    floating(root, desk, p, band, cx)
 }
 
 /// The window's ground: the sidebar layer, or at `glass` above 0 the
@@ -275,20 +217,6 @@ fn glassed(root: El, tint: Color, alpha: f32) -> El {
         .child(el().cover().fill(Color { a: alpha, ..tint }).inert())
 }
 
-/// The lane-period form of [`ground`] for a view that has a tint but not
-/// yet `Tokens`: the stricter of the house floors, so it never thins below
-/// what `verify` allows in either mode.
-fn chrome_ground(root: El, glass: f32, tint: Color) -> El {
-    let min = phux_design::tokens::MATERIAL.glass.tint_min;
-    let floor = min.dark.max(min.light);
-    let alpha = if glass > 0.0 {
-        1.0 - glass.clamp(0.0, 1.0) * (1.0 - floor)
-    } else {
-        1.0
-    };
-    glassed(root, tint, alpha)
-}
-
 /// The kit's tooltip on the overlay layer at the menu radius, its chord in
 /// keycaps, on every platform (§4.1.3).
 fn tooltip(t: &Tokens) -> rune::HelpLook {
@@ -299,7 +227,7 @@ fn tooltip(t: &Tokens) -> rune::HelpLook {
 }
 
 /// What floats over the window: banners, cards, sheets and menus.
-fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El {
+fn floating(root: El, desk: &Desk, p: &Tokens, band: f32, cx: &mut Cx<Desk>) -> El {
     let root = root
         .children(status::banner(desk, p))
         .children(updates::card(desk, p, band));
@@ -308,16 +236,22 @@ fn floating(root: El, desk: &Desk, p: &Ink, band: f32, cx: &mut Cx<Desk>) -> El 
 
 /// Paint exactly the ordering that determines keyboard, IME and paste
 /// ownership. The phone places its keyboard after these layers.
-fn floating_surfaces(mut root: El, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> El {
+fn floating_surfaces(mut root: El, desk: &Desk, p: &Tokens, top: f32, cx: &mut Cx<Desk>) -> El {
     for surface in desk.surfaces() {
         root = root.children(surface_view(surface, desk, p, top, cx));
     }
     root
 }
 
-fn surface_view(surface: Surface, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<Desk>) -> Option<El> {
+fn surface_view(
+    surface: Surface,
+    desk: &Desk,
+    p: &Tokens,
+    top: f32,
+    cx: &mut Cx<Desk>,
+) -> Option<El> {
     match surface {
-        Surface::PhoneNavigation => phone::navigation::view(desk, p, top),
+        Surface::PhoneNavigation => phone::navigation::view(desk, top),
         Surface::Inbox => Some(inbox::view(desk, p)),
         Surface::Playground(_) => playground::open(desk, p, cx),
         // A phone's Settings is already painted in its stage, not a scrim.
@@ -332,22 +266,29 @@ fn surface_view(surface: Surface, desk: &Desk, p: &Ink, top: f32, cx: &mut Cx<De
             p,
             if desk.phone.is_some() { 8.0 } else { 96.0 },
         )),
-        Surface::ContextMenu => desk
+        // A terminal's or a tab's menu at the pointer; it mounts itself in
+        // the kit layer (`kit_overlay`).
+        Surface::Menu(MenuOwner::Pane | MenuOwner::Tab) => desk
             .pointer
             .menu
             .map(|at| palette::context_menu(desk, at, p)),
-        // Kit overlays mount in the kit layer (`kit_overlay`), not here.
-        Surface::Menu(_) | Surface::Select(_) | Surface::Toasts => None,
+        // No sidebar menu or kit select opens yet; the toasts are drawn in
+        // the stage, clear of the live pill (`overlay::toast`).
+        Surface::Menu(MenuOwner::Sidebar) | Surface::Select(_) | Surface::Toasts => None,
     }
 }
 
 /// The bare window: the pane edge to edge under a band the traffic lights
 /// and a drag can use, with the same sheets over it.
-fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El {
+fn bare(desk: &Desk, p: &Tokens, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El {
     let band = el()
         .key("titlebar")
         .w_full()
-        .h(if lights > 0.0 { TITLEBAR_H } else { 0.0 })
+        .h(if lights > 0.0 {
+            p.space.titlebar_h
+        } else {
+            0.0
+        })
         .window_drag();
     let stage = col()
         .key("stage")
@@ -359,7 +300,11 @@ fn bare(desk: &Desk, p: &Ink, lights: f32, band_h: f32, cx: &mut Cx<Desk>) -> El
         .children(status::confirm_bar(desk, p))
         .children(overlay::toast(desk, p));
     let main = col().key("main").w_full().h_full().child(band).child(stage);
-    let root = el().w_full().h_full().fill(p.bg).child(main);
+    let root = el()
+        .w_full()
+        .h_full()
+        .fill(p.roles.layer.ground.paint())
+        .child(main);
     floating(root, desk, p, band_h, cx)
 }
 
@@ -370,5 +315,4 @@ mod test_support;
 pub use test_support::{element, offscreen, offscreen_as_app};
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
 mod tests;

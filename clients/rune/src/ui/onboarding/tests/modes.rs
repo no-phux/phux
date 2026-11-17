@@ -9,8 +9,8 @@ const LARGEST: u8 = 140;
 /// The house look in `dark`, at `size`, on `step`; increased contrast and
 /// the text scale as asked.
 fn house(step: Step, size: (f32, f32), dark: bool, more: bool, scale: f32) -> Runtime<Desk> {
-    crate::ui::tokens::overrides::set(false, scale);
     let mut desk = crate::test_support::settings_window();
+    desk.set_text_scale(scale);
     desk.connection.resources.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
     desk.settings_open = false;
     desk.settings.theme = None;
@@ -75,7 +75,6 @@ fn every_step_renders_in_every_mode() {
             }
         }
     }
-    crate::ui::tokens::overrides::set(false, 1.0);
 }
 
 /// Every choice on the Look step is a focusable radio, and the step's

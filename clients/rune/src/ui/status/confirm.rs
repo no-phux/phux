@@ -67,7 +67,7 @@ pub(super) const fn destructive(pending: &Pending) -> bool {
 
 /// The action waiting on Return or Escape, floating over the terminals so
 /// asking never resizes them.
-pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
+pub fn confirm_bar(desk: &Desk, p: &Tokens) -> Option<El> {
     // A popup covers this place and asks in its own box.
     if desk.connection.popup.command().is_some() {
         return None;
@@ -79,8 +79,8 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
 /// surface (it is past the blur budget, §1.9), Cancel outlined and the verb
 /// the view's one primary action, or the danger button when it ends
 /// something.
-pub(in crate::ui) fn question_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let t: &Tokens = p.as_ref();
+pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
     let s = &t.space;
     let pending = desk.pending.as_ref()?;
     let touch = desk.phone.is_some();

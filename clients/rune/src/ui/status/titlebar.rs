@@ -9,7 +9,7 @@ use rune_kit::WindowTitlebar;
 
 use super::super::sidebar::strong;
 use super::super::tokens::MONO;
-use super::{Desk, Ink, Paint, Shortcut, Tokens, badge, icon_press, icons, tabs, tip};
+use super::{Desk, Paint, Shortcut, Tokens, badge, icon_press, icons, tabs, tip};
 
 /// The terminal's size in the title bar: quiet machine figures that keep
 /// their columns as the window is dragged.
@@ -89,8 +89,8 @@ fn place(desk: &Desk, t: &Tokens) -> El {
 /// With "Show toolbar on hover", a strip along the top edge that grows into
 /// the toolbar while the pointer is over it, on the drawer spring. It
 /// floats over the panes, so showing it never resizes a terminal.
-pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> Option<El> {
-    let t: &Tokens = p.as_ref();
+pub fn hover_toolbar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Option<El> {
+    let t = p;
     let shown = desk.pointer.toolbar;
     desk.settings.hover_toolbar.then(|| {
         el().key("toolbar-reveal")
@@ -113,12 +113,12 @@ pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> Option
 /// The band over the terminal (kit `WindowTitlebar`): draggable, under the
 /// traffic lights when the sidebar is folded, clear of the caption buttons
 /// Rune draws on Linux (`trailing`), and holding what a status line would.
-pub fn title_bar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> El {
+pub fn title_bar(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> El {
     band(desk, p, lights, trailing, Color::TRANSPARENT)
 }
 
-fn band(desk: &Desk, p: &Ink, lights: f32, trailing: f32, fill: Color) -> El {
-    let t: &Tokens = p.as_ref();
+fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El {
+    let t = p;
     let s = &t.space;
     let geometry = desk
         .connection

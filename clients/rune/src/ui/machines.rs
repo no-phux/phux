@@ -42,8 +42,8 @@ fn mono(style: TextStyle) -> TextStyle {
     }
 }
 
-pub fn switch(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn switch(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let s = &t.space;
     pressable("machine-switch", t)
         .min_h(s.pointer_min)
@@ -484,8 +484,8 @@ fn outcome(words: String, tone: phux_design::Tone, t: &Tokens) -> El {
         .wrap()
 }
 
-pub fn sheet(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
-    let t = p.as_ref();
+pub fn sheet(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
     let s = &t.space;
     let list = &desk.machines;
     if !list.open {
@@ -554,7 +554,6 @@ pub fn sheet(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
         title: "Machines",
         width: GEOMETRY.sheet_w,
         top: GEOMETRY.sheet_top,
-        scrim: 0.0,
         close: Desk::close_machines,
     };
     Some(sheet.build(None, body, foot, t))

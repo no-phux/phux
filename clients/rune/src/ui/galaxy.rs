@@ -9,12 +9,15 @@
 
 mod sky;
 
+use crate::ui::Paint;
 use rune::{Color, Cx, El, LineCap, Shape, TextStyle, canvas, col, el, row, text};
 
 use self::sky::{Grown, Sky, State};
 use super::playground::hud;
 use super::sidebar::mark_color;
-use super::{Ink, TITLEBAR_H, pressable};
+use super::{Tokens, pressable};
+
+const TITLEBAR_H: f32 = phux_design::tokens::SPACE.titlebar_h;
 use crate::activity::Mark;
 use crate::creature;
 use crate::desk::Desk;
@@ -29,7 +32,7 @@ const EYEBROW: TextStyle = TextStyle::new(10.0, 650.0).mono().tracking(2.0);
 const STATS: TextStyle = TextStyle::new(11.0, 500.0).mono().tracking(1.0);
 const BUTTON: TextStyle = TextStyle::new(11.0, 650.0).mono().tracking(1.5);
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
     desk.galaxy.still.set(cx.is_reduced_motion());
     let planets = desk.fleet_machines();
     let plan = Desk::galaxy_plan(&planets);
@@ -41,9 +44,13 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .filter(|star| star.mark.needs_you())
         .count();
     // Needs-you's tone: the galaxy's one status colour of its own.
-    let needs = hud::needs_you_ink(&p.tokens);
-    let light = if waiting > 0 { needs } else { p.accent };
-    let ground_light = crate::theme::on_fill(p.bg) != Color::WHITE;
+    let needs = hud::needs_you_ink(p);
+    let light = if waiting > 0 {
+        needs
+    } else {
+        p.roles.accent.accent_text.paint()
+    };
+    let ground_light = crate::theme::on_fill(p.roles.layer.ground.paint()) != Color::WHITE;
 
     // Where every agent is this frame, with its kin for the beams.
     let placed: Vec<(usize, usize, Pt)> =
@@ -75,28 +82,30 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         light: ground_light,
     };
     let rim = plan.bezel();
-    sky = sky.dust(plan.core, rim, time, p.dim).bezel(
-        plan.core,
-        rim,
-        time,
-        light,
-        (waiting > 0).then_some(needs),
-    );
-    sky = sky.orbits(&plan, p.separator);
+    sky = sky
+        .dust(plan.core, rim, time, p.roles.text.dim.paint())
+        .bezel(plan.core, rim, time, light, (waiting > 0).then_some(needs));
+    sky = sky.orbits(&plan, p.roles.border.base.paint());
     // Each machine in its own colour; amber while it needs you, dim offline.
     let tints: Vec<Color> = planets
         .iter()
         .map(|planet| match planet {
-            _ if !planet.online => p.dim,
+            _ if !planet.online => p.roles.text.dim.paint(),
             _ if planet.agents.iter().any(|star| star.mark.needs_you()) => needs,
-            _ => crate::host_color::on(&planet.name, p.bg),
+            _ => crate::host_color::on(&planet.name, p.roles.layer.ground.paint()),
         })
         .collect();
     for ((planet, system), tint) in planets.iter().zip(&plan.systems).zip(&tints) {
         sky = sky.beam(plan.core, system.centre, time, *tint, planet.online);
     }
     for (a, b) in galaxy::related(&kin) {
-        sky = sky.kin(placed[a].2, placed[b].2, plan.core, time, p.accent);
+        sky = sky.kin(
+            placed[a].2,
+            placed[b].2,
+            plan.core,
+            time,
+            p.roles.accent.accent_text.paint(),
+        );
     }
     let mut picked_at = None;
     for &(at, i, point) in &placed {
@@ -131,7 +140,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         sky = sky.node(point, state, time, &grown);
     }
     if let Some(point) = picked_at {
-        sky = sky.reticle(plan.core, point, time, p.text);
+        sky = sky.reticle(plan.core, point, time, p.roles.text.text.paint());
     }
     sky = sky.core(plan.core, time, light);
     let mut shape = sky.shape;
@@ -171,9 +180,17 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                             .px(8.0)
                             .py(3.0)
                             .radius(6.0)
-                            .fill(p.bg.alpha(0.88))
-                            .child(text(planet.name.to_uppercase()).font(HOST).color(p.text))
-                            .children(note.map(|n| text(n.to_uppercase()).font(META).color(p.dim))),
+                            .fill(p.roles.layer.ground.paint().alpha(0.88))
+                            .child(
+                                text(planet.name.to_uppercase())
+                                    .font(HOST)
+                                    .color(p.roles.text.text.paint()),
+                            )
+                            .children(note.map(|n| {
+                                text(n.to_uppercase())
+                                    .font(META)
+                                    .color(p.roles.text.dim.paint())
+                            })),
                     ),
                 ),
         );
@@ -222,16 +239,21 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                     col()
                         .w_full()
                         .items_center()
-                        .child(text(truncate(&star.name, 14)).font(NAME).color(p.text))
+                        .child(
+                            text(truncate(&star.name, 14))
+                                .font(NAME)
+                                .color(p.roles.text.text.paint()),
+                        )
                         .children(worded.then(|| {
                             text(word.to_uppercase())
                                 .font(WORD)
                                 .color(mark_color(star.mark, p))
                         }))
-                        .children(
-                            card.filter(|_| detail == Detail::Full)
-                                .map(|(form, _)| text(form.to_uppercase()).font(META).color(p.dim)),
-                        )
+                        .children(card.filter(|_| detail == Detail::Full).map(|(form, _)| {
+                            text(form.to_uppercase())
+                                .font(META)
+                                .color(p.roles.text.dim.paint())
+                        }))
                 })),
         );
     }
@@ -252,7 +274,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 "{hosts} MACHINES  ·  {agents} AGENTS  ·  {working} WORKING"
             ))
             .font(STATS)
-            .color(p.dim),
+            .color(p.roles.text.dim.paint()),
         );
     let actions = row()
         .absolute((w - 336.0).max(0.0), TITLEBAR_H + 12.0)
@@ -267,7 +289,11 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 .radius(6.0)
                 .label("Fit the whole galaxy")
                 .on_press(Desk::fit_galaxy)
-                .child(text("[ FIT ]").font(BUTTON).color(p.text)),
+                .child(
+                    text("[ FIT ]")
+                        .font(BUTTON)
+                        .color(p.roles.text.text.paint()),
+                ),
         )
         .children((waiting > 0).then(|| {
             pressable("galaxy-next-waiting", p)
@@ -282,11 +308,11 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                         .color(needs),
                 )
         }))
-        .child(hud::close(&p.tokens, "galaxy", Desk::close_galaxy));
+        .child(hud::close(p, "galaxy", Desk::close_galaxy));
 
     el().key("galaxy")
         .cover()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_galaxy)
         .label("Galaxy")
         .on_layout(|desk: &mut Desk, r| desk.galaxy_laid_out(r[2], r[3]))

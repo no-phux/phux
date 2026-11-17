@@ -98,8 +98,8 @@ fn lines(desk: &Desk, t: &Tokens, style: TextStyle) -> El {
     list
 }
 
-pub fn card(desk: &Desk, p: &impl AsRef<Tokens>, top: f32) -> Option<El> {
-    let t = p.as_ref();
+pub fn card(desk: &Desk, p: &Tokens, top: f32) -> Option<El> {
+    let t = p;
     let s = &t.space;
     let updater = &desk.updater;
     if !updater.card_open() {
@@ -157,8 +157,8 @@ pub fn card(desk: &Desk, p: &impl AsRef<Tokens>, top: f32) -> Option<El> {
 }
 
 /// Reopens a closed card, so closing it never loses the update.
-pub fn pill(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
-    let t = p.as_ref();
+pub fn pill(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
     let updater = &desk.updater;
     let due = updater.action().is_some() || !matches!(updater.work, Work::Idle | Work::Checking);
     (due && !updater.card_open()).then(|| {

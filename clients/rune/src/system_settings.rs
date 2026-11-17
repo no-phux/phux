@@ -3,7 +3,7 @@
 //! CoreGraphics.
 
 /// A gap between the sheet and Settings, in points.
-const GAP: f32 = 12.0;
+const GAP: f32 = phux_design::tokens::SPACE.s3;
 
 /// Where the sheet's left edge goes to sit clear of `settings` on `screen`:
 /// to its left, else to its right, else at the screen's left edge, where the

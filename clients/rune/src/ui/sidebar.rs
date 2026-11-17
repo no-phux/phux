@@ -16,7 +16,7 @@ use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, Key, col, el, memo, row, text};
 
 use super::rows::State as Forced;
-use super::{Ink, Paint, Tokens, icons, lifted, pressable};
+use super::{Paint, Tokens, icons, lifted, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab};
 use crate::host_color;
@@ -294,7 +294,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
                 )
                 .children(detail),
         )
-        .children(selected.then(|| host_color::stripe(host)));
+        .children(selected.then(|| host_color::stripe(host, t)));
     if disabled {
         return row;
     }
@@ -408,8 +408,8 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
     )
 }
 
-pub fn view(desk: &Desk, ink: &Ink, inset: f32, leading: f32) -> El {
-    let t: &Tokens = ink.as_ref();
+pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
+    let t = ink;
     let s = &t.space;
     let topology = desk.connection.topology.as_ref();
     let counts = topology.map_or_else(HashMap::new, |top| counts_by_session(desk, top));

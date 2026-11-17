@@ -10,12 +10,13 @@
 //! one canvas, then the garages' boards, name pills, the cars' press targets
 //! and the readout. The camera stays put: a car laps too fast to follow.
 
+use crate::ui::Paint;
 use rune::{Cx, El, canvas, el, row, text};
 
+use super::Tokens;
 use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels;
 use super::playground::pen::{Pen, rgba};
-use super::{CAPTION, Ink, Tokens};
 use crate::creature;
 use crate::desk::Desk;
 use crate::pitlane::{AMBER, Mode, PitLane, RANKS};
@@ -26,9 +27,11 @@ mod ground;
 
 const PILL_H: f32 = 19.0;
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let t: &Tokens = &p.tokens;
-    desk.pitlane.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.pitlane
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.pitlane.still.set(cx.is_reduced_motion());
     let r = &desk.pitlane.scene;
     let count = |m: Mood| r.cars.iter().filter(|c| c.who.mood == m).count();
@@ -46,7 +49,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_pitlane)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.pitlane_laid_out(rect[2], rect[3]));
@@ -137,7 +140,7 @@ fn board(r: &PitLane, i: usize, t: &Tokens) -> El {
                 .radius(4.0)
                 .items_center()
                 .fill(rgba(g.c, 1.0))
-                .child(text(g.host.to_uppercase()).font(CAPTION).color(ink))
+                .child(text(g.host.to_uppercase()).font(t.ty.caption).color(ink))
                 .children((waiting > 0).then(|| labels::count(t, waiting, 15.0))),
         )
 }

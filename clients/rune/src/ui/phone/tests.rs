@@ -1,5 +1,4 @@
 use super::*;
-use crate::ui::tokens::phone::{Traits, set_traits};
 
 fn contrast(a: Color, b: Color) -> f32 {
     crate::theme::contrast(a, b)
@@ -39,8 +38,9 @@ fn nodes(tree: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
 
 #[test]
 fn controls_take_their_ground_not_the_os_appearance() {
+    let desk = phone_desk(1);
     for ground in [Color::BLACK, Color::WHITE] {
-        let t = Tokens::for_phone(Tokens::dark_ground(ground), None, Scale::GridCapped);
+        let t = Tokens::for_phone(&desk, Tokens::dark_ground(ground), None, Scale::GridCapped);
         let text = t.roles.text.text.paint();
         assert_ne!(crate::theme::on_fill(text), crate::theme::on_fill(ground));
         assert!(contrast(text, ground) >= 4.5);
@@ -216,15 +216,13 @@ fn reduce_transparency_from_the_host_drops_the_dock_glass() {
     rt.frame(5.0);
     assert_eq!(blurs(&rt), 1, "the dock is the phone's one glass");
     let before = page_look(&rt.state).version;
-    assert!(set_traits(Traits {
-        scale: 1.0,
-        reduce_transparency: true,
-    }));
-    rt.update(|_, tx| tx.instant());
+    rt.update(|d, tx| {
+        assert!(d.set_accessibility(true, "UICTContentSizeCategoryL"));
+        tx.instant();
+    });
     rt.frame(6.0);
     rt.frame(7.0);
     let after = page_look(&rt.state).version;
-    set_traits(Traits::DEFAULT);
     assert_ne!(before, after, "memos see the change");
     assert_eq!(blurs(&rt), 0, "the dock falls back to its opaque layer");
 }
@@ -233,15 +231,12 @@ fn reduce_transparency_from_the_host_drops_the_dock_glass() {
 /// the chrome beside the grid stops at its cap.
 #[test]
 fn the_reported_text_size_scales_the_phone_type() {
-    let desk = phone_desk(2);
+    let mut desk = phone_desk(2);
     let base = ground_look(&desk).ty.label.size;
-    set_traits(Traits {
-        scale: form::content_scale("UICTContentSizeCategoryAccessibilityXXXL"),
-        reduce_transparency: false,
-    });
+    assert!(desk.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL"));
     let chrome = ground_look(&desk).ty.label.size;
     let page = page_look(&desk).ty.label.size;
-    set_traits(Traits::DEFAULT);
-    assert!((chrome - base * form::GRID_CAP).abs() < 0.01, "{chrome}");
+    let cap = crate::desk::accessibility::GRID_CAP;
+    assert!((chrome - base * cap).abs() < 0.01, "{chrome}");
     assert!(page > chrome);
 }

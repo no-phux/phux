@@ -4,8 +4,8 @@ use phux_config_core::host_color::PALETTE;
 use phux_design::Tone;
 use phux_design::tokens::IDENTITY;
 
-fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> Ink {
-    super::super::ink(dark, Color::WHITE, theme)
+fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> std::rc::Rc<Tokens> {
+    super::super::tokens_for(dark, theme)
 }
 
 #[test]

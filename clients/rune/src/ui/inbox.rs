@@ -355,8 +355,8 @@ fn empty(t: &Tokens) -> El {
 
 /// The drawer, on the trailing edge: it slides in on the drawer spring and
 /// fades out.
-pub fn view(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
-    let t = p.as_ref();
+pub fn view(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     let items = desk.inbox_items();
@@ -447,13 +447,8 @@ pub struct AskCard {
 
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
-pub fn ask_card(
-    desk: &Desk,
-    id: &ResourceId,
-    area: [f32; 2],
-    p: &impl AsRef<Tokens>,
-) -> Option<AskCard> {
-    let t = p.as_ref();
+pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Option<AskCard> {
+    let t = p;
     let s = &t.space;
     let r = &t.roles;
     if desk.connection.find.is_some() || desk.inbox.open {

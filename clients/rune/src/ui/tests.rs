@@ -1,5 +1,5 @@
 use super::*;
-use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
+use crate::theme::contrast;
 
 #[test]
 fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
@@ -28,27 +28,25 @@ fn the_bare_window_drops_the_chrome_and_keeps_the_sheets() {
 
 #[test]
 fn the_system_appearance_clears_the_bars_too() {
+    // WCAG AA for every word-carrying ink (§1.2 D4).
+    const TEXT_FLOOR: f32 = 4.5;
     for dark in [true, false] {
-        let p = ink(dark, rune::oklch(0.6, 0.15, 250.0), None);
-        assert!(Rc::ptr_eq(
-            &p.tokens,
-            &ink(dark, rune::oklch(0.6, 0.15, 250.0), None).tokens
-        ));
-        let marks = p.marks;
+        let t = tokens_for(dark, None);
+        assert!(Rc::ptr_eq(&t, &tokens_for(dark, None)), "one shared Tokens");
+        let r = &t.roles;
         let readable = [
-            ("text", p.text),
-            ("danger", p.danger),
-            ("alert", marks.alert),
-            ("done", marks.done),
-            ("bell", marks.bell),
-            ("working", marks.working),
-            ("good", marks.good),
+            ("text", r.text.text),
+            ("dim", r.text.dim),
+            ("failed", r.status.failed),
+            ("done", r.status.done),
+            ("bell", r.status.bell),
+            ("working", r.status.working),
+            ("needs you", r.status.needs_you),
         ];
-        for ground in [p.bg, p.sidebar, p.raised] {
-            assert!(contrast(p.dim, ground) >= DIM_BAR, "dim, dark {dark}");
+        for ground in [r.layer.ground, r.layer.sidebar, r.layer.raised] {
             for (role, ink) in readable {
-                let got = contrast(ink, ground);
-                assert!(got >= TEXT_BAR, "{role}, dark {dark}: {got}");
+                let got = contrast(ink.paint(), ground.paint());
+                assert!(got >= TEXT_FLOOR, "{role}, dark {dark}: {got}");
             }
         }
     }

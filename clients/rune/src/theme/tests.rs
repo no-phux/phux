@@ -90,41 +90,10 @@ fn the_house_look_verifies_clean_in_both_modes() {
 }
 
 #[test]
-fn the_legacy_roles_read_on_their_grounds() {
-    for theme in themes() {
-        let roles = theme.roles();
-        let derived = derive(&crate::ui::tokens::theme_input(theme), &Params::house());
-        let ground = color(theme.background);
-        let raised = crate::ui::tokens::Paint::paint(derived.layer.raised);
-        for surface in [ground, raised] {
-            for (role, ink) in [
-                ("text", roles.text),
-                ("dim", roles.dim),
-                ("failed", roles.danger),
-            ] {
-                let got = contrast(ink, surface);
-                assert!(got >= TEXT_BAR - 0.05, "{} {role}: {got}", theme.name);
-            }
-        }
-        let sel = roles.selection;
-        assert!(
-            contrast(sel.foreground, sel.background) >= TEXT_BAR - 0.05,
-            "{}",
-            theme.name
-        );
-        assert!(
-            contrast(roles.on_accent, roles.accent) >= TEXT_BAR - 0.05,
-            "{}",
-            theme.name
-        );
-    }
-}
-
-#[test]
 fn any_accent_gets_a_readable_ink() {
     for hex in [0xffffff, 0x000000, 0x808080, 0xffcc00, 0x0a84ff] {
         let fill = color(hex);
-        assert!(contrast(on_fill(fill), fill) >= TEXT_BAR, "{hex:06x}");
+        assert!(contrast(on_fill(fill), fill) >= 4.5, "{hex:06x}");
     }
 }
 
