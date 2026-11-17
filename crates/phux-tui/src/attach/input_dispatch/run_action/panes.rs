@@ -32,6 +32,35 @@ pub(in crate::attach) fn previous_pane(ActionCall { ctx, effects, .. }: ActionCa
     cycle_pane(ctx, effects, actions::apply_previous_pane);
 }
 
+/// `next-slot-tab`: show the next tab of the focused pane's slot. Which tab
+/// shows is this client's own, so nothing is written.
+pub(in crate::attach) fn next_slot_tab(call: ActionCall<'_, '_>) {
+    cycle_slot_tab(call, 1);
+}
+
+/// `previous-slot-tab`: show the previous tab of the focused pane's slot.
+pub(in crate::attach) fn previous_slot_tab(call: ActionCall<'_, '_>) {
+    cycle_slot_tab(call, -1);
+}
+
+fn cycle_slot_tab(
+    ActionCall {
+        ctx,
+        focused,
+        effects,
+        ..
+    }: ActionCall<'_, '_>,
+    delta: isize,
+) {
+    match focused.and_then(|pane| ctx.workspace.cycle_tab(pane, delta)) {
+        Some(shown) => {
+            effects.layout_mutated = true;
+            effects.set_focus = Some(shown);
+        }
+        None => effects.bell = true,
+    }
+}
+
 /// Open the all-session destination picker, or commit its exact selected row.
 /// Side-by-side at 0.5 is the single keyboard-fast placement policy.
 pub(in crate::attach) fn move_pane(

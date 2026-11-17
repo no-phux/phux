@@ -59,6 +59,8 @@ pub(super) const ACTION_ORDER: &[&str] = &[
     "next-pane",
     "previous-pane",
     "last-pane",
+    "next-slot-tab",
+    "previous-slot-tab",
     "toggle-zoom",
     "move-pane",
     "copy-mode",

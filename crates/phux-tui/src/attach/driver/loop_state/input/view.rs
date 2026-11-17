@@ -139,7 +139,15 @@ impl super::super::SessionLoop {
                 self.viewport_dims,
             );
             let leaves = self.mirror.surface_leaves();
-            emit_moved_tiles(conn, leaves, &prior.rects, &rects, self.resize_cell_px).await?;
+            emit_moved_tiles(
+                conn,
+                leaves,
+                &self.mirror.workspace.slots,
+                &prior.rects,
+                &rects,
+                self.resize_cell_px,
+            )
+            .await?;
         }
         Ok(())
     }

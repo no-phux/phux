@@ -110,6 +110,9 @@ pub(super) struct PaneSlot {
     /// The cached OSC 0/2 title (empty ⇒ none): the only identity a plain
     /// agent CLI emits, diffed so a change refreshes the chrome.
     pub last_title: String,
+    /// This pane's place among its slot's tabs, `(position, count)` from 1,
+    /// refreshed at each paint; `None` outside a slot with tabs.
+    pub slot_tab: Option<(usize, usize)>,
     /// The foreground program (`phux.pane-occupant/v1`), which names an
     /// auto-numbered window after what runs in it.
     pub foreground: Option<String>,
@@ -187,6 +190,7 @@ impl PaneSlot {
             cwd: None,
             last_exit: None,
             last_title: String::new(),
+            slot_tab: None,
             foreground: None,
             seen: false,
             satellite_down: false,
@@ -257,6 +261,7 @@ pub(super) fn pane_label<'a>(
     let (key, slot) = panes.get_key_value(id)?;
     Some(crate::render::chrome::dividers::PaneLabel {
         text: slot.last_title.as_str(),
+        slot_tab: slot.slot_tab,
         agent: None,
         attention: slot.attention,
         seen: slot.seen,

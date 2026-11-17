@@ -47,6 +47,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "next-pane",
     "previous-pane",
     "last-pane",
+    "next-slot-tab",
+    "previous-slot-tab",
     "toggle-zoom",
     "toggle-sidebar",
     "command-palette",
