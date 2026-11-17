@@ -309,7 +309,7 @@ fn badges_draw_every_tone_in_its_token_colour_with_mark_and_word() {
             );
             let text = span.text_content().unwrap();
             match state.word() {
-                Some(word) => assert_eq!(text, format!("claude{word}")),
+                Some(word) => assert_eq!(text, format!("claude {word}")),
                 None => assert_eq!(text, "claude", "unknown shows the provider only"),
             }
         }
@@ -437,4 +437,39 @@ async fn the_backdrop_paints_layer_ground_of_the_house_palette() {
     );
     drop(app);
     client.close();
+}
+
+#[wasm_bindgen_test]
+fn a_finished_agent_stays_seen_until_it_works_again_and_moves_are_announced_once() {
+    use phux_design::State;
+    let mut memory = badges::BadgeMemory::default();
+    let id = ResourceId::new(7);
+    assert_eq!(
+        memory.settle(&id, "working", None, false),
+        (State::Working, None),
+        "first sight is not a transition"
+    );
+    assert_eq!(
+        memory.settle(&id, "blocked", None, false),
+        (State::NeedsYou, Some(State::Working))
+    );
+    assert_eq!(
+        memory.settle(&id, "blocked", None, false),
+        (State::NeedsYou, None),
+        "no repeat while it stays"
+    );
+    assert_eq!(memory.settle(&id, "done", None, false).0, State::Done);
+    assert!(memory.see_done(), "typing sees it");
+    for _ in 0..3 {
+        assert_eq!(memory.settle(&id, "done", None, false).0, State::DoneSeen);
+    }
+    assert!(!memory.see_done(), "nothing new to see");
+    assert_eq!(memory.settle(&id, "working", None, false).0, State::Working);
+    assert_eq!(
+        memory.settle(&id, "done", None, false).0,
+        State::Done,
+        "a new finish is unseen again"
+    );
+    memory.keep_only(&[]);
+    assert_eq!(memory.settle(&id, "done", None, false), (State::Done, None));
 }

@@ -35,6 +35,47 @@ pub(super) struct BadgeMemory {
     seen: HashSet<ResourceId>,
 }
 
+impl BadgeMemory {
+    /// Place badge `id` on the ladder, remembering it. Returns its state
+    /// and the state it moved from, when it moved (a badge seen for the
+    /// first time has not moved).
+    pub(super) fn settle(
+        &mut self,
+        id: &ResourceId,
+        word: &str,
+        exit: Option<PaneExit>,
+        link_lost: bool,
+    ) -> (State, Option<State>) {
+        let state = ladder(word, exit, link_lost, self.seen.contains(id));
+        // "Seen" belongs to one finish: leaving done forgets it.
+        if !matches!(state, State::Done | State::DoneSeen) {
+            self.seen.remove(id);
+        }
+        let before = self.states.insert(id.clone(), state);
+        (state, before.filter(|before| *before != state))
+    }
+
+    /// Forget badges no longer on screen.
+    pub(super) fn keep_only(&mut self, ids: &[&ResourceId]) {
+        self.states.retain(|id, _| ids.contains(&id));
+        self.seen.retain(|id| ids.contains(&id));
+    }
+
+    /// The user typed: every finished agent on screen is now seen. Returns
+    /// whether any changed.
+    pub(super) fn see_done(&mut self) -> bool {
+        let done: Vec<ResourceId> = self
+            .states
+            .iter()
+            .filter(|(_, state)| **state == State::Done)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let changed = !done.is_empty();
+        self.seen.extend(done);
+        changed
+    }
+}
+
 /// The kernel's lifecycle word as an agent state. `ended` (the provider
 /// session ended) has no agent state; it is drawn as `ended`.
 #[must_use]
@@ -133,23 +174,14 @@ impl App {
                 .as_ref()
                 .or(focused.as_ref())
                 .and_then(|pane| self.session.pane_exit(pane));
-            let state = ladder(
-                &badge.state,
-                exit,
-                link_lost,
-                memory.seen.contains(&badge.id),
-            );
-            if state != State::Done {
-                memory.seen.remove(&badge.id);
-            }
+            let (state, moved) = memory.settle(&badge.id, &badge.state, exit, link_lost);
             let provider = if badge.provider.is_empty() {
                 "agent"
             } else {
                 badge.provider.as_str()
             };
-            let before = memory.states.insert(badge.id.clone(), state);
-            // Once per transition: a badge seen for the first time is not one.
-            if before.is_some_and(|before| before != state)
+            // Once per transition, never for a badge seen for the first time.
+            if moved.is_some()
                 && let Some(line) = announcement(provider, state)
             {
                 said.push(line);
@@ -158,9 +190,7 @@ impl App {
                 let _ = container.append_child(&span);
             }
         }
-        memory
-            .states
-            .retain(|id, _| badges.iter().any(|badge| &badge.id == id));
+        memory.keep_only(&badges.iter().map(|badge| &badge.id).collect::<Vec<_>>());
         drop(memory);
         if self.bell_unread.get()
             && let Some(dot) = bell_dot(&document)
@@ -179,19 +209,9 @@ impl App {
     /// The user typed at the terminal: the bell is read, and every agent on
     /// screen that finished is now seen.
     pub(super) fn acknowledge_input(&self) {
-        let mut changed = self.bell_unread.replace(false);
-        {
-            let mut memory = self.badges.borrow_mut();
-            let done: Vec<ResourceId> = memory
-                .states
-                .iter()
-                .filter(|(_, state)| **state == State::Done)
-                .map(|(id, _)| id.clone())
-                .collect();
-            changed |= !done.is_empty();
-            memory.seen.extend(done);
-        }
-        if changed {
+        let bell = self.bell_unread.replace(false);
+        let seen = self.badges.borrow_mut().see_done();
+        if bell || seen {
             self.paint_badges();
         }
     }
@@ -257,6 +277,9 @@ pub(super) fn badge_element(
     name.set_text_content(Some(provider));
     span.append_child(&name).ok()?;
     if let Some(word) = state.word() {
+        // A space keeps the accessible name "claude needs you"; flex
+        // layout drops it, so the gap still comes from the stylesheet.
+        span.insert_adjacent_text("beforeend", " ").ok()?;
         let label = document.create_element("span").ok()?;
         label.set_class_name("phux-agent-word");
         label.set_text_content(Some(word));
