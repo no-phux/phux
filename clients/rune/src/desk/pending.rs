@@ -19,4 +19,6 @@ pub enum Pending {
     CloseSession(SessionKey, String),
     /// A program's clipboard read (OSC 52).
     ClipboardRead(ResourceId, phux_client_core::engine::ClipboardSelection),
+    /// A program's clipboard write (OSC 52) and the text it would set.
+    ClipboardWrite(ResourceId, String),
 }
