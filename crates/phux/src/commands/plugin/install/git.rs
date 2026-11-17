@@ -543,12 +543,20 @@ mod tests {
         let err = run_bounded(cmd, "sleeper", None, Duration::from_millis(400)).unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         let pid = std::fs::read_to_string(&pidfile).expect("child pid was recorded");
-        let alive = Command::new("kill")
-            .args(["-0", pid.trim()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("kill -0")
-            .success();
-        assert!(!alive, "process group child {pid} still alive");
+        let alive = || {
+            Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("kill -0")
+                .success()
+        };
+        // The killed grandchild is reparented to init and answers `kill -0`
+        // as a zombie until it is reaped, so allow the reaper a moment.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while alive() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "process group child {pid} still alive");
     }
 }
