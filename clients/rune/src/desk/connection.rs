@@ -39,7 +39,7 @@ pub struct Connection {
     /// A path search on the focused pane's host.
     pub paths: Option<palette::PathSearch>,
     /// Grid origins in window points, from the last layout.
-    pub(super) origins: HashMap<ResourceId, [f32; 2]>,
+    pub(crate) origins: HashMap<ResourceId, [f32; 2]>,
     /// Find in the focused pane's leased history.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
