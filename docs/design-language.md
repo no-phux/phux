@@ -43,9 +43,10 @@ The solver exists once per language and every port matches the brand's
 golden vectors exactly: colours as `#RRGGBBAA` strings, contrast within
 1e-12. Luminance goes through the shipped table, never `pow`, and
 arithmetic is IEEE-754 binary64 with no fused multiply-add. phux-brand's CI
-runs the full vector set and the floor checks; `crates/phux-design/tests/vectors.rs`
-spot-checks this port against a subset (`vectors.json`) pinned to the
-synced parameters, so a drift or a stale subset fails here too.
+runs the full vector set and the floor checks.
+`crates/phux-design/tests/vectors.rs` spot-checks this port against a subset
+(`tokens/derive-vectors.subset.json`) pinned to the synced parameters, so a
+drift or a stale subset fails here too.
 
 ## Roles
 

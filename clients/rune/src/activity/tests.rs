@@ -243,7 +243,7 @@ fn an_idle_agent_with_work_in_the_background_is_told_apart() {
 fn the_tone_of_vectors_hold_through_rune() {
     let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/phux-design/tests/vectors.json"
+        "/../../crates/phux-design/tokens/derive-vectors.subset.json"
     )))
     .unwrap();
     let mut ran = 0;

@@ -1,7 +1,7 @@
 //! The parity contract, spot-checked: a few of phux-brand's golden vectors
-//! (`vectors.json`, a subset of its `tokens/derive-vectors.json`; the brand's
-//! CI holds the full set). Colours match as exact `#RRGGBBAA` strings and
-//! contrast within 1e-12.
+//! (`tokens/derive-vectors.subset.json`, cut from its
+//! `tokens/derive-vectors.json`; the brand's CI holds the full set).
+//! Colours match as exact `#RRGGBBAA` strings and contrast within 1e-12.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +21,7 @@ use phux_design::{
 };
 use serde_json::Value;
 
-const VECTORS: &str = include_str!("vectors.json");
+const VECTORS: &str = include_str!("../tokens/derive-vectors.subset.json");
 
 fn vectors() -> Value {
     serde_json::from_str(VECTORS).unwrap()
