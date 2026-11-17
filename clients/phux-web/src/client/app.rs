@@ -51,6 +51,10 @@ pub(super) fn build_app(
     // viewport tells the server that grid's cell size.
     let (cell_w, cell_h) = metrics.cell_px();
     session.set_cell_size(cell_w, cell_h);
+    let engine_palette = {
+        let fresh = vt.terminal(1, 1).grid();
+        (fresh.default_bg, fresh.default_fg)
+    };
     let app = Rc::new(RefCell::new(App {
         session,
         tx,
@@ -77,7 +81,10 @@ pub(super) fn build_app(
         link_hover: Cell::new(false),
         touch: Cell::new(None),
         ctrl_latch: Cell::new(false),
-        bell_started_ms: Cell::new(f64::NEG_INFINITY),
+        bell: Cell::new(crate::bell::BellGate::default()),
+        bell_unread: Cell::new(false),
+        badges: RefCell::new(badges::BadgeMemory::default()),
+        engine_palette,
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -143,6 +150,9 @@ impl App {
             return;
         }
         self.failure_reason.replace(Some(message.to_owned()));
+        // The transport is gone: the agents on screen are lost, not still
+        // working. Painted before the kernel is failed.
+        self.paint_badges();
         self.session.fail_protocol(message);
         super::approvals::retain_uncertainty(&self.canvas, self.session.approval_status());
         let refused = self.session.is_version_refused();
@@ -170,61 +180,6 @@ impl App {
         self.self_owner.get_mut().take();
     }
 
-    /// Project the focused pane's agent badges into the DOM: one
-    /// `<span class="phux-agent-badge">` per `AgentSession` under a
-    /// `#phux-agent-badges` container beside the canvas, hidden when empty.
-    pub(super) fn paint_badges(&self) {
-        let Some(container) = self.badge_container() else {
-            return;
-        };
-        let badges = self.session.agent_badges();
-        container.set_text_content(None);
-        let Some(document) = container.owner_document() else {
-            return;
-        };
-        for badge in &badges {
-            let Ok(span) = document.create_element("span") else {
-                continue;
-            };
-            span.set_class_name("phux-agent-badge");
-            let _ = span.set_attribute("data-provider", &badge.provider);
-            let _ = span.set_attribute("data-state", &badge.state);
-            let provider = if badge.provider.is_empty() {
-                "agent"
-            } else {
-                badge.provider.as_str()
-            };
-            let text = if badge.state.is_empty() || badge.state == "unknown" {
-                provider.to_owned()
-            } else {
-                format!("{provider}: {}", badge.state)
-            };
-            span.set_text_content(Some(&text));
-            let _ = container.append_child(&span);
-        }
-        let _ = container.set_attribute("hidden", "");
-        if !badges.is_empty() {
-            let _ = container.remove_attribute("hidden");
-        }
-    }
-
-    /// The badge container, created next to the canvas on first use.
-    fn badge_container(&self) -> Option<web_sys::Element> {
-        let document = self.canvas.owner_document()?;
-        if let Some(existing) = document.get_element_by_id(BADGE_CONTAINER_ID) {
-            return Some(existing);
-        }
-        let container = document.create_element("div").ok()?;
-        container.set_id(BADGE_CONTAINER_ID);
-        let _ = container.set_attribute("hidden", "");
-        let parent = self
-            .canvas
-            .parent_element()
-            .or_else(|| document.body().map(Into::into))?;
-        parent.append_child(&container).ok()?;
-        Some(container)
-    }
-
     /// Move the input surface over the cursor cell, so an IME candidate
     /// window opens where the text will land.
     pub(super) fn place_input_surface(&self) {
@@ -245,9 +200,11 @@ impl App {
         let pane = self.focused_rect();
         let left = rect.left() + f64::from(pane.x + grid.cursor_col) * css_w;
         let top = rect.top() + f64::from(pane.y + grid.cursor_row) * css_h;
+        // Client-rect coordinates are physical, so this one box is placed
+        // with the physical `inset` shorthand (top, right, bottom, left).
         let _ = input.surface.set_attribute(
             "style",
-            &format!("{INPUT_SURFACE_STYLE}left:{left}px;top:{top}px;"),
+            &format!("{INPUT_SURFACE_STYLE}inset:{top}px auto auto {left}px;"),
         );
     }
 
@@ -291,7 +248,7 @@ impl App {
                 self.glass_mode.get(),
             );
             self.ctx.restore();
-            self.paint_pane_border(&pane, true);
+            self.paint_pane_border(&pane, true, &crate::ink::roles_of(grid));
         }
     }
 }

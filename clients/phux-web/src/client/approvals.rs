@@ -28,14 +28,28 @@ fn mount_container(app: &Rc<RefCell<App>>) -> Result<Element, JsValue> {
     container.set_id("phux-approvals");
     container.set_attribute("hidden", "")?;
     container.set_attribute("open", "")?;
-    container.set_attribute(
-        "style",
-        "max-height:50vh;overflow:auto;padding:.5rem;border:1px solid currentColor",
-    )?;
+    container.set_attribute("style", &panel_style())?;
     // Static markup only. Every server value is assigned through textContent below.
     container.set_inner_html("<summary>Approvals</summary><button type='button' data-action='refresh-approvals'>Refresh approvals</button><div class='phux-approval-status' role='status' aria-live='polite'></div><div class='phux-approval-records'></div>");
     mount_beside_canvas(&document, &app.borrow().canvas, &container)?;
     Ok(container)
+}
+
+/// The inbox is a raised card: `layer.raised` with a `border.base` edge and
+/// `radius.md`, from the page's tokens or the house fallbacks.
+fn panel_style() -> String {
+    use phux_design::tokens::{RADIUS, SPACE};
+    let house = crate::ink::house();
+    format!(
+        "max-height:50vh;overflow:auto;padding:{};border:{} solid {};border-radius:{};\
+         background:{};color:{}",
+        crate::ink::px("space-s2", SPACE.s2),
+        crate::ink::px("space-hairline", SPACE.hairline),
+        crate::ink::color("border-base", house.border.base),
+        crate::ink::px("radius-md", RADIUS.md),
+        crate::ink::color("layer-raised", house.layer.raised),
+        crate::ink::color("text-text", house.text.text),
+    )
 }
 
 fn mount_beside_canvas(
@@ -210,6 +224,16 @@ fn append_buttons(
         button.set_attribute("type", "button")?;
         button.set_attribute("data-approval-id", id)?;
         button.set_attribute("data-decision", decision)?;
+        // Deny is destructive (the danger variant); Approve is the view's one
+        // primary action (§1.10). index.html styles both.
+        button.set_attribute(
+            "data-variant",
+            if decision == "deny" {
+                "danger"
+            } else {
+                "primary"
+            },
+        )?;
         button.set_text_content(Some(label));
         if disabled {
             button.set_attribute("disabled", "")?;

@@ -224,6 +224,23 @@ impl Connection {
                         outcome.bell = true;
                     }
                 }
+                // A pane's exit decides whether its agents ended done or
+                // failed; their badges repaint.
+                KernelEffect::Status(KernelStatus::Exited {
+                    terminal_id,
+                    exit_status,
+                    signal,
+                    ..
+                }) => {
+                    self.exits.insert(
+                        terminal_id.clone(),
+                        crate::session::PaneExit {
+                            code: *exit_status,
+                            signal: *signal,
+                        },
+                    );
+                    outcome.badges = true;
+                }
                 KernelEffect::Status(_) | KernelEffect::Job(_) => {}
             }
         }

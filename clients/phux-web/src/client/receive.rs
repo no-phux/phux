@@ -218,8 +218,9 @@ impl BatchEffects {
     }
 }
 
-/// The program rang the bell: announce it with [`BELL_EVENT`], then flash
-/// the canvas unless the page prefers reduced motion or a flash is showing.
+/// The program rang the bell: announce it with [`BELL_EVENT`], then wash
+/// the canvas at most once a second ([`crate::bell::BellGate`]), or, when
+/// the page prefers reduced motion, show the unread dot instead.
 fn ring_bell(app: &Rc<RefCell<App>>) {
     let canvas = app.borrow().canvas.clone();
     // Dispatched with no borrow held: a listener may call the client.
@@ -229,15 +230,23 @@ fn ring_bell(app: &Rc<RefCell<App>>) {
         let Ok(now) = monotonic_now_ms() else {
             return;
         };
-        if prefers_reduced_motion() || app.bell_showing() {
-            return;
+        let mut gate = app.bell.get();
+        let ring = gate.ring(now, prefers_reduced_motion());
+        app.bell.set(gate);
+        match ring {
+            crate::bell::Ring::Wash => app.request_paint(),
+            crate::bell::Ring::Dot => {
+                if !app.bell_unread.replace(true) {
+                    app.paint_badges();
+                }
+                return;
+            }
+            crate::bell::Ring::Coalesced => return,
         }
-        app.bell_started_ms.set(now);
-        app.request_paint();
     }
     let weak = Rc::downgrade(app);
     wasm_bindgen_futures::spawn_local(async move {
-        TimeoutFuture::new(BELL_FLASH_MS).await;
+        TimeoutFuture::new(crate::bell::wash_ms()).await;
         if let Some(app) = weak.upgrade() {
             app.borrow().request_paint();
         }
@@ -246,14 +255,14 @@ fn ring_bell(app: &Rc<RefCell<App>>) {
 
 /// Whether the page asks for reduced motion (`prefers-reduced-motion`).
 fn prefers_reduced_motion() -> bool {
+    prefers("(prefers-reduced-motion: reduce)")
+}
+
+/// Whether the media `query` matches the page now.
+pub(super) fn prefers(query: &str) -> bool {
     web_sys::window()
-        .and_then(|window| {
-            window
-                .match_media("(prefers-reduced-motion: reduce)")
-                .ok()
-                .flatten()
-        })
-        .is_some_and(|query| query.matches())
+        .and_then(|window| window.match_media(query).ok().flatten())
+        .is_some_and(|list| list.matches())
 }
 
 fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
