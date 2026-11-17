@@ -1,7 +1,7 @@
 //! `[defaults]` and `[limits]`: pane defaults, history and journal budgets,
 //! and the ceilings the server enforces.
 
-pub use phux_config_core::ClipboardRead;
+pub use phux_config_core::{ClipboardRead, ClipboardWrite};
 use phux_config_core::limits::DEFAULT_HISTORY_LINES;
 pub use phux_config_core::limits::{DEFAULT_HISTORY_BYTES, MAX_HISTORY_BYTES, ScrollbackLimits};
 use serde::{Deserialize, Serialize};
@@ -233,20 +233,6 @@ impl Default for LimitsCfg {
 /// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/protocol.md#commands-events-resources`'s
 /// recommended cap.
 pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
-
-/// What a client does with an OSC 52 clipboard write from a pane
-/// (`defaults.clipboard-write`, ADR-0158). Ghostty's `clipboard-write`.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "kebab-case")]
-pub enum ClipboardWrite {
-    /// Set the host clipboard (default, as Ghostty and tmux).
-    #[default]
-    Allow,
-    /// Ask before setting it.
-    Ask,
-    /// Drop the write.
-    Deny,
-}
 
 /// How a newly-spawned pane chooses its working directory
 /// (`defaults.cwd-inheritance`).

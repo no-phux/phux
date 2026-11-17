@@ -143,11 +143,15 @@ impl Desk {
     }
 
     /// The confirm bar's button: [`Self::confirm_pending`], reading the
-    /// clipboard for a held read.
+    /// clipboard for a held read and setting it for a held write.
     pub fn confirm_pending_tx(&mut self, tx: &mut Tx) {
         match self.pending.take() {
             Some(Pending::ClipboardRead(terminal, selection)) => {
                 self.allow_clipboard_read(terminal, selection, false, tx);
+            }
+            write @ Some(Pending::ClipboardWrite(..)) => {
+                self.pending = write;
+                self.allow_clipboard_write(tx);
             }
             other => {
                 self.pending = other;
