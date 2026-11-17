@@ -74,8 +74,18 @@ fn window_on(
         pane(3, &phux, t("review #2617"), Some("~/workspace/phux")),
         pane(4, &site, t("docs build"), Some("~/workspace/website")),
         pane(5, &site, "zsh", Some("~/workspace/website")),
-        pane(6, &mobile, t("ios snapshots"), Some("~/workspace/phux-mobile")),
-        pane(7, &mobile, t("android build"), Some("~/workspace/phux-mobile")),
+        pane(
+            6,
+            &mobile,
+            t("ios snapshots"),
+            Some("~/workspace/phux-mobile"),
+        ),
+        pane(
+            7,
+            &mobile,
+            t("android build"),
+            Some("~/workspace/phux-mobile"),
+        ),
     ];
     let mut topology = crate::desk::topology(vec![phux, site, mobile], panes);
     server::terminal_resources(&mut topology);

@@ -41,12 +41,7 @@ fn window(dark: bool, open: fn(&mut Desk)) -> Runtime<Desk> {
     ];
     let mut topology = crate::desk::topology(vec![phux, site], panes);
     server::terminal_resources(&mut topology);
-    let mut rt = Runtime::new(
-        desk,
-        crate::ui::view,
-        SIZE,
-        Env::new(dark, SCALE),
-    );
+    let mut rt = Runtime::new(desk, crate::ui::view, SIZE, Env::new(dark, SCALE));
     rt.on_key = Some(Desk::key);
     rt.frame(0.0);
     rt.update(move |d, _| {
