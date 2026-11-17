@@ -10,6 +10,8 @@ use rune::{Key, Runtime};
 
 use crate::desk::Desk;
 
+mod delivery;
+
 const QUESTION: &str = "release-review";
 const WORDS: &str = "The arm64 build is ready. Should I run the native input checks before publishing the phone update?";
 const ANSWERS: [&str; 3] = [
@@ -29,6 +31,12 @@ enum Scene {
     NativeReply,
     Inline,
     InlineNoChoices,
+    Sending,
+    Delivered,
+    Refused,
+    Unknown,
+    NewDraft,
+    OtherQuestion,
 }
 
 impl Scene {
@@ -42,6 +50,12 @@ impl Scene {
             Self::NativeReply => "native-reply",
             Self::Inline => "inline",
             Self::InlineNoChoices => "inline-no-choices",
+            Self::Sending => "sending",
+            Self::Delivered => "delivered",
+            Self::Refused => "refused",
+            Self::Unknown => "unknown",
+            Self::NewDraft => "new-draft",
+            Self::OtherQuestion => "other-question",
         }
     }
 
@@ -63,6 +77,12 @@ impl Scene {
                 question(desk, &ANSWERS)
             }
             Self::InlineNoChoices => question(desk, &[]),
+            Self::Sending
+            | Self::Delivered
+            | Self::Refused
+            | Self::Unknown
+            | Self::NewDraft
+            | Self::OtherQuestion => question(desk, &ANSWERS),
         }
         if matches!(self, Self::Inline | Self::InlineNoChoices) {
             desk.phone.as_mut().unwrap().keyboard = matches!(self, Self::Inline);
@@ -74,7 +94,10 @@ impl Scene {
         desk.toggle_inbox();
         desk.inbox.reply.focused = false;
         if let Some(phone) = desk.phone.as_mut() {
-            phone.keyboard = matches!(self, Self::Reply);
+            phone.keyboard = !matches!(
+                self,
+                Self::Question | Self::Approval | Self::Empty | Self::Scrolled | Self::NativeReply
+            );
         }
     }
 
@@ -134,6 +157,12 @@ impl Scene {
                         .contains("Nothing needs you")
                 );
             }
+            Self::Sending
+            | Self::Delivered
+            | Self::Refused
+            | Self::Unknown
+            | Self::NewDraft
+            | Self::OtherQuestion => delivery::prepare(rt, self),
         }
     }
 }
@@ -232,6 +261,9 @@ fn render_case(
     scene: Scene,
 ) {
     let (_, mut rt) = fixture(size, phone, scale as f32);
+    if phone && size.1 <= 420 {
+        rt.state.native = Some(crate::mobile::Platform::test());
+    }
     prepare(&mut rt, scene, light);
     let mut renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
     let pixels = (size.0 * scale, size.1 * scale);
@@ -274,6 +306,12 @@ fn phone_inbox_visual_review_frames() {
                 Scene::Approval,
                 Scene::Empty,
                 Scene::Scrolled,
+                Scene::Sending,
+                Scene::Delivered,
+                Scene::Refused,
+                Scene::Unknown,
+                Scene::NewDraft,
+                Scene::OtherQuestion,
             ] {
                 render_case(&gpu, phone, size, scale, light, scene);
             }
@@ -282,6 +320,16 @@ fn phone_inbox_visual_review_frames() {
     for size in [(393, 420), (320, 280)] {
         for light in [false, true] {
             render_case(&gpu, true, size, 1, light, Scene::NativeReply);
+            for scene in [
+                Scene::Sending,
+                Scene::Delivered,
+                Scene::Refused,
+                Scene::Unknown,
+                Scene::NewDraft,
+                Scene::OtherQuestion,
+            ] {
+                render_case(&gpu, true, size, 1, light, scene);
+            }
         }
     }
     for size in [(393, 852), (320, 568)] {

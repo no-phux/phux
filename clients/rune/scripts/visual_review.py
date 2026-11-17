@@ -160,11 +160,18 @@ def inbox_inventory():
     cases = {
         f"inbox/{form}-{state}-{theme}-{width}x{height}-{scale}x.png": (width, height, scale)
         for (form, width, height, scale), state, theme in product(
-            INBOX_VIEWPORTS, ("question", "reply", "approval", "empty", "scrolled"), THEMES)
+            INBOX_VIEWPORTS, ("question", "reply", "approval", "empty", "scrolled",
+                             "sending", "delivered", "refused", "unknown", "new-draft", "other-question"), THEMES)
     }
     cases.update({
         f"inbox/phone-native-reply-{theme}-{width}x{height}-1x.png": (width, height, 1)
         for (width, height), theme in product(((393, 420), (320, 280)), THEMES)
+    })
+    cases.update({
+        f"inbox/phone-{state}-{theme}-{width}x{height}-1x.png": (width, height, 1)
+        for state, theme, (width, height) in product(
+            ("sending", "delivered", "refused", "unknown", "new-draft", "other-question"),
+            THEMES, ((393, 420), (320, 280)))
     })
     cases.update({
         f"inbox/phone-{state}-{theme}-{width}x{height}-1x.png": (width, height, 1)
@@ -214,7 +221,7 @@ def navigation_inventory():
 
 
 def required_inventory():
-    """159 required cases: 96 Inbox, 34 Settings, 28 navigation, 1 resource.
+    """255 required cases: 192 Inbox, 34 Settings, 28 navigation, 1 resource.
 
     Values are (logical width, logical height, scale); additional cases are
     welcome, but cannot replace any maintained case.

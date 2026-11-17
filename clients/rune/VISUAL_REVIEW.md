@@ -64,7 +64,7 @@ Keep a populated core gallery every tick, not just the selected happy path:
 | Settings | Grouped sections and current values; category drill-down; long labels; typed search/no match; in-progress update feedback. |
 | Phone navigation | Several sessions and panes with long names/folders; mixed working/attention/quiet states; current pane; scrolled bottom; matching search with keyboard and no matches. |
 | Resources | Actual decoded image beside a structured native document/accessibility tree; readable text and labels, not an empty placeholder. |
-| Phone Inbox | Populated questions and approvals, long agent/detail text, suggested replies; focused reply with keyboard; empty state and a safe dismiss path. |
+| Phone Inbox | Populated questions and approvals, long agent/detail text, suggested replies; focused reply with keyboard; empty state and a safe dismiss path. Delivery cases include pending, acknowledged, refused and unconfirmed answers, plus a newer draft and another question before an older receipt. |
 
 Retain the exporters' existing sizes. The gallery must include 1100×720
 desktop, the existing minimum desktop case (640×360), 393×852 phone and

@@ -18,6 +18,8 @@ use crate::desk::{Desk, Shown};
 use crate::features::changes::presentation::Line;
 use crate::keys::Shortcut;
 
+mod wheel;
+
 fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
     let caps = if checkout {
         ServerCapabilities::new()
