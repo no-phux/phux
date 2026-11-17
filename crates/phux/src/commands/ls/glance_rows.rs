@@ -177,7 +177,8 @@ pub(super) fn collapse_by_project(mut rows: Vec<(SessionGlance, RowProject)>) ->
     let sessions = |n: usize| if n == 1 { "session" } else { "sessions" };
     let mut counts = Vec::new();
     if loud > 0 {
-        counts.push(format!("+{loud} more {} that need you", sessions(loud)));
+        let need = if loud == 1 { "needs" } else { "need" };
+        counts.push(format!("+{loud} more {} that {need} you", sessions(loud)));
     }
     if quiet > 0 {
         counts.push(format!("+{quiet} quiet {}", sessions(quiet)));
@@ -207,9 +208,9 @@ pub(super) fn project_grouped_glance(rows: &[(SessionGlance, RowProject)]) -> Ve
         match block {
             Block::Single(index) => lines.push(glance_text(&rows[index].0)),
             Block::Project(project) => {
-                lines.push(match project.needs_you {
-                    0 => format!("{} (project)", project.name),
-                    n => format!("{} (project, {n} need you)", project.name),
+                lines.push(match needs_you_count(project.needs_you) {
+                    None => format!("{} (project)", project.name),
+                    Some(count) => format!("{} (project, {count})", project.name),
                 });
                 for member in project.members {
                     let indent = if member.linked { "    " } else { "  " };
@@ -219,6 +220,16 @@ pub(super) fn project_grouped_glance(rows: &[(SessionGlance, RowProject)]) -> Ve
         }
     }
     lines
+}
+
+/// A project header's count of sessions that need you, in the status
+/// vocabulary's plural (`1 needs you`, `2 need you`); `None` for none.
+pub(super) fn needs_you_count(count: usize) -> Option<String> {
+    if count == 0 {
+        return None;
+    }
+    let count = u64::try_from(count).unwrap_or(u64::MAX);
+    phux_design::plural("count.needs_you", count)
 }
 
 /// One session's glance line: what needs you, what runs, and `ephemeral`
