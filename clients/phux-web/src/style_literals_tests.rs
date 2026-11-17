@@ -9,15 +9,11 @@
 //!   `padding-left`/`margin-right`/`border-left`…, and `left:`/`right:`.
 //!
 //! Owner paths may hold them: `src/ink.rs`, the one module that turns
-//! `phux_design` values into CSS. A file's count may never rise above
-//! `style_literals.baseline.json`, and a file missing from the baseline must
-//! have none. Lowering a count needs no baseline edit.
+//! `phux_design` values into CSS. Every other file must have none.
 //!
 //! It is an integration test (`[[test]]` in `Cargo.toml`), not a `lib` unit
 //! test, because the `lib` suite runs only in a browser and this one reads
 //! the source tree through Node's `fs`.
-
-use std::collections::BTreeMap;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -112,22 +108,13 @@ fn literals(text: &str) -> usize {
     hex_colors(text) + rgb_functions(text) + physical_properties(text)
 }
 
-fn baseline() -> BTreeMap<String, usize> {
-    let text = read_file_sync(&format!("{ROOT}/style_literals.baseline.json"), "utf8");
-    serde_json::from_str(&text).expect("style_literals.baseline.json is a map of path to count")
-}
-
 #[wasm_bindgen_test]
-fn no_file_gains_a_raw_style_literal() {
-    let baseline = baseline();
+fn no_file_holds_a_raw_style_literal() {
     let mut over = Vec::new();
     for path in sources() {
         let found = literals(&read_file_sync(&format!("{ROOT}/{path}"), "utf8"));
-        let allowed = baseline.get(&path).copied().unwrap_or(0);
-        if found > allowed {
-            over.push(format!(
-                "{path}: {found} raw style literals, baseline {allowed}"
-            ));
+        if found > 0 {
+            over.push(format!("{path}: {found} raw style literals"));
         }
     }
     assert!(
@@ -135,14 +122,6 @@ fn no_file_gains_a_raw_style_literal() {
         "use phux-design tokens or var(--phux-…) instead:\n{}",
         over.join("\n")
     );
-}
-
-#[wasm_bindgen_test]
-fn the_baseline_names_only_files_that_exist() {
-    let sources = sources();
-    for path in baseline().keys() {
-        assert!(sources.contains(path), "stale baseline entry {path}");
-    }
 }
 
 #[wasm_bindgen_test]
