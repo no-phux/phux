@@ -147,7 +147,8 @@ impl Desk {
         if self.view_of(&terminal).is_none() {
             return;
         }
-        let Some(area) = self.connection.areas.get(&terminal).copied() else {
+        let area = self.connection.areas.get(&terminal).copied();
+        let Some(area) = area.or_else(|| self.slot_area(&terminal)) else {
             return;
         };
         if area[0] < 1.0 || area[1] < 1.0 {

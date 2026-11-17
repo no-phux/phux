@@ -65,6 +65,8 @@ every_shortcut!(
     PreviousTerminal,
     NextTerminalInSession,
     PreviousTerminalInSession,
+    NextSlotTab,
+    PreviousSlotTab,
     NextSession,
     PreviousSession,
     ZoomIn,
