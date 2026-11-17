@@ -235,7 +235,13 @@ fn glass_stays_within_its_budget() {
             );
         }
     }
-    assert!(drawn > 0, "full glass drew no glass panel at all");
+    // Glass is macOS only (`Desk::glass`): the window is transparent there
+    // alone, so elsewhere full glass still draws every panel opaque.
+    if cfg!(target_os = "macos") {
+        assert!(drawn > 0, "full glass drew no glass panel at all");
+    } else {
+        assert_eq!(drawn, 0, "glass drawn off macOS");
+    }
 }
 
 #[test]
