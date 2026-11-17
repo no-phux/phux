@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
@@ -69,7 +69,7 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
 #[test]
 fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     let journal = crate::state::SharedState::new();
-    let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+    let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(32);
     for terminal in [5, 9] {
         journal.with_mut(|s| {
@@ -144,7 +144,8 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     // the hub's lease ledger names the holder.
     let (lease_tx, _lease_rx) = mpsc::channel(1);
     journal.with_mut(|s| {
-        s.set_satellite_lease(host(), 9, consumer, lease_tx);
+        s.federation_mut()
+            .set_satellite_lease(host(), 9, consumer, lease_tx);
     });
     let stamp = phux_protocol::wire::frame::EventStamp::new(2, 1).with_operation_id(key);
     let got = relay(9, control(1), Some(Box::new(stamp)));
@@ -252,10 +253,10 @@ fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
             operation_id: None,
         }
     );
-    let refusal = CommandResult::Error {
-        code: ErrorCode::PreconditionFailed,
-        message: "satellite incarnation changed".into(),
-    };
+    let refusal = CommandResult::error(
+        ErrorCode::PreconditionFailed,
+        "satellite incarnation changed",
+    );
     session.feed(&FrameKind::CommandResult {
         request_id,
         result: refusal.clone(),

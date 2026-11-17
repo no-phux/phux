@@ -37,35 +37,21 @@ impl ServerGuard {
         for (key, value) in envs {
             cmd.env(key, value);
         }
-        let out = cmd.stdin(Stdio::null()).output().expect("run phux verb");
-        assert!(
-            out.status.success(),
-            "phux {args:?} exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        common::Out::of(&mut cmd).ok()
     }
 
     /// Run `phux agent <args...> --socket <sock>` capturing stdout.
     /// `agent`'s subcommands take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe here.
     fn agent(&self, args: &[&str]) -> String {
-        let out = common::phux_cmd(crate::runner::phux_bin())
-            .arg("agent")
-            .args(args)
-            .arg("--socket")
-            .arg(&self.socket)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux agent verb");
-        assert!(
-            out.status.success(),
-            "phux agent {args:?} exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        common::Out::of(
+            common::phux_cmd(crate::runner::phux_bin())
+                .arg("agent")
+                .args(args)
+                .arg("--socket")
+                .arg(&self.socket),
+        )
+        .ok()
     }
 
 

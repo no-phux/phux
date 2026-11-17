@@ -23,7 +23,7 @@ use phux_server_testkit::{
     SpawnedServer, assert_command_error, command, recv_until, run_local, seed_pty,
 };
 
-use crate::common::{connect_as, full_caps};
+use crate::common::{advertises, connect_as, full_caps};
 
 const FAILURE: &[u8] = &[5];
 const LIST: &[u8] = &[11];
@@ -57,13 +57,10 @@ async fn serve(agent: bool, body: impl AsyncFnOnce(&Path, PathBuf)) {
 
 async fn client(socket: &Path, name: &str) -> (UnixStream, bool) {
     let (stream, hello_ok) = connect_as(socket, name, full_caps()).await;
-    let FrameKind::HelloOk { server_caps, .. } = hello_ok else {
-        unreachable!()
-    };
-    let advertised = server_caps
-        .features_ext
-        .contains(ServerFeatureExt::ForwardAgent);
-    (stream, advertised)
+    (
+        stream,
+        advertises(&hello_ok, ServerFeatureExt::ForwardAgent),
+    )
 }
 
 async fn offer(stream: &mut UnixStream, request_id: u32) -> CommandResult {

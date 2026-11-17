@@ -1,20 +1,15 @@
 use super::*;
 
+fn sends_no_spawn(plane: &mut ControlPlane) -> bool {
+    plane
+        .take_outbound()
+        .iter()
+        .all(|bytes| !matches!(decode(bytes), FrameKind::SpawnResource { .. }))
+}
+
 #[test]
 fn interactive_setup_spawn_is_not_replayed_even_when_server_supports_idempotency() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        ..ControlOptions::default()
-    });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
-        .unwrap();
-    let attach_id = outbound_attach_id(&mut plane);
-    attach(&mut plane, attach_id, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
+    let mut plane = idempotent_home();
     let id = plane.spawn_terminal_once(SpawnRequest {
         command: Some(vec!["opencode".into(), "auth".into(), "login".into()]),
         ..SpawnRequest::default()
@@ -34,33 +29,11 @@ fn interactive_setup_spawn_is_not_replayed_even_when_server_supports_idempotency
         .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
         .unwrap();
     finish_reconnected_attach(&mut plane);
-    assert!(
-        plane
-            .take_outbound()
-            .iter()
-            .all(|bytes| !matches!(decode(bytes), FrameKind::SpawnResource { .. }))
-    );
+    assert!(sends_no_spawn(&mut plane));
 }
 
 fn inventory_read(plane: &mut ControlPlane) -> u32 {
-    plane
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Command {
-                request_id,
-                command: Command::GetState { .. },
-            } => Some(request_id),
-            _ => None,
-        })
-        .expect("topology read")
-}
-
-fn answer_inventory(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    state_read(&outbound(plane)).expect("topology read")
 }
 
 /// An empty session emits no terminal-close event to refresh the inventory.
@@ -70,16 +43,13 @@ fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
     use phux_protocol::wire::frame::AgentEvent;
 
     for read_in_flight in [false, true] {
-        let mut plane = ControlPlane::new(ControlOptions::default());
-        plane.connection_opened();
-        let _ = plane.take_outbound();
-        plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+        let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
         let initial = inventory_read(&mut plane);
         let mut before = snapshot();
         before
             .sessions
             .push(SessionInfo::new(SessionId::new(2), "empty"));
-        answer_inventory(&mut plane, initial, before.clone());
+        answer_state(&mut plane, initial, before.clone());
         let _ = plane.take_outbound();
         let _ = plane.take_events();
         assert!(plane.topology().unwrap().session_named("empty").is_some());
@@ -98,10 +68,10 @@ fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
             .unwrap();
         if let Some(old_read) = old_read {
             assert!(plane.take_outbound().is_empty(), "coalesce in-flight reads");
-            answer_inventory(&mut plane, old_read, before);
+            answer_state(&mut plane, old_read, before);
         }
         let refresh = inventory_read(&mut plane);
-        answer_inventory(&mut plane, refresh, snapshot());
+        answer_state(&mut plane, refresh, snapshot());
         assert!(plane.topology().unwrap().session_named("empty").is_none());
         assert!(
             plane
@@ -122,19 +92,7 @@ fn replacement_hello(incarnation: u8) -> FrameKind {
 
 #[test]
 fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        ..ControlOptions::default()
-    });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane
-        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
-        .unwrap();
-    let first_attach = outbound_attach_id(&mut plane);
-    attach(&mut plane, first_attach, b"home");
-    let _ = plane.take_outbound();
-    let _ = plane.take_events();
+    let mut plane = idempotent_home();
     let request_id = plane.spawn_terminal(SpawnRequest::default());
     let _ = plane.take_outbound();
     plane.connection_lost(None);
@@ -146,12 +104,7 @@ fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
     }
     plane.feed(hello).unwrap();
     finish_reconnected_attach(&mut plane);
-    assert!(
-        plane
-            .take_outbound()
-            .iter()
-            .all(|bytes| !matches!(decode(bytes), FrameKind::SpawnResource { .. }))
-    );
+    assert!(sends_no_spawn(&mut plane));
     assert!(plane.take_events().iter().any(|event| matches!(event,
         Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(message) }
             if *id == request_id && message.contains("server restarted")
@@ -160,9 +113,7 @@ fn keyed_spawn_never_replays_to_a_different_server_incarnation() {
 
 fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
     plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(replacement_hello(incarnation)).unwrap();
+    reopen(plane, replacement_hello(incarnation));
     plane
         .take_outbound()
         .iter()
@@ -173,6 +124,13 @@ fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
         .expect("reconnect must request the selected session")
 }
 
+/// The session a reconnect asks for: `same` from the same server
+/// incarnation, `other` from a different one.
+fn assert_reconnect_targets(plane: &mut ControlPlane, same: &AttachTarget, other: &AttachTarget) {
+    assert_eq!(&reconnect_target(plane, 0xAB), same, "same incarnation");
+    assert_eq!(&reconnect_target(plane, 0xCD), other, "new incarnation");
+}
+
 #[test]
 fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect() {
     let mut plane = ControlPlane::new(ControlOptions {
@@ -181,14 +139,8 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
         subscribe_agent_sessions: false,
         ..ControlOptions::default()
     });
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let initial: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    let initial = outbound(&mut plane);
     let request_id = initial
         .iter()
         .find_map(|frame| match frame {
@@ -199,10 +151,7 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
             _ => None,
         })
         .expect("inventory before selecting work");
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(two_session_snapshot(false))),
-    );
+    answer_state(&mut plane, request_id, two_session_snapshot(false));
     let _ = plane.take_outbound();
     assert!(!plane.attach_session(AttachTarget::ById(SessionId::new(1))));
     let _ = plane.take_outbound();
@@ -210,14 +159,8 @@ fn consumer_validated_sessions_browse_before_replaying_any_terminal_on_reconnect
     let _ = plane.take_outbound();
     for incarnation in [0xAB, 0xCD] {
         plane.connection_lost(None);
-        plane.connection_opened();
-        let _ = plane.take_outbound();
-        plane.feed(replacement_hello(incarnation)).unwrap();
-        let frames: Vec<_> = plane
-            .take_outbound()
-            .iter()
-            .map(|bytes| decode(bytes))
-            .collect();
+        reopen(&mut plane, replacement_hello(incarnation));
+        let frames = outbound(&mut plane);
         assert!(frames.iter().any(|frame| matches!(
             frame,
             FrameKind::Command {
@@ -248,13 +191,10 @@ fn named_attach_reconnect_follows_a_rename_not_the_reused_name() {
     snapshot.sessions[0].name = "renamed".to_owned();
     snapshot.sessions[1].name = "main".to_owned();
     refresh_to(&mut plane, snapshot);
-    assert_eq!(
-        reconnect_target(&mut plane, 0xAB),
-        AttachTarget::ById(SessionId::new(1))
-    );
-    assert_eq!(
-        reconnect_target(&mut plane, 0xCD),
-        AttachTarget::ByName("renamed".to_owned())
+    assert_reconnect_targets(
+        &mut plane,
+        &AttachTarget::ById(SessionId::new(1)),
+        &AttachTarget::ByName("renamed".to_owned()),
     );
 }
 
@@ -268,13 +208,10 @@ fn a_live_named_switch_reconnects_to_its_renamed_identity() {
     snapshot.sessions[0].name = "beta".to_owned();
     snapshot.sessions[1].name = "renamed-beta".to_owned();
     refresh_to(&mut plane, snapshot);
-    assert_eq!(
-        reconnect_target(&mut plane, 0xAB),
-        AttachTarget::ById(SessionId::new(2))
-    );
-    assert_eq!(
-        reconnect_target(&mut plane, 0xCD),
-        AttachTarget::ByName("renamed-beta".to_owned())
+    assert_reconnect_targets(
+        &mut plane,
+        &AttachTarget::ById(SessionId::new(2)),
+        &AttachTarget::ByName("renamed-beta".to_owned()),
     );
 }
 
@@ -286,13 +223,10 @@ fn selected_session_numbers_are_scoped_to_the_server_incarnation() {
 
     // A dropped socket does not change a session's identity, even if its name
     // changes. A different server may have reused that number for other work.
-    assert_eq!(
-        reconnect_target(&mut plane, 0xAB),
-        AttachTarget::ById(SessionId::new(1))
-    );
-    assert_eq!(
-        reconnect_target(&mut plane, 0xCD),
-        AttachTarget::ByName("main".to_owned())
+    assert_reconnect_targets(
+        &mut plane,
+        &AttachTarget::ById(SessionId::new(1)),
+        &AttachTarget::ByName("main".to_owned()),
     );
 }
 
@@ -364,27 +298,8 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
             .with_agent(Some(phux_protocol::AgentFacet::new("claude", "working"))),
     );
     plane.attached(attach_id, snapshot.clone());
-    let stream_id = StreamId::new(u64::from(attach_id)).unwrap();
-    let bootstrap_id = BootstrapId::new(u64::from(attach_id)).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    let generation = u64::from(attach_id);
+    empty_bootstrap(&mut plane, &terminal(), [generation, generation]);
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
     assert!(plane.take_outbound().iter().all(|bytes| !matches!(
         decode(bytes),
@@ -413,10 +328,7 @@ fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
         .unwrap();
     plane.watch_agent_sessions();
     assert!(plane.take_outbound().is_empty());
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    answer_state(&mut plane, request_id, snapshot);
     let subscribed: Vec<_> = plane
         .take_outbound()
         .iter()

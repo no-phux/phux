@@ -229,10 +229,10 @@ fixes. phux keeps one change on top:
 libghostty is not the multiplexer. Sessions, tabs, and the process in
 the pane belong to the server. The library holds one pane's terminal.
 
-It does not speak the server protocol. The default `phux-protocol`
-build is pure Rust, with no libghostty, and compiles to wasm. The
-`server` feature adds libghostty conversions; decoding wire messages
-does not need them
+It does not speak the server protocol. `phux-protocol` is pure Rust,
+with no libghostty, and compiles to wasm. The libghostty conversions,
+render pool, and replay helpers live in the unpublished `phux-vt` crate;
+decoding wire messages does not need them
 ([phux-protocol README](../crates/phux-protocol/README.md)).
 
 The WebAssembly driver does no networking, does not speak the phux

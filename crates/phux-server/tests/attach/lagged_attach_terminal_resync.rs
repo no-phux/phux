@@ -17,11 +17,9 @@ use phux_protocol::wire::frame::{
 };
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, attach_by_name, recv_typed, run_local,
-    send_frame, spawn_resource, spawn_server_with_seed_cmd, wait_for_server_screen_text,
-    wait_for_socket,
+    Spawn, SpawnedServer, attach_by_name, recv_typed, run_local, send_frame, spawn_resource,
+    wait_for_server_screen_text,
 };
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use super::common::sh;
@@ -87,8 +85,7 @@ impl Oracle {
 }
 
 struct Lagged {
-    _tmp: TempDir,
-    _server: ServerHandles,
+    _server: SpawnedServer,
     owner: UnixStream,
     watcher: UnixStream,
     probe: UnixStream,
@@ -102,13 +99,9 @@ struct Lagged {
 /// server's grid while the watcher sits unread.
 async fn lagged(exit_after: bool, retained: bool) -> Lagged {
     phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
-    let tmp = TempDir::new().unwrap();
-    let socket = tmp.path().join("phux.sock");
-    let gate = tmp.path().join("dump.gate");
-    let server =
-        spawn_server_with_seed_cmd(socket.clone(), "lag", sh("while :; do sleep 3600; done"));
-
-    let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+    let server = SpawnedServer::seeded("lag", sh("while :; do sleep 3600; done"));
+    let gate = server.tmp.path().join("dump.gate");
+    let mut owner = server.connect().await;
     send_frame(&mut owner, &attach_by_name("lag")).await;
     let tail = if exit_after { "" } else { "; exec sleep 3600" };
     let script = format!(
@@ -123,7 +116,7 @@ async fn lagged(exit_after: bool, retained: bool) -> Lagged {
         panic!("burst pane spawn failed");
     };
 
-    let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+    let mut watcher = server.connect().await;
     let attach = FrameKind::Command {
         request_id: 100,
         command: Command::attach_terminal(pane.clone(), None),
@@ -148,14 +141,13 @@ async fn lagged(exit_after: bool, retained: bool) -> Lagged {
         "bootstrap must precede any delta (ADR-0007 s4)"
     );
 
-    let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+    let mut probe = server.connect().await;
     std::fs::write(&gate, b"").unwrap();
     // A non-retained exiting pane is reaped, so its screen cannot be polled.
     if !exit_after || retained {
         wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
     }
     Lagged {
-        _tmp: tmp,
         _server: server,
         owner,
         watcher,

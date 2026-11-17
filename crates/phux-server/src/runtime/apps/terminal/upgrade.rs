@@ -159,6 +159,7 @@ pub(crate) fn carry_handoffs(
 ) {
     for pane in blob.panes.iter_mut().filter(|p| p.retained_exit.is_none()) {
         let handoff = s
+            .idspace
             .resource_from_wire(&WireResourceId::local(pane.wire_id))
             .and_then(|id| handoffs.get(&id));
         if let Some(handoff) = handoff {
@@ -252,7 +253,7 @@ where
     /// spawn the engine that re-adopts its PTY. A pane is the tree's own, so
     /// one that cannot be rebuilt fails the resume.
     fn rebuild(&mut self, cx: &mut ResumeCx<'_>) -> Result<(), RebuildError> {
-        let scrollback = cx.state.scrollback_limits();
+        let scrollback = cx.state.config().scrollback;
         let blob = cx.blob;
         for p in &blob.panes {
             let core = cx.record(p.wire_id).ok_or(RebuildError::DanglingRef {
@@ -278,10 +279,10 @@ where
             cx.spawn(core, p.wire_id, handle, token, engine, exit_notify)?;
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
-                cx.state.note_retain_request(core, secs);
+                cx.state.retained_mut().note_request(core, secs);
             }
             if let Some(exit) = p.retained_exit {
-                cx.state.restore_retained_exit(core, exit_facet(exit));
+                cx.state.retained_mut().restore_exit(core, exit_facet(exit));
             }
         }
         Ok(())
@@ -303,7 +304,7 @@ where
         std::mem::take(&mut self.wired)
             .into_iter()
             .filter_map(|(pane, wiring)| {
-                let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+                let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
                 Some((pane, wiring.start(state, &wire)?))
             })
             .collect()

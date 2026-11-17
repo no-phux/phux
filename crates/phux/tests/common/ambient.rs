@@ -7,7 +7,7 @@
     reason = "shared integration-test helpers are used per test binary"
 )]
 #![allow(unreachable_pub, reason = "shared by sibling integration-test crates")]
-#![allow(clippy::expect_used, reason = "test harness")]
+#![allow(clippy::expect_used, clippy::panic, reason = "test harness")]
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -178,19 +178,140 @@ pub fn write_executable(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
 /// return `(exit_code, stdout, stderr)`.
 ///
 /// Four CLI suites used to copy this helper across three test binaries
-/// (phux-n0du). Suites that strip `dhat:` lines or set extra env keep their
-/// own wrappers.
+/// (phux-n0du). Suites that set extra env build on [`phux_in`] instead.
 pub fn run_with_xdg(args: &[&str], xdg_config_home: &Path) -> (i32, String, String) {
-    let out = phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", xdg_config_home)
-        .args(args)
+    phux_in([("XDG_CONFIG_HOME", xdg_config_home)], args).into_parts()
+}
+
+/// The result of one finished `phux` invocation: the exit code (`-1` when a
+/// signal ended it) and both streams as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Out {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl From<std::process::Output> for Out {
+    fn from(out: std::process::Output) -> Self {
+        Self {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    }
+}
+
+impl Out {
+    /// Run `cmd` to completion. Unless `cmd` says otherwise, stdin is
+    /// closed ([`Command::output`]'s default).
+    pub fn of(cmd: &mut Command) -> Self {
+        cmd.output().expect("run phux").into()
+    }
+
+    pub const fn success(&self) -> bool {
+        self.code == 0
+    }
+
+    /// `(code, stdout, stderr)`, for a test that destructures the run.
+    pub fn into_parts(self) -> (i32, String, String) {
+        (self.code, self.stdout, self.stderr)
+    }
+
+    /// Stdout of a run that must have exited 0.
+    pub fn ok(self) -> String {
+        assert!(
+            self.success(),
+            "phux exited {}; stdout={} stderr={}",
+            self.code,
+            self.stdout,
+            self.stderr
+        );
+        self.stdout
+    }
+
+    /// Stdout of a run that must have exited 0, parsed as one JSON document.
+    pub fn json(&self) -> serde_json::Value {
+        assert!(
+            self.success(),
+            "phux exited {}; stdout={} stderr={}",
+            self.code,
+            self.stdout,
+            self.stderr
+        );
+        serde_json::from_str(&self.stdout).unwrap_or_else(|err| {
+            panic!(
+                "expected one JSON document ({err}): {}{}",
+                self.stdout, self.stderr
+            )
+        })
+    }
+
+    /// The `--json` failure document: stdout must be empty and stderr one
+    /// JSON line.
+    pub fn json_error(&self) -> serde_json::Value {
+        assert!(self.stdout.is_empty(), "{self:?}");
+        let stderr = &self.stderr;
+        serde_json::from_str(stderr.trim())
+            .unwrap_or_else(|err| panic!("stderr is not one JSON line ({err}): {stderr}"))
+    }
+
+    /// Drop the heap report an `--all-features` build's dhat profiler prints
+    /// to stderr on exit: a build diagnostic, not CLI output.
+    pub fn without_dhat(mut self) -> Self {
+        self.stderr = self
+            .stderr
+            .lines()
+            .filter(|line| !line.starts_with("dhat: "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self
+    }
+}
+
+/// `phux ARGS` for a verb that needs no server, under the [`phux_cmd`] scrub.
+pub fn phux(args: &[&str]) -> Out {
+    Out::of(phux_cmd(crate::runner::phux_bin()).args(args))
+}
+
+/// [`phux`] with `env` set over the scrubbed defaults.
+pub fn phux_in<K, V>(env: impl IntoIterator<Item = (K, V)>, args: &[&str]) -> Out
+where
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    Out::of(phux_cmd(crate::runner::phux_bin()).envs(env).args(args))
+}
+
+/// Poll `probe` until it yields a value, or `None` once `deadline` has passed.
+pub fn until<T>(deadline: std::time::Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(value) = probe() {
+            return Some(value);
+        }
+        if start.elapsed() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Poll `probe` until it holds; `false` once `deadline` has passed.
+pub fn eventually(deadline: std::time::Duration, mut probe: impl FnMut() -> bool) -> bool {
+    until(deadline, || probe().then_some(())).is_some()
+}
+
+/// The first direct child PID of `parent`, via `pgrep -P`.
+pub fn child_of(parent: u32) -> Option<u32> {
+    let out = Command::new("pgrep")
+        .args(["-P", &parent.to_string()])
         .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse().ok())
 }
 
 #[cfg(test)]

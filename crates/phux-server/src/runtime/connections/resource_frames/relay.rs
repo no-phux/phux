@@ -44,11 +44,15 @@ const fn structured_input(frame: &FrameKind) -> bool {
 
 fn input_allowed(ctx: &ResourceFrame<'_>, route: &RelayRoute) -> bool {
     ctx.state.with(|s| {
-        if !s.has_satellite_proxy_attach(ctx.client_id, &route.host, route.id) {
+        if !s
+            .federation()
+            .has_satellite_proxy_attach(ctx.client_id, &route.host, route.id)
+        {
             return false;
         }
         // The satellite sees one hub identity, not these individual consumers.
-        s.satellite_lease_holder(&route.host, route.id)
+        s.federation()
+            .satellite_lease_holder(&route.host, route.id)
             .is_none_or(|holder| holder == ctx.client_id)
     })
 }

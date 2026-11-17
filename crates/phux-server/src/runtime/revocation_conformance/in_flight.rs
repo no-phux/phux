@@ -214,12 +214,12 @@ async fn revoking_a_hub_consumer_tears_down_its_relay_state() {
         let (relay, mut mailbox) = RelayHandle::new(host.clone());
         let relays = HubRelays::default();
         relays.insert(relay);
-        fx.state.with_mut(|s| s.set_hub_relays(relays));
+        fx.state.with_mut(|s| s.federation_mut().set_relays(relays));
 
         let agent = fx.workload().await;
         let (lease_tx, _lease_rx) = mpsc::channel(1);
         let proxies_cancel = fx.state.with_mut(|s| {
-            let _ = s.set_satellite_lease(host.clone(), 7, agent.client, lease_tx);
+            let _ = s.federation_mut().set_satellite_lease(host.clone(), 7, agent.client, lease_tx);
             s.client_connection_cancellation(agent.client).unwrap()
         });
 
@@ -244,7 +244,7 @@ async fn revoking_a_hub_consumer_tears_down_its_relay_state() {
             ),
             "the satellite lease is released over the link"
         );
-        assert!(fx.state.with(|s| s.satellite_leases_held_by(agent.client).is_empty()));
+        assert!(fx.state.with(|s| s.federation().satellite_leases_held_by(agent.client).is_empty()));
         agent.finish().await;
     })
     .await;

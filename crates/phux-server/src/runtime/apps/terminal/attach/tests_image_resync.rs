@@ -33,7 +33,6 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                 drain: None,
                 snapshot: Some(terminal.snapshot.clone()),
                 last_seq: None,
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 terminal,
             };
             let mut generation = PumpGeneration::opened_at(0, BootstrapId::new(1).unwrap());
@@ -50,8 +49,7 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                     .is_continue()
             );
             let mut receiver = phux_terminal::vt::Terminal::new(10, 5).unwrap();
-            phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut receiver)
-                .unwrap();
+            phux_vt::kitty_replay::configure_terminal_for_kitty_graphics(&mut receiver).unwrap();
             let mut began = false;
             let mut ready = false;
             while let Ok(Outbound::Frame(frame)) = out_rx.try_recv() {

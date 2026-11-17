@@ -3,41 +3,28 @@
 use super::*;
 use phux_client::attach::connection::Connection;
 use phux_protocol::ids::OperationId;
-use phux_protocol::policy::PeerIdentity;
-use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, Scope};
-use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use phux_server::policy::ConnectionGrant;
+use phux_server::policy::testing::{FnPolicy, parse_scopes};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// First admission observes the held request, second asks, later ones decide.
-#[derive(Debug, Default)]
-struct Grants(AtomicUsize);
-
-impl PolicyEngine for Grants {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let admission = self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move {
-            if admission == 0 {
-                return Ok(ConnectionGrant::owner());
-            }
-            let scope = if admission == 1 {
-                "?terminate@global"
-            } else {
-                "terminate@global"
-            };
-            Ok(
-                ConnectionGrant::scoped(TerminalScopeSet::parse_all(&[scope]).unwrap(), None)
-                    .unwrap(),
-            )
-        })
-    }
+fn grants() -> FnPolicy {
+    let admissions = AtomicUsize::new(0);
+    FnPolicy::new(move |_, _| {
+        let admission = admissions.fetch_add(1, Ordering::SeqCst);
+        if admission == 0 {
+            return Ok(ConnectionGrant::owner());
+        }
+        let scope = if admission == 1 {
+            "?terminate@global"
+        } else {
+            "terminate@global"
+        };
+        Ok(ConnectionGrant::scoped(parse_scopes(&[scope]), None).unwrap())
+    })
 }
 
 async fn start_server(
@@ -51,7 +38,7 @@ async fn start_server(
         pre_seeded_session: Some("held".to_owned()),
         seed_with_pty: false,
         seed_command: None,
-        policy_engine: Some(Arc::new(Grants::default())),
+        policy_engine: Some(Arc::new(grants())),
         ..phux_server::ServerConfig::with_default_socket()
     };
     let (ready, listening) = tokio::sync::oneshot::channel();

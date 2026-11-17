@@ -15,7 +15,7 @@ async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
         )
     })
     .await;
-    let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
+    let conn = net_transport("ssh")
         .connect(&SatelliteHost::new("sat"), &loopback_ws(port), None)
         .await
         .unwrap();
@@ -47,7 +47,7 @@ async fn net_link_selects_the_profile_the_hub_selects_for_native_clients() {
         )
     })
     .await;
-    let conn = NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default())
+    let conn = net_transport("ssh")
         .with_bootstrap(native)
         .connect(&SatelliteHost::new("sat"), &loopback_ws(port), None)
         .await
@@ -62,65 +62,63 @@ async fn net_link_selects_the_profile_the_hub_selects_for_native_clients() {
 
 #[tokio::test]
 async fn net_transport_connects_to_a_loopback_ws_listener_and_notices_the_drop() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    on_local(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::task::spawn_local(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut ws = tokio_tungstenite::accept_async(tcp)
                 .await
-                .expect("bind loopback");
-            let addr = listener.local_addr().expect("addr");
-            let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
-            let server = tokio::task::spawn_local(async move {
-                let (tcp, _) = listener.accept().await.expect("accept");
-                let mut ws = tokio_tungstenite::accept_async(tcp)
-                    .await
-                    .expect("ws handshake");
-                let hello = futures_util::StreamExt::next(&mut ws)
-                    .await
-                    .expect("HELLO message")
-                    .expect("HELLO read");
-                let tokio_tungstenite::tungstenite::Message::Binary(hello) = hello else {
-                    panic!("expected binary HELLO");
-                };
-                assert!(matches!(
-                    FrameKind::decode(&hello).expect("decode HELLO").0,
-                    FrameKind::Hello { .. }
-                ));
-                let hello_ok = synthesized_hello_ok();
-                futures_util::SinkExt::send(
-                    &mut ws,
-                    tokio_tungstenite::tungstenite::Message::Binary(hello_ok.into()),
-                )
+                .expect("ws handshake");
+            let hello = futures_util::StreamExt::next(&mut ws)
                 .await
-                .expect("send HELLO_OK");
-                let _ = drop_rx.await;
-                drop(ws);
-                drop(listener);
-            });
+                .expect("HELLO message")
+                .expect("HELLO read");
+            let tokio_tungstenite::tungstenite::Message::Binary(hello) = hello else {
+                panic!("expected binary HELLO");
+            };
+            assert!(matches!(
+                FrameKind::decode(&hello).expect("decode HELLO").0,
+                FrameKind::Hello { .. }
+            ));
+            let hello_ok = synthesized_hello_ok();
+            futures_util::SinkExt::send(
+                &mut ws,
+                tokio_tungstenite::tungstenite::Message::Binary(hello_ok.into()),
+            )
+            .await
+            .expect("send HELLO_OK");
+            let _ = drop_rx.await;
+            drop(ws);
+            drop(listener);
+        });
 
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(
-                entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
-                NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default()),
-            );
+        let link = supervise(
+            entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
+            net_transport("ssh"),
+        );
 
-            wait_for_real_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+        link.wait_real(|s| *s == LinkStatus::Connected).await;
 
-            drop_tx.send(()).expect("server alive");
-            wait_for_real_status(&statuses, &host, |s| {
-                matches!(s, LinkStatus::Backoff { .. })
-            })
+        drop_tx.send(()).expect("server alive");
+        link.wait_real(|s| matches!(s, LinkStatus::Backoff { .. }))
             .await;
 
-            cancel.cancel();
-            server.await.expect("server task");
-        })
-        .await;
+        link.cancel.cancel();
+        server.await.expect("server task");
+    })
+    .await;
+}
+
+/// The real network/SSH transport, dialing SSH through `ssh_program`.
+pub(super) fn net_transport(ssh_program: impl Into<std::ffi::OsString>) -> NetLinkTransport {
+    NetLinkTransport::new(
+        ssh_program.into(),
+        crate::hub::adopt::SatelliteAdopter::default(),
+    )
 }
 
 pub(super) fn synthesized_hello_ok() -> Vec<u8> {
@@ -208,148 +206,87 @@ pub(super) fn ssh_entry() -> HubEntry {
 
 #[tokio::test]
 async fn ssh_transport_spawns_the_planned_argv_and_treats_exit_as_a_drop() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let argv_file = dir.path().join("argv.txt");
-            let stub = write_stub(
-                dir.path(),
-                &format!(
-                    "printf '%s\\n' \"$@\" > {}\necho 'stub bridge refused' >&2\nexit 7",
-                    argv_file.display()
-                ),
-            );
-            let transport =
-                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(ssh_entry(), transport);
+    on_local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let argv_file = dir.path().join("argv.txt");
+        let stub = write_stub(
+            dir.path(),
+            &format!(
+                "printf '%s\\n' \"$@\" > {}\necho 'stub bridge refused' >&2\nexit 7",
+                argv_file.display()
+            ),
+        );
+        let link = supervise(ssh_entry(), net_transport(stub));
 
-            wait_for_real_status(&statuses, &host, |s| {
-                matches!(
-                    s,
-                    LinkStatus::Backoff { last_error, .. }
-                        if last_error.contains("stub bridge refused")
-                            && last_error.contains('7')
-                )
-            })
-            .await;
-            cancel.cancel();
+        link.backoff_real(&["stub bridge refused", "7"]).await;
+        link.cancel.cancel();
 
-            // The stub saw exactly the planner's argv, host after `--`.
-            let recorded = std::fs::read_to_string(&argv_file).expect("argv recorded");
-            let expected: Vec<String> = ssh_argv(Some("me"), "devbox", Some(2222));
-            assert_eq!(
-                recorded.lines().collect::<Vec<_>>(),
-                expected.iter().map(String::as_str).collect::<Vec<_>>()
-            );
-        })
-        .await;
+        // The stub saw exactly the planner's argv, host after `--`.
+        let recorded = std::fs::read_to_string(&argv_file).expect("argv recorded");
+        let expected: Vec<String> = ssh_argv(Some("me"), "devbox", Some(2222));
+        assert_eq!(
+            recorded.lines().collect::<Vec<_>>(),
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn ssh_transport_drains_stderr_past_the_pipe_buffer_without_stalling() {
     // A remote writing more than a pipe buffer to fd 2 must not wedge
     // the link, and the tail keeps the end of the stream.
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            // ~200 KiB of stderr, a marker, and a nonzero exit.
-            let stub = write_stub(
-                dir.path(),
-                "i=0\n\
-                     while [ \"$i\" -lt 200 ]; do printf '%01024d' 0 >&2; i=$((i + 1)); done\n\
-                     echo 'DRAINED-TO-EOF' >&2\n\
-                     exit 3",
-            );
-            let transport =
-                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(ssh_entry(), transport);
+    on_local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // ~200 KiB of stderr, a marker, and a nonzero exit.
+        let stub = write_stub(
+            dir.path(),
+            "i=0\n\
+                 while [ \"$i\" -lt 200 ]; do printf '%01024d' 0 >&2; i=$((i + 1)); done\n\
+                 echo 'DRAINED-TO-EOF' >&2\n\
+                 exit 3",
+        );
+        let link = supervise(ssh_entry(), net_transport(stub));
 
-            wait_for_real_status(&statuses, &host, |s| {
-                matches!(
-                    s,
-                    LinkStatus::Backoff { last_error, .. }
-                        if last_error.contains("DRAINED-TO-EOF")
-                            && last_error.contains('3')
-                )
-            })
-            .await;
-            cancel.cancel();
-        })
-        .await;
+        link.backoff_real(&["DRAINED-TO-EOF", "3"]).await;
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn ssh_transport_holds_a_live_child_as_connected() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            // Stays up reading stdin until the pipe closes or it is killed.
-            let reply = shell_octal(&synthesized_hello_ok());
-            let stub = write_stub(
-                dir.path(),
-                &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
-            );
-            let transport =
-                NetLinkTransport::new(stub.into(), crate::hub::adopt::SatelliteAdopter::default());
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task,
-            } = supervise(ssh_entry(), transport);
+    on_local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Stays up reading stdin until the pipe closes or it is killed.
+        let reply = shell_octal(&synthesized_hello_ok());
+        let stub = write_stub(
+            dir.path(),
+            &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
+        );
+        let link = supervise(ssh_entry(), net_transport(stub));
 
-            wait_for_real_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
-            cancel.cancel();
-            tokio::time::timeout(Duration::from_secs(10), task)
-                .await
-                .expect("supervisor exits on cancel")
-                .expect("no panic");
-        })
-        .await;
+        link.wait_real(|s| *s == LinkStatus::Connected).await;
+        link.cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(10), link.task)
+            .await
+            .expect("supervisor exits on cancel")
+            .expect("no panic");
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn ssh_transport_missing_program_is_a_failed_attempt_not_a_panic() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let transport = NetLinkTransport::new(
-                "/nonexistent/phux-test-no-such-ssh".into(),
-                crate::hub::adopt::SatelliteAdopter::default(),
-            );
-            let Supervised {
-                statuses,
-                cancel,
-                host,
-                relay: _relay,
-                task: _task,
-            } = supervise(ssh_entry(), transport);
-            wait_for_real_status(&statuses, &host, |s| {
-                matches!(
-                    s,
-                    LinkStatus::Backoff { last_error, .. } if last_error.contains("spawn")
-                )
-            })
-            .await;
-            cancel.cancel();
-        })
-        .await;
+    on_local(async {
+        let link = supervise(
+            ssh_entry(),
+            net_transport("/nonexistent/phux-test-no-such-ssh"),
+        );
+        link.backoff_real(&["spawn"]).await;
+        link.cancel.cancel();
+    })
+    .await;
 }
 
 /// Real-time sibling of [`wait_for_status`] for the loopback test.

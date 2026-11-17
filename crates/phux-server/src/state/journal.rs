@@ -194,6 +194,7 @@ impl Journal {
     }
 
     /// Re-bound the ring, evicting whatever the new bounds no longer hold.
+    #[cfg(test)]
     pub(crate) fn set_bounds(&mut self, max_entries: usize, max_bytes: usize) {
         self.max_entries = max_entries;
         self.max_bytes = max_bytes;

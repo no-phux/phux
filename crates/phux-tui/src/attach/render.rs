@@ -13,10 +13,10 @@ use libghostty_vt::{
     color::Rgb,
     render::{CellIterator, CursorVisualStyle, Dirty, RowIteration, Snapshot},
     screen::CellWide,
-    style::{Style, StyleColor, Underline},
+    style::{Style, Underline},
 };
-use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
-use phux_protocol::{
+use phux_core::screen::{CursorState, RenderedFrame};
+use phux_vt::{
     kitty_replay,
     render_pool::{RenderPool, RenderWalk, TerminalGeneration},
     sgr::write_reset_and_sgr,
@@ -1306,7 +1306,7 @@ fn project_cell_into_frame(
     row: u16,
     col: u16,
 ) -> Result<(), RenderError> {
-    let style = to_cell_style(&batch.style(cell.style_index)?, cell.fg, cell.bg);
+    let style = phux_vt::cell_style(&batch.style(cell.style_index)?, cell.fg, cell.bg);
     if let Some(dst) = frame.cell_mut(row, col) {
         // Overwrite in place so the destination cell's `String` keeps its
         // buffer across frames instead of being dropped and re-allocated.
@@ -1414,44 +1414,6 @@ fn render_clean_frame_cursor(
     Ok(())
 }
 
-/// Project a cell's `(Style, fg, bg)` into a [`CellStyle`]. Mirrors the
-/// server synthesizer and `phux-record`; the conformance test in
-/// `crates/phux/tests/conformance` holds all three to one corpus.
-fn to_cell_style(style: &Style, fg: Option<Rgb>, bg: Option<Rgb>) -> CellStyle {
-    CellStyle {
-        bold: style.bold,
-        faint: style.faint,
-        italic: style.italic,
-        underline: !matches!(style.underline, Underline::None),
-        blink: style.blink,
-        inverse: style.inverse,
-        invisible: style.invisible,
-        strikethrough: style.strikethrough,
-        overline: style.overline,
-        fg: cell_color(fg, style.fg_color),
-        bg: cell_color(bg, style.bg_color),
-    }
-}
-
-/// Project a cell color to [`CellColor`], preferring the explicit per-cell
-/// [`StyleColor`] so a palette index keeps its identity, and falling back to
-/// the iteration's resolved RGB. Mirrors the synthesizer's `cell_color`.
-fn cell_color(resolved: Option<Rgb>, raw: StyleColor) -> CellColor {
-    match raw {
-        StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
-        StyleColor::Rgb(rgb) => CellColor::Rgb {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        },
-        StyleColor::None => resolved.map_or(CellColor::Default, |rgb| CellColor::Rgb {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        }),
-    }
-}
-
 /// Reset SGR and show the cursor, for teardown paths.
 pub fn write_reset(out: &mut impl Write) -> io::Result<()> {
     out.write_all(b"\x1b[0m")?;
@@ -1552,6 +1514,7 @@ mod tests {
     use libghostty_vt::{
         RenderState, Terminal as GhosttyTerminal,
         render::{CellIterator, RowIterator},
+        style::StyleColor,
     };
 
     type Pane = GhosttyTerminal<'static, 'static>;

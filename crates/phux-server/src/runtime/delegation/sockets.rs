@@ -52,7 +52,7 @@ pub(in crate::runtime) fn carry_delegations(
     state: &SharedState,
     mut blob: StateBlob,
 ) -> io::Result<(StateBlob, Vec<OwnedFd>)> {
-    let carried = state.with(|s| s.carried_delegations(Utc::now()));
+    let carried = state.with(|s| s.delegations().carried(Utc::now()));
     let mut owned = Vec::with_capacity(carried.len());
     blob.delegations = Vec::with_capacity(carried.len());
     for delegation in carried {
@@ -90,7 +90,7 @@ pub(in crate::runtime) fn resume_delegations(
     input_lane: Option<&InputLane>,
     root_token: &CancellationToken,
 ) -> usize {
-    let server_socket = state.with(|s| s.server_socket_path().map(Path::to_path_buf));
+    let server_socket = state.with(|s| s.config().server_socket_path().map(Path::to_path_buf));
     let mut pending: Vec<&DelegationBlob> = carried.iter().collect();
     let mut restored = 0;
     // A delegate's own delegator must be reinstated first: retry until a
@@ -134,7 +134,7 @@ fn serve_carried(
     root_token: &CancellationToken,
 ) -> bool {
     let socket_path = state
-        .with(|s| s.server_socket_path().map(Path::to_path_buf))
+        .with(|s| s.config().server_socket_path().map(Path::to_path_buf))
         .map(|server| socket_path_for(&server, &credential.id));
     let listener = super::super::resume::adopt_uds_listener(blob.listener_fd);
     let (Some(socket_path), Ok(listener)) = (socket_path, listener) else {
@@ -189,8 +189,9 @@ fn drop_carried(
 pub(in crate::runtime) fn sweep_stale_sockets(state: &SharedState) {
     let (server_socket, live) = state.with(|s| {
         (
-            s.server_socket_path().map(Path::to_path_buf),
-            s.carried_delegations(Utc::now())
+            s.config().server_socket_path().map(Path::to_path_buf),
+            s.delegations()
+                .carried(Utc::now())
                 .into_iter()
                 .map(|carried| carried.socket_path)
                 .collect::<Vec<_>>(),
@@ -238,7 +239,7 @@ pub(super) fn open_socket(
     credential: &DelegatedCredential,
 ) -> io::Result<(UdsListener, PathBuf)> {
     let server_socket = state
-        .with(|s| s.server_socket_path().map(Path::to_path_buf))
+        .with(|s| s.config().server_socket_path().map(Path::to_path_buf))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the server has no socket"))?;
     let path = socket_path_for(&server_socket, &credential.id);
     super::super::validate_socket_path_len(&path)

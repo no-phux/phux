@@ -15,35 +15,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use phux_client::approvals::{Approval, ApprovalError, Decision};
 use phux_protocol::ids::ApprovalId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::confirm;
-use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::server_target::ServerTarget;
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::{self, CliError, Refusal, codes};
+use crate::commands::server_target::{ServerSpec, ServerTarget};
+use crate::exit_codes::EXIT_USAGE;
 
 /// `phux approvals [--json]`: list the actions awaiting a decision.
 pub(crate) fn run_approvals(json: bool, socket: Option<PathBuf>) -> ExitCode {
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match crate::commands::cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    let target = ServerTarget::local(&socket_path);
-    rt.block_on(async {
-        let mut conn = match target.connect().await {
-            Ok(conn) => conn,
-            Err(err) => return target.report_unreachable(json, &err, "approvals"),
-        };
-        match phux_client::approvals::list(&mut conn).await {
-            Ok(approvals) => {
-                print_approvals(json, &approvals);
-                ExitCode::SUCCESS
-            }
-            Err(ApprovalError::Transport(err)) => {
-                target.report_unreachable(json, &err, "approvals")
-            }
-            Err(err) => json_err::emit(json, &approval_error("approvals", &err), 2),
-        }
+    ctx::run(ServerSpec::local(socket), "approvals", json, |ctx| {
+        ctx.rt.block_on(async {
+            let mut conn = ctx
+                .target
+                .connect()
+                .await
+                .map_err(|err| ctx.unreachable(&err, "approvals"))?;
+            let approvals = phux_client::approvals::list(&mut conn)
+                .await
+                .map_err(|err| approval_refusal(ctx, "approvals", err))?;
+            print_approvals(json, &approvals);
+            Ok(ExitCode::SUCCESS)
+        })
     })
 }
 
@@ -66,42 +59,44 @@ fn run_decision(
     socket: Option<PathBuf>,
 ) -> ExitCode {
     let verb = decision.as_str();
-    let Some(approval) = ApprovalId::parse(id) else {
-        return json_err::emit(
-            json,
-            &CliError::new(
+    ctx::run(ServerSpec::local(socket), verb, json, |ctx| {
+        let approval = ApprovalId::parse(id).ok_or_else(|| {
+            Refusal::new(
                 codes::USAGE_ERROR,
                 format!("{verb}: {id:?} is not an approval id (32 lowercase hex digits)"),
                 "`phux approvals` lists the pending ids",
-            ),
-            2,
-        );
-    };
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match crate::commands::cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    let target = ServerTarget::local(&socket_path);
-    rt.block_on(async {
-        let mut conn = match prepare_decision(&target, approval, decision, yes, json).await {
-            Ok(conn) => conn,
-            Err(code) => return code,
-        };
-        match phux_client::approvals::decide(&mut conn, approval, decision).await {
-            Ok(()) if json => crate::output::json(&serde_json::json!({
-                "schema_version": 1,
-                "approval": approval.to_string(),
-                "decision": verb,
-            })),
-            Ok(()) => {
-                outln!("phux: {}d {approval}", verb.trim_end_matches('e'));
-                ExitCode::SUCCESS
+                EXIT_USAGE,
+            )
+        })?;
+        ctx.rt.block_on(async {
+            let mut conn = match prepare_decision(&ctx.target, approval, decision, yes, json).await
+            {
+                Ok(conn) => conn,
+                // Already reported: a declined confirmation or a failed read.
+                Err(code) => return Ok(code),
+            };
+            phux_client::approvals::decide(&mut conn, approval, decision)
+                .await
+                .map_err(|err| approval_refusal(ctx, verb, err))?;
+            if json {
+                return Ok(crate::output::json(&serde_json::json!({
+                    "schema_version": 1,
+                    "approval": approval.to_string(),
+                    "decision": verb,
+                })));
             }
-            Err(ApprovalError::Transport(err)) => target.report_unreachable(json, &err, verb),
-            Err(err) => json_err::emit(json, &approval_error(verb, &err), 2),
-        }
+            outln!("phux: {}d {approval}", verb.trim_end_matches('e'));
+            Ok(ExitCode::SUCCESS)
+        })
     })
+}
+
+/// A failed approvals exchange: unreachable, exit 1, else exit 2.
+fn approval_refusal(ctx: &Ctx, verb: &str, err: ApprovalError) -> Refusal {
+    if let ApprovalError::Transport(err) = err {
+        return ctx.unreachable(&err, verb);
+    }
+    Refusal::from_error(approval_error(verb, &err), EXIT_USAGE)
 }
 
 async fn approval_connection(
@@ -259,6 +254,24 @@ fn now_ms() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// Run `phux approvals` as parsed.
+pub(crate) fn run(args: crate::commands::ApprovalsArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::ApprovalsArgs { json } = args;
+    run_approvals(json.json, socket)
+}
+
+/// Run `phux approve` as parsed.
+pub(crate) fn approve(args: crate::commands::ApproveArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::ApproveArgs { id, yes, json } = args;
+    run_approve(&id, yes, json.json, socket)
+}
+
+/// Run `phux deny` as parsed.
+pub(crate) fn deny(args: crate::commands::DenyArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::DenyArgs { id, json } = args;
+    run_deny(&id, json.json, socket)
 }
 
 #[cfg(test)]

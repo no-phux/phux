@@ -11,15 +11,26 @@ use std::path::Path;
 
 use phux_config::ConnectorConfigEntry;
 use phux_dial::quic::{DialedStream, InnerTls};
+use phux_dial::relay::{RelayConfig, cert_fingerprint};
 use phux_dial::{CertTrust, DialError, QuicDial, TlsClientIdentity};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::FrameKind;
-use phux_relay::{RelayConfig, cert_fingerprint};
 use phux_server::ServerConfig;
 use phux_server::workload::WorkloadPaths;
 use phux_server_testkit::{WIRE_RECV_TIMEOUT, encode_frame};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::oneshot;
+
+/// A temp dir only its owner can enter, as workload stores require.
+pub(crate) fn private_dir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::set_permissions(
+        dir.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .expect("owner-only");
+    dir
+}
 
 /// Write `contents` owner-only.
 pub(crate) fn write_private(path: &Path, contents: impl AsRef<[u8]>) {
@@ -43,7 +54,7 @@ pub(crate) fn relay_config(
     .expect("relay route");
     RelayConfig {
         max_conns: 16,
-        ..phux_relay::config_in(listen, dir)
+        ..phux_dial::relay::config_in(listen, dir)
     }
 }
 
@@ -134,6 +145,16 @@ impl RelayedServer {
         let _ = self.stop.send(());
         self.task.await.expect("server task").expect("shutdown");
     }
+}
+
+/// Configure `cfg` as the routing suites run it: an embedder engine
+/// (ADR-0072), seeding session `default` with a PTY running `seed` if given.
+pub(crate) fn embedder_seeded(cfg: &mut ServerConfig, seed: Option<phux_server::LaunchCommand>) {
+    if let Some(seed) = seed {
+        cfg.pre_seeded_session = Some("default".to_owned());
+        phux_server_testkit::seed_pty(cfg, seed);
+    }
+    phux_server_testkit::embedder::embed_owner_engine(cfg);
 }
 
 /// An end-to-end session to the server behind `route`, pinning `ca`.

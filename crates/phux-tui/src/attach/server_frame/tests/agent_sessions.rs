@@ -87,7 +87,7 @@ fn an_agent_stream_bootstraps_without_a_slot_and_dirties_the_chrome() {
         !ready.layout_replaced,
         "no pane repaint for a record stream"
     );
-    let live = h.send(output_frame(
+    let live = h.send(output(
         &agent,
         2,
         b"{\"seq\":2,\"ts_ms\":2,\"type\":\"stop\",\"data\":{}}\n",

@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use std::str::FromStr;
 
-use phux_config::widget::{Cell as WidgetCell, CellHit, CellStyle};
+use crate::render::chrome::status_bar::widgets::{Cell as WidgetCell, CellHit, CellStyle};
 use ratatui::buffer::{Buffer, Cell as RatatuiCell};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

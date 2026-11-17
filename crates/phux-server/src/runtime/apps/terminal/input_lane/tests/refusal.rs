@@ -85,7 +85,7 @@ async fn apply_input_reports_mailbox_full_without_handoff() {
         let wire = s
             .register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())
             .unwrap();
-        (wire, s.new_client_id())
+        (wire, s.clients_mut().new_client_id())
     });
     let lane = spawn_input_lane(state.clone()).expect("spawn lane");
     let result = lane
@@ -123,7 +123,7 @@ async fn apply_input_reports_not_written_when_no_writer_can_receive() {
                 });
                 (token, wire)
             };
-            let client = state.with_mut(crate::state::ServerState::new_client_id);
+            let client = state.with_mut(|s| s.clients_mut().new_client_id());
             let lane = spawn_input_lane(state.clone()).expect("spawn lane");
             let result = tokio::time::timeout(
                 LANE_DELIVERY_DEADLINE,

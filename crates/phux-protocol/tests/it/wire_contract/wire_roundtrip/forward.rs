@@ -1,4 +1,6 @@
-//! `FORWARD_*` commands and replies: round trips and decoder bounds.
+//! `FORWARD_*` commands and replies: decoder bounds. Their round trips at
+//! the accepted bounds run over the wire-schema sample corpus
+//! (`src/wire/decode/wire_schema/roundtrip_tests.rs`).
 
 use super::{BytesMut, Command, CommandResult, CommandValue, DecodeError, FrameKind};
 use phux_protocol::forward::{
@@ -40,53 +42,6 @@ const fn reply(value: CommandValue) -> FrameKind {
 
 fn max_read() -> u32 {
     u32::try_from(MAX_FORWARD_CHUNK_BYTES).unwrap()
-}
-
-#[test]
-fn forward_commands_and_replies_round_trip() {
-    let frames = [
-        command(ForwardOp::Open {
-            addr: "::1".to_owned(),
-            port: u16::MAX,
-        }),
-        command(ForwardOp::Open {
-            addr: "x".repeat(MAX_FORWARD_ADDR_BYTES),
-            port: 1,
-        }),
-        command(ForwardOp::Read {
-            id: u64::MAX,
-            max_bytes: max_read(),
-        }),
-        command(ForwardOp::Write {
-            id: 9,
-            bytes: vec![0xa5; MAX_FORWARD_CHUNK_BYTES],
-            fin: false,
-        }),
-        command(ForwardOp::Write {
-            id: 9,
-            bytes: Vec::new(),
-            fin: true,
-        }),
-        command(ForwardOp::Close { id: 9 }),
-        command(ForwardOp::AgentOffer),
-        command(ForwardOp::AgentReply {
-            id: u64::MAX,
-            message: vec![5; MAX_AGENT_MESSAGE_BYTES],
-        }),
-        agent_request(u64::MAX, vec![13; MAX_AGENT_MESSAGE_BYTES]),
-        reply(CommandValue::ForwardOpened(u64::MAX)),
-        reply(CommandValue::ForwardChunk(ForwardChunk {
-            bytes: vec![0x5a; MAX_FORWARD_CHUNK_BYTES],
-            eof: false,
-        })),
-        reply(CommandValue::ForwardChunk(ForwardChunk {
-            bytes: Vec::new(),
-            eof: true,
-        })),
-    ];
-    for frame in frames {
-        assert_eq!(decoded(&frame).unwrap(), frame);
-    }
 }
 
 #[test]

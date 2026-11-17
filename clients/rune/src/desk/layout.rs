@@ -7,7 +7,8 @@
 //! tree back; another client sees it on its next read.
 
 use phux_client_core::layout::{
-    ArrangementDoc, Direction, LayoutNode, focus_direction, kill_pane, leaves,
+    ArrangementDoc, Direction, LayoutNode, NodePath, focus_direction, kill_pane, leaves,
+    set_ratio_at,
 };
 use phux_client_runtime::Client;
 use phux_protocol::ids::{ResourceId, SessionKey};
@@ -354,38 +355,10 @@ pub fn neighbour(tree: &LayoutNode, closed: &ResourceId) -> Option<ResourceId> {
         .cloned()
 }
 
-/// `tree` with the split at `path` given `ratio`; `None` when `path` does
-/// not end at a split.
+/// `tree` with the split at `path` (`true` for each right step) given
+/// `ratio`; `None` when `path` does not end at a split.
 pub fn with_ratio(tree: &LayoutNode, path: &[bool], ratio: f32) -> Option<LayoutNode> {
-    let LayoutNode::Split {
-        dir,
-        ratio: old,
-        left,
-        right,
-    } = tree
-    else {
-        return None;
-    };
-    Some(match path.split_first() {
-        None => LayoutNode::Split {
-            dir: *dir,
-            ratio,
-            left: left.clone(),
-            right: right.clone(),
-        },
-        Some((false, rest)) => LayoutNode::Split {
-            dir: *dir,
-            ratio: *old,
-            left: Box::new(with_ratio(left, rest, ratio)?),
-            right: right.clone(),
-        },
-        Some((true, rest)) => LayoutNode::Split {
-            dir: *dir,
-            ratio: *old,
-            left: left.clone(),
-            right: Box::new(with_ratio(right, rest, ratio)?),
-        },
-    })
+    set_ratio_at(tree, &NodePath::from_sides(path), ratio)
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use phux_client::attach::{AttachError, is_incompatible_protocol};
+use phux_client::contract::START_SERVER_REMEDY;
 
 use crate::commands::json_err;
 
@@ -71,17 +72,22 @@ fn is_dead_socket(err: &AttachError) -> bool {
 /// one otherwise. Returns the failure exit code for the caller to bubble.
 pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str) -> ExitCode {
     crate::output::error_block(
-        no_server_lines(
-            err,
-            socket_path,
-            verb,
-            &phux_server::telemetry::server_log_path(),
-            recovery_pid(err, socket_path),
-        )
-        .iter()
-        .map(String::as_str),
+        report_lines(err, socket_path, verb)
+            .iter()
+            .map(String::as_str),
     );
     ExitCode::FAILURE
+}
+
+/// The lines [`report_no_server`] prints, against this process's server log.
+pub(crate) fn report_lines(err: &AttachError, socket_path: &Path, verb: &str) -> Vec<String> {
+    no_server_lines(
+        err,
+        socket_path,
+        verb,
+        &phux_config::instance::server_log_path(),
+        recovery_pid(err, socket_path),
+    )
 }
 
 /// The lines [`report_no_server`] prints, pure so tests can pin every arm
@@ -96,32 +102,14 @@ pub(super) fn no_server_lines(
     server_log: &Path,
     pid: Option<i32>,
 ) -> Vec<String> {
-    let mut lines = match err {
-        AttachError::Io(io_err)
-            if matches!(
-                io_err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-            ) =>
-        {
-            vec![
-                format!("no server running at {}", socket_path.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
-                    .to_owned(),
-            ]
-        }
-        AttachError::Disconnected => {
-            vec![format!("server closed the connection during {verb}")]
-        }
-        AttachError::Io(io_err) => vec![json_err::unreachable_socket_message(
-            verb,
-            io_err,
-            socket_path,
-        )],
-        AttachError::IncompatibleProtocol(_) => {
-            return old_server_recovery_lines(socket_path, pid);
-        }
-        other => vec![format!("{verb} failed: {other}")],
-    };
+    if is_incompatible_protocol(err) {
+        return old_server_recovery_lines(socket_path, pid);
+    }
+    let refusal = json_err::transport_refusal(err, socket_path, verb, pid);
+    let mut lines = vec![refusal.message];
+    if refusal.code == json_err::codes::NO_SERVER {
+        lines.push(START_SERVER_REMEDY.to_owned());
+    }
     lines.push(format!("server log: {}", server_log.display()));
     lines.push("run `phux doctor` for a health check".to_owned());
     lines
@@ -188,7 +176,7 @@ pub(super) fn attach_error_lines(
             "the server closed the connection unexpectedly".to_owned(),
             format!(
                 "server log: {}",
-                phux_server::telemetry::server_log_path().display()
+                phux_config::instance::server_log_path().display()
             ),
             "run `phux doctor` for a health check".to_owned(),
         ],

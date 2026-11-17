@@ -39,7 +39,6 @@ mod output;
 mod capabilities;
 mod commands;
 mod companion;
-mod deprecations;
 mod dispatch;
 mod environment;
 mod exit_codes;

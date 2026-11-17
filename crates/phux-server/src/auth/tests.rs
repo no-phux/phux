@@ -1,11 +1,12 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
-use std::fs::{self, OpenOptions};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::fs;
 use std::path::Path;
 
 use chrono::{Duration, Utc};
+
+use crate::secure_file::{WriteFault, fault, with_lock};
 
 fn secret(minted: &MintedCredential) -> Vec<u8> {
     hex::decode(minted.secret()).unwrap()

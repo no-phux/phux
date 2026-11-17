@@ -18,31 +18,21 @@ fn open_on_sat(service: &str, target: &str) -> Command {
     }
 }
 
-fn code(result: &CommandResult) -> ErrorCode {
-    match result {
-        CommandResult::Error { code, .. } => *code,
-        other => panic!("expected an error, got {other:?}"),
-    }
-}
-
 #[test]
 fn the_satellite_answers_and_the_hub_owns_the_exchange_ids() {
     phux_server_testkit::run_local(async {
         let fed = Fed::boot().await;
         let mut hub = fed.linked_hub().await;
 
+        // The satellite refused it.
         let (unknown, _) = command_via_hub(&mut hub, 1, open_on_sat("nginx", "/")).await;
-        assert_eq!(
-            code(&unknown),
-            ErrorCode::NotFound,
-            "the satellite refused it"
-        );
+        assert_command_error(&unknown, ErrorCode::NotFound);
         let read = Command::ServiceHttpRead {
             exchange: 1,
             max_bytes: 1,
         };
         let (unmapped, _) = command_via_hub(&mut hub, 2, read).await;
-        assert_eq!(code(&unmapped), ErrorCode::NotFound);
+        assert_command_error(&unmapped, ErrorCode::NotFound);
 
         drop(hub);
         fed.shutdown().await;

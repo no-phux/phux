@@ -20,11 +20,11 @@ use rcgen::{
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
-use super::store::{self, FileRole};
 use super::{
     WorkloadError, WorkloadPaths, credential_id, ensure_ca, load_authority_certificate,
     load_authority_key, scrub,
 };
+use crate::secure_file::{self, FileRole};
 
 /// The common name every issued server certificate carries. Clients pin; they
 /// never read it.
@@ -156,9 +156,10 @@ pub fn rotate_authority(
 ) -> Result<Rotation, WorkloadError> {
     let stamp = chrono::Utc::now().timestamp();
     let suffix = format!("retired-{stamp}");
-    store::with_lock(&paths.ca_key, |held| {
+    secure_file::with_lock(&paths.ca_key, |held| {
         let (old_certificate, old_pem) = load_authority_certificate(&paths.ca_cert)?;
-        let Some((_, mut old_key)) = store::read_stable(&paths.ca_key, FileRole::CaPrivateKey)?
+        let Some((_, mut old_key)) =
+            secure_file::read_stable(&paths.ca_key, FileRole::CaPrivateKey)?
         else {
             return Err(WorkloadError::PartialPair {
                 present: "certificate",
@@ -176,8 +177,9 @@ pub fn rotate_authority(
             })
             .transpose()?;
 
-        let retire =
-            |path: &Path, bytes: &[u8]| store::atomic_replace(&retired(path, &suffix), bytes, held);
+        let retire = |path: &Path, bytes: &[u8]| {
+            secure_file::atomic_replace(&retired(path, &suffix), bytes, held)
+        };
         let retired_key = retire(&paths.ca_key, &old_key);
         scrub(&mut old_key);
         retired_key?;
@@ -188,17 +190,17 @@ pub fn rotate_authority(
             scrub(&mut key);
             retired_server_key?;
             retire(pair.cert, &std::fs::read(pair.cert)?)?;
-            store::atomic_replace(pair.key, issued.key_pem().as_bytes(), held)?;
-            store::atomic_replace(pair.cert, issued.chain_pem().as_bytes(), held)?;
+            secure_file::atomic_replace(pair.key, issued.key_pem().as_bytes(), held)?;
+            secure_file::atomic_replace(pair.cert, issued.chain_pem().as_bytes(), held)?;
             Some(leaf_fingerprint(issued.chain_pem())?)
         } else {
             None
         };
         let mut key_pem = new_key.serialize_pem().into_bytes();
-        let written = store::atomic_replace(&paths.ca_key, &key_pem, held);
+        let written = secure_file::atomic_replace(&paths.ca_key, &key_pem, held);
         scrub(&mut key_pem);
         written?;
-        store::atomic_replace(&paths.ca_cert, new_pem.as_bytes(), held)?;
+        secure_file::atomic_replace(&paths.ca_cert, new_pem.as_bytes(), held)?;
         Ok(Rotation {
             previous: credential_id(old_certificate.as_ref()),
             fingerprint: credential_id(new_der.as_ref()),

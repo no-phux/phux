@@ -4,29 +4,28 @@ use super::{
     ActivationInfo, ArrangementOwner, ArrangementValue, AuthorityId, BytesMut, Committed,
     DecodeError, Decoder, Delegation, Encoder, Fields, MAX_ORG_CURSOR_BYTES, OrganizationPage,
     ResourceRecord, Revision, SessionKey, SessionRecord, encode_live_target, encode_outcome,
-    encode_pair, encode_pin, encode_terminal_id, field, read_key, read_u32, read_u64, req,
+    encode_pair, encode_pin, encode_terminal_id, field, read_key, req, u32_value, u64_value,
     write_document, write_key, write_name, write_operation, write_resource, write_session,
-    write_u8, write_u32, write_u64,
 };
 
 pub(super) fn encode_session_record(record: &SessionRecord, enc: &mut Encoder<'_>) {
     write_session(enc, field::org::SESSION, &record.key);
     write_name(enc, &record.name);
-    write_u8(enc, field::org::LIFETIME, record.lifetime.to_u8());
+    enc.write_u8_field(field::org::LIFETIME, record.lifetime.to_u8());
     for pair in &record.attrs {
         encode_pair(enc, field::org::ATTR, pair);
     }
     if let Some(arrangement) = record.arrangement {
         write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
     }
-    write_u64(enc, field::org::REVISION, record.revision.get());
+    enc.write_u64_field(field::org::REVISION, record.revision.get());
     if let Some(live) = record.live {
-        write_u32(enc, field::org::LIVE_SESSION, live.get());
+        enc.write_u32_field(field::org::LIVE_SESSION, live.get());
     }
     if record.awaiting_organization {
-        write_u8(enc, field::org::AWAITING, 1);
+        enc.write_u8_field(field::org::AWAITING, 1);
     }
-    write_u32(enc, field::org::MEMBERS, record.members);
+    enc.write_u32_field(field::org::MEMBERS, record.members);
 }
 
 pub(super) fn decode_session_record(value: &[u8]) -> Result<SessionRecord, DecodeError> {
@@ -50,17 +49,17 @@ pub(super) fn encode_resource_record(record: &ResourceRecord, enc: &mut Encoder<
     if let Some(name) = &record.name {
         write_name(enc, name);
     }
-    write_u8(enc, field::org::KIND, record.kind.as_wire());
-    write_u8(enc, field::org::ON_EXIT, record.on_exit.to_u8());
+    enc.write_u8_field(field::org::KIND, record.kind.as_wire());
+    enc.write_u8_field(field::org::ON_EXIT, record.on_exit.to_u8());
     if let Some(activation) = &record.activation {
-        write_u64(enc, field::org::ACTIVATION, activation.id.get());
+        enc.write_u64_field(field::org::ACTIVATION, activation.id.get());
     }
-    write_u64(enc, field::org::REVISION, record.revision.get());
+    enc.write_u64_field(field::org::REVISION, record.revision.get());
     if let Some(live) = &record.live {
         enc.write_field_with(field::org::LIVE_RESOURCE, |e| encode_terminal_id(live, e));
     }
     if let Some(activation) = &record.activation {
-        write_u8(enc, field::org::STATE, activation.state.to_u8());
+        enc.write_u8_field(field::org::STATE, activation.state.to_u8());
         if let Some(outcome) = activation.outcome {
             enc.write_field_with(field::org::OUTCOME, |e| encode_outcome(outcome, e));
         }
@@ -77,7 +76,7 @@ fn encode_evidence(activation: &ActivationInfo, enc: &mut Encoder<'_>) {
         }
     }
     if activation.persistence_pending {
-        write_u8(enc, field::org::PERSISTENCE_PENDING, 1);
+        enc.write_u8_field(field::org::PERSISTENCE_PENDING, 1);
     }
 }
 
@@ -131,19 +130,14 @@ pub(in crate::wire) fn encode_organization_page(page: &OrganizationPage, enc: &m
                 encode_resource_record(record, e);
             });
         }
-        write_u32(&mut e, field::org_page::TOTAL_SESSIONS, page.total_sessions);
-        write_u32(
-            &mut e,
-            field::org_page::TOTAL_RESOURCES,
-            page.total_resources,
-        );
-        write_u32(&mut e, field::org_page::TOTAL_INTAKE, page.total_intake);
-        write_u64(
-            &mut e,
+        e.write_u32_field(field::org_page::TOTAL_SESSIONS, page.total_sessions);
+        e.write_u32_field(field::org_page::TOTAL_RESOURCES, page.total_resources);
+        e.write_u32_field(field::org_page::TOTAL_INTAKE, page.total_intake);
+        e.write_u64_field(
             field::org_page::SNAPSHOT_REVISION,
             page.snapshot_revision.get(),
         );
-        write_u64(&mut e, field::org_page::JOURNAL_SEQ, page.journal_seq);
+        e.write_u64_field(field::org_page::JOURNAL_SEQ, page.journal_seq);
         if let Some(cursor) = &page.next_cursor {
             e.write_field(field::org_page::NEXT_CURSOR, cursor);
         }
@@ -169,11 +163,11 @@ pub(in crate::wire) fn decode_organization_page(
         field::org_page::INBOX => inbox = Some(read_key(value, SessionKey::new)?),
         field::org_page::SESSION => sessions.push(decode_session_record(value)?),
         field::org_page::RESOURCE => resources.push(decode_resource_record(value)?),
-        field::org_page::TOTAL_SESSIONS => totals.0 = read_u32(value)?,
-        field::org_page::TOTAL_RESOURCES => totals.1 = read_u32(value)?,
-        field::org_page::TOTAL_INTAKE => totals.2 = read_u32(value)?,
-        field::org_page::SNAPSHOT_REVISION => snapshot_revision = Revision::new(read_u64(value)?),
-        field::org_page::JOURNAL_SEQ => journal_seq = read_u64(value)?,
+        field::org_page::TOTAL_SESSIONS => totals.0 = u32_value(value)?,
+        field::org_page::TOTAL_RESOURCES => totals.1 = u32_value(value)?,
+        field::org_page::TOTAL_INTAKE => totals.2 = u32_value(value)?,
+        field::org_page::SNAPSHOT_REVISION => snapshot_revision = Revision::new(u64_value(value)?),
+        field::org_page::JOURNAL_SEQ => journal_seq = u64_value(value)?,
         field::org_page::NEXT_CURSOR => {
             if value.len() > MAX_ORG_CURSOR_BYTES {
                 return Err(DecodeError::OrganizationLimitExceeded);
@@ -199,7 +193,7 @@ pub(in crate::wire) fn encode_arrangement_value(value: &ArrangementValue, enc: &
         write_owner(&mut e, value.owner);
         write_key(&mut e, field::org::ARRANGEMENT, value.key.as_bytes());
         write_document(&mut e, &value.document);
-        write_u64(&mut e, field::org::REVISION, value.revision.get());
+        e.write_u64_field(field::org::REVISION, value.revision.get());
     }
     enc.write_bytes(&body);
 }
@@ -255,23 +249,23 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
             write_key(&mut e, field::org::ENTRY, entry);
         }
         if committed.replayed {
-            write_u8(&mut e, field::org::REPLAYED, 1);
+            e.write_u8_field(field::org::REPLAYED, 1);
         }
         if let Some(activation) = &committed.activation {
-            write_u64(&mut e, field::org::ACTIVATION, activation.id.get());
+            e.write_u64_field(field::org::ACTIVATION, activation.id.get());
             write_key(&mut e, field::org::INSTANCE, activation.instance.as_bytes());
-            write_u8(&mut e, field::org::STATE, activation.state.to_u8());
+            e.write_u8_field(field::org::STATE, activation.state.to_u8());
             encode_evidence(activation, &mut e);
             if let Some(outcome) = activation.outcome {
                 e.write_field_with(field::org::OUTCOME, |e| encode_outcome(outcome, e));
             }
         }
-        write_u64(&mut e, field::org::REVISION, committed.revision.get());
+        e.write_u64_field(field::org::REVISION, committed.revision.get());
         if let Some(prior) = committed.prior_awaiting {
-            write_u8(&mut e, field::org::AWAITING, u8::from(prior));
+            e.write_u8_field(field::org::AWAITING, u8::from(prior));
         }
         if let Some(members) = committed.members {
-            write_u32(&mut e, field::org::MEMBERS, members);
+            e.write_u32_field(field::org::MEMBERS, members);
         }
     }
     enc.write_bytes(&body);
@@ -318,7 +312,7 @@ pub(in crate::wire) fn encode_delegation(delegation: &Delegation, enc: &mut Enco
         e.write_field(field::org::CREDENTIAL, delegation.credential_id.as_bytes());
         write_session(&mut e, field::org::SESSION, &delegation.session);
         e.write_field(field::org::SOCKET_PATH, delegation.socket_path.as_bytes());
-        write_u64(&mut e, field::org::EXPIRES_AT, delegation.expires_at_ms);
+        e.write_u64_field(field::org::EXPIRES_AT, delegation.expires_at_ms);
     }
     enc.write_bytes(&body);
 }

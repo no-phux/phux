@@ -1,12 +1,46 @@
 use super::*;
 
+/// A real 20x5 PTY with a `cat` child, set up for adoption: the child's pid,
+/// an owned duplicate of the master fd for the actor, and the original
+/// master the test keeps. The child handle is dropped so the adopted actor
+/// becomes the sole reaper.
+fn adoptable_cat_pty() -> (
+    i32,
+    std::os::fd::RawFd,
+    Box<dyn portable_pty::MasterPty + Send>,
+) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::os::fd::{BorrowedFd, IntoRawFd};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 5,
+            cols: 20,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("openpty");
+    let child = pair
+        .slave
+        .spawn_command(CommandBuilder::new("cat"))
+        .expect("spawn cat");
+    drop(pair.slave);
+    let pid = i32::try_from(child.process_id().expect("pid")).expect("pid fits i32");
+    let master_fd = pair.master.as_raw_fd().expect("master fd");
+    // SAFETY: `master_fd` is open and outlives this borrow.
+    let dup_fd = unsafe { BorrowedFd::borrow_raw(master_fd) }
+        .try_clone_to_owned()
+        .expect("dup master")
+        .into_raw_fd();
+    drop(child);
+    (pid, dup_fd, pair.master)
+}
+
 /// `new_with_adopted_pty` replays the seed, exposes the adopted child, and
 /// surfaces its live output.
 #[tokio::test(flavor = "current_thread")]
 async fn adopted_actor_replays_seed_and_serves_live_pty() {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::io::Write;
-    use std::os::fd::{BorrowedFd, IntoRawFd};
 
     #[allow(
         clippy::future_not_send,
@@ -32,32 +66,10 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
     }
 
     on_local!(async {
-        // A real PTY with a `cat` child that echoes input.
-        let sys = native_pty_system();
-        let pair = sys
-            .openpty(PtySize {
-                rows: 5,
-                cols: 20,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("openpty");
-        let child = pair
-            .slave
-            .spawn_command(CommandBuilder::new("cat"))
-            .expect("spawn cat");
-        drop(pair.slave);
-        let pid = i32::try_from(child.process_id().expect("pid")).expect("pid fits i32");
-        let master_fd = pair.master.as_raw_fd().expect("master fd");
-        // An owned duplicate of the master for the actor to adopt; the
-        // test keeps `pair.master` to write into the PTY.
-        // SAFETY: `master_fd` is open and outlives this borrow.
-        let dup_fd = unsafe { BorrowedFd::borrow_raw(master_fd) }
-            .try_clone_to_owned()
-            .expect("dup master")
-            .into_raw_fd();
-        let mut writer = pair.master.take_writer().expect("take writer");
-        drop(child); // the adopted actor becomes the sole reaper.
+        // A real PTY with a `cat` child that echoes input; the test keeps
+        // the original master to write into the PTY.
+        let (pid, dup_fd, master) = adoptable_cat_pty();
+        let mut writer = master.take_writer().expect("take writer");
 
         let bundle = TerminalActor::new_with_adopted_pty(
             dup_fd,
@@ -80,15 +92,7 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
         );
 
         // The adopted child is live and wired into the actor.
-        let (reply, rx) = oneshot::channel();
-        handle
-            .terminal()
-            .expect("terminal facet")
-            .upgrade
-            .send(UpgradeHandleRequest { reply })
-            .await
-            .expect("send upgrade");
-        let h = rx.await.expect("upgrade reply");
+        let h = request_upgrade(&handle).await;
         assert_eq!(h.child_pid, Some(pid));
         assert!(h.master_fd.is_some());
 
@@ -118,9 +122,6 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
     reason = "end-to-end PTY signal test: three signal round-trips plus subscriber setup"
 )]
 async fn signal_freezes_resumes_and_kills_the_child() {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::os::fd::{BorrowedFd, IntoRawFd};
-
     #[allow(
         clippy::future_not_send,
         reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
@@ -150,28 +151,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
     }
 
     on_local!(async {
-        let sys = native_pty_system();
-        let pair = sys
-            .openpty(PtySize {
-                rows: 5,
-                cols: 20,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("openpty");
-        let child = pair
-            .slave
-            .spawn_command(CommandBuilder::new("cat"))
-            .expect("spawn cat");
-        drop(pair.slave);
-        let pid = i32::try_from(child.process_id().expect("pid")).expect("pid fits i32");
-        let master_fd = pair.master.as_raw_fd().expect("master fd");
-        // SAFETY: `master_fd` is open and outlives this borrow.
-        let dup_fd = unsafe { BorrowedFd::borrow_raw(master_fd) }
-            .try_clone_to_owned()
-            .expect("dup master")
-            .into_raw_fd();
-        drop(child); // the adopted actor becomes the sole reaper.
+        let (pid, dup_fd, _master) = adoptable_cat_pty();
 
         let bundle = TerminalActor::new_with_adopted_pty(
             dup_fd,

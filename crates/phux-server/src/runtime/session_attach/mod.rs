@@ -141,8 +141,9 @@ fn attach_refusal(
     None
 }
 
-/// Fence the client's earlier streams of `panes`, then let each kind's app
-/// fence its own consumers and apply the client's presentation and viewport.
+/// Fence the client's earlier streams of `panes`, then let each interactive
+/// kind's app fence its own consumers and apply the client's presentation
+/// and viewport.
 async fn prepare_panes(
     attach: SessionAttach<'_>,
     panes: &[AttachSnapshotPane],
@@ -153,7 +154,7 @@ async fn prepare_panes(
     for pane in panes {
         super::pump::stop_output(attach.state, attach.client_id, pane.terminal_id).await;
     }
-    let by_kind = apps::by_kind(panes, |pane| pane.handle.kind);
+    let by_kind = apps::interactive_by_kind(panes, |pane| pane.handle.kind);
     for (app, of_kind) in &by_kind {
         app.prepare_attach(attach, of_kind).await;
     }
@@ -189,19 +190,20 @@ pub(crate) fn prepare_panes_now(
         .expect("a first attach with no palette prepares without waiting");
 }
 
-/// Record the declared role, then let each kind's app apply it.
+/// Record the declared role, then let each interactive kind's app apply it.
 async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], role: RolePolicy) {
     attach
         .state
         .with_mut(|s| s.set_attached_viewer(attach.client_id, role.is_viewer()));
-    for (app, of_kind) in apps::by_kind(panes, |pane| pane.handle.kind) {
+    for (app, of_kind) in apps::interactive_by_kind(panes, |pane| pane.handle.kind) {
         app.after_attach(attach, &of_kind, role).await;
     }
 }
 
 /// Roll back a session `ATTACH` that failed before publication: stop every
-/// staged and committed pump, let each kind release its consumers, drop the
-/// client's consumer state, then end the connection with a fatal error.
+/// staged and committed pump, let each interactive kind release its
+/// consumers, drop the client's consumer state, then end the connection with
+/// a fatal error.
 #[allow(
     clippy::too_many_arguments,
     reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
@@ -220,7 +222,7 @@ async fn fail_prepublication(
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
     super::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
-    for (app, of_kind) in apps::by_kind(staged_handles, |handle| handle.kind) {
+    for (app, of_kind) in apps::interactive_by_kind(staged_handles, |handle| handle.kind) {
         app.abort_attach(client_id, &of_kind).await;
     }
     super::connections::detach_and_release_consumer_state(state, client_id);
@@ -330,9 +332,7 @@ pub(crate) async fn handle_attach(
     // this transaction and their control-stream output shares ATTACH_READY.
     let captured_panes = panes
         .iter()
-        .filter(|pane| {
-            !defer_subscription || !apps::app_for(pane.handle.kind).defers_stream_bootstrap()
-        })
+        .filter(|pane| !defer_subscription || !apps::defers_stream_bootstrap(pane.handle.kind))
         .cloned()
         .collect();
     let capture = SessionCapture {

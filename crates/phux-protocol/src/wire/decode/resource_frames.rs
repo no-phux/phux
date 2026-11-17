@@ -1,10 +1,12 @@
-//! Resource spawn, move, close, resize, and command frame bodies.
+//! Resource spawn, spawned, close, resize, and command frame bodies. The
+//! move, moved, command result, and event subscription frames are
+//! generated from their `field` modules.
 
 use super::{
     CloseReason, DecodeError, Decoder, FrameKind, GroupId, ResourceId, SpawnResource,
-    absorb_spawn_resource_field, bind_spawn_result, decode_command, decode_command_result,
-    decode_env, decode_move_result, decode_spawn_result, decode_string_list, decode_terminal_id,
-    field, req, utf8_value, validate_spawn_for_kind,
+    absorb_spawn_resource_field, bind_spawn_result, decode_command, decode_env,
+    decode_spawn_result, decode_string_list, decode_terminal_id, field, req, utf8_value,
+    validate_spawn_for_kind,
 };
 
 impl Decoder<'_> {
@@ -91,37 +93,6 @@ impl Decoder<'_> {
         })
     }
 
-    pub(super) fn decode_move_terminal(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut request_id = 0u32;
-        let mut terminal: Option<ResourceId> = None;
-        let mut owner_terminal: Option<ResourceId> = None;
-        for_each_field!(self, value, {
-            field::move_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-            field::move_terminal::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
-            field::move_terminal::OWNER_TERMINAL => {
-                owner_terminal = Some(sub!(value, decode_terminal_id));
-            }
-        });
-        Ok(FrameKind::MoveResource {
-            request_id,
-            terminal: req(terminal)?,
-            owner_terminal: req(owner_terminal)?,
-        })
-    }
-
-    pub(super) fn decode_terminal_moved(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut request_id = 0u32;
-        let mut result: Option<crate::wire::frame::MoveResult> = None;
-        for_each_field!(self, value, {
-            field::terminal_moved::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-            field::terminal_moved::RESULT => result = Some(sub!(value, decode_move_result)),
-        });
-        Ok(FrameKind::ResourceMoved {
-            request_id,
-            result: req(result)?,
-        })
-    }
-
     pub(super) fn decode_terminal_closed(&mut self) -> Result<FrameKind, DecodeError> {
         use field::terminal_closed as f;
         let mut terminal_id: Option<ResourceId> = None;
@@ -186,19 +157,6 @@ impl Decoder<'_> {
         Ok(FrameKind::Command {
             request_id,
             command,
-        })
-    }
-
-    pub(super) fn decode_command_result(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut request_id = 0u32;
-        let mut result: Option<crate::wire::frame::CommandResult> = None;
-        for_each_field!(self, value, {
-            field::command_result::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-            field::command_result::RESULT => result = Some(sub!(value, decode_command_result)),
-        });
-        Ok(FrameKind::CommandResult {
-            request_id,
-            result: req(result)?,
         })
     }
 }

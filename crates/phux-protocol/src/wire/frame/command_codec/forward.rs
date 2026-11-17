@@ -5,6 +5,7 @@ use crate::forward::{ForwardChunk, ForwardOp, MAX_FORWARD_CHUNK_BYTES, op_fits};
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
+use crate::wire::frame::command_codec::unknown_command;
 use crate::wire::frame::{
     COMMAND_TAG_AGENT_OFFER, COMMAND_TAG_AGENT_REPLY, COMMAND_TAG_FORWARD_CLOSE,
     COMMAND_TAG_FORWARD_OPEN, COMMAND_TAG_FORWARD_READ, COMMAND_TAG_FORWARD_WRITE,
@@ -42,8 +43,8 @@ pub(super) fn encode_op(op: &ForwardOp, enc: &mut Encoder<'_>) {
     }
 }
 
-/// Decode a `FORWARD_*` command; `None` (reading nothing) for any other tag.
-pub(super) fn decode_op(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<ForwardOp>, DecodeError> {
+/// Decode a `FORWARD_*` command; any other tag is an unknown command.
+pub(super) fn decode_op(tag: u8, dec: &mut Decoder<'_>) -> Result<ForwardOp, DecodeError> {
     let op = match tag {
         COMMAND_TAG_FORWARD_OPEN => ForwardOp::Open {
             addr: dec.read_str()?.to_owned(),
@@ -66,10 +67,10 @@ pub(super) fn decode_op(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Forward
             id: dec.read_u64_be()?,
             message: read_chunk_bytes(dec)?,
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
     if op_fits(&op) {
-        Ok(Some(op))
+        Ok(op)
     } else {
         Err(DecodeError::ForwardLimitExceeded)
     }

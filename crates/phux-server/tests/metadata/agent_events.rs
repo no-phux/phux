@@ -6,12 +6,11 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{AgentEvent, FrameKind};
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 
-use phux_server_testkit::{SpawnedServer, WIRE_RECV_TIMEOUT, recv_typed_before, run_local};
+use phux_server_testkit::{WIRE_RECV_TIMEOUT, recv_typed_before, run_local};
 
-use crate::common::{attach_pane, connect_as, full_caps, gated_seed, subscribe_all};
+use crate::common::{attach_pane, connect_as, full_caps, gated_server, subscribe_all};
 
 /// Drain `EVENT`s until `complete(&seen)` holds or `deadline` elapses.
 async fn collect_events(
@@ -42,13 +41,8 @@ fn has(seen: &[AgentEvent], pred: impl Fn(&AgentEvent) -> bool) -> bool {
 #[test]
 fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("release");
-        let seed = gated_seed(
-            &release,
-            "printf '\\033]2;phux-watch\\007'; printf '\\007'; exit 0",
-        );
-        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (server, release) =
+            gated_server("printf '\\033]2;phux-watch\\007'; printf '\\007'; exit 0");
 
         let (mut attached, _) = connect_as(&server.socket, "attached", full_caps()).await;
         attach_pane(&mut attached, "demo").await;
@@ -83,13 +77,8 @@ fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
 #[test]
 fn subscribed_client_receives_command_and_cwd_events() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("release");
-        let seed = gated_seed(
-            &release,
-            "cd /; printf '\\033]133;C\\007out\\r\\n\\033]133;D;7\\007'; sleep 60",
-        );
-        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
+        let (server, release) =
+            gated_server("cd /; printf '\\033]133;C\\007out\\r\\n\\033]133;D;7\\007'; sleep 60");
         let (mut stream, _) = connect_as(&server.socket, "agent-events", full_caps()).await;
         attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;

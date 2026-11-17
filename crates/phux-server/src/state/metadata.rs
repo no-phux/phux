@@ -414,18 +414,6 @@ impl ServerState {
         }
     }
 
-    /// Whether any live connection owns an unread result at `key`.
-    #[must_use]
-    pub fn session_create_result_is_pending(&self, key: &str) -> bool {
-        self.clients.session_create_result_is_pending(key)
-    }
-
-    /// Whether `client_id` owns the unread nonce-bearing result at `key`.
-    #[must_use]
-    pub fn owns_session_create_result(&self, client_id: ClientId, key: &str) -> bool {
-        self.clients.owns_session_create_result(client_id, key)
-    }
-
     /// Consume a one-shot session-create result and forget its owner.
     pub fn consume_session_create_result(&mut self, key: &str) {
         let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, key);

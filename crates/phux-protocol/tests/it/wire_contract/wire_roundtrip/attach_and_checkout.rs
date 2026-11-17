@@ -118,11 +118,7 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
                 request,
             },
         };
-        let mut encoded = BytesMut::new();
-        frame.encode(&mut encoded);
-        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+        crate::common::assert_round_trip(&frame);
     }
 
     for answer in [
@@ -150,11 +146,7 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
             request_id: 9,
             result: CommandResult::OkWith(CommandValue::Checkout(Box::new(answer))),
         };
-        let mut encoded = BytesMut::new();
-        reply.encode(&mut encoded);
-        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-        assert_eq!(decoded, reply);
-        assert!(tail.is_empty());
+        crate::common::assert_round_trip(&reply);
     }
 
     let oversized = FrameKind::Command {
@@ -166,10 +158,8 @@ fn checkout_requests_and_answers_round_trip_and_are_bounded() {
             },
         },
     };
-    let mut bytes = BytesMut::new();
-    oversized.encode(&mut bytes);
     assert_eq!(
-        FrameKind::decode(&bytes).unwrap_err(),
+        crate::common::decode_err(&oversized),
         DecodeError::CheckoutLimitExceeded
     );
 }

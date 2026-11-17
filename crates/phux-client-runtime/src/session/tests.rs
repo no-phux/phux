@@ -7,9 +7,6 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapStreamProfile, select_bootstrap_profile,
-};
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, MAX_FRAME_LEN, Scope, SpawnResult, StateScope,
@@ -89,40 +86,17 @@ fn scripted(script: Vec<FrameKind>) -> Session {
 }
 
 fn ack(request_id: u32) -> FrameKind {
-    FrameKind::CommandResult {
-        request_id,
-        result: CommandResult::Ok,
-    }
+    phux_wire_fixtures::command_ok(request_id)
 }
 
 fn bootstrap() -> Vec<FrameKind> {
-    let terminal_id = ResourceId::local(1);
-    let stream_id = StreamId::new(1).expect("stream");
-    let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
-    vec![
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 120,
-            rows: 40,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: Bytes::from_static(b"opening screen"),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ]
+    phux_wire_fixtures::bootstrap_frames(
+        &ResourceId::local(1),
+        [1, 1],
+        [120, 40],
+        b"opening screen",
+    )
+    .to_vec()
 }
 
 /// One `COMMAND` round trip against `script`.
@@ -145,17 +119,9 @@ fn hello_ok(
     offered: &ClientCapabilities,
     server_caps: phux_protocol::caps::ServerCapabilities,
 ) -> FrameKind {
-    let (selected_profile, bootstrap_limits) =
-        select_bootstrap_profile(offered, &BootstrapCapabilities::new()).expect("intersect");
-    FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        server_caps,
-        server_id: b"incarnation-1".to_vec(),
-        selected_profile: Some(selected_profile),
-        bootstrap_limits,
-    }
+    phux_wire_fixtures::HelloOk::new(*b"incarnation-1", server_caps)
+        .negotiated_from(offered)
+        .build()
 }
 
 /// Answer the HELLO that arrives with `answer(offer)`.

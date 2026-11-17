@@ -43,9 +43,9 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_project_inspect` | `phux project inspect` | CLI | yes | no |
 | `phux_plugin_action` | `phux config run` | in-process | no | yes |
 | `phux_plugin_profile` | none (automation only) | in-process | yes | no |
-| `phux_agent_list` | `phux agent list` | CLI | yes | no |
-| `phux_agent_show` | `phux agent show` | CLI | yes | no |
-| `phux_agent_explain` | `phux agent explain` | CLI | yes | no |
+| `phux_agent_list` | `phux agent list` | in-process | yes | no |
+| `phux_agent_show` | `phux agent show` | in-process | yes | no |
+| `phux_agent_explain` | `phux agent explain` | in-process | yes | no |
 | `phux_agent_set` | `phux agent set` | in-process | no | no |
 | `phux_agent_clear` | `phux agent clear` | in-process | no | no |
 | `phux_agent_wait` | `phux agent wait` | CLI | yes | no |
@@ -66,7 +66,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_claim_list` | `phux claim list` | in-process | yes | no |
 | `phux_status` | `phux status` | CLI | yes | no |
 | `phux_doctor` | `phux doctor` | CLI | yes | no |
-| `phux_whoami` | `phux whoami` | CLI | yes | no |
+| `phux_whoami` | `phux whoami` | in-process | yes | no |
 | `phux_perf` | `phux perf` | CLI | yes | no |
 | `phux_perf_trace` | `phux perf trace` | CLI | no | no |
 | `phux_resource_show` | `phux resource show` | in-process | yes | no |
@@ -96,10 +96,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_launch`: integration resolution (enabled plugins, manifests, argv templates, native-session restore) lives in the CLI command.
 - `phux_archive`: the archive capture, its agent-session bridge, and the import live in the CLI command.
 - `phux_project_inspect`: git worktree inspection runs `git` from the CLI command; phux-client has no git.
-- `phux_agent_list`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
-- `phux_agent_show`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
-- `phux_agent_explain`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
-- `phux_agent_wait`: the result document's `detection` field is the detector projection, which is built in the phux binary, not phux-client.
+- `phux_agent_wait`: the transition wait, its exit-124 timeout document, and the result document are assembled in the CLI command (`commands/agent/wait.rs`).
 - `phux_agent_send_keys`: key-spec validation, the occupant check, operation-id minting, and the error-code table live in the CLI command.
 - `phux_agent_prompt`: operation-id minting, the fused wait's result document, and the error-code table live in the CLI command.
 - `phux_agent_answer`: live-ask correlation and suggestion validation live in the CLI command.
@@ -110,7 +107,6 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_agent_log`: the Terminal-to-AgentSession resolution and the result documents are assembled in the CLI command (`commands/agent/resource_session.rs`).
 - `phux_status`: the status document (peer-credential pid, service state, log paths) is assembled by the CLI command.
 - `phux_doctor`: the health checks are the CLI's; a second copy could disagree with `phux doctor`.
-- `phux_whoami`: the `whoami` feature check and the refusal document are the CLI command's.
 - `phux_perf`: the report document is the CLI command's.
 - `phux_perf_trace`: the capture window and the trace file are the CLI command's.
 

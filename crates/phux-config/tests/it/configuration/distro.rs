@@ -19,6 +19,13 @@ fn plant_distro(dir: &Path, name: &str) -> PathBuf {
     layer.canonicalize().expect("canonicalize")
 }
 
+fn mtime(path: &Path) -> std::time::SystemTime {
+    fs::metadata(path)
+        .expect("metadata")
+        .modified()
+        .expect("modified")
+}
+
 /// Bare names search the directories in order (first hit wins); file and
 /// directory path specs bypass them; a renamed name falls through to its
 /// alias.
@@ -219,18 +226,9 @@ fn a_removed_selected_layer_can_be_turned_off_and_noop_off_does_not_write() {
     fs::remove_file(&layer).expect("remove layer");
     assert_eq!(current_distro(&path).expect("current broken"), Some(layer));
     switch_distro(&path, None).expect("off broken");
-    let before = fs::metadata(&path)
-        .expect("metadata")
-        .modified()
-        .expect("modified");
+    let before = mtime(&path);
     switch_distro(&path, None).expect("off again");
-    assert_eq!(
-        fs::metadata(&path)
-            .expect("metadata")
-            .modified()
-            .expect("modified"),
-        before
-    );
+    assert_eq!(mtime(&path), before);
 }
 
 #[cfg(unix)]
@@ -285,18 +283,9 @@ fn selecting_the_same_distro_is_idempotent_and_off_keeps_entry_notes() {
     let layer = plant_distro(tmp.path(), "a");
     let path = tmp.path().join("config.toml");
     switch_distro(&path, Some(&layer)).expect("select");
-    let before = fs::metadata(&path)
-        .expect("metadata")
-        .modified()
-        .expect("modified");
+    let before = mtime(&path);
     switch_distro(&path, Some(&layer)).expect("select again");
-    assert_eq!(
-        fs::metadata(&path)
-            .expect("metadata")
-            .modified()
-            .expect("modified"),
-        before
-    );
+    assert_eq!(mtime(&path), before);
     let text = fs::read_to_string(&path).expect("read").replace(
         "# phux-managed-distro",
         "# my distro note\n  # phux-managed-distro",

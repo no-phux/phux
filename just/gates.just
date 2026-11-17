@@ -16,7 +16,7 @@ check *ARGS: worktree-claim
 core-check: (doctor "core") (crate-check "phux-core")
 
 
-# One crate's gate; optional test features (e.g. phux-protocol server).
+# One crate's gate; optional test features (e.g. phux-vt kitty).
 [group('gates')]
 crate-check PACKAGE FEATURES="": worktree-claim
     #!/usr/bin/env bash

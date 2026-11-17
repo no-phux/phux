@@ -43,7 +43,7 @@ pub(crate) fn run_logs(
     }
     let lines = lines.unwrap_or(DEFAULT_TAIL_LINES);
     if server {
-        let log = phux_server::telemetry::server_log_path();
+        let log = phux_config::instance::server_log_path();
         let missing = format!(
             "logs: no server log at {} yet.\n\
              A server writes it when it next starts; run `phux` (auto-spawns) or `phux server`.",
@@ -52,7 +52,7 @@ pub(crate) fn run_logs(
         return tail_file(&log, follow, lines, &missing);
     }
 
-    let dir = phux_server::telemetry::state_dir();
+    let dir = phux_config::instance::state_dir();
     if client {
         let log = match client_log_target(&dir, pid) {
             Ok(log) => log,
@@ -70,7 +70,7 @@ pub(crate) fn run_logs(
         return tail_file(&log, follow, lines, &missing);
     }
 
-    let inventory = inventory(dir, phux_server::telemetry::server_log_path());
+    let inventory = inventory(dir, phux_config::instance::server_log_path());
     if json {
         return crate::output::json(&json_doc(&inventory));
     }
@@ -344,6 +344,23 @@ fn file_json(facts: &FileFacts) -> serde_json::Value {
         "size_bytes": facts.size,
         "modified_unix": modified_unix,
     })
+}
+
+/// Run `phux logs` as parsed.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "every verb entry point takes its parsed Args by value, as dispatch hands them over"
+)]
+pub(crate) fn run(args: crate::commands::LogsArgs) -> ExitCode {
+    let crate::commands::LogsArgs {
+        server,
+        client,
+        pid,
+        follow,
+        lines,
+        json,
+    } = args;
+    run_logs(server, client, pid, follow, lines, json)
 }
 
 #[cfg(test)]

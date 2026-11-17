@@ -14,26 +14,20 @@ use phux_protocol::wire::frame::{Committed, OrgFilter, ResourceRecord, SessionRe
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, parse_selector, socket_arg, strict_object};
+use crate::tools::{
+    ToolError, ToolSpec, parse_selector, socket_arg, strict_bool_arg, strict_object,
+};
 
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![rm_schema(), relaunch_schema(), organize_schema()]
-}
-
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_rm" | "phux_relaunch" | "phux_organize")
-}
-
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_rm" => rm(args).await,
-        "phux_relaunch" => relaunch(args).await,
-        "phux_organize" => organize(args).await,
-        other => Err(ToolError::new(format!(
-            "unknown organization tool: {other}"
-        ))),
-    }
-}
+/// The organization tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_rm", rm_schema, |args| Box::pin(rm(args))),
+    ToolSpec::in_process("phux_relaunch", relaunch_schema, |args| {
+        Box::pin(relaunch(args))
+    }),
+    ToolSpec::in_process("phux_organize", organize_schema, |args| {
+        Box::pin(organize(args))
+    }),
+];
 
 fn rm_schema() -> Value {
     schema(
@@ -107,18 +101,10 @@ fn organize_args(args: &Value) -> Result<OrganizeArgs, ToolError> {
     };
     Ok(OrganizeArgs {
         session: crate::cli_adapter::bounded_string(args, "session", false)?,
-        apply: bool_arg(args, "apply")?,
-        offline: bool_arg(args, "offline")?,
+        apply: strict_bool_arg(args, "apply")?,
+        offline: strict_bool_arg(args, "offline")?,
         min_confidence,
     })
-}
-
-fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
-    match args.get(name) {
-        None => Ok(false),
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(ToolError::new(format!("`{name}` must be a boolean"))),
-    }
 }
 
 /// `phux_organize`: what `phux organize --json` prints.
@@ -293,7 +279,10 @@ mod tests {
             ("phux_organize", json!({ "extra": 1 })),
             ("phux_relaunch", json!({ "target": 3 })),
         ] {
-            assert!(call(name, &args).await.is_err(), "{name} accepted {args}");
+            assert!(
+                crate::tools::call_registered(name, &args).await.is_err(),
+                "{name} accepted {args}"
+            );
         }
     }
 }

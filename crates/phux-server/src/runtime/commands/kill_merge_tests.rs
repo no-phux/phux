@@ -11,14 +11,14 @@ use tokio::sync::oneshot;
 /// whose satellite `down` has none.
 fn hub() -> (SharedState, ClientId, RelayMailbox) {
     let state = SharedState::new();
-    let client = state.with_mut(crate::state::ServerState::new_client_id);
+    let client = state.with_mut(|s| s.clients_mut().new_client_id());
     let relays = HubRelays::default();
     let (up, up_mailbox) = RelayHandle::new(SatelliteHost::new("up"));
     let (down, down_mailbox) = RelayHandle::new(SatelliteHost::new("down"));
     drop(down_mailbox);
     relays.insert(up);
     relays.insert(down);
-    state.with_mut(|s| s.set_hub_relays(relays));
+    state.with_mut(|s| s.federation_mut().set_relays(relays));
     (state, client, up_mailbox)
 }
 
@@ -192,10 +192,7 @@ async fn a_keyed_signal_that_was_not_delivered_answers_its_failure_on_retry() {
         claim,
         ..
     } = committed_signal().await;
-    let failure = CommandResult::Error {
-        code: ErrorCode::InternalError,
-        message: "no PTY child to signal".to_owned(),
-    };
+    let failure = CommandResult::error(ErrorCode::InternalError, "no PTY child to signal");
     record_signal_failure(Some(&claim), &failure);
     crate::runtime::keyed_ops::settle(Some(claim), &failure);
     assert!(

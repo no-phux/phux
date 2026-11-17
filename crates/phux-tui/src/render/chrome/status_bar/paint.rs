@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use phux_config::widget::Cell as WidgetCell;
+use crate::render::chrome::status_bar::widgets::Cell as WidgetCell;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -443,7 +443,7 @@ impl StatusBarPainter {
     /// The driver spawns one bounded interval runner per feed; an
     /// error-line painter (empty bar) has none.
     #[must_use]
-    pub fn exec_feeds(&self) -> Vec<phux_config::widget::ExecFeed> {
+    pub fn exec_feeds(&self) -> Vec<crate::render::chrome::status_bar::widgets::ExecFeed> {
         self.bar.exec_feeds()
     }
 
@@ -461,15 +461,16 @@ impl StatusBarPainter {
     #[must_use]
     pub fn window_hit_at(&self, x: u16) -> Option<usize> {
         match self.hit_at(x)? {
-            phux_config::widget::CellHit::Window(i) => Some(i),
-            phux_config::widget::CellHit::Switch | phux_config::widget::CellHit::Action(_) => None,
+            crate::render::chrome::status_bar::widgets::CellHit::Window(i) => Some(i),
+            crate::render::chrome::status_bar::widgets::CellHit::Switch
+            | crate::render::chrome::status_bar::widgets::CellHit::Action(_) => None,
         }
     }
 
     /// The interactive target under screen column `x`, resolved against the
     /// strip last painted.
     #[must_use]
-    pub fn hit_at(&self, x: u16) -> Option<phux_config::widget::CellHit> {
+    pub fn hit_at(&self, x: u16) -> Option<crate::render::chrome::status_bar::widgets::CellHit> {
         let (origin, cols, row) = self.last_row.as_ref()?;
         let col = x.checked_sub(*origin)?;
         if self

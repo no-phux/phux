@@ -53,7 +53,7 @@ pub(crate) fn run(args: NativeArgs, socket: Option<PathBuf>) -> ExitCode {
         error!("terminal requires interactive stdin and stdout");
         return ExitCode::from(2);
     }
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     if let Err(code) = super::attach::nested_attach_guard(&socket) {
         return code;
     }

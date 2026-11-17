@@ -1,11 +1,11 @@
 //! Correlating a frame that did not decode: its request id, and what a client reads in its place.
 
-use super::{
-    DecodeError, Decoder, ErrorCode, FrameKind, TYPE_COMMAND, TYPE_COMMAND_RESULT,
-    TYPE_DELETE_METADATA, TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_GET_METADATA,
-    TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE,
-    TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS, TYPE_RESOURCE_MOVED,
-    TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+use super::{DecodeError, Decoder, ErrorCode, FrameKind};
+use crate::wire::frame::{
+    TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DIRECTORY_LISTING, TYPE_ERROR,
+    TYPE_GET_METADATA, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_KEYS,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS,
+    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
 };
 
 /// Whether frames of `type_byte` carry their correlating `request_id` as
@@ -119,8 +119,8 @@ const fn is_correlated_reply(type_byte: u8) -> bool {
 
 #[cfg(test)]
 mod request_id_tests {
-    use super::super::TYPE_INPUT_KEY;
     use super::*;
+    use crate::wire::frame::TYPE_INPUT_KEY;
 
     fn framed(type_byte: u8, fields: &[(u32, &[u8])]) -> Vec<u8> {
         let mut body = bytes::BytesMut::new();

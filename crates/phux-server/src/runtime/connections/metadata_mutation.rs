@@ -21,8 +21,9 @@ fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
         return;
     };
     let handle = state.with(|s| {
-        s.resource_from_wire(wire)
-            .and_then(|pane| s.resource_handle(pane).cloned())
+        s.idspace
+            .resource_from_wire(wire)
+            .and_then(|pane| s.resources().handle(pane).cloned())
     });
     if let Some(handle) = handle
         && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
@@ -44,7 +45,10 @@ fn reject_unknown_local_terminal_scope(
     let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
-    if state.with(|s| s.resource_from_wire(terminal)).is_some() {
+    if state
+        .with(|s| s.idspace.resource_from_wire(terminal))
+        .is_some()
+    {
         return false;
     }
     warn!(
@@ -76,7 +80,7 @@ fn reject_set_metadata(
         return true;
     }
     // ADR-0129 / L3 §2: an oversized value is refused whole.
-    let cap = state.with(ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     if value.len() > cap {
         warn!(
             ?client_id,
@@ -406,7 +410,7 @@ pub(super) async fn handle_list_metadata(
     out_tx: &mpsc::Sender<Outbound>,
 ) {
     let (mut keys, speaks_l3) =
-        state.with(|s| (s.metadata().list(scope), s.client_speaks_l3(client_id)));
+        state.with(|s| (s.metadata().list(scope), s.clients().speaks_l3(client_id)));
     if matches!(scope, Scope::Global) {
         keys.retain(|key| {
             !key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)

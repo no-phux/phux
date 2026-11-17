@@ -231,6 +231,9 @@ pub(super) fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// Scrollback bounds that set only the line count (bytes stay default).
 #[cfg(test)]
-pub(super) const fn test_scrollback(lines: u32) -> phux_config::ScrollbackLimits {
-    phux_config::ScrollbackLimits::new(lines, phux_config::DEFAULT_HISTORY_BYTES)
+pub(super) const fn test_scrollback(lines: u32) -> phux_config_core::limits::ScrollbackLimits {
+    phux_config_core::limits::ScrollbackLimits::new(
+        lines,
+        phux_config_core::limits::DEFAULT_HISTORY_BYTES,
+    )
 }

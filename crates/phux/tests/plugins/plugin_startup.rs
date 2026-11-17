@@ -6,8 +6,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::common::{XdgDirs, phux_cmd};
-use crate::runner::phux_bin;
+use crate::common::{XdgDirs, phux_in};
 
 fn manifest(dir: &Path, body: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
@@ -24,17 +23,14 @@ fn manifest(dir: &Path, body: &str) -> std::path::PathBuf {
 }
 
 fn run(xdg: &XdgDirs, args: &[&str]) -> (i32, String, String) {
-    let out = phux_cmd(phux_bin())
-        .env("XDG_CONFIG_HOME", &xdg.config)
-        .env("XDG_STATE_HOME", &xdg.state)
-        .args(args)
-        .output()
-        .expect("run phux");
-    (
-        out.status.code().unwrap_or(1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    phux_in(
+        [
+            ("XDG_CONFIG_HOME", &xdg.config),
+            ("XDG_STATE_HOME", &xdg.state),
+        ],
+        args,
     )
+    .into_parts()
 }
 
 #[test]

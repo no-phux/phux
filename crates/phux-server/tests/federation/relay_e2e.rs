@@ -23,12 +23,13 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::relay::RelayHarness;
-use phux_server_testkit::{WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, seed_pty};
+use phux_server_testkit::{WIRE_RECV_TIMEOUT, ascii_key, attach_by_name};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
 use crate::relay_common::{
-    RelayedServer, hello, inner, loopback, plan, read_frame, relay_config, relay_pin, write_frame,
+    RelayedServer, embedder_seeded, hello, inner, loopback, plan, read_frame, relay_config,
+    relay_pin, write_frame,
 };
 
 const ROUTE: &str = "connector-test";
@@ -56,13 +57,7 @@ impl Topology {
             relay.addr,
             &fingerprint,
             &TUNNEL_TOKEN,
-            |cfg, _| {
-                if let Some(seed) = seed {
-                    cfg.pre_seeded_session = Some("default".to_owned());
-                    seed_pty(cfg, seed);
-                }
-                phux_server_testkit::embedder::embed_owner_engine(cfg);
-            },
+            |cfg, _| embedder_seeded(cfg, seed),
         );
         Self {
             dir,

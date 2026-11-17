@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use phux_server::runtime::{MirrorSlot, default_socket_path};
+use phux_config::socket::default_socket_path;
+use phux_server::runtime::MirrorSlot;
 
 /// How often the config is re-read and exited mirrors restarted.
 const TICK: Duration = Duration::from_secs(2);

@@ -50,11 +50,11 @@ pub(super) struct OpenRequest {
 fn workload_authority(
     state: &SharedState,
 ) -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
-    let required = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let required = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     super::workload_auth::WorkloadAuth::for_posture(required, &env).map_err(|err| {
         warn!(error = %err, "OPEN_LISTENER refused: configured workload mTLS is unavailable");
-        refusal(
+        CommandResult::error(
             ErrorCode::InternalError,
             "OPEN_LISTENER: workload mTLS is configured but its authority could not be loaded; see the server log"
                 .to_owned(),
@@ -79,15 +79,15 @@ pub(super) fn handle_open_listener(
         return refused;
     }
     if let Err(message) = validate(&request) {
-        return refusal(ErrorCode::InvalidCommand, message);
+        return CommandResult::error(ErrorCode::InvalidCommand, message);
     }
     let linger = effective_linger(request.linger_secs);
 
-    let env = state.with(crate::state::ServerState::server_env);
+    let env = state.with(|s| s.config().server_env.clone());
     let Some((cert, key)) =
         super::remote_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), "quic", &env)
     else {
-        return refusal(
+        return CommandResult::error(
             ErrorCode::InternalError,
             "OPEN_LISTENER: the TLS certificate could not be provisioned; see the server log"
                 .to_owned(),
@@ -96,7 +96,7 @@ pub(super) fn handle_open_listener(
     let fingerprint = match crate::transport::tls::cert_fingerprint(&cert) {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
-            return refusal(
+            return CommandResult::error(
                 ErrorCode::InternalError,
                 format!("OPEN_LISTENER: could not read the certificate fingerprint: {err}"),
             );
@@ -105,7 +105,7 @@ pub(super) fn handle_open_listener(
     let (token, secret) = match ListenerToken::mint() {
         Ok(minted) => minted,
         Err(err) => {
-            return refusal(
+            return CommandResult::error(
                 ErrorCode::InternalError,
                 format!("OPEN_LISTENER: could not mint a token: {err}"),
             );
@@ -130,13 +130,13 @@ pub(super) fn handle_open_listener(
     }) {
         Ok(listener) => listener,
         Err(BindFailure::RangeExhausted { min, max }) => {
-            return refusal(
+            return CommandResult::error(
                 ErrorCode::ResourceExhausted,
                 format!("OPEN_LISTENER: no free UDP port in {min}-{max}"),
             );
         }
         Err(BindFailure::Bind(err)) => {
-            return refusal(
+            return CommandResult::error(
                 ErrorCode::InternalError,
                 format!("OPEN_LISTENER: could not bind QUIC: {err}"),
             );
@@ -145,7 +145,7 @@ pub(super) fn handle_open_listener(
     let port = match listener.local_addr() {
         Ok(addr) => addr.port(),
         Err(err) => {
-            return refusal(
+            return CommandResult::error(
                 ErrorCode::InternalError,
                 format!("OPEN_LISTENER: the bound port is unknown: {err}"),
             );
@@ -185,17 +185,14 @@ pub(super) fn handle_open_listener(
 fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResult> {
     if !from_local_socket(state, client_id) {
         warn!(?client_id, "OPEN_LISTENER refused: local socket only");
-        return Some(refusal(
+        return Some(CommandResult::error(
             ErrorCode::PermissionDenied,
             "OPEN_LISTENER is accepted on the local socket only".to_owned(),
         ));
     }
-    if state
-        .with(crate::state::ServerState::policy_posture)
-        .is_local()
-    {
+    if state.with(|s| s.config().policy_posture).is_local() {
         warn!(?client_id, "OPEN_LISTENER refused: [policy] mode is local");
-        return Some(refusal(
+        return Some(CommandResult::error(
             ErrorCode::PermissionDenied,
             "OPEN_LISTENER is unavailable under [policy] mode = \"local\"".to_owned(),
         ));
@@ -205,7 +202,11 @@ fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResul
 
 /// Whether `client_id` reached the server over its Unix socket.
 fn from_local_socket(state: &SharedState, client_id: ClientId) -> bool {
-    let transport = state.with(|s| s.peer_identity(client_id).map(|peer| peer.transport));
+    let transport = state.with(|s| {
+        s.clients()
+            .peer_identity(client_id)
+            .map(|peer| peer.transport)
+    });
     matches!(transport, Some(TransportType::UnixSocket))
 }
 
@@ -234,10 +235,6 @@ fn effective_linger(linger_secs: u32) -> Duration {
         return DEFAULT_LINGER;
     }
     Duration::from_secs(u64::from(linger_secs)).min(MAX_LINGER)
-}
-
-const fn refusal(code: ErrorCode, message: String) -> CommandResult {
-    CommandResult::Error { code, message }
 }
 
 /// Why no listener could be bound.

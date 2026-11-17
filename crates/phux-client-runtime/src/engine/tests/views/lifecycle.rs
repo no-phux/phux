@@ -72,37 +72,7 @@ fn replica_replacement_keeps_view_identity_but_rejects_old_handles() {
     let press = owner
         .view_selection_gesture(view, gesture(0, 0, 0))
         .unwrap();
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-    );
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapChunk {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            chunk_seq: 0,
-            payload: b"new".to_vec().into(),
-        },
-    );
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapReady {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(2),
-            history_cursor: None,
-        },
-    );
+    rebootstrap(&owner, &terminal, 2, b"new");
     let frame = publication.acquire_view(view).unwrap();
     assert_eq!(frame.text(), "new");
     assert_eq!(frame.bootstrap_id, 2);

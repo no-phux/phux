@@ -27,7 +27,7 @@ async fn build_upgrade_blob_captures_tree_and_snapshot() {
             // A session/window/pane in the registry.
             let (sid, tid) = state.seed_session("main");
             let session_wire = state.idspace.intern_session(sid).get();
-            let window_wire = state.intern_window_wire(sid).get();
+            let window_wire = state.idspace.intern_window(sid).get();
 
             // A real (no-PTY) actor answering the upgrade request.
             let bundle = seeded_terminal(20, 5, b"hello");
@@ -94,7 +94,7 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         let mut state = ServerState::new();
         let (sid, tid) = state.seed_session("main");
         state.idspace.intern_session(sid);
-        state.intern_window_wire(sid);
+        state.idspace.intern_window(sid);
         let bundle = seeded_terminal(20, 5, b"hello");
         tokio::task::spawn_local(bundle.actor.run());
         state
@@ -225,7 +225,7 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
         .expect("terminal")
         .title = user_title.map(ToOwned::to_owned);
     state.idspace.intern_session(sid);
-    state.intern_window_wire(sid);
+    state.idspace.intern_window(sid);
     let bundle = seeded_terminal(20, 5, seed);
     tokio::task::spawn_local(bundle.actor.run());
     state

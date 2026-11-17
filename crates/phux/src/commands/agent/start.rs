@@ -42,10 +42,10 @@ use phux_client::agent_wait::{AgentWaitError, AgentWaitResult, wait_for_agent_st
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input, sh_quote};
@@ -447,7 +447,7 @@ async fn drive(
 ) -> ExitCode {
     let (terminal, mut conn) = match open_target(req, plan, selector, socket_path).await {
         Ok(opened) => opened,
-        Err(code) => return code,
+        Err(refusal) => return refusal.emit(req.json),
     };
 
     // Bind the name only, never `kind`: the server fills `kind` only when the
@@ -504,24 +504,21 @@ async fn open_target(
     plan: &Plan,
     selector: &phux_client::selector::Selector,
     socket_path: &Path,
-) -> Result<(ResourceId, Connection), ExitCode> {
+) -> Result<(ResourceId, Connection), Refusal> {
     // `agent start` types the launch line over acknowledged input, so a
     // `%name` takes the ADR-0075 point 5 withdrawn-record guard.
-    let terminal =
-        resolve_target_for_input(socket_path, selector, Verb::AgentStart, req.json).await?;
+    let terminal = resolve_target_for_input(socket_path, selector, Verb::AgentStart).await?;
     // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
     if !matches!(terminal, ResourceId::Local { .. }) {
-        return Err(satellite_refusal(&terminal).emit(req.json));
+        return Err(satellite_refusal(&terminal));
     }
-    check_preconditions(req, plan, &terminal, socket_path)
-        .await
-        .map_err(|refusal| refusal.emit(req.json))?;
+    check_preconditions(req, plan, &terminal, socket_path).await?;
 
-    let no_server = |err| json_err::report_no_server(req.json, &err, socket_path, "agent start");
+    let no_server = |err| Refusal::no_server(&err, socket_path, "agent start");
     let mut conn = Connection::connect(socket_path).await.map_err(no_server)?;
     match recheck_occupant(&mut conn, &terminal).await {
         Ok(()) => Ok((terminal, conn)),
-        Err(Ok(refusal)) => Err(refusal.emit(req.json)),
+        Err(Ok(refusal)) => Err(refusal),
         Err(Err(err)) => Err(no_server(err)),
     }
 }

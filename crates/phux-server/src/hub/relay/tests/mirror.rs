@@ -35,7 +35,7 @@ fn a_satellite_writes_only_requested_bounded_mirror_entries() {
     session.handle_inbound(&changed(7, b"{}".to_vec())).unwrap();
     assert_eq!(stored(7).as_deref(), Some(b"{}".as_slice()));
 
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     session
         .handle_inbound(&changed(7, vec![b'x'; cap + 1]))
         .unwrap();
@@ -53,7 +53,8 @@ fn a_closed_satellite_terminal_leaves_no_lease_mirror_state() {
     session.set_journal(Some(state.clone()));
     for id in 0..64 {
         state.with_mut(|s| {
-            s.mirror_satellite_lease_event(&host(), id, false, Some(1));
+            s.federation_mut()
+                .mirror_satellite_lease_event(&host(), id, false, Some(1));
         });
         session.feed(&FrameKind::ResourceClosed {
             terminal_id: ResourceId::local(id),
@@ -63,7 +64,7 @@ fn a_closed_satellite_terminal_leaves_no_lease_mirror_state() {
         });
     }
     assert_eq!(
-        state.with(crate::state::ServerState::satellite_lease_mirror_entries),
+        state.with(|s| s.federation().satellite_lease_mirror_entries()),
         0
     );
 }

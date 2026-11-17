@@ -214,7 +214,7 @@ async fn after_claim(revoke_provider: bool) {
     let provider_token = crate::auth::mint_token(tokens.path()).unwrap();
     let approver_token = crate::auth::mint_token(tokens.path()).unwrap();
     let state = crate::runtime::apps::terminal::test_support::terminal_state();
-    state.with_mut(|s| s.set_policy_engine(Arc::new(crate::policy::OwnerForAll)));
+    state.with_mut(|s| s.config_mut().policy_engine = Arc::new(crate::policy::OwnerForAll));
     let root = CancellationToken::new();
     let accept_state = state.clone();
     let accept_root = root.clone();

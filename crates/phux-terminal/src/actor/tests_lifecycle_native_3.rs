@@ -158,15 +158,13 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
     let stream_b = phux_protocol::ids::StreamId::new(2).expect("stream");
     let bootstrap_a = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap");
     let bootstrap_b = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap");
-    let request = |stream_id, bootstrap_id, reply| NativeBootstrapRequest {
-        owner,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id,
-        bootstrap_id,
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-        reply,
+    let request = |stream_id, bootstrap_id, reply| {
+        native_request(
+            owner,
+            phux_protocol::ids::ResourceId::local(1),
+            (stream_id, bootstrap_id),
+            reply,
+        )
     };
     let (reply_a, mut response_a) = oneshot::channel();
     actor.handle_native_bootstrap(request(stream_a, bootstrap_a, reply_a));

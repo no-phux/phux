@@ -47,25 +47,10 @@ impl SessionRecord {
         }
     }
 
-    /// Builder setter for [`Self::lifetime`].
-    #[must_use]
-    pub const fn with_lifetime(mut self, lifetime: SessionLifetime) -> Self {
-        self.lifetime = lifetime;
-        self
-    }
-
-    /// Builder setter for [`Self::awaiting_organization`].
-    #[must_use]
-    pub const fn with_awaiting_organization(mut self, awaiting: bool) -> Self {
-        self.awaiting_organization = awaiting;
-        self
-    }
-
-    /// Builder setter for [`Self::arrangement`].
-    #[must_use]
-    pub const fn with_arrangement(mut self, arrangement: Option<ArrangementKey>) -> Self {
-        self.arrangement = arrangement;
-        self
+    builder_setters! {
+        const fn with_lifetime(lifetime: SessionLifetime) => lifetime;
+        const fn with_awaiting_organization(awaiting: bool) => awaiting_organization;
+        const fn with_arrangement(arrangement: Option<ArrangementKey>) => arrangement;
     }
 
     /// Builder setter for [`Self::attrs`].
@@ -75,18 +60,9 @@ impl SessionRecord {
         self
     }
 
-    /// Builder setter for [`Self::members`].
-    #[must_use]
-    pub const fn with_members(mut self, members: u32) -> Self {
-        self.members = members;
-        self
-    }
-
-    /// Builder setter for [`Self::live`].
-    #[must_use]
-    pub const fn with_live(mut self, live: Option<SessionId>) -> Self {
-        self.live = live;
-        self
+    builder_setters! {
+        const fn with_members(members: u32) => members;
+        const fn with_live(live: Option<SessionId>) => live;
     }
 }
 
@@ -122,11 +98,8 @@ impl ActivationInfo {
         }
     }
 
-    /// Builder setter for [`Self::outcome`].
-    #[must_use]
-    pub const fn with_outcome(mut self, outcome: Option<Outcome>) -> Self {
-        self.outcome = outcome;
-        self
+    builder_setters! {
+        const fn with_outcome(outcome: Option<Outcome>) => outcome;
     }
 
     /// Attach safe execution evidence and persistence uncertainty.
@@ -180,39 +153,12 @@ impl ResourceRecord {
         }
     }
 
-    /// Builder setter for [`Self::name`].
-    #[must_use]
-    pub fn with_name(mut self, name: Option<String>) -> Self {
-        self.name = name;
-        self
-    }
-
-    /// Builder setter for [`Self::kind`].
-    #[must_use]
-    pub const fn with_kind(mut self, kind: ResourceKind) -> Self {
-        self.kind = kind;
-        self
-    }
-
-    /// Builder setter for [`Self::on_exit`].
-    #[must_use]
-    pub const fn with_on_exit(mut self, on_exit: ExitPolicy) -> Self {
-        self.on_exit = on_exit;
-        self
-    }
-
-    /// Builder setter for [`Self::activation`].
-    #[must_use]
-    pub const fn with_activation(mut self, activation: Option<ActivationInfo>) -> Self {
-        self.activation = activation;
-        self
-    }
-
-    /// Builder setter for [`Self::live`].
-    #[must_use]
-    pub fn with_live(mut self, live: Option<ResourceId>) -> Self {
-        self.live = live;
-        self
+    builder_setters! {
+        fn with_name(name: Option<String>) => name;
+        const fn with_kind(kind: ResourceKind) => kind;
+        const fn with_on_exit(on_exit: ExitPolicy) => on_exit;
+        const fn with_activation(activation: Option<ActivationInfo>) => activation;
+        fn with_live(live: Option<ResourceId>) => live;
     }
 }
 
@@ -270,11 +216,9 @@ impl OrganizationPage {
         self.inbox
     }
 
-    /// Set the designated Intake session without changing its wire field tag.
-    #[must_use]
-    pub const fn with_intake(mut self, intake: Option<SessionKey>) -> Self {
-        self.inbox = intake;
-        self
+    builder_setters! {
+        /// Set the designated Intake session without changing its wire field tag.
+        const fn with_intake(intake: Option<SessionKey>) => inbox;
     }
 
     /// Legacy alias for [`Self::with_intake`].
@@ -283,18 +227,9 @@ impl OrganizationPage {
         self.with_intake(inbox)
     }
 
-    /// Builder setter for [`Self::sessions`].
-    #[must_use]
-    pub fn with_sessions(mut self, sessions: Vec<SessionRecord>) -> Self {
-        self.sessions = sessions;
-        self
-    }
-
-    /// Builder setter for [`Self::resources`].
-    #[must_use]
-    pub fn with_resources(mut self, resources: Vec<ResourceRecord>) -> Self {
-        self.resources = resources;
-        self
+    builder_setters! {
+        fn with_sessions(sessions: Vec<SessionRecord>) => sessions;
+        fn with_resources(resources: Vec<ResourceRecord>) => resources;
     }
 
     /// Builder setter for the three totals.
@@ -306,11 +241,8 @@ impl OrganizationPage {
         self
     }
 
-    /// Builder setter for [`Self::next_cursor`].
-    #[must_use]
-    pub fn with_next_cursor(mut self, next_cursor: Option<Vec<u8>>) -> Self {
-        self.next_cursor = next_cursor;
-        self
+    builder_setters! {
+        fn with_next_cursor(next_cursor: Option<Vec<u8>>) => next_cursor;
     }
 }
 
@@ -456,52 +388,14 @@ impl Committed {
         self
     }
 
-    /// Mark a replay of a retained operation.
-    #[must_use]
-    pub const fn with_replayed(mut self, replayed: bool) -> Self {
-        self.replayed = replayed;
-        self
-    }
-
-    /// Builder setter for [`Self::session`].
-    #[must_use]
-    pub const fn with_session(mut self, session: Option<SessionKey>) -> Self {
-        self.session = session;
-        self
-    }
-
-    /// Builder setter for [`Self::resource`].
-    #[must_use]
-    pub const fn with_resource(mut self, resource: Option<ResourceKey>) -> Self {
-        self.resource = resource;
-        self
-    }
-
-    /// Builder setter for [`Self::target`].
-    #[must_use]
-    pub fn with_target(mut self, target: Option<LiveTarget>) -> Self {
-        self.target = target;
-        self
-    }
-
-    /// Builder setter for [`Self::revisions`].
-    #[must_use]
-    pub fn with_revisions(mut self, revisions: Vec<RecordRevision>) -> Self {
-        self.revisions = revisions;
-        self
-    }
-
-    /// Builder setter for [`Self::prior_awaiting`].
-    #[must_use]
-    pub const fn with_prior_awaiting(mut self, prior_awaiting: Option<bool>) -> Self {
-        self.prior_awaiting = prior_awaiting;
-        self
-    }
-
-    /// Builder setter for [`Self::members`].
-    #[must_use]
-    pub const fn with_members(mut self, members: Option<u32>) -> Self {
-        self.members = members;
-        self
+    builder_setters! {
+        /// Mark a replay of a retained operation.
+        const fn with_replayed(replayed: bool) => replayed;
+        const fn with_session(session: Option<SessionKey>) => session;
+        const fn with_resource(resource: Option<ResourceKey>) => resource;
+        fn with_target(target: Option<LiveTarget>) => target;
+        fn with_revisions(revisions: Vec<RecordRevision>) => revisions;
+        const fn with_prior_awaiting(prior_awaiting: Option<bool>) => prior_awaiting;
+        const fn with_members(members: Option<u32>) => members;
     }
 }

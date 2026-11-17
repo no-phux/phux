@@ -8,7 +8,9 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_mission::{ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb};
+use phux_work::mission::{
+    ListDocument, MutationDocument, SCHEMA, SCHEMA_VERSION, ShowDocument, Verb,
+};
 use phux_work::{
     AddObjective, Alias, Client, EditObjective, Endpoint, KeeperExit, Launcher, ListFilter,
     OperationId, RevisionEdit,
@@ -156,8 +158,13 @@ pub(crate) struct RevOpt {
     expected_revision: Option<u64>,
 }
 
-pub(crate) fn run(action: Option<MissionAction>, socket: Option<std::path::PathBuf>) -> ExitCode {
-    action.map_or_else(print_help, |action| run_action(action, socket))
+/// Run `phux mission` as parsed: bare `phux mission` prints its help.
+pub(crate) fn run(
+    args: crate::commands::MissionArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    args.action
+        .map_or_else(print_help, |action| run_action(action, socket))
 }
 
 fn print_help() -> ExitCode {

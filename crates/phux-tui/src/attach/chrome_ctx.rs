@@ -66,6 +66,23 @@ impl<'a> ChromeCtx<'a> {
         }
     }
 
+    /// Test chrome on `viewport`: no sidebar, bar, or strip, the default
+    /// theme, and no placeholder leaves. Struct-update the parts a test sets.
+    #[cfg(test)]
+    pub(super) fn bare(viewport: (u16, u16), session_name: &'a str) -> Self {
+        static THEME: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(Theme::default);
+        static LEAVES: std::sync::LazyLock<LeafBook> = std::sync::LazyLock::new(LeafBook::default);
+        Self {
+            viewport,
+            sidebar: None,
+            status_bar: None,
+            sidebar_painter: None,
+            session_name,
+            theme: &THEME,
+            leaves: &LEAVES,
+        }
+    }
+
     /// The row the status bar docks to, if there is a bar.
     pub(super) fn bar(&self) -> Option<Position> {
         self.status_bar.as_deref().map(StatusBarPainter::position)

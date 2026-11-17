@@ -15,13 +15,11 @@ use phux_protocol::input::{
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_typed, recv_until, recv_until_deadline, run_local, send_frame, spawn_server_with_seed_cmd,
-    wait_for_socket,
+    Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, recv_until,
+    recv_until_deadline, run_local, send_frame,
 };
 
 use super::common::connect_with;
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::{Duration, Instant, timeout};
 
@@ -232,15 +230,9 @@ async fn detach_and_check(
 }
 
 async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("server.sock");
-    let (shutdown, task) = spawn_server_with_seed_cmd(
-        path.clone(),
-        "detach",
-        phux_server::LaunchCommand::new("/bin/cat"),
-    );
-    let mut stream = connect_with(&path, caps).await;
-    let mut control = wait_for_socket(&path, SOCKET_CONNECT_DEADLINE).await;
+    let server = cat_server();
+    let mut stream = connect_with(&server.socket, caps).await;
+    let mut control = server.connect().await;
     let seed = match source {
         Source::Session | Source::Spawn => attach_session(&mut stream).await,
         Source::Explicit => {
@@ -286,7 +278,12 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     }
     drop(stream);
     drop(control);
-    join_after_shutdown(shutdown, task).await;
+    server.stop().await;
+}
+
+/// Session `detach`, seeded with `/bin/cat`.
+fn cat_server() -> SpawnedServer {
+    SpawnedServer::seeded("detach", phux_server::LaunchCommand::new("/bin/cat"))
 }
 
 #[test]
@@ -323,14 +320,8 @@ const fn native_caps() -> ClientCapabilities {
 #[test]
 fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("server.sock");
-        let (shutdown, task) = spawn_server_with_seed_cmd(
-            path.clone(),
-            "detach",
-            phux_server::LaunchCommand::new("/bin/cat"),
-        );
-        let mut stream = connect_with(&path, native_caps()).await;
+        let server = cat_server();
+        let mut stream = connect_with(&server.socket, native_caps()).await;
         send_frame(&mut stream, &attach_by_name("detach")).await;
         let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
         let history = recv_until_deadline(&mut stream, deadline, |_, frame| match frame {
@@ -383,7 +374,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
         ));
         command(&mut stream, 2, phux_server_testkit::get_state(), true).await;
         drop(stream);
-        join_after_shutdown(shutdown, task).await;
+        server.stop().await;
     });
 }
 

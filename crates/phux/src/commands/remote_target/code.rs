@@ -76,7 +76,7 @@ pub(crate) fn pair_from_code(
 /// an orphaned bearer token or identity on disk. Same ordering `phux host
 /// add` uses, and for the same reason.
 fn validated(name: &str, link: &pair::ConnectLink) -> Result<remote::NewRemote, String> {
-    let token_file = enroll::token_path(&phux_server::telemetry::state_dir(), name);
+    let token_file = enroll::token_path(&phux_config::instance::state_dir(), name);
     // A relay link registers the relay with its route (ADR-0149); any other
     // prefers its supplied WebSocket url, with its QUIC route kept beside it
     // for attach to promote once it answers. A QUIC-only code registers QUIC.
@@ -141,7 +141,7 @@ fn redeem_ticket(
         .ok_or_else(|| {
             "the link carries an enrollment ticket but no quic endpoint to enroll over".to_owned()
         })?;
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let remotes_dir = phux_config::instance::state_dir().join("remotes");
     let pins = enroll::TicketPins {
         leaf: link.cert_fingerprint.as_deref(),
         authority: link.ca_fingerprint.as_deref(),

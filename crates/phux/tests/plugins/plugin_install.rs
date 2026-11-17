@@ -8,83 +8,9 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tempfile::TempDir;
-
-struct TestHome {
-    _tmp: TempDir,
-    xdg_config: PathBuf,
-    xdg_data: PathBuf,
-    scratch: PathBuf,
-}
-
-impl TestHome {
-    fn new() -> Self {
-        let tmp = TempDir::new().expect("tempdir");
-        let xdg_config = tmp.path().join("config");
-        let xdg_data = tmp.path().join("data");
-        let scratch = tmp.path().join("scratch");
-        std::fs::create_dir_all(&scratch).expect("create scratch dir");
-        Self {
-            _tmp: tmp,
-            xdg_config,
-            xdg_data,
-            scratch,
-        }
-    }
-
-    fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(crate::runner::phux_bin())
-            .env("XDG_CONFIG_HOME", &self.xdg_config)
-            .env("XDG_DATA_HOME", &self.xdg_data)
-            .args(args)
-            .output()
-            .expect("run phux binary");
-        (
-            out.status.code().expect("phux exited via code, not signal"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-
-    fn plugins_dir(&self) -> PathBuf {
-        self.xdg_data.join("phux").join("plugins")
-    }
-
-    fn config_toml(&self) -> PathBuf {
-        self.xdg_config.join("phux").join("config.toml")
-    }
-
-    fn lockfile(&self) -> PathBuf {
-        self.plugins_dir().join("plugins.lock")
-    }
-}
-
-fn write_fixture_plugin(dir: &Path, id: &str, version: &str, min_phux: &str, build: &str) {
-    std::fs::create_dir_all(dir).expect("create plugin dir");
-    std::fs::write(
-        dir.join("phux-plugin.toml"),
-        format!(
-            r#"
-id = "{id}"
-name = "Install Fixture"
-version = "{version}"
-min_phux_version = "{min_phux}"
-
-{build}
-
-[[actions]]
-id = "open"
-title = "Open"
-command = ["true"]
-"#
-        ),
-    )
-    .expect("write manifest");
-    std::fs::write(dir.join("payload.txt"), "payload").expect("write payload");
-}
+use crate::support::{TestHome, init_repo, write_fixture_plugin};
 
 const BUILD_OK: &str = r#"
 [[build]]
@@ -245,25 +171,7 @@ fn install_from_git_url_records_resolved_commit() {
     let home = TestHome::new();
     let repo = home.scratch.join("repo");
     write_fixture_plugin(&repo, "example.install-git", "0.1.0", "0.0.1", "");
-    let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args([
-                "-c",
-                "user.email=test@example.invalid",
-                "-c",
-                "user.name=Test",
-            ])
-            .args(args)
-            .status()
-            .expect("run git");
-        assert!(status.success(), "git {args:?} should succeed");
-    };
-    git(&["init", "--quiet", "--initial-branch=main"]);
-    git(&["add", "."]);
-    git(&["commit", "--quiet", "-m", "fixture"]);
-    let url = format!("file://{}", repo.display());
+    let url = init_repo(&repo, "fixture");
 
     let (code, stdout, stderr) = home.run(&["plugin", "install", &url, "--json"]);
 

@@ -92,8 +92,9 @@ impl ServerState {
         }
     }
 
-    /// Re-bound the journal (entries and bytes).
-    pub fn set_event_journal_bounds(&mut self, entries: usize, bytes: usize) {
+    /// Re-bound the journal (entries and bytes) after construction.
+    #[cfg(test)]
+    pub(crate) fn set_event_journal_bounds(&mut self, entries: usize, bytes: usize) {
         self.journal.set_bounds(entries, bytes);
     }
 

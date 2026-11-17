@@ -120,10 +120,7 @@ fn a_command_error_with_a_newer_code_decodes() {
         decode(&frame(TYPE_COMMAND_RESULT, 2, &body)).unwrap(),
         FrameKind::CommandResult {
             request_id: 2,
-            result: CommandResult::Error {
-                code: ErrorCode::Unknown(0x0FFF),
-                message: String::new(),
-            },
+            result: CommandResult::error(ErrorCode::Unknown(0x0FFF), String::new()),
         }
     );
 }

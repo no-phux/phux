@@ -15,8 +15,7 @@ use crate::commands::PluginAction;
 use json::{print_plugin_json, print_plugins_json, print_validation_json};
 use registry::{
     RegistryEntry, find_entry, load_registry, load_registry_from_path, manifest_path_for_config,
-    own_index, push_entry, read_config_document, reject_symlinked_config, remove_entry,
-    set_enabled, update_entry, write_config_document,
+    open_config, own_index, push_entry, remove_entry, set_enabled, update_entry,
 };
 
 pub(crate) fn run_plugin(action: &PluginAction) -> ExitCode {
@@ -111,14 +110,13 @@ fn upsert_config_entry(
 ) -> Result<RegistryEntry, String> {
     let config_path = config_loader::config_path();
     let stored_manifest = manifest_path_for_config(&manifest.manifest_path, &config_path);
-    reject_symlinked_config(&config_path)?;
-    let mut doc = read_config_document(&config_path)?;
+    let mut doc = open_config(&config_path)?;
     let mut updated = false;
     for entry in load_registry_from_path(&config_path)? {
         if entry.manifest.id == manifest.id {
             // Only a table of this file's own is edited; an inherited entry
             // is left to its layer and gets one here instead.
-            if let Some(own) = own_index(&config_path, &entry.manifest_path)? {
+            if let Some(own) = own_index(&doc, &config_path, &entry.manifest_path) {
                 update_entry(&mut doc, own, &stored_manifest, enabled)?;
                 updated = true;
             }
@@ -128,7 +126,7 @@ fn upsert_config_entry(
     if !updated {
         push_entry(&mut doc, &stored_manifest, enabled)?;
     }
-    write_config_document(&config_path, &doc)?;
+    doc.commit()?;
     Ok(RegistryEntry {
         key: "plugins",
         index: 0,
@@ -141,21 +139,18 @@ fn upsert_config_entry(
 
 fn run_unlink(id: &str, json: bool) -> ExitCode {
     let config_path = config_loader::config_path();
-    if let Err(err) = reject_symlinked_config(&config_path) {
-        return fail(json, &err);
-    }
-    let entry = match find_entry(&config_path, id) {
-        Ok(entry) => entry,
+    let mut doc = match open_config(&config_path) {
+        Ok(doc) => doc,
         Err(err) => return fail(json, &err),
     };
-    let mut doc = match read_config_document(&config_path) {
-        Ok(doc) => doc,
+    let entry = match find_entry(&doc, &config_path, id) {
+        Ok(entry) => entry,
         Err(err) => return fail(json, &err),
     };
     if let Err(err) = remove_entry(&mut doc, entry.key, entry.index) {
         return fail(json, &err);
     }
-    if let Err(err) = write_config_document(&config_path, &doc) {
+    if let Err(err) = doc.commit() {
         return fail(json, &err);
     }
     if json {
@@ -168,21 +163,18 @@ fn run_unlink(id: &str, json: bool) -> ExitCode {
 
 fn run_set_enabled(id: &str, enabled: bool, json: bool) -> ExitCode {
     let config_path = config_loader::config_path();
-    if let Err(err) = reject_symlinked_config(&config_path) {
-        return fail(json, &err);
-    }
-    let mut entry = match find_entry(&config_path, id) {
-        Ok(entry) => entry,
+    let mut doc = match open_config(&config_path) {
+        Ok(doc) => doc,
         Err(err) => return fail(json, &err),
     };
-    let mut doc = match read_config_document(&config_path) {
-        Ok(doc) => doc,
+    let mut entry = match find_entry(&doc, &config_path, id) {
+        Ok(entry) => entry,
         Err(err) => return fail(json, &err),
     };
     if let Err(err) = set_enabled(&mut doc, entry.key, entry.index, enabled) {
         return fail(json, &err);
     }
-    if let Err(err) = write_config_document(&config_path, &doc) {
+    if let Err(err) = doc.commit() {
         return fail(json, &err);
     }
     entry.enabled = enabled;
@@ -266,7 +258,7 @@ pub(crate) fn valid_manifest_count() -> Result<usize, String> {
 /// `[[startup]]` sidecars. A missing server is quiet: enable and disable
 /// still succeed, and the next server start reads the file.
 fn signal_startup_reload(json: bool) {
-    let socket_path = phux_server::runtime::default_socket_path();
+    let socket_path = phux_config::socket::default_socket_path();
     let Ok(rt) = crate::commands::cli_runtime() else {
         return;
     };
@@ -301,4 +293,10 @@ pub(super) fn fail(json: bool, message: &str) -> ExitCode {
     }
     error!("{message}");
     ExitCode::FAILURE
+}
+
+/// Run `phux plugin` as parsed.
+pub(crate) fn run(args: crate::commands::PluginArgs) -> ExitCode {
+    let crate::commands::PluginArgs { action } = args;
+    run_plugin(&action)
 }

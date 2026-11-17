@@ -63,7 +63,7 @@ pub struct EngineBuild {
     pub cols: u16,
     pub rows: u16,
     pub source: EngineSource,
-    pub scrollback: phux_config::ScrollbackLimits,
+    pub scrollback: phux_config_core::limits::ScrollbackLimits,
     pub token: CancellationToken,
     pub default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     pub reports: EngineReports,

@@ -17,7 +17,7 @@ default = []
 # Safe native libghostty checkpoint host. The target-qualified optional
 # dependency below keeps wasm builds, including `--all-features`, off the
 # native C/Zig linkage graph.
-native-engine = ["dep:bytes", "dep:libghostty-vt", "phux-protocol/server"]
+native-engine = ["dep:bytes", "dep:libghostty-vt", "dep:phux-vt"]
 # Criterion is only needed by the history benchmark. Keeping this feature off
 # by default prevents workspace tests from compiling the benchmark toolchain.
 history-bench = ["dep:criterion"]
@@ -25,9 +25,10 @@ history-bench = ["dep:criterion"]
 [dependencies]
 criterion = { workspace = true, optional = true }
 # Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
-# Engine-specific conversions stay off by default for native/wasm portability.
-# The native engine reuses the protocol's bounded Kitty storage/PNG setup.
+# libghostty conversions live in phux-vt, so the wasm build never links them.
 phux-protocol.workspace = true
+# The generic binary split tree (`LayoutNode<L>`) and its edits; wasm-safe.
+phux-core.workspace = true
 # Kernel-side performance telemetry (`perf` module); wasm-safe, no clock on
 # wasm32, always on.
 phux-perf.workspace = true
@@ -49,6 +50,9 @@ sha2 = "0.11"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bytes = { workspace = true, optional = true }
 libghostty-vt = { workspace = true, optional = true }
+# Shared libghostty glue: the GHOSTSNP codec, render pool, bounded Kitty
+# storage and PNG setup. A leaf, so it never depends back on this crate.
+phux-vt = { workspace = true, optional = true, features = ["kitty"] }
 
 [dev-dependencies]
 phux-frozen.workspace = true

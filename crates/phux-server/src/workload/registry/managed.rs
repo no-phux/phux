@@ -9,10 +9,11 @@ use rustls::pki_types::{CertificateDer, UnixTime};
 use serde::Deserialize;
 
 use super::WorkloadRegistry;
+use crate::secure_file;
 use crate::workload::org_roots::replace_org_roots;
 use crate::workload::{
     ClientMaterial, EnrolledFor, MaterialError, WorkloadCredential, WorkloadError, credential_id,
-    store, validate_expiry, validate_org_name, validate_scopes, validate_subject,
+    validate_expiry, validate_org_name, validate_scopes, validate_subject,
 };
 
 /// The document version this reader accepts.
@@ -104,7 +105,7 @@ impl WorkloadRegistry {
             pem.push('\n');
             pem
         });
-        store::with_lock(path, |held| {
+        secure_file::with_lock(path, |held| {
             let mut registry = Self::load(path)?;
             if let Some(taken) = wanted.iter().find(|credential| {
                 registry.credentials.iter().any(|record| {

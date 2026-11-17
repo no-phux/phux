@@ -16,16 +16,13 @@
 //! three to cell-for-cell agreement. Change one, change all three.
 
 use libghostty_vt::Terminal as GhosttyTerminal;
+use libghostty_vt::color::Rgb as RgbColor;
 use libghostty_vt::render::{
     CellIteration, CellIterator, Dirty, RowIteration, RowIterator, Snapshot,
 };
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::{
-    color::Rgb as RgbColor,
-    style::{Style, StyleColor, Underline},
-};
-use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
-use phux_protocol::render_pool::{RenderPool, RenderWalk};
+use phux_core::screen::{CellStyle, CursorState, RenderedFrame};
+use phux_vt::render_pool::{RenderPool, RenderWalk};
 
 use crate::error::RecordError;
 use crate::raster::Theme;
@@ -325,49 +322,12 @@ fn project_cell(cell: &CellIteration<'_, '_>) -> Result<(String, CellStyle), Rec
     } else {
         graphemes.iter().collect()
     };
-    let style = to_cell_style(
+    let style = phux_vt::cell_style(
         &cell.style().map_err(|err| replay_err("style", &err))?,
         cell.fg_color().map_err(|err| replay_err("fg", &err))?,
         cell.bg_color().map_err(|err| replay_err("bg", &err))?,
     );
     Ok((grapheme, style))
-}
-
-/// Project a libghostty cell's `(Style, resolved fg, resolved bg)` into a
-/// plain-data [`CellStyle`].
-fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> CellStyle {
-    CellStyle {
-        bold: style.bold,
-        faint: style.faint,
-        italic: style.italic,
-        underline: !matches!(style.underline, Underline::None),
-        blink: style.blink,
-        inverse: style.inverse,
-        invisible: style.invisible,
-        strikethrough: style.strikethrough,
-        overline: style.overline,
-        fg: cell_color(fg, style.fg_color),
-        bg: cell_color(bg, style.bg_color),
-    }
-}
-
-/// Project a cell colour, keeping a palette index as an index (the
-/// rasterizer resolves it through the recording's theme) and falling back to
-/// the resolved RGB.
-fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
-    match raw {
-        StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
-        StyleColor::Rgb(color) => CellColor::Rgb {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-        },
-        StyleColor::None => resolved.map_or(CellColor::Default, |color| CellColor::Rgb {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-        }),
-    }
 }
 
 #[cfg(test)]

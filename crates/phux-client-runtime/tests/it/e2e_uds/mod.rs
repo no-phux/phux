@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
 use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
+use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
-use phux_protocol::{GroupId, ResourceId};
-use phux_server_testkit::{recv_until, run_local, send_frame, spawn_server, wait_for_socket};
+use phux_server_testkit::{
+    Spawn, recv_until, run_local, send_frame, spawn_server, wait_for_socket,
+};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -26,6 +28,8 @@ use tokio::net::{UnixListener, UnixStream};
 const DEADLINE: Duration = Duration::from_secs(20);
 
 mod approvals_live;
+mod fixtures;
+use fixtures::*;
 #[cfg(feature = "engine")]
 mod geometry_live;
 #[cfg(feature = "engine")]
@@ -55,11 +59,8 @@ fn options() -> ClientOptions {
 /// Wall-clock poll for a predicate that has no delivery signal of its own
 /// (topology, input eligibility). [`DEADLINE`] is still the failure bound.
 async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !ready() {
-        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let poll = Duration::from_millis(10);
+    phux_server_testkit::eventually(what, DEADLINE, poll, || ready().then_some(())).await;
 }
 
 /// [`DEADLINE`] is idle time since the status last moved. The attach wait
@@ -250,10 +251,8 @@ impl Listener for Wakes {
 #[test]
 fn attaches_spawns_types_and_observes_the_published_frame() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        let live = Live::start();
+        let client = Runtime::connect(Target::uds(&live.socket), options()).expect("connect");
         let wakes = Arc::new(Wakes {
             count: AtomicUsize::new(0),
         });
@@ -294,8 +293,7 @@ fn attaches_spawns_types_and_observes_the_published_frame() {
 
         client.close();
         wait_for_status(&client, Status::Closed).await;
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }
 
@@ -339,31 +337,7 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
             matches!(frame, FrameKind::AttachReady { attach_id: 77 }).then_some(())
         })
         .await;
-        send_frame(
-            &mut controller,
-            &FrameKind::SpawnResource {
-                request_id: 87,
-                group: GroupId::new(1),
-                command: Some(vec!["/bin/cat".to_owned()]),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                resource: None,
-                initial_size: Some((40, 8)),
-            },
-        )
-        .await;
-        let beta_live = recv_until(&mut controller, |_, frame| match frame {
-            FrameKind::ResourceSpawned {
-                request_id: 87,
-                result: SpawnResult::Ok(id),
-            } => Some(id),
-            _ => None,
-        })
-        .await;
+        let beta_live = controller_spawn_cat(&mut controller, 87).await;
 
         let dials = Arc::new(AtomicUsize::new(0));
         let proxy_listener = UnixListener::bind(&proxy_socket).unwrap();
@@ -406,31 +380,7 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
         })
         .await;
 
-        send_frame(
-            &mut controller,
-            &FrameKind::SpawnResource {
-                request_id: 88,
-                group: GroupId::new(1),
-                command: Some(vec!["/bin/cat".to_owned()]),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                resource: None,
-                initial_size: Some((40, 8)),
-            },
-        )
-        .await;
-        let foreign = recv_until(&mut controller, |_, frame| match frame {
-            FrameKind::ResourceSpawned {
-                request_id: 88,
-                result: SpawnResult::Ok(id),
-            } => Some(id),
-            _ => None,
-        })
-        .await;
+        let foreign = controller_spawn_cat(&mut controller, 88).await;
         wait_until("foreign pane pickup", || client.input_ready(&foreign)).await;
         assert!(client.send_text(&foreign, "FOREIGN-PANE\n"));
         wait_for_text(&client, &foreign, "FOREIGN-PANE").await;
@@ -544,57 +494,6 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
         drop(shutdown);
         server.await.unwrap().unwrap();
     });
-}
-
-/// A Unix-socket relay to `server` that can turn every connection it has
-/// already accepted into a black hole: still open, never answering, the
-/// half-open link a dead NAT mapping or a stale USB forward leaves behind.
-/// Connections accepted after the freeze relay normally.
-fn freezable_relay(server: std::path::PathBuf, listen: &std::path::Path) -> Arc<AtomicUsize> {
-    // Connections with an index below this value are black-holed.
-    let frozen_below = Arc::new(AtomicUsize::new(0));
-    let listener = UnixListener::bind(listen).unwrap();
-    let freeze = Arc::clone(&frozen_below);
-    tokio::task::spawn_local(async move {
-        let mut index = 0usize;
-        while let Ok((client, _)) = listener.accept().await {
-            let Ok(upstream) = UnixStream::connect(&server).await else {
-                continue;
-            };
-            let this = index;
-            index += 1;
-            let (client_read, client_write) = client.into_split();
-            let (upstream_read, upstream_write) = upstream.into_split();
-            for (mut from, mut to) in [
-                (
-                    Box::new(client_read) as Box<dyn tokio::io::AsyncRead + Unpin>,
-                    Box::new(upstream_write) as Box<dyn tokio::io::AsyncWrite + Unpin>,
-                ),
-                (Box::new(upstream_read) as _, Box::new(client_write) as _),
-            ] {
-                let freeze = Arc::clone(&freeze);
-                tokio::task::spawn_local(async move {
-                    let mut buf = vec![0u8; 16 * 1024];
-                    loop {
-                        let Ok(n) = from.read(&mut buf).await else {
-                            return;
-                        };
-                        if n == 0 {
-                            return;
-                        }
-                        // Frozen: swallow the bytes and keep the socket open.
-                        if this < freeze.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        if to.write_all(&buf[..n]).await.is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-        }
-    });
-    frozen_below
 }
 
 /// An acknowledged line submitted into a half-open connection resolves
@@ -712,38 +611,6 @@ fn a_reused_terminal_id_publishes_the_new_incarnation_after_restart() {
         drop(shutdown);
         server.await.unwrap().unwrap();
     });
-}
-
-/// A listener that answers every WebSocket upgrade with 401: the pairing
-/// gate refusing a token, which no retry can change. Returns the port and
-/// the count of connections it accepted.
-async fn refuse_with_401() -> (u16, Arc<AtomicUsize>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&accepted);
-    tokio::task::spawn_local(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            counter.fetch_add(1, Ordering::SeqCst);
-            // Read the whole upgrade request before answering, so the
-            // client never sees a reset instead of the status line.
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                match stream.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => request.extend_from_slice(&buf[..read]),
-                }
-            }
-            let _ = stream
-                .write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await;
-            drop(stream);
-        }
-    });
-    (port, accepted)
 }
 
 #[test]

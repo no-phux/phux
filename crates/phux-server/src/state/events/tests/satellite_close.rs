@@ -14,12 +14,12 @@ fn kill(terminal: WireResourceId) -> Command {
 fn a_relayed_satellite_close_withdraws_holds_naming_it_before_the_close() {
     let satellite = WireResourceId::satellite("sat", 3);
     let mut state = ServerState::new();
-    let requester = state.new_client_id();
+    let requester = state.clients_mut().new_client_id();
     let mut opened = state
         .open_approval(requester, &kill(satellite.clone()))
         .expect("held");
     let id = opened.id;
-    let observer = state.new_client_id();
+    let observer = state.clients_mut().new_client_id();
     let (tx, mut rx) = mpsc::channel(8);
     state.subscribe_satellite_events(observer, satellite.clone(), EventFilter::all(), None, tx);
 
@@ -96,7 +96,7 @@ fn a_relayed_satellite_close_does_not_withdraw_holds_naming_another_terminal() {
     let satellite = WireResourceId::satellite("sat", 3);
     let local = pane(1);
     let mut state = ServerState::new();
-    let requester = state.new_client_id();
+    let requester = state.clients_mut().new_client_id();
     let mut local_hold = state
         .open_approval(requester, &kill(local))
         .expect("held locally");
@@ -118,7 +118,7 @@ fn a_relayed_satellite_close_does_not_withdraw_holds_naming_another_terminal() {
 fn a_relayed_non_close_does_not_withdraw_holds_naming_the_satellite() {
     let satellite = WireResourceId::satellite("sat", 3);
     let mut state = ServerState::new();
-    let requester = state.new_client_id();
+    let requester = state.clients_mut().new_client_id();
     let mut opened = state
         .open_approval(requester, &kill(satellite.clone()))
         .expect("held");
@@ -134,7 +134,7 @@ fn a_relayed_satellite_close_withdraws_a_batch_that_names_it() {
     let satellite = WireResourceId::satellite("sat", 3);
     let local = pane(1);
     let mut state = ServerState::new();
-    let requester = state.new_client_id();
+    let requester = state.clients_mut().new_client_id();
     let mut opened = state
         .open_approval(
             requester,

@@ -9,10 +9,11 @@
 //! players and balls by depth, confetti, and the shell's overlays: shirt
 //! numbers, the selection ring, name pills, press targets and the readout.
 
-use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::Ink;
 use super::playground::pen::{Pen, rgba};
-use super::{CAPTION, Ink, LABEL_STRONG, overlay, pressable};
+use super::playground::readout::{Picked, Readout, working};
 use crate::creature;
 use crate::desk::Desk;
 use crate::pitch::{AMBER, MINT, Mood, Pitch, Pt, RANKS, mix};
@@ -59,7 +60,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .filter(|(_, (shown, _))| *shown)
         .map(|(i, (_, alpha))| {
             full(el().key(format!("pitch-ground-{i}")))
-                .pixels(&desk.pitch.ground[i])
+                .pixels(&desk.pitch.backdrop.ground[i])
                 .opacity(alpha)
         });
 
@@ -69,7 +70,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .map(|([x, y], rad)| {
             el().absolute(x - rad, y - rad)
                 .size(2.0 * rad, 2.0 * rad)
-                .pixels(&desk.pitch.cloud)
+                .pixels(&desk.pitch.backdrop.cloud)
                 .opacity(0.09 * (1.0 - r.nt))
         });
     let mut air = Pen::new();
@@ -351,80 +352,31 @@ fn dozing<'a>(
 }
 
 fn readout(r: &Pitch, waiting: usize, p: &Ink) -> El {
-    let working = r
-        .players
-        .iter()
-        .filter(|q| q.who.mood == Mood::Working)
-        .count();
-    let picked = r.selected_player().map(|q| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            q.who.name,
-            q.who.mood.word(),
-            r.zone_of(q).host
-        );
+    let picked = r.selected_player().map(|q| Picked {
+        name: &q.who.name,
+        mood: q.who.mood,
+        host: &r.zone_of(q).host,
         // Its rank and work, when its machine publishes agent stats.
-        let card = q.who.work.map(|w| {
+        card: q.who.work.map(|w| {
             format!(
                 "Rank: {} · Work: {}",
                 RANKS[q.tier.min(4)],
                 creature::work_line(&w)
             )
-        });
-        pressable("pitch-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", q.who.name))
-            .on_press(Desk::open_player)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        }),
     });
-    let y = if r.h > 0.0 { r.h - 44.0 } else { 42.0 };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        r.zones.len(),
-                        r.players.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("pitch-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::pitch_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "pitch-close",
-            p,
-            Desk::close_pitch,
-        ))
+    let readout = Readout {
+        scene: "pitch",
+        hosts: r.zones.len(),
+        agents: r.players.len(),
+        working: working(r.players.iter().map(|q| q.who.mood)),
+        waiting,
+        h: r.h,
+        unlaid_y: 42.0,
+        picked,
+        open: Desk::open_player,
+        next_waiting: Desk::pitch_next_waiting,
+        close: Desk::close_pitch,
+    };
+    super::playground::readout::readout(readout, p)
 }

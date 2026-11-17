@@ -63,38 +63,24 @@ fn a_live_agent_session_leaves_the_idle_confirmation_to_the_screen() {
     );
 }
 
-/// The fail-safe idle does not overwrite a stream's `done`.
+/// The fail-safe idle does not overwrite a stream's `done`, nor a live
+/// stream's `working`: no-rule-matched is not evidence that the turn ended.
 #[test]
-fn the_fail_safe_idle_does_not_overwrite_a_streams_done() {
-    let mut h = Harness::new().past_grace();
-    h.session_open();
-    h.stream_says(DetectedState::Done);
-    for _ in 0..IDLE_CONFIRMATIONS.saturating_add(2) {
-        assert_eq!(h.tick("a screen no rule matches"), DetectOutcome::Quiet);
+fn the_fail_safe_idle_does_not_overwrite_the_streams_state() {
+    for said in [DetectedState::Done, DetectedState::Working] {
+        let mut h = Harness::new().past_grace();
+        h.session_open();
+        h.stream_says(said);
+        assert_eq!(h.state(), Some(said));
+        for _ in 0..IDLE_CONFIRMATIONS.saturating_add(2) {
+            assert_eq!(
+                h.tick("a screen no rule matches"),
+                DetectOutcome::Quiet,
+                "{said:?}"
+            );
+        }
+        assert_eq!(h.state(), Some(said), "the stream's {said:?} survives");
     }
-    assert_eq!(h.state(), Some(DetectedState::Done));
-}
-
-/// The fail-safe idle does not overwrite a live stream's `working`.
-#[test]
-fn the_fail_safe_idle_does_not_overwrite_a_live_stream() {
-    let mut h = Harness::new().past_grace();
-    h.session_open();
-    h.stream_says(DetectedState::Working);
-    assert_eq!(h.state(), Some(DetectedState::Working));
-
-    for _ in 0..IDLE_CONFIRMATIONS.saturating_add(2) {
-        assert_eq!(
-            h.tick("a screen no rule matches"),
-            DetectOutcome::Quiet,
-            "no-rule-matched is not evidence that the turn ended",
-        );
-    }
-    assert_eq!(
-        h.state(),
-        Some(DetectedState::Working),
-        "the stream's state survives the screen tick",
-    );
 }
 
 /// Even a positive idle does not talk over a stream still `working`.

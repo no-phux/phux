@@ -4,11 +4,6 @@ use phux_client_runtime::{
     control::{ControlOptions, ControlPlane},
 };
 use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{
-        BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt,
-        ServerFeatureExtSet,
-    },
     ids::{ArrangementKey, AuthorityId, ClientId, ResourceKey, ResourceKind, Revision, WindowId},
     wire::{
         frame::{
@@ -38,18 +33,7 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
     }));
     client.with_control(ControlPlane::connection_opened);
     outbound(&client);
-    client
-        .feed(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
-            server_id: vec![1; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        })
-        .unwrap();
+    client.feed(crate::wire_fixture::hello(1, true)).unwrap();
     let sent = outbound(&client);
     let attach_id = sent
         .iter()

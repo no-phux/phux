@@ -3,7 +3,7 @@
 //! `phux_launch`, `phux_archive`, and `phux_project_inspect` stay on the CLI
 //! residue (their reasons are in `crate::tool_table`); spawn, signal, tag,
 //! rename, and the spatial edits run in-process in `crate::pane_tools`,
-//! dispatched from here.
+//! registered from here.
 
 #![allow(
     clippy::similar_names,
@@ -16,7 +16,44 @@ use crate::cli_adapter::{
     CliAdapter, DEFAULT_CALL_TIMEOUT, bounded_string, bounded_strings, enum_string, push_socket,
     ratio,
 };
-use crate::tools::{ToolError, strict_object};
+use crate::pane_tools::{self, Spatial};
+use crate::tools::{ToolError, ToolSpec, strict_object};
+
+/// The orchestration tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::cli("phux_launch", launch_schema, |args, adapter| {
+        Box::pin(launch(args, adapter))
+    }),
+    ToolSpec::in_process("phux_spawn", spawn_schema, |args| {
+        Box::pin(pane_tools::spawn(args))
+    }),
+    ToolSpec::in_process("phux_signal", signal_schema, |args| {
+        Box::pin(pane_tools::signal(args))
+    }),
+    ToolSpec::in_process("phux_tag", tag_schema, |args| {
+        Box::pin(pane_tools::tag(args))
+    }),
+    ToolSpec::in_process("phux_rename", rename_schema, |args| {
+        Box::pin(pane_tools::rename(args))
+    }),
+    ToolSpec::in_process("phux_insert_pane", insert_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Insert))
+    }),
+    ToolSpec::in_process("phux_move_pane", move_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Move))
+    }),
+    ToolSpec::in_process("phux_swap_pane", swap_schema, |args| {
+        Box::pin(pane_tools::spatial(args, Spatial::Swap))
+    }),
+    ToolSpec::cli("phux_archive", archive_schema, |args, adapter| {
+        Box::pin(archive(args, adapter))
+    }),
+    ToolSpec::cli(
+        "phux_project_inspect",
+        project_inspect_schema,
+        |args, adapter| Box::pin(project_inspect(args, adapter)),
+    ),
+];
 
 pub(crate) fn string_schema() -> Value {
     json!({ "type": "string", "minLength": 1, "maxLength": 4096 })
@@ -39,7 +76,7 @@ pub(crate) fn schema(name: &str, description: &str, properties: Value, required:
     })
 }
 
-pub(crate) fn launch_schema() -> Value {
+fn launch_schema() -> Value {
     schema(
         "phux_launch",
         "Launch a configured agent integration, optionally placing it beside an exact local pane.",
@@ -58,7 +95,7 @@ pub(crate) fn launch_schema() -> Value {
     )
 }
 
-pub(crate) fn spawn_schema() -> Value {
+fn spawn_schema() -> Value {
     schema(
         "phux_spawn",
         "Spawn a Terminal without attaching; optional target/split/ratio performs explicit local placement.",
@@ -99,7 +136,7 @@ fn projection_key_schema() -> Value {
     })
 }
 
-pub(crate) fn signal_schema() -> Value {
+fn signal_schema() -> Value {
     schema(
         "phux_signal",
         "Send a process-group signal to exactly one target. terminate/kill/interrupt require confirm=true.",
@@ -120,7 +157,7 @@ pub(crate) fn signal_schema() -> Value {
     )
 }
 
-pub(crate) fn tag_schema() -> Value {
+fn tag_schema() -> Value {
     schema(
         "phux_tag",
         "List, add, or remove Terminal tags through the canonical phux tag command.",
@@ -134,7 +171,7 @@ pub(crate) fn tag_schema() -> Value {
     )
 }
 
-pub(crate) fn rename_schema() -> Value {
+fn rename_schema() -> Value {
     schema(
         "phux_rename",
         "Rename an existing session.",
@@ -171,7 +208,7 @@ fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool)
     schema(name, description, Value::Object(properties), roles)
 }
 
-pub(crate) fn insert_schema() -> Value {
+fn insert_schema() -> Value {
     spatial_schema(
         "phux_insert_pane",
         "Insert an already-created local pane beside an exact same-session target; never spawns.",
@@ -180,7 +217,7 @@ pub(crate) fn insert_schema() -> Value {
     )
 }
 
-pub(crate) fn move_schema() -> Value {
+fn move_schema() -> Value {
     spatial_schema(
         "phux_move_pane",
         "Move one exact local pane beside another, including across sessions.",
@@ -189,7 +226,7 @@ pub(crate) fn move_schema() -> Value {
     )
 }
 
-pub(crate) fn swap_schema() -> Value {
+fn swap_schema() -> Value {
     spatial_schema(
         "phux_swap_pane",
         "Swap two exact local pane leaves in the same session without changing focus.",
@@ -198,7 +235,7 @@ pub(crate) fn swap_schema() -> Value {
     )
 }
 
-pub(crate) fn archive_schema() -> Value {
+fn archive_schema() -> Value {
     schema(
         "phux_archive",
         "Export the running server's sessions as an archive document, or import an archive file: \
@@ -212,7 +249,7 @@ pub(crate) fn archive_schema() -> Value {
     )
 }
 
-pub(crate) fn project_inspect_schema() -> Value {
+fn project_inspect_schema() -> Value {
     schema(
         "phux_project_inspect",
         "Map a git repository and its checked-out worktrees. Local only: never contacts a \
@@ -220,33 +257,6 @@ pub(crate) fn project_inspect_schema() -> Value {
         json!({ "path": string_schema() }),
         &[],
     )
-}
-
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    use crate::pane_tools::{self, Spatial};
-    match name {
-        "phux_spawn" => pane_tools::spawn(args).await,
-        "phux_signal" => pane_tools::signal(args).await,
-        "phux_tag" => pane_tools::tag(args).await,
-        "phux_rename" => pane_tools::rename(args).await,
-        "phux_insert_pane" => pane_tools::spatial(args, Spatial::Insert).await,
-        "phux_move_pane" => pane_tools::spatial(args, Spatial::Move).await,
-        "phux_swap_pane" => pane_tools::spatial(args, Spatial::Swap).await,
-        residue => call_with_adapter(residue, args, &CliAdapter::for_residue(residue)?).await,
-    }
-}
-
-async fn call_with_adapter(
-    name: &str,
-    args: &Value,
-    adapter: &CliAdapter,
-) -> Result<Value, ToolError> {
-    match name {
-        "phux_launch" => launch(args, adapter).await,
-        "phux_archive" => archive(args, adapter).await,
-        "phux_project_inspect" => project_inspect(args, adapter).await,
-        other => Err(ToolError::new(format!("unknown CLI parity tool: {other}"))),
-    }
 }
 
 async fn launch(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
@@ -451,21 +461,9 @@ fn reject_present(args: &Value, keys: &[&str]) -> Result<(), ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use crate::cli_adapter::fake;
-
-    async fn assert_argv(
-        adapter: &CliAdapter,
-        log: &Path,
-        name: &str,
-        args: Value,
-        expected: &[&str],
-    ) {
-        call_with_adapter(name, &args, adapter).await.unwrap();
-        assert_eq!(fake::logged(log), expected, "{name}");
-    }
+    use crate::tools::call_with_adapter;
 
     #[tokio::test]
     async fn dispatch_validation_blocks_malformed_residue_calls_before_execution() {
@@ -500,7 +498,7 @@ mod tests {
     async fn residue_handlers_execute_the_exact_canonical_argv() {
         let (_temp, adapter, log) = fake::cli("printf '{}\\n'\n");
 
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_launch",
@@ -515,7 +513,7 @@ mod tests {
             ],
         )
         .await;
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_project_inspect",
@@ -523,7 +521,7 @@ mod tests {
             &["project", "inspect", "/repo", "--json"],
         )
         .await;
-        assert_argv(
+        fake::assert_argv(
             &adapter,
             &log,
             "phux_archive",

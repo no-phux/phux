@@ -31,7 +31,7 @@ credit reporters in the advisory unless you ask us not to.
 In scope:
 
 - the server (`phux server`) and its local, WebSocket and QUIC listeners
-- the relay (`phux-relay`)
+- the relay (`phux relay`, `phux_dial::relay`)
 - clients: the `phux` CLI and TUI, `phux-mcp`, Phux Rune, and the mobile
   client libraries
 - the install script (`https://phux.sh/install`, `scripts/install.sh`) and

@@ -1213,9 +1213,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_zero_timeout_against_a_silent_server_ends_at_the_floor() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("silent.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
-        let peer = tokio::spawn(crate::testkit::hold_silent(listener));
+        let (socket, peer) = crate::testkit::spawn_hold_silent(dir.path());
         let started = tokio::time::Instant::now();
         let mut resume = ResumeState::new(None);
         let outcome = watch_resumable(

@@ -117,16 +117,10 @@ fn focusing_an_unreviewed_done_pane_flips_seen_and_dirties_the_chrome() {
     // focus action itself produced, one iteration before the flip.
     let mut sidebar_painter = SidebarPainter::new(crate::render::Theme::default());
     let mut vcs = VcsIndex::default();
-    let theme = crate::render::Theme::default();
     let mut refresh = |painter: &mut SidebarPainter, panes: &HashMap<ResourceId, PaneSlot>| {
         let mut chrome = ChromeCtx {
-            viewport: (80, 24),
-            sidebar: None,
-            status_bar: None,
             sidebar_painter: Some(painter),
-            session_name: "",
-            theme: &theme,
-            leaves: &crate::attach::surface_leaf::LeafBook::default(),
+            ..ChromeCtx::bare((80, 24), "")
         };
         let scene = PaneScene {
             workspace: &workspace,

@@ -47,6 +47,55 @@ fn supervise<T: LinkTransport + 'static>(entry: HubEntry, transport: T) -> Super
     }
 }
 
+impl Supervised {
+    /// Wait under paused time until the link status satisfies `want`.
+    async fn wait(&self, want: impl Fn(&LinkStatus) -> bool) {
+        wait_for_status(&self.statuses, &self.host, want).await;
+    }
+
+    /// Wait under paused time until the link status is exactly `want`.
+    async fn reach(&self, want: LinkStatus) {
+        self.wait(|s| *s == want).await;
+    }
+
+    /// Real-time [`Self::wait`], for links over real sockets and programs.
+    async fn wait_real(&self, want: impl Fn(&LinkStatus) -> bool) {
+        transports::wait_for_real_status(&self.statuses, &self.host, want).await;
+    }
+
+    /// Real-time wait for a `Backoff` whose error contains every `needle`.
+    async fn backoff_real(&self, needles: &[&str]) {
+        self.wait_real(|s| backoff_mentions(s, needles)).await;
+    }
+}
+
+/// Run `body` on a fresh `LocalSet`; the supervisor spawns locally.
+#[allow(
+    clippy::future_not_send,
+    reason = "the scripted link is Rc-backed and runs only on a LocalSet"
+)]
+async fn on_local(body: impl std::future::Future<Output = ()>) {
+    tokio::task::LocalSet::new().run_until(body).await;
+}
+
+/// The `Backoff` status after failed attempt `attempt`.
+fn backoff(attempt: u32, retry_in: Duration, last_error: &str) -> LinkStatus {
+    LinkStatus::Backoff {
+        attempt,
+        retry_in,
+        last_error: last_error.to_owned(),
+    }
+}
+
+/// Whether `status` is a `Backoff` whose error contains every `needle`.
+fn backoff_mentions(status: &LinkStatus, needles: &[&str]) -> bool {
+    matches!(
+        status,
+        LinkStatus::Backoff { last_error, .. }
+            if needles.iter().all(|needle| last_error.contains(needle))
+    )
+}
+
 /// A satellite on any minor or patch of the hub's major is linked; only
 /// a different major is refused.
 #[test]
@@ -82,90 +131,57 @@ fn link_admits_any_minor_and_patch_of_the_hubs_major() {
 /// refuses the redial (`docs/remote.md#managing-credentials`).
 #[tokio::test(flavor = "current_thread")]
 async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let tokens = dir.path().join("satellite-tokens");
-            let secret = [0x5a; crate::auth::TOKEN_LEN];
-            crate::auth::write_test_credential(&tokens, &secret);
-            let store = std::sync::Arc::new(
-                crate::auth::ReloadingTokenStore::load(tokens.clone()).expect("store"),
-            );
-            let listener = crate::transport::WsListener::loopback_with_tokens(store)
+    on_local(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tokens = dir.path().join("satellite-tokens");
+        let secret = [0x5a; crate::auth::TOKEN_LEN];
+        crate::auth::write_test_credential(&tokens, &secret);
+        let store = std::sync::Arc::new(
+            crate::auth::ReloadingTokenStore::load(tokens.clone()).expect("store"),
+        );
+        let listener = crate::transport::WsListener::loopback_with_tokens(store)
+            .await
+            .expect("bind satellite");
+        let port = listener.local_addr().expect("addr").port();
+        let satellite = crate::state::SharedState::new();
+        // The bearer's revocation is under test, not the grant: an
+        // embedder engine admits the link (ADR-0072).
+        satellite.with_mut(|s| {
+            s.config_mut().policy_engine = std::sync::Arc::new(crate::policy::OwnerForAll);
+        });
+        let satellite_root = CancellationToken::new();
+        let accept_state = satellite.clone();
+        let accept_root = satellite_root.clone();
+        tokio::task::spawn_local(async move {
+            crate::runtime::connections::accept_loop(&listener, accept_state, accept_root, None)
                 .await
-                .expect("bind satellite");
-            let port = listener.local_addr().expect("addr").port();
-            let satellite = crate::state::SharedState::new();
-            // The bearer's revocation is under test, not the grant: an
-            // embedder engine admits the link (ADR-0072).
-            satellite.with_mut(|s| {
-                s.set_policy_engine(std::sync::Arc::new(crate::policy::OwnerForAll));
-            });
-            let satellite_root = CancellationToken::new();
-            let accept_state = satellite.clone();
-            let accept_root = satellite_root.clone();
-            tokio::task::spawn_local(async move {
-                crate::runtime::connections::accept_loop(&listener, accept_state, accept_root, None)
-                    .await
-            });
-            crate::runtime::revocation::spawn_revocation_watcher(&satellite, &satellite_root);
+        });
+        crate::runtime::revocation::spawn_revocation_watcher(&satellite, &satellite_root);
 
-            let token_file = dir.path().join("link.token");
-            std::fs::write(&token_file, hex::encode(secret)).expect("write link token");
-            let statuses = HubLinkStatuses::default();
-            let cancel = CancellationToken::new();
-            let host = host();
-            let (_relay, relay_rx) = relay_pair(&host);
-            tokio::task::spawn_local(run_link(
-                host.clone(),
-                entry(
-                    &format!("ws://127.0.0.1:{port}"),
-                    Some(token_file.to_str().expect("utf8 path")),
-                    None,
-                ),
-                NetLinkTransport::new("ssh".into(), crate::hub::adopt::SatelliteAdopter::default()),
-                statuses.clone(),
-                relay_rx,
-                cancel.child_token(),
-            ));
-            wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+        let token_file = dir.path().join("link.token");
+        std::fs::write(&token_file, hex::encode(secret)).expect("write link token");
+        let link = supervise(
+            entry(
+                &format!("ws://127.0.0.1:{port}"),
+                Some(token_file.to_str().expect("utf8 path")),
+                None,
+            ),
+            transports::net_transport("ssh"),
+        );
+        link.reach(LinkStatus::Connected).await;
 
-            crate::auth::revoke_credential(&tokens, "test-credential").expect("revoke");
-            wait_for_status(&statuses, &host, |s| {
-                matches!(s, LinkStatus::Backoff { .. })
-            })
-            .await;
-            // The redial presents the revoked token and is refused.
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-            assert_ne!(
-                statuses.get(&host),
-                Some(LinkStatus::Connected),
-                "a revoked link token must not reconnect"
-            );
+        crate::auth::revoke_credential(&tokens, "test-credential").expect("revoke");
+        link.wait(|s| matches!(s, LinkStatus::Backoff { .. })).await;
+        // The redial presents the revoked token and is refused.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_ne!(
+            link.statuses.get(&link.host),
+            Some(LinkStatus::Connected),
+            "a revoked link token must not reconnect"
+        );
 
-            cancel.cancel();
-            satellite_root.cancel();
-        })
-        .await;
+        link.cancel.cancel();
+        satellite_root.cancel();
+    })
+    .await;
 }
-
-// --- dial-target selection ----------------------------------------
-
-// --- fail-closed matrix ---------------------------------------------
-
-// --- ssh-stdio planning and argv (phux-v45.9) ------------------------
-
-// --- token file -----------------------------------------------------
-
-// --- stderr tail ------------------------------------------------------
-
-// --- backoff ----------------------------------------------------------
-
-// --- supervisor (scripted transport, no network) ---------------------
-
-// --- loopback integration: the real transport over a real socket -----
-
-// --- ssh-stdio through the real transport against a stub `$PHUX_SSH`,
-// which records its argv; its exit is the drop signal. The bridge half
-// is covered by `crates/phux/tests/fleet/stdio_bridge_e2e.rs`.

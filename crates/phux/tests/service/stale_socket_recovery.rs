@@ -10,15 +10,10 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::support::{LiveServer, phux_on};
+
 const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
-
-/// Kill whatever server ended up on `socket` (its pid comes from
-/// `phux status --json`), so a failed assertion cannot leak a daemon.
-struct Cleanup {
-    _server: common::AutoSpawnedServer,
-    _dir: tempfile::TempDir,
-}
 
 /// A socket file with no listener, as a `SIGKILL`ed server leaves; refusal
 /// is polled because a just-closed listener can still accept off the backlog.
@@ -46,15 +41,10 @@ fn leave_stale_socket(path: &Path) {
 /// report a dead socket to the user.
 #[test]
 fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
+    let (dir, socket) = LiveServer::cold();
     leave_stale_socket(&socket);
 
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "revived", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
+    let out = phux_on(&socket, &["new", "--session", "revived", "--json"]);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -62,12 +52,8 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
         out.status.success(),
         "a stale socket must not be fatal.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let mut server = LiveServer::guard(dir, socket.clone());
+    server.pid();
     assert!(
         stdout.contains("\"session\": \"revived\""),
         "the session should have been created on a freshly spawned server.\n\
@@ -83,29 +69,16 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
 /// socket.
 #[test]
 fn a_second_invocation_reuses_the_live_server() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
+    let (dir, socket) = LiveServer::cold();
     leave_stale_socket(&socket);
 
-    let first = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "first", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new (first)");
+    let first = phux_on(&socket, &["new", "--session", "first", "--json"]);
     assert!(first.status.success(), "first invocation must succeed");
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let mut server = LiveServer::guard(dir, socket.clone());
+    server.pid();
 
-    let second = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "second", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new (second)");
+    let second = phux_on(&socket, &["new", "--session", "second", "--json"]);
     assert!(
         second.status.success(),
         "second invocation must succeed against the live server.\nstderr: {}",
@@ -114,11 +87,7 @@ fn a_second_invocation_reuses_the_live_server() {
 
     // Both sessions live on ONE server — proof the second run reused it
     // rather than reaping the socket and starting a replacement.
-    let listed = common::phux_cmd(crate::runner::phux_bin())
-        .args(["ls", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux ls");
+    let listed = phux_on(&socket, &["ls"]);
     let sessions = String::from_utf8_lossy(&listed.stdout);
     assert!(
         sessions.contains("first") && sessions.contains("second"),
@@ -131,15 +100,10 @@ fn a_second_invocation_reuses_the_live_server() {
 /// name) succeeds rather than colliding with a seed the CLI itself made.
 #[test]
 fn headless_new_on_a_cold_socket_creates_only_the_requested_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
+    let (dir, socket) = LiveServer::cold();
 
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "default", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
+    let out = phux_on(&socket, &["new", "--session", "default", "--json"]);
+    let mut server = LiveServer::guard(dir, socket.clone());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -147,17 +111,9 @@ fn headless_new_on_a_cold_socket_creates_only_the_requested_session() {
         "`new -s default` on a cold socket must not collide with a seed.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    server.pid();
 
-    let listed = common::phux_cmd(crate::runner::phux_bin())
-        .args(["ls", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux ls");
+    let listed = phux_on(&socket, &["ls", "--json"]);
     let listed: serde_json::Value =
         serde_json::from_slice(&listed.stdout).expect("ls --json is JSON");
     let names: Vec<&str> = listed["sessions"]
@@ -173,30 +129,21 @@ fn headless_new_on_a_cold_socket_creates_only_the_requested_session() {
 /// and test guards send SIGTERM).
 #[test]
 fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("phux.sock");
+    let (dir, socket) = LiveServer::cold();
 
     // The guard matters even though the body ends by stopping the server: an
     // assertion that fails before the SIGTERM would otherwise leak a daemon
     // holding a PTY (phux-whhd). It is idempotent against an already-stopped
     // server -- `status` then reports no pid and the guard returns.
-    let out = common::phux_cmd(crate::runner::phux_bin())
-        .args(["new", "--session", "graceful", "--json", "--socket"])
-        .arg(&socket)
-        .output()
-        .expect("run phux new");
+    let out = phux_on(&socket, &["new", "--session", "graceful", "--json"]);
     assert!(
         out.status.success(),
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
-    let pid = server.capture_pid();
-    let _cleanup = Cleanup {
-        _server: server,
-        _dir: dir,
-    };
+    let mut server = LiveServer::guard(dir, socket.clone());
+    let pid = server.pid();
 
     common::terminate(pid);
 

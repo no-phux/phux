@@ -216,15 +216,7 @@ async fn run_approved(ctx: &CommandContext, request_id: u32, command: Command) {
 /// The deferred result waits for mailbox capacity rather than being
 /// dropped; a closed connection is owed nothing.
 async fn reply(out_tx: &mpsc::Sender<Outbound>, request_id: u32, code: ErrorCode, message: &str) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code,
-                message: message.to_owned(),
-            },
-        }))
-        .await;
+    super::reply::send(out_tx, request_id, CommandResult::error(code, message)).await;
 }
 
 struct ReleaseJoinOnDrop {

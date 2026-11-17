@@ -375,7 +375,7 @@ mod tests {
                     transport,
                     ..crate::runtime::test_support::owner_peer()
                 };
-                state.with_mut(|s| s.set_peer_identity(ClientId(1), peer));
+                state.with_mut(|s| s.clients_mut().set_peer_identity(ClientId(1), peer));
             }
             let SpawnError::SpawnFailed(message) =
                 refusal(reply_in(&state, document_request(), profile).await)
@@ -386,7 +386,8 @@ mod tests {
         }
         let state = SharedState::new();
         state.with_mut(|s| {
-            s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+            s.clients_mut()
+                .set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
         });
         assert_eq!(
             refusal(reply_in(&state, document_request(), profile).await),

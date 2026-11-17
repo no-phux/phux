@@ -91,7 +91,7 @@ fn a_locked_tab_refuses_a_kill_until_unlocked() {
         let (key, wire_pane) = state.with_mut(|s| {
             let record = s.registry().session(session).unwrap();
             let key = ow::arrangement_key(record.arrangement.unwrap()).unwrap();
-            (key, s.intern_resource_wire(pane))
+            (key, s.idspace.intern_resource(pane))
         });
         let get = || match handle(
             &state,
@@ -124,7 +124,7 @@ fn a_locked_tab_refuses_a_kill_until_unlocked() {
             matches!(kill().await, CommandResult::Error { message, .. } if message.contains("locked"))
         );
         assert!(
-            state.with(|s| s.resource_from_wire(&wire_pane).is_some()),
+            state.with(|s| s.idspace.resource_from_wire(&wire_pane).is_some()),
             "nothing was killed"
         );
 

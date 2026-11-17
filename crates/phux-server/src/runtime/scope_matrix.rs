@@ -10,16 +10,16 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::ids::{GroupId, ResourceId as WireResourceId};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::TransportType;
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, Scope, SpawnResult, WHOAMI_KEY,
 };
 use tokio_util::sync::CancellationToken;
 
-use super::test_support::{Feed, Wire, encode, workload_identity};
-use crate::auth::AuthenticatedCredential;
-use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use super::test_support::{Feed, Wire, command, encode, workload_identity};
+use crate::policy::testing::FnPolicy;
+use crate::policy::{PolicyEngine, ScopedPolicy};
 use crate::runtime::apps::InputLane;
 use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, SharedState};
@@ -29,24 +29,6 @@ mod guard;
 mod inventory;
 
 const CLIENT: ClientId = ClientId(21);
-
-/// Mints the same scoped grant for every connection: the shape a
-/// HELLO-requested attenuation would produce, including Group and Terminal
-/// selectors no registry record may hold.
-#[derive(Debug)]
-struct FixedGrant(TerminalScopeSet);
-
-impl PolicyEngine for FixedGrant {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let grant = ConnectionGrant::scoped(self.0.clone(), credential.map(|c| c.id.clone()))
-            .map_err(|err| PolicyError::Internal(err.to_string()));
-        Box::pin(async move { grant })
-    }
-}
 
 /// The ids a test's scopes may need to name.
 struct Topology {
@@ -59,7 +41,9 @@ struct Topology {
 enum Engine {
     /// The `paired` engine over a real registry file.
     Registry,
-    /// [`FixedGrant`].
+    /// [`FnPolicy::scoped_set`]: the same scoped grant for every
+    /// connection, the shape a HELLO-requested attenuation would produce,
+    /// including Group and Terminal selectors no registry record may hold.
     Fixed,
 }
 
@@ -83,8 +67,8 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
     let (alpha, beta, alpha_group) = state.with_mut(|s| {
         let (alpha_session, alpha_core) = s.seed_session("alpha");
         let (_, beta_core) = s.seed_session("beta");
-        let alpha = s.intern_resource_wire(alpha_core);
-        let beta = s.intern_resource_wire(beta_core);
+        let alpha = s.idspace.intern_resource(alpha_core);
+        let beta = s.idspace.intern_resource(beta_core);
         (alpha, beta, s.idspace.intern_session(alpha_session).get())
     });
     let WireResourceId::Local { id: alpha_id } = alpha else {
@@ -107,12 +91,13 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
         Engine::Fixed => {
             let set = TerminalScopeSet::parse_all(&scopes).unwrap();
             let id = format!("sha256:{}", "f".repeat(64));
-            (id, Arc::new(FixedGrant(set)))
+            (id, Arc::new(FnPolicy::scoped_set(set)))
         }
     };
     state.with_mut(|s| {
-        s.set_policy_engine(policy);
-        s.set_connection_identity(CLIENT, workload_identity(&id, &["*@global"]));
+        s.config_mut().policy_engine = policy;
+        s.clients_mut()
+            .set_connection_identity(CLIENT, workload_identity(&id, &["*@global"]));
     });
     Fixture {
         _dir: dir,
@@ -125,13 +110,6 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
 
 fn script(frames: &[FrameKind]) -> Vec<BytesMut> {
     frames.iter().map(encode).collect()
-}
-
-fn command(request_id: u32, command: Command) -> FrameKind {
-    FrameKind::Command {
-        request_id,
-        command,
-    }
 }
 
 fn get_screen(request_id: u32, terminal_id: WireResourceId) -> FrameKind {

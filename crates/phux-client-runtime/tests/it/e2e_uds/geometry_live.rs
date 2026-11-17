@@ -37,16 +37,12 @@ async fn geometry(client: &Client, terminal: &ResourceId, size: (u16, u16)) {
 #[test]
 fn targeted_geometry_and_observer_reconnect_use_authoritative_server_frames() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("geometry.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
-        let owner = Runtime::connect(Target::uds(&socket), options()).unwrap();
-        wait_for_status(&owner, Status::Attached).await;
+        let live = Live::start();
+        let owner = live.attached(options()).await;
         let first = spawn_cat(&owner).await;
         let second = spawn_cat(&owner).await;
 
-        let desktop = Runtime::connect(Target::uds(&socket), resource_options(None)).unwrap();
-        wait_for_status(&desktop, Status::Attached).await;
+        let desktop = live.attached(resource_options(None)).await;
         assert_ne!(desktop.attach_terminal_preserving_geometry(&first), 0);
         subscribed(&desktop, &first).await;
         assert_ne!(desktop.attach_terminal_preserving_geometry(&second), 0);
@@ -59,12 +55,9 @@ fn targeted_geometry_and_observer_reconnect_use_authoritative_server_frames() {
         geometry(&desktop, &second, (40, 8)).await;
         geometry(&owner, &second, (40, 8)).await;
 
-        let observer = Runtime::connect(
-            Target::uds(&socket),
-            resource_options(Some(RolePolicy::VIEWER)),
-        )
-        .unwrap();
-        wait_for_status(&observer, Status::Attached).await;
+        let observer = live
+            .attached(resource_options(Some(RolePolicy::VIEWER)))
+            .await;
         assert_ne!(observer.attach_terminal_preserving_geometry(&first), 0);
         subscribed(&observer, &first).await;
         geometry(&observer, &first, (55, 9)).await;
@@ -79,7 +72,6 @@ fn targeted_geometry_and_observer_reconnect_use_authoritative_server_frames() {
         observer.close();
         desktop.close();
         owner.close();
-        drop(shutdown);
-        server.await.unwrap().unwrap();
+        live.stop().await;
     });
 }

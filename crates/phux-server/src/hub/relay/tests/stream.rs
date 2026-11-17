@@ -9,13 +9,7 @@ fn session_retags_subscribed_streams_local_to_satellite() {
     subscribe(&mut session, 9, ClientId(1), out_tx);
 
     session.feed(&agent_event(9));
-    session.feed(&FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(9),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-        seq: 42,
-        bytes: bytes::Bytes::from_static(b"hi"),
-    });
+    session.feed(&output_frame(9, 42, b"hi"));
     // A different terminal: nothing must reach the subscriber.
     session.feed(&agent_event(10));
 
@@ -55,12 +49,7 @@ fn terminal_closed_retags_and_drops_the_proxy_subscription() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (out_tx, mut out_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, ClientId(1), out_tx);
-    session.feed(&FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(9),
-        exit_status: Some(0),
-        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        signal: None,
-    });
+    session.feed(&closed_frame(9));
     let frame = next_frame(&mut out_rx, "closed fanned out");
     assert_eq!(
         frame,
@@ -85,12 +74,7 @@ fn terminal_close_follows_retained_output_before_subscription_removal() {
         .try_send(Outbound::Frame(FrameKind::Detach))
         .expect("fill downstream mailbox");
     session.fan_out(9, &output_frame(9, 2, b"before-close"));
-    session.feed(&FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(9),
-        exit_status: Some(0),
-        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        signal: None,
-    });
+    session.feed(&closed_frame(9));
     assert!(session.subscribers.contains_key(&9));
 
     let _ = out_rx.try_recv().expect("filler");
@@ -120,12 +104,7 @@ fn idempotent_reattach_cannot_cancel_a_queued_terminal_close() {
         .expect("fill old mailbox");
     subscribe(&mut session, 9, ClientId(1), old_tx);
     session.fan_out(9, &output_frame(9, 2, b"before-close"));
-    session.feed(&FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(9),
-        exit_status: Some(0),
-        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        signal: None,
-    });
+    session.feed(&closed_frame(9));
 
     let (new_tx, mut new_rx) = mpsc::channel(2);
     let registration = session.register_subscriber(ProxySubscription {
@@ -166,12 +145,7 @@ fn close_overflow_fences_the_terminal_generation_without_detaching_closed_upstre
     session.retained_bytes = MAX_RELAY_SUBSCRIBER_RETAINED_BYTES;
     session.retained_frames = 1;
 
-    session.feed(&FrameKind::ResourceClosed {
-        terminal_id: ResourceId::local(9),
-        exit_status: Some(0),
-        reason: phux_protocol::wire::frame::CloseReason::Unknown,
-        signal: None,
-    });
+    session.feed(&closed_frame(9));
     let SnapshotGate::Retiring {
         failure,
         detach_upstream,

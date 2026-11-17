@@ -16,11 +16,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use phux_config::socket::default_socket_path;
 use phux_protocol::wire::LENGTH_PREFIX_LEN;
 use phux_protocol::wire::frame::TYPE_PING;
 use phux_protocol::wire::framing::decode_length;
 use phux_protocol::wire::ssh_origin::{SshOrigin, restamp_hello};
-use phux_server::runtime::default_socket_path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // Idle reads are unlimited. A wedged peer must not keep the bridge alive

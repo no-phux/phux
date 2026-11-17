@@ -48,12 +48,15 @@ fn launch(
         return;
     };
     let result = if spec.kind() == kind {
-        crate::runtime::apps::app_for(kind).launch(crate::runtime::apps::ResourceLaunch {
-            state,
-            resource: id,
-            spec,
-            root_token,
-        })
+        crate::runtime::apps::launch(
+            kind,
+            crate::runtime::apps::ResourceLaunch {
+                state,
+                resource: id,
+                spec,
+                root_token,
+            },
+        )
     } else {
         Err("committed resource kind and launch spec disagree".to_owned())
     };
@@ -105,7 +108,7 @@ fn terminate(
 ) {
     let live = state.with_mut(|s| {
         let id = s.registry().resource_id(&resource)?;
-        s.resource_handle(id)?;
+        s.resources().handle(id)?;
         if mode == phux_core::TerminateMode::Force {
             kill_group(proc, nix::sys::signal::Signal::SIGKILL);
         }

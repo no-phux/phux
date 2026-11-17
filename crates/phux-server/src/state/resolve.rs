@@ -99,13 +99,13 @@ impl ServerState {
     /// `Local` requires both an interned id and a registered handle.
     pub(crate) fn resolve_resource(&self, wire: &WireResourceId) -> Resolved<'_> {
         if let Some((host, id)) = crate::hub::relay::satellite_route(wire) {
-            let relay = self.hub_relay(&host);
+            let relay = self.federation().relay(&host);
             return Resolved::Remote(RelayRoute { host, id, relay });
         }
-        let Some(id) = self.resource_from_wire(wire) else {
+        let Some(id) = self.idspace.resource_from_wire(wire) else {
             return Resolved::Unknown;
         };
-        let Some(handle) = self.resource_handle(id) else {
+        let Some(handle) = self.resources().handle(id) else {
             return Resolved::Unknown;
         };
         Resolved::Local(LocalResource { id, handle })
@@ -171,7 +171,7 @@ mod tests {
         let relays = HubRelays::default();
         let (relay, _mailbox) = RelayHandle::new(host);
         relays.insert(relay);
-        server.set_hub_relays(relays);
+        server.federation_mut().set_relays(relays);
         match server.resolve_resource(&satellite_id) {
             Resolved::Remote(route) => assert!(
                 route.relay.is_some(),

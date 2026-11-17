@@ -8,13 +8,16 @@
 
 use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::ids::ResourceKind;
-use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError, SpawnResource};
+use phux_protocol::wire::frame::{SpawnError, SpawnResource};
 use tracing::debug;
 
 use super::attach::attach_agent_session;
 use crate::mailbox::Outbound;
 use crate::runtime::apps::ResourceSpawn;
-use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
+use crate::runtime::apps::producer_stream::{
+    SpawnFinish, SpawnedChild, finish_spawn, register_spawned_child,
+};
+use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn};
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::AgentSessionActor;
 /// Validate parent ownership and fitness in the same state borrow that
@@ -32,7 +35,7 @@ fn validate_agent_parent(
             "an SDK-owned guardian reserves one native source; external hook sources cannot bind it".into(),
         ));
     }
-    let Some(handle) = state.resource_handle(parent) else {
+    let Some(handle) = state.resources().handle(parent) else {
         return Err(SpawnError::ParentNotFound);
     };
     if !crate::runtime::apps::spawn::supervises_producers(handle) {
@@ -47,7 +50,8 @@ async fn bind_agent_stream(
     handle: &crate::resource::ResourceHandle,
 ) {
     let agent_parent = state.with(|s| {
-        s.resource_handle(parent)
+        s.resources()
+            .handle(parent)
             .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
             .cloned()
     });
@@ -70,21 +74,9 @@ async fn bind_agent_stream(
 /// `AgentSession` parent is `ParentKindMismatch`, ADR-0104 §5); a
 /// satellite-addressed spawn is relayed with the parent reduced to the
 /// satellite's `Local` space (ADR-0104 §6).
-#[allow(clippy::too_many_lines)]
 pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
-    let ResourceSpawn {
-        state,
-        client_id,
-        request_id,
-        resource,
-        satellite,
-        out_tx,
-        root_token,
-        limits: bootstrap_limits,
-        connection_token,
-        decodes,
-        ..
-    } = spawn;
+    let (state, client_id, request_id) = (spawn.state, spawn.client_id, spawn.request_id);
+    let (resource, out_tx) = (spawn.resource, spawn.out_tx);
     let Some(provider) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
         refuse_spawn(
             out_tx,
@@ -99,7 +91,7 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         return;
     };
 
-    if let Some(host) = satellite {
+    if let Some(host) = spawn.satellite {
         relay_agent_session_spawn(
             state, client_id, request_id, resource, host, &parent, out_tx,
         )
@@ -108,19 +100,41 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
     }
 
     // A `Satellite` parent without a `satellite` route is not ours.
-    let Some((core_parent, wire_parent)) = state.with(|s| {
+    let core_parent = state.with(|s| {
         parent
             .is_local()
-            .then(|| s.resource_from_wire(&parent))
+            .then(|| s.idspace.resource_from_wire(&parent))
             .flatten()
-            .map(|core| (core, parent.clone()))
-    }) else {
+    });
+    let Some(core_parent) = core_parent else {
         debug!(?client_id, request_id, %parent, "SPAWN_RESOURCE: agent session parent not found");
         refuse_spawn(out_tx, request_id, SpawnError::ParentNotFound).await;
         return;
     };
+    spawn_local_session(spawn, provider, core_parent, parent).await;
+}
 
-    let log_bytes = state.with(crate::state::ServerState::agent_log_bytes);
+/// Build, register and answer an admitted local session spawn under
+/// `core_parent` (`wire_parent` on the wire).
+async fn spawn_local_session(
+    spawn: ResourceSpawn<'_>,
+    provider: &str,
+    core_parent: phux_core::ids::ResourceId,
+    wire_parent: phux_protocol::ids::ResourceId,
+) {
+    let ResourceSpawn {
+        state,
+        client_id,
+        request_id,
+        resource,
+        out_tx,
+        root_token,
+        limits: bootstrap_limits,
+        connection_token,
+        decodes,
+        ..
+    } = spawn;
+    let log_bytes = state.with(|s| s.config().agent_log_bytes);
     let token = root_token.child_token();
     let bundle = AgentSessionActor::build(
         core_parent,
@@ -145,34 +159,18 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
                 &actor,
             )
             .map_err(|_| SpawnError::ParentNotFound)?;
-        let wire = s
-            .spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run())
-            .map_err(|error| {
-                s.reap_resource(core);
-                SpawnError::SpawnFailed(error.to_string())
-            })?;
-        // Journaled before the exit watcher exists (ADR-0123), and fanned out
-        // to the parent's subscribers too: nobody can be subscribed to a
-        // resource they are hearing about for the first time.
-        let announcement = crate::state::EventRecord::new(
-            Some(wire.clone()),
-            AgentEvent::ResourceSpawned {
-                kind: ResourceKind::AgentSession,
-                parent: Some(wire_parent.clone()),
-            },
-        )
-        .with_parent(Some(wire_parent.clone()))
-        .with_actor(Some(client_id))
-        .with_operation_id(resource.idempotency_key);
-        let _ = s.record_and_fanout(announcement);
-        // ADR-0126: the key binds in the step that registers the session.
-        crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
-        // ADR-0109: provenance before the spawner's own subscription.
-        s.record_spawn(core, client_id);
-        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
-        // ADR-0127: a session attached as `VIEWER` watches its spawns too.
-        s.mark_if_viewer_session(client_id, &wire);
-        Ok((core, wire))
+        let child = SpawnedChild {
+            core,
+            handle: bundle.handle.clone(),
+            token,
+            actor: bundle.actor.run(),
+            kind: ResourceKind::AgentSession,
+            parent: &wire_parent,
+            client_id,
+            idempotency_key: resource.idempotency_key,
+            out_tx,
+        };
+        register_spawned_child(s, child).map(|wire| (core, wire))
     });
     let (core_session, wire_session) = match registered {
         Ok(pair) => pair,
@@ -182,31 +180,19 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
         }
     };
 
-    crate::runtime::connections::spawn_resource_exit_watcher(
-        state.clone(),
-        core_session,
-        Some(bundle.exit_notify),
-        root_token.clone(),
-        None,
-    );
-
+    let finish = SpawnFinish {
+        state,
+        request_id,
+        out_tx,
+        root_token,
+        bind_instance: resource.bind_instance,
+        decodes,
+        kind: ResourceKind::AgentSession,
+    };
     // ADR-0103 §6: the parent's `REPORT_AGENT_STATE` now lands on this stream.
-    bind_agent_stream(state, core_parent, &bundle.handle).await;
-
-    let instance = resource
-        .bind_instance
-        .then(|| state.with(|s| s.idspace.instance()));
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::ResourceSpawned {
-            request_id,
-            result: spawned_result(wire_session.clone(), instance),
-        }))
-        .await;
-    // The subscription alone forwards nothing: run the (empty) bootstrap and
-    // live pump the `ATTACH_RESOURCE` path runs. One whose `HELLO` does not
-    // list the kind stays its producer, streamed nothing.
-    if decodes.contains(phux_protocol::ids::ResourceKind::AgentSession) {
-        let _ = attach_agent_session(
+    let bind = async || bind_agent_stream(state, core_parent, &bundle.handle).await;
+    let attach = async || {
+        attach_agent_session(
             state,
             client_id,
             &wire_session,
@@ -217,8 +203,17 @@ pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
             connection_token,
             None,
         )
-        .await;
-    }
+        .await
+    };
+    finish_spawn(
+        finish,
+        core_session,
+        &wire_session,
+        bundle.exit_notify,
+        bind,
+        attach,
+    )
+    .await;
     debug!(
         ?client_id,
         request_id,

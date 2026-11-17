@@ -161,7 +161,7 @@ fn write_file(path: &Path, body: &str) -> Result<(), String> {
 /// Where this integration keeps its state: under the phux state directory,
 /// so each profile has its own.
 fn state_root() -> PathBuf {
-    phux_server::telemetry::state_dir().join("minimal")
+    phux_config::instance::state_dir().join("minimal")
 }
 
 pub(super) fn registry_path() -> PathBuf {

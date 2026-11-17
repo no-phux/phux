@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
+use crate::render::chrome::status_bar::widgets::WindowInfo;
 use phux_client::agent_meta::AgentRecord;
 use phux_config::plugin::PluginManifest;
-use phux_config::widget::WindowInfo;
 use phux_protocol::ids::ResourceId;
 
 use crate::attach::pane_state::PaneSlot;

@@ -35,7 +35,7 @@ async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
         let listener = tempfile::tempfile().unwrap();
         let dir = tempfile::tempdir().unwrap();
         state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 listener.as_raw_fd(),
                 dir.path().join("phux.sock"),
                 RuntimeFlags {
@@ -65,7 +65,7 @@ async fn upgrade_capture_names_what_no_client_has_read() {
         s.register_resource_handle(pane, bundle.handle, bundle.token)
             .unwrap();
         let _ = s.seed_empty_session("empty").expect("seed");
-        s.set_upgrade_context(
+        s.lifecycle_mut().set_upgrade_context(
             7,
             PathBuf::from("/nonexistent/phux.sock"),
             RuntimeFlags::default(),
@@ -84,7 +84,7 @@ async fn upgrade_capture_names_what_no_client_has_read() {
 async fn a_session_created_after_capture_aborts_the_upgrade() {
     let state = SharedState::new();
     state.with_mut(|s| {
-        s.set_upgrade_context(
+        s.lifecycle_mut().set_upgrade_context(
             7,
             PathBuf::from("/nonexistent/phux.sock"),
             RuntimeFlags::default(),
@@ -151,9 +151,12 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             );
 
             let (session, handle, parent) = resumed.with(|s| {
-                let session = s.resource_from_wire(&agent_wire).expect("same `@N`");
-                let handle = s.resource_handle(session).expect("engine").clone();
-                let parent = s.resource_from_wire(&pane_wire).expect("pane");
+                let session = s
+                    .idspace
+                    .resource_from_wire(&agent_wire)
+                    .expect("same `@N`");
+                let handle = s.resources().handle(session).expect("engine").clone();
+                let parent = s.idspace.resource_from_wire(&pane_wire).expect("pane");
                 (session, handle, parent)
             });
             assert_eq!(handle.parent, Some(parent), "rebound to its rebuilt pane");

@@ -7,10 +7,7 @@
 use super::*;
 use phux_server_testkit::{command, hangup_proof_script};
 
-fn lists(result: &CommandResult, pane: &ResourceId) -> bool {
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("GET_STATE via the hub failed: {result:?}");
-    };
+fn lists(snapshot: &SessionSnapshot, pane: &ResourceId) -> bool {
     snapshot
         .resources
         .iter()
@@ -34,12 +31,12 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
             };
             panes.push(pane);
         }
-        let (before, _) = get_state_via_hub(&mut hub, 8102).await;
+        let (before, _) = state_via_hub(&mut hub, 8102).await;
         assert!(panes.iter().all(|pane| lists(&before, pane)), "{before:?}");
 
         let kill_one = phux_server_testkit::kill(panes[0].clone());
         assert_eq!(command(&mut hub, 8103, kill_one).await, CommandResult::Ok);
-        let (after_one, _) = get_state_via_hub(&mut hub, 8104).await;
+        let (after_one, _) = state_via_hub(&mut hub, 8104).await;
         assert!(
             !lists(&after_one, &panes[0]),
             "KILL_RESOURCE: {after_one:?}"
@@ -47,7 +44,7 @@ fn a_relayed_kill_reply_is_the_satellites_committed_teardown() {
 
         let kill_rest = phux_server_testkit::kill_all(vec![panes[1].clone()]);
         assert_eq!(command(&mut hub, 8105, kill_rest).await, CommandResult::Ok);
-        let (after_all, _) = get_state_via_hub(&mut hub, 8106).await;
+        let (after_all, _) = state_via_hub(&mut hub, 8106).await;
         assert!(
             !lists(&after_all, &panes[1]),
             "KILL_RESOURCES: {after_all:?}"

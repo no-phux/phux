@@ -5,28 +5,41 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use phux_client::read::Verb;
+use phux_client::selector::{AgentResolveError, Resolved, Selector};
+use phux_protocol::ids::ResourceId;
 
-use crate::commands::{json_err, partial, read_kind};
+use crate::commands::json_err::{Refusal, codes};
+use crate::commands::{partial, read_kind};
 
-/// Parse an optional target string into a [`phux_client::selector::Selector`],
-/// defaulting to the focused session when absent. On a parse error,
-/// prints a diagnostic and returns the failure exit code for the caller to
-/// bubble.
-pub(crate) fn parse_selector(
-    session: Option<&str>,
-) -> Result<phux_client::selector::Selector, ExitCode> {
-    session.map_or(Ok(phux_client::selector::Selector::Current), |target| {
-        phux_client::selector::parse(target).map_err(|err| {
-            error!("invalid target '{target}': {err}");
-            ExitCode::FAILURE
-        })
+/// Parse an optional target string into a [`Selector`], defaulting to the
+/// focused session when absent. On a parse error, prints a diagnostic and
+/// returns the failure exit code for the caller to bubble.
+pub(crate) fn parse_selector(session: Option<&str>) -> Result<Selector, ExitCode> {
+    parse_target(session).map_err(|refusal| refusal.emit(false))
+}
+
+/// [`parse_selector`] as a refusal: `invalid_selector`, exit 1. A human
+/// reads the one line [`parse_selector`] has always printed.
+pub(crate) fn parse_target(session: Option<&str>) -> Result<Selector, Refusal> {
+    let Some(target) = session else {
+        return Ok(Selector::Current);
+    };
+    phux_client::selector::parse(target).map_err(|err| {
+        let message = format!("invalid target '{target}': {err}");
+        Refusal::new(
+            codes::INVALID_SELECTOR,
+            message.clone(),
+            "selector forms: NAME, NAME:WIN, NAME:WIN.PANE, @ID, `.`, #TAG, %NAME",
+            crate::exit_codes::EXIT_FAILURE,
+        )
+        .with_human(vec![message])
     })
 }
 
 /// Resolve `selector` to a single pane against a fresh `GET_STATE`
 /// snapshot. Prefers the focused pane when the selector spans several
-/// (e.g. a whole session); otherwise the first in snapshot order. Prints
-/// diagnostics and returns the failure exit code on no-server / miss.
+/// (e.g. a whole session); otherwise the first in snapshot order. Refuses
+/// on no-server / miss.
 ///
 /// This is the shared front door for every verb that addresses one pane
 /// (`snapshot`, `send-keys`, `paste`, `run`, `wait`, `watch`, `resize`,
@@ -34,23 +47,21 @@ pub(crate) fn parse_selector(
 /// is drawn for all of them: a miss against a hub that could not reach a
 /// satellite is reported as unresolvable, never as absent.
 ///
-/// It uses [`partial::report_target_miss_keeping_status`] rather than the
-/// distinct exit status `kill`/`tag`/`agent` return, because two of the verbs
-/// behind this door have already spent their status space — `run` mirrors the
+/// It uses [`partial::target_miss_keeping_status`] rather than the distinct
+/// exit status `kill`/`tag`/`agent` return, because two of the verbs behind
+/// this door have already spent their status space — `run` mirrors the
 /// child's own exit code and `wait` owns `124`. A shared resolver cannot hand
 /// out a code that means one thing for `kill` and collides for `run`, so the
 /// distinction stays in the sentence, which is where the user reads it.
 ///
-/// `json` selects the failure channel per the JSON error contract
-/// ([`json_err`], phux-i0e8.8.2): verbs without a `--json` flag pass `false`
-/// and keep the historical prose.
+/// Every refusal follows the JSON error contract ([`crate::commands::json_err`],
+/// phux-i0e8.8.2) on whichever channel the verb reports it.
 pub(crate) async fn resolve_target(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: &str,
-    json: bool,
-) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_target_with(socket_path, selector, verb, json, false)
+) -> Result<ResourceId, Refusal> {
+    resolve_target_with(socket_path, selector, verb, false)
         .await
         .map(|resolved| resolved.id)
 }
@@ -60,12 +71,11 @@ pub(crate) async fn resolve_target(
 /// [`resolve_target_for_input`].
 pub(crate) async fn resolve_resource(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: &str,
-    json: bool,
     for_input: bool,
-) -> Result<phux_client::selector::Resolved, ExitCode> {
-    resolve_target_with(socket_path, selector, verb, json, for_input).await
+) -> Result<Resolved, Refusal> {
+    resolve_target_with(socket_path, selector, verb, for_input).await
 }
 
 /// [`resolve_terminal_target`] for the verbs that deliver input into the
@@ -75,11 +85,10 @@ pub(crate) async fn resolve_resource(
 /// 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: Verb,
-    json: bool,
-) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_terminal_with(socket_path, selector, verb, json, true).await
+) -> Result<ResourceId, Refusal> {
+    resolve_terminal_with(socket_path, selector, verb, true).await
 }
 
 /// [`resolve_target`] for a verb that reaches a Terminal only (`resize`,
@@ -88,60 +97,52 @@ pub(crate) async fn resolve_target_for_input(
 /// kind is read from the snapshot the resolution already fetched.
 pub(crate) async fn resolve_terminal_target(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: Verb,
-    json: bool,
-) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    resolve_terminal_with(socket_path, selector, verb, json, false).await
+) -> Result<ResourceId, Refusal> {
+    resolve_terminal_with(socket_path, selector, verb, false).await
 }
 
 async fn resolve_terminal_with(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: Verb,
-    json: bool,
     for_input: bool,
-) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
-    let resolved = resolve_target_with(socket_path, selector, verb.name(), json, for_input).await?;
+) -> Result<ResourceId, Refusal> {
+    let resolved = resolve_target_with(socket_path, selector, verb.name(), for_input).await?;
     phux_client::read::require_terminal(verb, &resolved)
-        .map_err(|err| read_kind::wrong_kind(json, &err))?;
+        .map_err(|err| read_kind::wrong_kind_refusal(&err))?;
     Ok(resolved.id)
 }
 
 async fn resolve_target_with(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     verb: &str,
-    json: bool,
     for_input: bool,
-) -> Result<phux_client::selector::Resolved, ExitCode> {
-    use phux_client::selector::Resolved;
+) -> Result<Resolved, Refusal> {
     let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
-        .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?
+        .map_err(|err| Refusal::no_server(&err, socket_path, verb))?
         .into_parts();
     // `%name` is singular: it resolves to exactly one agent or refuses, and
     // never travels the set-valued path below where `pick_target_pane` would
     // narrow it (ADR-0075 point 3). A Terminal-facet verb acts on the named
     // agent's pane; the session verbs resolve their own side.
-    if let phux_client::selector::Selector::Agent(name) = selector {
+    if let Selector::Agent(name) = selector {
         let target =
             phux_client::state::resolve_agent_target(socket_path, name, &snapshot, for_input)
                 .await
-                .map_err(|err| report_agent_resolve_error(json, &err, true))?;
+                .map_err(|err| agent_refusal(&err, true))?;
         partial::warn_partial_view(verb, &degradation);
         return Ok(Resolved::in_snapshot(&snapshot, target.terminal));
     }
     let candidates = resolve_targets(socket_path, selector, &snapshot)
         .await
-        .map_err(|err| report_agent_resolve_error(json, &err, true))?;
+        .map_err(|err| agent_refusal(&err, true))?;
     let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         .ok_or_else(|| {
-        partial::report_target_miss_keeping_status_for(
-            json,
-            Some(&selector.to_string()),
-            &degradation,
-        )
+        partial::target_miss_keeping_status(Some(&selector.to_string()), &degradation)
     })?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
@@ -153,44 +154,26 @@ async fn resolve_target_with(
 /// exit status.
 pub(crate) fn report_agent_resolve_error(
     json: bool,
-    err: &phux_client::selector::AgentResolveError,
+    err: &AgentResolveError,
     keep_status: bool,
 ) -> ExitCode {
-    json_err::emit(
-        json,
-        &json_err::CliError::new(agent_resolve_code(err), err.to_string(), err.remedy()),
+    agent_refusal(err, keep_status).emit(json)
+}
+
+/// The refusal behind [`report_agent_resolve_error`].
+pub(crate) fn agent_refusal(err: &AgentResolveError, keep_status: bool) -> Refusal {
+    Refusal::new(
+        err.code(),
+        err.to_string(),
+        err.remedy(),
         agent_resolve_exit(err, keep_status),
     )
 }
 
-/// The CLI vocabulary's spelling of [`AgentResolveError::code`], so the
-/// codes stay in [`json_err::codes`] (a test pins the two equal).
-pub(super) const fn agent_resolve_code(
-    err: &phux_client::selector::AgentResolveError,
-) -> &'static str {
-    use phux_client::selector::AgentResolveError;
-    match err {
-        AgentResolveError::Unknown { .. } => json_err::codes::NO_SUCH_TARGET,
-        AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => {
-            json_err::codes::SELECTOR_NOT_SINGLE
-        }
-        AgentResolveError::Withdrawn { .. } => json_err::codes::AGENT_WITHDRAWN,
-        AgentResolveError::PartialIndex { .. } => json_err::codes::PARTIAL_VIEW,
-    }
-}
-
 /// [`AgentResolveError::exit_code`], except a partial index exits 1 under
 /// `keep_status` (the shared single-pane resolver, ADR-0075 point 3).
-pub(super) const fn agent_resolve_exit(
-    err: &phux_client::selector::AgentResolveError,
-    keep_status: bool,
-) -> u8 {
-    if keep_status
-        && matches!(
-            err,
-            phux_client::selector::AgentResolveError::PartialIndex { .. }
-        )
-    {
+pub(super) const fn agent_resolve_exit(err: &AgentResolveError, keep_status: bool) -> u8 {
+    if keep_status && matches!(err, AgentResolveError::PartialIndex { .. }) {
         return crate::exit_codes::EXIT_FAILURE;
     }
     err.exit_code()
@@ -207,8 +190,8 @@ pub(super) const fn agent_resolve_exit(
 /// [`report_agent_resolve_error`].
 pub(crate) async fn resolve_targets(
     socket_path: &Path,
-    selector: &phux_client::selector::Selector,
+    selector: &Selector,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-) -> Result<Vec<phux_protocol::ids::ResourceId>, phux_client::selector::AgentResolveError> {
+) -> Result<Vec<ResourceId>, AgentResolveError> {
     phux_client::state::resolve_targets(socket_path, selector, snapshot).await
 }

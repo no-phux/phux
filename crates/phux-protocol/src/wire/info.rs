@@ -133,8 +133,41 @@ fn decode_list<'a, T>(
     item: impl Fn(&mut Decoder<'a>) -> Result<T, DecodeError>,
 ) -> Result<Vec<T>, DecodeError> {
     let len = decode_list_len(dec)?;
-    let mut out = dec.bounded_capacity(len);
-    for _ in 0..len {
+    decode_counted(dec, len, item)
+}
+
+/// Write a `u16`-counted list, each item via `item`. A list longer than
+/// `u16::MAX` saturates the count; the decoder then reads the first
+/// `u16::MAX` items and skips the rest as trailing bytes.
+pub(in crate::wire) fn encode_u16_list<T>(
+    items: &[T],
+    enc: &mut Encoder<'_>,
+    item: impl Fn(&T, &mut Encoder<'_>),
+) {
+    enc.write_u16_be(u16::try_from(items.len()).unwrap_or(u16::MAX));
+    for value in items {
+        item(value, enc);
+    }
+}
+
+/// Read a `u16`-counted list; an over-declared count cannot pre-allocate
+/// past the remaining bytes.
+pub(in crate::wire) fn decode_u16_list<'a, T>(
+    dec: &mut Decoder<'a>,
+    item: impl Fn(&mut Decoder<'a>) -> Result<T, DecodeError>,
+) -> Result<Vec<T>, DecodeError> {
+    let count = usize::from(dec.read_u16_be()?);
+    decode_counted(dec, count, item)
+}
+
+/// Read `count` items, reserving no more than the remaining body can hold.
+pub(in crate::wire) fn decode_counted<'a, T>(
+    dec: &mut Decoder<'a>,
+    count: usize,
+    item: impl Fn(&mut Decoder<'a>) -> Result<T, DecodeError>,
+) -> Result<Vec<T>, DecodeError> {
+    let mut out = dec.bounded_capacity(count);
+    for _ in 0..count {
         out.push(item(dec)?);
     }
     Ok(out)

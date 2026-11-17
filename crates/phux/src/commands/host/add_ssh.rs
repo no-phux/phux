@@ -81,7 +81,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     // Prefer credentials already on file for this name when re-enrolling so
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let remotes_dir = phux_config::instance::state_dir().join("remotes");
     let workload = previous
         .held
         .replacement(&remotes_dir, &name, opts.hardware_key);

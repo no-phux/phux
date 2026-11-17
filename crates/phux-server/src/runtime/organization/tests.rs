@@ -24,6 +24,18 @@ fn committed(result: CommandResult) -> Committed {
     }
 }
 
+/// A persistent, attribute-less `SESSION_CREATE`, launching its first
+/// Terminal when `launched`.
+fn session_create(n: u8, name: &str, launched: bool) -> Command {
+    Command::SessionCreate {
+        operation: op(n),
+        name: name.to_owned(),
+        lifetime: SessionLifetime::Persistent,
+        attrs: Vec::new(),
+        launch: launched.then(|| Box::new(LaunchSpec::new(Vec::new()))),
+    }
+}
+
 fn page(state: &SharedState, filter: OrgFilter) -> OrganizationPage {
     let result = handle(
         state,

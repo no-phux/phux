@@ -60,10 +60,10 @@ impl InputLaneHandle {
                 frame_label = routed.kind.frame_label(),
                 "input lane closed; dropping input",
             );
-            routed.kind.reply_dropped(CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "input lane unavailable for ROUTE_INPUT".to_owned(),
-            });
+            routed.kind.reply_dropped(CommandResult::error(
+                ErrorCode::InternalError,
+                "input lane unavailable for ROUTE_INPUT",
+            ));
         }
     }
 
@@ -91,14 +91,14 @@ impl InputLaneHandle {
         };
         let failure = match self.tx.try_send(routed) {
             Ok(()) => None,
-            Err(mpsc::error::TrySendError::Full(_)) => Some(CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "input lane queue is full for ROUTE_INPUT".to_owned(),
-            }),
-            Err(mpsc::error::TrySendError::Closed(_)) => Some(CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "input lane unavailable for ROUTE_INPUT".to_owned(),
-            }),
+            Err(mpsc::error::TrySendError::Full(_)) => Some(CommandResult::error(
+                ErrorCode::ResourceExhausted,
+                "input lane queue is full for ROUTE_INPUT",
+            )),
+            Err(mpsc::error::TrySendError::Closed(_)) => Some(CommandResult::error(
+                ErrorCode::InternalError,
+                "input lane unavailable for ROUTE_INPUT",
+            )),
         };
         if let Some(failure) = failure {
             return ready_receipt(failure);

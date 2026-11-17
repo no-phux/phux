@@ -296,13 +296,11 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
             PeerResponse::Fenced => {
                 send(
                     &mut stream,
-                    FrameKind::CommandResult {
+                    phux_wire_fixtures::command_err(
                         request_id,
-                        result: CommandResult::Error {
-                            code: ErrorCode::PreconditionFailed,
-                            message: "native controller generation is fenced".into(),
-                        },
-                    },
+                        ErrorCode::PreconditionFailed,
+                        "native controller generation is fenced",
+                    ),
                 )
                 .await;
                 broker.fence_sent.notify_one();

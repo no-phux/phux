@@ -27,7 +27,7 @@ async fn a_viewer_or_non_signal_holder_cannot_decide() {
         let unsignaled = connect(&world.state, UNSIGNALED, TransportType::Quic).await;
         world
             .state
-            .with_mut(|s| s.set_viewer_mark(APPROVER, &world.alpha, true));
+            .with_mut(|s| s.clients_mut().mark_viewer(APPROVER, &world.alpha, true));
 
         requester.send(&kill(HELD, &world.alpha));
         let id = the_pending_approval(&world.state).await;
@@ -51,7 +51,7 @@ async fn a_viewer_or_non_signal_holder_cannot_decide() {
         // decides.
         world
             .state
-            .with_mut(|s| s.set_viewer_mark(APPROVER, &world.alpha, false));
+            .with_mut(|s| s.clients_mut().mark_viewer(APPROVER, &world.alpha, false));
         viewer.send(&decision(10, id, APPROVAL_DENY));
         let result = requester.result(HELD).await;
         assert!(is_denied(&result, "approval denied"), "{result:?}");
@@ -69,8 +69,8 @@ async fn local_mode_never_holds() {
         .run_until(async {
             let state = SharedState::new();
             state.with_mut(|s| {
-                s.set_policy_engine(Arc::new(ScopedPolicy::local()));
-                s.set_peer_identity(OBSERVER, owner_peer());
+                s.config_mut().policy_engine = Arc::new(ScopedPolicy::local());
+                s.clients_mut().set_peer_identity(OBSERVER, owner_peer());
             });
             let owner = connect(&state, OBSERVER, TransportType::UnixSocket).await;
             owner.send(&detach_all(HELD));
@@ -152,7 +152,7 @@ async fn a_viewer_cannot_decide_a_held_close_tab_and_its_record_lists_the_termin
         let viewer = connect(&world.state, APPROVER, TransportType::Quic).await;
         world
             .state
-            .with_mut(|s| s.set_viewer_mark(APPROVER, &world.alpha, true));
+            .with_mut(|s| s.clients_mut().mark_viewer(APPROVER, &world.alpha, true));
         requester.send(&command(
             HELD,
             Command::CloseTabResources {

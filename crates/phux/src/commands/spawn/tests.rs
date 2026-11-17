@@ -241,15 +241,10 @@ fn a_malformed_key_is_a_usage_error() {
 
 #[test]
 fn retain_and_key_flags_parse_before_the_command() {
-    let cli = crate::parse_cli([
-        "phux",
-        "spawn",
-        "--retain=30",
-        "--idempotency-key",
-        "0123456789abcdef0123456789abcdef",
-        "--",
-        "true",
-    ])
+    let cli = crate::parse_cli(
+        "phux spawn --retain=30 --idempotency-key 0123456789abcdef0123456789abcdef -- true"
+            .split_whitespace(),
+    )
     .expect("parses");
     let Some(crate::commands::Command::Spawn(crate::commands::SpawnArgs {
         retain,
@@ -278,8 +273,8 @@ fn retain_and_key_flags_parse_before_the_command() {
 
 #[test]
 fn spawn_app_takes_a_name_an_optional_browser_url_and_headless() {
-    let app = |argv: &[&str]| {
-        let cli = crate::parse_cli(argv.iter().copied()).expect("parses");
+    let app = |line: &str| {
+        let cli = crate::parse_cli(line.split_whitespace()).expect("parses");
         let Some(crate::commands::Command::Spawn(crate::commands::SpawnArgs {
             app,
             browser,
@@ -292,28 +287,15 @@ fn spawn_app_takes_a_name_an_optional_browser_url_and_headless() {
         (app, browser, headless)
     };
     assert_eq!(
-        app(&["phux", "spawn", "--app", "TextEdit"]),
+        app("phux spawn --app TextEdit"),
         (Some("TextEdit".into()), None, false)
     );
     assert_eq!(
-        app(&[
-            "phux",
-            "spawn",
-            "--app",
-            "chrome",
-            "--browser",
-            "--headless"
-        ]),
+        app("phux spawn --app chrome --browser --headless"),
         (Some("chrome".into()), Some("about:blank".into()), true)
     );
     assert_eq!(
-        app(&[
-            "phux",
-            "spawn",
-            "--app",
-            "chrome",
-            "--browser=https://phux.sh"
-        ]),
+        app("phux spawn --app chrome --browser=https://phux.sh"),
         (Some("chrome".into()), Some("https://phux.sh".into()), false)
     );
     assert!(crate::parse_cli(["phux", "spawn", "--browser"]).is_err());

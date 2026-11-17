@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use phux_config::document::{ConfigDocument, Guard, SymlinkPolicy};
 use phux_config::loader as config_loader;
 use phux_config::plugin::{self, PluginManifest};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
@@ -49,28 +50,37 @@ pub(super) fn load_registry_from_path(config_path: &Path) -> Result<Vec<Registry
 /// `[[plugins]]` table in `config_path`. A plugin an `extends` layer
 /// contributes has no table there to edit, so it is an error naming the
 /// way to drop it rather than an edit of whichever entry shares its index.
-pub(super) fn find_entry(config_path: &Path, id: &str) -> Result<RegistryEntry, String> {
+///
+/// `doc` is the locked [`ConfigDocument`] the caller will edit, so the
+/// index is resolved against the very text the commit checks.
+pub(super) fn find_entry(
+    doc: &DocumentMut,
+    config_path: &Path,
+    id: &str,
+) -> Result<RegistryEntry, String> {
     let mut entry = load_registry_from_path(config_path)?
         .into_iter()
         .find(|entry| entry.manifest.id == id)
         .ok_or_else(|| format!("plugin {id:?} is not registered"))?;
-    (entry.key, entry.index) = own_index(config_path, &entry.manifest_path)?.ok_or_else(|| {
-        format!(
-            "plugin {id:?} comes from a config layer (`extends`), not {}; \
+    (entry.key, entry.index) =
+        own_index(doc, config_path, &entry.manifest_path).ok_or_else(|| {
+            format!(
+                "plugin {id:?} comes from a config layer (`extends`), not {}; \
              to drop it, assign `plugins = [...]` there listing the plugins to keep",
-            config_path.display()
-        )
-    })?;
+                config_path.display()
+            )
+        })?;
     Ok(entry)
 }
 
-/// Where `config_path` itself declares the plugin whose manifest is
-/// `manifest_path`: the array (`plugins` or `plugins-append`) and index.
+/// Where `doc` (the text of `config_path` itself) declares the plugin whose
+/// manifest is `manifest_path`: the array (`plugins` or `plugins-append`)
+/// and index.
 pub(super) fn own_index(
+    doc: &DocumentMut,
     config_path: &Path,
     manifest_path: &Path,
-) -> Result<Option<(&'static str, usize)>, String> {
-    let doc = read_config_document(config_path)?;
+) -> Option<(&'static str, usize)> {
     let canonical =
         |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let wanted = canonical(manifest_path);
@@ -88,31 +98,24 @@ pub(super) fn own_index(
                 })
         });
         if let Some(index) = found {
-            return Ok(Some((key, index)));
+            return Some((key, index));
         }
     }
-    Ok(None)
+    None
 }
 
 const PLUGINS: &str = "plugins";
 const PLUGINS_APPEND: &str = "plugins-append";
 
-pub(super) fn read_config_document(config_path: &Path) -> Result<DocumentMut, String> {
-    match std::fs::read_to_string(config_path) {
-        Ok(input) => input
-            .parse::<DocumentMut>()
-            .map_err(|err| format!("could not parse {}: {err}", config_path.display())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(DocumentMut::new()),
-        Err(err) => Err(format!("could not read {}: {err}", config_path.display())),
-    }
-}
-
-pub(super) fn write_config_document(config_path: &Path, doc: &DocumentMut) -> Result<(), String> {
-    // The plugin registry decides what code the production server runs.
-    phux_config::production::refuse_dev_on_production_state(config_path)?;
-    reject_symlinked_config(config_path)?;
-    phux_config::settings::replace_atomically(config_path, &doc.to_string(), || Ok(()))
-        .map_err(|err| format!("could not write {}: {err}", config_path.display()))
+/// Lock and read `config_path` for a plugin registry edit. The registry
+/// decides what code the production server runs: a dev build aimed at
+/// production state is refused, and so is a symlinked config.
+pub(super) fn open_config(config_path: &Path) -> Result<ConfigDocument, String> {
+    Ok(ConfigDocument::open(
+        config_path,
+        Guard::ProductionState,
+        SymlinkPolicy::Refuse,
+    )?)
 }
 
 pub(super) fn push_entry(
@@ -196,17 +199,6 @@ fn plugin_tables_mut<'a>(
         .ok_or_else(|| format!("`{key}` must be an array of tables"))
 }
 
-pub(super) fn reject_symlinked_config(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err(format!("{} must not be a symlink", path.display()))
-        }
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("could not inspect {}: {err}", path.display())),
-    }
-}
-
 pub(super) fn temp_nonce() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -254,17 +246,17 @@ mod tests {
             ),
         )
         .expect("config");
-        let refused = find_entry(&config, "layered").expect_err("inherited");
+        let mut doc = open_config(&config).expect("open");
+        let refused = find_entry(&doc, &config, "layered").expect_err("inherited");
         assert!(refused.contains("config layer"), "{refused}");
-        let entry = find_entry(&config, "mine").expect("own entry");
+        let entry = find_entry(&doc, &config, "mine").expect("own entry");
         assert_eq!(
             (entry.key, entry.index),
             ("plugins-append", 0),
             "its own table, not merged position 1"
         );
-        let mut doc = read_config_document(&config).expect("read");
         set_enabled(&mut doc, entry.key, entry.index, false).expect("disable");
-        write_config_document(&config, &doc).expect("write");
+        doc.commit().expect("write");
         let reloaded = load_registry_from_path(&config).expect("reload");
         let enabled: Vec<(&str, bool)> = reloaded
             .iter()
@@ -280,9 +272,9 @@ mod tests {
         std::fs::write(&config, "# mine\n").expect("seed config");
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))
             .expect("restrict config");
-        let mut doc = read_config_document(&config).expect("read config");
+        let mut doc = open_config(&config).expect("open config");
         push_entry(&mut doc, "./plugins/demo/plugin.toml", true).expect("add entry");
-        write_config_document(&config, &doc).expect("write config");
+        doc.commit().expect("write config");
         let mode = std::fs::metadata(&config)
             .expect("stat config")
             .permissions()

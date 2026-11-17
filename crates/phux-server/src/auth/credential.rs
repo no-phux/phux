@@ -256,4 +256,17 @@ mod frozen {
     fn remote_tokens() {
         phux_frozen::json::<super::CredentialFile>("remote-tokens").check();
     }
+
+    /// The exact bytes a store commit writes: pretty JSON and one trailing
+    /// newline, pinned against the newest frozen image.
+    #[test]
+    fn remote_tokens_commit_bytes() {
+        let golden = include_bytes!("../../tests/fixtures/frozen/remote-tokens/0002.json");
+        let file: super::CredentialFile = serde_json::from_slice(golden).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote-tokens");
+        crate::secure_file::with_lock(&path, |held| crate::auth::commit(&path, &file, held))
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), golden);
+    }
 }

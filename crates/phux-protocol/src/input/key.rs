@@ -268,59 +268,6 @@ impl core::fmt::Debug for KeyEvent {
     }
 }
 
-/// Conversions to/from libghostty's atoms, at the server's engine boundary.
-#[cfg(feature = "server")]
-mod libghostty_conv {
-    use super::{KeyAction, ModSet, PhysicalKey};
-    use libghostty_vt::key::{Action, Key, Mods};
-
-    impl From<KeyAction> for Action {
-        fn from(a: KeyAction) -> Self {
-            match a {
-                KeyAction::Release => Self::Release,
-                KeyAction::Press => Self::Press,
-                KeyAction::Repeat => Self::Repeat,
-            }
-        }
-    }
-
-    impl From<Action> for KeyAction {
-        fn from(a: Action) -> Self {
-            match a {
-                Action::Release => Self::Release,
-                Action::Repeat => Self::Repeat,
-                // `Action` is #[non_exhaustive]; Press is the safe default.
-                _ => Self::Press,
-            }
-        }
-    }
-
-    impl From<ModSet> for Mods {
-        fn from(m: ModSet) -> Self {
-            Self::from_bits_truncate(m.bits())
-        }
-    }
-
-    impl From<Mods> for ModSet {
-        fn from(m: Mods) -> Self {
-            Self::from_bits_truncate(m.bits())
-        }
-    }
-
-    impl From<PhysicalKey> for Key {
-        fn from(k: PhysicalKey) -> Self {
-            // Same discriminants (ADR-0024); unknown -> Unidentified.
-            Self::try_from(k as i32).unwrap_or(Self::Unidentified)
-        }
-    }
-
-    impl From<Key> for PhysicalKey {
-        fn from(k: Key) -> Self {
-            Self::try_from(k as u32).unwrap_or(Self::Unidentified)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

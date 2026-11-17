@@ -164,24 +164,23 @@ mod tests {
         String::from_utf8(out).expect("utf8")
     }
 
+    /// Indexed colours keep their palette index (the buffer path flattens
+    /// them to a gray; this helper exists to emit the real index). RGB and
+    /// named colours emit truecolor; reset emits nothing.
     #[test]
-    fn indexed_color_is_preserved_not_flattened() {
-        // The reason this helper exists: the buffer path flattens Indexed to
-        // a gray; here it must emit the real palette index.
-        assert_eq!(sgr(Color::Indexed(240), false), "\x1b[48;5;240m");
-        assert_eq!(sgr(Color::Indexed(12), true), "\x1b[38;5;12m");
-    }
-
-    #[test]
-    fn rgb_and_named_emit_truecolor() {
-        assert_eq!(sgr(Color::Rgb(10, 20, 30), false), "\x1b[48;2;10;20;30m");
-        assert_eq!(sgr(Color::White, true), "\x1b[38;2;255;255;255m");
-    }
-
-    #[test]
-    fn reset_emits_nothing() {
-        assert_eq!(sgr(Color::Reset, true), "");
-        assert_eq!(sgr(Color::Reset, false), "");
+    fn colors_emit_their_sgr_form() {
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            (Color::Indexed(240), false, "\x1b[48;5;240m"),
+            (Color::Indexed(12), true, "\x1b[38;5;12m"),
+            (Color::Rgb(10, 20, 30), false, "\x1b[48;2;10;20;30m"),
+            (Color::White, true, "\x1b[38;2;255;255;255m"),
+            (Color::Reset, true, ""),
+            (Color::Reset, false, ""),
+        ];
+        for (color, fg, want) in cases {
+            assert_eq!(sgr(color, fg), want, "{color:?} fg={fg}");
+        }
     }
 
     #[test]

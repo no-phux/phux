@@ -16,8 +16,8 @@ use phux_client::attach::{
 };
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
+use phux_config::socket::default_socket_path;
 use phux_protocol::wire::frame::AttachTarget;
-use phux_server::runtime::default_socket_path;
 use phux_tui::attach::{self, record::SessionRecorder, status_bar::Notice};
 
 use crate::commands::rec::RecordSpec;

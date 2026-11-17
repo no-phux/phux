@@ -38,9 +38,12 @@ fn upload() -> FileUploadId {
     FileUploadId::new([1; 16]).unwrap()
 }
 
-/// One sample per forwarding op; all share a row.
+/// One sample per forwarding op, then each bounded op at the largest values
+/// the decoder accepts; all share a row.
 fn forward_samples() -> Vec<(Command, &'static Rule)> {
-    use crate::forward::ForwardOp;
+    use crate::forward::{
+        ForwardOp, MAX_AGENT_MESSAGE_BYTES, MAX_FORWARD_ADDR_BYTES, MAX_FORWARD_CHUNK_BYTES,
+    };
     [
         ForwardOp::Open {
             addr: "localhost".to_owned(),
@@ -61,9 +64,77 @@ fn forward_samples() -> Vec<(Command, &'static Rule)> {
             id: 1,
             message: vec![crate::forward::SSH_AGENT_FAILURE],
         },
+        ForwardOp::Open {
+            addr: "x".repeat(MAX_FORWARD_ADDR_BYTES),
+            port: u16::MAX,
+        },
+        ForwardOp::Read {
+            id: u64::MAX,
+            max_bytes: u32::try_from(MAX_FORWARD_CHUNK_BYTES).unwrap(),
+        },
+        ForwardOp::Write {
+            id: u64::MAX,
+            bytes: vec![0xa5; MAX_FORWARD_CHUNK_BYTES],
+            fin: false,
+        },
+        ForwardOp::Write {
+            id: 1,
+            bytes: Vec::new(),
+            fin: true,
+        },
+        ForwardOp::AgentReply {
+            id: u64::MAX,
+            message: vec![5; MAX_AGENT_MESSAGE_BYTES],
+        },
     ]
     .into_iter()
     .map(|op| (Command::Forward { op }, &C_FORWARD))
+    .collect()
+}
+
+/// One sample per service-HTTP command, then a request carrying every
+/// optional part and a read at the largest size the decoder accepts; all
+/// share a row.
+fn service_http_samples() -> Vec<(Command, &'static Rule)> {
+    use crate::service_http::{MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpRequest};
+    let bare = ServiceHttpRequest {
+        host: None,
+        service: "opencode".to_owned(),
+        method: "GET".to_owned(),
+        target: "/api/info".to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+    let full = ServiceHttpRequest {
+        host: Some("mini".to_owned()),
+        method: "POST".to_owned(),
+        target: "/api/session?directory=%2Ftmp".to_owned(),
+        headers: vec![
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("accept".to_owned(), "text/event-stream".to_owned()),
+        ],
+        body: br#"{"title":"x"}"#.to_vec(),
+        ..bare.clone()
+    };
+    [
+        Command::ServiceHttpOpen {
+            request: Box::new(bare),
+        },
+        Command::ServiceHttpRead {
+            exchange: 1,
+            max_bytes: 1,
+        },
+        Command::ServiceHttpClose { exchange: 1 },
+        Command::ServiceHttpOpen {
+            request: Box::new(full),
+        },
+        Command::ServiceHttpRead {
+            exchange: u64::MAX,
+            max_bytes: u32::try_from(MAX_SERVICE_HTTP_READ_BYTES).unwrap(),
+        },
+    ]
+    .into_iter()
+    .map(|command| (command, &C_SERVICE_HTTP))
     .collect()
 }
 
@@ -193,9 +264,23 @@ fn every_client_frame_variant_lands_on_its_row() {
     }
 }
 
+/// Assert that server-to-client `frame` has no client index, classifies as
+/// unclassified, and is carried by no catalog method. The wire-schema
+/// samples run it over every server-to-client variant.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the wire schema's tests, outside `kinds`, call it"
+)]
+pub(crate) fn assert_wrong_direction_denied(frame: &FrameKind) {
+    let unclassified: &Rule = &F_UNCLASSIFIED;
+    assert_ne!(frame.type_byte() & 0x80, 0, "{frame:?} is client to server");
+    assert_eq!(client_frame_variant(frame), None, "{frame:?}");
+    assert!(std::ptr::eq(frame_rule(frame), unclassified), "{frame:?}");
+    assert!(frame_method(frame.type_byte()).is_none(), "{frame:?}");
+}
+
 #[test]
 fn wrong_direction_frames_are_denied() {
-    let unclassified: &Rule = &F_UNCLASSIFIED;
     for frame in [
         FrameKind::Pong { nonce: 1 },
         FrameKind::AttachReady { attach_id: 1 },
@@ -203,9 +288,7 @@ fn wrong_direction_frames_are_denied() {
             terminal_id: terminal(),
         },
     ] {
-        assert_eq!(client_frame_variant(&frame), None);
-        assert!(std::ptr::eq(frame_rule(&frame), unclassified), "{frame:?}");
-        assert!(frame_method(frame.type_byte()).is_none(), "{frame:?}");
+        assert_wrong_direction_denied(&frame);
     }
 }
 

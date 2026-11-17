@@ -27,7 +27,7 @@ async fn handle_attach_bounds_snapshot_sources_sequentially() {
 
         let (out_tx, mut out_rx) =
             tokio::sync::mpsc::channel::<Outbound>(crate::state::DEFAULT_CLIENT_MAILBOX);
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         let attach_task = spawn_attach(
             &state,
             client_id,
@@ -81,7 +81,7 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
         let mut rx = register_stub(&state, pid);
         let (out_tx, mut out_rx) =
             tokio::sync::mpsc::channel::<Outbound>(crate::state::DEFAULT_CLIENT_MAILBOX);
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         let caps = ClientCapabilities::default()
             .with_output_mode(phux_protocol::caps::OutputMode::StateSync);
         let profile = phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync;
@@ -150,7 +150,6 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
 
 /// A native replacement bootstrap that fails after a resync closes the
 /// connection with `CODEC_UNAVAILABLE` and rolls back the consumer.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,
@@ -176,7 +175,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                 .unwrap();
         });
 
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let client_id = state.with_mut(|s| s.clients_mut().new_client_id());
         let (out_tx, mut out_rx) =
             tokio::sync::mpsc::channel::<Outbound>(crate::state::DEFAULT_CLIENT_MAILBOX);
         let connection_token = CancellationToken::new();

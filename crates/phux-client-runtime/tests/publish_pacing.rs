@@ -91,11 +91,8 @@ fn options() -> ClientOptions {
 }
 
 async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !ready() {
-        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    let poll = Duration::from_millis(5);
+    phux_server_testkit::eventually(what, DEADLINE, poll, || ready().then_some(())).await;
 }
 
 async fn spawn(client: &Client, command: &str) -> ResourceId {

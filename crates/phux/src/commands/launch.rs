@@ -3,10 +3,10 @@ use std::process::ExitCode;
 
 use phux_config::integration::LaunchWorkingDirectory;
 use phux_config::loader as config_loader;
+use phux_config::socket::default_socket_path;
 use phux_plugin::{LaunchError, LaunchMode, ResolvedLaunch};
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
 use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};
@@ -17,22 +17,32 @@ mod native;
 /// `phux launch` (phux-ark7, ADR-0042) — resolve a named agent integration
 /// template from an enabled plugin and spawn a pane running its `[launch]`
 /// command.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_launch(
-    integration: Option<String>,
-    list: bool,
-    print: bool,
-    mode: LaunchMode,
-    session: Option<&str>,
-    json: bool,
-    target: Option<String>,
-    split: SpawnSplit,
-    ratio: f32,
-    projection: Option<&str>,
-    cwd: Option<PathBuf>,
+pub(crate) fn run(
+    crate::commands::LaunchArgs {
+        integration,
+        list,
+        print,
+        acp,
+        session,
+        json,
+        target,
+        split,
+        ratio,
+        projection,
+        cwd,
+        extra,
+    }: crate::commands::LaunchArgs,
     socket: Option<PathBuf>,
-    extra: &[String],
 ) -> ExitCode {
+    let mode = if acp {
+        LaunchMode::Native
+    } else {
+        LaunchMode::Terminal
+    };
+    let session = session.as_deref();
+    let json = json.json;
+    let projection = projection.as_deref();
+    let extra = extra.as_slice();
     let config_path = config_loader::config_path();
     if list {
         return run_list(&config_path, mode, json);
@@ -275,7 +285,7 @@ const fn working_directory_slug(dir: LaunchWorkingDirectory) -> &'static str {
 
 /// Resolved launch placed into an existing session.
 pub(crate) struct SessionLaunch {
-    /// Agent kind. Template ids are tried from [`phux_mission::integration_ids`].
+    /// Agent kind. Template ids are tried from [`phux_work::mission::integration_ids`].
     pub kind: String,
     /// Brief argv, appended to the template.
     pub extra: Vec<String>,
@@ -304,7 +314,7 @@ pub(crate) fn launch_in_session(plan: &SessionLaunch) -> Result<LaunchedPane, St
     let config_path = config_loader::config_path();
     let mut resolved = None;
     let mut last_err = None;
-    for id in phux_mission::integration_ids(&plan.kind) {
+    for id in phux_work::mission::integration_ids(&plan.kind) {
         match phux_plugin::resolve_launch(
             &config_path,
             id,

@@ -222,3 +222,27 @@ The rest have a reason not to:
 | `.cast` | Has its own golden tests (`golden_v3_round_trips_through_both_writers_unchanged`). |
 | `config.toml` and layers | Written by people, and `deny_unknown_fields` makes a rename fail loudly. |
 | `update-check.json`, `usage/state.json`, logs, reports | Caches and diagnostics: losing them costs a recompute. |
+
+## Deprecating a CLI spelling
+
+A renamed verb or flag keeps its old spelling as a hidden alias that parses
+with its full argument surface and runs the replacement's implementation.
+It differs from the replacement in exactly three ways:
+
+1. it prints one warning line on stderr naming the replacement, suppressed
+   under `--json`, where stdout carries only the document and stderr is
+   reserved for the one-line error contract;
+2. it is absent from `--help`;
+3. it is absent from the generated shell completions.
+
+An old spelling survives at least one full release cycle with the warning in
+place before it is removed, so scripts have a release to move to the
+replacement.
+
+No spelling is deprecated today. A test in `crates/phux/src/tests/aliases.rs`
+(`no_unregistered_hidden_cli_surface`) fails on any hidden verb or flag that
+is not allowlisted as internal plumbing. The next deprecation restores the
+deprecation table, its generated reference page, and its binary-level audit
+from `git show d4d856229^` (`crates/phux/src/deprecations.rs`,
+`crates/phux/src/refdocs/deprecations.rs`,
+`crates/phux/tests/configuration/deprecated_aliases.rs`).

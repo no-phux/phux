@@ -5,28 +5,18 @@
 use super::*;
 use std::sync::Mutex;
 
-use phux_protocol::policy::PeerIdentity;
 use phux_protocol::scope::TerminalScopeSet;
-use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use phux_server::policy::{ConnectionGrant, PolicyEngine};
+use phux_server_testkit::FnPolicy;
 
 /// The owner's grant until `scope` is set; that scope for every later HELLO.
-#[derive(Debug, Default)]
-struct Switchable(Mutex<Option<TerminalScopeSet>>);
-
-impl PolicyEngine for Switchable {
-    fn authorize_hello<'a>(
-        &'a self,
-        _peer_identity: &'a PeerIdentity,
-        _credential: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let scope = self.0.lock().unwrap().clone();
-        Box::pin(async move {
-            Ok(scope.map_or_else(ConnectionGrant::owner, |set| {
-                ConnectionGrant::scoped(set, None).unwrap()
-            }))
-        })
-    }
+fn switchable(scope: Arc<Mutex<Option<TerminalScopeSet>>>) -> FnPolicy {
+    FnPolicy::new(move |_, _| {
+        let scope = scope.lock().unwrap().clone();
+        Ok(scope.map_or_else(ConnectionGrant::owner, |set| {
+            ConnectionGrant::scoped(set, None).unwrap()
+        }))
+    })
 }
 
 fn local_id(id: &ResourceId) -> u32 {
@@ -43,8 +33,8 @@ fn an_inventory_narrower_than_observe_never_closes_an_attached_pane() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let policy = Arc::new(Switchable::default());
-        let engine: Arc<dyn PolicyEngine> = policy.clone();
+        let scope = Arc::new(Mutex::new(None));
+        let engine: Arc<dyn PolicyEngine> = Arc::new(switchable(Arc::clone(&scope)));
         let (shutdown, server) =
             phux_server_testkit::spawn_server_with(socket.clone(), Some("main"), move |cfg| {
                 cfg.policy_engine = Some(engine);
@@ -54,7 +44,7 @@ fn an_inventory_narrower_than_observe_never_closes_an_attached_pane() {
         let listed = owner.topology().unwrap().panes[0].terminal_id.clone();
         let hidden = spawn_cat(&owner).await;
 
-        *policy.0.lock().unwrap() = Some(
+        *scope.lock().unwrap() = Some(
             TerminalScopeSet::parse_all(&[
                 "bind,observe@global".to_owned(),
                 format!("inventory@terminal:{}", local_id(&listed)),

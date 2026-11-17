@@ -175,17 +175,6 @@ fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
 
 // --- keyed operations and the incarnation fence (L1 §9.1) -----------
 
-fn spawn_with(
-    reply: oneshot::Sender<SpawnResult>,
-    resource: phux_protocol::wire::frame::SpawnResource,
-) -> RelayRequest {
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(resource));
-    }
-    request
-}
-
 pub(super) fn keyed_session(
     features: &[ServerFeature],
     incarnation: [u8; 16],

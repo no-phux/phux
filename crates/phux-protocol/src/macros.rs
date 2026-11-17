@@ -103,3 +103,38 @@ macro_rules! for_each_field {
         }
     };
 }
+
+/// Declare `#[must_use]` builder setters that move one argument into one
+/// field and return `self`. Each entry reads
+/// `[/// doc] [const] fn with_x(param: T) => field;` and expands to
+/// `pub [const] fn with_x(mut self, param: T) -> Self { self.field = param; self }`.
+/// An entry without a doc line is documented as
+/// "Builder setter for [`Self::field`]." The setters are generated, so a grep
+/// for `fn with_x` finds them here, not at their definition: grep the entry
+/// (`with_x(`) instead.
+macro_rules! builder_setters {
+    (@setter [] [$($c:tt)?] $name:ident($param:ident: $t:ty) => $field:ident) => {
+        builder_setters!(@setter
+            [concat!("Builder setter for [`Self::", stringify!($field), "`].")]
+            [$($c)?] $name($param: $t) => $field);
+    };
+    (@setter [$doc:expr] [$($c:tt)?] $name:ident($param:ident: $t:ty) => $field:ident) => {
+        #[doc = $doc]
+        #[must_use]
+        pub $($c)? fn $name(mut self, $param: $t) -> Self {
+            self.$field = $param;
+            self
+        }
+    };
+    ($(#[doc = $doc:literal])? const fn $name:ident($param:ident: $t:ty) => $field:ident;
+     $($rest:tt)*) => {
+        builder_setters!(@setter [$($doc)?] [const] $name($param: $t) => $field);
+        builder_setters!($($rest)*);
+    };
+    ($(#[doc = $doc:literal])? fn $name:ident($param:ident: $t:ty) => $field:ident;
+     $($rest:tt)*) => {
+        builder_setters!(@setter [$($doc)?] [] $name($param: $t) => $field);
+        builder_setters!($($rest)*);
+    };
+    () => {};
+}

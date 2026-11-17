@@ -7,15 +7,16 @@ use libghostty_vt::{
     key::{Encoder as LgKeyEncoder, EncoderOptions, Event as LgKeyEvent, KittyKeyFlags},
 };
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_vt::input::ToGhostty as _;
 
 /// Build a libghostty `key::Event` from a wire `KeyEvent`; fallible only
 /// through libghostty's allocator.
 fn key_event_to_libghostty(ev: &KeyEvent) -> Result<LgKeyEvent<'static>, Error> {
     let mut out = LgKeyEvent::new()?;
-    out.set_action(ev.action.into())
-        .set_key(ev.key.into())
-        .set_mods(ev.mods.into())
-        .set_consumed_mods(ev.consumed_mods.into())
+    out.set_action(ev.action.to_ghostty())
+        .set_key(ev.key.to_ghostty())
+        .set_mods(ev.mods.to_ghostty())
+        .set_consumed_mods(ev.consumed_mods.to_ghostty())
         .set_composing(ev.composing)
         .set_utf8(ev.text.clone());
     if let Some(cp) = ev.unshifted_codepoint
@@ -132,6 +133,7 @@ mod tests {
     use super::*;
     use libghostty_vt::key::{Action, Key, Mods};
     use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use phux_vt::input::FromGhostty as _;
 
     #[test]
     fn key_event_to_libghostty_round_trips_fields() {
@@ -162,13 +164,13 @@ mod tests {
             (KeyAction::Release, Action::Release),
             (KeyAction::Repeat, Action::Repeat),
         ] {
-            assert_eq!(Action::from(pa), la);
-            assert_eq!(KeyAction::from(la), pa);
+            assert_eq!(pa.to_ghostty(), la);
+            assert_eq!(KeyAction::from_ghostty(la), pa);
         }
-        assert_eq!(Key::from(PhysicalKey::A), Key::A);
-        assert_eq!(PhysicalKey::from(Key::A), PhysicalKey::A);
+        assert_eq!(PhysicalKey::A.to_ghostty(), Key::A);
+        assert_eq!(PhysicalKey::from_ghostty(Key::A), PhysicalKey::A);
         assert_eq!(
-            Mods::from(ModSet::CTRL | ModSet::SHIFT),
+            (ModSet::CTRL | ModSet::SHIFT).to_ghostty(),
             Mods::CTRL | Mods::SHIFT
         );
     }

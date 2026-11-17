@@ -101,16 +101,7 @@ fn several_megabytes_are_refused_before_formatting_and_sibling_stays_intact() {
     let bytes = format!("{}\r\n", "é".repeat(119))
         .repeat(30_000)
         .into_bytes();
-    apply_ok(
-        &owner,
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq: 1,
-            bytes: bytes.into(),
-        },
-    );
+    apply_ok(&owner, output(&terminal, 1, &bytes));
     let huge = owner.create_view(&terminal).unwrap();
     let sibling = owner.create_view(&terminal).unwrap();
     let bar = publication.acquire_view(huge).unwrap().scrollbar;

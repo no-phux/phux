@@ -13,4 +13,3 @@ mod config_import_tmux;
 mod config_init_distro;
 mod config_plugin_actions;
 mod config_show_layers;
-mod deprecated_aliases;

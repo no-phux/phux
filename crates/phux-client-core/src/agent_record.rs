@@ -16,33 +16,134 @@
 //! - A value over [`MAX_AGENT_RECORD_BYTES`] is "no declared agent": any
 //!   local client can write the key, so its size is untrusted input.
 
-/// The lifecycle word a record declares.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+/// The lifecycle word a record declares (OPEN enum: an unrecognized word
+/// decodes to [`AgentState::Unknown`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", from = "String")]
 pub enum AgentState {
     /// No state declared, or an unrecognized (newer) vocabulary value.
     #[default]
     Unknown,
-    /// Declared `idle`.
+    /// Declared `idle`: available and not actively working.
     Idle,
-    /// Declared `working`.
+    /// Declared `working`: actively doing work.
     Working,
-    /// Declared `blocked`.
+    /// Declared `blocked`: waiting on human input or otherwise blocked.
     Blocked,
-    /// Declared `done`.
+    /// Declared `done`: finished its task.
     Done,
 }
 
-/// How loudly a record asks to be noticed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl AgentState {
+    /// The vocabulary word for `word`, or `None` when this build does not
+    /// recognize it. `"unknown"` is a recognized word.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "unknown" => Self::Unknown,
+            "idle" => Self::Idle,
+            "working" => Self::Working,
+            "blocked" => Self::Blocked,
+            "done" => Self::Done,
+            _ => return None,
+        })
+    }
+
+    /// The kebab-case wire/display word for this state.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+        }
+    }
+
+    /// The conventional attention for an undeclared `attention` (L3 §3.7):
+    /// `blocked` is high, `working` normal, `done`/`unknown` low, `idle` none.
+    #[must_use]
+    pub const fn default_attention(self) -> AgentAttention {
+        match self {
+            Self::Blocked => AgentAttention::High,
+            Self::Working => AgentAttention::Normal,
+            Self::Done | Self::Unknown => AgentAttention::Low,
+            Self::Idle => AgentAttention::None,
+        }
+    }
+}
+
+impl From<String> for AgentState {
+    /// OPEN-enum decode: any string not in the v1 vocabulary is `Unknown`.
+    fn from(word: String) -> Self {
+        Self::from_word(&word).unwrap_or_default()
+    }
+}
+
+impl fmt::Display for AgentState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How loudly a record asks to be noticed (OPEN enum: an unrecognized word
+/// decodes to [`AgentAttention::Normal`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", from = "String")]
 pub enum AgentAttention {
-    /// Declared `none`.
+    /// Declared `none`, or derived from `idle`.
     None,
     /// Declared `low`, or derived from a finished or undeclared state.
     Low,
     /// Declared `normal`, an unrecognized word, or derived from `working`.
+    #[default]
     Normal,
     /// Declared `high`, or derived from `blocked`.
     High,
+}
+
+impl AgentAttention {
+    /// The attention level for `word`, or `None` when this build does not
+    /// recognize it.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "none" => Self::None,
+            "low" => Self::Low,
+            "normal" => Self::Normal,
+            "high" => Self::High,
+            _ => return None,
+        })
+    }
+
+    /// The kebab-case wire/display word for this attention level.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+        }
+    }
+}
+
+impl From<String> for AgentAttention {
+    /// OPEN-enum decode: any string not in the v1 vocabulary is `Normal`.
+    fn from(word: String) -> Self {
+        Self::from_word(&word).unwrap_or_default()
+    }
+}
+
+impl fmt::Display for AgentAttention {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// The most bytes an encoded `phux.agent/v1` record may hold. Writers refuse
@@ -103,7 +204,8 @@ pub struct AgentRecordReading {
     /// How `state` was read.
     pub state_reading: StateReading,
     /// The declared attention and how it was read; `None` when the record
-    /// declared no `attention` (derive it with `derived_attention`).
+    /// declared no `attention` (derive it with
+    /// [`AgentState::default_attention`]).
     pub attention: Option<(AgentAttention, AttentionReading)>,
 }
 
@@ -113,7 +215,7 @@ impl AgentRecordReading {
     pub fn effective_attention(&self) -> (AgentAttention, AttentionReading) {
         self.attention
             .clone()
-            .unwrap_or_else(|| (derived_attention(self.state), AttentionReading::Derived))
+            .unwrap_or_else(|| (self.state.default_attention(), AttentionReading::Derived))
     }
 }
 
@@ -148,42 +250,18 @@ pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecordReading> {
     })
 }
 
-/// The conventional attention for an undeclared `attention` (L3 §3.7):
-/// `blocked` is high, `working` normal, `done`/`unknown` low, `idle` none.
-#[must_use]
-pub(crate) const fn derived_attention(state: AgentState) -> AgentAttention {
-    match state {
-        AgentState::Blocked => AgentAttention::High,
-        AgentState::Working => AgentAttention::Normal,
-        AgentState::Done | AgentState::Unknown => AgentAttention::Low,
-        AgentState::Idle => AgentAttention::None,
+fn state_from(value: &serde_json::Value) -> (AgentState, StateReading) {
+    match value.as_str().and_then(AgentState::from_word) {
+        Some(AgentState::Unknown) => (AgentState::Unknown, StateReading::Indeterminate),
+        Some(state) => (state, StateReading::Recognized),
+        None => (AgentState::Unknown, StateReading::Unsupported(raw(value))),
     }
 }
 
-fn state_from(value: &serde_json::Value) -> (AgentState, StateReading) {
-    let state = match value.as_str() {
-        Some("unknown") => return (AgentState::Unknown, StateReading::Indeterminate),
-        Some("idle") => AgentState::Idle,
-        Some("working") => AgentState::Working,
-        Some("blocked") => AgentState::Blocked,
-        Some("done") => AgentState::Done,
-        _ => return (AgentState::Unknown, StateReading::Unsupported(raw(value))),
-    };
-    (state, StateReading::Recognized)
-}
-
 fn attention_from(value: &serde_json::Value) -> (AgentAttention, AttentionReading) {
-    let attention = match value.as_str() {
-        Some("none") => AgentAttention::None,
-        Some("low") => AgentAttention::Low,
-        Some("normal") => AgentAttention::Normal,
-        Some("high") => AgentAttention::High,
-        _ => {
-            return (
-                AgentAttention::Normal,
-                AttentionReading::Unsupported(raw(value)),
-            );
-        }
+    let Some(attention) = value.as_str().and_then(AgentAttention::from_word) else {
+        let unsupported = AttentionReading::Unsupported(raw(value));
+        return (AgentAttention::Normal, unsupported);
     };
     (attention, AttentionReading::Declared)
 }
@@ -212,7 +290,47 @@ fn raw(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentState, MAX_AGENT_RECORD_BYTES, StateReading, parse_agent_record};
+    use super::{
+        AgentAttention, AgentState, MAX_AGENT_RECORD_BYTES, StateReading, parse_agent_record,
+    };
+
+    /// The serialized words are the `phux.agent/v1` vocabulary, and decode is
+    /// open: a word this build does not know is the default, never an error.
+    #[test]
+    fn the_vocabulary_round_trips_through_its_words() {
+        for state in [
+            AgentState::Unknown,
+            AgentState::Idle,
+            AgentState::Working,
+            AgentState::Blocked,
+            AgentState::Done,
+        ] {
+            let word = serde_json::to_string(&state).expect("serialize");
+            assert_eq!(word, format!("\"{state}\""));
+            assert_eq!(serde_json::from_str::<AgentState>(&word).ok(), Some(state));
+        }
+        for attention in [
+            AgentAttention::None,
+            AgentAttention::Low,
+            AgentAttention::Normal,
+            AgentAttention::High,
+        ] {
+            let word = serde_json::to_string(&attention).expect("serialize");
+            assert_eq!(word, format!("\"{}\"", attention.as_str()));
+            assert_eq!(
+                serde_json::from_str::<AgentAttention>(&word).ok(),
+                Some(attention)
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<AgentState>(r#""hibernating""#).ok(),
+            Some(AgentState::Unknown)
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentAttention>(r#""maximal""#).ok(),
+            Some(AgentAttention::Normal)
+        );
+    }
 
     /// The record is untrusted input: one byte over the limit is no
     /// declared agent, however well-formed; exactly at the limit still reads.

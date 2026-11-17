@@ -159,13 +159,10 @@ impl PaneCaptureContext<'_> {
         let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
         staging.gates.push(SnapshotGate {
             terminal_id,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             wire_terminal_id: wire_terminal_id.clone(),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: terminal.clone(),
             gate: gate_tx,
             cut: None,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_cursor: None,
         });
         pump::spawn_tracked(

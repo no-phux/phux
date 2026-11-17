@@ -17,16 +17,18 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use phux_client_runtime::pairing::{
-    CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX, validate_quic_endpoint,
-};
+use phux_client_runtime::pairing::{CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX};
 pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
+mod connector;
 #[cfg(test)]
 mod endpoint_tests;
 mod link_name;
+mod mint;
+pub(crate) use mint::run;
 #[cfg(test)]
 mod link_tests;
+use connector::relay_connector;
 use link_name::{link_name, percent_encode};
 mod manage;
 mod rebind;
@@ -730,148 +732,6 @@ fn render_qr_scaled(payload: &str, scale: u32) -> Result<String, String> {
         .map_err(|err| format!("could not encode pairing QR: {err}"))
 }
 
-/// Mint a token into the store and print it with the certificate
-/// fingerprint. Defaults are the shared paths the server reads (ADR-0031), and
-/// the certificate is provisioned if absent. Nothing is minted unless the
-/// server on `socket` has a remote listener bound (ADR-0141). With a
-/// reachable wss listener the credentials are also printed as a connect
-/// link, followed on a terminal by its QR unless `--no-qr`; `--qr` is the
-/// camera form, the QR alone. With `relay` the credential is minted for a
-/// relay route instead ([`mint_relay_link`]).
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "CLI entry point owns the args clap dispatch hands it; taking them by value keeps the call site clean"
-)]
-#[allow(
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools,
-    reason = "the existing mint options remain flat for CLI compatibility while the optional action selects lifecycle operations"
-)]
-pub(crate) fn run_pair(
-    action: Option<PairAction>,
-    socket: Option<PathBuf>,
-    tokens: Option<PathBuf>,
-    cert: Option<PathBuf>,
-    qr: bool,
-    secret_file: Option<PathBuf>,
-    expires: Option<String>,
-    no_qr: bool,
-    host: Option<String>,
-    name: Option<String>,
-    json: bool,
-    replace_token: Option<String>,
-    door: Door,
-    enable: bool,
-    lifetime: Lifetime,
-) -> ExitCode {
-    let tokens = tokens
-        .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
-        .unwrap_or_else(phux_server::auth::default_token_store_path);
-    if let Some(action) = action {
-        return run_credential_action(&tokens, action, json);
-    }
-    if json && (secret_file.is_some() || qr) {
-        error!("pair: --json prints the bearer and cannot combine with --qr or --secret-file");
-        return ExitCode::from(2);
-    }
-    if let Some(path) = secret_file.as_deref()
-        && let Err(err) = prepare_secret_file(path)
-    {
-        error!("pair: {err}");
-        return ExitCode::FAILURE;
-    }
-    let expires_for = match expires.as_deref().map(parse_expires).transpose() {
-        Ok(duration) => duration,
-        Err(err) => {
-            error!("pair: {err}");
-            return ExitCode::from(2);
-        }
-    };
-    let certificate = resolve_certificate_paths(cert);
-
-    // Everything that could make the credential useless is settled before
-    // the store is touched. The store's own refusal comes first, in the
-    // words a failed mint uses (a retired legacy store names its remedy).
-    if let Err(err) = phux_server::auth::TokenStore::load(&tokens) {
-        error!("pair: failed to mint token: {err}");
-        return ExitCode::FAILURE;
-    }
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
-    let expires_at = expires_for.map(|duration| chrono::Utc::now() + duration);
-    let first_use_by = lifetime.first_use_by(expires_at.is_some(), json, &door);
-    let output = LinkOutput {
-        name: name.as_deref(),
-        qr,
-        default_qr: shows_default_qr(
-            qr || no_qr || json || secret_file.is_some(),
-            std::io::IsTerminal::is_terminal(&std::io::stdout()),
-        ),
-        json,
-        secret_file: secret_file.as_deref(),
-        expires_at,
-        expires_label: expires.as_deref(),
-        first_use_by,
-        no_enroll: lifetime.no_enroll,
-    };
-    let enroll = match door {
-        Door::Listener { enroll } => enroll,
-        Door::Relay { route, enroll } => {
-            let replace = replace_token.as_deref();
-            let enroll = phone_enrollment_requested(enroll, output, true);
-            return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
-        }
-    };
-    let Some(live) = bound_remote_listener(&socket, enable, json) else {
-        return ExitCode::FAILURE;
-    };
-    let addresses = resolve_pair_addresses(host.as_deref(), live);
-    // Both explicit camera QR and a QR shown by default must enroll a new
-    // phone. With no link there is no default QR; ordinary mints still work.
-    let enroll = phone_enrollment_requested(enroll, output, addresses.server_url.is_some());
-    let refusal = link_refusal(
-        host.as_deref(),
-        qr,
-        &addresses.live,
-        addresses.server_url.as_deref(),
-    )
-    .or_else(|| {
-        let camera = qr || (output.default_qr && addresses.server_url.is_some());
-        (enroll && !addresses.enrollment_endpoint_ready(camera))
-            .then(|| ENROLL_NEEDS_QUIC.to_owned())
-    });
-    if let Some(refusal) = refusal {
-        error!("pair: {refusal}");
-        return ExitCode::FAILURE;
-    }
-    provision_pairing_certificate(&certificate, &addresses.advertised);
-    // A device enrolls trusting the CA its link pins and never learns one
-    // (ADR-0179), so a certificate no workload CA issued has nothing to give
-    // it. Refused before anything is minted.
-    if enroll
-        && phux_server::transport::tls::presented_authority(&certificate.cert)
-            .ok()
-            .flatten()
-            .is_none()
-    {
-        error!("pair: {ENROLL_NEEDS_AUTHORITY}");
-        return ExitCode::FAILURE;
-    }
-
-    let Some((minted, ticket)) =
-        mint_pairing_bundle(&tokens, replace_token.as_deref(), output, enroll)
-    else {
-        return ExitCode::FAILURE;
-    };
-    present_listener_credential(
-        &minted,
-        ticket.as_ref(),
-        &tokens,
-        &certificate,
-        &addresses,
-        output,
-    )
-}
-
 /// Print or file a listener mint. `--json` is the only path that writes the
 /// bearer to stdout; camera and secret-file mints keep it out of the text.
 fn present_listener_credential(
@@ -1185,69 +1045,6 @@ fn mint_relay_link(
     outln!();
     let secret = HumanSecret::new(&minted.id, &token, fingerprint, Some(&link), output);
     finish_human_mint(&secret, tokens)
-}
-
-/// The validated route and the `[[connector]]` entry its link dials.
-fn relay_connector(relay: &RelayRoute) -> Result<phux_config::ConnectorConfigEntry, String> {
-    phux_relay::validate_route_name(&relay.route).map_err(|err| format!("--relay-route: {err}"))?;
-    let config = phux_config::loader::load().map_err(|err| {
-        format!(
-            "could not read the phux config {}: {err}",
-            phux_config::loader::config_path().display()
-        )
-    })?;
-    let connector = select_relay_connector(config.connector, relay.relay.as_deref())?;
-    // The link must parse on the device: refuse a relay address it could not
-    // dial before anything is minted.
-    validate_quic_endpoint(&format!("quic://{}", connector.relay)).map_err(|err| {
-        format!(
-            "the [[connector]] relay {:?} cannot go in a link ({err}); none was minted",
-            connector.relay
-        )
-    })?;
-    Ok(connector)
-}
-
-/// Pick the `[[connector]]` entry a relay link dials: the one `--relay`
-/// names, else the only one. Nothing configured, or an ambiguous choice, is
-/// a refusal: a link must name the relay this server actually tunnels to.
-fn select_relay_connector(
-    configured: Vec<phux_config::ConnectorConfigEntry>,
-    relay: Option<&str>,
-) -> Result<phux_config::ConnectorConfigEntry, String> {
-    let names = || {
-        configured
-            .iter()
-            .map(|entry| entry.relay.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    if let Some(relay) = relay {
-        let listed = names();
-        return configured
-            .into_iter()
-            .find(|entry| entry.relay == relay)
-            .ok_or_else(|| {
-                format!(
-                    "no [[connector]] entry dials relay {relay:?} (configured: {}), so none was minted",
-                    if listed.is_empty() { "none" } else { &listed }
-                )
-            });
-    }
-    if configured.len() > 1 {
-        return Err(format!(
-            "several [[connector]] relays are configured ({}); pass --relay HOST:PORT naming \
-             the one this route is enrolled on",
-            names()
-        ));
-    }
-    configured.into_iter().next().ok_or_else(|| {
-        "this server has no [[connector]] relay configured, so a relay link would route to \
-         nothing and none was minted.\n  \
-         enroll the route with `phux relay pair --route ROUTE` on the relay host, add a \
-         [[connector]] entry naming that relay, and restart the server"
-            .to_owned()
-    })
 }
 
 /// Ask the server on `socket` for its state, only to learn that it answers:
@@ -1926,6 +1723,7 @@ fn pair_document(
 
 #[cfg(test)]
 mod tests {
+    use super::connector::select_relay_connector;
     use super::{
         LinkOutput, ListenerQueryError, ListenerSetup, LiveListeners, MagicDns, ModePrompt,
         NO_BOUND_LISTENER, PAIRED_MODE_PROMPT, PairAddresses, ServerPins, accept_paired_mode,
@@ -1933,7 +1731,7 @@ mod tests {
         ensure_remote_listener, is_affirmative, legacy_connect_link, link_refusal, live_listeners,
         mode_unset_refusal, other_unbound_refusal, pair_document, parse_connect_link,
         percent_encode, phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
-        select_relay_connector, shows_default_qr,
+        shows_default_qr,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
@@ -2753,14 +2551,9 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))));
-        let found = ensure_remote_listener(
-            Path::new("/run/phux.sock"),
-            true,
-            false,
-            &mut prompt,
-            &mut setup,
-        )
-        .expect("bound");
+        let socket = Path::new("/run/phux.sock");
+        let found =
+            ensure_remote_listener(socket, true, false, &mut prompt, &mut setup).expect("bound");
         assert_eq!(
             found,
             live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
@@ -2859,14 +2652,9 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(None, Some("100.64.0.2:8788"))));
-        let found = ensure_remote_listener(
-            Path::new("/run/phux.sock"),
-            true,
-            false,
-            &mut prompt,
-            &mut setup,
-        )
-        .expect("enabled");
+        let socket = Path::new("/run/phux.sock");
+        let found =
+            ensure_remote_listener(socket, true, false, &mut prompt, &mut setup).expect("enabled");
         assert_eq!(found, live(None, Some("100.64.0.2:8788")));
         assert_eq!(prompt.prompted, 0);
         assert!(setup.wrote && setup.rebound);

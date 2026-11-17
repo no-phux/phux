@@ -54,7 +54,7 @@ impl HubReload {
 pub(super) fn reload_local_hub() -> HubReload {
     use super::super::config::{ReloadRingError, ring_config_reload};
 
-    let socket_path = phux_server::runtime::default_socket_path();
+    let socket_path = phux_config::socket::default_socket_path();
     if let Err(refusal) = phux_config::socket::refuse_dev_on_production(&socket_path) {
         return HubReload::Failed(refusal);
     }

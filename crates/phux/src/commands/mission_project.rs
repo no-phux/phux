@@ -20,13 +20,13 @@ use std::time::{Duration, Instant};
 
 use phux_client::agent_meta::AgentMetaState;
 use phux_client::watch::{FleetSubscription, WatchItem, subscribe_fleet_after};
-use phux_mission::{
-    AgentReport, Projection, ProjectionInput, RunPhase, TerminalFact, observation_operation,
-    project,
-};
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{AgentEvent, ResourceLifecycle};
 use phux_protocol::wire::info::ResourceInfo;
+use phux_work::mission::{
+    AgentReport, Projection, ProjectionInput, RunPhase, TerminalFact, observation_operation,
+    project,
+};
 use phux_work::{Client, ObjectiveState, OpenRun, RunState, StateEdit};
 
 const ACTOR: &str = "keeper";
@@ -100,7 +100,7 @@ fn drive(socket: PathBuf) {
 
 fn default_server_socket() -> PathBuf {
     std::env::var_os("PHUX_SOCKET")
-        .map_or_else(phux_server::runtime::default_socket_path, PathBuf::from)
+        .map_or_else(phux_config::socket::default_socket_path, PathBuf::from)
 }
 
 struct ProjectionWatch {

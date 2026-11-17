@@ -5,7 +5,6 @@ use std::time::Duration;
 use phux_core::screen::{CellInfo, CellStyle, CursorState, ScreenState, SemanticContent, SoftWrap};
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::Scope;
-use tokio::net::UnixListener;
 
 use super::{RunOutcome, run_in_with_deadline};
 use crate::agent_meta::{RESOURCE_PANE_OCCUPANT_KEY, ShellAvailability};
@@ -71,9 +70,7 @@ where
     Fut: Future<Output = T>,
 {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("run.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let peer = tokio::spawn(testkit::serve_every(listener, make_spec));
+    let (socket, peer) = testkit::spawn_serve_every(dir.path(), make_spec);
     let out = body(socket).await;
     peer.abort();
     out

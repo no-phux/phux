@@ -4,15 +4,16 @@ use bytes::{Bytes, BytesMut};
 use phux_core::{Actor, LaunchSpec, SessionLifetime};
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapStreamProfile};
 use phux_protocol::policy::TransportType;
-use phux_tree::{
-    DocumentActor, DocumentKind, DocumentResource as _, SurfaceDocument, TreeDocument,
-};
 use std::io;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::LocalSet;
 
 use super::*;
 use crate::resource::{ResourceHandle, ResourceOutput};
+use crate::runtime::apps::document::engine::{
+    DocumentActor, DocumentKind, DocumentResource as _, PublishRequest, SurfaceDocument,
+    TreeDocument,
+};
 use crate::transport::{FrameReader, FrameWriter};
 
 mod agents;
@@ -70,8 +71,9 @@ impl Connection {
         kinds: Option<phux_protocol::caps::ResourceKindSet>,
     ) -> Self {
         let client = state.with_mut(|s| {
-            let client = s.new_client_id();
-            s.set_peer_identity(client, crate::runtime::test_support::owner_peer());
+            let client = s.clients_mut().new_client_id();
+            s.clients_mut()
+                .set_peer_identity(client, crate::runtime::test_support::owner_peer());
             client
         });
         let (tx, input) = mpsc::channel(64);
@@ -226,12 +228,15 @@ fn tree(
 fn aggregate_generation_is_not_reused_by_document_lag_recovery() {
     let mut state = crate::state::ServerState::new();
     let (_, resource) = state.seed_session("generation");
-    let client = state.new_client_id();
+    let client = state.clients_mut().new_client_id();
     let (_, _, seq, _) =
-        state.replace_attach_terminal_pump(client, resource, initial_bootstrap_id());
+        state
+            .resources_mut()
+            .replace_pump(client, resource, initial_bootstrap_id());
     assert_eq!(
         state
-            .advance_attach_terminal_pump(client, resource, &seq)
+            .resources_mut()
+            .advance_pump_generation(client, resource, &seq)
             .unwrap()
             .get(),
         2
@@ -244,7 +249,7 @@ async fn publish<K: DocumentKind>(handle: &ResourceHandle, bytes: Bytes) {
         .document::<K>()
         .unwrap()
         .publish
-        .send(phux_tree::PublishRequest { bytes, reply })
+        .send(PublishRequest { bytes, reply })
         .await
         .unwrap();
     rx.await.unwrap().unwrap();
@@ -325,16 +330,16 @@ async fn document_only_without_terminal_profile_and_reattach_are_live() {
     LocalSet::new().run_until(async {
         let state = SharedState::new();
         let (session, parent) = parent(&state, false);
-        state.with_mut(|s| s.set_window_size(phux_config::WindowSize::Smallest));
+        state.with_mut(|s| s.config_mut().window_size = phux_config::WindowSize::Smallest);
         let (core, handle) = tree(&state, parent, session);
         publish::<TreeDocument>(&handle, Bytes::from_static(b"{\"cut\":1}")).await;
-        let wire = state.with_mut(|s| s.intern_resource_wire(core));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(core));
         let mut connection = Connection::start(&state, false).await;
         for attach_id in [1, 2] {
             connection.attach(attach_id).await;
             assert_eq!(prefix(&mut connection, 1, attach_id).await,
                 [BootstrapStreamProfile::AccessibilityTreeJsonV1]);
-            assert!(state.with(|s| s.input_lease_holder(core).is_none()));
+            assert!(state.with(|s| s.leases().holder(core).is_none()));
             assert!(state.with(|s| s.viewport_terminals(connection.client).is_empty()));
             assert!(state.with(|s| s.resolve_terminal_geometry(core, Some(ViewportInfo::new(123, 45))).is_none()));
             assert!(state.with(|s| s.resolve_terminal_cell_px(core).is_none()));
@@ -373,8 +378,8 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
         state.with_mut(|s| {
             assert!(s.registry_mut().set_recent(session, Some(tree)));
             assert_eq!(s.active_resource_of_session(session), Some(tree));
-            assert_eq!(s.active_pane_of_session(session), Some(parent));
-            let wire = s.intern_resource_wire(tree);
+            assert_eq!(s.sessions().default_pane_of(session), Some(parent));
+            let wire = s.idspace.intern_resource(tree);
             assert_eq!(
                 s.build_session_snapshot(session).unwrap().focused_resource,
                 wire
@@ -410,7 +415,7 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
         assert_eq!(profiles.len(), 3);
         assert!(!profiles.contains(&BootstrapStreamProfile::AgentEventsJsonlV1));
         assert!(profiles.contains(&BootstrapStreamProfile::PixelSurfacePngV1));
-        let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(agent));
         connection.send(FrameKind::Command {
             request_id: 70,
             command: phux_protocol::wire::frame::Command::attach_agent_session(wire.clone(), None, None),
@@ -423,14 +428,14 @@ async fn mixed_four_kinds_defer_agent_stream_and_only_terminal_gets_a_lease() {
             request_id: 70, result: phux_protocol::wire::frame::CommandResult::Ok
         }));
         for core in [agent, tree, surface] {
-            assert!(state.with(|s| s.input_lease_holder(core).is_none()));
+            assert!(state.with(|s| s.leases().holder(core).is_none()));
         }
         assert_eq!(
             state.with(|s| s.viewport_terminals(connection.client)),
             [parent]
         );
         assert_eq!(
-            state.with(|s| s.input_lease_holder(parent)),
+            state.with(|s| s.leases().holder(parent)),
             Some(connection.client)
         );
         connection.finish().await;
@@ -457,11 +462,12 @@ async fn mixed_without_terminal_profile_refuses_before_subscription_or_geometry(
         state.with(|s| {
             assert!(!s.attached().contains_key(&connection.client));
             assert!(
-                !s.subscribers_for_resource(tree)
+                !s.resources()
+                    .subscribers_for(tree)
                     .contains(&connection.client)
             );
             assert_eq!(s.registry().terminal(parent).unwrap().dims, before);
-            assert!(s.input_lease_holder(parent).is_none());
+            assert!(s.leases().holder(parent).is_none());
         });
         connection.send(FrameKind::Ping { nonce: 9 }).await;
         assert!(matches!(

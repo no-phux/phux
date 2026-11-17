@@ -1,14 +1,18 @@
 //! Byte goldens for `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`,
 //! `SERVICE_HTTP_CLOSE`, and their `SERVICE_HTTP_HEAD` / `SERVICE_HTTP_CHUNK`
-//! replies, in the `xxd` style of `file_transfer_snapshots.rs`.
+//! replies, in the `xxd` style of `file_transfer_snapshots.rs`, checked by
+//! `wire_snapshots.rs`.
 
 #![allow(clippy::unwrap_used)]
 
-use crate::common::dump_frame;
 use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
 
-fn fixtures() -> Vec<(&'static str, FrameKind)> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "`pub` alone trips `unreachable_pub`; `wire_snapshots.rs` checks these"
+)]
+pub(crate) fn fixtures() -> Vec<(&'static str, FrameKind)> {
     vec![
         // SERVICE_HTTP_OPEN (tag 0x3d) to the serving server's OpenCode.
         (
@@ -69,13 +73,4 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
             },
         ),
     ]
-}
-
-/// Every fixture's hex dump matches its committed golden byte-for-byte, and
-/// decodes back to itself.
-#[test]
-fn service_http_frames_match_goldens() {
-    for (name, frame) in fixtures() {
-        insta::assert_snapshot!(name, dump_frame(&frame));
-    }
 }

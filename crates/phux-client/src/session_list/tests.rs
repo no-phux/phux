@@ -182,16 +182,7 @@ fn json_rows_carry_lifetime_members_and_exec_counts() {
     fixture.resource(work, None);
     fixture.session("parked", SessionLifetime::Persistent);
     let snapshot = fixture.snapshot();
-    let inventory = crate::org::OrgInventory {
-        authority: phux_protocol::ids::AuthorityId::new([1; 16]).expect("non-zero"),
-        inbox: None,
-        sessions: fixture.sessions().to_vec(),
-        resources: fixture.resources().to_vec(),
-        snapshot_revision: phux_protocol::ids::Revision::new(1),
-        journal_seq: 0,
-        total_intake: 0,
-        degradation: Degradation::default(),
-    };
+    let inventory = fixture.inventory();
     let doc = document(&snapshot, Some(&inventory), &Degradation::default());
     let json = serde_json::to_value(&doc).expect("serialize");
     assert_eq!(json["schema_version"], 4);
@@ -230,16 +221,7 @@ fn json_rows_carry_full_record_keys() {
     let shell = fixture.shell(work);
     let live = fixture.live(&shell).expect("the shell executes");
     let snapshot = fixture.snapshot();
-    let inventory = crate::org::OrgInventory {
-        authority: phux_protocol::ids::AuthorityId::new([1; 16]).expect("non-zero"),
-        inbox: None,
-        sessions: fixture.sessions().to_vec(),
-        resources: fixture.resources().to_vec(),
-        snapshot_revision: phux_protocol::ids::Revision::new(1),
-        journal_seq: 0,
-        total_intake: 0,
-        degradation: Degradation::default(),
-    };
+    let inventory = fixture.inventory();
     let doc = document(&snapshot, Some(&inventory), &Degradation::default());
     let session_key = doc.sessions[0].key.clone().expect("session key");
     assert_eq!(session_key, work.to_string());

@@ -14,19 +14,20 @@ authors.workspace = true
 workspace = true
 
 [features]
-default = ["webtransport", "native-engine"]
+default = ["webtransport"]
 # WebTransport (HTTP/3 over QUIC) listener: the browser's QUIC-class door,
 # which `phux-web` dials before falling back to WebSocket.
 webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
 # tokio-console debugger. Requires `RUSTFLAGS='--cfg tokio_unstable'`.
 tokio-console = ["dep:console-subscriber"]
-# Opaque native-checkpoint hosting; the executable supplies its implementation.
-native-engine = ["phux-terminal-api/native-engine"]
 # Builds the `#[ignore]`d `stress` storms. Only `just stress` runs them, so
 # the default test build skips compiling and linking that binary.
 stress = []
 # Builds the `#[ignore]`d `perf` wall-clock gates, which only `just e2e` runs.
 measure = []
+# `policy::testing::FnPolicy`, a scripted HELLO engine for other crates'
+# live-server tests. Never enabled by a runtime dependency.
+testing = []
 
 
 [dependencies]
@@ -36,7 +37,6 @@ phux-core.workspace = true
 phux-resource.workspace = true
 phux-agent-session.workspace = true
 phux-agent-rules.workspace = true
-phux-tree.workspace = true
 # Terminal operations only: this contract cannot link a VT or PTY implementation.
 phux-terminal-api.workspace = true
 # `Authorization: Basic` for the OpenCode host service.
@@ -54,8 +54,6 @@ chrono.workspace = true
 # The graceful-upgrade state blob and JSON records.
 serde.workspace = true
 serde_json.workspace = true
-# SIMD ESC search when downsampling bootstrap bytes for a client's caps.
-memchr.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -117,7 +115,7 @@ x509-parser = "0.18"
 # feature is omitted because it would enable `tracing/log` workspace-wide.
 quinn.workspace = true
 # Shared dial/TLS stack for hub links; `provision` shares the self-signed
-# certificate generator with phux-relay.
+# certificate generator with the relay.
 phux-dial = { workspace = true, features = ["provision"] }
 # WebTransport CONNECT parsing on a phux-owned accept path (duplicate
 # `Authorization` fields are refused before QPACK collapses them). Already in
@@ -141,11 +139,9 @@ rusqlite.workspace = true
 
 [dev-dependencies]
 phux-frozen.workspace = true
-# Tests name a seeded pane's launch directly.
-portable-pty.workspace = true
 # Terminal fixtures for the host's own tests.
-phux-terminal = { workspace = true, features = ["test-support", "native-engine"] }
-phux-terminal-api = { workspace = true, features = ["test-support", "native-engine"] }
+phux-terminal = { workspace = true, features = ["test-support"] }
+phux-terminal-api = { workspace = true, features = ["test-support"] }
 phux-agent-session = { workspace = true, features = ["test-support"] }
 # The fake loopback service the `SERVICE_HTTP_*` tests answer from.
 hyper = { version = "1", default-features = false, features = ["client", "http1", "server"] }
@@ -156,13 +152,14 @@ iai-callgrind.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # Tests drive the native engine the client kernel uses.
 phux-client-core = { workspace = true, features = ["native-engine"] }
-# The relay e2e test runs the production relay. Dev-only: phux-relay must
-# never depend on phux-server (ADR-0051).
-phux-relay.workspace = true
+# Kitty replay for the image-resync tests.
+phux-vt = { workspace = true, features = ["kitty"] }
 # Shared integration-test scaffolding, built once as an rlib.
 phux-server-testkit.workspace = true
-# `testing` adds `DropProxy` for the send-window tests.
-phux-dial = { workspace = true, features = ["provision", "testing"] }
+# `testing` adds `DropProxy` for the send-window tests. `relay`: the relay
+# e2e test runs the production relay. Dev-only: the relay must never depend
+# on phux-server (ADR-0051).
+phux-dial = { workspace = true, features = ["provision", "relay", "testing"] }
 # WebTransport test client; `dangerous-configuration` trusts the throwaway
 # self-signed leaf.
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "dangerous-configuration"] }
@@ -181,7 +178,6 @@ required-features = ["measure"]
 [[bench]]
 name = "warm_attach"
 harness = false
-required-features = ["native-engine"]
 
 # Callgrind instruction counts for the hot paths. No Criterion feature:
 # `cargo bench -p phux-server --bench icount` builds this alone.

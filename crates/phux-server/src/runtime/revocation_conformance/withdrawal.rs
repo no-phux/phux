@@ -13,7 +13,7 @@ use super::{
 };
 use crate::runtime::revocation::spawn_revocation_watcher;
 use crate::runtime::test_support::{hello, workload_identity};
-use crate::state::{Outbound, ServerState};
+use crate::state::Outbound;
 use crate::workload::WorkloadRegistry;
 
 #[tokio::test(flavor = "current_thread")]
@@ -185,7 +185,7 @@ async fn malformed_reload_revokes_every_workload_session_until_a_valid_generatio
 async fn revocation_releases_input_leases_and_subscriptions_and_journals_them() {
     local(async {
         let fx = Fixture::paired(&["*@global"]);
-        let observer = fx.state.with_mut(ServerState::new_client_id);
+        let observer = fx.state.with_mut(|s| s.clients_mut().new_client_id());
         let (observer_tx, mut observer_rx) = mpsc::channel(256);
         fx.state
             .with_mut(|s| s.subscribe_events(observer, None, observer_tx));
@@ -274,11 +274,11 @@ async fn revocation_does_not_kill_the_workloads_terminals() {
 
         fx.state.with(|s| {
             assert!(
-                s.resource_handle(fx.alpha_core).is_some(),
+                s.resources().handle(fx.alpha_core).is_some(),
                 "the Terminal survives"
             );
             assert!(
-                s.find_session_by_name("alpha").is_some(),
+                s.sessions().find_by_name("alpha").is_some(),
                 "its session survives"
             );
         });

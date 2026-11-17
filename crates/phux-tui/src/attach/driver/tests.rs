@@ -8,11 +8,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, Layer, ServerCapabilities, TerminalColor, TerminalDefaultColors,
-    select_bootstrap_profile,
-};
+use phux_protocol::caps::{Layer, ServerCapabilities, TerminalColor, TerminalDefaultColors};
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, Scope, ViewportInfo};
 use tokio::net::UnixStream;
@@ -30,7 +26,7 @@ use crate::attach::render::{ReplicaWalk, SelectionRect};
 use crate::layout::ArrangementDoc;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
-use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
+use crate::render::chrome::status_bar::{Notice, StatusBarPainter, widgets::WindowInfo};
 use crate::render::overlay::{OverlayState, RenderOverlay, SelectItem, SelectList};
 use crate::settings::{build_resolver_from, config_error_line, keybind_error_line};
 use phux_client::agent_meta::{
@@ -39,7 +35,6 @@ use phux_client::agent_meta::{
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
 use phux_config::KeybindingsCfg;
-use phux_config::widget::WindowInfo;
 
 use super::config_ui::*;
 use super::entry::*;
@@ -120,14 +115,13 @@ fn create_session_target_uses_the_given_directory() {
 }
 
 fn session_name_painter() -> StatusBarPainter {
-    use phux_config::widget::WidgetRegistry;
+    use crate::render::chrome::status_bar::widgets::{StatusBar, WidgetRegistry};
     use phux_config::{StatusCfg, Widget};
     let cfg = StatusCfg {
         left: vec![Widget::Bare("session-name".into())],
         ..StatusCfg::default()
     };
-    let bar =
-        phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
+    let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
     StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom)
 }
 
@@ -165,15 +159,9 @@ fn returning(path: &Path) -> (onboarding::AttachClaim, StatusBarPainter) {
 }
 
 fn paint_bar(painter: &mut StatusBarPainter, cols: u16, out: &mut Vec<u8>) -> StatusBarPaint {
-    let theme = crate::render::theme::Theme::default();
     let mut chrome = ChromeCtx {
-        viewport: (cols, 24),
-        sidebar: None,
         status_bar: Some(painter),
-        sidebar_painter: None,
-        session_name: "demo",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare((cols, 24), "demo")
     };
     paint_bar_after_pane(out, &mut chrome, None, None, false)
 }
@@ -806,17 +794,13 @@ fn shipped_frame_rows(
         PaneSlot::new_with_size(cols, pane_rows).expect("slot"),
     )]);
     let kernel = published_test_kernel(&id, cols, pane_rows, PROBE_PANE_TEXT.as_bytes());
-    let theme = crate::render::theme::Theme::default();
     let mut sidebar_painter = probe_sidebar(windows);
     let mut out: Vec<u8> = Vec::new();
     let mut chrome = ChromeCtx {
-        viewport: view,
         sidebar,
         status_bar: Some(&mut status_bar),
         sidebar_painter: Some(&mut sidebar_painter),
-        session_name: "phux",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare(view, "phux")
     };
     paint_full_frame(
         &mut out,
@@ -942,7 +926,6 @@ fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
 /// painter threaded when `with_painter`, projected to strip columns and rows.
 fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<String>, String) {
     const VIEW: (u16, u16) = (80, 24);
-    let theme = crate::render::Theme::default();
     let id = ResourceId::local(1);
     let workspace = ArrangementDoc::single(id.clone());
     let sidebar = Some(SidebarReservation {
@@ -960,13 +943,9 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
     overlays.push(overlay);
     let mut out: Vec<u8> = Vec::new();
     let mut chrome = ChromeCtx {
-        viewport: VIEW,
         sidebar,
-        status_bar: None,
         sidebar_painter: with_painter.then_some(&mut sidebar_painter),
-        session_name: "probe",
-        theme: &theme,
-        leaves: &crate::attach::surface_leaf::LeafBook::default(),
+        ..ChromeCtx::bare(VIEW, "probe")
     };
     paint_active_overlay(
         &mut out,
@@ -1046,18 +1025,10 @@ fn all_floating_overlays_keep_sidebar_visible() {
         .collect(),
         ..KeybindingsCfg::default()
     };
-    let fleet_items = crate::attach::fleet::fleet_items(
+    let fleet_items = crate::attach::fleet::local_fleet_items(
         &ArrangementDoc::single(ResourceId::local(1)),
-        &[],
-        None,
         &HashMap::new(),
         &HashMap::new(),
-        crate::attach::fleet::ForeignSessions {
-            layouts: &HashMap::new(),
-            agents: &HashMap::new(),
-            terminals: &HashMap::new(),
-        },
-        &[],
     );
     assert!(!fleet_items.iter().all(SelectItem::is_header));
     let overlays: Vec<(&str, Box<dyn RenderOverlay>)> = vec![

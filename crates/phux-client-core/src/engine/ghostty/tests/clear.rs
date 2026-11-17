@@ -18,15 +18,7 @@ fn pending_replica(
         let ready_end = capture.prefix_records.last().unwrap().end;
         bytes = capture.bytes[..ready_end].to_vec();
     }
-    let mut adapter = native_adapter();
-    let mut replica = adapter.start_replica(profile, geometry()).unwrap();
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &bytes, &mut effects)
-        .unwrap();
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .unwrap();
+    let (adapter, replica, mut effects) = published(profile, &bytes);
     effects.clear();
     (adapter, replica, effects)
 }

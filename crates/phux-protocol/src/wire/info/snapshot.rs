@@ -49,46 +49,13 @@ impl HostSessionInfo {
         }
     }
 
-    /// Builder setter for [`Self::created_at_unix_secs`].
-    #[must_use]
-    pub const fn with_created_at_unix_secs(mut self, created_at_unix_secs: i64) -> Self {
-        self.created_at_unix_secs = created_at_unix_secs;
-        self
-    }
-
-    /// Builder setter for [`Self::window_count`].
-    #[must_use]
-    pub const fn with_window_count(mut self, window_count: u16) -> Self {
-        self.window_count = window_count;
-        self
-    }
-
-    /// Builder setter for [`Self::pane_count`].
-    #[must_use]
-    pub const fn with_pane_count(mut self, pane_count: u16) -> Self {
-        self.pane_count = pane_count;
-        self
-    }
-
-    /// Builder setter for [`Self::attached_client_count`].
-    #[must_use]
-    pub const fn with_attached_client_count(mut self, attached_client_count: u16) -> Self {
-        self.attached_client_count = attached_client_count;
-        self
-    }
-
-    /// Builder setter for [`Self::active_resource`].
-    #[must_use]
-    pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
-        self.active_resource = active_resource;
-        self
-    }
-
-    /// Builder setter for [`Self::members`].
-    #[must_use]
-    pub fn with_members(mut self, members: Vec<ResourceId>) -> Self {
-        self.members = members;
-        self
+    builder_setters! {
+        const fn with_created_at_unix_secs(created_at_unix_secs: i64) => created_at_unix_secs;
+        const fn with_window_count(window_count: u16) => window_count;
+        const fn with_pane_count(pane_count: u16) => pane_count;
+        const fn with_attached_client_count(attached_client_count: u16) => attached_client_count;
+        fn with_active_resource(active_resource: Option<ResourceId>) => active_resource;
+        fn with_members(members: Vec<ResourceId>) => members;
     }
 }
 
@@ -321,24 +288,9 @@ impl SessionSnapshot {
         self
     }
 
-    /// Builder setter for [`Self::sessions`].
-    #[must_use]
-    pub fn with_sessions(mut self, sessions: Vec<SessionInfo>) -> Self {
-        self.sessions = sessions;
-        self
-    }
-
-    /// Builder setter for [`Self::windows`].
-    #[must_use]
-    pub fn with_windows(mut self, windows: Vec<WindowInfo>) -> Self {
-        self.windows = windows;
-        self
-    }
-
-    /// Builder setter for [`Self::resources`].
-    #[must_use]
-    pub fn with_resources(mut self, resources: Vec<ResourceInfo>) -> Self {
-        self.resources = resources;
-        self
+    builder_setters! {
+        fn with_sessions(sessions: Vec<SessionInfo>) => sessions;
+        fn with_windows(windows: Vec<WindowInfo>) => windows;
+        fn with_resources(resources: Vec<ResourceInfo>) => resources;
     }
 }

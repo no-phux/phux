@@ -264,29 +264,33 @@ mod resync_debounce_tests {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
         tokio::pin!(sleep);
 
-        let mut debounce = idle();
-        debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        debounce.arm(resize(), sleep.as_mut());
-        assert_eq!(
-            owed(&mut debounce),
-            (ResyncReason::Resize, ResyncAudience::Everyone)
-        );
-
-        let mut debounce = idle();
-        debounce.arm(resize(), sleep.as_mut());
-        debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        assert_eq!(
-            owed(&mut debounce),
-            (ResyncReason::Resize, ResyncAudience::Everyone)
-        );
-
-        let mut debounce = idle();
-        debounce.arm(gap_for(pump(1)), sleep.as_mut());
-        debounce.arm(gap(), sleep.as_mut());
-        assert_eq!(
-            owed(&mut debounce),
-            (ResyncReason::OutboundGap, ResyncAudience::Everyone)
-        );
+        for (label, requests, reason) in [
+            (
+                "gap then resize",
+                [gap_for(pump(1)), resize()],
+                ResyncReason::Resize,
+            ),
+            (
+                "resize then gap",
+                [resize(), gap_for(pump(1))],
+                ResyncReason::Resize,
+            ),
+            (
+                "named then unnamed gap",
+                [gap_for(pump(1)), gap()],
+                ResyncReason::OutboundGap,
+            ),
+        ] {
+            let mut debounce = idle();
+            for request in requests {
+                debounce.arm(request, sleep.as_mut());
+            }
+            assert_eq!(
+                owed(&mut debounce),
+                (reason, ResyncAudience::Everyone),
+                "{label}"
+            );
+        }
     }
 
     /// A resize storm still re-arms every time.

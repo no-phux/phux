@@ -183,7 +183,7 @@ async fn failed_split_discards_unadmitted_agent_announcements() {
     let mut session = path_session(false, false).await;
     let spawn = requested_spawn(&mut session, "vertical");
     session.on_frame(spawned_agent(301, 202));
-    session.on_frame(error_reply(
+    session.on_frame(command_err(
         spawn,
         ErrorCode::TerminalNotFound,
         "split refused",
@@ -280,7 +280,7 @@ async fn live_agent_discovery_attaches_once_and_closure_never_resurrects() {
 async fn refused_agent_attach_retracts_badge_without_failing_terminal() {
     let mut session = path_session(false, false).await;
     let request_id = agent_attach(&session.on_frame(spawned_agent(201, 101)), 201);
-    let refused = session.on_frame(error_reply(
+    let refused = session.on_frame(command_err(
         request_id,
         ErrorCode::TerminalNotFound,
         "child already closed",

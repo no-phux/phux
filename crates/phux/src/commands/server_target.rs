@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{AttachError, Dial};
 use phux_client::state::StateView;
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use super::attach::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, codes};
@@ -337,9 +337,20 @@ impl ServerTarget {
     /// remote arm names the host and endpoint, and adds the overlay hint when
     /// the dial never got an answer.
     pub(crate) fn report_unreachable(&self, json: bool, err: &AttachError, verb: &str) -> ExitCode {
+        self.classify(err, verb).emit(json)
+    }
+
+    /// The refusal behind [`Self::report_unreachable`], exit 1: the local
+    /// no-server classification, or the remote failure naming the host. A
+    /// verb that words a particular failure its own way overrides the human
+    /// text with [`json_err::Refusal::with_human`].
+    pub(crate) fn classify(&self, err: &AttachError, verb: &str) -> json_err::Refusal {
         match self {
-            Self::Local(path) => json_err::report_no_server(json, err, path, verb),
-            Self::Remote(remote) => json_err::emit(json, &remote.failure(err, verb), 1),
+            Self::Local(path) => json_err::Refusal::no_server(err, path, verb),
+            Self::Remote(remote) => json_err::Refusal::from_error(
+                remote.failure(err, verb),
+                crate::exit_codes::EXIT_FAILURE,
+            ),
         }
     }
 

@@ -13,13 +13,11 @@
 use phux_protocol::ids::ResourceId;
 
 use crate::creature::Work;
-pub use crate::playground::{Mood, Pt, Rgb, Rng, Species, hash, lerp, mix};
+pub use crate::playground::{AMBER, MINT, Mood, Pt, Rgb, Rng, Species, hash, lerp, mix};
 
 pub mod ground;
 mod sim;
 
-pub const AMBER: Rgb = [255.0, 181.0, 71.0];
-pub const MINT: Rgb = [98.0, 230.0, 180.0];
 pub const GOLD: Rgb = [255.0, 206.0, 84.0];
 
 /// The view's chrome, top and bottom: the title bar and the readout.

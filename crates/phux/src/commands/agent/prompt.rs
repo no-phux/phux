@@ -25,8 +25,8 @@ use phux_client::agent_meta::AgentRecord;
 use phux_client::agent_prompt::{PromptError, PromptOutcome, PromptWait, Refusal, prompt_agent};
 use phux_client::attach::AttachError;
 use phux_client::read::Verb;
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::InputOperationId;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
@@ -119,11 +119,10 @@ pub(super) fn run_agent_prompt(
     let text = text.to_owned();
 
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentPrompt, json)
-            .await
+        let pane = match resolve_target_for_input(&socket_path, &selector, Verb::AgentPrompt).await
         {
             Ok(id) => id,
-            Err(code) => return code,
+            Err(refusal) => return refusal.emit(json),
         };
         let label = phux_client::selector::format_terminal_id(&pane);
         // ADR-0076 point 4: the same identity comparison `agent send-keys` does.

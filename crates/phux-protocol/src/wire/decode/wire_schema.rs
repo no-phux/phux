@@ -3,16 +3,17 @@
 //! `docs/spec/wire-schema.json` lists every frame's type byte and, for each
 //! top-level TLV field, its id, name, value type, and presence. Everything
 //! except the value type is derived here from the codec itself: frame names
-//! from an exhaustive match over [`FrameKind`], field names and ids from
-//! `wire/field.rs`, presence from encoding samples of every variant and
-//! decoding each with one field stripped, and retired ids from the gaps in a
-//! frame's id range. The rendered result must equal the committed file byte
+//! from the frame catalog (`wire/frame/catalog.rs`), field names and ids from
+//! the `FIELDS` table `tlv_body!` emits in each `wire/field` module
+//! (`field::FRAME_MODULES`), presence from encoding samples of every variant
+//! and decoding each with one field stripped, and retired ids from the gaps
+//! in a frame's id range. The rendered result must equal the committed file byte
 //! for byte, so the codec cannot change shape without a schema diff in the
 //! same change. Each declared value type is then checked against every
 //! sampled value of its field.
 //!
-//! A new `FrameKind` variant fails to compile in [`frame_entry`] until it has
-//! a name and an index, then fails [`every_variant_has_a_sample`] until it
+//! A new `FrameKind` variant fails to compile until it has a frame catalog
+//! row, which gives it a name and an index, then fails [`every_variant_has_a_sample`] until it
 //! has a sample. After an intended codec change, regenerate with
 //! `PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_matches`,
 //! set the `type` of any new field (written as `?`), and review the diff.
@@ -23,13 +24,7 @@ use std::path::PathBuf;
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    Decoder, decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
-    decode_bootstrap_profile, decode_client_capabilities, decode_command, decode_command_result,
-    decode_env, decode_key_event, decode_mouse_event, decode_move_result, decode_paste_event,
-    decode_scope, decode_server_capabilities, decode_session_snapshot, decode_spawn_result,
-    decode_string_list, decode_terminal_id, decode_viewport_info,
-};
+use super::{Decoder, decode_client_capabilities, decode_server_capabilities};
 use crate::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Compression, ServerCapabilities,
 };
@@ -39,28 +34,36 @@ use crate::ids::{
 };
 use crate::wire::encode::wire_type;
 use crate::wire::frame::{
-    ActorRef, AgentEvent, CloseReason, CommandResult, DetachReason, DirectoryEntry,
+    ActorRef, AgentEvent, CloseReason, CommandResult, CommandValue, DetachReason, DirectoryEntry,
     DirectoryErrorCode, DirectoryListing, DirectoryListingError, ErrorCode, EventStamp, FrameKind,
     HistoryRejectionReason, HistoryTombstoneReason, MoveResult, PathErrorCode, PathKind,
     PathQueryError, PathRow, PathStatus, Scope, SpawnResult, TYPE_FRAME_COMPRESSED,
     TombstoneReason,
 };
+use crate::wire::frame::{
+    decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
+    decode_bootstrap_profile, decode_command, decode_command_result, decode_env, decode_key_event,
+    decode_mouse_event, decode_move_result, decode_paste_event, decode_scope, decode_spawn_result,
+    decode_string_list, decode_terminal_id, decode_viewport_info,
+};
 use crate::wire::info::SessionSnapshot;
+use crate::wire::info::decode_session_snapshot;
 use crate::wire::ssh_origin::decode_ssh_origin;
 
 mod derive;
 mod frames;
 mod model;
+mod roundtrip_tests;
 mod samples;
 mod stream_samples;
 mod types;
 
-use derive::{decodes, derive, field_modules, fields, type_byte};
+use derive::{decodes, derive, fields, type_byte};
 use frames::{FRAME_COMPRESSED, FRAME_VARIANTS, frame_entry};
 use model::{FieldEntry, FrameEntry, Presence, Schema, render};
 use samples::{Sample, actor, frame_samples, generation, key, samples, stream, terminal};
 use stream_samples::{
-    host_samples, lifecycle_samples, metadata_samples, spawn_samples, stream_samples,
+    host_samples, lifecycle_samples, metadata_samples, reply_samples, spawn_samples, stream_samples,
 };
 use types::{KNOWN_TYPES, type_matches};
 
@@ -69,30 +72,6 @@ const SCHEMA_PATH: &str = "docs/spec/wire-schema.json";
 
 /// Set to regenerate the schema from the codec instead of checking it.
 const UPDATE_ENV: &str = "PHUX_UPDATE_WIRE_SCHEMA";
-
-/// The field-id table the codec encodes and decodes by: the modules
-/// `field.rs` re-exports, one source file per frame family.
-const FIELD_RS: &str = concat!(
-    include_str!("../field/connection.rs"),
-    include_str!("../field/metadata.rs"),
-    include_str!("../field/lifecycle.rs"),
-    include_str!("../field/organization.rs"),
-);
-
-/// `field.rs` modules that number a field-tagged record nested inside a
-/// positional value, not a frame body. The schema covers frame bodies only.
-const NESTED_RECORD_MODULES: [&str; 10] = [
-    "event_journal_gap",
-    "event_source_gap",
-    "snapshot_extension",
-    "resource_state",
-    "session_state",
-    "event_asked",
-    "event_pane_spawned",
-    "org",
-    "org_launch",
-    "org_page",
-];
 
 /// Placeholder `type` the regenerator writes for a field it has not seen.
 const UNSET_TYPE: &str = "?";
@@ -187,6 +166,26 @@ fn every_variant_has_a_sample() {
 }
 
 #[test]
+fn spec_names_are_unique() {
+    let mut rows: BTreeMap<&str, usize> = BTreeMap::new();
+    for frame in frame_samples() {
+        let (row, name, _) = frame_entry(&frame);
+        let first = *rows.entry(name).or_insert(row);
+        assert_eq!(first, row, "{name} names catalog rows {first} and {row}");
+    }
+    assert!(!rows.contains_key(FRAME_COMPRESSED.0));
+}
+
+#[test]
+fn every_server_frame_is_denied_as_wrong_direction() {
+    for frame in frame_samples() {
+        if frame.type_byte() & 0x80 != 0 {
+            crate::kinds::samples::assert_wrong_direction_denied(&frame);
+        }
+    }
+}
+
+#[test]
 fn samples_carry_only_length_delimited_unrepeated_fields() {
     for sample in samples() {
         let tlvs = fields(&sample.bytes);
@@ -257,20 +256,19 @@ fn declared_types_are_exactly_the_checked_ones() {
 }
 
 #[test]
-fn every_field_module_is_a_frame_or_a_nested_record() {
+fn every_frame_module_is_a_sampled_frame() {
     let mut frames: BTreeSet<&str> = frame_samples()
         .iter()
         .map(|frame| frame_entry(frame).2)
         .filter(|module| !module.is_empty())
         .collect();
     frames.insert(FRAME_COMPRESSED.1);
-    let nested: BTreeSet<&str> = NESTED_RECORD_MODULES.into_iter().collect();
-    let catalog = field_modules();
-    let modules: BTreeSet<&str> = catalog.keys().map(String::as_str).collect();
-    assert!(frames.is_disjoint(&nested));
+    let listed: BTreeSet<&str> = crate::wire::field::FRAME_MODULES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
     assert_eq!(
-        modules,
-        frames.union(&nested).copied().collect(),
-        "a field.rs module is neither a sampled frame nor a listed nested record"
+        listed, frames,
+        "field::FRAME_MODULES must list exactly the sampled frames' modules"
     );
 }

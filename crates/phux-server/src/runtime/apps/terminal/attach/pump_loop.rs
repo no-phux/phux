@@ -198,7 +198,6 @@ pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[Re
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in handles {
         // Native history cuts are a Terminal facet lease.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Ok(terminal) = handle.terminal() {
             let _ = tokio::time::timeout(
                 producer_deadline,

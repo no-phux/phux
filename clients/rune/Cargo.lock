@@ -2597,8 +2597,10 @@ dependencies = [
  "bytes",
  "ciborium",
  "libghostty-vt",
+ "phux-core",
  "phux-perf",
  "phux-protocol",
+ "phux-vt",
  "serde",
  "serde_json",
  "sha2",
@@ -2622,17 +2624,16 @@ dependencies = [
  "phux-dial",
  "phux-perf",
  "phux-protocol",
+ "phux-vt",
  "quinn",
  "rcgen",
  "rustls",
  "security-framework",
  "security-framework-sys",
- "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "unicode-segmentation",
  "uuid",
@@ -2694,8 +2695,6 @@ dependencies = [
  "bytes",
  "flate2",
  "int-enum",
- "libghostty-vt",
- "png 0.18.1",
  "schemars",
  "serde",
  "serde_json",
@@ -2718,6 +2717,7 @@ dependencies = [
  "phux-config-core",
  "phux-perf",
  "phux-protocol",
+ "phux-wire-fixtures",
  "png 0.17.16",
  "pollster",
  "qrcode",
@@ -2742,6 +2742,26 @@ version = "0.1.0"
 dependencies = [
  "phux-rune",
  "serde_json",
+]
+
+[[package]]
+name = "phux-vt"
+version = "0.156.0"
+dependencies = [
+ "bytes",
+ "flate2",
+ "libghostty-vt",
+ "phux-core",
+ "phux-protocol",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "phux-wire-fixtures"
+version = "0.156.0"
+dependencies = [
+ "bytes",
+ "phux-protocol",
 ]
 
 [[package]]

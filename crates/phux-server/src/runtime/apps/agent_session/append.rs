@@ -25,16 +25,16 @@ pub(crate) async fn handle_append_resource_output(
     bytes: Bytes,
 ) -> CommandResult {
     if state.with(|s| s.native_agents().bindings.contains_key(terminal_id)) {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "SDK-owned streams require the reserved native controller".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "SDK-owned streams require the reserved native controller",
+        );
     }
     if !state.with(|s| s.client_may_produce(client_id)) {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "appending to a resource stream requires a local owner connection".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "appending to a resource stream requires a local owner connection",
+        );
     }
     // A non-native producer cannot masquerade as a registered SDK controller
     // merely by emitting the reserved provider_raw schema on an attached stream.
@@ -47,10 +47,10 @@ pub(crate) async fn handle_append_resource_output(
         })
     });
     if forged {
-        return CommandResult::Error {
-            code: ErrorCode::NotProducer,
-            message: "native controller schema is reserved".to_owned(),
-        };
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "native controller schema is reserved",
+        );
     }
     match append_native_output(state, terminal_id, bytes).await {
         Ok(accepted) => CommandResult::OkWith(CommandValue::Json(format!(
@@ -89,15 +89,18 @@ async fn append_output(
     let native_identity = publication.clone();
     let (core, handle) = state
         .with(|s| {
-            s.resource_from_wire(terminal_id).and_then(|core| {
-                s.resource_handle(core)
+            s.idspace.resource_from_wire(terminal_id).and_then(|core| {
+                s.resources()
+                    .handle(core)
                     .cloned()
                     .map(|handle| (core, handle))
             })
         })
-        .ok_or_else(|| CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such resource: {terminal_id}"),
+        .ok_or_else(|| {
+            CommandResult::error(
+                ErrorCode::TerminalNotFound,
+                format!("no such resource: {terminal_id}"),
+            )
         })?;
     let session = handle
         .agent_session()
@@ -110,15 +113,16 @@ async fn append_output(
             reply,
             publication,
         })
-        .map_err(|_| CommandResult::Error {
-            code: ErrorCode::Overflow,
-            message: "the session's append queue is full".to_owned(),
+        .map_err(|_| {
+            CommandResult::error(ErrorCode::Overflow, "the session's append queue is full")
         })?;
     let accepted = rx
         .await
-        .map_err(|_| CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before the append landed".to_owned(),
+        .map_err(|_| {
+            CommandResult::error(
+                ErrorCode::TerminalNotFound,
+                "the session closed before the append landed",
+            )
         })?
         .map_err(append_rejection)?;
     if let Some(identity) = native_identity {
@@ -153,18 +157,17 @@ async fn append_output(
 
 fn append_rejection(rejection: AppendRejection) -> CommandResult {
     match rejection {
-        AppendRejection::Invalid(error) => CommandResult::Error {
-            code: ErrorCode::RecordInvalid,
-            message: error.to_string(),
-        },
+        AppendRejection::Invalid(error) => {
+            CommandResult::error(ErrorCode::RecordInvalid, error.to_string())
+        }
         AppendRejection::Overflow(message) => CommandResult::Error {
             code: ErrorCode::Overflow,
             message,
         },
-        AppendRejection::Closed => CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "the session closed before the append landed".to_owned(),
-        },
+        AppendRejection::Closed => CommandResult::error(
+            ErrorCode::TerminalNotFound,
+            "the session closed before the append landed",
+        ),
     }
 }
 
@@ -251,7 +254,8 @@ fn agent_parent_of(
     parent: Option<phux_core::ids::ResourceId>,
 ) -> Option<AgentParent> {
     state
-        .resource_handle(parent?)?
+        .resources()
+        .handle(parent?)?
         .companion::<AgentParent>()
         .cloned()
 }
@@ -269,7 +273,7 @@ fn publish_stream_ask(
         return;
     };
     let (payload, wire_parent) = state.with_mut(|s| {
-        let wire = s.intern_resource_wire(parent);
+        let wire = s.idspace.intern_resource(parent);
         let payload = if let Some(ask) = ask {
             s.report_stream_ask(
                 parent,

@@ -5,15 +5,14 @@
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ErrorCode, FrameKind};
-use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SpawnedServer, WIRE_RECV_TIMEOUT, recv_until, recv_until_deadline, run_local,
+    SpawnedServer, WIRE_RECV_TIMEOUT, recv_until, recv_until_deadline, run_local, sh,
 };
 
-use crate::common::{attach_pane, connect_as, full_caps, gated_seed, subscribe_all};
+use crate::common::{attach_pane, connect_as, full_caps, gated_server, subscribe_all};
 
 fn report_asked(terminal: ResourceId, id: &str, question: &str, suggestions: &[&str]) -> Command {
     Command::ReportAsked {
@@ -58,13 +57,9 @@ async fn asked_before_reply(
 #[test]
 fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("release");
-        let seed = gated_seed(
-            &release,
+        let (server, release) = gated_server(
             "printf '\\033]2;phux-ask[q1]:Deploy to prod??s=Yes|No|Hold\\007'; sleep 60",
         );
-        let server = SpawnedServer::seeded_in(tmp, "demo", seed);
         let (mut stream, _) = connect_as(&server.socket, "agent-asked", full_caps()).await;
         let pane = attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;
@@ -105,10 +100,7 @@ fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
 #[test]
 fn report_asked_emits_asked_and_rejects_an_empty_question() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let mut park = CommandBuilder::new("/bin/sh");
-        park.args(["-c", "sleep 600"]);
-        let server = SpawnedServer::seeded_in(tmp, "demo", park);
+        let server = SpawnedServer::seeded_in(TempDir::new().unwrap(), "demo", sh("sleep 600"));
         let (mut stream, _) = connect_as(&server.socket, "agent-asked", full_caps()).await;
         let pane = attach_pane(&mut stream, "demo").await;
         subscribe_all(&mut stream, 1).await;

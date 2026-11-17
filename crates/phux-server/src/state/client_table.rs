@@ -32,7 +32,7 @@ use crate::mailbox::Outbound;
 /// Every client-keyed table plus the [`ClientId`] allocator; synchronized
 /// by the surrounding `Mutex<ServerState>`.
 #[derive(Debug)]
-pub(super) struct ClientTable {
+pub(crate) struct ClientTable {
     /// Currently attached clients. Read outside `state` only through
     /// [`super::ServerState::attached`].
     pub(super) attached: HashMap<ClientId, AttachedClient>,
@@ -121,7 +121,7 @@ impl ClientTable {
 
     /// Whether `client` subscribed `terminal` as a `VIEWER`.
     #[must_use]
-    pub(super) fn is_viewer(&self, client: ClientId, terminal: &WireResourceId) -> bool {
+    pub(crate) fn is_viewer(&self, client: ClientId, terminal: &WireResourceId) -> bool {
         self.viewers
             .get(&client)
             .is_some_and(|terminals| terminals.contains(terminal))
@@ -129,7 +129,7 @@ impl ClientTable {
 
     /// Mark or unmark `client` as a viewer of `terminal`; returns whether it
     /// changed. Empty sets are dropped.
-    pub(super) fn mark_viewer(
+    pub(crate) fn mark_viewer(
         &mut self,
         client: ClientId,
         terminal: &WireResourceId,
@@ -162,7 +162,7 @@ impl ClientTable {
 
     /// Every connection that subscribed `terminal` as a `VIEWER`, ascending.
     #[must_use]
-    pub(super) fn viewers_of(&self, terminal: &WireResourceId) -> Vec<ClientId> {
+    pub(crate) fn viewers_of(&self, terminal: &WireResourceId) -> Vec<ClientId> {
         let mut viewers: Vec<ClientId> = self
             .viewers
             .iter()
@@ -176,7 +176,7 @@ impl ClientTable {
     // -- identity ------------------------------------------------------
 
     /// Allocate the next monotonic [`ClientId`].
-    pub(super) const fn new_client_id(&mut self) -> ClientId {
+    pub(crate) const fn new_client_id(&mut self) -> ClientId {
         let id = ClientId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         id
@@ -185,13 +185,13 @@ impl ClientTable {
     // -- negotiated layers ---------------------------------------------
 
     /// Record the HELLO layer set (latest wins).
-    pub(super) fn set_layers(&mut self, client: ClientId, layers: LayerSet) {
+    pub(crate) fn set_layers(&mut self, client: ClientId, layers: LayerSet) {
         self.layers.insert(client, layers);
     }
 
     /// The HELLO layer set, [`LayerSet::all`] if none was seen.
     #[must_use]
-    pub(super) fn layers(&self, client: ClientId) -> LayerSet {
+    pub(crate) fn layers(&self, client: ClientId) -> LayerSet {
         self.layers
             .get(&client)
             .copied()
@@ -200,7 +200,7 @@ impl ClientTable {
 
     /// Whether `client` negotiated L3 (gates `METADATA_CHANGED`).
     #[must_use]
-    pub(super) fn speaks_l3(&self, client: ClientId) -> bool {
+    pub(crate) fn speaks_l3(&self, client: ClientId) -> bool {
         self.layers(client).contains(Layer::L3)
     }
 
@@ -209,7 +209,7 @@ impl ClientTable {
     /// `(client, mailbox)` for every client attached to `session`
     /// (per-terminal consumers excluded).
     #[must_use]
-    pub(super) fn attached_in_session(
+    pub(crate) fn attached_in_session(
         &self,
         session: SessionId,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
@@ -272,7 +272,7 @@ impl ClientTable {
     /// The `ActorRef` naming `client`: wire id, credential, HELLO name, and
     /// the principal pair its grant authenticated (ADR-0163).
     #[must_use]
-    pub(super) fn actor_ref(&self, client: ClientId) -> ActorRef {
+    pub(crate) fn actor_ref(&self, client: ClientId) -> ActorRef {
         let wire = phux_protocol::ids::ClientId::new(u32::try_from(client.0).unwrap_or(u32::MAX));
         let credential_id = self
             .peer_identities
@@ -311,7 +311,8 @@ impl ClientTable {
     // -- peer identities -----------------------------------------------
 
     /// Store a peer identity for a client.
-    pub(super) fn set_peer_identity(
+    #[cfg(test)]
+    pub(crate) fn set_peer_identity(
         &mut self,
         client: ClientId,
         identity: phux_protocol::policy::PeerIdentity,
@@ -320,7 +321,7 @@ impl ClientTable {
     }
 
     /// Store transport identity and credential attestation for a client.
-    pub(super) fn set_connection_identity(
+    pub(crate) fn set_connection_identity(
         &mut self,
         client: ClientId,
         identity: crate::auth::ConnectionIdentity,
@@ -330,7 +331,7 @@ impl ClientTable {
 
     /// Look up a peer identity by client id.
     #[must_use]
-    pub(super) fn peer_identity(
+    pub(crate) fn peer_identity(
         &self,
         client: ClientId,
     ) -> Option<&phux_protocol::policy::PeerIdentity> {
@@ -350,7 +351,7 @@ impl ClientTable {
 
     /// Look up the credential captured for this connection.
     #[must_use]
-    pub(super) fn authenticated_credential(
+    pub(crate) fn authenticated_credential(
         &self,
         client: ClientId,
     ) -> Option<&crate::auth::AuthenticatedCredential> {
@@ -361,7 +362,7 @@ impl ClientTable {
 
     /// Record the ssh origin a same-uid bridge announced (no-op without an
     /// identity).
-    pub(super) fn set_ssh_origin(
+    pub(crate) fn set_ssh_origin(
         &mut self,
         client: ClientId,
         origin: phux_protocol::wire::ssh_origin::SshOrigin,
@@ -373,7 +374,7 @@ impl ClientTable {
 
     /// The ssh origin recorded for this connection, if any.
     #[must_use]
-    pub(super) fn ssh_origin(
+    pub(crate) fn ssh_origin(
         &self,
         client: ClientId,
     ) -> Option<phux_protocol::wire::ssh_origin::SshOrigin> {
@@ -391,7 +392,7 @@ impl ClientTable {
 
     /// Whether any live connection owns an unread result at `key`.
     #[must_use]
-    pub(super) fn session_create_result_is_pending(&self, key: &str) -> bool {
+    pub(crate) fn session_create_result_is_pending(&self, key: &str) -> bool {
         self.session_create_results
             .values()
             .any(|keys| keys.iter().any(|candidate| candidate == key))
@@ -399,7 +400,7 @@ impl ClientTable {
 
     /// Whether `client` owns the unread nonce-bearing result at `key`.
     #[must_use]
-    pub(super) fn owns_session_create_result(&self, client: ClientId, key: &str) -> bool {
+    pub(crate) fn owns_session_create_result(&self, client: ClientId, key: &str) -> bool {
         self.session_create_results
             .get(&client)
             .is_some_and(|keys| keys.iter().any(|candidate| candidate == key))

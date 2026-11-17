@@ -6,7 +6,7 @@
 /// with `verb`, cut with a listener report so server-global data shows.
 fn filtered(world: &mut World, scopes: &[&str], verb: Verb) -> SessionSnapshot {
     world.state.set_connection_grant(CLIENT, scoped(scopes));
-    let alpha = world.state.find_session_by_name("alpha").unwrap();
+    let alpha = world.state.sessions().find_by_name("alpha").unwrap();
     let snapshot = world
         .state
         .build_session_snapshot(alpha)
@@ -96,19 +96,8 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     assert!(satellite(&["inventory@global"]));
 
     // Other connections and an uncovered parent are not disclosed.
-    let child = world
-        .state
-        .new_agent_session(
-            world.alpha_core,
-            &phux_core::resource::AgentFacet {
-                provider: "claude".to_owned(),
-                native_id: None,
-                state: None,
-            },
-        )
-        .unwrap();
-    let child = world.state.intern_resource_wire(child);
-    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let child = agent_child(&mut world);
+    let alpha_session = world.state.sessions().find_by_name("alpha").unwrap();
     let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
     for resource in &mut whole.resources {
         resource.viewers = vec![phux_protocol::ids::ClientId::new(99)];
@@ -131,7 +120,7 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     world
         .state
         .set_connection_grant(CLIENT, ConnectionGrant::owner());
-    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let alpha_session = world.state.sessions().find_by_name("alpha").unwrap();
     let whole = world.state.build_session_snapshot(alpha_session).unwrap();
     let owner =
         super::filter::filter_snapshot(&world.state, CLIENT, Verb::Inventory, whole.clone());
@@ -214,18 +203,7 @@ fn server_wide_bells(scopes: &[&str]) -> Vec<Option<WireResourceId>> {
     use phux_protocol::wire::frame::AgentEvent;
 
     let mut world = world();
-    let child = world
-        .state
-        .new_agent_session(
-            world.alpha_core,
-            &phux_core::resource::AgentFacet {
-                provider: "claude".to_owned(),
-                native_id: None,
-                state: None,
-            },
-        )
-        .unwrap();
-    let child = world.state.intern_resource_wire(child);
+    let child = agent_child(&mut world);
     world.state.set_connection_grant(CLIENT, scoped(scopes));
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
     world.state.subscribe_events(CLIENT, None, tx);

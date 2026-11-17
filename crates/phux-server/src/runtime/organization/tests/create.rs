@@ -7,13 +7,7 @@ fn lookup_refuses_another_sessions_creation_receipt() {
     run(async {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
-        let open = |n, name: &str| Command::SessionCreate {
-            operation: op(n),
-            name: name.to_owned(),
-            lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
-            launch: None,
-        };
+        let open = |n, name: &str| session_create(n, name, false);
         let origin = committed(handle(&state, CLIENT, open(1, "origin"), &root))
             .session
             .unwrap();
@@ -125,7 +119,7 @@ fn create_rename_and_page_round_trip_with_typed_refusals() {
         };
         let renamed = committed(handle(&state, CLIENT, rename, &root));
         assert_eq!(renamed.revision.get(), record.revision.get() + 1);
-        assert!(state.with(|s| s.session_by_name("renamed").is_some()));
+        assert!(state.with(|s| s.sessions().by_name("renamed").is_some()));
 
         let link = |n: u8, project: Option<&str>| Command::SessionSetProject {
             operation: op(n),
@@ -211,7 +205,7 @@ fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
                 s.registry().record(id).unwrap().activation.is_some(),
                 "the relaunch started an activation"
             );
-            s.intern_resource_wire(id)
+            s.idspace.intern_resource(id)
         });
         assert_eq!(
             state.with(|s| s
@@ -278,7 +272,10 @@ fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
             let key = phux_core::ResourceKey::from_bytes(*resource.as_bytes());
             let id = s.registry().resource_id(&key).unwrap();
             let (_, sibling) = s.seed_session("elsewhere");
-            (s.intern_resource_wire(id), s.intern_resource_wire(sibling))
+            (
+                s.idspace.intern_resource(id),
+                s.idspace.intern_resource(sibling),
+            )
         });
         let screen = |terminal_id| Command::GetScreen {
             terminal_id,

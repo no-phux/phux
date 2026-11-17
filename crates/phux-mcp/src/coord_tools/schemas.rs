@@ -8,20 +8,6 @@ const ADDRESS_DESC: &str = "Speak as this address instead of this pane. An addre
     (`@749`), a labelled pane (`pi@749`), or a bare name for something outside a pane. On a host \
     joined to a hub, `hub/@749` is the hub's pane; on a hub, `min-api/@3` is a satellite's.";
 
-/// Every schema in this family, in catalog order.
-#[must_use]
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![
-        mail_send_schema(),
-        mail_read_schema(),
-        mail_ack_schema(),
-        claim_take_schema(),
-        claim_renew_schema(),
-        claim_release_schema(),
-        claim_list_schema(),
-    ]
-}
-
 fn address() -> Value {
     json!({ "type": "string", "minLength": 1, "maxLength": 128, "description": ADDRESS_DESC })
 }
@@ -41,7 +27,7 @@ fn path_list(description: &str) -> Value {
     })
 }
 
-fn mail_send_schema() -> Value {
+pub(super) fn mail_send_schema() -> Value {
     schema(
         "phux_mail_send",
         "Send a message to other agents on this host, or across its hub. Mail is stored in the \
@@ -67,7 +53,7 @@ fn mail_send_schema() -> Value {
     )
 }
 
-fn mail_read_schema() -> Value {
+pub(super) fn mail_read_schema() -> Value {
     schema(
         "phux_mail_read",
         "Read your mail, oldest first, and mark it read. By default only unread messages sent to \
@@ -86,7 +72,7 @@ fn mail_read_schema() -> Value {
     )
 }
 
-fn mail_ack_schema() -> Value {
+pub(super) fn mail_ack_schema() -> Value {
     schema(
         "phux_mail_ack",
         "Acknowledge a message sent to you, which also marks it read. Repeating is harmless. \
@@ -99,7 +85,7 @@ fn mail_ack_schema() -> Value {
     )
 }
 
-fn claim_take_schema() -> Value {
+pub(super) fn claim_take_schema() -> Value {
     schema(
         "phux_claim_take",
         "Claim absolute paths before working there, so other agents know to leave them alone. A \
@@ -126,7 +112,7 @@ fn fence_schema() -> Value {
     json!({"type": "integer", "minimum": 1, "maximum": i64::MAX, "description": "Exact fence returned by the acquisition, shared by all its paths."})
 }
 
-fn claim_renew_schema() -> Value {
+pub(super) fn claim_renew_schema() -> Value {
     schema(
         "phux_claim_renew",
         "Renew precisely the live acquisition at this holder and fence. Paths, sharing mode \
@@ -142,7 +128,7 @@ fn claim_renew_schema() -> Value {
     )
 }
 
-fn claim_release_schema() -> Value {
+pub(super) fn claim_release_schema() -> Value {
     schema(
         "phux_claim_release",
         "Release precisely the acquisition at this holder and fence, including every path \
@@ -154,7 +140,7 @@ fn claim_release_schema() -> Value {
     )
 }
 
-fn claim_list_schema() -> Value {
+pub(super) fn claim_list_schema() -> Value {
     schema(
         "phux_claim_list",
         "List live claims, optionally only those overlapping an absolute `path` or held by \

@@ -216,89 +216,9 @@ pub async fn read_pane_occupant_within(
     }
 }
 
-/// Lifecycle state a `phux.agent/v1` record declares (OPEN enum).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", from = "String")]
-pub enum AgentMetaState {
-    /// No state declared, or an unrecognized (newer) vocabulary value.
-    #[default]
-    Unknown,
-    /// Available and not actively working.
-    Idle,
-    /// Actively doing work.
-    Working,
-    /// Waiting on human input or otherwise blocked.
-    Blocked,
-    /// Finished its task.
-    Done,
-}
-
-impl From<String> for AgentMetaState {
-    /// OPEN-enum decode: any string not in the v1 vocabulary is `Unknown`.
-    fn from(word: String) -> Self {
-        match word.as_str() {
-            "idle" => Self::Idle,
-            "working" => Self::Working,
-            "blocked" => Self::Blocked,
-            "done" => Self::Done,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl AgentMetaState {
-    /// The kebab-case wire/display word for this state.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Done => "done",
-        }
-    }
-}
-
-/// Attention priority a `phux.agent/v1` record declares (OPEN enum).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", from = "String")]
-pub enum AgentAttention {
-    /// Explicitly no attention requested.
-    None,
-    /// Low-priority background signal.
-    Low,
-    /// Normal priority, and the fallback for unrecognized values.
-    #[default]
-    Normal,
-    /// Should be surfaced prominently.
-    High,
-}
-
-impl From<String> for AgentAttention {
-    /// OPEN-enum decode: any string not in the v1 vocabulary is `Normal`.
-    fn from(word: String) -> Self {
-        match word.as_str() {
-            "none" => Self::None,
-            "low" => Self::Low,
-            "high" => Self::High,
-            _ => Self::Normal,
-        }
-    }
-}
-
-impl AgentAttention {
-    /// The kebab-case wire/display word for this attention level.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Low => "low",
-            Self::Normal => "normal",
-            Self::High => "high",
-        }
-    }
-}
+/// The one `phux.agent/v1` state and attention vocabulary, shared with every
+/// client through `phux_client_core::agent_record`.
+pub use phux_client_core::agent_record::{AgentAttention, AgentState as AgentMetaState};
 
 /// The `phux.agent/v1` record: one agent's declared identity + lifecycle,
 /// scoped to the Terminal it runs in.
@@ -327,12 +247,8 @@ impl AgentRecord {
     /// normal, `done`/`unknown` low, `idle` none).
     #[must_use]
     pub fn effective_attention(&self) -> AgentAttention {
-        self.attention.unwrap_or(match self.state {
-            AgentMetaState::Blocked => AgentAttention::High,
-            AgentMetaState::Working => AgentAttention::Normal,
-            AgentMetaState::Done | AgentMetaState::Unknown => AgentAttention::Low,
-            AgentMetaState::Idle => AgentAttention::None,
-        })
+        self.attention
+            .unwrap_or_else(|| self.state.default_attention())
     }
 
     /// Encode this record to the UTF-8 JSON bytes `SET_METADATA` carries.
@@ -349,28 +265,13 @@ pub use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
 /// `phux_client_core::agent_record`, the one reader every client shares.
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecord> {
-    use phux_client_core::agent_record as core;
-
-    let record = core::parse_agent_record(bytes)?;
-    let state = match record.state {
-        core::AgentState::Unknown => AgentMetaState::Unknown,
-        core::AgentState::Idle => AgentMetaState::Idle,
-        core::AgentState::Working => AgentMetaState::Working,
-        core::AgentState::Blocked => AgentMetaState::Blocked,
-        core::AgentState::Done => AgentMetaState::Done,
-    };
+    let record = phux_client_core::agent_record::parse_agent_record(bytes)?;
     // An unsupported word already reads as `Normal` (L3 §3.7).
-    let attention = record.attention.map(|(level, _)| match level {
-        core::AgentAttention::None => AgentAttention::None,
-        core::AgentAttention::Low => AgentAttention::Low,
-        core::AgentAttention::Normal => AgentAttention::Normal,
-        core::AgentAttention::High => AgentAttention::High,
-    });
     Some(AgentRecord {
         name: record.name,
         kind: record.kind,
-        state,
-        attention,
+        state: record.state,
+        attention: record.attention.map(|(level, _)| level),
         session: record.session,
     })
 }

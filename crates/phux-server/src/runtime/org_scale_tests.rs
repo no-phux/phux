@@ -222,7 +222,7 @@ fn the_org_store_holds_the_scale_contract() {
         .map(|_| {
             let (tx, rx) = mpsc::channel(4096);
             let client = state.with_mut(|s| {
-                let client = s.new_client_id();
+                let client = s.clients_mut().new_client_id();
                 s.subscribe_events(client, None, tx);
                 client
             });

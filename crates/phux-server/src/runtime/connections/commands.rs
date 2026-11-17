@@ -333,10 +333,10 @@ impl CommandDispatch<'_> {
                 .out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,
-                    result: CommandResult::Error {
-                        code: ErrorCode::ResourceExhausted,
-                        message: "input completion capacity exhausted".to_owned(),
-                    },
+                    result: CommandResult::error(
+                        ErrorCode::ResourceExhausted,
+                        "input completion capacity exhausted",
+                    ),
                 }))
                 .await;
             return;
@@ -405,10 +405,10 @@ impl CommandDispatch<'_> {
                 .out_tx
                 .send(Outbound::Frame(FrameKind::CommandResult {
                     request_id,
-                    result: CommandResult::Error {
-                        code: ErrorCode::ResourceExhausted,
-                        message: "too many long-running commands in flight; retry".to_owned(),
-                    },
+                    result: CommandResult::error(
+                        ErrorCode::ResourceExhausted,
+                        "too many long-running commands in flight; retry",
+                    ),
                 }))
                 .await;
             return;

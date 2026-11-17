@@ -2,14 +2,17 @@
 //! ADR-0027), which the `#tag` selector addresses. The round trips live in
 //! [`phux_client::tags`].
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::selector;
+use phux_client::tags::TagError;
 use phux_protocol::ids::ResourceId;
-use phux_server::runtime::default_socket_path;
 
-use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::{TagAction, cli_runtime, partial};
+use crate::commands::ctx::{self, Ctx};
+use crate::commands::json_err::{Refusal, codes};
+use crate::commands::{TagAction, partial};
+use crate::exit_codes::{EXIT_FAILURE, EXIT_PARTIAL_VIEW};
 
 /// Dispatch `phux tag <action>`.
 pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) -> ExitCode {
@@ -18,67 +21,55 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
         | TagAction::Add { target, json, .. }
         | TagAction::Rm { target, json, .. } => (target, json.json),
     };
-    let selector = match selector::parse(target) {
-        Ok(sel) => sel,
-        Err(err) => {
-            return json_err::emit(
-                json,
-                &CliError::new(
-                    codes::INVALID_SELECTOR,
-                    format!("invalid target '{target}': {err}"),
-                    "selector forms: NAME, NAME:WIN, NAME:WIN.PANE, @ID, `.`, #TAG",
-                ),
-                1,
-            );
-        }
-    };
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-
-    rt.block_on(async move {
+    ctx::run_local(socket, json, |ctx| {
+        let selector = selector::parse(target).map_err(|err| {
+            Refusal::new(
+                codes::INVALID_SELECTOR,
+                format!("invalid target '{target}': {err}"),
+                "selector forms: NAME, NAME:WIN, NAME:WIN.PANE, @ID, `.`, #TAG",
+                EXIT_FAILURE,
+            )
+        })?;
         let op = match action {
             TagAction::Ls { .. } => phux_client::tags::TagOp::List,
             TagAction::Add { tags, .. } => phux_client::tags::TagOp::Add(tags),
             TagAction::Rm { tags, .. } => phux_client::tags::TagOp::Remove(tags),
         };
-        match phux_client::tags::apply(&socket_path, &selector, op).await {
-            Ok(outcome) => {
-                // A `#tag` set resolved against a partial fleet is a subset
-                // of the real one; the writes land on that subset only.
-                // Under `--json` this stays a prose stderr warning ahead of
-                // the document, per the contract's warnings rule.
-                partial::warn_partial_view("tag", &outcome.view);
-                for message in outcome.interleaved {
-                    warn!("partial results — {message}");
-                }
-                print_rows(json, &outcome.rows)
-            }
-            Err(phux_client::tags::TagError::Attach(err)) => {
-                json_err::report_no_server(json, &err, &socket_path, "tag")
-            }
-            Err(phux_client::tags::TagError::Agent(err)) => {
-                crate::commands::report_agent_resolve_error(json, &err, false)
-            }
-            Err(phux_client::tags::TagError::Miss { degradation }) => {
-                // Every `phux tag` target is Terminal-scoped, and `panes`
-                // is the list a hub aggregates. An empty match against a
-                // degraded snapshot is unresolved, not absent.
-                partial::report_target_miss_for(json, Some(target), &degradation)
-            }
-            Err(phux_client::tags::TagError::WriteRefused { message }) => json_err::emit(
-                json,
-                &CliError::new(
-                    codes::TRANSPORT,
-                    message,
-                    "run `phux doctor` for a health check",
-                ),
-                1,
-            ),
+        let outcome = ctx
+            .rt
+            .block_on(phux_client::tags::apply(ctx.socket(), &selector, op))
+            .map_err(|err| tag_refusal(ctx, target, err))?;
+        // A `#tag` set resolved against a partial fleet is a subset of the
+        // real one; the writes land on that subset only. Under `--json` this
+        // stays a prose stderr warning ahead of the document, per the
+        // contract's warnings rule.
+        partial::warn_partial_view("tag", &outcome.view);
+        for message in outcome.interleaved {
+            warn!("partial results — {message}");
         }
+        Ok(print_rows(json, &outcome.rows))
     })
+}
+
+/// Why a tag read or write did not happen. A miss gets the distinct
+/// partial-view status, unlike the shared single-pane resolver.
+fn tag_refusal(ctx: &Ctx<PathBuf>, target: &str, err: TagError) -> Refusal {
+    match err {
+        TagError::Attach(err) => ctx.unreachable(&err, "tag"),
+        TagError::Agent(err) => crate::commands::agent_refusal(&err, false),
+        // Every `phux tag` target is Terminal-scoped, and `panes` is the list
+        // a hub aggregates. An empty match against a degraded snapshot is
+        // unresolved, not absent.
+        TagError::Miss { degradation } => {
+            partial::target_miss(Some(target), &degradation, EXIT_PARTIAL_VIEW)
+        }
+        TagError::WriteRefused { message } => Refusal::new(
+            codes::TRANSPORT,
+            message,
+            "run `phux doctor` for a health check",
+            EXIT_FAILURE,
+        ),
+    }
 }
 
 /// Print the per-Terminal tag rows: the human view (one `SELECTOR\tTAGS`
@@ -116,6 +107,12 @@ fn tags_document(rows: &[(ResourceId, Vec<String>)]) -> serde_json::Value {
 /// One tag output line, prefixed by a canonical, reusable Terminal selector.
 fn render_tags(id: &ResourceId, tags: &[String]) -> String {
     format!("{}\t{}", selector::format_terminal_id(id), tags.join(" "))
+}
+
+/// Run `phux tag` as parsed.
+pub(crate) fn run(args: crate::commands::TagArgs, socket: Option<std::path::PathBuf>) -> ExitCode {
+    let crate::commands::TagArgs { action } = args;
+    run_tag(&action, socket)
 }
 
 #[cfg(test)]

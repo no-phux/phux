@@ -89,14 +89,11 @@ pub(crate) struct OutputPumpStart {
 
 pub(super) struct SnapshotGate {
     pub(super) terminal_id: ResourceId,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Terminal facet, for the native publication fence.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) terminal: phux_terminal_api::actor::TerminalHandle,
     pub(super) gate: oneshot::Sender<OutputPumpStart>,
     pub(super) cut: Option<u64>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) native_cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
 }
 
@@ -110,7 +107,6 @@ pub(crate) use crate::runtime::session_attach::staging::{
 pub(crate) use crate::runtime::session_attach::staging::BootstrapStagingBudget;
 
 /// Is `profile` publishing native libghostty checkpoints?
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) const fn publishes_native_checkpoints(profile: BootstrapStreamProfile) -> bool {
     matches!(
         profile,
@@ -121,7 +117,6 @@ pub(super) const fn publishes_native_checkpoints(profile: BootstrapStreamProfile
 }
 
 /// Why a native checkpoint or publication request produced no reply.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub(crate) enum NativeRequestFailure {
     /// The actor mailbox is closed.
@@ -132,7 +127,6 @@ pub(crate) enum NativeRequestFailure {
     Refused(phux_terminal_api::native_state::NativeStateError),
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 impl NativeRequestFailure {
     /// The pane's actor is gone: the pane exited, and `RESOURCE_CLOSED` is
     /// its end. No generation of it can be published, and that is no fault
@@ -143,7 +137,6 @@ impl NativeRequestFailure {
 }
 
 /// Send the native checkpoint request `make` builds and await its reply.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) async fn request_native_checkpoint(
     terminal: &phux_terminal_api::actor::TerminalHandle,
     make: impl FnOnce(
@@ -167,7 +160,6 @@ pub(in crate::runtime) async fn request_native_checkpoint(
         .map_err(NativeRequestFailure::Refused)
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reply: phux_terminal_api::actor::NativeBootstrapReply,
@@ -180,7 +172,6 @@ pub(crate) async fn publish_native_bootstrap(
     Ok((cut, cursor))
 }
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn activate_native_publication(
     handle: &phux_terminal_api::actor::TerminalHandle,
     owner: u64,

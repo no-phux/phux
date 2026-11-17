@@ -28,10 +28,11 @@ async fn oversized_document_rolls_back_every_kind_before_attached() {
             assert!(!s.attached().contains_key(&connection.client));
             for core in [parent, agent, tree] {
                 assert!(
-                    !s.subscribers_for_resource(core)
+                    !s.resources()
+                        .subscribers_for(core)
                         .contains(&connection.client)
                 );
-                assert!(s.input_lease_holder(core).is_none());
+                assert!(s.leases().holder(core).is_none());
             }
         });
         assert!(
@@ -50,7 +51,7 @@ async fn malformed_explicit_agent_cut_refuses_without_stopping_documents() {
         let (session, parent) = parent(&state, false);
         let (_, handle) = tree(&state, parent, session);
         let (agent, mut cut) = agent_stub(&state, parent, session);
-        let wire = state.with_mut(|s| s.intern_resource_wire(agent));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(agent));
         let mut connection = Connection::start(&state, false).await;
         connection.attach(1).await;
         prefix(&mut connection, 2, 1).await;
@@ -102,7 +103,7 @@ async fn resource_closed_mid_capture_satisfies_the_barrier_without_stopping_docu
         let (session, parent) = parent(&state, false);
         let (_, handle) = tree(&state, parent, session);
         let (closed, parked, actor) = parked_tree(&state, parent, session);
-        let wire = state.with_mut(|s| s.intern_resource_wire(closed));
+        let wire = state.with_mut(|s| s.idspace.intern_resource(closed));
         let mut connection = Connection::start(&state, false).await;
         connection.attach(1).await;
         wait_for_capture(&parked).await;

@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeature, ServerFeatureSet,
 };
@@ -13,7 +13,8 @@ use phux_protocol::wire::frame::{
 };
 
 use crate::common::{
-    framed_tlv, local_id_bytes as local_terminal, put_varint, take_varint, tlv_field,
+    assert_round_trip, decode, encode, encode_with_unknown_field, framed_tlv,
+    local_id_bytes as local_terminal, put_varint, take_varint, tlv_field,
 };
 
 fn framed(fields: &[u8]) -> Vec<u8> {
@@ -36,14 +37,17 @@ fn hello_ok_explicitly_negotiates_terminal_replies() {
         selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
-    let mut encoded = BytesMut::new();
-    hello_ok.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert!(tail.is_empty());
-    let FrameKind::HelloOk { server_caps, .. } = decoded else {
+    let FrameKind::HelloOk { server_caps, .. } = decode(&encode(&hello_ok)).unwrap() else {
         panic!("expected HELLO_OK");
     };
     assert!(server_caps.features.contains(ServerFeature::TerminalReply));
+}
+
+const fn reply(terminal: u32, bytes: Bytes) -> FrameKind {
+    FrameKind::InputTerminalReply {
+        terminal_id: ResourceId::local(terminal),
+        bytes,
+    }
 }
 
 #[test]
@@ -51,40 +55,32 @@ fn discriminator_is_client_originated_and_does_not_reuse_history() {
     assert_eq!(TYPE_INPUT_TERMINAL_REPLY, 0x17);
     assert_eq!(TYPE_HISTORY_REQUEST, 0x16);
     assert_eq!(TYPE_INPUT_TERMINAL_REPLY & 0x80, 0);
-
-    let frame = FrameKind::InputTerminalReply {
-        terminal_id: ResourceId::local(1),
-        bytes: Bytes::from_static(b"reply"),
-    };
+    let frame = reply(1, Bytes::from_static(b"reply"));
     assert_eq!(frame.type_byte(), TYPE_INPUT_TERMINAL_REPLY);
 }
 
+/// Opaque NUL, escape and non-UTF-8 bytes round-trip exactly, up to the
+/// maximum reply size; an unknown trailing field is skipped without
+/// touching them.
 #[test]
 fn opaque_nul_escape_and_non_utf8_bytes_round_trip_exactly() {
-    let opaque = Bytes::from_static(b"\0\x1b[?1;2c\xff\x80\x1b]10;?\x07");
-    let frame = FrameKind::InputTerminalReply {
-        terminal_id: ResourceId::local(0x1020_3040),
-        bytes: opaque.clone(),
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(decoded, frame);
-    let FrameKind::InputTerminalReply { bytes, .. } = decoded else {
-        panic!("expected INPUT_TERMINAL_REPLY");
-    };
-    assert_eq!(bytes, opaque);
+    for frame in [
+        reply(
+            0x1020_3040,
+            Bytes::from_static(b"\0\x1b[?1;2c\xff\x80\x1b]10;?\x07"),
+        ),
+        reply(1, Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES])),
+    ] {
+        assert_round_trip(&frame);
+    }
+    let frame = reply(9, Bytes::from_static(b"\xff\0\x1bPfuture-reply\x1b\\"));
+    let encoded = encode_with_unknown_field(&frame, 99, b"future-field");
+    assert_eq!(decode(&encoded).unwrap(), frame);
 }
 
 #[test]
 fn fields_are_required_and_encoded_in_allocated_order() {
-    let frame = FrameKind::InputTerminalReply {
-        terminal_id: ResourceId::local(7),
-        bytes: Bytes::from_static(b"\x1b[0n"),
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
+    let encoded = encode(&reply(7, Bytes::from_static(b"\x1b[0n")));
     let mut offset = 5;
     let mut ids = Vec::new();
     while offset < encoded.len() {
@@ -96,32 +92,15 @@ fn fields_are_required_and_encoded_in_allocated_order() {
     }
     assert_eq!(ids, [1, 2]);
 
-    let mut only_terminal = Vec::new();
-    tlv_field(&mut only_terminal, 1, &local_terminal(7));
-    assert_eq!(
-        FrameKind::decode(&framed(&only_terminal)).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-
-    let mut only_bytes = Vec::new();
-    tlv_field(&mut only_bytes, 2, b"reply");
-    assert_eq!(
-        FrameKind::decode(&framed(&only_bytes)).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-}
-
-#[test]
-fn maximum_sized_reply_is_accepted() {
-    let frame = FrameKind::InputTerminalReply {
-        terminal_id: ResourceId::local(1),
-        bytes: Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES]),
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(decoded, frame);
+    for (id, value) in [(1, local_terminal(7)), (2, b"reply".to_vec())] {
+        let mut only = Vec::new();
+        tlv_field(&mut only, id, &value);
+        assert_eq!(
+            FrameKind::decode(&framed(&only)).unwrap_err(),
+            DecodeError::UnexpectedEof,
+            "only field {id}"
+        );
+    }
 }
 
 #[test]
@@ -130,38 +109,13 @@ fn empty_and_oversized_replies_are_rejected_before_dispatch() {
         Bytes::new(),
         Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES + 1]),
     ] {
-        let frame = FrameKind::InputTerminalReply {
-            terminal_id: ResourceId::local(1),
-            bytes,
-        };
-        let mut encoded = BytesMut::new();
-        frame.encode(&mut encoded);
+        let len = bytes.len();
         assert_eq!(
-            FrameKind::decode(&encoded).unwrap_err(),
-            DecodeError::InputTerminalReplyLimitExceeded
+            FrameKind::decode(&encode(&reply(1, bytes))).unwrap_err(),
+            DecodeError::InputTerminalReplyLimitExceeded,
+            "{len}-byte reply"
         );
     }
-}
-
-#[test]
-fn unknown_fields_are_skipped_without_touching_opaque_reply() {
-    let frame = FrameKind::InputTerminalReply {
-        terminal_id: ResourceId::local(9),
-        bytes: Bytes::from_static(b"\xff\0\x1bPfuture-reply\x1b\\"),
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let mut unknown = Vec::new();
-    tlv_field(&mut unknown, 99, b"future-field");
-    encoded.extend_from_slice(&unknown);
-    let length = u32::from_be_bytes(encoded[..4].try_into().unwrap())
-        .checked_add(u32::try_from(unknown.len()).unwrap())
-        .unwrap();
-    encoded[..4].copy_from_slice(&length.to_be_bytes());
-
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(decoded, frame);
 }
 
 #[test]

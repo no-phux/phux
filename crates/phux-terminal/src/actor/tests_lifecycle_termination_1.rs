@@ -1,5 +1,72 @@
 use super::*;
 
+/// A running pane whose `cmd` puts an armed foreground job in its own group.
+struct ArmedForegroundPane {
+    token: CancellationToken,
+    run: tokio::task::JoinHandle<()>,
+    _pane_cleanup: FixturePane,
+}
+
+/// Build and run a pane on `cmd`, wait for its foreground job to write
+/// `armed` (after its HUP trap), and assert the job-control topology.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+)]
+async fn arm_foreground_pane(
+    (cols, rows): (u16, u16),
+    cmd: portable_pty::CommandBuilder,
+    hangup: HangupPolicy,
+    armed: &std::path::Path,
+) -> ArmedForegroundPane {
+    let token = CancellationToken::new();
+    let bundle = TerminalActor::build(
+        cols,
+        rows,
+        PtySource::Spawn(cmd),
+        test_scrollback(1000),
+        token.clone(),
+        None,
+        hangup,
+    )
+    .expect("build actor");
+    let actor = bundle.actor;
+    let pty = actor.pty.as_ref().expect("test actor has PTY");
+    let shell_group =
+        i32::try_from(pty.child.process_id().expect("shell pid")).expect("shell pid fits i32");
+    let pane_cleanup = FixturePane(shell_group);
+    let master = std::sync::Arc::clone(&pty.master);
+    let run = tokio::task::spawn_local(actor.run());
+
+    // One barrier: `armed` is written after `trap` by the process
+    // `set -m` put in its own group, so it implies both
+    // preconditions. The generous budget covers process startup
+    // under load, not the subject under test.
+    assert!(
+        wait_until_fixture_exists(armed).await,
+        "foreground job never installed its SIGHUP trap: the fixture shells did not \
+                 get scheduled, which is an environment problem (machine load), not a \
+                 failure of the flush-before-death path this test covers",
+    );
+
+    // Armed, so the foreground group is settled.
+    let foreground_group = master
+        .lock()
+        .expect("master lock")
+        .process_group_leader()
+        .expect("an armed foreground job has a process group");
+    assert_ne!(
+        foreground_group, shell_group,
+        "the fixture must reproduce interactive job-control topology: a foreground \
+                 job in a group distinct from the shell's",
+    );
+    ArmedForegroundPane {
+        token,
+        run,
+        _pane_cleanup: pane_cleanup,
+    }
+}
+
 /// Killing a pane gives a foreground job in its own process group a chance
 /// to flush before it dies. The hangup ceiling is stretched for load;
 /// nextest gives this test all CPUs.
@@ -38,52 +105,18 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
         cmd.env("PHUX_TEST_ARMED", &armed);
         foreground.configure(&mut cmd);
 
-        let token = CancellationToken::new();
-        let bundle = TerminalActor::build(
-            20,
-            5,
-            PtySource::Spawn(cmd),
-            test_scrollback(1000),
-            token.clone(),
-            None,
+        let pane = arm_foreground_pane(
+            (20, 5),
+            cmd,
             HangupPolicy::stretched(CONTENDED_FLUSH_GRACE),
+            &armed,
         )
-        .expect("build actor");
-        let actor = bundle.actor;
-        let pty = actor.pty.as_ref().expect("test actor has PTY");
-        let shell_group =
-            i32::try_from(pty.child.process_id().expect("shell pid")).expect("shell pid fits i32");
-        let _pane_cleanup = FixturePane(shell_group);
-        let master = std::sync::Arc::clone(&pty.master);
-        let run = tokio::task::spawn_local(actor.run());
-
-        // One barrier: `armed` is written after `trap` by the process
-        // `set -m` put in its own group, so it implies both
-        // preconditions. The generous budget covers process startup
-        // under load, not the subject under test.
-        assert!(
-            wait_until_fixture_exists(&armed).await,
-            "foreground job never installed its SIGHUP trap: the fixture shells did not \
-                     get scheduled, which is an environment problem (machine load), not a \
-                     failure of the flush-before-death path this test covers",
-        );
-
-        // Armed, so the foreground group is settled.
-        let foreground_group = master
-            .lock()
-            .expect("master lock")
-            .process_group_leader()
-            .expect("an armed foreground job has a process group");
-        assert_ne!(
-            foreground_group, shell_group,
-            "the fixture must reproduce interactive job-control topology: a foreground \
-                     job in a group distinct from the shell's",
-        );
+        .await;
 
         // Kill the pane. The actor's shutdown runs SIGHUP + grace.
-        token.cancel();
+        pane.token.cancel();
         let body = wait_for_flush_marker(&marker).await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        tokio::time::timeout(std::time::Duration::from_secs(5), pane.run)
             .await
             .expect("actor shutdown timed out")
             .expect("actor task failed");
@@ -153,45 +186,16 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
         cmd.env("PHUX_TEST_ERR", &stderr);
         foreground.configure(&mut cmd);
 
-        let token = CancellationToken::new();
-        let bundle = TerminalActor::build(
-            80,
-            24,
-            PtySource::Spawn(cmd),
-            test_scrollback(1000),
-            token.clone(),
-            None,
+        let pane = arm_foreground_pane(
+            (80, 24),
+            cmd,
             HangupPolicy::gated(CONTENDED_FLUSH_GRACE, &started),
+            &armed,
         )
-        .expect("build actor");
-        let actor = bundle.actor;
-        let pty = actor.pty.as_ref().expect("test actor has PTY");
-        let shell_group =
-            i32::try_from(pty.child.process_id().expect("shell pid")).expect("shell pid fits i32");
-        let _pane_cleanup = FixturePane(shell_group);
-        let master = std::sync::Arc::clone(&pty.master);
-        let run = tokio::task::spawn_local(actor.run());
-
-        assert!(
-            wait_until_fixture_exists(&armed).await,
-            "foreground job never installed its SIGHUP trap: the fixture shells did not \
-                     get scheduled, which is an environment problem (machine load), not a \
-                     failure of the flush-before-death path this test covers",
-        );
-
-        let foreground_group = master
-            .lock()
-            .expect("master lock")
-            .process_group_leader()
-            .expect("an armed foreground job has a process group");
-        assert_ne!(
-            foreground_group, shell_group,
-            "the fixture must reproduce interactive job-control topology: a foreground \
-                     job in a group distinct from the shell's",
-        );
+        .await;
 
         let killed_at = std::time::Instant::now();
-        token.cancel();
+        pane.token.cancel();
         assert!(
             wait_until_fixture_exists(&started).await,
             "SIGHUP trap never started: the fixture shell did not get scheduled \
@@ -199,7 +203,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      failure of the flush-before-death path this test covers",
         );
         let body = wait_for_flush_marker(&marker).await;
-        tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        tokio::time::timeout(std::time::Duration::from_secs(10), pane.run)
             .await
             .expect("actor shutdown stalled: the pane-kill path did not complete")
             .expect("actor task failed");

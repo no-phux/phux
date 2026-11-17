@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use crate::relay_common::{
-    RelayedServer, loopback, quic_hello, relay_config, relay_pin, write_private,
+    RelayedServer, loopback, private_dir, quic_hello, relay_config, relay_pin, write_private,
 };
 
 const ROUTE: &str = "inner-test";
@@ -37,12 +37,7 @@ impl Topology {
     /// otherwise it runs an embedder engine (ADR-0072), the only way a
     /// connector serves without `paired` (ADR-0179).
     fn start(paired: bool) -> Self {
-        let dir = TempDir::new().expect("tempdir");
-        std::fs::set_permissions(
-            dir.path(),
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
-        )
-        .expect("owner-only");
+        let dir = private_dir();
         let d = dir.path();
         let relay = RelayHarness::start(relay_config(d, loopback(), ROUTE, &TUNNEL_TOKEN));
         let relay_pin = relay_pin(d);
@@ -56,7 +51,7 @@ impl Topology {
                     cfg.env.workload_ca_key = Some(paths.ca_key.clone());
                     cfg.env.workload_keys = Some(paths.registry.clone());
                 } else {
-                    phux_server_testkit::embedder::embed_owner_engine(cfg);
+                    crate::relay_common::embedder_seeded(cfg, None);
                 }
             });
         Self {

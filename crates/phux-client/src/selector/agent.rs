@@ -2,6 +2,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::agent_meta::{AgentMetaState, AgentRecord};
+use crate::contract::codes;
 
 use super::is_addressable_agent_name;
 use super::resolve::format_terminal_id;
@@ -119,10 +120,10 @@ impl AgentResolveError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Unknown { .. } => "no_such_target",
-            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => "selector_not_single",
-            Self::Withdrawn { .. } => "agent_withdrawn",
-            Self::PartialIndex { .. } => "partial_view",
+            Self::Unknown { .. } => codes::NO_SUCH_TARGET,
+            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => codes::SELECTOR_NOT_SINGLE,
+            Self::Withdrawn { .. } => codes::AGENT_WITHDRAWN,
+            Self::PartialIndex { .. } => codes::PARTIAL_VIEW,
         }
     }
 
@@ -309,13 +310,13 @@ pub fn agent_address(
 ) -> Option<Result<String, &'static str>> {
     let name = &index.get(terminal)?.name;
     if !is_addressable_agent_name(name) {
-        return Some(Err("invalid_agent_name"));
+        return Some(Err(codes::INVALID_AGENT_NAME));
     }
     Some(match resolve_agent(name, snapshot, index) {
         Ok(target) if &target.terminal == terminal => Ok(format!("%{name}")),
         // `terminal` is not a live Terminal in `snapshot`, so the name
         // reaches some other pane: never label this one with it.
-        Ok(_) => Err("selector_not_single"),
+        Ok(_) => Err(codes::SELECTOR_NOT_SINGLE),
         Err(err) => Err(err.code()),
     })
 }

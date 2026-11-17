@@ -24,10 +24,8 @@ pub use input::{
 pub const DEFAULT_REPLAY_SCROLLBACK_LINES: u32 = 1_000;
 pub use input::{EncodedInputRequest, WriteCompletion, WriteCompletionSink, echo_probe_for};
 
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[path = "actor/requests_native.rs"]
 mod native;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub use native::{
     NativeBootstrapReply, NativeBootstrapRequest, NativeHistoryReply, NativeHistoryRequest,
     NativePublicationReply, NativePublicationRequest, NativeReleaseRequest,
@@ -240,16 +238,12 @@ pub struct TerminalHandle {
     /// Snapshot requests (ATTACH).
     pub snapshot: mpsc::Sender<SnapshotRequest>,
     /// Actor-serialized native checkpoint capture.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_bootstrap: mpsc::Sender<NativeBootstrapRequest>,
     /// Actor-serialized transition from staged READY to replay/live delivery.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_publication: mpsc::Sender<NativePublicationRequest>,
     /// Actor-serialized native history paging.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_history: mpsc::Sender<NativeHistoryRequest>,
     /// Actor-serialized detach cleanup for retained native cuts.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_release: mpsc::Sender<NativeReleaseRequest>,
     /// Host-palette updates; the latest reporting client wins.
     pub set_default_colors: mpsc::Sender<SetDefaultColorsRequest>,
@@ -358,13 +352,9 @@ impl TerminalHandle {
             input: mpsc::channel(1).0,
             ordered_input: crate::input::InputPort::new(crate::input::DetachedInput::default()),
             snapshot: mpsc::channel(1).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap: mpsc::channel(1).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_publication: mpsc::channel(1).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_history: mpsc::channel(1).0,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_release: mpsc::channel(1).0,
             set_default_colors: mpsc::channel(1).0,
             screen: mpsc::channel(1).0,

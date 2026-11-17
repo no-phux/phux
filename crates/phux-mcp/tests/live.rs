@@ -5,10 +5,8 @@
     clippy::panic,
     reason = "test assertions"
 )]
-use phux_protocol::policy::PeerIdentity;
-use phux_protocol::scope::TerminalScopeSet;
-use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{ConnectionGrant, GrantFuture, PolicyEngine};
+use phux_server::policy::{ConnectionGrant, PolicyEngine};
+use phux_server_testkit::{FnPolicy, parse_scopes};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -19,30 +17,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 const DEADLINE: Duration = Duration::from_secs(20);
 const KEY: &str = "0123456789abcdef0123456789abcdef";
-#[derive(Debug, Default)]
-struct HeldSignal(AtomicBool);
-impl PolicyEngine for HeldSignal {
-    fn authorize_hello<'a>(
-        &'a self,
-        _: &'a PeerIdentity,
-        _: Option<&'a AuthenticatedCredential>,
-    ) -> GrantFuture<'a> {
-        let held = self.0.load(Ordering::SeqCst);
-        Box::pin(async move {
-            Ok(if held {
-                ConnectionGrant::scoped(
-                    TerminalScopeSet::parse_all(&[
-                        "inventory,observe,bind,?signal@global".to_owned()
-                    ])
-                    .unwrap(),
-                    None,
-                )
-                .unwrap()
-            } else {
-                ConnectionGrant::owner()
-            })
+/// The owner's grant until `held` is set; a held-`signal` grant for every
+/// later HELLO.
+fn held_signal(held: Arc<AtomicBool>) -> FnPolicy {
+    let set = parse_scopes(&["inventory,observe,bind,?signal@global"]);
+    FnPolicy::new(move |_, _| {
+        Ok(if held.load(Ordering::SeqCst) {
+            ConnectionGrant::scoped(set.clone(), None).unwrap()
+        } else {
+            ConnectionGrant::owner()
         })
-    }
+    })
 }
 struct Mcp {
     child: Child,
@@ -139,8 +124,8 @@ fn stdio_mutation_returns_without_human_wait_and_only_authorized_approval_releas
         tokio::time::timeout(Duration::from_secs(60), async {
             let temp = tempfile::tempdir().unwrap();
             let socket = temp.path().join("mcp.sock");
-            let policy = Arc::new(HeldSignal::default());
-            let engine: Arc<dyn PolicyEngine> = policy.clone();
+            let held = Arc::new(AtomicBool::new(false));
+            let engine: Arc<dyn PolicyEngine> = Arc::new(held_signal(Arc::clone(&held)));
             let (shutdown, server) = phux_server_testkit::spawn_server_with(socket.clone(), Some("main"), move |cfg| cfg.policy_engine = Some(engine));
             drop(phux_server_testkit::wait_for_socket(&socket, DEADLINE).await);
             let mut owner = phux_client::attach::connection::Connection::connect(&socket).await.unwrap();
@@ -155,7 +140,7 @@ fn stdio_mutation_returns_without_human_wait_and_only_authorized_approval_releas
             let confirmation = mcp.call("phux_signal", json!({"resource_id":resource,"signal":"kill"})).await;
             assert_eq!(confirmation["isError"], true);
             assert_eq!(confirmation["structuredContent"]["error"]["code"], "confirmation_required");
-            policy.0.store(true, Ordering::SeqCst);
+            held.store(true, Ordering::SeqCst);
             let args = json!({"resource_id":resource,"signal":"kill","confirm":true,"idempotency_key":KEY,"background":true});
             let pending = mcp.call("phux_signal", args.clone()).await;
             assert_eq!(pending["structuredContent"]["state"], "pending");
@@ -182,7 +167,7 @@ fn stdio_mutation_returns_without_human_wait_and_only_authorized_approval_releas
             assert_eq!(status["structuredContent"]["state"], "pending");
             // The policy change admits the separate approver's future connections;
             // it never changes the original requester's already-minted held grant.
-            policy.0.store(false, Ordering::SeqCst);
+            held.store(false, Ordering::SeqCst);
             let mut approver = Mcp::start(&socket).await;
             let visible = approver.call("phux_approvals", json!({})).await;
             assert_eq!(visible["structuredContent"]["approvals"][0]["id"], id);

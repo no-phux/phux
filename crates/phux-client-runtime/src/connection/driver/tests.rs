@@ -58,30 +58,29 @@ impl WriteFixture {
     }
 }
 
-/// A path change on a lane with nothing to migrate still probes: the
-/// PING goes out right behind HELLO, and its silence is what drops a
-/// socket the new path cannot carry.
-#[tokio::test]
-async fn a_path_change_probes_a_plain_stream() {
-    use tokio::io::AsyncReadExt as _;
-    let mut fixture = WriteFixture::new(64 * 1024);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "rebind",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
-    fixture.rebind.send_modify(|n| *n += 1);
-    assert!(running.as_mut().now_or_never().is_none());
+/// Start a pump on `fixture`'s socket as `$name`, polled once so it has
+/// written its opening, and bind the pinned run future to `$running`.
+macro_rules! start_pump {
+    ($running:ident, $fixture:ident, $name:literal) => {
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            $name,
+            &mut $fixture.io,
+            ConnectOptions::default(),
+            &$fixture.shared,
+            &mut $fixture.signals,
+            &wake,
+        );
+        let $running = pump.run();
+        tokio::pin!($running);
+        assert!($running.as_mut().now_or_never().is_none());
+    };
+}
 
+/// The frame type bytes written to `peer` so far, without waiting.
+fn written_types(mut peer: tokio::io::DuplexStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
     let mut written = BytesMut::with_capacity(4096);
-    let mut peer = fixture.peer;
     while let Some(Ok(read)) = peer.read_buf(&mut written).now_or_never() {
         if read == 0 {
             break;
@@ -91,6 +90,20 @@ async fn a_path_change_probes_a_plain_stream() {
     while let Ok(Some(frame)) = phux_protocol::wire::framing::split_frame(&mut written) {
         types.push(frame[LENGTH_PREFIX_LEN]);
     }
+    types
+}
+
+/// A path change on a lane with nothing to migrate still probes: the
+/// PING goes out right behind HELLO, and its silence is what drops a
+/// socket the new path cannot carry.
+#[tokio::test]
+async fn a_path_change_probes_a_plain_stream() {
+    let mut fixture = WriteFixture::new(64 * 1024);
+    start_pump!(running, fixture, "rebind");
+    fixture.rebind.send_modify(|n| *n += 1);
+    assert!(running.as_mut().now_or_never().is_none());
+
+    let types = written_types(fixture.peer);
     assert!(
         types.contains(&TYPE_PING),
         "a probe follows the path change; wrote {types:?}"
@@ -148,18 +161,7 @@ async fn close_interrupts_a_blocked_opening_write() {
     // One byte of capacity cannot hold HELLO. Polling once gets the
     // opening write stuck, without sleeps or a real socket's buffers.
     let mut fixture = WriteFixture::new(1);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "blocked-hello",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
+    start_pump!(running, fixture, "blocked-hello");
     assert_eq!(lock(&fixture.shared).connection_epoch(), 1);
     fixture.close.send(true).expect("driver receives close");
     let end = tokio::time::timeout(Duration::from_secs(1), running)
@@ -173,18 +175,7 @@ async fn close_interrupts_a_blocked_outbound_flush() {
     // HELLO fits, then a batch of pings fills the unread peer's buffer.
     let mut fixture = WriteFixture::new(1024);
     let outbound = Arc::clone(&fixture.signals.outbound);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "blocked-flush",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
+    start_pump!(running, fixture, "blocked-flush");
     {
         let mut control = lock(&fixture.shared);
         for nonce in 0..1024 {
@@ -207,18 +198,7 @@ async fn close_interrupts_a_blocked_outbound_flush() {
 #[tokio::test(start_paused = true)]
 async fn a_send_that_makes_no_progress_drops_the_link() {
     let mut fixture = WriteFixture::new(1);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "stalled-send",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
+    start_pump!(running, fixture, "stalled-send");
     tokio::time::advance(SEND_BUDGET).await;
     let end = running
         .as_mut()
@@ -232,38 +212,16 @@ async fn a_send_that_makes_no_progress_drops_the_link() {
 
 #[tokio::test(start_paused = true)]
 async fn a_quiet_attached_session_probes() {
-    use tokio::io::AsyncReadExt as _;
     let mut fixture = WriteFixture::new(64 * 1024);
     let outbound = Arc::clone(&fixture.signals.outbound);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "quiet",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
+    start_pump!(running, fixture, "quiet");
     lock(&fixture.shared).set_status_for_test(Status::Attached);
     outbound.notify_one();
     assert!(running.as_mut().now_or_never().is_none());
     tokio::time::advance(QUIET_PROBE).await;
     assert!(running.as_mut().now_or_never().is_none());
 
-    let mut written = BytesMut::with_capacity(4096);
-    let mut peer = fixture.peer;
-    while let Some(Ok(read)) = peer.read_buf(&mut written).now_or_never() {
-        if read == 0 {
-            break;
-        }
-    }
-    let mut types = Vec::new();
-    while let Ok(Some(frame)) = phux_protocol::wire::framing::split_frame(&mut written) {
-        types.push(frame[LENGTH_PREFIX_LEN]);
-    }
+    let types = written_types(fixture.peer);
     assert!(
         types.contains(&TYPE_PING),
         "a quiet attached session must probe; wrote {types:?}"
@@ -276,18 +234,7 @@ async fn a_quiet_attached_session_probes() {
 async fn an_answered_probe_publishes_its_round_trip() {
     use tokio::io::AsyncWriteExt as _;
     let mut fixture = WriteFixture::new(64 * 1024);
-    let wake: Wake = Arc::new(|| {});
-    let mut pump = Pump::new(
-        "round-trip",
-        &mut fixture.io,
-        ConnectOptions::default(),
-        &fixture.shared,
-        &mut fixture.signals,
-        &wake,
-    );
-    let running = pump.run();
-    tokio::pin!(running);
-    assert!(running.as_mut().now_or_never().is_none());
+    start_pump!(running, fixture, "round-trip");
     fixture.rebind.send_modify(|n| *n += 1);
     assert!(running.as_mut().now_or_never().is_none());
     assert_eq!(lock(&fixture.shared).round_trip(), None);

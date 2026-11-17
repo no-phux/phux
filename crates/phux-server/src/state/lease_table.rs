@@ -1,35 +1,22 @@
-//! The input-lease ledgers (ADR-0033, "take the wheel"): who owns keystroke
-//! delivery to a local pane, and on a hub, which consumer owns it over a
-//! satellite pane.
+//! The local input-lease ledger (ADR-0033, "take the wheel"): who owns
+//! keystroke delivery to a local pane. The hub-side satellite ledger lives
+//! in [`super::federation`].
 //!
 //! Both clear together on the holder's detach
-//! ([`LeaseTable::release_all_for`]); a stranded entry leaves a pane nobody
-//! can type into. The protocol around the ledgers (relays, `Seized` and
-//! `Released` notifications) lives in the runtime, behind `ServerState`
+//! (`ServerState::release_all_input_leases`); a stranded entry leaves a pane
+//! nobody can type into. The protocol around the ledger (relays, `Seized`
+//! and `Released` notifications) lives in the runtime, behind `ServerState`
 //! accessors. Everything here is `pub(super)` and sync.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 
 use phux_core::ids::ResourceId;
-use tokio::sync::mpsc;
 
 use super::client::ClientId;
-use crate::mailbox::Outbound;
 
-/// One hub-side satellite input lease: the holding hub consumer and its
-/// mailbox, so a SEIZE by another consumer can notify the evicted holder
-/// (the satellite sees only the link's single identity and cannot).
-#[derive(Debug, Clone)]
-pub(crate) struct SatelliteLease {
-    /// The hub consumer that holds the lease.
-    pub(crate) holder: ClientId,
-    /// The holder's outbound mailbox, for the eviction notification.
-    pub(crate) out_tx: mpsc::Sender<Outbound>,
-}
-
-/// The local and hub-side input-lease ledgers.
+/// The local input-lease ledger.
 #[derive(Debug, Default)]
-pub(super) struct LeaseTable {
+pub(crate) struct LeaseTable {
     /// Per-pane lease: only the holder's input reaches the PTY (others are
     /// dropped but still acked). Absent means `Open`.
     input: HashMap<ResourceId, ClientId>,
@@ -37,15 +24,6 @@ pub(super) struct LeaseTable {
     /// so `0` until the first grant. Kept after the lease is released so
     /// epochs never repeat while the pane lives.
     epochs: HashMap<ResourceId, u64>,
-    /// Hub-side lease per satellite terminal (L1 §9.1). All hub consumers
-    /// share one identity on the satellite, so the hub gates relayed input
-    /// and lease commands here before forwarding. Carries the holder's
-    /// mailbox for SEIZE notifications.
-    satellite: BTreeMap<(phux_protocol::ids::SatelliteHost, u32), SatelliteLease>,
-    /// Proxied satellite `ATTACH_RESOURCE`s. A relayed frame must match an
-    /// exact `(client, host, terminal)` entry, so a consumer cannot address
-    /// a satellite pane it never attached.
-    satellite_proxy_attaches: HashSet<(ClientId, phux_protocol::ids::SatelliteHost, u32)>,
     /// Armed TTL expiry per pane (ADR-0033 `ttl_ms`). A woken timer acts only
     /// if its generation is still on file; generations come from a counter
     /// that never resets, and superseding an entry aborts its timer, so at
@@ -54,14 +32,9 @@ pub(super) struct LeaseTable {
     /// Source of expiry generations; never reset, so each is unique.
     next_expiry_generation: u64,
     /// Live timer-task count, for the regression test that re-arms do not
-    /// accumulate tasks (cheap enough to keep ungated).
+    /// accumulate tasks.
+    #[cfg(test)]
     expiry_task_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// Satellite terminals with an `ACQUIRE_INPUT` relay in flight; see
-    /// [`Self::mirror_satellite_lease_event`].
-    satellite_acquire_pending: HashSet<(phux_protocol::ids::SatelliteHost, u32)>,
-    /// The satellite's `seq` of the last mirrored Acquired/Seized per
-    /// terminal, when the link carries stamps.
-    satellite_last_mirrored_seq: HashMap<(phux_protocol::ids::SatelliteHost, u32), u64>,
 }
 
 /// One pane's armed TTL timer: its generation and, once spawned, its abort
@@ -76,52 +49,18 @@ struct ExpiryEntry {
 }
 
 impl LeaseTable {
-    // -- satellite proxy attach registrations -----------------------------
-
-    /// Whether `client` holds a proxied attach over `(host, terminal)`.
-    pub(super) fn has_satellite_proxy_attach(
-        &self,
-        client: ClientId,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) -> bool {
-        self.satellite_proxy_attaches
-            .contains(&(client, host.clone(), terminal))
-    }
-
-    /// Record that `client` now proxies `terminal` on `host`.
-    pub(super) fn register_satellite_proxy_attach(
-        &mut self,
-        client: ClientId,
-        host: phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) {
-        self.satellite_proxy_attaches
-            .insert((client, host, terminal));
-    }
-
-    /// Drop one proxy registration. Idempotent.
-    pub(super) fn unregister_satellite_proxy_attach(
-        &mut self,
-        client: ClientId,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) {
-        self.satellite_proxy_attaches
-            .remove(&(client, host.clone(), terminal));
-    }
-
     // -- local pane leases ----------------------------------------------
 
-    /// The lease holder for `terminal`, or `None` when `Open`.
+    /// The client currently holding `terminal`'s input lease, or `None` when
+    /// the pane is `Open`.
     #[must_use]
-    pub(super) fn holder(&self, terminal: ResourceId) -> Option<ClientId> {
+    pub(crate) fn holder(&self, terminal: ResourceId) -> Option<ClientId> {
         self.input.get(&terminal).copied()
     }
 
     /// Whether another client's lease blocks `client`'s input.
     #[must_use]
-    pub(super) fn blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
+    pub(crate) fn blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.input
             .get(&terminal)
             .is_some_and(|holder| *holder != client)
@@ -167,9 +106,10 @@ impl LeaseTable {
         *epoch = epoch.saturating_add(1);
     }
 
-    /// Every pane whose input lease `client` currently holds.
+    /// Every pane whose input lease `client` currently holds (for disconnect
+    /// broadcasts).
     #[must_use]
-    pub(super) fn held_by(&self, client: ClientId) -> Vec<ResourceId> {
+    pub(crate) fn held_by(&self, client: ClientId) -> Vec<ResourceId> {
         self.input
             .iter()
             .filter_map(|(pane, holder)| (*holder == client).then_some(*pane))
@@ -219,7 +159,7 @@ impl LeaseTable {
 
     /// Whether `generation` is still current (checked by a woken timer).
     #[must_use]
-    pub(super) fn expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
+    pub(crate) fn expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
         self.expiry
             .get(&terminal)
             .is_some_and(|e| e.generation == generation)
@@ -232,9 +172,10 @@ impl LeaseTable {
         self.expiry.remove(&terminal);
     }
 
-    /// A clone of the live-timer-task counter.
+    /// A clone of the live TTL-timer-task counter.
+    #[cfg(test)]
     #[must_use]
-    pub(super) fn expiry_task_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    pub(crate) fn expiry_task_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         std::sync::Arc::clone(&self.expiry_task_counter)
     }
 
@@ -245,73 +186,11 @@ impl LeaseTable {
         }
     }
 
-    // -- hub-side satellite leases (phux-v45.7) -------------------------
-
-    /// The hub consumer holding the satellite lease (L1 §9.1), if any.
-    #[must_use]
-    pub(super) fn satellite_holder(
-        &self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) -> Option<ClientId> {
-        self.satellite
-            .get(&(host.clone(), terminal))
-            .map(|lease| lease.holder)
-    }
-
-    /// Record `client` (and mailbox) as the satellite lease holder,
-    /// returning the evicted lease when a different consumer held it.
-    pub(super) fn set_satellite(
-        &mut self,
-        host: phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-        client: ClientId,
-        out_tx: mpsc::Sender<Outbound>,
-    ) -> Option<SatelliteLease> {
-        let prior = self.satellite.insert(
-            (host, terminal),
-            SatelliteLease {
-                holder: client,
-                out_tx,
-            },
-        );
-        prior.filter(|lease| lease.holder != client)
-    }
-
-    /// Release the satellite lease if `client` holds it; `true` if removed.
-    pub(super) fn release_satellite(
-        &mut self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-        client: ClientId,
-    ) -> bool {
-        let key = (host.clone(), terminal);
-        if self.satellite.get(&key).map(|lease| lease.holder) == Some(client) {
-            self.satellite.remove(&key);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Every satellite lease `client` currently holds.
-    #[must_use]
-    pub(super) fn satellite_held_by(
-        &self,
-        client: ClientId,
-    ) -> Vec<(phux_protocol::ids::SatelliteHost, u32)> {
-        self.satellite
-            .iter()
-            .filter(|(_, lease)| lease.holder == client)
-            .map(|(key, _)| key.clone())
-            .collect()
-    }
-
     // -- disconnect teardown --------------------------------------------
 
-    /// Drop every lease `client` holds, local and hub-side (called from
-    /// `detach` after the runtime has broadcast and relayed the releases).
-    /// Returns the local panes released, each now in a new epoch.
+    /// Drop every local lease `client` holds (called from `detach` after the
+    /// runtime has broadcast the releases). Returns the panes released, each
+    /// now in a new epoch.
     pub(super) fn release_all_for(&mut self, client: ClientId) -> Vec<ResourceId> {
         let held = self.held_by(client);
         for pane in &held {
@@ -319,103 +198,6 @@ impl LeaseTable {
             self.input.remove(pane);
             self.bump_epoch(*pane);
         }
-        self.satellite.retain(|_, lease| lease.holder != client);
         held
-    }
-
-    /// Clear the satellite lease whoever holds it, mirroring a satellite's
-    /// `Released`/`Expired`. Returns the evicted holder.
-    pub(super) fn clear_satellite(
-        &mut self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) -> Option<ClientId> {
-        self.satellite
-            .remove(&(host.clone(), terminal))
-            .map(|lease| lease.holder)
-    }
-
-    // -- satellite lease mirror ordering (review round 2, medium finding) -
-
-    /// Mark an `ACQUIRE_INPUT` relay in flight. Clear it on failure; on
-    /// success the next mirrored event clears it.
-    pub(super) fn mark_satellite_acquire_pending(
-        &mut self,
-        host: phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) {
-        self.satellite_acquire_pending.insert((host, terminal));
-    }
-
-    /// Clear the pending mark after a failed relay.
-    pub(super) fn clear_satellite_acquire_pending(
-        &mut self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) {
-        self.satellite_acquire_pending
-            .remove(&(host.clone(), terminal));
-    }
-
-    /// Forget the mirror-ordering bookkeeping for a satellite terminal that
-    /// closed; no event for it can arrive again. Without this the map keeps
-    /// one entry per satellite terminal that ever held a lease, for the
-    /// hub's lifetime, and a satellite naming fresh ids grows it at will.
-    pub(super) fn forget_satellite_terminal(
-        &mut self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-    ) {
-        let key = (host.clone(), terminal);
-        self.satellite_last_mirrored_seq.remove(&key);
-        self.satellite_acquire_pending.remove(&key);
-    }
-
-    /// Entries in the mirror-ordering bookkeeping.
-    #[cfg(test)]
-    pub(super) fn satellite_mirror_entries(&self) -> usize {
-        self.satellite_last_mirrored_seq.len() + self.satellite_acquire_pending.len()
-    }
-
-    /// Mirror a satellite `terminal_control` into the hub ledger (the
-    /// satellite owns the timer). `is_end` is true for Released/Expired.
-    /// Returns the evicted holder when an end was applied.
-    ///
-    /// The acquire reply can beat an earlier Released/Expired over the link:
-    ///
-    /// * **Pending**: the first event after a relayed acquire consumes the
-    ///   mark; an end arriving then is stale and swallowed.
-    /// * **Seq**: otherwise an end applies only if its `seq` is newer than
-    ///   the last mirrored Acquired/Seized.
-    ///
-    /// A lost confirming event could let one genuine end be swallowed, but
-    /// only once.
-    pub(super) fn mirror_satellite_lease_event(
-        &mut self,
-        host: &phux_protocol::ids::SatelliteHost,
-        terminal: u32,
-        is_end: bool,
-        seq: Option<u64>,
-    ) -> Option<ClientId> {
-        let key = (host.clone(), terminal);
-        let was_pending = self.satellite_acquire_pending.remove(&key);
-        if was_pending && is_end {
-            return None;
-        }
-        if !was_pending
-            && is_end
-            && let Some(seq) = seq
-            && let Some(last) = self.satellite_last_mirrored_seq.get(&key)
-            && seq <= *last
-        {
-            return None;
-        }
-        if !is_end {
-            if let Some(seq) = seq {
-                self.satellite_last_mirrored_seq.insert(key, seq);
-            }
-            return None;
-        }
-        self.clear_satellite(host, terminal)
     }
 }

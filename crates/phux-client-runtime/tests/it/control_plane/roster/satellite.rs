@@ -3,8 +3,7 @@ use super::*;
 
 #[test]
 fn a_satellite_pane_is_not_subscribed_to_the_occupant_record_a_hub_cannot_route() {
-    let (mut plane, read) = discovered();
-    answer_metadata(&mut plane, read, None);
+    let mut plane = settled();
     let satellite = ResourceId::satellite("powerhouse-1", 3);
     let mut current = snapshot();
     current.resources.push(ResourceInfo::new(

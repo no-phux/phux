@@ -1,0 +1,51 @@
+//! `time` widget — strftime-formatted wall clock.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use chrono::format::StrftimeItems;
+use chrono::{DateTime, Local};
+
+use phux_config::widget::kinds::time::{TimeOpts, parse};
+
+use super::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
+
+/// `time` widget: [`WidgetContext::now`] in the local zone, formatted with a
+/// strftime spec validated when the options were parsed.
+#[derive(Debug, Clone)]
+pub struct TimeWidget {
+    /// strftime-style format string.
+    pub format: String,
+}
+
+impl StatusWidget for TimeWidget {
+    fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
+        let dt: DateTime<Local> = ctx.now.into();
+        let text = StrftimeItems::new(&self.format)
+            .parse()
+            .map(|items| dt.format_with_items(items.iter()).to_string())
+            .unwrap_or_default();
+        WidgetCells::from_text(&text)
+    }
+
+    /// Whole or not at all: a clipped clock (`Wed 18:…`) tells no time.
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
+        let cells = self.render(ctx);
+        if cells.cells.len() <= budget {
+            cells
+        } else {
+            WidgetCells { cells: Vec::new() }
+        }
+    }
+
+    fn poll_interval(&self) -> Option<Duration> {
+        Some(Duration::from_secs(1))
+    }
+}
+
+pub(super) fn factory(
+    opts: &BTreeMap<String, toml::Value>,
+) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    let TimeOpts { format } = parse(opts)?;
+    Ok(Box::new(TimeWidget { format }))
+}

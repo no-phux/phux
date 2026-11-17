@@ -123,10 +123,7 @@ pub(super) fn authorize_launch(
     let command = phux_protocol::wire::frame::Command::NativeAgent { request };
     ctx.state.with(|s| {
         if s.native_agents().sealed {
-            return Err(CommandResult::Error {
-                code: ErrorCode::Overflow,
-                message: "daemon upgrade is in progress; no agent was started; reconnect before launching again".into(),
-            });
+            return Err(CommandResult::error(ErrorCode::Overflow, "daemon upgrade is in progress; no agent was started; reconnect before launching again"));
         }
         if s.is_attached_viewer(ctx.client_id)
             || s.connection_grant(ctx.client_id)

@@ -4,13 +4,11 @@ use std::sync::Arc;
 
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
 use phux_client_runtime::{Client, Runtime, ViewId};
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
-use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities},
-};
+use phux_wire_fixtures::{HelloOk, attached, bootstrap_frames, decode_one, output};
 
 pub const FILL: &str = "terminal workload terminal workload terminal workload terminal workload ";
 
@@ -40,20 +38,12 @@ impl Replica {
         client.with_control(ControlPlane::connection_opened);
         let _ = client.take_outbound();
         client
-            .feed(FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: capabilities,
-                server_id: vec![1; 16],
-                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-                bootstrap_limits: BootstrapLimits::default(),
-            })
+            .feed(HelloOk::new(vec![1; 16], capabilities).build())
             .expect("hello");
         let attach_id = client
             .take_outbound()
             .iter()
-            .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+            .find_map(|bytes| match decode_one(bytes) {
                 FrameKind::Attach { attach_id, .. } => Some(attach_id),
                 _ => None,
             })
@@ -72,11 +62,7 @@ impl Replica {
             ])
             .with_resources(resources);
         client
-            .feed(FrameKind::Attached {
-                attach_id,
-                snapshot,
-                initial_client_id: ClientId::new(1),
-            })
+            .feed(attached(attach_id, snapshot, 1))
             .expect("attached");
         let payload = (0..rows)
             .map(|row| format!("{row:02} {FILL}"))
@@ -105,44 +91,14 @@ impl Replica {
     pub fn feed(&mut self, bytes: String) {
         self.seq += 1;
         self.client
-            .feed(FrameKind::ResourceOutput {
-                terminal_id: self.terminal.clone(),
-                stream_id: StreamId::new(1).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
-                seq: self.seq,
-                bytes: bytes.into_bytes().into(),
-            })
+            .feed(output(&self.terminal, self.seq, bytes.as_bytes()))
             .expect("output");
     }
 }
 
 fn bootstrap(client: &Client, id: &ResourceId, number: u64, cols: u16, rows: u16, payload: &str) {
-    let stream_id = StreamId::new(number).expect("a stream id");
-    let bootstrap_id = BootstrapId::new(number).expect("a bootstrap id");
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: payload.as_bytes().to_vec().into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-    ] {
+    let ids = [number, number];
+    for frame in bootstrap_frames(id, ids, [cols, rows], payload.as_bytes()) {
         client.feed(frame).expect("bootstrap");
     }
 }

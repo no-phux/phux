@@ -116,7 +116,7 @@ async fn outdated(
     wanted: &BTreeMap<String, Vec<String>>,
     slots: &BTreeMap<String, Slot>,
 ) -> BTreeSet<String> {
-    let Ok(installed) = state.with(crate::state::ServerState::native_host_executable) else {
+    let Ok(installed) = state.with(|s| s.config().native_host_executable()) else {
         return BTreeSet::new();
     };
     let mut outdated = BTreeSet::new();
@@ -144,12 +144,13 @@ async fn outdated(
 /// The terminal handles of `name`'s panes.
 fn terminals(state: &SharedState, name: &str) -> Vec<phux_terminal_api::actor::TerminalHandle> {
     state.with(|s| {
-        let Some(session) = s.find_session_by_name(name) else {
+        let Some(session) = s.sessions().find_by_name(name) else {
             return Vec::new();
         };
-        s.session_terminals(session)
+        s.sessions()
+            .terminal_members(session)
             .into_iter()
-            .filter_map(|pane| s.resource_handle(pane)?.terminal().ok().cloned())
+            .filter_map(|pane| s.resources().handle(pane)?.terminal().ok().cloned())
             .collect()
     })
 }
@@ -201,10 +202,13 @@ fn tick(
 /// Whether `name` holds a pane whose process still runs.
 fn live(state: &SharedState, name: &str) -> bool {
     state.with(|s| {
-        s.find_session_by_name(name).is_some_and(|session| {
-            s.session_terminals(session)
+        s.sessions().find_by_name(name).is_some_and(|session| {
+            s.sessions()
+                .terminal_members(session)
                 .into_iter()
-                .any(|pane| s.resource_handle(pane).is_some() && s.retained_exit(pane).is_none())
+                .any(|pane| {
+                    s.resources().handle(pane).is_some() && s.retained().exit(pane).is_none()
+                })
         })
     })
 }
@@ -212,13 +216,14 @@ fn live(state: &SharedState, name: &str) -> bool {
 /// Close every pane of `name`; its ephemeral session goes with the last.
 fn stop(state: &SharedState, name: &str) {
     state.with_mut(|s| {
-        let Some(session) = s.find_session_by_name(name) else {
+        let Some(session) = s.sessions().find_by_name(name) else {
             return;
         };
         let panes: Vec<_> = s
-            .session_terminals(session)
+            .sessions()
+            .terminal_members(session)
             .into_iter()
-            .filter(|pane| s.resource_handle(*pane).is_some())
+            .filter(|pane| s.resources().handle(*pane).is_some())
             .collect();
         for pane in &panes {
             s.mark_terminating(*pane);
@@ -245,7 +250,7 @@ fn start(
         ["/bin/sh", "-c", MACOS_HOLDER].map(str::to_owned).into()
     } else if args.first().is_some_and(|word| word == "phux") {
         let exe = state
-            .with(crate::state::ServerState::native_host_executable)
+            .with(|s| s.config().native_host_executable())
             .map_err(|err| err.to_string())?;
         let mut command = vec![exe.to_string_lossy().into_owned()];
         command.extend(args.into_iter().skip(1));
@@ -260,10 +265,10 @@ fn start(
         None,
         BTreeMap::new(),
     );
-    let scrollback = state.with(crate::state::ServerState::scrollback_limits);
+    let scrollback = state.with(|s| s.config().scrollback);
     let existing = state.with_mut(|s| {
         // A cold start leaves the previous run's ended panes in the session.
-        let session = s.find_session_by_name(name)?;
+        let session = s.sessions().find_by_name(name)?;
         let ended: Vec<_> = s
             .registry()
             .session(session)?
@@ -272,7 +277,7 @@ fn start(
             .filter(|key| {
                 s.registry()
                     .resource_id(key)
-                    .is_none_or(|id| s.resource_handle(id).is_none())
+                    .is_none_or(|id| s.resources().handle(id).is_none())
             })
             .copied()
             .collect();
@@ -281,7 +286,7 @@ fn start(
                 warn!(session = %name, %refusal, "an ended standing mirror pane was not removed");
             }
         }
-        s.find_session_by_name(name)
+        s.sessions().find_by_name(name)
     });
     let started = match existing {
         Some(session) => spawn_pane_with_pty_and_colors(
@@ -332,7 +337,7 @@ mod tests {
         crate::runtime::test_support::local(async move {
             let state = SharedState::new();
             state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-            state.with_mut(|s| s.set_native_host_executable(Some(fake)));
+            state.with_mut(|s| s.config_mut().native_host_executable = Some(fake));
             let token = CancellationToken::new();
             let mirror = MirrorConfigEntry {
                 target: "display".to_owned(),
@@ -375,7 +380,7 @@ mod tests {
             );
             let mut gone = false;
             for _ in 0..100 {
-                gone = state.with(|s| names.iter().all(|n| s.find_session_by_name(n).is_none()));
+                gone = state.with(|s| names.iter().all(|n| s.sessions().find_by_name(n).is_none()));
                 if gone {
                     break;
                 }
@@ -404,7 +409,7 @@ mod tests {
         crate::runtime::test_support::local(async move {
             let state = SharedState::new();
             state.set_terminal_engine(Arc::new(phux_terminal::TerminalEngine));
-            state.with_mut(|s| s.set_native_host_executable(Some(fake.clone())));
+            state.with_mut(|s| s.config_mut().native_host_executable = Some(fake.clone()));
             let token = CancellationToken::new();
             let producer = ProducerConfigEntry {
                 name: "feed".to_owned(),
@@ -424,7 +429,10 @@ mod tests {
             );
             assert!(live(&state, name));
             let panes = |state: &SharedState| {
-                state.with(|s| s.session_terminals(s.find_session_by_name(name).unwrap()))
+                state.with(|s| {
+                    s.sessions()
+                        .terminal_members(s.sessions().find_by_name(name).unwrap())
+                })
             };
             let first = panes(&state);
             // A hot upgrade's supervisor has no slot for what it adopts.

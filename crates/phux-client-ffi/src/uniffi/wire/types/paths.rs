@@ -19,17 +19,13 @@ pub enum WireDirectoryErrorCode {
     Unanswered,
 }
 
-impl From<DirectoryFailure> for WireDirectoryErrorCode {
-    fn from(value: DirectoryFailure) -> Self {
-        match value {
-            DirectoryFailure::NotFound => Self::NotFound,
-            DirectoryFailure::PermissionDenied => Self::PermissionDenied,
-            DirectoryFailure::NotADirectory => Self::NotADirectory,
-            DirectoryFailure::Other => Self::Other,
-            DirectoryFailure::Unanswered => Self::Unanswered,
-        }
-    }
-}
+mirror_enum_from!(DirectoryFailure => WireDirectoryErrorCode {
+    NotFound,
+    PermissionDenied,
+    NotADirectory,
+    Other,
+    Unanswered,
+});
 
 /// One child directory in a listing.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -39,14 +35,7 @@ pub struct WireDirectoryEntry {
     pub is_symlink: bool,
 }
 
-impl From<DirectoryChild> for WireDirectoryEntry {
-    fn from(value: DirectoryChild) -> Self {
-        Self {
-            name: value.name,
-            is_symlink: value.is_symlink,
-        }
-    }
-}
+mirror_from!(DirectoryChild => WireDirectoryEntry { name, is_symlink });
 
 /// The correlated answer to one `list_directory` call, drained losslessly
 /// through `take_directory_listings`. `error` is `None` on success; then
@@ -66,19 +55,15 @@ pub struct WireDirectoryListing {
     pub message: String,
 }
 
-impl From<DirectoryListing> for WireDirectoryListing {
-    fn from(value: DirectoryListing) -> Self {
-        Self {
-            request_id: value.request_id,
-            path: value.path,
-            parent: value.parent,
-            entries: value.entries.into_iter().map(Into::into).collect(),
-            truncated: value.truncated,
-            error: value.error.map(Into::into),
-            message: value.message,
-        }
-    }
-}
+mirror_from!(DirectoryListing => WireDirectoryListing {
+    request_id,
+    path,
+    parent,
+    entries: vec,
+    truncated,
+    error: opt,
+    message,
+});
 
 /// Host path kind. A symlink is not implicitly a directory.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,15 +73,11 @@ pub enum WirePathKind {
     Symlink,
 }
 
-impl From<PathMatchKind> for WirePathKind {
-    fn from(value: PathMatchKind) -> Self {
-        match value {
-            PathMatchKind::File => Self::File,
-            PathMatchKind::Directory => Self::Directory,
-            PathMatchKind::Symlink => Self::Symlink,
-        }
-    }
-}
+mirror_enum_from!(PathMatchKind => WirePathKind {
+    File,
+    Directory,
+    Symlink,
+});
 
 /// Completeness of one answer; warming and truncated may be retried.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,15 +87,11 @@ pub enum WirePathStatus {
     Truncated,
 }
 
-impl From<PathSearchStatus> for WirePathStatus {
-    fn from(value: PathSearchStatus) -> Self {
-        match value {
-            PathSearchStatus::Complete => Self::Complete,
-            PathSearchStatus::Warming => Self::Warming,
-            PathSearchStatus::Truncated => Self::Truncated,
-        }
-    }
-}
+mirror_enum_from!(PathSearchStatus => WirePathStatus {
+    Complete,
+    Warming,
+    Truncated,
+});
 
 /// Typed refusal; unanswered means the carrying connection ended.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,17 +103,13 @@ pub enum WirePathError {
     Unanswered,
 }
 
-impl From<PathFailure> for WirePathError {
-    fn from(value: PathFailure) -> Self {
-        match value {
-            PathFailure::NotFound => Self::NotFound,
-            PathFailure::PermissionDenied => Self::PermissionDenied,
-            PathFailure::NotADirectory => Self::NotADirectory,
-            PathFailure::Other => Self::Other,
-            PathFailure::Unanswered => Self::Unanswered,
-        }
-    }
-}
+mirror_enum_from!(PathFailure => WirePathError {
+    NotFound,
+    PermissionDenied,
+    NotADirectory,
+    Other,
+    Unanswered,
+});
 
 /// Absolute host path matched by the query. Escape for the target shell.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -145,14 +118,7 @@ pub struct WirePathRow {
     pub kind: WirePathKind,
 }
 
-impl From<PathMatch> for WirePathRow {
-    fn from(value: PathMatch) -> Self {
-        Self {
-            path: value.path,
-            kind: value.kind.into(),
-        }
-    }
-}
+mirror_from!(PathMatch => WirePathRow { path, kind: into });
 
 /// One correlated bounded answer, or a typed refusal/cancellation.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
@@ -166,16 +132,12 @@ pub struct WirePathAnswer {
     pub message: String,
 }
 
-impl From<PathAnswer> for WirePathAnswer {
-    fn from(value: PathAnswer) -> Self {
-        Self {
-            request_id: value.request_id,
-            root: value.root,
-            parent: value.parent,
-            rows: value.rows.into_iter().map(Into::into).collect(),
-            status: value.status.map(Into::into),
-            error: value.failure.map(Into::into),
-            message: value.message,
-        }
-    }
-}
+mirror_from!(PathAnswer => WirePathAnswer {
+    request_id,
+    root,
+    parent,
+    rows: vec,
+    status: opt,
+    failure as error: opt,
+    message,
+});

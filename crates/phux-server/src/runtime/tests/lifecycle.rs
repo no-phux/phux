@@ -57,7 +57,7 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
         let mut hooks = capture_hooks(&state);
         let root = CancellationToken::new();
         let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
-        state.with_mut(crate::state::ServerState::arm_self_exit);
+        state.with_mut(|s| s.lifecycle_mut().arm_self_exit());
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
         spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
 
@@ -106,7 +106,7 @@ fn focus_hooks_fire_only_for_authorized_focus_gained() {
         let mut hooks = capture_hooks(&state);
         let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
         let _rx = register_stub(&state, pane);
-        let wire_terminal_id = state.with_mut(|s| s.intern_resource_wire(pane));
+        let wire_terminal_id = state.with_mut(|s| s.idspace.intern_resource(pane));
         let client_id = attach_client(&state, "focus");
 
         let focus = |client, event| {
@@ -145,7 +145,7 @@ fn detach_fires_client_detached_hook_only_for_attached_clients() {
         let mut hooks = capture_hooks(&state);
         let _ = state.with_mut(|s| s.seed_session("leaving"));
 
-        let stranger = state.with_mut(crate::state::ServerState::new_client_id);
+        let stranger = state.with_mut(|s| s.clients_mut().new_client_id());
         detach_and_release_consumer_state(&state, stranger);
         assert!(hooks.try_recv().is_err());
 

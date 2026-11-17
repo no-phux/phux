@@ -56,24 +56,24 @@ async fn a_promoted_hub_resumes_with_hub() {
         let state = SharedState::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 3,
                 PathBuf::from("/run/phux/phux.sock"),
                 RuntimeFlags::default(),
             );
-            s.arm_hub_reload(None, cancel.clone());
+            s.federation_mut().arm_reload(None, cancel.clone());
         });
         let served =
             |state: &SharedState| args_as_strings(capture_upgrade_context(state).unwrap().flags);
         assert!(!served(&state).contains(&"--hub".to_owned()));
-        assert!(state.with_mut(|s| s.hub_ensure_links(
+        assert!(state.with_mut(|s| s.federation_mut().ensure_links(
             std::ffi::OsString::from("ssh"),
             phux_protocol::caps::BootstrapCapabilities::new(),
         )));
         assert!(served(&state).contains(&"--hub".to_owned()));
 
         let empty = crate::hub::HubTable::from_registry(&[]).unwrap();
-        state.with_mut(|s| s.hub_replace_table(empty, &state));
+        state.with_mut(|s| s.federation_mut().replace_table(empty, &state));
         assert!(served(&state).contains(&"--hub".to_owned()));
         assert!(crate::hub::resolve_hub_table(true, &[]).is_ok());
         cancel.cancel();
@@ -104,7 +104,7 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
         let listener = tempfile::tempfile().unwrap();
         let dir = tempfile::tempdir().unwrap();
         state.with_mut(|s| {
-            s.set_upgrade_context(
+            s.lifecycle_mut().set_upgrade_context(
                 listener.as_raw_fd(),
                 dir.path().join("phux.sock"),
                 RuntimeFlags {
@@ -112,10 +112,10 @@ async fn an_invalid_registry_blocks_a_promoted_hub_upgrade() {
                     ..RuntimeFlags::default()
                 },
             );
-            s.arm_hub_reload(Some(source), cancel.clone());
+            s.federation_mut().arm_reload(Some(source), cancel.clone());
         });
         crate::hub::reload_satellites(&state);
-        assert!(state.with(crate::state::ServerState::hub_has_links));
+        assert!(state.with(|s| s.federation().has_links()));
 
         registry.lock().unwrap().extend([
             satellite("gopher", "gopher://box"),

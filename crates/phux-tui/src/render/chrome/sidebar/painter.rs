@@ -2,8 +2,8 @@
 
 use std::io::{self, Write};
 
+use crate::render::chrome::status_bar::widgets::WindowInfo;
 use phux_config::SessionConfigEntry;
-use phux_config::widget::WindowInfo;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 

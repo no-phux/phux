@@ -29,23 +29,20 @@ fn pre1_native_codec_is_rejected_before_accepting_payload() {
 fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
     let captured = capture_snapshot();
     for width in [1, 2, 3, 7, 31, captured.ready.len()] {
-        let mut adapter = native_adapter();
-        let mut replica = adapter
-            .start_replica(native_profile(), geometry())
-            .expect("native replica");
-        let mut effects = EngineEffectBuffer::new();
+        let (mut adapter, mut replica, mut effects) = started(native_profile());
         let mut bootstrap_progress = BootstrapProgress::Pending;
         for fragment in captured.ready.chunks(width) {
             bootstrap_progress = adapter
                 .apply_bootstrap_chunk(&mut replica, fragment, &mut effects)
                 .expect("arbitrary bootstrap fragment");
         }
-        assert_eq!(bootstrap_progress, BootstrapProgress::Pending);
+        assert_eq!(bootstrap_progress, BootstrapProgress::Pending, "{width}");
         assert_eq!(
             adapter
                 .finish_bootstrap(&mut replica, &mut effects)
                 .expect("protocol READY"),
-            BootstrapProgress::Ready
+            BootstrapProgress::Ready,
+            "{width}"
         );
         apply_history(&mut adapter, &mut replica, &captured, &mut effects);
         assert_eq!(
@@ -54,7 +51,8 @@ fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
                 .expect("finished terminal")
                 .title()
                 .unwrap(),
-            b"checkpoint-title"
+            b"checkpoint-title",
+            "{width}"
         );
     }
 }
@@ -62,11 +60,7 @@ fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
 #[test]
 fn publication_requires_authenticated_ready_and_one_shot_continuation_replay() {
     let captured = capture_snapshot();
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
+    let (mut adapter, mut replica, mut effects) = started(native_profile());
     assert!(matches!(
         adapter.apply_output(&mut replica, b"too early", &mut effects),
         Err(GhosttyEngineError::LiveOutputBeforeReady)
@@ -112,17 +106,7 @@ fn publication_requires_authenticated_ready_and_one_shot_continuation_replay() {
 #[test]
 fn live_output_is_applied_between_later_history_pages() {
     let captured = capture_snapshot();
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-        .expect("checkpoint bootstrap record");
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .expect("protocol READY");
+    let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
     adapter
         .apply_output(
             &mut replica,
@@ -152,47 +136,30 @@ fn live_output_is_applied_between_later_history_pages() {
 fn native_truncation_corruption_and_limits_are_typed() {
     let captured = capture_snapshot();
     let bootstrap = &captured.ready;
-    let mut effects = EngineEffectBuffer::new();
-
-    let mut adapter = native_adapter();
-    let mut early = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    assert!(matches!(
-        adapter.finish_bootstrap(&mut early, &mut effects),
-        Err(GhosttyEngineError::Checkpoint { .. })
-    ));
-
-    let mut adapter = native_adapter();
-    let mut truncated = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    adapter
-        .apply_bootstrap_chunk(
-            &mut truncated,
-            &bootstrap[..bootstrap.len() - 1],
-            &mut effects,
-        )
-        .expect("truncated fragment is buffered");
-    assert!(matches!(
-        adapter.finish_bootstrap(&mut truncated, &mut effects),
-        Err(GhosttyEngineError::Checkpoint { .. })
-    ));
-
     let mut corrupt = bootstrap.clone();
     corrupt[0] ^= 0xff;
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &corrupt, &mut effects)
-        .expect("corrupt bytes are buffered until READY");
-    assert!(matches!(
-        adapter.finish_bootstrap(&mut replica, &mut effects),
-        Err(GhosttyEngineError::Checkpoint { .. })
-    ));
+    // FINISH before any chunk, after a truncated record, or after corrupt bytes.
+    for (label, fed) in [
+        ("early", None),
+        ("truncated", Some(&bootstrap[..bootstrap.len() - 1])),
+        ("corrupt", Some(&corrupt[..])),
+    ] {
+        let (mut adapter, mut replica, mut effects) = started(native_profile());
+        if let Some(fed) = fed {
+            adapter
+                .apply_bootstrap_chunk(&mut replica, fed, &mut effects)
+                .unwrap_or_else(|error| panic!("{label}: bytes are buffered until READY: {error}"));
+        }
+        assert!(
+            matches!(
+                adapter.finish_bootstrap(&mut replica, &mut effects),
+                Err(GhosttyEngineError::Checkpoint { .. })
+            ),
+            "{label}"
+        );
+    }
 
+    let mut effects = EngineEffectBuffer::new();
     let tiny = BootstrapLimits::new(1, 1).expect("tiny valid limits");
     let mut adapter = GhosttyAdapter::new(tiny);
     let mut replica = adapter
@@ -228,17 +195,7 @@ fn native_history_finish_rejects_trailing_and_post_finish_pages() {
     let captured = capture_snapshot();
     let mut finish = captured.finish.clone();
     finish.extend_from_slice(b"trailing");
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-        .expect("checkpoint through READY");
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .expect("protocol READY");
+    let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
     for (page, rows) in &captured.history {
         adapter
             .apply_history_page(&mut replica, page, *rows, &mut effects)
@@ -253,29 +210,23 @@ fn native_history_finish_rejects_trailing_and_post_finish_pages() {
 #[test]
 fn native_history_rejects_truncated_page_and_finish_and_releases_feed() {
     let captured = capture_snapshot();
-    for (truncated, rows) in [
+    for (label, truncated, rows) in [
         (
+            "page",
             &captured.history[0].0[..captured.history[0].0.len() - 1],
             captured.history[0].1,
         ),
-        (&captured.finish[..captured.finish.len() - 1], 0),
+        ("finish", &captured.finish[..captured.finish.len() - 1], 0),
     ] {
-        let mut adapter = native_adapter();
-        let mut replica = adapter
-            .start_replica(native_profile(), geometry())
-            .expect("native replica");
-        let mut effects = EngineEffectBuffer::new();
-        adapter
-            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-            .expect("READY bytes");
-        adapter
-            .finish_bootstrap(&mut replica, &mut effects)
-            .expect("protocol READY");
-        assert!(matches!(
-            adapter.apply_history_page(&mut replica, truncated, rows, &mut effects),
-            Err(GhosttyEngineError::Checkpoint { .. })
-        ));
-        assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
+        let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
+        assert!(
+            matches!(
+                adapter.apply_history_page(&mut replica, truncated, rows, &mut effects),
+                Err(GhosttyEngineError::Checkpoint { .. })
+            ),
+            "{label}"
+        );
+        assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0, "{label}");
     }
 }
 
@@ -283,34 +234,24 @@ fn native_history_rejects_truncated_page_and_finish_and_releases_feed() {
 fn native_history_row_mismatch_is_rejected_before_terminal_mutation() {
     let captured = capture_snapshot();
     let (page, rows) = &captured.history[0];
-    let mut adapter = native_adapter();
-    let mut replica = adapter
-        .start_replica(native_profile(), geometry())
-        .expect("native replica");
-    let mut effects = EngineEffectBuffer::new();
-    adapter
-        .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-        .expect("READY bytes");
-    adapter
-        .finish_bootstrap(&mut replica, &mut effects)
-        .expect("protocol READY");
-    let before = replica
-        .terminal()
-        .expect("published terminal")
-        .scrollback_rows()
-        .expect("scrollback rows");
+    let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
+    let scrollback = |replica: &GhosttyReplica| {
+        replica
+            .terminal()
+            .expect("published terminal")
+            .scrollback_rows()
+            .expect("scrollback rows")
+    };
+    let before = scrollback(&replica);
 
     assert!(matches!(
         adapter.apply_history_page(&mut replica, page, rows.saturating_add(1), &mut effects,),
         Err(GhosttyEngineError::Checkpoint { .. })
     ));
     assert_eq!(
-        replica
-            .terminal()
-            .expect("last good terminal remains live")
-            .scrollback_rows()
-            .expect("scrollback rows"),
-        before
+        scrollback(&replica),
+        before,
+        "last good terminal remains live"
     );
     assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
 }
@@ -319,15 +260,7 @@ fn native_history_row_mismatch_is_rejected_before_terminal_mutation() {
 fn live_history_clear_does_not_resurrect_deferred_snapshot_rows() {
     for clear in [Some(b"\x1b[3J".as_slice()), Some(b"\x1bc".as_slice()), None] {
         let captured = capture_snapshot();
-        let mut adapter = native_adapter();
-        let mut replica = adapter.start_replica(native_profile(), geometry()).unwrap();
-        let mut effects = EngineEffectBuffer::new();
-        adapter
-            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
-            .unwrap();
-        adapter
-            .finish_bootstrap(&mut replica, &mut effects)
-            .unwrap();
+        let (mut adapter, mut replica, mut effects) = published(native_profile(), &captured.ready);
         match clear {
             Some(bytes) => adapter
                 .apply_output(&mut replica, bytes, &mut effects)

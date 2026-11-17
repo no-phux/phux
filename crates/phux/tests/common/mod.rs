@@ -46,6 +46,12 @@ mod server_guard;
 #[allow(unused_imports, reason = "not every suite spawns a ServerGuard")]
 pub use server_guard::ServerGuard;
 
+mod pty;
+#[cfg(test)]
+use pty::isolated_attach_command;
+#[allow(unused_imports, reason = "not every suite drives a PTY")]
+pub use pty::{PtyAttach, clear_pty_env, pty_transcript};
+
 /// Owns a directly spawned server until it has actually been reaped.
 pub struct ServerProcess {
     child: Child,
@@ -99,6 +105,20 @@ impl Drop for ServerProcess {
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.socket);
     }
+}
+
+/// `phux --socket SOCKET ARGS...` with the idle backstop set, so a daemon
+/// it auto-spawns and a test fails to reap cannot outlive the run. The
+/// socket goes ahead of the verb: anything after a `--` is a seed's argv.
+pub fn backstopped(socket: &Path, args: &[&str]) -> Out {
+    let (key, value) = AutoSpawnedServer::IDLE_BACKSTOP;
+    Out::of(
+        ambient::phux_cmd(crate::runner::phux_bin())
+            .arg("--socket")
+            .arg(socket)
+            .args(args)
+            .env(key, value),
+    )
 }
 
 /// Tracks a daemonized auto-spawn. Drop reaps a live socket even when the
@@ -387,41 +407,6 @@ impl Drop for WatchChild {
     }
 }
 
-/// `phux attach <args...>` with the harness isolation env applied last.
-///
-/// `configure` may `env_clear`. The release-check opt-out is sealed
-/// afterwards: a private state dir still permits a live lookup, and a cached
-/// newer release still paints a modal that consumes the next scripted key.
-fn isolated_attach_command(
-    args: &[&str],
-    config: &Path,
-    configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
-) -> portable_pty::CommandBuilder {
-    isolated_client_command("attach", args, config, configure)
-}
-
-fn isolated_client_command(
-    verb: &str,
-    args: &[&str],
-    config: &Path,
-    configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
-) -> portable_pty::CommandBuilder {
-    let mut command = portable_pty::CommandBuilder::new(crate::runner::phux_bin());
-    for key in ambient::ambient_phux_keys() {
-        command.env_remove(key);
-    }
-    command.arg(verb);
-    command.args(args);
-    command.env("SHELL", "/bin/sh");
-    command.env("TERM", "xterm-256color");
-    command.env("RUST_LOG", "off");
-    command.env("XDG_CONFIG_HOME", config);
-    command.env("XDG_STATE_HOME", &ambient::isolated_xdg().state);
-    configure(config, &mut command);
-    command.env(ambient::NO_UPDATE_CHECK_ENV, ambient::NO_UPDATE_CHECK_VALUE);
-    command
-}
-
 /// The index of the first captured line satisfying `want`, for asserting the
 /// ORDER two observations arrived in rather than merely that both did.
 pub fn first_index(
@@ -429,153 +414,6 @@ pub fn first_index(
     want: impl Fn(&serde_json::Value) -> bool,
 ) -> Option<usize> {
     lines.iter().position(want)
-}
-
-/// A real `phux attach` TUI on a pseudo-terminal: `/bin/sh` panes, a private
-/// empty config dir (so the embedded defaults apply), every painted byte
-/// drained into `transcript` so the PTY never backpressures the client.
-/// Killed on drop.
-pub struct PtyAttach {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn std::io::Write + Send>,
-    transcript: Arc<Mutex<Vec<u8>>>,
-    pub config: tempfile::TempDir,
-    master: Box<dyn portable_pty::MasterPty + Send>,
-}
-
-impl PtyAttach {
-    /// `phux attach --socket SOCKET <args...>` at `cols x rows`, with `env`
-    /// set after the defaults (`XDG_CONFIG_HOME` is `self.config`).
-    pub fn start(
-        socket: &Path,
-        args: &[&str],
-        size: (u16, u16),
-        env: &[(&str, &std::ffi::OsStr)],
-    ) -> Self {
-        Self::start_with(socket, args, size, |_, command| {
-            for (key, value) in env {
-                command.env(key, value);
-            }
-        })
-    }
-
-    /// As [`Self::start`], with `configure` given the config dir and the
-    /// command to adjust before the spawn.
-    pub fn start_with(
-        socket: &Path,
-        args: &[&str],
-        size: (u16, u16),
-        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
-    ) -> Self {
-        let mut attach_args = vec!["--socket", socket.to_str().expect("UTF-8 socket path")];
-        attach_args.extend_from_slice(args);
-        Self::start_dialing(&attach_args, size, configure)
-    }
-
-    /// `phux attach <args...>` with no `--socket` injected, for an attach
-    /// that dials by `--quic`, `--ws`, or `--remote`.
-    pub fn start_dialing(
-        args: &[&str],
-        (cols, rows): (u16, u16),
-        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
-    ) -> Self {
-        Self::start_client("attach", args, (cols, rows), configure)
-    }
-
-    /// Run a different interactive client mode with the same PTY isolation.
-    pub fn start_client(
-        verb: &str,
-        args: &[&str],
-        (cols, rows): (u16, u16),
-        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
-    ) -> Self {
-        use std::io::Read as _;
-
-        let pair = portable_pty::native_pty_system()
-            .openpty(portable_pty::PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let command = isolated_client_command(verb, args, config.path(), configure);
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-        let transcript = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&transcript);
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(count) = reader.read(&mut bytes) {
-                if count == 0 {
-                    break;
-                }
-                sink.lock()
-                    .expect("transcript lock")
-                    .extend_from_slice(&bytes[..count]);
-            }
-        });
-        let writer = pair.master.take_writer().expect("take PTY writer");
-        Self {
-            child,
-            writer,
-            transcript,
-            config,
-            master: pair.master,
-        }
-    }
-
-    pub fn terminal_is_cooked(&self) -> bool {
-        use std::os::fd::BorrowedFd;
-        let raw = self.master.as_raw_fd().expect("master descriptor");
-        // SAFETY: the master remains owned by self for this borrow.
-        let fd = unsafe { BorrowedFd::borrow_raw(raw) };
-        let mode = rustix::termios::tcgetattr(fd).expect("client terminal modes");
-        mode.local_modes
-            .contains(rustix::termios::LocalModes::ECHO | rustix::termios::LocalModes::ICANON)
-    }
-
-    pub fn resize(&self, cols: u16, rows: u16) {
-        self.master
-            .resize(portable_pty::PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("resize client PTY");
-    }
-
-    pub fn signal(&self, signal: i32) {
-        self::signal(self.child.process_id().expect("client pid"), signal).expect("signal client");
-    }
-
-    pub fn send(&mut self, bytes: &[u8]) {
-        self.writer.write_all(bytes).expect("write to attach PTY");
-        self.writer.flush().expect("flush attach PTY");
-    }
-
-    /// Whether the `phux attach` process is still running.
-    pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
-
-    /// Everything painted so far, with terminal control sequences removed.
-    pub fn painted(&self) -> String {
-        strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
-    }
-}
-
-impl Drop for PtyAttach {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 #[cfg(test)]

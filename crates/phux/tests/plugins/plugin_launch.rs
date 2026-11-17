@@ -8,30 +8,10 @@
 
 use std::path::PathBuf;
 
-const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
-
-fn repo_root() -> PathBuf {
-    crate::runner::manifest_dir()
-        .join("../..")
-        .canonicalize()
-        .expect("canonical repo root")
-}
-
-fn demo_xdg() -> PathBuf {
-    repo_root().join("plugins/agent-tools/config")
-}
+use crate::support::{PLUGIN_ID, demo_xdg};
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", demo_xdg())
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    crate::common::phux_in([("XDG_CONFIG_HOME", demo_xdg())], args).into_parts()
 }
 
 #[test]
@@ -158,17 +138,14 @@ fn run_with_path(args: &[&str], front: &std::path::Path) -> (i32, String, String
     let mut path = front.as_os_str().to_owned();
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", demo_xdg())
-        .env("PATH", path)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    crate::common::phux_in(
+        [
+            ("XDG_CONFIG_HOME", demo_xdg().into_os_string()),
+            ("PATH", path),
+        ],
+        args,
     )
+    .into_parts()
 }
 
 #[test]

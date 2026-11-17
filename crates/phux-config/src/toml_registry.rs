@@ -1,63 +1,21 @@
 //! Comment-preserving `[[remote]]` / `[[satellites]]` registry edits
 //! (ADR-0038, ADR-0055) for the CLI and native embedders.
 //!
-//! [`edit_document`] resolves one target for its sibling advisory lock, read,
-//! modify and publish, refusing a busy writer immediately even through a
-//! symlink alias. Dangling file symlinks are refused rather than replaced.
-//! Publication is atomic and refuses when the file changed since it was read;
-//! that check is not an atomic CAS against editors that do not take the lock.
+//! [`edit_document`] opens the shared [`ConfigDocument`] transaction with
+//! the production guard, following an existing symlink: one target for the
+//! sibling advisory lock, read, modify and publish, refusing a dangling link
+//! and an observed external change. See [`crate::document`].
 use std::path::{Path, PathBuf};
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-/// One locked registry read/modify/publish transaction.
-pub struct RegistryEdit {
-    path: PathBuf,
-    document: DocumentMut,
-    original: String,
-    _lock: std::fs::File,
-}
+pub use crate::document::ConfigDocument as RegistryEdit;
+use crate::document::{ConfigDocument, Guard, SymlinkPolicy};
 
-impl std::fmt::Debug for RegistryEdit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegistryEdit")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
-}
+/// The refusal a registry writer sees when the file changed under it.
+const REGISTRY_STALE: &str = "machine registry changed; refresh Machines";
 
-impl std::ops::Deref for RegistryEdit {
-    type Target = DocumentMut;
-    fn deref(&self) -> &Self::Target {
-        &self.document
-    }
-}
-
-impl std::ops::DerefMut for RegistryEdit {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.document
-    }
-}
-
-impl RegistryEdit {
-    /// Publish this edit while retaining its lock through the rename.
-    /// # Errors
-    /// Refuses observed external changes and filesystem failures.
-    pub fn commit(self) -> Result<(), String> {
-        let text = self.document.to_string();
-        crate::settings::replace_atomically(&self.path, &text, || {
-            if read_text(&self.path).map_err(std::io::Error::other)? != self.original {
-                return Err(std::io::Error::other(
-                    "machine registry changed; refresh Machines",
-                ));
-            }
-            #[cfg(test)]
-            before_publish_hook();
-            Ok(())
-        })
-        .map_err(|err| format!("could not write {}: {err}", self.path.display()))
-    }
-
+impl ConfigDocument {
     /// Remove one exact root machine, never an inherited or ambiguous entry.
     /// # Errors
     /// Refuses unknown roles, missing entries and duplicate name/endpoint pairs.
@@ -65,7 +23,7 @@ impl RegistryEdit {
         if !matches!(role, "remote" | "satellites") {
             return Err("unknown machine registry role".to_owned());
         }
-        let tables = tables_mut(&mut self.document, role)?;
+        let tables = tables_mut(self, role)?;
         let matches = machine_indices(tables, name, endpoint);
         let [index] = matches.as_slice() else {
             return Err(
@@ -81,88 +39,9 @@ impl RegistryEdit {
 /// # Errors
 /// Refuses busy writers, malformed documents and filesystem errors.
 pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
-    crate::production::refuse_dev_on_production_state(path)?;
-    let path = registry_target(path)?;
-    let lock = lock_registry(&path)?;
-    let original = read_text(&path)?;
-    let document = original
-        .parse::<DocumentMut>()
-        .map_err(|err| format!("could not parse {}: {err}", path.display()))?;
-    Ok(RegistryEdit {
-        path,
-        document,
-        original,
-        _lock: lock,
-    })
-}
-
-/// Existing files use their real target; new files use a real parent plus
-/// their filename. Never treat a dangling file symlink as an independent file.
-fn registry_target(path: &Path) -> Result<PathBuf, String> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| "registry has no file name".to_owned())?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    let resolved = match std::fs::symlink_metadata(path) {
-        Ok(_) => std::fs::canonicalize(path),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::canonicalize(parent).map(|parent| parent.join(name))
-        }
-        Err(err) => Err(err),
-    };
-    resolved.map_err(|err| format!("could not resolve registry {}: {err}", path.display()))
-}
-
-fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
-    // The machine registries point the production client at credentials.
-    crate::production::refuse_dev_on_production_state(path)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "registry has no parent directory".to_owned())?;
-    let mut name = path
-        .file_name()
-        .ok_or_else(|| "registry has no file name".to_owned())?
-        .to_os_string();
-    name.push(".registry.lock");
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(parent.join(name))
-        .map_err(|err| err.to_string())?;
-    // Another phux editing the registry holds it only for a read and a
-    // write, and a child process being spawned holds an inherited lock only
-    // until it execs: wait that out rather than fail on a brief overlap.
-    let deadline = std::time::Instant::now() + LOCK_WAIT;
-    loop {
-        match lock.try_lock() {
-            Ok(()) => return Ok(lock),
-            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(err) => {
-                return Err(format!(
-                    "registry is busy or could not be locked; retry: {err}"
-                ));
-            }
-        }
-    }
-}
-
-/// How long a registry edit waits for another holder of the lock.
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-
-fn read_text(path: &Path) -> Result<String, String> {
-    match std::fs::read_to_string(path) {
-        Ok(input) => Ok(input),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(err) => Err(format!("could not read {}: {err}", path.display())),
-    }
+    let document =
+        ConfigDocument::open(path, Guard::ProductionState, SymlinkPolicy::FollowExisting)?;
+    Ok(document.with_stale_message(REGISTRY_STALE))
 }
 
 /// Remove one captured machine entry in the root user file, preserving comments.
@@ -181,8 +60,8 @@ pub fn forget_machine(
     endpoint: &str,
 ) -> Result<(), String> {
     let mut edit = edit_document(path)?;
-    if edit.original != expected {
-        return Err("machine registry changed; refresh Machines".to_owned());
+    if edit.original() != expected {
+        return Err(REGISTRY_STALE.to_owned());
     }
     edit.remove_machine(role, name, endpoint)?;
     edit.commit()
@@ -341,20 +220,6 @@ pub fn validate_fingerprint(fingerprint: &str, what: &str) -> Result<String, Str
             "{what} cert-fingerprint must be a SHA-256 fingerprint (64 hex digits, \
              optionally colon-separated) as printed by `phux pair`"
         ))
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    // Deterministic scheduler boundary, not an alternative writer implementation.
-    static BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn before_publish_hook() {
-    let hook = BEFORE_PUBLISH.with(|slot| slot.borrow_mut().take());
-    if let Some(hook) = hook {
-        hook();
     }
 }
 

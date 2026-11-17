@@ -9,7 +9,7 @@
 use crate::common;
 
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::ServerGuard;
 
@@ -31,22 +31,11 @@ fn open_descriptors(pid: u32) -> usize {
         .count()
 }
 
-fn poll(deadline: Duration, mut f: impl FnMut() -> bool) -> bool {
-    let end = Instant::now() + deadline;
-    while Instant::now() < end {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
 /// `phux upgrade`, then wait until the re-execed server answers again.
 fn upgrade(server: &ServerGuard) {
     assert_eq!(server.run(&["upgrade"]).0, 0, "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(15), || server.run(&["ls"]).0 == 0),
+        common::eventually(Duration::from_secs(15), || server.run(&["ls"]).0 == 0),
         "the resumed server should accept connections again"
     );
     assert!(
@@ -78,7 +67,7 @@ fn repeated_upgrades_do_not_leak_descriptors() {
     // descriptors a just-closed client may still hold.
     let mut last = 0;
     assert!(
-        poll(Duration::from_secs(10), || {
+        common::eventually(Duration::from_secs(10), || {
             last = open_descriptors(pid);
             last <= baseline + 2
         }),

@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-runtime"
-description = "The one client orchestration layer between the sans-IO session kernel and a language binding: registry resolution, dial planning, reconnect policy, the relay tunnel, the control plane, the engine owner thread, and grid publication."
+description = "The one client orchestration layer between the sans-IO session kernel and a language binding: registry resolution, dial planning, reconnect policy, the control plane, the engine owner thread, and grid publication."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -19,9 +19,9 @@ default = ["engine"]
 # projected grid. Without it a bounded byte adapter keeps the transport and
 # control-plane lanes buildable and testable with no Zig toolchain, the way
 # phux-mobile's headless `wire` lane does.
-engine = ["dep:libghostty-vt", "phux-client-core/native-engine"]
-# Test-only hooks a consumer's tests need to drive tunnel state without a
-# network, the way phux-dial's `testing` feature exposes its fixtures.
+engine = ["dep:libghostty-vt", "dep:phux-vt", "phux-client-core/native-engine"]
+# Test-only hooks a consumer's tests need to drive session and publication
+# state without a network, the way phux-dial's `testing` feature exposes its fixtures.
 testing = []
 # Builds the `publish_pacing` measurement test target (`#[ignore]`d tests
 # only), so the default test build skips it.
@@ -57,15 +57,13 @@ phux-perf.workspace = true
 # The engine the owner thread hosts; optional so the headless lane links no
 # Zig (see the `engine` feature).
 libghostty-vt = { workspace = true, optional = true }
+# Kitty storage bounds and input conversions for the engine owner thread.
+phux-vt = { workspace = true, optional = true, features = ["kitty"] }
 # The QUIC lane's connection handle and close reasons; phux-dial re-exports
-# neither, and the tunnel preserves the application-close code.
+# neither.
 quinn.workspace = true
 tokio.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# The WebSocket lane reads the raw message stream so its two directions can
-# run concurrently while it still sees keepalive pongs; `Message` is not
-# re-exported by phux-dial.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 bytes.workspace = true
 # Lifecycle events for whichever subscriber the embedder installs.
 tracing.workspace = true
@@ -91,10 +89,6 @@ rustls.workspace = true
 minisign-verify = "0.3"
 # TRANSCRIBE returns the protocol's open-shaped JSON command value.
 serde_json.workspace = true
-# The server-held approval record (ADR-0128) is parsed once, here, for the
-# control plane and phux-client's verbs alike. Already in this crate's tree
-# through phux-core and phux-client-core at the workspace spec.
-serde.workspace = true
 # Predictive text commits are segmented by grapheme before entering the
 # shared phux-client-core predictor.
 unicode-segmentation.workspace = true
@@ -114,9 +108,8 @@ tempfile.workspace = true
 phux-server-testkit.workspace = true
 # Its policy seam, for a scoped-grant server (already built by the testkit).
 phux-server.workspace = true
-# The seed command type the testkit's PTY-seeded server takes (already in
-# the lockfile through the testkit and phux-client-ffi's tests).
-portable-pty.workspace = true
+# Frame builders for the fed-frame tests.
+phux-wire-fixtures.workspace = true
 
 [[test]]
 name = "publish_pacing"

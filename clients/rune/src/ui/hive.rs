@@ -12,11 +12,12 @@
 
 use std::f32::consts::TAU;
 
-use rune::{Cx, El, TextStyle, canvas, col, el, row, text};
+use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
 use super::playground::edges::edges;
 use super::playground::pen::{Pen, clip_convex, rgba};
-use super::{CAPTION, Ink, LABEL_STRONG, TITLEBAR_H, overlay, pressable};
+use super::playground::readout::{Picked, Readout, working};
+use super::{CAPTION, Ink, TITLEBAR_H};
 use crate::creature;
 use crate::desk::Desk;
 use crate::hive::{AMBER, Hive, RANKS, place_pills};
@@ -315,81 +316,28 @@ fn pills(h: &Hive) -> Vec<El> {
 }
 
 fn readout(h: &Hive, waiting: usize, p: &Ink) -> El {
-    let working = h
-        .bees
-        .iter()
-        .filter(|b| b.who.mood == Mood::Working)
-        .count();
-    let picked = h.selected_bee().map(|b| {
-        let line = format!(
-            "{} · {} · {}  ↩",
-            b.who.name,
-            b.who.mood.word(),
-            h.frame_of(b).host
-        );
+    let picked = h.selected_bee().map(|b| Picked {
+        name: &b.who.name,
+        mood: b.who.mood,
+        host: &h.frame_of(b).host,
         // Its rank and work, when its machine publishes agent stats.
-        let card = b.who.work.map(|w| {
+        card: b.who.work.map(|w| {
             let rank = RANKS[b.who.tier.min(4)];
             format!("Rank: {rank} · Work: {}", creature::work_line(&w))
-        });
-        pressable("hive-open", p)
-            .px(12.0)
-            .py(5.0)
-            .radius(12.0)
-            .fill(p.raised.alpha(0.85))
-            .label(format!("Open {}", b.who.name))
-            .on_press(Desk::open_bee)
-            .child(
-                col()
-                    .gap(2.0)
-                    .child(text(line).font(LABEL_STRONG).color(p.text))
-                    .children(card.map(|c| text(c).font(CAPTION).color(p.dim))),
-            )
+        }),
     });
-    let y = if h.h > 0.0 {
-        h.h - 44.0
-    } else {
-        TITLEBAR_H + 4.0
+    let readout = Readout {
+        scene: "hive",
+        hosts: h.frames.len(),
+        agents: h.bees.len(),
+        working: working(h.bees.iter().map(|b| b.who.mood)),
+        waiting,
+        h: h.h,
+        unlaid_y: TITLEBAR_H + 4.0,
+        picked,
+        open: Desk::open_bee,
+        next_waiting: Desk::hive_next_waiting,
+        close: Desk::close_hive,
     };
-    row()
-        .absolute(16.0, y)
-        .gap(10.0)
-        .items_center()
-        .child(
-            el().px(10.0)
-                .py(4.0)
-                .radius(10.0)
-                .fill(p.raised.alpha(0.85))
-                .child(
-                    text(format!(
-                        "{} hosts · {} agents · {working} working",
-                        h.frames.len(),
-                        h.bees.len()
-                    ))
-                    .font(CAPTION)
-                    .color(p.dim),
-                ),
-        )
-        .children((waiting > 0).then(|| {
-            pressable("hive-next-waiting", p)
-                .px(12.0)
-                .py(5.0)
-                .radius(12.0)
-                .fill(p.marks.alert)
-                .label("Show the next agent that needs you")
-                .on_press(Desk::hive_next_waiting)
-                .child(
-                    text(format!("{waiting} need you"))
-                        .font(LABEL_STRONG)
-                        .color(crate::theme::on_fill(p.marks.alert)),
-                )
-        }))
-        .children(picked)
-        .child(overlay::icon_button(
-            &super::icons::CLOSE,
-            "Close",
-            "hive-close",
-            p,
-            Desk::close_hive,
-        ))
+    super::playground::readout::readout(readout, p)
 }

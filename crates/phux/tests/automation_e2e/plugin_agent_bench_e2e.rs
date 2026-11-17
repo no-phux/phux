@@ -15,20 +15,16 @@ fn repo_root() -> PathBuf {
 }
 
 fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = common::phux_cmd(crate::runner::phux_bin())
+    crate::common::Out::of(
+        common::phux_cmd(crate::runner::phux_bin())
         // Plugin actions launch nested `phux` commands. CI does not install
         // the just-built binary on PATH, so always pass its exact location.
         .env("PHUX_BIN", crate::runner::phux_bin())
         .envs(envs.iter().copied())
         .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux command");
-    (
-        out.status.code().expect("phux exited with code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        .stdin(Stdio::null()),
     )
+    .into_parts()
 }
 
 fn action_stdout(stdout: &str) -> String {

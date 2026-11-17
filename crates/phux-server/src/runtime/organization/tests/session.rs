@@ -11,13 +11,7 @@ fn session_kill_ends_every_member_and_deletes_the_session() {
         let receipt = committed(handle(
             &state,
             CLIENT,
-            Command::SessionCreate {
-                operation: op(1),
-                name: "work".to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
-            },
+            session_create(1, "work", true),
             &root,
         ));
         let session = receipt.session.expect("created session");
@@ -47,7 +41,7 @@ fn session_kill_ends_every_member_and_deletes_the_session() {
                 .sessions
                 .is_empty()
         );
-        assert!(state.with(|s| s.session_by_name("work").is_none()));
+        assert!(state.with(|s| s.sessions().by_name("work").is_none()));
         let replayed = committed(handle(&state, CLIENT, kill, &root));
         assert_eq!(replayed.members, None, "a replay answers without the count");
 
@@ -86,22 +80,16 @@ fn session_kill_store_failure_closes_nothing() {
         let receipt = committed(handle(
             &state,
             CLIENT,
-            Command::SessionCreate {
-                operation: op(1),
-                name: "work".to_owned(),
-                lifetime: SessionLifetime::Persistent,
-                attrs: Vec::new(),
-                launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
-            },
+            session_create(1, "work", true),
             &root,
         ));
         let session = receipt.session.expect("created session");
         let wire = receipt.target.expect("a launched engine").resource;
         let core = state
-            .with(|s| s.resource_from_wire(&wire))
+            .with(|s| s.idspace.resource_from_wire(&wire))
             .expect("live core id");
         assert!(
-            state.with(|s| s.resource_handle(core).is_some()),
+            state.with(|s| s.resources().handle(core).is_some()),
             "the launch registered an engine"
         );
         let head = state.with(ServerState::journal_head);
@@ -120,7 +108,7 @@ fn session_kill_store_failure_closes_nothing() {
             CommandResult::Refused(WireRefusal::StoreFailure { .. })
         ));
         assert!(
-            state.with(|s| s.resource_handle(core).is_some()),
+            state.with(|s| s.resources().handle(core).is_some()),
             "a refused kill does not close the engine"
         );
         assert!(state.with(|s| s.registry().record(core).is_some()));
@@ -144,7 +132,7 @@ fn session_kill_store_failure_closes_nothing() {
                 .is_empty()
         );
         assert!(
-            state.with(|s| s.resource_handle(core).is_none()),
+            state.with(|s| s.resources().handle(core).is_none()),
             "a committed kill closes the engine"
         );
     });
@@ -157,7 +145,7 @@ fn terminate_is_accepted_and_a_stale_target_refused() {
         let root = CancellationToken::new();
         let (_, pane) = state.with_mut(|s| s.seed_session("work"));
         let target = |activation| LiveTarget {
-            resource: state.with_mut(|s| s.intern_resource_wire(pane)),
+            resource: state.with_mut(|s| s.idspace.intern_resource(pane)),
             instance: state.with(|s| s.idspace.instance()),
             activation: phux_protocol::ids::ActivationId::new(activation),
         };
@@ -189,13 +177,7 @@ fn organization_events_are_journaled_with_their_actor() {
         let state = crate::runtime::apps::terminal::test_support::terminal_state();
         state.with_mut(|s| s.set_client_name(CLIENT, "agent".to_owned()));
         let before = state.with(ServerState::journal_head);
-        let create = Command::SessionCreate {
-            operation: op(1),
-            name: "work".to_owned(),
-            lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
-            launch: None,
-        };
+        let create = session_create(1, "work", false);
         let _ = committed(handle(&state, CLIENT, create, &CancellationToken::new()));
         let after = state.with(ServerState::journal_head);
         assert_eq!(

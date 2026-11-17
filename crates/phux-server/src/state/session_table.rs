@@ -14,7 +14,7 @@ use phux_core::session::Session;
 
 /// The registry plus its per-session ledgers.
 #[derive(Debug)]
-pub(super) struct SessionTable {
+pub(crate) struct SessionTable {
     /// Every session and resource record with its live handle.
     /// `pub(super)` for disjoint-field borrows; read outside `state` via
     /// `ServerState::registry`.
@@ -51,9 +51,10 @@ impl SessionTable {
 
     // -- last-touch ordering -------------------------------------------
 
-    /// The most recently touched live session (`AttachTarget::Last`).
+    /// Most-recently-touched live session, if any. Resolves
+    /// `AttachTarget::Last`.
     #[must_use]
-    pub(super) fn most_recently_touched(&self) -> Option<SessionId> {
+    pub(crate) fn most_recently_touched(&self) -> Option<SessionId> {
         self.last_touched
             .iter()
             .filter(|(sid, _)| self.registry.session(**sid).is_some())
@@ -67,9 +68,10 @@ impl SessionTable {
         self.last_touched.get(&session).copied()
     }
 
-    /// Whether any session was ever touched (live or not).
+    /// Whether this server has any session-touch history, even if every
+    /// touched session has since gone away.
     #[must_use]
-    pub(super) fn has_touch_history(&self) -> bool {
+    pub(crate) fn has_touch_history(&self) -> bool {
         !self.last_touched.is_empty()
     }
 
@@ -83,10 +85,10 @@ impl SessionTable {
     // -- session lookup -------------------------------------------------
 
     /// The Terminal a session-addressed action without a pane lands on
-    /// (R14): the member that last took human input, else the first leaf
-    /// of the arrangement's first group, else the first Terminal member.
+    /// (R14): the member that last took human input, else the first leaf of
+    /// the arrangement's first group, else the oldest Terminal member.
     #[must_use]
-    pub(super) fn default_pane_of(&self, session: SessionId) -> Option<ResourceId> {
+    pub(crate) fn default_pane_of(&self, session: SessionId) -> Option<ResourceId> {
         let record = self.registry.session(session)?;
         let is_terminal = |id: &ResourceId| {
             self.registry
@@ -111,24 +113,24 @@ impl SessionTable {
 
     /// Borrow the session named `name`, if it exists.
     #[must_use]
-    pub(super) fn by_name(&self, name: &str) -> Option<&Session> {
+    pub(crate) fn by_name(&self, name: &str) -> Option<&Session> {
         self.registry.org().session_by_name(name)
     }
 
     /// The [`SessionId`] named `name`.
-    pub(super) fn find_by_name(&self, name: &str) -> Option<SessionId> {
+    pub(crate) fn find_by_name(&self, name: &str) -> Option<SessionId> {
         self.registry.session_by_name(name)
     }
 
     /// `session`'s oldest Terminal member.
     #[must_use]
-    pub(super) fn seed_pane_of(&self, session: SessionId) -> Option<ResourceId> {
+    pub(crate) fn seed_pane_of(&self, session: SessionId) -> Option<ResourceId> {
         self.terminal_members(session).into_iter().next()
     }
 
     /// `session`'s Terminal members, in membership order.
     #[must_use]
-    pub(super) fn terminal_members(&self, session: SessionId) -> Vec<ResourceId> {
+    pub(crate) fn terminal_members(&self, session: SessionId) -> Vec<ResourceId> {
         self.registry
             .members(session)
             .into_iter()
@@ -142,9 +144,9 @@ impl SessionTable {
 
     // -- cwd-inheritance ledgers (phux-nyx) -----------------------------
 
-    /// `session`'s frozen creation directory, if captured.
+    /// `session`'s frozen creation directory (`session-root`), if captured.
     #[must_use]
-    pub(super) fn root(&self, session: SessionId) -> Option<&PathBuf> {
+    pub(crate) fn root(&self, session: SessionId) -> Option<&PathBuf> {
         self.roots.get(&session)
     }
 
@@ -154,9 +156,10 @@ impl SessionTable {
         self.roots.entry(session).or_insert(root)
     }
 
-    /// `session`'s latest recorded cwd.
+    /// The most-recent working directory recorded for `session` under the
+    /// `last-cwd-per-window` cwd-inheritance policy (phux-nyx), if any.
     #[must_use]
-    pub(super) fn last_cwd(&self, session: SessionId) -> Option<&PathBuf> {
+    pub(crate) fn last_cwd(&self, session: SessionId) -> Option<&PathBuf> {
         self.last_cwd.get(&session)
     }
 

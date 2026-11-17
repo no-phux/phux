@@ -31,17 +31,21 @@ fn picks(seed: u64, count: usize) -> Vec<String> {
     (0..count).map(|_| random_name(&mut rng)).collect()
 }
 
+/// `fresh_session_name` for the random-name template, seeded with 4.
+fn fresh_random(existing: &[String]) -> String {
+    fresh_session_name(
+        existing,
+        "${random-name}",
+        Path::new(CWD),
+        &mut NameRng::seeded(4),
+    )
+}
+
 /// A free generated name is taken as-is on the first draw.
 #[test]
 fn fresh_session_name_takes_a_free_random_pick() {
     let expected = picks(4, 1).remove(0);
-    let name = fresh_session_name(
-        &["other".to_owned()],
-        "${random-name}",
-        Path::new(CWD),
-        &mut NameRng::seeded(4),
-    );
-    assert_eq!(name, expected);
+    assert_eq!(fresh_random(&["other".to_owned()]), expected);
 }
 
 /// A taken pick is retried with the next draw rather than suffixed.
@@ -49,13 +53,7 @@ fn fresh_session_name_takes_a_free_random_pick() {
 fn fresh_session_name_retries_a_taken_random_pick() {
     let sequence = picks(4, 2);
     assert_ne!(sequence[0], sequence[1], "seed must yield distinct picks");
-    let name = fresh_session_name(
-        &[sequence[0].clone()],
-        "${random-name}",
-        Path::new(CWD),
-        &mut NameRng::seeded(4),
-    );
-    assert_eq!(name, sequence[1]);
+    assert_eq!(fresh_random(&sequence[..1]), sequence[1]);
 }
 
 #[test]
@@ -75,12 +73,7 @@ fn a_suffixed_name_stays_within_the_byte_limit() {
 #[test]
 fn fresh_session_name_falls_back_to_a_numeric_suffix() {
     let existing = picks(4, RANDOM_NAME_ATTEMPTS);
-    let name = fresh_session_name(
-        &existing,
-        "${random-name}",
-        Path::new(CWD),
-        &mut NameRng::seeded(4),
-    );
+    let name = fresh_random(&existing);
     assert_eq!(name, format!("{}-2", existing[0]));
     assert!(!existing.contains(&name));
 }
@@ -188,20 +181,15 @@ fn new_session_target_honors_explicit_cwd_and_command() {
 /// silently pick one.
 #[test]
 fn requested_session_name_merges_the_two_spellings() {
-    assert_eq!(
-        requested_session_name(Some("a".to_owned()), None).ok(),
-        Some(Some("a".to_owned()))
-    );
-    assert_eq!(
-        requested_session_name(None, Some("b".to_owned())).ok(),
-        Some(Some("b".to_owned()))
-    );
-    assert_eq!(
-        requested_session_name(Some("a".to_owned()), Some("a".to_owned())).ok(),
-        Some(Some("a".to_owned()))
-    );
-    assert!(requested_session_name(Some("a".to_owned()), Some("b".to_owned())).is_err());
-    assert_eq!(requested_session_name(None, None).ok(), Some(None));
+    let merged = |positional: Option<&str>, flag: Option<&str>| {
+        requested_session_name(positional.map(str::to_owned), flag.map(str::to_owned))
+    };
+    let named = |name: &str| Some(Some(name.to_owned()));
+    assert_eq!(merged(Some("a"), None).ok(), named("a"));
+    assert_eq!(merged(None, Some("b")).ok(), named("b"));
+    assert_eq!(merged(Some("a"), Some("a")).ok(), named("a"));
+    assert!(merged(Some("a"), Some("b")).is_err());
+    assert_eq!(merged(None, None).ok(), Some(None));
 }
 
 /// A taken name is refused; a free one is kept.

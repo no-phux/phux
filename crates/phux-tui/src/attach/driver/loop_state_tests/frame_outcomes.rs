@@ -43,46 +43,53 @@ async fn fold_of_an_empty_outcome_raises_nothing() {
     assert!(!state.peers.chrome_dirty);
 }
 
+/// (case, outcome, repaint level, drain chrome when asserted, folded-state check).
+type FoldCase<'a> = (&'a str, FrameOutcome, RepaintLevel, Option<bool>, &'a dyn Fn(&SessionLoop) -> bool);
+
+/// One outcome on a fresh loop raises the fleet and the paint its row names.
+/// Foreign state waits for the drain (which then owes the strip a refresh);
+/// unchanged painter inputs owe no paint; a replaced layout repaints fully.
+/// `kept` checks the folded state kept what the frame carried.
 #[tokio::test(flavor = "current_thread")]
-async fn fold_of_a_foreign_agent_record_raises_the_fleet_and_the_drain_chrome() {
+async fn fold_raises_the_fleet_and_the_paint_each_outcome_owes() {
     let peer = ResourceId::local(9);
-    let (repaint, state) = fold(FrameOutcome {
+    let peer_session = SessionId::new(2);
+    let layout = ArrangementDoc::single(peer.clone()).encode_cbor().unwrap();
+    let agent = FrameOutcome {
         foreign_agent: Some((peer.clone(), Some(working("peer").encode()))),
         ..FrameOutcome::default()
-    })
-    .await;
-    assert!(repaint.fleet_dirty);
-    assert_eq!(
-        repaint.level,
-        RepaintLevel::None,
-        "chrome waits for the drain"
-    );
-    assert!(
-        state.peers.chrome_dirty,
-        "the drain owes the strip a refresh"
-    );
-    assert_eq!(state.peers.foreign_agents[&peer].name, "peer");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn fold_of_a_foreign_layout_raises_the_fleet_and_the_drain_chrome() {
-    let peer_session = SessionId::new(2);
-    let layout = ArrangementDoc::single(ResourceId::local(9))
-        .encode_cbor()
-        .unwrap();
-    let (repaint, state) = fold(FrameOutcome {
+    };
+    let foreign_layout = FrameOutcome {
         foreign_layout: Some((peer_session, Some(layout))),
         ..FrameOutcome::default()
-    })
-    .await;
-    assert!(repaint.fleet_dirty);
-    assert_eq!(
-        repaint.level,
-        RepaintLevel::None,
-        "chrome waits for the drain"
-    );
-    assert!(state.peers.chrome_dirty);
-    assert!(state.peers.foreign_layouts.contains_key(&peer_session));
+    };
+    let chrome = FrameOutcome {
+        chrome_dirty: true,
+        ..FrameOutcome::default()
+    };
+    let replaced = FrameOutcome {
+        layout_replaced: true,
+        ..FrameOutcome::default()
+    };
+    let agent_kept = |s: &SessionLoop| s.peers.foreign_agents[&ResourceId::local(9)].name == "peer";
+    let layout_kept = |s: &SessionLoop| s.peers.foreign_layouts.contains_key(&SessionId::new(2));
+    let anything = |_: &SessionLoop| true;
+    #[rustfmt::skip] // a case table, one row per case
+    let cases: [FoldCase<'_>; 4] = [
+        ("foreign agent record", agent, RepaintLevel::None, Some(true), &agent_kept),
+        ("foreign layout", foreign_layout, RepaintLevel::None, Some(true), &layout_kept),
+        ("chrome dirty, painters unchanged", chrome, RepaintLevel::None, Some(false), &anything),
+        ("replaced layout", replaced, RepaintLevel::Full, None, &anything),
+    ];
+    for (case, outcome, level, drain_chrome, kept) in cases {
+        let (repaint, state) = fold(outcome).await;
+        assert!(repaint.fleet_dirty, "{case}");
+        assert_eq!(repaint.level, level, "{case}");
+        if let Some(drain_chrome) = drain_chrome {
+            assert_eq!(state.peers.chrome_dirty, drain_chrome, "{case}: drain chrome");
+        }
+        assert!(kept(&state), "{case}: folded state");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -101,22 +108,6 @@ async fn fold_of_a_new_foreign_ask_raises_but_a_repeat_does_not() {
         repeat,
         RepaintAccumulator::default(),
         "a repeated ask is not news"
-    );
-    assert!(!state.peers.chrome_dirty);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn fold_of_chrome_dirty_with_unchanged_painters_raises_only_the_fleet() {
-    let (repaint, state) = fold(FrameOutcome {
-        chrome_dirty: true,
-        ..FrameOutcome::default()
-    })
-    .await;
-    assert!(repaint.fleet_dirty);
-    assert_eq!(
-        repaint.level,
-        RepaintLevel::None,
-        "unchanged painter inputs owe no paint"
     );
     assert!(!state.peers.chrome_dirty);
 }
@@ -144,13 +135,3 @@ async fn fold_of_a_moved_local_agent_record_raises_chrome_in_place_and_the_fleet
     assert_eq!(repaint.level, RepaintLevel::Chrome);
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn fold_of_a_replaced_layout_raises_a_full_repaint_and_the_fleet() {
-    let (repaint, _) = fold(FrameOutcome {
-        layout_replaced: true,
-        ..FrameOutcome::default()
-    })
-    .await;
-    assert!(repaint.fleet_dirty);
-    assert_eq!(repaint.level, RepaintLevel::Full);
-}

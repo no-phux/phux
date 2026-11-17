@@ -39,22 +39,22 @@ pub(super) fn line_count(text: &[u8]) -> usize {
 mod tests {
     use super::*;
 
+    /// Bracketed panes take multi-line pastes; unbracketed line breaks
+    /// (including a bare CR) ask; the bracket terminator always asks.
     #[test]
-    fn bracketed_panes_take_multiline_pastes_without_asking() {
-        assert!(!needs_confirmation(b"one\ntwo\n", true));
-        assert!(!needs_confirmation(b"single line", false));
-    }
-
-    #[test]
-    fn unbracketed_line_breaks_ask_including_a_bare_cr() {
-        assert!(needs_confirmation(b"rm -rf build\n", false));
-        assert!(needs_confirmation(b"echo hi\r", false));
-    }
-
-    #[test]
-    fn the_bracket_terminator_always_asks() {
-        assert!(needs_confirmation(b"x\x1b[201~rm -rf ~\n", true));
-        assert!(needs_confirmation(b"\x1b[201~", false));
+    fn confirmation_follows_line_breaks_and_the_bracket_terminator() {
+        #[rustfmt::skip] // a case table, one row per case
+        let cases: [(&str, &[u8], bool, bool); 6] = [
+            ("bracketed multi-line", b"one\ntwo\n", true, false),
+            ("unbracketed single line", b"single line", false, false),
+            ("unbracketed newline", b"rm -rf build\n", false, true),
+            ("unbracketed bare cr", b"echo hi\r", false, true),
+            ("embedded terminator, bracketed", b"x\x1b[201~rm -rf ~\n", true, true),
+            ("bare terminator, unbracketed", b"\x1b[201~", false, true),
+        ];
+        for (case, bytes, bracketed, asks) in cases {
+            assert_eq!(needs_confirmation(bytes, bracketed), asks, "{case}");
+        }
     }
 
     #[test]

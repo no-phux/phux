@@ -9,19 +9,19 @@ async fn a_doorbell_promotes_a_non_hub_and_leaves_an_empty_registry_alone() {
             let idle = crate::state::SharedState::new();
             let idle_cancel = tokio_util::sync::CancellationToken::new();
             idle.with_mut(|s| {
-                s.arm_hub_reload(
+                s.federation_mut().arm_reload(
                     Some(SatelliteSource::new(|| Ok(Vec::new()))),
                     idle_cancel.clone(),
                 );
             });
             reload_satellites(&idle);
-            assert!(idle.with(|s| s.hub_table().is_none()));
+            assert!(idle.with(|s| !s.federation().is_hub()));
             idle_cancel.cancel();
 
             let state = crate::state::SharedState::new();
             let cancel = tokio_util::sync::CancellationToken::new();
             state.with_mut(|s| {
-                s.arm_hub_reload(
+                s.federation_mut().arm_reload(
                     Some(SatelliteSource::new(|| {
                         Ok(vec![entry("edge", "quic://127.0.0.1:9", true)])
                     })),
@@ -30,11 +30,11 @@ async fn a_doorbell_promotes_a_non_hub_and_leaves_an_empty_registry_alone() {
             });
             reload_satellites(&state);
             let host = state.with(|s| {
-                let table = s.hub_table().expect("promoted to a hub");
+                let table = s.federation().table().expect("promoted to a hub");
                 assert_eq!(table.len(), 1);
                 table.iter().next().expect("satellite").0.clone()
             });
-            assert!(state.with(|s| s.hub_relay(&host).is_some()));
+            assert!(state.with(|s| s.federation().relay(&host).is_some()));
             cancel.cancel();
         })
         .await;

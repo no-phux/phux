@@ -96,7 +96,7 @@ fn a_fresh_input_origin_badges_the_label_until_it_expires() {
 
 /// A republish at unchanged geometry must serve fresh rows through an
 /// incremental paint: the kernel's new token reaches the renderer. (The
-/// deterministic guard lives in `phux_protocol::render_pool::tests`.)
+/// deterministic guard lives in `phux_vt::render_pool::tests`.)
 #[test]
 fn republish_at_same_geometry_serves_fresh_rows_without_force_full() {
     use phux_client_core::engine::CanonicalGeometry;

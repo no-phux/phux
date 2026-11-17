@@ -1,14 +1,18 @@
 //! Byte goldens for the file-transfer pull: `GET_FILE` and its `FILE_CHUNK`
 //! reply. Kept apart from `frame_wire_snapshots.rs`, whose fixture table is
 //! already at the authored-file size budget; the dump format is the same
-//! `xxd` style so the two golden sets read alike.
+//! `xxd` style so the two golden sets read alike. `wire_snapshots.rs` checks
+//! the goldens.
 
 #![allow(clippy::unwrap_used)]
 
-use crate::common::dump_frame;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FileChunk, FrameKind};
 
-fn fixtures() -> Vec<(&'static str, FrameKind)> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "`pub` alone trips `unreachable_pub`; `wire_snapshots.rs` checks these"
+)]
+pub(crate) fn fixtures() -> Vec<(&'static str, FrameKind)> {
     vec![
         // GET_FILE (tag 0x3a): a bounded read of a file on the named
         // satellite.
@@ -38,13 +42,4 @@ fn fixtures() -> Vec<(&'static str, FrameKind)> {
             },
         ),
     ]
-}
-
-/// Every fixture's hex dump matches its committed golden byte-for-byte, and
-/// decodes back to itself.
-#[test]
-fn file_transfer_frames_match_goldens() {
-    for (name, frame) in fixtures() {
-        insta::assert_snapshot!(name, dump_frame(&frame));
-    }
 }

@@ -81,16 +81,17 @@ fn csi_z_is_shift_tab() {
 /// also what native Ghostty sends for the same key.
 fn encode(ev: &KeyEvent, flags: libghostty_vt::key::KittyKeyFlags) -> Vec<u8> {
     use libghostty_vt::key::{Encoder, EncoderOptions, Event};
+    use phux_vt::input::ToGhostty as _;
     let term = libghostty_vt::Terminal::new(80, 24).expect("terminal");
     let mut opts = EncoderOptions::from_terminal(&term).expect("options");
     opts.kitty_flags = flags;
     let mut enc = Encoder::new().expect("encoder");
     enc.set_options(opts);
     let mut lg = Event::new().expect("event");
-    lg.set_action(ev.action.into())
-        .set_key(ev.key.into())
-        .set_mods(ev.mods.into())
-        .set_consumed_mods(ev.consumed_mods.into())
+    lg.set_action(ev.action.to_ghostty())
+        .set_key(ev.key.to_ghostty())
+        .set_mods(ev.mods.to_ghostty())
+        .set_consumed_mods(ev.consumed_mods.to_ghostty())
         .set_utf8(ev.text.clone());
     if let Some(c) = ev.unshifted_codepoint.and_then(char::from_u32) {
         lg.set_unshifted_codepoint(c);

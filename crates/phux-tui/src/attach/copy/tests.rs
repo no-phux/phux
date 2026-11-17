@@ -69,15 +69,6 @@ fn osc52_wraps_base64_in_set_clipboard() {
 }
 
 #[test]
-fn extract_single_word_from_viewport() {
-    let mut t = fresh(20, 3);
-    t.vt_write(b"hello world");
-    // "hello" occupies viewport row 0, cols 0..=4 (inclusive).
-    let req = rect_req(0, 0, 0, 4);
-    assert_eq!(extract_selection_text(&t, req).as_deref(), Some("hello"));
-}
-
-#[test]
 fn mouse_drag_copy_keeps_its_first_cell_after_scrolling() {
     let mut t = fresh(12, 3);
     for n in 0..8 {
@@ -159,17 +150,6 @@ fn extract_block_normalizes_inverted_column_corners() {
 }
 
 #[test]
-fn extract_spanning_two_rows_linear() {
-    let mut t = fresh(20, 3);
-    // Row 0: "abc", row 1: "def" (explicit CR/LF placement).
-    t.vt_write(b"abc\r\ndef");
-    let req = rect_req(0, 0, 1, 2);
-    let text = extract_selection_text(&t, req).expect("some text");
-    assert!(text.contains("abc"), "got {text:?}");
-    assert!(text.contains("def"), "got {text:?}");
-}
-
-#[test]
 fn copy_to_host_clipboard_emits_osc52() {
     let mut t = fresh(20, 3);
     t.vt_write(b"hi");
@@ -192,62 +172,71 @@ fn copy_to_host_clipboard_blank_span_writes_nothing() {
     );
 }
 
+/// (case, screen size, bytes written, request, must contain, must not contain).
+type ExtractCase<'a> = (
+    &'a str,
+    (u16, u16),
+    &'a [u8],
+    CopyRequest,
+    &'a [&'a str],
+    &'a [&'a str],
+);
+
+/// Each request over a written screen, as the text it must contain and
+/// must not. A rectangle takes its cells (linear across rows); a word grab
+/// the word under the cursor; a line grab its whole row and never the next;
+/// `All` ignores the cursor; `LineSemantic` is bounded by the OSC-133 prompt
+/// marks; `Output` takes the OSC-133 C zone.
 #[test]
-fn grab_word_extracts_word_under_cursor() {
+fn extraction_resolves_each_request_over_the_screen() {
+    use SelectionGrab::{All, Line, LineSemantic, Output};
+    const PROMPT: &[u8] = b"\x1b]133;A\x07$ \x1b]133;B\x07";
+    let output = [PROMPT, b"cat f\r\n\x1b]133;C\x07the-output-line\r\n"].concat();
+    let semantic = [PROMPT, b"ls -la"].concat();
+    #[rustfmt::skip] // a case table, one row per case
+    let cases: [ExtractCase<'_>; 5] = [
+        ("two linear rows", (20, 3), b"abc\r\ndef", rect_req(0, 0, 1, 2), &["abc", "def"], &[]),
+        ("line grab", (20, 3), b"alpha beta\r\ngamma", grab_req(Line, 0, 2), &["alpha", "beta"], &["gamma"]),
+        ("all grab", (20, 3), b"first\r\nsecond", grab_req(All, 0, 0), &["first", "second"], &[]),
+        ("semantic line", (40, 3), &semantic, grab_req(LineSemantic, 0, 4), &["ls -la"], &[]),
+        ("output zone", (40, 4), &output, grab_req(Output, 1, 3), &["the-output-line"], &[]),
+    ];
+    for (case, (cols, rows), bytes, req, has, lacks) in cases {
+        let mut t = fresh(cols, rows);
+        t.vt_write(bytes);
+        let text = extract_selection_text(&t, req).unwrap_or_else(|| panic!("{case}: no text"));
+        for part in has {
+            assert!(
+                text.contains(part),
+                "{case}: {part:?} missing from {text:?}"
+            );
+        }
+        for part in lacks {
+            assert!(
+                !text.contains(part),
+                "{case}: {part:?} leaked into {text:?}"
+            );
+        }
+    }
+}
+
+/// Exact extractions over `hello world`: a rectangle over cols 0..=4, and
+/// a word grab inside "world".
+#[test]
+fn extraction_of_a_single_word_is_exact() {
     let mut t = fresh(20, 3);
     t.vt_write(b"hello world");
-    // Cursor inside "world" (col 8, row 0) -> select_word yields "world".
-    let req = grab_req(SelectionGrab::Word, 0, 8);
-    assert_eq!(extract_selection_text(&t, req).as_deref(), Some("world"));
-}
-
-#[test]
-fn grab_line_extracts_whole_line() {
-    let mut t = fresh(20, 3);
-    t.vt_write(b"alpha beta\r\ngamma");
-    // Cursor anywhere on row 0 -> the whole first line.
-    let req = grab_req(SelectionGrab::Line, 0, 2);
-    let text = extract_selection_text(&t, req).expect("line text");
-    assert!(text.contains("alpha"), "got {text:?}");
-    assert!(text.contains("beta"), "got {text:?}");
-    assert!(!text.contains("gamma"), "must not bleed row 1: {text:?}");
-}
-
-#[test]
-fn grab_all_extracts_all_content() {
-    let mut t = fresh(20, 3);
-    t.vt_write(b"first\r\nsecond");
-    // select_all ignores the cursor; both rows are captured.
-    let req = grab_req(SelectionGrab::All, 0, 0);
-    let text = extract_selection_text(&t, req).expect("all text");
-    assert!(text.contains("first"), "got {text:?}");
-    assert!(text.contains("second"), "got {text:?}");
-}
-
-#[test]
-fn grab_line_semantic_bounds_at_prompt() {
-    let mut t = fresh(40, 3);
-    // OSC-133 ; A -> prompt start, then prompt text + typed input on row 0.
-    t.vt_write(b"\x1b]133;A\x07$ ");
-    t.vt_write(b"\x1b]133;B\x07ls -la");
-    // Semantic-line select at the cursor: derives a selection bounded by
-    // the OSC-133 prompt-state changes rather than the raw display line.
-    let req = grab_req(SelectionGrab::LineSemantic, 0, 4);
-    let text = extract_selection_text(&t, req).expect("semantic line text");
-    assert!(text.contains("ls -la"), "got {text:?}");
-}
-
-#[test]
-fn grab_output_extracts_command_output_zone() {
-    let mut t = fresh(40, 4);
-    // Prompt + input (row 0), then command output marked by OSC-133 ; C.
-    t.vt_write(b"\x1b]133;A\x07$ ");
-    t.vt_write(b"\x1b]133;B\x07cat f\r\n");
-    t.vt_write(b"\x1b]133;C\x07the-output-line\r\n");
-    // Cursor on the output row -> select_output captures the output span.
-    let req = grab_req(SelectionGrab::Output, 1, 3);
-    let text = extract_selection_text(&t, req).expect("output text");
-    assert!(text.contains("the-output-line"), "got {text:?}");
+    let cases = [
+        ("rect", rect_req(0, 0, 0, 4), "hello"),
+        ("word grab", grab_req(SelectionGrab::Word, 0, 8), "world"),
+    ];
+    for (case, req, want) in cases {
+        assert_eq!(
+            extract_selection_text(&t, req).as_deref(),
+            Some(want),
+            "{case}"
+        );
+    }
 }
 
 #[test]

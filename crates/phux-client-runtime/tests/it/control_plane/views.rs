@@ -38,40 +38,17 @@ fn attached(plane: &mut ControlPlane, attach_id: u32, snapshot: SessionSnapshot)
 
 fn reattach(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {
     plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
     let attach_id = plane.queued_attach_id();
     attached(plane, attach_id, snapshot);
-    plane
-        .take_outbound()
-        .iter()
-        .map(|bytes| decode(bytes))
-        .collect()
-}
-
-fn state_read(frames: &[FrameKind]) -> Option<u32> {
-    frames.iter().find_map(|frame| match frame {
-        FrameKind::Command {
-            request_id,
-            command: Command::GetState { .. },
-        } => Some(*request_id),
-        _ => None,
-    })
-}
-
-fn answer(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
-    plane.reply(
-        request_id,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    outbound(plane)
 }
 
 /// One `GET_STATE` round trip; the events it caused.
 fn inventory(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<Event> {
     let request_id = plane.refresh_topology().expect("negotiated topology read");
     let _ = plane.take_outbound();
-    answer(plane, request_id, snapshot);
+    answer_state(plane, request_id, snapshot);
     plane.take_events()
 }
 
@@ -79,10 +56,7 @@ fn inventory(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<Event> 
 /// relaunched pane takes the recycled id. That pane must show.
 #[test]
 fn a_new_incarnation_can_list_an_id_its_predecessor_listed() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     inventory(&mut plane, with_terminals(&[terminal()]));
 
     plane.connection_lost(None);
@@ -131,7 +105,7 @@ fn an_attach_that_omits_satellites_neither_closes_them_nor_hides_them_for_long()
     let frames = reattach(&mut plane, with_terminals(&[terminal()]));
     assert!(!closed(&plane.take_events(), &satellite()));
     let read = state_read(&frames).expect("the attach hid inventoried panes, so it re-reads");
-    answer(&mut plane, read, with_terminals(&[terminal(), satellite()]));
+    answer_state(&mut plane, read, with_terminals(&[terminal(), satellite()]));
     assert!(listed(&plane, &satellite()));
 }
 

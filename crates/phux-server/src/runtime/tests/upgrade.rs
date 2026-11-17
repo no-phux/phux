@@ -40,13 +40,13 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
             let root = CancellationToken::new();
             resume_session_tree(&resumed, &blob, &root).expect("resume");
             let pane = resumed
-                .with(|s| s.resource_from_wire(&wire))
+                .with(|s| s.idspace.resource_from_wire(&wire))
                 .expect("rebuilt, to be closed");
             let running_pane = resumed
-                .with(|s| s.resource_from_wire(&running_wire))
+                .with(|s| s.idspace.resource_from_wire(&running_wire))
                 .expect("the running pane is rebuilt");
             assert_eq!(
-                resumed.with(|s| s.retain_request(running_pane)),
+                resumed.with(|s| s.retained().request(running_pane)),
                 Some(60),
                 "its retention request survived the upgrade"
             );
@@ -62,7 +62,7 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
             );
             let (tx, mut rx) = tokio::sync::mpsc::channel(8);
             resumed.with_mut(|s| {
-                let client = s.new_client_id();
+                let client = s.clients_mut().new_client_id();
                 s.subscribe_resource(client, pane, Some(tx));
             });
             assert_eq!(
@@ -85,9 +85,9 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
 async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
     use phux_core::{Delta, ExitPolicy, Transition};
     use phux_protocol::wire::frame::CloseReason;
-    crate::runtime::test_support::local(async {
+    crate::runtime::test_support::local(Box::pin(async {
         let (mut old, wire, _, tokens) = old_image_with_retained_panes();
-        let pane = old.resource_from_wire(&wire).unwrap();
+        let pane = old.idspace.resource_from_wire(&wire).unwrap();
         let mut record = old.registry().record(pane).unwrap().clone();
         let key = record.key;
         record.on_exit = ExitPolicy::Retain;
@@ -102,11 +102,11 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
         let root = CancellationToken::new();
         resume_session_tree(&resumed, &blob, &root).unwrap();
         let pane = resumed
-            .with(|state| state.resource_from_wire(&wire))
+            .with(|state| state.idspace.resource_from_wire(&wire))
             .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         resumed.with_mut(|state| {
-            let client = state.new_client_id();
+            let client = state.clients_mut().new_client_id();
             state.subscribe_resource(client, pane, Some(tx));
         });
         assert_eq!(
@@ -123,13 +123,13 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
                 record.activation.as_ref().unwrap().state,
                 phux_core::ExecState::Completed
             );
-            assert!(state.resource_handle(pane).is_none());
+            assert!(state.resources().handle(pane).is_none());
         });
         root.cancel();
         for token in tokens {
             token.cancel();
         }
-    })
+    }))
     .await;
 }
 

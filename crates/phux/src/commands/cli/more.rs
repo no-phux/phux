@@ -283,3 +283,24 @@ pub(crate) enum ArchiveAction {
         plan: bool,
     },
 }
+
+// `phux idea`; its help is declared on the `Command::Idea` variant.
+#[derive(Debug, Args)]
+pub(crate) struct IdeaArgs {
+    /// Ensure the body contains the `#private` tag.
+    #[usage(long)]
+    pub(crate) private: bool,
+
+    /// Send queued ideas and do not capture a new one.
+    #[usage(long)]
+    pub(crate) flush: bool,
+
+    /// Idea text. Required unless `--flush`.
+    #[usage(value_name = "TEXT")]
+    pub(crate) text: Option<String>,
+}
+
+// `phux stdio-bridge` takes no arguments; its help is declared on the
+// `Command::StdioBridge` variant.
+#[derive(Debug, Args)]
+pub(crate) struct StdioBridgeArgs {}

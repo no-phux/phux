@@ -213,3 +213,77 @@ pub fn decode_attached_snapshot(snapshot: &[u8]) -> phux_protocol::wire::info::S
         other => panic!("expected Attached, got {other:?}"),
     }
 }
+
+/// Every field of a `SPAWN_RESOURCE`, defaulting to group 1 with each
+/// optional field absent, so a case names only what it sets:
+/// `Spawn { term: Some(..), ..Spawn::default() }.frame()`.
+pub struct Spawn {
+    pub request_id: u32,
+    pub group: phux_protocol::ids::GroupId,
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<(String, String)>>,
+    pub term: Option<String>,
+    pub satellite: Option<phux_protocol::ids::SatelliteHost>,
+    pub owner_terminal: Option<phux_protocol::ids::ResourceId>,
+    pub agent_session: Option<Vec<u8>>,
+    pub initial_size: Option<(u16, u16)>,
+    pub resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
+}
+
+impl Default for Spawn {
+    fn default() -> Self {
+        Self {
+            request_id: 0,
+            group: phux_protocol::ids::GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: None,
+        }
+    }
+}
+
+impl Spawn {
+    pub fn frame(self) -> phux_protocol::wire::frame::FrameKind {
+        phux_protocol::wire::frame::FrameKind::SpawnResource {
+            request_id: self.request_id,
+            group: self.group,
+            command: self.command,
+            cwd: self.cwd,
+            env: self.env,
+            term: self.term,
+            satellite: self.satellite,
+            owner_terminal: self.owner_terminal,
+            agent_session: self.agent_session,
+            initial_size: self.initial_size,
+            resource: self.resource,
+        }
+    }
+}
+
+/// `frame` encoded with an unknown trailing field `id` appended and the
+/// length prefix patched to cover it: what a newer peer sends.
+pub fn encode_with_unknown_field(
+    frame: &phux_protocol::wire::frame::FrameKind,
+    id: u32,
+    value: &[u8],
+) -> Vec<u8> {
+    let mut encoded = encode(frame);
+    tlv_field(&mut encoded, id, value);
+    let body_len = u32::try_from(encoded.len() - 4).unwrap();
+    encoded[..4].copy_from_slice(&body_len.to_be_bytes());
+    encoded
+}
+
+/// The decode error for `frame`'s own encoding.
+pub fn decode_err(
+    frame: &phux_protocol::wire::frame::FrameKind,
+) -> phux_protocol::wire::DecodeError {
+    phux_protocol::wire::frame::FrameKind::decode(&encode(frame)).unwrap_err()
+}

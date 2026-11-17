@@ -2,6 +2,7 @@
 //! pointer modal and the app's keyboard/IME/paste gate must agree.
 
 use crate::desk::Desk;
+use crate::desk::surfaces::Playground;
 use crate::keys::Shortcut;
 
 /// What has the keyboard instead of the terminal, in the order they claim it.
@@ -82,21 +83,13 @@ impl Desk {
         modal: Modal,
         event: &rune::KeyEvent,
     ) -> bool {
-        type Keys = (Modal, fn(&mut Desk), fn(&mut Desk));
-        let actions: [Keys; 6] = [
-            (Modal::Galaxy, Desk::close_galaxy, Desk::open_picked),
-            (Modal::Reef, Desk::reef_escape, Desk::open_fish),
-            (Modal::Pitch, Desk::pitch_escape, Desk::open_player),
-            (Modal::Kitchen, Desk::kitchen_escape, Desk::open_chef),
-            (Modal::PitLane, Desk::pitlane_escape, Desk::open_car),
-            (Modal::Hive, Desk::hive_escape, Desk::open_bee),
-        ];
-        let Some((_, escape, enter)) = actions.into_iter().find(|a| a.0 == modal) else {
+        let mut scenes = Playground::ALL.into_iter();
+        let Some(scene) = scenes.find(|s| s.modal == modal) else {
             return false;
         };
         match event.key {
-            rune::Key::Escape => escape(self),
-            rune::Key::Enter => enter(self),
+            rune::Key::Escape => (scene.escape)(self),
+            rune::Key::Enter => (scene.enter)(self),
             _ => return false,
         }
         true

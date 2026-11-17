@@ -3,32 +3,17 @@
 
 use super::error::DecodeError;
 use super::field;
-use super::frame::Scope;
 use super::frame::{
     CloseReason, DetachReason, ErrorCode, FrameKind, HistoryRejectionReason,
     HistoryTombstoneReason, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
-    MAX_INPUT_TERMINAL_REPLY_BYTES, SpawnResource, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED,
-    TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
-    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_CLIPBOARD_REPLY, TYPE_COMMAND, TYPE_COMMAND_RESULT,
-    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_DIRECTORY_LISTING, TYPE_ERROR,
-    TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
-    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
-    TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
-    TombstoneReason, decode_actor_ref, decode_agent_event, decode_attach_target,
-    decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_bootstrap_stream_profile, decode_command, decode_command_result,
-    decode_directory_listing, decode_env, decode_focus_event, decode_idempotency_key,
-    decode_key_event, decode_list_directory, decode_metadata_scope_key, decode_mouse_event,
-    decode_move_result, decode_paste_event, decode_query, decode_results, decode_scope,
-    decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
-    decode_viewport_info,
+    MAX_INPUT_TERMINAL_REPLY_BYTES, SpawnResource, TYPE_FRAME_COMPRESSED, TombstoneReason,
+    decode_actor_ref, decode_agent_event, decode_bootstrap_codec, decode_bootstrap_id,
+    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    decode_directory_listing, decode_env, decode_idempotency_key, decode_list_directory,
+    decode_query, decode_results, decode_spawn_result, decode_stream_id, decode_string_list,
+    decode_terminal_id,
 };
-use super::info::{decode_client_id, decode_session_snapshot};
+use super::tlv::TlvValue;
 use crate::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
@@ -78,6 +63,21 @@ pub(crate) fn utf8_value(value: &[u8]) -> Result<String, DecodeError> {
     core::str::from_utf8(value)
         .map(str::to_owned)
         .map_err(|_| DecodeError::InvalidUtf8)
+}
+
+/// A field value's leading `u8`; bytes after it are ignored.
+pub(crate) fn u8_value(value: &[u8]) -> Result<u8, DecodeError> {
+    u8::take(value, "")
+}
+
+/// A field value's leading big-endian `u32`; bytes after it are ignored.
+pub(crate) fn u32_value(value: &[u8]) -> Result<u32, DecodeError> {
+    u32::take(value, "")
+}
+
+/// A field value's leading big-endian `u64`; bytes after it are ignored.
+pub(crate) fn u64_value(value: &[u8]) -> Result<u64, DecodeError> {
+    u64::take(value, "")
 }
 
 /// Cursor-style decoder over a borrowed byte slice; `read_*` methods advance

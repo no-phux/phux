@@ -21,12 +21,13 @@ use tokio::net::UnixStream;
 use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
-    command, join_after_shutdown, recv_typed, recv_until, run_local, seed_pty, send_frame,
-    spawn_resource, spawn_server_with, wait_for_socket,
+    Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result, command,
+    eventually, eventually_async, recv_typed, recv_until, run_local, send_frame, spawn_resource,
 };
 
 const SESSION: &str = "command-isolation";
+/// How often the marker-file and process waits look again.
+const POLL: Duration = Duration::from_millis(10);
 static BULK_TEST_LOCK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 fn paste(bytes: &[u8]) -> InputEvent {
@@ -86,34 +87,26 @@ async fn upload(
     upload_id: FileUploadId,
     bytes: &[u8],
 ) {
-    match command(
-        stream,
-        request_id,
-        put_file(upload_id, terminal_id.clone(), bytes),
-    )
-    .await
-    {
-        CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
-            assert!(ack.path.is_some(), "final PUT_FILE must publish the upload");
-        }
-        other => panic!("PUT_FILE failed: {other:?}"),
-    }
+    let put = put_file(upload_id, terminal_id.clone(), bytes);
+    assert_published(&command(stream, request_id, put).await, "final PUT_FILE");
+}
+
+/// `result` is a final `PUT_FILE` ack that published the upload.
+fn assert_published(result: &CommandResult, what: &str) {
+    assert!(
+        matches!(result, CommandResult::OkWith(CommandValue::FileUpload(ack)) if ack.path.is_some()),
+        "{what} must publish the upload: {result:?}"
+    );
 }
 
 async fn wait_for_lines(path: &Path, count: usize) -> Vec<String> {
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            if let Ok(value) = tokio::fs::read_to_string(path).await {
-                let lines: Vec<_> = value.lines().map(str::to_owned).collect();
-                if lines.len() >= count {
-                    return lines;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let what = format!("marker {} to reach {count} lines", path.display());
+    eventually_async(&what, WIRE_RECV_TIMEOUT, POLL, || async {
+        let value = tokio::fs::read_to_string(path).await.ok()?;
+        let lines: Vec<_> = value.lines().map(str::to_owned).collect();
+        (lines.len() >= count).then_some(lines)
     })
     .await
-    .unwrap_or_else(|_| panic!("marker {} never reached {count} lines", path.display()))
 }
 
 fn put_file(upload_id: FileUploadId, terminal_id: ResourceId, bytes: &[u8]) -> Command {
@@ -128,15 +121,27 @@ fn put_file(upload_id: FileUploadId, terminal_id: ResourceId, bytes: &[u8]) -> C
     }
 }
 
-/// A server seeding `cat` in `SESSION`, with `voice` config edits applied.
-fn cat_server(
-    socket: &Path,
+/// A server in `tmp` seeding `cat` in `SESSION`, with `voice` config edits
+/// applied, and a client attached to the seed pane.
+async fn cat_server(
+    tmp: TempDir,
     voice: impl FnOnce(&mut phux_server::ServerConfig),
-) -> phux_server_testkit::ServerHandles {
-    spawn_server_with(socket.to_owned(), Some(SESSION), |cfg| {
-        seed_pty(cfg, LaunchCommand::new("cat"));
-        voice(cfg);
-    })
+) -> (SpawnedServer, UnixStream, ResourceId) {
+    let server = SpawnedServer::builder()
+        .session(SESSION)
+        .seed(LaunchCommand::new("cat"))
+        .configure(voice)
+        .start_in(tmp);
+    let mut stream = server.connect().await;
+    let terminal_id = attach(&mut stream).await;
+    (server, stream, terminal_id)
+}
+
+const fn transcribe(upload_id: FileUploadId, terminal_id: ResourceId) -> Command {
+    Command::Transcribe {
+        upload_id,
+        terminal_id,
+    }
 }
 
 fn transcript(result: CommandResult) -> String {
@@ -211,20 +216,11 @@ fn held_transcribe_does_not_block_control_or_independent_terminal_input() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let upload_dir = tmp.path().join("uploads");
         let started = tmp.path().join("transcriber-started");
         let release = tmp.path().join("release-transcriber");
         let input_marker = tmp.path().join("terminal-b-input");
-
-        let transcriber = blocking_transcriber(&started, &release);
-        let (shutdown, server) = cat_server(&socket, move |cfg| {
-            cfg.env.upload_dir = Some(upload_dir);
-            cfg.voice.transcriber = Some(transcriber);
-            cfg.voice.timeout_secs = Some(15);
-        });
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let transcribe_terminal = attach(&mut stream).await;
+        let voice = blocking_voice(&tmp, &started, &release);
+        let (server, mut stream, transcribe_terminal) = cat_server(tmp, voice).await;
         let input_terminal = spawn_terminal(&mut stream, 2, &input_marker).await;
         let upload_id = FileUploadId::new([0x31; 16]).unwrap();
         upload(
@@ -236,17 +232,7 @@ fn held_transcribe_does_not_block_control_or_independent_terminal_input() {
         )
         .await;
 
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 10,
-                command: Command::Transcribe {
-                    upload_id,
-                    terminal_id: transcribe_terminal,
-                },
-            },
-        )
-        .await;
+        submit_transcribe(&mut stream, 10, upload_id, &transcribe_terminal).await;
         let started_lines = wait_for_lines(&started, 1).await;
         assert!(
             marker_entry(&started_lines, "held transcript").is_some(),
@@ -274,7 +260,7 @@ fn held_transcribe_does_not_block_control_or_independent_terminal_input() {
         );
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -285,27 +271,19 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let upload_root = tmp.path().join("uploads");
-        let (shutdown, server) = cat_server(&socket, |cfg| {
+        let (server, mut stream, terminal_id) = cat_server(tmp, |cfg| {
             cfg.env.upload_dir = Some(upload_root);
             cfg.voice.transcriber = Some(passthrough_transcriber());
-        });
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut stream).await;
+        })
+        .await;
         let upload_id = FileUploadId::new([0x42; 16]).unwrap();
         for (request_id, command) in [
             (
                 20,
                 put_file(upload_id, terminal_id.clone(), b"fifo transcript"),
             ),
-            (
-                21,
-                Command::Transcribe {
-                    upload_id,
-                    terminal_id,
-                },
-            ),
+            (21, transcribe(upload_id, terminal_id)),
         ] {
             phux_server_testkit::send_command(&mut stream, request_id, command).await;
         }
@@ -325,10 +303,7 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
         else {
             panic!("PUT_FILE must complete before TRANSCRIBE");
         };
-        assert!(
-            matches!(put, CommandResult::OkWith(CommandValue::FileUpload(ref ack)) if ack.path.is_some()),
-            "{put:?}"
-        );
+        assert_published(&put, "PUT_FILE");
         let CommandResult::OkWith(CommandValue::Json(json)) = transcribed else {
             panic!("TRANSCRIBE failed: {transcribed:?}");
         };
@@ -338,24 +313,17 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
         assert_eq!(value["pasted"], true);
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
 #[test]
 fn transcribe_without_a_transcriber_is_refused_with_a_remedy() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = cat_server(&socket, |_| {});
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut stream).await;
-        let transcribe = Command::Transcribe {
-            upload_id: FileUploadId::new([1; 16]).unwrap(),
-            terminal_id,
-        };
-        let CommandResult::Error { code, message } = command(&mut stream, 12, transcribe).await
-        else {
+        let (server, mut stream, terminal_id) = cat_server(TempDir::new().unwrap(), |_| {}).await;
+        let upload_id = FileUploadId::new([1; 16]).unwrap();
+        let refused = command(&mut stream, 12, transcribe(upload_id, terminal_id)).await;
+        let CommandResult::Error { code, message } = refused else {
             panic!("expected a refusal");
         };
         assert_eq!(code, ErrorCode::InvalidCommand);
@@ -364,7 +332,7 @@ fn transcribe_without_a_transcriber_is_refused_with_a_remedy() {
             "remedy missing: {message}"
         );
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -376,11 +344,10 @@ fn transcribe_refuses_a_non_audio_upload_without_running_the_transcriber() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let upload_root = tmp.path().join("uploads");
         let ran = tmp.path().join("transcriber-ran");
         let marker = ran.display().to_string();
-        let (shutdown, server) = cat_server(&socket, move |cfg| {
+        let (server, mut stream, terminal_id) = cat_server(tmp, move |cfg| {
             cfg.env.upload_dir = Some(upload_root);
             cfg.voice.transcriber = Some(vec![
                 "/bin/sh".to_owned(),
@@ -390,9 +357,8 @@ fn transcribe_refuses_a_non_audio_upload_without_running_the_transcriber() {
                 "{path}".to_owned(),
                 marker,
             ]);
-        });
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut stream).await;
+        })
+        .await;
 
         let playlist = FileUploadId::new([0x61; 16]).unwrap();
         let body = b"#EXTM3U\nfile:///etc/passwd\n";
@@ -404,12 +370,8 @@ fn transcribe_refuses_a_non_audio_upload_without_running_the_transcriber() {
             command(&mut stream, 40, put).await,
             CommandResult::OkWith(CommandValue::FileUpload(_))
         ));
-        let transcribe = Command::Transcribe {
-            upload_id: playlist,
-            terminal_id: terminal_id.clone(),
-        };
-        let CommandResult::Error { code, message } = command(&mut stream, 41, transcribe).await
-        else {
+        let refused = command(&mut stream, 41, transcribe(playlist, terminal_id.clone())).await;
+        let CommandResult::Error { code, message } = refused else {
             panic!("a playlist must not be transcribed");
         };
         assert_eq!(code, ErrorCode::InvalidCommand);
@@ -418,17 +380,13 @@ fn transcribe_refuses_a_non_audio_upload_without_running_the_transcriber() {
 
         let clip = FileUploadId::new([0x62; 16]).unwrap();
         upload(&mut stream, &terminal_id, 42, clip, b"spoken words").await;
-        let transcribe = Command::Transcribe {
-            upload_id: clip,
-            terminal_id,
-        };
         assert_eq!(
-            transcript(command(&mut stream, 43, transcribe).await),
+            transcript(command(&mut stream, 43, transcribe(clip, terminal_id)).await),
             "spoken words"
         );
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -439,14 +397,12 @@ fn a_full_upload_quota_refuses_a_new_upload() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let upload_root = tmp.path().join("uploads");
-        let (shutdown, server) = cat_server(&socket, move |cfg| {
+        let (server, mut stream, terminal_id) = cat_server(tmp, move |cfg| {
             cfg.env.upload_dir = Some(upload_root);
             cfg.env.upload_max_files = Some(1);
-        });
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut stream).await;
+        })
+        .await;
         upload(
             &mut stream,
             &terminal_id,
@@ -467,7 +423,7 @@ fn a_full_upload_quota_refuses_a_new_upload() {
         assert!(message.contains("PHUX_UPLOAD_MAX_FILES"), "{message}");
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -476,17 +432,15 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
-        let hold = tmp.path().join("upload-hold");
-        std::fs::create_dir(&hold).unwrap();
+        let gate = tmp.path().join("upload-hold");
+        std::fs::create_dir(&gate).unwrap();
         let upload_root = tmp.path().join("uploads");
-        unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &hold) };
+        unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &gate) };
 
-        let (shutdown, server) = cat_server(&socket, |cfg| {
+        let (server, mut stream, terminal_id) = cat_server(tmp, |cfg| {
             cfg.env.upload_dir = Some(upload_root);
-        });
-        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut stream).await;
+        })
+        .await;
         let upload_id = FileUploadId::new([0x5d; 16]).unwrap();
         let bytes = b"held disk";
 
@@ -494,7 +448,7 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
             .await;
 
         timeout(WIRE_RECV_TIMEOUT, async {
-            while !hold.join("held").exists() {
+            while !gate.join("held").exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -502,23 +456,19 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
         .expect("admitted upload worker must reach the disk-hold barrier");
 
         timeout(Duration::from_secs(5), async {
-            let mut peer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            let mut peer = server.connect().await;
             attach(&mut peer).await
         })
         .await
         .expect("HELLO+ATTACH must complete while an admitted upload worker is held");
 
-        tokio::fs::write(hold.join("release"), b"").await.unwrap();
-        match await_command_result(&mut stream, 30).await {
-            CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
-                assert!(ack.path.is_some(), "held PUT_FILE must still publish");
-            }
-            other => panic!("held PUT_FILE failed: {other:?}"),
-        }
+        tokio::fs::write(gate.join("release"), b"").await.unwrap();
+        let held = await_command_result(&mut stream, 30).await;
+        assert_published(&held, "held PUT_FILE");
 
         unsafe { std::env::remove_var("PHUX_TEST_UPLOAD_HOLD") };
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -537,13 +487,11 @@ fn process_exists(pid: u32) -> bool {
 }
 
 async fn wait_for_process_exit(pid: u32) {
-    timeout(WIRE_RECV_TIMEOUT, async {
-        while process_exists(pid) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let what = format!("transcriber process {pid} to exit with its connection");
+    eventually(&what, WIRE_RECV_TIMEOUT, POLL, || {
+        (!process_exists(pid)).then_some(())
     })
-    .await
-    .unwrap_or_else(|_| panic!("transcriber process {pid} survived connection teardown"));
+    .await;
 }
 
 /// Drop leftover saturation clients and wait for their transcribers to die,
@@ -567,17 +515,30 @@ async fn submit_transcribe(
     upload_id: FileUploadId,
     terminal_id: &ResourceId,
 ) {
+    let command = transcribe(upload_id, terminal_id.clone());
     send_frame(
         stream,
         &FrameKind::Command {
             request_id,
-            command: Command::Transcribe {
-                upload_id,
-                terminal_id: terminal_id.clone(),
-            },
+            command,
         },
     )
     .await;
+}
+
+/// Voice config holding each job on `release`, uploads under `tmp`.
+fn blocking_voice(
+    tmp: &TempDir,
+    started: &Path,
+    release: &Path,
+) -> impl FnOnce(&mut phux_server::ServerConfig) + use<> {
+    let upload_root = tmp.path().join("uploads");
+    let transcriber = blocking_transcriber(started, release);
+    move |cfg| {
+        cfg.env.upload_dir = Some(upload_root);
+        cfg.voice.transcriber = Some(transcriber);
+        cfg.voice.timeout_secs = Some(15);
+    }
 }
 
 #[test]
@@ -585,19 +546,10 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
     run_local(async {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
-        let socket = tmp.path().join("phux.sock");
         let started = tmp.path().join("starts");
         let release = tmp.path().join("release");
-        let upload_root = tmp.path().join("uploads");
-        let transcriber = blocking_transcriber(&started, &release);
-        let (shutdown, server) = cat_server(&socket, move |cfg| {
-            cfg.env.upload_dir = Some(upload_root);
-            cfg.voice.transcriber = Some(transcriber);
-            cfg.voice.timeout_secs = Some(15);
-        });
-
-        let mut setup = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let terminal_id = attach(&mut setup).await;
+        let voice = blocking_voice(&tmp, &started, &release);
+        let (server, mut setup, terminal_id) = cat_server(tmp, voice).await;
         let mut uploads = Vec::new();
         for index in 0_u8..5 {
             let upload_id = FileUploadId::new([index + 1; 16]).unwrap();
@@ -615,7 +567,7 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
 
         let mut clients = Vec::new();
         for _ in 0..4 {
-            clients.push(wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await);
+            clients.push(server.connect().await);
         }
         submit_transcribe(&mut clients[0], 100, uploads[0], &terminal_id).await;
         let first_lines = wait_for_lines(&started, 1).await;
@@ -647,7 +599,7 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
             );
         }
 
-        let mut replacement = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let mut replacement = server.connect().await;
         submit_transcribe(&mut replacement, 500, uploads[4], &terminal_id).await;
         match await_command_result(&mut replacement, 500).await {
             CommandResult::Error { code, .. } => assert_eq!(code, ErrorCode::ResourceExhausted),
@@ -684,6 +636,6 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
             "client-4"
         );
         drop(replacement);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }

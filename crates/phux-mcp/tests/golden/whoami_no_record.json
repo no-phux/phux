@@ -1,0 +1,1 @@
+{"schema_version":1,"error":{"code":"transport","message":"whoami failed: the server returned no identity for this connection"},"remedy":"upgrade phux on both ends so they agree on the record, then retry","exit_code":1}

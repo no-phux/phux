@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// Client 1's withdrawal from Terminal 9, polled once so it is queued.
+async fn pending_withdrawal(
+    handle: &RelayHandle,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = CommandResult> + '_>> {
+    let mut detach = Box::pin(handle.unsubscribe_resource(ClientId(1), 9));
+    assert!(futures_util::poll!(&mut detach).is_pending());
+    detach
+}
+
+/// A session where client 1 subscribes to Terminal 9 at token `seq`.
+fn subscribed_at(seq: u64) -> (RelaySession, mpsc::Receiver<Outbound>) {
+    let mut session = RelaySession::new(host(), BootstrapLimits::default());
+    let (out_tx, out_rx) = mpsc::channel(8);
+    subscribe_at(&mut session, 9, ClientId(1), seq, out_tx);
+    (session, out_rx)
+}
+
 #[test]
 fn teardown_fails_pending_and_notifies_each_consumer_once() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -99,13 +116,7 @@ fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
     );
 
     // The re-attached stream is intact.
-    session.feed(&FrameKind::ResourceOutput {
-        terminal_id: ResourceId::local(9),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
-        seq: 7,
-        bytes: bytes::Bytes::from_static(b"live"),
-    });
+    session.feed(&output_frame(9, 7, b"live"));
     let frame = next_frame(&mut out_rx, "re-attached stream torn down");
     assert!(matches!(
         frame,
@@ -179,9 +190,7 @@ async fn withdrawal_receipt_fences_retained_replay_and_live_fanout() {
 #[tokio::test(start_paused = true)]
 async fn withdrawal_timeout_cancels_unapplied_teardown() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_resource(ClientId(1), 9);
-    tokio::pin!(detach);
-    assert!(futures_util::poll!(&mut detach).is_pending());
+    let detach = pending_withdrawal(&handle).await;
     tokio::time::advance(RELAY_COMMAND_TIMEOUT).await;
     assert!(matches!(
         detach.await,
@@ -190,9 +199,7 @@ async fn withdrawal_timeout_cancels_unapplied_teardown() {
             ..
         }
     ));
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, _out_rx) = mpsc::channel(1);
-    subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
+    let (mut session, _out_rx) = subscribed_at(0);
     let frames = session.handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap());
     assert!(
         frames.is_empty(),
@@ -204,12 +211,8 @@ async fn withdrawal_timeout_cancels_unapplied_teardown() {
 #[tokio::test(start_paused = true)]
 async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_resource(ClientId(1), 9);
-    tokio::pin!(detach);
-    assert!(futures_util::poll!(&mut detach).is_pending());
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, _out_rx) = mpsc::channel(8);
-    subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
+    let detach = pending_withdrawal(&handle).await;
+    let (mut session, _out_rx) = subscribed_at(0);
     assert_eq!(
         session
             .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
@@ -228,12 +231,8 @@ async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
 #[tokio::test]
 async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let mut detach = Box::pin(handle.unsubscribe_resource(ClientId(1), 9));
-    assert!(futures_util::poll!(&mut detach).is_pending());
-    drop(detach);
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, _out_rx) = mpsc::channel(8);
-    subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
+    drop(pending_withdrawal(&handle).await);
+    let (mut session, _out_rx) = subscribed_at(0);
     assert_eq!(
         session
             .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
@@ -249,9 +248,7 @@ async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
 #[tokio::test]
 async fn withdrawal_without_a_live_session_is_idempotent() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_resource(ClientId(1), 9);
-    tokio::pin!(detach);
-    assert!(futures_util::poll!(&mut detach).is_pending());
+    let detach = pending_withdrawal(&handle).await;
     // No session: dropping the receipt certifies no proxy can emit.
     drop(mailbox.unsubscribes.try_recv().unwrap());
     assert_eq!(detach.await, CommandResult::Ok);
@@ -265,13 +262,9 @@ async fn withdrawal_without_a_live_session_is_idempotent() {
 #[tokio::test]
 async fn stale_withdrawal_is_refused_while_the_newer_proxy_stays_live() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_resource(ClientId(1), 9);
-    tokio::pin!(detach);
-    assert!(futures_util::poll!(&mut detach).is_pending());
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (out_tx, mut out_rx) = mpsc::channel(8);
+    let detach = pending_withdrawal(&handle).await;
     // Model the separate request mailbox overtaking the queued withdrawal.
-    subscribe_at(&mut session, 9, ClientId(1), u64::MAX, out_tx);
+    let (mut session, mut out_rx) = subscribed_at(u64::MAX);
     assert!(
         session
             .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
@@ -398,10 +391,7 @@ fn detach_without_a_proxy_retires_automatic_spawn_output() {
 #[test]
 fn upstream_detach_barrier_refusal_fails_the_link_closed() {
     for result in [
-        CommandResult::Error {
-            code: ErrorCode::SatelliteUnreachable,
-            message: "refused".to_owned(),
-        },
+        CommandResult::error(ErrorCode::SatelliteUnreachable, "refused"),
         CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::Json(
             "{}".to_owned(),
         )),
@@ -449,17 +439,10 @@ async fn subscribe_on_a_full_mailbox_registers_nothing_and_notifies_the_consumer
     }
     let (out_tx, mut out_rx) = mpsc::channel(8);
     handle.subscribe(
+        // `seq` is stamped by `handle.subscribe` at enqueue.
         ProxySubscription {
-            resource_kind: None,
-            terminal: 9,
-            client: ClientId(1),
-            out_tx,
-            consumer_cancel: CancellationToken::new(),
-            // Stamped by `handle.subscribe` at enqueue.
             seq: 0,
-            awaits_snapshot: false,
-            bootstrap_profile: None,
-            bootstrap_limits: None,
+            ..proxy(9, ClientId(1), out_tx)
         },
         FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::local(9)),

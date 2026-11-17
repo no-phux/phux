@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
 
@@ -14,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::dispatch::handle_client;
 use super::plumbing::StreamBinding;
 use super::writer::{RevocationWatch, writer_task};
+use crate::runtime::test_support::{Feed, encode};
 use crate::state::{ClientId, Outbound, SharedState};
 use crate::transport::{FrameReader, FrameWriter};
 
@@ -103,38 +103,9 @@ impl FrameWriter for Recorder {
     }
 }
 
-/// Scripted client frames, then pending forever (or EOF when `eof`).
-pub(super) struct Script {
-    frames: VecDeque<BytesMut>,
-    eof: bool,
-}
-
-impl Script {
-    pub(super) fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
-        Self {
-            frames: frames
-                .into_iter()
-                .map(|frame| {
-                    let mut encoded = BytesMut::new();
-                    frame.encode(&mut encoded);
-                    encoded
-                })
-                .collect(),
-            eof: false,
-        }
-    }
-}
-
-impl FrameReader for Script {
-    async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        if let Some(frame) = self.frames.pop_front() {
-            return Ok(Some(frame));
-        }
-        if self.eof {
-            return Ok(None);
-        }
-        std::future::pending().await
-    }
+/// Encode client frames for a [`Feed`].
+pub(super) fn script(frames: impl IntoIterator<Item = FrameKind>) -> Vec<BytesMut> {
+    frames.into_iter().map(|frame| encode(&frame)).collect()
 }
 
 /// Run the writer over `frames` already queued and a closed mailbox.

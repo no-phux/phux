@@ -189,7 +189,7 @@ fn pending(key: &str) -> Value {
     json!({ "schema_version": 1, "operation_id": key, "adapter_receipt_id": key, "scope": phux_client::recovery::Scope { kind: phux_client::recovery::ScopeKind::McpAdapter, id: None }, "state": "pending", "status_tool": "phux_operation_status" })
 }
 
-fn failure(code: &str, message: &str) -> ToolError {
+fn failure(code: &'static str, message: &str) -> ToolError {
     tools::contract_error(
         code,
         message,

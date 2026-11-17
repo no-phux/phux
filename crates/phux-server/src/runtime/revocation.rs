@@ -115,7 +115,7 @@ impl Watcher {
     /// Observe the registry the state's engine mints from. Reads the file,
     /// so it runs off the state lock.
     fn observe(&mut self, state: &SharedState) -> RegistryView {
-        let Some(registry) = state.with(|s| s.policy_engine().workload_registry()) else {
+        let Some(registry) = state.with(|s| s.config().policy_engine.workload_registry()) else {
             self.broken_since = None;
             return RegistryView::Absent;
         };

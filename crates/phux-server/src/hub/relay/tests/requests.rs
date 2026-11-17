@@ -71,10 +71,7 @@ fn session_maps_correlated_error_frames_to_command_errors() {
     });
     assert_eq!(
         rx.try_recv().expect("resolved"),
-        CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: "nope".to_owned(),
-        }
+        CommandResult::error(ErrorCode::TerminalNotFound, "nope")
     );
 }
 
@@ -96,100 +93,104 @@ pub(super) fn spawn_request(reply: oneshot::Sender<SpawnResult>) -> RelayRequest
     }
 }
 
+/// [`spawn_request`] carrying `resource`.
+pub(super) fn spawn_with(
+    reply: oneshot::Sender<SpawnResult>,
+    resource: phux_protocol::wire::frame::SpawnResource,
+) -> RelayRequest {
+    let mut request = spawn_request(reply);
+    if let RelayRequest::Spawn { spawn, .. } = &mut request {
+        spawn.resource = Some(Box::new(resource));
+    }
+    request
+}
+
+/// Relay `request` (a spawn) and answer it from the satellite with
+/// `answer`: the `SPAWN_RESOURCE` that crossed the link, and the reply.
+fn spawn_answered(
+    session: &mut RelaySession,
+    request: impl FnOnce(oneshot::Sender<SpawnResult>) -> RelayRequest,
+    answer: SpawnResult,
+) -> (FrameKind, SpawnResult) {
+    let (reply, mut rx) = oneshot::channel();
+    let wire = decode(&session.handle_request(request(reply)));
+    let FrameKind::SpawnResource { request_id, .. } = &wire else {
+        panic!("expected SPAWN_RESOURCE on the wire, got {wire:?}");
+    };
+    session.feed(&FrameKind::ResourceSpawned {
+        request_id: *request_id,
+        result: answer,
+    });
+    (wire, rx.try_recv().expect("spawn resolved"))
+}
+
 #[test]
 fn session_relays_spawn_with_stripped_addressing_and_retags_the_reply() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let wire = session.handle_request(spawn_request(reply));
-    let FrameKind::SpawnResource {
-        request_id,
-        satellite,
-        ..
-    } = decode(&wire)
-    else {
-        panic!("expected SPAWN_RESOURCE on the wire");
-    };
-    assert_eq!(
-        satellite, None,
+    let (wire, reply) = spawn_answered(
+        &mut session,
+        spawn_request,
+        SpawnResult::Ok(ResourceId::local(42)),
+    );
+    assert!(
+        matches!(
+            wire,
+            FrameKind::SpawnResource {
+                satellite: None,
+                ..
+            }
+        ),
         "the addressing field never crosses the link (no chaining)"
     );
-    session.feed(&FrameKind::ResourceSpawned {
-        request_id,
-        result: SpawnResult::Ok(ResourceId::local(42)),
-    });
-    assert_eq!(
-        rx.try_recv().expect("spawn resolved"),
-        SpawnResult::Ok(ResourceId::satellite("devbox", 42))
-    );
+    assert_eq!(reply, SpawnResult::Ok(ResourceId::satellite("devbox", 42)));
 }
 
 #[test]
 fn session_rejects_chained_ids_and_relays_spawn_errors_verbatim() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     // A Satellite-tagged id in the satellite's own reply never chains.
-    let (reply, mut rx) = oneshot::channel();
-    let wire = session.handle_request(spawn_request(reply));
-    let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
-        panic!("expected SPAWN_RESOURCE");
-    };
-    session.feed(&FrameKind::ResourceSpawned {
-        request_id,
-        result: SpawnResult::Ok(ResourceId::satellite("nested", 7)),
-    });
+    let (_, chained) = spawn_answered(
+        &mut session,
+        spawn_request,
+        SpawnResult::Ok(ResourceId::satellite("nested", 7)),
+    );
     assert!(matches!(
-        rx.try_recv().expect("resolved"),
+        chained,
         SpawnResult::Err(SpawnError::SpawnFailed(_))
     ));
     // A typed satellite-side error relays verbatim.
-    let (reply, mut rx) = oneshot::channel();
-    let wire = session.handle_request(spawn_request(reply));
-    let FrameKind::SpawnResource { request_id, .. } = decode(&wire) else {
-        panic!("expected SPAWN_RESOURCE");
-    };
-    session.feed(&FrameKind::ResourceSpawned {
-        request_id,
-        result: SpawnResult::Err(SpawnError::GroupNotFound),
-    });
-    assert_eq!(
-        rx.try_recv().expect("resolved"),
-        SpawnResult::Err(SpawnError::GroupNotFound)
+    let (_, typed) = spawn_answered(
+        &mut session,
+        spawn_request,
+        SpawnResult::Err(SpawnError::GroupNotFound),
     );
+    assert_eq!(typed, SpawnResult::Err(SpawnError::GroupNotFound));
 }
 
 /// ADR-0109: the instance token comes back beside the re-tagged id.
 #[test]
 fn session_keeps_a_bound_spawn_token_while_retagging_the_id() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    let (reply, mut rx) = oneshot::channel();
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(
-            phux_protocol::wire::frame::SpawnResource::default().with_bind_instance(true),
-        ));
-    }
-    let wire = session.handle_request(request);
-    let FrameKind::SpawnResource {
-        request_id,
-        resource,
-        ..
-    } = decode(&wire)
-    else {
-        panic!("expected SPAWN_RESOURCE on the wire");
-    };
-    assert!(
-        resource.is_some_and(|r| r.bind_instance),
-        "the bind request crosses the link"
-    );
     let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
-    session.feed(&FrameKind::ResourceSpawned {
-        request_id,
-        result: SpawnResult::OkBound {
+    let (wire, reply) = spawn_answered(
+        &mut session,
+        |reply| {
+            spawn_with(
+                reply,
+                phux_protocol::wire::frame::SpawnResource::default().with_bind_instance(true),
+            )
+        },
+        SpawnResult::OkBound {
             id: ResourceId::local(42),
             instance,
         },
-    });
+    );
+    assert!(
+        matches!(wire, FrameKind::SpawnResource { resource: Some(r), .. } if r.bind_instance),
+        "the bind request crosses the link"
+    );
     assert_eq!(
-        rx.try_recv().expect("spawn resolved"),
+        reply,
         SpawnResult::OkBound {
             id: ResourceId::satellite("devbox", 42),
             instance,
@@ -204,40 +205,34 @@ fn session_keeps_a_replayed_spawn_replayed_while_retagging_the_id() {
     let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
     for original in [None, Some(instance)] {
         let mut session = negotiated(&[ServerFeature::SpawnIdempotency]);
-        let (reply, mut rx) = oneshot::channel();
-        let mut request = spawn_request(reply);
-        if let RelayRequest::Spawn { spawn, .. } = &mut request {
-            spawn.resource = Some(Box::new(
-                phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key),
-            ));
-        }
-        let wire = session.handle_request(request);
-        let FrameKind::SpawnResource {
-            request_id,
-            resource,
-            ..
-        } = decode(&wire)
-        else {
-            panic!("expected SPAWN_RESOURCE on the wire");
+        let (wire, reply) = spawn_answered(
+            &mut session,
+            |reply| {
+                spawn_with(
+                    reply,
+                    phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key),
+                )
+            },
+            SpawnResult::Replayed {
+                id: ResourceId::local(42),
+                instance: original,
+            },
+        );
+        let FrameKind::SpawnResource { resource, .. } = wire else {
+            unreachable!("spawn_answered checked the frame");
         };
         assert_eq!(
             resource.and_then(|r| r.idempotency_key),
             key,
-            "the key crosses the link"
+            "{original:?}: the key crosses the link"
         );
-        session.feed(&FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Replayed {
-                id: ResourceId::local(42),
-                instance: original,
-            },
-        });
         assert_eq!(
-            rx.try_recv().expect("spawn resolved"),
+            reply,
             SpawnResult::Replayed {
                 id: ResourceId::satellite("devbox", 42),
                 instance: original,
-            }
+            },
+            "{original:?}"
         );
     }
 }

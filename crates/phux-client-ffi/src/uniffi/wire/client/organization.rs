@@ -38,14 +38,10 @@ pub enum WireSessionLifetime {
     Ephemeral,
 }
 
-impl From<WireSessionLifetime> for SessionLifetime {
-    fn from(value: WireSessionLifetime) -> Self {
-        match value {
-            WireSessionLifetime::Persistent => Self::Persistent,
-            WireSessionLifetime::Ephemeral => Self::Ephemeral,
-        }
-    }
-}
+mirror_enum_from!(WireSessionLifetime => SessionLifetime {
+    Persistent,
+    Ephemeral,
+});
 
 fn reason(word: &str) -> WireError {
     WireError::Runtime {

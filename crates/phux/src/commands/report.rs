@@ -176,3 +176,8 @@ fn emit_json(value: &serde_json::Value) -> ExitCode {
         ),
     }
 }
+
+/// Run `phux report` as parsed.
+pub(crate) fn run(args: crate::commands::ReportArgs) -> ExitCode {
+    run_report(args.action, args.json.json)
+}

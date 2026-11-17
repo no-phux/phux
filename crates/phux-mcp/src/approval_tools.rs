@@ -8,23 +8,17 @@ use phux_protocol::ids::ApprovalId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, socket_or_default, str_arg, strict_object};
+use crate::tools::{ToolError, ToolSpec, socket_or_default, str_arg, strict_object};
 
-pub(crate) fn schemas() -> Vec<Value> {
-    vec![approvals_schema(), approve_schema()]
-}
-
-pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_approvals" | "phux_approve")
-}
-
-pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
-        "phux_approvals" => approvals(args).await,
-        "phux_approve" => approve(args).await,
-        other => Err(ToolError::new(format!("unknown approval tool: {other}"))),
-    }
-}
+/// The approval tools, in catalog order.
+pub(crate) const SPECS: &[ToolSpec] = &[
+    ToolSpec::in_process("phux_approvals", approvals_schema, |args| {
+        Box::pin(approvals(args))
+    }),
+    ToolSpec::in_process("phux_approve", approve_schema, |args| {
+        Box::pin(approve(args))
+    }),
+];
 
 fn approvals_schema() -> Value {
     schema(

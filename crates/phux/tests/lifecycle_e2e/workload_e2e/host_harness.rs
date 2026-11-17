@@ -51,7 +51,7 @@ impl FarHost {
             .stderr(stderr)
             .spawn()
             .expect("spawn far server");
-        let server = Server(child);
+        let server = Server::from_child(child, self.root.join("s.sock"));
         let start = Instant::now();
         while !self.server_log().contains("QUIC listening") {
             assert!(

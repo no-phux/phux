@@ -6,6 +6,8 @@
 
 use bytes::BytesMut;
 
+use super::tlv::TlvValue;
+
 /// TLV wire types (`docs/protocol.md#framing`).
 pub mod wire_type {
     /// Length-delimited `varint length || bytes`: the only type emitted at the
@@ -156,6 +158,32 @@ impl<'a> Encoder<'a> {
         );
         self.write_varint(value.len() as u64);
         self.buf.extend_from_slice(value);
+    }
+
+    /// Write one TLV field whose value is a single `u8`.
+    pub(crate) fn write_u8_field(&mut self, field_id: u32, value: u8) {
+        value.put(self, field_id);
+    }
+
+    /// Write one TLV field whose value is a big-endian `u16`.
+    pub(crate) fn write_u16_field(&mut self, field_id: u32, value: u16) {
+        value.put(self, field_id);
+    }
+
+    /// Write one TLV field whose value is a big-endian `u32`.
+    pub(crate) fn write_u32_field(&mut self, field_id: u32, value: u32) {
+        value.put(self, field_id);
+    }
+
+    /// Write one TLV field whose value is a big-endian `u64`.
+    pub(crate) fn write_u64_field(&mut self, field_id: u32, value: u64) {
+        value.put(self, field_id);
+    }
+
+    /// Write one TLV field whose value is a big-endian two's-complement
+    /// `i32`.
+    pub(crate) fn write_i32_field(&mut self, field_id: u32, value: i32) {
+        value.put(self, field_id);
     }
 
     /// Write one TLV field whose value `build` writes positionally into an

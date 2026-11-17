@@ -1,8 +1,8 @@
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
+use phux_protocol::caps::ServerCapabilities;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope,
 };
+use phux_wire_fixtures::{HelloOk, command_err, command_ok, command_value};
 
 #[cfg(doc)]
 use super::ScriptedServer;
@@ -28,20 +28,11 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
                     message,
                 }];
             }
-            let (selected_profile, bootstrap_limits) =
-                select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
-                    .expect("default scripted server and client share a bootstrap profile");
-            vec![FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new()
-                    .with_features(spec.server_features)
-                    .with_features_ext(spec.server_features_ext),
-                server_id: spec.server_id.clone(),
-                selected_profile: Some(selected_profile),
-                bootstrap_limits,
-            }]
+            let hello = HelloOk::new(spec.server_id.clone(), ServerCapabilities::new())
+                .features(spec.server_features)
+                .features_ext(spec.server_features_ext)
+                .negotiated_from(client_caps);
+            vec![hello.build()]
         }
         FrameKind::Command {
             request_id,
@@ -170,10 +161,7 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                  priming bootstrap frames. Call ScriptSpec::priming_snapshot."
             );
             out.extend(spec.priming.clone());
-            out.push(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            });
+            out.push(command_ok(request_id));
         }
         // The organization commands: `COMMITTED`, `ACCEPTED`, a value, or
         // `REFUSED`, from the scripted organization.
@@ -209,18 +197,15 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
         // `handle_get_terminal_state` answers `OK_WITH(JSON(..))`.
         Command::GetTerminalState { .. } if spec.terminal_state.is_some() => {
             let json = spec.terminal_state.clone().unwrap_or_default();
-            out.push(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::OkWith(CommandValue::Json(json)),
-            });
+            out.push(command_value(request_id, CommandValue::Json(json)));
         }
         // `handle_detach_clients` always answers `OkWith(Json(count))`.
         Command::DetachClients { .. } => {
             let count = spec.detach_result.unwrap_or(0);
-            out.push(FrameKind::CommandResult {
+            out.push(command_value(
                 request_id,
-                result: CommandResult::OkWith(CommandValue::Json(count.to_string())),
-            });
+                CommandValue::Json(count.to_string()),
+            ));
         }
         // `APPEND_RESOURCE_OUTPUT`: the test supplies the result.
         Command::AppendResourceOutput { .. } => {
@@ -230,23 +215,15 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
         // `handle_upgrade` answers a failed preparation with an
         // `INTERNAL_ERROR` result; success is the default `Ok` ack.
         Command::Upgrade if spec.upgrade_error.is_some() => {
-            out.push(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::InternalError,
-                    message: spec.upgrade_error.clone().unwrap_or_default(),
-                },
-            });
+            let message = spec.upgrade_error.clone().unwrap_or_default();
+            out.push(command_err(request_id, ErrorCode::InternalError, &message));
         }
         // A wedged server, on purpose: see `ScriptSpec::wedge_screen_reads`.
         Command::GetScreen { .. } if spec.wedge_screen_reads => {}
         // `handle_get_screen` answers `OK_WITH(JSON(ScreenState))`.
         Command::GetScreen { .. } if spec.screen.is_some() => {
             let json = spec.screen.clone().unwrap_or_default();
-            out.push(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::OkWith(CommandValue::Json(json)),
-            });
+            out.push(command_value(request_id, CommandValue::Json(json)));
         }
         // A wedged server, on purpose: see `ScriptSpec::wedge_input_after`.
         Command::RouteInput { .. } if spec.input_acks_left == Some(0) => {}
@@ -254,15 +231,9 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
             if let Some(left) = spec.input_acks_left.as_mut() {
                 *left -= 1;
             }
-            out.push(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Ok,
-            });
+            out.push(command_ok(request_id));
         }
-        _ => out.push(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        }),
+        _ => out.push(command_ok(request_id)),
     }
     out
 }

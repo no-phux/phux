@@ -1,4 +1,5 @@
 use super::*;
+use phux_wire_fixtures::{HelloOk, attached, decode_one, l3_caps};
 
 /// A `RemoteClient` over a sans-IO runtime client attached to `panes`, each
 /// bootstrapped with its bytes. No socket: frames are fed directly.
@@ -11,22 +12,12 @@ pub(super) fn remote_with(panes: &[(u32, Vec<u8>)]) -> Arc<RemoteClient> {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
-        .feed(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_layers(LayerSet::with(&[Layer::L3]))
-                .with_features(ServerFeatureSet::new()),
-            server_id: vec![0xAB; 16],
-            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
-            bootstrap_limits: BootstrapLimits::default(),
-        })
+        .feed(HelloOk::new([0xAB; 16], l3_caps()).build())
         .expect("HELLO_OK");
     let attach_id = client
         .take_outbound()
         .iter()
-        .find_map(|bytes| match FrameKind::decode(bytes).expect("decodes").0 {
+        .find_map(|bytes| match decode_one(bytes) {
             FrameKind::Attach { attach_id, .. } => Some(attach_id),
             _ => None,
         })
@@ -42,11 +33,7 @@ pub(super) fn remote_with(panes: &[(u32, Vec<u8>)]) -> Arc<RemoteClient> {
         .with_windows(vec![WindowInfo::new(window, session, "shell")])
         .with_resources(resources);
     client
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        })
+        .feed(attached(attach_id, snapshot, 1))
         .expect("ATTACHED");
     for (id, bytes) in panes {
         bootstrap(&client, ResourceId::local(*id), bytes);

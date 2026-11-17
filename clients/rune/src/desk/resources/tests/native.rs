@@ -2,10 +2,7 @@ use super::*;
 
 #[test]
 fn bootstrap_before_identity_is_adopted_after_organization_seed() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     rt.state.connection.resources.entries.clear();
     let publication = Arc::new(DocumentPublication {
         resource_id: id(1),
@@ -67,16 +64,8 @@ fn metadata_rename_preserves_document_but_a_new_execution_does_not() {
 #[test]
 fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
     for server in [1, 2] {
-        let (client, mut rt) = fixture(
-            &[record(1, ResourceKind::AccessibilityTree)],
-            &doc(LayoutNode::Leaf(id(1))),
-        );
-        publish(
-            &client,
-            1,
-            ResourceKind::AccessibilityTree,
-            b"{\"old\":true}",
-        );
+        let (client, mut rt) = one_document();
+        publish_tree(&client, b"{\"old\":true}");
         step(&mut rt);
         client.with_control(ControlPlane::connection_opened);
         step(&mut rt);
@@ -111,16 +100,8 @@ fn reconnect_same_or_new_server_retires_bytes_and_restores_key_on_new_handle() {
 
 #[test]
 fn epoch_retirement_reopens_by_key_not_reused_numeric_handle() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
-    publish(
-        &client,
-        1,
-        ResourceKind::AccessibilityTree,
-        b"{\"old\":true}",
-    );
+    let (client, mut rt) = one_document();
+    publish_tree(&client, b"{\"old\":true}");
     step(&mut rt);
     rt.update(|d, _| d.retire_documents(&client));
     assert!(rt.state.connection.shown.is_none());
@@ -224,10 +205,7 @@ fn native_png_headless_renderer_smoke() {
 
 #[test]
 fn native_document_labels_distinguish_pending_empty_invalid_and_unavailable() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     assert!(
         rt.accessibility_json()
             .to_string()

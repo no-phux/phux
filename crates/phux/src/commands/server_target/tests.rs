@@ -53,7 +53,7 @@ fn a_spec_without_remote_is_the_local_socket() {
         .expect("default resolves");
     assert_eq!(
         default.socket_path(),
-        Some(phux_server::runtime::default_socket_path().as_path())
+        Some(phux_config::socket::default_socket_path().as_path())
     );
 }
 

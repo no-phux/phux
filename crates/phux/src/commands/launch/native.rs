@@ -48,7 +48,7 @@ pub(super) fn spawn(
         guardian_key: None,
         guardian_expected: None,
     };
-    let socket = socket.map_or_else(phux_server::runtime::default_socket_path, Path::to_owned);
+    let socket = socket.map_or_else(phux_config::socket::default_socket_path, Path::to_owned);
     let runtime = match cli_runtime() {
         Ok(runtime) => runtime,
         Err(code) => return code,

@@ -313,7 +313,7 @@ fn register_over_ssh(
     let previous = existing
         .map(host::PreviousEnrollment::of)
         .unwrap_or_default();
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let remotes_dir = phux_config::instance::state_dir().join("remotes");
     let req = enroll::EnrollRequest {
         ssh_host,
         remote_phux: existing.map_or("phux", RemoteEntry::remote_phux),

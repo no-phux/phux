@@ -18,13 +18,11 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, EventStamp, FrameKind, SpawnResult,
 };
-use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
-    ServerHandles, Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_typed_before,
-    send_frame, spawn_server_with,
+    Spawn, SpawnedServer, WIRE_RECV_TIMEOUT, recv_typed, recv_typed_before, send_frame,
 };
 
 use crate::common::{attach_pane, connect_as, full_caps};
@@ -77,24 +75,23 @@ fn as_seen(frame: FrameKind) -> Option<Seen> {
 }
 
 /// A server seeding session `demo` without a PTY, with an optional journal size.
-struct Server {
-    tmp: TempDir,
-    handles: ServerHandles,
-}
+struct Server(SpawnedServer);
 
 impl Server {
     fn start(journal_entries: Option<u32>) -> Self {
-        let tmp = TempDir::new().unwrap();
-        let handles = spawn_server_with(tmp.path().join("phux.sock"), Some("demo"), |cfg| {
-            if let Some(entries) = journal_entries {
-                cfg.event_journal_entries = entries;
-            }
-        });
-        Self { tmp, handles }
+        let server = SpawnedServer::builder()
+            .session("demo")
+            .configure(move |cfg| {
+                if let Some(entries) = journal_entries {
+                    cfg.event_journal_entries = entries;
+                }
+            })
+            .start();
+        Self(server)
     }
 
     fn socket(&self) -> std::path::PathBuf {
-        self.tmp.path().join("phux.sock")
+        self.0.socket.clone()
     }
 
     async fn connect(&self, name: &str) -> UnixStream {
@@ -109,8 +106,7 @@ impl Server {
     }
 
     async fn stop(self) {
-        let (shutdown, server) = self.handles;
-        join_after_shutdown(shutdown, server).await;
+        self.0.stop().await;
     }
 }
 

@@ -1,46 +1,33 @@
 use super::session::default_worktree_path;
 use super::*;
 
+/// The ADR-0054 session name for a checkout: its sanitized basename, with
+/// dash runs collapsed (three separate illegal characters still make one
+/// dash), selector sigils stripped from the edges (a leading `@` would
+/// parse as a terminal id, `#` as a tag, a bare `.` as the focused pane),
+/// never the `:` locus separator, and a fallback when nothing survives.
 #[test]
 fn derived_name_is_the_sanitized_basename() {
-    assert_eq!(
-        session_name_for(Path::new("/w/phux-feat-auth")),
-        "phux-feat-auth"
-    );
-    assert_eq!(session_name_for(Path::new("/w/my repo")), "my-repo");
-    assert_eq!(session_name_for(Path::new("/w/v1.2_beta")), "v1.2_beta");
-}
-
-#[test]
-fn derived_name_collapses_dash_runs() {
-    assert_eq!(session_name_for(Path::new("/w/a---b")), "a-b");
-    // Three separate illegal characters must still collapse to one dash.
-    assert_eq!(session_name_for(Path::new("/w/a ~ b")), "a-b");
-}
-
-#[test]
-fn derived_name_strips_selector_sigils_from_the_edges() {
-    // A leading `@` would parse as a terminal id, `#` as a tag, and a
-    // bare `.` as the focused-pane selector.
-    assert_eq!(session_name_for(Path::new("/w/@42")), "42");
-    assert_eq!(session_name_for(Path::new("/w/#tag")), "tag");
-    assert_eq!(session_name_for(Path::new("/w/.hidden")), "hidden");
-}
-
-#[test]
-fn derived_name_never_contains_the_selector_separator() {
-    let name = session_name_for(Path::new("/w/work:1.0"));
-    assert!(
-        !name.contains(':'),
-        "derived '{name}' would parse as a locus"
-    );
-    assert_eq!(name, "work-1.0");
-}
-
-#[test]
-fn derived_name_falls_back_when_nothing_survives() {
-    assert_eq!(session_name_for(Path::new("/w/...")), FALLBACK_NAME);
-    assert_eq!(session_name_for(Path::new("/")), FALLBACK_NAME);
+    for (path, expected) in [
+        ("/w/phux-feat-auth", "phux-feat-auth"),
+        ("/w/my repo", "my-repo"),
+        ("/w/v1.2_beta", "v1.2_beta"),
+        ("/w/a---b", "a-b"),
+        ("/w/a ~ b", "a-b"),
+        ("/w/@42", "42"),
+        ("/w/#tag", "tag"),
+        ("/w/.hidden", "hidden"),
+        ("/w/work:1.0", "work-1.0"),
+        ("/w/...", FALLBACK_NAME),
+        ("/", FALLBACK_NAME),
+    ] {
+        let name = session_name_for(Path::new(path));
+        assert_eq!(name, expected, "{path}");
+        assert!(
+            !name.contains(':'),
+            "{path}: '{name}' would parse as a locus"
+        );
+    }
 }
 
 #[test]
@@ -179,15 +166,16 @@ fn a_json_failure_carries_a_stable_code_and_leaves_stdout_alone() {
     assert_eq!(doc["exit_code"], serde_json::json!(1));
 }
 
+/// The default checkout is a sibling of the repository, with the branch's
+/// slashes flattened so it stays one path component.
 #[test]
 fn default_path_is_a_sibling_of_the_repo() {
-    let dest = default_worktree_path(Path::new("/src/phux"), "feat/auth");
-    assert_eq!(dest, PathBuf::from("/src/phux-feat-auth"));
-}
-
-#[test]
-fn default_path_flattens_slashes_in_the_branch() {
-    let dest = default_worktree_path(Path::new("/src/phux"), "a/b/c");
-    assert_eq!(dest, PathBuf::from("/src/phux-a-b-c"));
-    assert_eq!(dest.components().count(), 3);
+    for (branch, expected) in [
+        ("feat/auth", "/src/phux-feat-auth"),
+        ("a/b/c", "/src/phux-a-b-c"),
+    ] {
+        let dest = default_worktree_path(Path::new("/src/phux"), branch);
+        assert_eq!(dest, PathBuf::from(expected), "{branch}");
+        assert_eq!(dest.components().count(), 3, "{branch}");
+    }
 }

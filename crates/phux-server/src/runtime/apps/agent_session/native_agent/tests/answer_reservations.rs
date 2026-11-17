@@ -8,14 +8,12 @@ async fn invalid_declared_custom_answer_does_not_reserve_the_question() {
         ask.fields = serde_json::json!({"allow_custom_input":false});
         ask.questions.push(NativeQuestionItem { id: "choice".into(), question: "Choose".into(), header: "Choice".into(),
             options: ask.options.clone(), multi: false, recommended: None });
-        decode::<NativePublicationReceipt>(fx.publish(generation, 2, NativeUpdate::QuestionOpened { question: ask }).await);
-        let invalid = NativeIntent::Answer { question_id: "question-A".into(),
-            response: serde_json::json!({"answers":[{"id":"choice","selected_options":[],"custom_input":"unsupported"}]}) };
-        assert_eq!(fx.command(fx.owner, 100, invalid.clone()).await.disposition, NativeDisposition::Refused);
-        let corrected = NativeIntent::Answer { question_id: "question-A".into(),
-            response: serde_json::json!({"answers":[{"id":"choice","selected_options":["deny-once"]}]}) };
-        assert_eq!(fx.command(fx.owner, 101, corrected.clone()).await.disposition, NativeDisposition::Queued);
-        assert_eq!(fx.command(fx.owner, 100, invalid).await.disposition, NativeDisposition::Refused);
+        fx.published(generation, 2, NativeUpdate::QuestionOpened { question: ask }).await;
+        let invalid = answer(serde_json::json!({"answers":[{"id":"choice","selected_options":[],"custom_input":"unsupported"}]}));
+        assert_eq!(fx.disposition(fx.owner, 100, invalid.clone()).await, NativeDisposition::Refused);
+        let corrected = answer(serde_json::json!({"answers":[{"id":"choice","selected_options":["deny-once"]}]}));
+        assert_eq!(fx.disposition(fx.owner, 101, corrected.clone()).await, NativeDisposition::Queued);
+        assert_eq!(fx.disposition(fx.owner, 100, invalid).await, NativeDisposition::Refused);
         assert_eq!(fx.receive(generation).await.intent, corrected);
     }).await;
 }
@@ -37,22 +35,10 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
             ] {
                 let fx = Fixture::new();
                 let generation = fx.ready().await;
-                decode::<NativePublicationReceipt>(
-                    fx.publish(
-                        generation,
-                        2,
-                        NativeUpdate::QuestionOpened {
-                            question: question("form"),
-                        },
-                    )
-                    .await,
-                );
-                let answer = NativeIntent::Answer {
-                    question_id: "question-A".into(),
-                    response: serde_json::json!({"values":{"count":"1"}}),
-                };
+                fx.ask(generation, 2, "form").await;
+                let first = answer(serde_json::json!({"values":{"count":"1"}}));
                 assert_eq!(
-                    fx.command(fx.owner, 110, answer.clone()).await.disposition,
+                    fx.disposition(fx.owner, 110, first.clone()).await,
                     NativeDisposition::Queued
                 );
                 fx.receive(generation).await;
@@ -68,10 +54,7 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
                         assert_eq!(receipt, CommandResult::Ok);
                     }
                 }
-                let corrected = NativeIntent::Answer {
-                    question_id: "question-A".into(),
-                    response: serde_json::json!({"values":{"count":1}}),
-                };
+                let corrected = answer(serde_json::json!({"values":{"count":1}}));
                 let result = fx.command(fx.owner, 111, corrected).await;
                 assert_eq!(
                     result.disposition,
@@ -90,20 +73,16 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
                         CommandResult::Ok
                     );
                     assert_eq!(
-                        fx.command(fx.owner, 110, answer).await.disposition,
+                        fx.disposition(fx.owner, 110, first).await,
                         NativeDisposition::Refused
                     );
                     assert_eq!(
-                        fx.command(
+                        fx.disposition(
                             fx.owner,
                             112,
-                            NativeIntent::Answer {
-                                question_id: "question-A".into(),
-                                response: serde_json::json!({"cancelled":true})
-                            }
+                            answer(serde_json::json!({"cancelled":true}))
                         )
-                        .await
-                        .disposition,
+                        .await,
                         NativeDisposition::Refused
                     );
                     assert_eq!(
@@ -124,35 +103,22 @@ async fn local_answer_refusal_releases_only_its_exact_live_reservation() {
 }
 
 async fn prepare_answer_reservation_case(fx: &Fixture, generation: u64, case: &str) {
-    let complete = |disposition| fx.completion(generation, 110, disposition);
+    let completions: &[NativeDisposition] = match case {
+        "queued" => &[NativeDisposition::Queued],
+        "admitted" => &[NativeDisposition::Admitted],
+        "completed" => &[NativeDisposition::Completed],
+        "submitted-then-unknown" => &[NativeDisposition::Queued, NativeDisposition::Unknown],
+        _ => &[],
+    };
+    for disposition in completions {
+        assert_eq!(
+            fx.request(fx.host, fx.completion(generation, 110, *disposition))
+                .await,
+            CommandResult::Ok,
+            "{case}: {disposition:?}"
+        );
+    }
     match case {
-        "queued" => assert_eq!(
-            fx.request(fx.host, complete(NativeDisposition::Queued))
-                .await,
-            CommandResult::Ok
-        ),
-        "admitted" => assert_eq!(
-            fx.request(fx.host, complete(NativeDisposition::Admitted))
-                .await,
-            CommandResult::Ok
-        ),
-        "completed" => assert_eq!(
-            fx.request(fx.host, complete(NativeDisposition::Completed))
-                .await,
-            CommandResult::Ok
-        ),
-        "submitted-then-unknown" => {
-            assert_eq!(
-                fx.request(fx.host, complete(NativeDisposition::Queued))
-                    .await,
-                CommandResult::Ok
-            );
-            assert_eq!(
-                fx.request(fx.host, complete(NativeDisposition::Unknown))
-                    .await,
-                CommandResult::Ok
-            );
-        }
         "other-operation" => fx.state.with_mut(|s| {
             s.native_agents_mut()
                 .bindings
@@ -173,19 +139,17 @@ async fn prepare_answer_reservation_case(fx: &Fixture, generation: u64, case: &s
                 .activation = "older-activation".into();
         }),
         "closed-question" => {
-            decode::<NativePublicationReceipt>(
-                fx.publish(
-                    generation,
-                    3,
-                    NativeUpdate::QuestionClosed {
-                        id: "question-A".into(),
-                        reason: "withdrawn".into(),
-                    },
-                )
-                .await,
-            );
+            fx.published(
+                generation,
+                3,
+                NativeUpdate::QuestionClosed {
+                    id: "question-A".into(),
+                    reason: "withdrawn".into(),
+                },
+            )
+            .await;
         }
-        "local" | "unknown" => {}
+        "local" | "unknown" | "queued" | "admitted" | "completed" | "submitted-then-unknown" => {}
         _ => panic!("unhandled reservation case: {case}"),
     }
 }

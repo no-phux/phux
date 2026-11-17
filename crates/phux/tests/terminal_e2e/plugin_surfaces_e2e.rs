@@ -83,22 +83,6 @@ fn overlay_running(client: &common::PtyAttach) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Wait until every phrase has been painted; panic with the transcript.
-fn wait_for(client: &common::PtyAttach, phrases: &[&str]) {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let painted = client.painted();
-        if phrases.iter().all(|phrase| painted.contains(phrase)) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "never painted {phrases:?}; painted text was:\n{painted}"
-        );
-        std::thread::sleep(POLL);
-    }
-}
-
 #[test]
 #[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
 fn plugin_overlay_and_sidebar_section_drive_a_real_tui() {
@@ -107,12 +91,12 @@ fn plugin_overlay_and_sidebar_section_drive_a_real_tui() {
         .start();
     let mut client = attach(&server);
     // The sidebar section is laid out as soon as the strip paints.
-    wait_for(&client, &["E2E Panes", "Sessions"]);
+    client.await_painted(&["E2E Panes", "Sessions"], DEADLINE);
 
     // Open the overlay: its output paints inside its titled box.
     client.send(PREFIX);
     client.send(b"O");
-    wait_for(&client, &["Stay Board", "OVERLAY-42"]);
+    client.await_painted(&["Stay Board", "OVERLAY-42"], DEADLINE);
 
     // Keys go to the overlay (whose `sleep` ignores them), so the layout
     // shell must not answer this one.
@@ -130,7 +114,7 @@ fn plugin_overlay_and_sidebar_section_drive_a_real_tui() {
     client.send(b"x");
     std::thread::sleep(Duration::from_millis(300));
     client.send(b"echo BACK-$((6+6))\r");
-    wait_for(&client, &["BACK-12"]);
+    client.await_painted(&["BACK-12"], DEADLINE);
     assert!(
         client.is_running(),
         "dismissing the overlay ended the attach"
@@ -149,9 +133,9 @@ fn plugin_overlay_and_sidebar_section_drive_a_real_tui() {
     // An overlay whose process exits closes by itself.
     client.send(PREFIX);
     client.send(b"B");
-    wait_for(&client, &["Brief Board", "BRIEF-33"]);
+    client.await_painted(&["Brief Board", "BRIEF-33"], DEADLINE);
     std::thread::sleep(Duration::from_secs(2));
     client.send(b"echo AFTER-$((7+7))\r");
-    wait_for(&client, &["AFTER-14"]);
+    client.await_painted(&["AFTER-14"], DEADLINE);
     assert!(client.is_running(), "an exiting overlay ended the attach");
 }

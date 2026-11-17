@@ -5,23 +5,7 @@ use phux_client_runtime::control::forward::ForwardError;
 use phux_protocol::forward::{ForwardChunk, ForwardOp, MAX_FORWARD_CHUNK_BYTES};
 
 fn plane_with_forward() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::ForwardTcp]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
-}
-
-fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
-    plane
-        .feed(FrameKind::CommandResult { request_id, result })
-        .unwrap();
+    browsing_with_ext(&[ServerFeatureExt::ForwardTcp])
 }
 
 #[test]
@@ -31,9 +15,7 @@ fn a_server_without_the_bit_is_never_asked() {
         plane.forward_open("localhost".to_owned(), 80).unwrap_err(),
         ForwardError::NotConnected
     );
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert!(!plane.forward_supported());
     assert_eq!(
@@ -156,17 +138,7 @@ fn a_dropped_open_closes_the_forward_it_was_answered_with() {
 }
 
 fn plane_with_agent() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps = server_caps
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::ForwardAgent]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(&[ServerFeatureExt::ForwardAgent])
 }
 
 /// The two forwarding bits gate their own calls: a server with only TCP

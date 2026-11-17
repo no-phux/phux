@@ -109,7 +109,7 @@ fn refuse_viewer_input(
     let Some(terminal) = named_terminal(request) else {
         return Ok(());
     };
-    if is_input_request(request) && s.is_viewer(client, terminal) {
+    if is_input_request(request) && s.clients().is_viewer(client, terminal) {
         return Err(Denial::VIEWER);
     }
     Ok(())
@@ -349,6 +349,6 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
     if !terminal_id.is_local() {
         return true;
     }
-    s.resource_from_wire(terminal_id)
-        .is_some_and(|core| s.subscribers_for_resource(core).contains(&client))
+    s.idspace.resource_from_wire(terminal_id)
+        .is_some_and(|core| s.resources().subscribers_for(core).contains(&client))
 }

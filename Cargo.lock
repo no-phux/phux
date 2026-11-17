@@ -2960,12 +2960,10 @@ dependencies = [
  "phux-core",
  "phux-dial",
  "phux-frozen",
- "phux-mission",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
  "phux-record",
- "phux-relay",
  "phux-resource",
  "phux-server",
  "phux-terminal",
@@ -3046,6 +3044,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "libghostty-vt",
+ "phux-agent-rules",
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
@@ -3056,6 +3055,8 @@ dependencies = [
  "phux-record",
  "phux-server",
  "phux-terminal",
+ "phux-vt",
+ "phux-wire-fixtures",
  "phux-work",
  "quinn",
  "regex",
@@ -3081,9 +3082,11 @@ dependencies = [
  "criterion",
  "insta",
  "libghostty-vt",
+ "phux-core",
  "phux-frozen",
  "phux-perf",
  "phux-protocol",
+ "phux-vt",
  "proptest",
  "serde",
  "serde_json",
@@ -3101,10 +3104,11 @@ dependencies = [
  "phux-client-core",
  "phux-client-runtime",
  "phux-config",
+ "phux-dial",
  "phux-protocol",
- "phux-relay",
  "phux-server",
  "phux-server-testkit",
+ "phux-wire-fixtures",
  "serde",
  "serde_json",
  "tempfile",
@@ -3130,19 +3134,18 @@ dependencies = [
  "phux-protocol",
  "phux-server",
  "phux-server-testkit",
- "portable-pty",
+ "phux-vt",
+ "phux-wire-fixtures",
  "quinn",
  "rcgen",
  "rustls",
  "security-framework",
  "security-framework-sys",
- "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "unicode-segmentation",
  "uuid",
@@ -3154,19 +3157,16 @@ version = "0.156.0"
 dependencies = [
  "chrono",
  "insta",
- "nix 0.31.3",
  "phux-config-core",
  "phux-protocol",
  "serde",
  "serde_json",
  "serde_path_to_error",
- "smallvec",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
  "toml_edit",
  "tracing",
- "unicode-width",
 ]
 
 [[package]]
@@ -3263,14 +3263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phux-mission"
-version = "0.156.0"
-dependencies = [
- "phux-work",
- "serde",
-]
-
-[[package]]
 name = "phux-perf"
 version = "0.156.0"
 dependencies = [
@@ -3302,8 +3294,6 @@ dependencies = [
  "flate2",
  "insta",
  "int-enum",
- "libghostty-vt",
- "png",
  "proptest",
  "schemars 1.2.3",
  "serde",
@@ -3320,22 +3310,10 @@ dependencies = [
  "gif",
  "libghostty-vt",
  "phux-core",
- "phux-protocol",
+ "phux-vt",
  "png",
  "serde_json",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "phux-relay"
-version = "0.156.0"
-dependencies = [
- "phux-dial",
- "phux-protocol",
- "quictun",
- "quinn",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -3373,7 +3351,6 @@ dependencies = [
  "hyper-util",
  "iai-callgrind",
  "libc",
- "memchr",
  "nix 0.31.3",
  "phux-agent-rules",
  "phux-agent-session",
@@ -3386,14 +3363,12 @@ dependencies = [
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
- "phux-relay",
  "phux-resource",
  "phux-server-testkit",
  "phux-terminal",
  "phux-terminal-api",
- "phux-tree",
+ "phux-vt",
  "phux-work",
- "portable-pty",
  "quinn",
  "rcgen",
  "ring",
@@ -3426,11 +3401,11 @@ version = "0.156.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
+ "phux-dial",
  "phux-protocol",
- "phux-relay",
  "phux-server",
  "phux-terminal",
- "portable-pty",
+ "phux-vt",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3455,16 +3430,16 @@ dependencies = [
  "phux-agent-rules",
  "phux-agent-session",
  "phux-client-core",
- "phux-config",
+ "phux-config-core",
  "phux-core",
  "phux-perf",
  "phux-protocol",
  "phux-resource",
  "phux-terminal-api",
+ "phux-vt",
  "portable-pty",
  "portable-pty-adopt",
  "rustix",
- "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -3482,7 +3457,7 @@ dependencies = [
  "bytes",
  "phux-agent-rules",
  "phux-agent-session",
- "phux-config",
+ "phux-config-core",
  "phux-core",
  "phux-perf",
  "phux-protocol",
@@ -3496,24 +3471,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "phux-tree"
-version = "0.156.0"
-dependencies = [
- "bytes",
- "phux-core",
- "phux-protocol",
- "phux-resource",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "phux-tui"
 version = "0.156.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "chrono",
  "insta",
  "libghostty-vt",
  "phux-client",
@@ -3527,11 +3490,14 @@ dependencies = [
  "phux-protocol",
  "phux-record",
  "phux-server-testkit",
+ "phux-vt",
+ "phux-wire-fixtures",
  "proptest",
  "ratatui",
  "rustix",
  "serde",
  "serde_json",
+ "smallvec",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3539,6 +3505,7 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]
@@ -3552,6 +3519,27 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
+]
+
+[[package]]
+name = "phux-vt"
+version = "0.156.0"
+dependencies = [
+ "bytes",
+ "flate2",
+ "libghostty-vt",
+ "phux-core",
+ "phux-protocol",
+ "png",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "phux-wire-fixtures"
+version = "0.156.0"
+dependencies = [
+ "bytes",
+ "phux-protocol",
 ]
 
 [[package]]

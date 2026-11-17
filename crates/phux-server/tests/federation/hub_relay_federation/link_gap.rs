@@ -12,9 +12,7 @@ fn a_satellites_link_gap_reaches_the_hubs_consumer_as_a_source_gap() {
         let gate = TempDir::new().unwrap();
         let release = gate.path().join("release");
         let marks = "\\033]133;C\\007\\033]133;D;0\\007".repeat(30);
-        let mut seed = LaunchCommand::new("/bin/sh");
-        seed.arg("-c");
-        seed.arg(format!(
+        let seed = phux_server_testkit::sh(&format!(
             "until [ -f '{}' ]; do sleep 0.01; done; printf '{marks}'; sleep 1; \
              printf '\\033]133;C\\007'; sleep 600",
             release.display(),

@@ -10,8 +10,6 @@ use phux_client_runtime::runtime::{Client, ClientOptions, Listener, Runtime};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 
-use super::server_target::ServerSpec;
-
 /// One `-L` argument: where to listen here and what to reach there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Spec {
@@ -71,7 +69,13 @@ impl Listener for Activity {
 }
 
 /// `-L local`, or with none `--agent` (`yes` skips its per-signature ask).
-pub(crate) fn run(local: Option<&str>, yes: bool, spec: ServerSpec) -> ExitCode {
+pub(crate) fn run(
+    args: crate::commands::ForwardArgs,
+    socket: Option<std::path::PathBuf>,
+) -> ExitCode {
+    let spec = args.remote.with_socket(socket);
+    let local = args.local.as_deref();
+    let yes = args.yes;
     let forward = match local.map(parse).transpose() {
         Ok(forward) => forward,
         Err(err) => {

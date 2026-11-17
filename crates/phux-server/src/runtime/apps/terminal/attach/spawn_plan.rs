@@ -141,7 +141,8 @@ pub(super) fn spawn_argv_builder(
     command: Option<Vec<String>>,
 ) -> phux_terminal_api::launch::LaunchCommand {
     crate::runtime::apps::terminal::launch::argv_command(command).unwrap_or_else(|| {
-        let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
+        let (shell, login_shell) =
+            state.with(|s| (s.config().shell.as_str().to_owned(), s.config().login_shell));
         phux_terminal_api::launch::default_shell_command(&shell, login_shell)
     })
 }
@@ -158,7 +159,7 @@ pub(super) async fn build_spawn_command(
     term: Option<&str>,
 ) -> phux_terminal_api::launch::LaunchCommand {
     let mut builder = spawn_argv_builder(state, command);
-    let default_term = state.with(|s| s.term().to_owned());
+    let default_term = state.with(|s| s.config().term.as_str().to_owned());
     phux_terminal_api::launch::apply_term(&mut builder, &default_term);
     if let Some(t) = term {
         phux_terminal_api::launch::apply_term(&mut builder, t);
@@ -186,7 +187,7 @@ pub(super) fn resolve_spawn_ownership(
 ) -> Result<SpawnOwnership, SpawnError> {
     if let Some(owner) = owner_terminal {
         if !matches!(owner, phux_protocol::ids::ResourceId::Local { .. })
-            || state.with(|s| s.resource_from_wire(&owner).is_none())
+            || state.with(|s| s.idspace.resource_from_wire(&owner).is_none())
         {
             return Err(SpawnError::SpawnFailed(
                 "owner terminal was not found on this server".to_owned(),
@@ -198,7 +199,7 @@ pub(super) fn resolve_spawn_ownership(
         s.attached()
             .get(&client_id)
             .map(|c| c.session)
-            .or_else(|| s.most_recently_touched_session())
+            .or_else(|| s.sessions().most_recently_touched())
             .or_else(|| s.fallback_session())
     });
     let Some(session) = session else {
@@ -228,9 +229,9 @@ pub(super) fn subscribe_spawning_client(
     ClientCapabilities,
 )> {
     state.with_mut(|s| {
-        let wire_terminal_id = s.intern_resource_wire(core_terminal_id);
+        let wire_terminal_id = s.idspace.intern_resource(core_terminal_id);
         // ADR-0109: provenance before any subscription.
-        s.record_spawn(core_terminal_id, client_id);
+        s.resources_mut().record_spawn(core_terminal_id, client_id);
         let client_caps = s
             .attached()
             .get(&client_id)
@@ -238,7 +239,8 @@ pub(super) fn subscribe_spawning_client(
             .unwrap_or_default();
         s.subscribe_resource(client_id, core_terminal_id, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire_terminal_id);
-        s.resource_handle(core_terminal_id)
+        s.resources()
+            .handle(core_terminal_id)
             .cloned()
             .map(|h| (wire_terminal_id, h, client_caps))
     })

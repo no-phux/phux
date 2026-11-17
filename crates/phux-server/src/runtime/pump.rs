@@ -71,7 +71,10 @@ pub(super) fn spawn_tracked(
         }
         None => tokio::task::spawn_local(task).abort_handle(),
     };
-    state.with_mut(|s| s.track_terminal_output_pump(client, terminal, abort, done, drain));
+    state.with_mut(|s| {
+        s.resources_mut()
+            .track_output_pump(client, terminal, abort, done, drain);
+    });
 }
 
 /// Stop all output tasks for a subscription, including tasks blocked inside
@@ -81,7 +84,7 @@ pub(super) async fn stop_output(
     client: crate::state::ClientId,
     terminal: phux_core::ResourceId,
 ) {
-    let completions = state.with_mut(|s| s.stop_terminal_output_pumps(client, terminal));
+    let completions = state.with_mut(|s| s.resources_mut().stop_output_pumps(client, terminal));
     for done in completions {
         done.cancelled().await;
     }

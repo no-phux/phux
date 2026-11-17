@@ -80,7 +80,7 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
     let attribution = crate::runtime::commands::SpawnAttribution {
         actor: Some(client_id),
         operation_id: resource.idempotency_key,
-        retain_secs: state.with(|s| s.retain_policy().resolve(resource.retain_secs)),
+        retain_secs: state.with(|s| s.config().retain.resolve(resource.retain_secs)),
     };
     // The spawner consumes the new Terminal's stream.
     if !decodes.contains(phux_protocol::ids::ResourceKind::Terminal) {
@@ -138,7 +138,7 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
 
     let (scrollback, default_colors) = state.with(|s| {
         (
-            s.scrollback_limits(),
+            s.config().scrollback,
             s.attached()
                 .get(&client_id)
                 .and_then(|client| client.client_caps.default_colors),

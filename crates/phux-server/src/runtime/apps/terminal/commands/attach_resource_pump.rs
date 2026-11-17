@@ -86,7 +86,6 @@ impl AttachResourceSession<'_> {
         &self,
         generation: &mut AttachResourceGeneration,
     ) -> Result<(), AttachResourceFailure> {
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(self.stream_profile) {
             return self.finish_native(generation).await;
         }
@@ -94,7 +93,6 @@ impl AttachResourceSession<'_> {
     }
 
     /// Capture a native checkpoint bootstrap from the pane actor.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn capture_native_bootstrap(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
@@ -127,7 +125,6 @@ impl AttachResourceSession<'_> {
 
     /// Publish the native checkpoint bootstrap, cross the publication fence,
     /// and release both the live gate and the pump's first delta.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn finish_native(
         &self,
         generation: &mut AttachResourceGeneration,

@@ -97,23 +97,28 @@ fn non_unicode_explicit_addresses_do_not_trigger_discovery() {
     );
 }
 
+/// The CGNAT range boundaries, and the tailnet ranges in both families.
 #[test]
 fn cgnat_range_boundaries() {
-    assert!(is_cgnat(ip("100.64.0.0")));
-    assert!(is_cgnat(ip("100.127.255.255")));
-    assert!(!is_cgnat(ip("100.63.255.255")));
-    assert!(!is_cgnat(ip("100.128.0.0")));
-    assert!(!is_cgnat(ip("192.168.1.5")));
-    assert!(!is_cgnat(ip("fd7a:115c:a1e0::1")));
-}
-
-#[test]
-fn tailnet_ranges_cover_both_families() {
-    assert!(is_tailnet(ip("100.94.129.125")));
-    assert!(is_tailnet(ip("fd7a:115c:a1e0:ab12::1")));
-    assert!(!is_tailnet(ip("fd7a:115c:a1e1::1")));
-    assert!(!is_tailnet(ip("100.128.0.0")));
-    assert!(!is_tailnet(ip("0.0.0.0")));
+    for (addr, cgnat) in [
+        ("100.64.0.0", true),
+        ("100.127.255.255", true),
+        ("100.63.255.255", false),
+        ("100.128.0.0", false),
+        ("192.168.1.5", false),
+        ("fd7a:115c:a1e0::1", false),
+    ] {
+        assert_eq!(is_cgnat(ip(addr)), cgnat, "is_cgnat({addr})");
+    }
+    for (addr, tailnet) in [
+        ("100.94.129.125", true),
+        ("fd7a:115c:a1e0:ab12::1", true),
+        ("fd7a:115c:a1e1::1", false),
+        ("100.128.0.0", false),
+        ("0.0.0.0", false),
+    ] {
+        assert_eq!(is_tailnet(ip(addr)), tailnet, "is_tailnet({addr})");
+    }
 }
 
 #[test]
@@ -200,13 +205,22 @@ fn status_json_without_a_usable_magic_dns_name_yields_nothing() {
     }
 }
 
+/// Write an executable `/bin/sh` stub named `name` into `dir`.
+#[cfg(unix)]
+fn write_stub(dir: &std::path::Path, name: &str, script: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join(name);
+    std::fs::write(&path, script).expect("write stub");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    path
+}
+
 /// End-to-end through the real spawn path, with output larger than a
 /// pipe buffer: a tailnet with many peers must not stall the CLI.
 #[cfg(unix)]
 #[test]
 fn stub_tailscale_status_round_trips_past_a_pipe_buffer() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let doc = dir.path().join("status.json");
     let padding = "x".repeat(256 * 1024);
@@ -216,16 +230,14 @@ fn stub_tailscale_status_round_trips_past_a_pipe_buffer() {
         &format!(r#"["100.99.98.97"],"Padding":"{padding}""#),
     );
     std::fs::write(&doc, out).expect("write status");
-    let script = dir.path().join("tailscale-stub");
-    std::fs::write(
-        &script,
-        format!(
+    let script = write_stub(
+        dir.path(),
+        "tailscale-stub",
+        &format!(
             "#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 1\ncat '{}'\n",
             doc.display()
         ),
-    )
-    .expect("write stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    );
 
     let out = run_tailscale(
         script.as_os_str(),
@@ -242,12 +254,12 @@ fn stub_tailscale_status_round_trips_past_a_pipe_buffer() {
 #[cfg(unix)]
 #[test]
 fn stub_tailscale_binary_round_trips() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().expect("tempdir");
-    let script = dir.path().join("tailscale-stub");
-    std::fs::write(&script, "#!/bin/sh\necho 100.99.98.97\n").expect("write stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let script = write_stub(
+        dir.path(),
+        "tailscale-stub",
+        "#!/bin/sh\necho 100.99.98.97\n",
+    );
 
     // Generous deadline: a loaded CI box can take seconds to spawn /bin/sh.
     let out = run_tailscale(
@@ -264,12 +276,12 @@ fn stub_tailscale_binary_round_trips() {
 #[cfg(unix)]
 #[test]
 fn wedged_tailscale_binary_is_killed_at_the_deadline() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().expect("tempdir");
-    let script = dir.path().join("tailscale-wedged");
-    std::fs::write(&script, "#!/bin/sh\nsleep 10\necho 100.99.98.97\n").expect("write stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let script = write_stub(
+        dir.path(),
+        "tailscale-wedged",
+        "#!/bin/sh\nsleep 10\necho 100.99.98.97\n",
+    );
 
     let start = std::time::Instant::now();
     let addrs = detect_with(

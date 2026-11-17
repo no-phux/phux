@@ -369,79 +369,50 @@ mod tests {
         })
     }
 
+    /// `decide` for pane 1 in `phase`, the client window focused.
+    fn step(prior: Option<Track>, phase: Phase, primed: bool) -> (Track, Option<NotifyKind>) {
+        decide(prior, &row(1, phase), true, primed, cfg())
+    }
+
+    /// Single transitions: working to blocked fires (and the run still
+    /// finishes later); staying blocked does not refire; settling without
+    /// work is silent; a first sighting of a blocked pane fires only once
+    /// the notifier is primed.
     #[test]
-    fn working_to_blocked_fires_blocked() {
-        let (next, edge) = decide(
-            track(Phase::Working, true),
-            &row(1, Phase::Blocked),
-            true,
-            true,
-            cfg(),
-        );
-        assert_eq!(edge, Some(NotifyKind::Blocked { asking: false }));
+    fn single_transitions_fire_only_on_a_new_edge() {
+        let blocked = Some(NotifyKind::Blocked { asking: false });
+        #[rustfmt::skip] // a case table, one row per case
+        let cases = [
+            ("working to blocked", track(Phase::Working, true), Phase::Blocked, true, blocked),
+            ("staying blocked", track(Phase::Blocked, true), Phase::Blocked, true, None),
+            ("idle without work", None, Phase::Settled, true, None),
+            ("unknown without work", track(Phase::Unknown, false), Phase::Settled, true, None),
+            ("first sighting, unprimed", None, Phase::Blocked, false, None),
+            ("first sighting, primed", None, Phase::Blocked, true, blocked),
+        ];
+        for (case, prior, phase, primed, want) in cases {
+            assert_eq!(step(prior, phase, primed).1, want, "{case}");
+        }
+        let (next, _) = step(track(Phase::Working, true), Phase::Blocked, true);
         assert!(next.worked, "a blocked run still finishes later");
     }
 
     #[test]
-    fn staying_blocked_does_not_refire() {
-        let (_, edge) = decide(
-            track(Phase::Blocked, true),
-            &row(1, Phase::Blocked),
-            true,
-            true,
-            cfg(),
-        );
-        assert_eq!(edge, None);
-    }
-
-    #[test]
     fn done_fires_once_per_run() {
-        let (next, edge) = decide(
-            track(Phase::Working, true),
-            &row(1, Phase::Settled),
-            true,
-            true,
-            cfg(),
-        );
+        let (next, edge) = step(track(Phase::Working, true), Phase::Settled, true);
         assert_eq!(edge, Some(NotifyKind::Done));
         assert!(!next.worked);
-        let (_, again) = decide(Some(next), &row(1, Phase::Settled), true, true, cfg());
+        let (_, again) = step(Some(next), Phase::Settled, true);
         assert_eq!(again, None, "a second identical done is not a new run");
     }
 
     #[test]
     fn blocked_then_done_after_working_fires_done() {
-        let (t, _) = decide(
-            track(Phase::Working, true),
-            &row(1, Phase::Blocked),
-            true,
-            true,
-            cfg(),
+        let (t, _) = step(track(Phase::Working, true), Phase::Blocked, true);
+        assert_eq!(
+            step(Some(t), Phase::Settled, true).1,
+            Some(NotifyKind::Done)
         );
-        let (_, edge) = decide(Some(t), &row(1, Phase::Settled), true, true, cfg());
-        assert_eq!(edge, Some(NotifyKind::Done));
-    }
-
-    #[test]
-    fn idle_without_work_is_silent() {
-        let (_, edge) = decide(None, &row(1, Phase::Settled), true, true, cfg());
-        assert_eq!(edge, None);
-        let (_, edge) = decide(
-            track(Phase::Unknown, false),
-            &row(1, Phase::Settled),
-            true,
-            true,
-            cfg(),
-        );
-        assert_eq!(edge, None);
-    }
-
-    #[test]
-    fn first_sighting_blocked_fires_only_when_primed() {
-        let (_, early) = decide(None, &row(1, Phase::Blocked), true, false, cfg());
-        assert_eq!(early, None);
-        let (_, late) = decide(None, &row(1, Phase::Blocked), true, true, cfg());
-        assert_eq!(late, Some(NotifyKind::Blocked { asking: false }));
     }
 
     #[test]
@@ -475,17 +446,12 @@ mod tests {
 
     #[test]
     fn mode_off_and_kind_toggles_silence_but_still_track() {
+        let working = || track(Phase::Working, true);
         let off = NotificationsCfg {
             mode: NotifyMode::Off,
             ..cfg()
         };
-        let (next, edge) = decide(
-            track(Phase::Working, true),
-            &row(1, Phase::Settled),
-            true,
-            true,
-            off,
-        );
+        let (next, edge) = decide(working(), &row(1, Phase::Settled), true, true, off);
         assert_eq!(edge, None);
         assert!(!next.worked, "the run is consumed even when silent");
         let no_done = NotificationsCfg {
@@ -493,14 +459,7 @@ mod tests {
             ..cfg()
         };
         assert_eq!(
-            decide(
-                track(Phase::Working, true),
-                &row(1, Phase::Settled),
-                true,
-                true,
-                no_done
-            )
-            .1,
+            decide(working(), &row(1, Phase::Settled), true, true, no_done).1,
             None
         );
         let no_blocked = NotificationsCfg {
@@ -508,14 +467,7 @@ mod tests {
             ..cfg()
         };
         assert_eq!(
-            decide(
-                track(Phase::Working, true),
-                &row(1, Phase::Blocked),
-                true,
-                true,
-                no_blocked
-            )
-            .1,
+            decide(working(), &row(1, Phase::Blocked), true, true, no_blocked).1,
             None
         );
     }

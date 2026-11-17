@@ -1,0 +1,14 @@
+{
+  "auth_route": "uds",
+  "credential_id": null,
+  "host": "mini",
+  "peer_uid": 501,
+  "principal": null,
+  "schema_version": 1,
+  "server_version": "0.30.0",
+  "serving_user": {
+    "name": "me",
+    "uid": 501
+  },
+  "ssh_client": null
+}

@@ -173,7 +173,7 @@ fn not_running_document_is_pinned() {
     let refused = AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
     let doc = not_running_document(&refused, Path::new("/tmp/phux-test.sock"));
     let remedy = doc["remedy"].as_str().unwrap();
-    assert!(remedy.contains("`phux server`") && remedy.contains("phux doctor"));
+    assert!(remedy.contains("`phux server --ensure`") && remedy.contains("phux doctor"));
     assert_eq!(
         doc,
         serde_json::json!({

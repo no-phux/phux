@@ -6,7 +6,7 @@ use phux_client::attach::AttachError;
 use phux_client::deadline::Deadline;
 use phux_client::read::{Resolved, Route, Verb};
 use phux_client::wait::{Condition, MatchRegex, MatchScope};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, read_kind, resolve_resource};
 
@@ -156,7 +156,9 @@ async fn resolve_routed(
     terminal_flags: &[(&'static str, bool)],
     json: bool,
 ) -> Result<(Resolved, Route), ExitCode> {
-    let resolved = resolve_resource(socket_path, selector, "wait", json, false).await?;
+    let resolved = resolve_resource(socket_path, selector, "wait", false)
+        .await
+        .map_err(|refusal| refusal.emit(json))?;
     let route = phux_client::read::route(Verb::Wait, &resolved)
         .map_err(|err| read_kind::wrong_kind(json, &err))?;
     phux_client::read::terminal_only(&resolved, route, terminal_flags)
@@ -206,6 +208,31 @@ fn report_result(result: &phux_client::wait::WaitResult, json: bool) -> ExitCode
             crate::exit_codes::EXIT_WAIT_TIMEOUT,
         ),
     }
+}
+
+/// Run `phux wait` as parsed.
+pub(crate) fn run(args: crate::commands::WaitArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::WaitArgs {
+        session,
+        until,
+        regex,
+        tail,
+        output_only,
+        idle,
+        timeout,
+        json,
+    } = args;
+    run_wait(WaitArgs {
+        session: session.as_deref(),
+        until,
+        regex,
+        idle,
+        tail,
+        output_only,
+        timeout,
+        json: json.json,
+        socket,
+    })
 }
 
 #[cfg(test)]

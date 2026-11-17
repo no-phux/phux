@@ -2,8 +2,10 @@
 
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::SessionSnapshot;
+use phux_server::policy::PolicyEngine;
 use phux_server::{LaunchCommand, ServerConfig, ServerError, ServerRuntime};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -16,36 +18,120 @@ use crate::{
 
 pub type ServerHandles = (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>);
 
+/// The one way to spawn an in-process server: [`SpawnedServer::builder`].
+/// Every other spawn helper here is a wrapper over it.
+///
+/// With no options the server seeds nothing, runs no PTYs, and decides HELLO
+/// with the posture `phux server` would pick. Options apply in call order,
+/// [`Self::configure`] closures included, so a later one wins.
+#[must_use = "a builder spawns nothing until `start`, `start_in`, or `spawn_at`"]
+pub struct ServerBuilder<'a> {
+    session: Option<String>,
+    edits: Vec<ConfigEdit<'a>>,
+}
+
+/// One deferred [`ServerConfig`] edit.
+type ConfigEdit<'a> = Box<dyn FnOnce(&mut ServerConfig) + 'a>;
+
+impl<'a> ServerBuilder<'a> {
+    /// Pre-seed session `name` (without a PTY unless [`Self::pty`] or
+    /// [`Self::seed`] says otherwise).
+    pub fn session(self, name: &str) -> Self {
+        self.maybe_session(Some(name))
+    }
+
+    /// [`Self::session`] when `name` is `Some`.
+    pub fn maybe_session(mut self, name: Option<&str>) -> Self {
+        self.session = name.map(str::to_owned);
+        self
+    }
+
+    /// Run panes (seed and attach-create) on real PTYs, with no override
+    /// command, so a wire `CREATE_SESSION { command }` decides what runs.
+    pub fn pty(self) -> Self {
+        self.configure(|cfg| cfg.seed_with_pty = true)
+    }
+
+    /// Seed panes with a real PTY running `cmd`.
+    pub fn seed(self, cmd: LaunchCommand) -> Self {
+        self.configure(|cfg| seed_pty(cfg, cmd))
+    }
+
+    /// Decide every HELLO with `engine` (ADR-0072).
+    pub fn policy(self, engine: Arc<dyn PolicyEngine>) -> Self {
+        self.configure(|cfg| cfg.policy_engine = Some(engine))
+    }
+
+    /// Edit the [`ServerConfig`] directly.
+    pub fn configure(mut self, edit: impl FnOnce(&mut ServerConfig) + 'a) -> Self {
+        self.edits.push(Box::new(edit));
+        self
+    }
+
+    /// Serve on `phux.sock` in a fresh temp dir.
+    pub fn start(self) -> SpawnedServer {
+        self.start_in(TempDir::new().unwrap())
+    }
+
+    /// Serve on `phux.sock` in `tmp`, which the caller may have populated.
+    pub fn start_in(self, tmp: TempDir) -> SpawnedServer {
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = self.spawn_at(socket.clone());
+        SpawnedServer {
+            tmp,
+            socket,
+            shutdown,
+            server,
+        }
+    }
+
+    /// Serve on `socket_path`, which the caller owns (a short path, or one
+    /// beside other fixtures). Returns the shutdown sender and join handle.
+    ///
+    /// Spawns on the current `LocalSet` (ADR-0014: pane actors are `!Send`,
+    /// so call from inside [`crate::run_local`]).
+    pub fn spawn_at(self, socket_path: PathBuf) -> ServerHandles {
+        let mut cfg = ServerConfig {
+            socket_path,
+            pre_seeded_session: self.session,
+            seed_with_pty: false,
+            seed_command: None,
+            ..ServerConfig::with_default_socket()
+        };
+        for edit in self.edits {
+            edit(&mut cfg);
+        }
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::task::spawn_local(async move {
+            terminal_server(cfg)
+                .run_async(async move {
+                    let _ = rx.await;
+                })
+                .await
+        });
+        (tx, handle)
+    }
+}
+
 /// Spawn a [`ServerRuntime`] on the current `LocalSet` (ADR-0014: pane actors
 /// are `!Send`, so call from inside [`crate::run_local`]), optionally pre-seeding a
 /// session without a PTY. Returns the shutdown sender and join handle.
 pub fn spawn_server(socket_path: PathBuf, pre_seeded: Option<&str>) -> ServerHandles {
-    spawn_server_with(socket_path, pre_seeded, |_| {})
+    SpawnedServer::builder()
+        .maybe_session(pre_seeded)
+        .spawn_at(socket_path)
 }
 
 /// Like [`spawn_server`] but lets the caller edit the [`ServerConfig`] first.
-pub fn spawn_server_with(
+pub fn spawn_server_with<'a>(
     socket_path: PathBuf,
     pre_seeded: Option<&str>,
-    configure: impl FnOnce(&mut ServerConfig),
+    configure: impl FnOnce(&mut ServerConfig) + 'a,
 ) -> ServerHandles {
-    let (tx, rx) = oneshot::channel::<()>();
-    let mut cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: pre_seeded.map(str::to_owned),
-        seed_with_pty: false,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    configure(&mut cfg);
-    let handle = tokio::task::spawn_local(async move {
-        terminal_server(cfg)
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+    SpawnedServer::builder()
+        .maybe_session(pre_seeded)
+        .configure(configure)
+        .spawn_at(socket_path)
 }
 
 /// Pre-seed `pre_seeded` with a PTY-backed pane running `cmd`.
@@ -54,7 +140,10 @@ pub fn spawn_server_with_seed_cmd(
     pre_seeded: &str,
     cmd: LaunchCommand,
 ) -> ServerHandles {
-    spawn_server_with(socket_path, Some(pre_seeded), |cfg| seed_pty(cfg, cmd))
+    SpawnedServer::builder()
+        .session(pre_seeded)
+        .seed(cmd)
+        .spawn_at(socket_path)
 }
 
 /// Explicit test composition with the production Terminal implementation.
@@ -74,7 +163,22 @@ pub fn spawn_server_seed_pty_no_cmd(
     socket_path: PathBuf,
     pre_seeded: Option<&str>,
 ) -> ServerHandles {
-    spawn_server_with(socket_path, pre_seeded, |cfg| cfg.seed_with_pty = true)
+    SpawnedServer::builder()
+        .maybe_session(pre_seeded)
+        .pty()
+        .spawn_at(socket_path)
+}
+
+/// `/bin/sh -c script`, as a seed or launch command.
+pub fn sh(script: &str) -> LaunchCommand {
+    let mut cmd = LaunchCommand::new("/bin/sh");
+    cmd.args(["-c", script]);
+    cmd
+}
+
+/// Whether `hay` holds `needle` anywhere, as accumulated wire bytes.
+pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|window| window == needle)
 }
 
 /// A `/bin/sh -c` body that ignores `SIGHUP`, so only a pane kill's
@@ -98,40 +202,50 @@ pub struct SpawnedServer {
 }
 
 impl SpawnedServer {
+    /// Compose a server option by option.
+    pub fn builder<'a>() -> ServerBuilder<'a> {
+        ServerBuilder {
+            session: None,
+            edits: Vec::new(),
+        }
+    }
+
     /// Start a server, optionally pre-seeding session `pre_seeded`.
-    pub fn start(pre_seeded: Option<&str>, configure: impl FnOnce(&mut ServerConfig)) -> Self {
-        Self::start_in(TempDir::new().unwrap(), pre_seeded, configure)
+    pub fn start<'a>(
+        pre_seeded: Option<&str>,
+        configure: impl FnOnce(&mut ServerConfig) + 'a,
+    ) -> Self {
+        Self::builder()
+            .maybe_session(pre_seeded)
+            .configure(configure)
+            .start()
     }
 
     /// [`Self::start`] in `tmp`, which the caller may have populated.
-    pub fn start_in(
+    pub fn start_in<'a>(
         tmp: TempDir,
         pre_seeded: Option<&str>,
-        configure: impl FnOnce(&mut ServerConfig),
+        configure: impl FnOnce(&mut ServerConfig) + 'a,
     ) -> Self {
-        let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server_with(socket.clone(), pre_seeded, configure);
-        Self {
-            tmp,
-            socket,
-            shutdown,
-            server,
-        }
+        Self::builder()
+            .maybe_session(pre_seeded)
+            .configure(configure)
+            .start_in(tmp)
     }
 
     /// A server whose panes (seed and attach-create) run on real PTYs.
     pub fn pty(pre_seeded: Option<&str>) -> Self {
-        Self::start(pre_seeded, |cfg| cfg.seed_with_pty = true)
+        Self::builder().maybe_session(pre_seeded).pty().start()
     }
 
     /// Pre-seed `session` with a PTY-backed pane running `cmd`.
     pub fn seeded(session: &str, cmd: LaunchCommand) -> Self {
-        Self::start(Some(session), |cfg| seed_pty(cfg, cmd))
+        Self::builder().session(session).seed(cmd).start()
     }
 
     /// [`Self::seeded`] in `tmp`, which the caller may have populated.
     pub fn seeded_in(tmp: TempDir, session: &str, cmd: LaunchCommand) -> Self {
-        Self::start_in(tmp, Some(session), |cfg| seed_pty(cfg, cmd))
+        Self::builder().session(session).seed(cmd).start_in(tmp)
     }
 
     /// Open another HELLO'd client against this server.

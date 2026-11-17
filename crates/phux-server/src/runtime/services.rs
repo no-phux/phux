@@ -28,7 +28,7 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
             // While a client is connected `idle_since` is `None`; re-check
             // after a full interval.
             let remaining = state.with(|s| {
-                s.idle_since().map_or(idle_limit, |since| {
+                s.lifecycle().idle_since().map_or(idle_limit, |since| {
                     idle_limit.saturating_sub(since.elapsed())
                 })
             });
@@ -39,7 +39,8 @@ pub(in crate::runtime) fn spawn_idle_exit_watchdog(
             }
             // Re-read: a client may have come and gone while we slept.
             let expired = state.with(|s| {
-                s.idle_since()
+                s.lifecycle()
+                    .idle_since()
                     .is_some_and(|since| since.elapsed() >= idle_limit)
             });
             if expired {
@@ -68,7 +69,7 @@ const ENGINE_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 /// the server holding its PTY. That includes a pane already killed, whose
 /// reply precedes the grace.
 pub(in crate::runtime) async fn drain_engines(state: &SharedState) {
-    let mut engines = state.with_mut(crate::state::ServerState::retire_engines);
+    let mut engines = state.with_mut(|s| s.resources_mut().retire_engines());
     let drained = tokio::time::timeout(ENGINE_DRAIN_TIMEOUT, async {
         while engines.join_next().await.is_some() {}
     })
@@ -191,8 +192,8 @@ pub(in crate::runtime) fn spawn_hub_links(
         return;
     };
     let relays = crate::hub::relay::HubRelays::default();
-    let ssh_program = state.with(|s| s.server_env().ssh_program());
-    let adopter = state.with(crate::state::ServerState::satellite_adopter);
+    let ssh_program = state.with(|s| s.config().server_env.clone().ssh_program());
+    let adopter = state.with(|s| s.federation().adopter());
     let bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
     let mut links = crate::hub::link::HubLinks::new(
         relays.clone(),
@@ -205,8 +206,8 @@ pub(in crate::runtime) fn spawn_hub_links(
         links.start(host, entry, state);
     }
     state.with_mut(|s| {
-        s.set_hub_relays(relays);
-        s.set_hub_links(links, source);
+        s.federation_mut().set_relays(relays);
+        s.federation_mut().set_links(links, source);
     });
 }
 
@@ -222,8 +223,8 @@ pub(in crate::runtime) fn spawn_connector_supervisors(
     let Some(tokens) = consumer_tokens else {
         return;
     };
-    let paired = state.with(crate::state::ServerState::workload_mtls_required);
-    let env = state.with(crate::state::ServerState::server_env);
+    let paired = state.with(|s| s.config().workload_mtls_required());
+    let env = state.with(|s| s.config().server_env.clone());
     let Some(inner) = connector_inner_tls(paired, &env) else {
         // Fail closed in every posture: a bridged consumer is admitted only
         // inside its end-to-end session, so the relay never reads it

@@ -1,5 +1,5 @@
 //! phux-config: the typed `config.toml` schema (`docs/config.md`),
-//! its layered loader, and the status-bar widget contract.
+//! its layered loader, and the status-bar widget specs and validators.
 //!
 //! Parse errors carry `line:col` derived from the TOML span; errors on a
 //! merged layer stack carry no position rather than a fabricated one.
@@ -11,6 +11,7 @@
 pub mod check;
 pub mod connector;
 pub mod distro;
+pub mod document;
 pub mod integration;
 pub mod keybind;
 pub mod loader;
@@ -18,7 +19,6 @@ pub mod mirror;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;
-pub mod production;
 pub mod project;
 pub mod satellite;
 pub mod scaffold;
@@ -38,6 +38,8 @@ pub mod widget;
 pub use check::{CheckReport, Fault, Finding};
 pub use connector::ConnectorConfigEntry;
 pub use mirror::MirrorConfigEntry;
+/// Kept at its old path; the guard itself lives in `phux_config_core::guard`.
+pub use phux_config_core::guard as production;
 use phux_config_core::layer;
 pub use phux_config_core::{
     ConfigError, ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, OrganizeCfg,
@@ -68,11 +70,7 @@ pub use settings::{
     Applies, CATALOG, Edit, EditOutcome, SettingKind, SettingSection, SettingSpec, SettingsSnapshot,
 };
 pub use uplink::UplinkConfigEntry;
-pub use widget::{
-    Cell, CellStyle, SessionNameWidget, SpacerWidget, StatusBar, StatusWidget, TextWidget,
-    TimeWidget, WidgetCells, WidgetContext, WidgetError, WidgetFactory, WidgetRegistry, WindowInfo,
-    WindowsWidget, row_to_string,
-};
+pub use widget::{CellStyle, WidgetError};
 
 use std::path::Path;
 

@@ -77,6 +77,12 @@ impl Harness {
         result
     }
 
+    /// Run `op` as the owner under the caller's `operation` id, so a retry
+    /// can reuse it.
+    pub fn run_op(&mut self, operation: OperationId, op: Op) -> Result<Applied, Refusal> {
+        self.run_cmd(&Actor::owner(), &Command { operation, op })
+    }
+
     pub fn run(&mut self, op: Op) -> Result<Applied, Refusal> {
         self.run_as(&Actor::owner(), op)
     }
@@ -138,6 +144,24 @@ impl Harness {
             session,
             resource,
             placement,
+        })
+    }
+
+    /// Move `resource` from `from` to `to`, pinning both sessions at their
+    /// current revisions.
+    pub fn move_resource(
+        &mut self,
+        resource: ResourceKey,
+        from: SessionKey,
+        to: SessionKey,
+    ) -> Result<Applied, Refusal> {
+        let (from_expected, to_expected) = (self.session(from).revision, self.session(to).revision);
+        self.run(Op::ResourceMove {
+            resource,
+            from,
+            from_expected,
+            to,
+            to_expected,
         })
     }
 

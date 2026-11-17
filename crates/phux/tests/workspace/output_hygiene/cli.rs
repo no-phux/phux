@@ -1,16 +1,48 @@
+/// Never dialed: the verbs below refuse `--socket` before any connect.
+const SOCKETLESS_SOCKET: &str = "/tmp/phux-output-hygiene-never-dialed.sock";
+
+/// Usage refusals: each `args` exits 2 with empty stdout and every needle
+/// on stderr.
+const USAGE_REFUSALS: &[(&[&str], &[&str])] = &[
+    // The retired cockpit command and log flags.
+    (&["cockpit"], &["cockpit"]),
+    (&["cockpit", "--json"], &["cockpit"]),
+    (&["logs", "--cockpit"], &["cockpit"]),
+    (&["logs", "--cockpit", "-f", "-n", "50"], &["cockpit"]),
+    (&["logs", "--json", "--cockpit"], &["cockpit"]),
+    // `--skill` takes a scope, never a command.
+    (&["--skill", "ls"], &["invalid value 'ls'", "quick", "terminal"]),
+    // A root `--rec` in front of a verb names the two correct spellings
+    // (the `args_conflicts_with_subcommands` replacement).
+    (
+        &["--rec", "demo.gif", "ls"],
+        &["phux attach --rec", "phux rec"],
+    ),
+    // A verb that never dials a server refuses a provided `--socket` with a
+    // one-line teaching error instead of silently ignoring it.
+    (
+        &["config", "path", "--socket", SOCKETLESS_SOCKET],
+        &["--socket", "never dials a server"],
+    ),
+    (
+        &["pair", "ls", "--socket", SOCKETLESS_SOCKET],
+        &["--socket", "never dials a server"],
+    ),
+    (
+        &["--socket", SOCKETLESS_SOCKET, "plugin", "list"],
+        &["--socket", "never dials a server"],
+    ),
+];
+
 #[test]
-fn retired_cockpit_command_and_log_flags_are_usage_errors() {
-    for args in [
-        &["cockpit"][..],
-        &["cockpit", "--json"][..],
-        &["logs", "--cockpit"][..],
-        &["logs", "--cockpit", "-f", "-n", "50"][..],
-        &["logs", "--json", "--cockpit"][..],
-    ] {
+fn usage_refusals_exit_2_with_their_teaching_message() {
+    for (args, needles) in USAGE_REFUSALS {
         let (code, stdout, stderr) = run(args);
-        assert_eq!(code, 2, "{args:?}: {stderr}");
-        assert!(stdout.is_empty(), "{args:?}: {stdout}");
-        assert!(stderr.contains("cockpit"), "{args:?}: {stderr}");
+        assert_eq!(code, 2, "`phux {}`: stderr={stderr}", args.join(" "));
+        assert!(stdout.is_empty(), "{args:?}: refusals leave stdout empty: {stdout}");
+        for needle in *needles {
+            assert!(stderr.contains(needle), "{args:?}: missing {needle:?}; got {stderr:?}");
+        }
     }
 }
 
@@ -179,17 +211,6 @@ fn skill_flag_is_clean_and_matches_the_legacy_verb() {
 }
 
 #[test]
-fn skill_flag_refuses_a_command_as_an_invalid_scope() {
-    let (code, stdout, stderr) = run(&["--skill", "ls"]);
-
-    assert_eq!(code, 2);
-    assert!(stdout.is_empty(), "stdout={stdout:?}");
-    assert!(stderr.contains("invalid value 'ls'"));
-    assert!(stderr.contains("quick"));
-    assert!(stderr.contains("terminal"));
-}
-
-#[test]
 fn capabilities_are_clean_machine_readable_and_socketless() {
     let (code, stdout, stderr) = run(&["--capabilities", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
@@ -262,31 +283,6 @@ fn socket_before_and_after_the_verb_behave_identically() {
     );
 }
 
-/// A verb that never dials a server refuses a provided `--socket` with a
-/// one-line teaching error instead of silently ignoring it.
-#[test]
-fn socketless_verb_rejects_socket_with_teaching_error() {
-    let sock = dead_socket();
-    for args in [
-        vec!["config", "path", "--socket", sock.as_str()],
-        vec!["pair", "ls", "--socket", sock.as_str()],
-        vec!["--socket", sock.as_str(), "plugin", "list"],
-    ] {
-        let (code, stdout, stderr) = run(&args);
-        assert_eq!(
-            code,
-            2,
-            "`phux {}` must refuse --socket as a usage error; stderr={stderr}",
-            args.join(" ")
-        );
-        assert!(stdout.is_empty(), "refusals leave stdout empty");
-        assert!(
-            stderr.contains("--socket") && stderr.contains("never dials a server"),
-            "the refusal must teach why; got {stderr:?}"
-        );
-    }
-}
-
 /// A scoped JSON flag placed before the verb gets a usage document whose
 /// remedy teaches the fix.
 #[test]
@@ -303,19 +299,6 @@ fn misplaced_json_before_verb_teaches_placement() {
     assert_eq!(
         doc["remedy"],
         "`--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`"
-    );
-}
-
-/// A root `--rec` in front of a verb is refused with the two correct
-/// spellings named (the `args_conflicts_with_subcommands` replacement).
-#[test]
-fn root_rec_before_verb_teaches_the_two_spellings() {
-    let (code, stdout, stderr) = run(&["--rec", "demo.gif", "ls"]);
-    assert_eq!(code, 2, "a root --rec before a verb is a usage error");
-    assert!(stdout.is_empty());
-    assert!(
-        stderr.contains("phux attach --rec") && stderr.contains("phux rec"),
-        "the refusal must name the attach and headless spellings; got {stderr:?}"
     );
 }
 

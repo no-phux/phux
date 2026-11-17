@@ -287,6 +287,7 @@ pub(crate) fn on_agent_record(
         (Some("blocked"), _) => return,
         (_, Some("blocked")) => {
             let asked = s
+                .idspace
                 .resource_from_wire(pane)
                 .is_some_and(|terminal| s.agent_is_asked(terminal));
             if asked {

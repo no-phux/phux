@@ -26,10 +26,10 @@ use phux_protocol::wire::info::{
     ExitFacet, ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo,
 };
 use serde_json::{Value, json};
-use tokio::net::UnixListener;
 
 use crate::cli_adapter::spawn_record;
 
+mod residue;
 mod sweep;
 
 const WORK: SessionId = SessionId::new(1);
@@ -333,9 +333,7 @@ fn golden_path(name: &str) -> PathBuf {
 /// document carried by `tools/call` (object key order is not a contract).
 async fn run(case: &Case) -> String {
     let dir = tempfile::tempdir().expect("temp dir");
-    let socket = dir.path().join("golden.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let server = tokio::spawn(testkit::serve_every(listener, case.spec));
+    let (socket, server) = testkit::spawn_serve_every(dir.path(), case.spec);
     let mut args = (case.args)();
     args["socket"] = json!(socket.to_string_lossy());
     let result = crate::tools::dispatch(case.tool, &args).await;
@@ -378,10 +376,8 @@ async fn in_process_tools_produce_the_same_documents_as_the_former_subprocess_pa
 async fn kill_under_a_partial_view_still_kills() {
     const NOTICE: &str = "satellite build-box is unreachable: link is down";
     let dir = tempfile::tempdir().expect("temp dir");
-    let socket = dir.path().join("golden.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
     let spec = || ScriptSpec::new().state(state()).degradation_notice(NOTICE);
-    let server = tokio::spawn(testkit::serve_every(listener, spec));
+    let (socket, server) = testkit::spawn_serve_every(dir.path(), spec);
     let result = crate::tools::dispatch(
         "phux_kill",
         &json!({
@@ -418,9 +414,7 @@ async fn dispatch_against(
     spec: impl Fn() -> ScriptSpec + Send + 'static,
 ) -> Result<Value, crate::tools::ToolError> {
     let dir = tempfile::tempdir().expect("temp dir");
-    let socket = dir.path().join("agent.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let server = tokio::spawn(testkit::serve_every(listener, spec));
+    let (socket, server) = testkit::spawn_serve_every(dir.path(), spec);
     args["socket"] = json!(socket.to_string_lossy());
     let result = crate::tools::dispatch(tool, &args).await;
     server.abort();

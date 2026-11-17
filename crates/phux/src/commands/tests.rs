@@ -28,7 +28,7 @@ fn refused_io() -> AttachError {
 /// behind the shared single-pane resolver, which keeps its status
 /// (ADR-0075 point 3).
 #[test]
-fn agent_resolve_refusals_share_one_code_vocabulary() {
+fn agent_resolve_exit_matches_the_refusal_unless_status_is_kept() {
     use phux_client::selector::AgentResolveError;
     let t = phux_protocol::ids::ResourceId::local(1);
     for err in [
@@ -51,11 +51,6 @@ fn agent_resolve_refusals_share_one_code_vocabulary() {
             matched: vec![],
         },
     ] {
-        assert_eq!(
-            super::targets::agent_resolve_code(&err),
-            err.code(),
-            "{err:?}"
-        );
         assert_eq!(
             super::targets::agent_resolve_exit(&err, false),
             err.exit_code()
@@ -160,7 +155,7 @@ fn attach_error_lines_name_their_cause_and_remedy() {
     ] {
         assert_eq!(lines(&err), [line]);
     }
-    let server_log = phux_server::telemetry::server_log_path();
+    let server_log = phux_config::instance::server_log_path();
     assert_eq!(
         lines(&AttachError::Disconnected),
         [

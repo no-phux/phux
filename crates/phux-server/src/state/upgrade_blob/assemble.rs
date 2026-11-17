@@ -78,8 +78,8 @@ impl ServerState {
                     window_wire,
                     desc,
                     &self.config.term,
-                    self.retained_exit(tid).map(exit_blob),
-                    self.retain_request(tid),
+                    self.retained().exit(tid).map(exit_blob),
+                    self.retained().request(tid),
                 );
                 pane.key = self.sessions.registry.resource_key(tid);
                 panes.push(pane);

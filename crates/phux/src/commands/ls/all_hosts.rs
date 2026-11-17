@@ -49,7 +49,7 @@ pub(crate) fn run_ls_all(json: bool, socket: Option<std::path::PathBuf>) -> Exit
             return json_err::emit(json, &err, 1);
         }
     };
-    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let socket = socket.unwrap_or_else(phux_config::socket::default_socket_path);
     let mut probes: Vec<HostProbe> = vec![HostProbe {
         row: host_row("local", &local_hostname(), HostKind::Local, None),
         target: Ok(ServerTarget::local(&socket)),

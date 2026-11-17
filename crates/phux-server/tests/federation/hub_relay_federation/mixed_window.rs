@@ -369,10 +369,7 @@ async fn assert_degraded(
         &get_screen_via_hub(hub, 400, b.clone()).await,
         ErrorCode::SatelliteUnreachable,
     );
-    let (result, errors) = get_state_via_hub(hub, 401).await;
-    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-        panic!("aggregated GET_STATE must never fail, got {result:?}");
-    };
+    let (snapshot, errors) = state_via_hub(hub, 401).await;
     let listed = |id: &ResourceId| snapshot.resources.iter().any(|p| &p.id == id);
     assert!(listed(local) && listed(a), "the live panes stay listed");
     assert!(!listed(b), "the unreachable pane is not listed as live");
@@ -394,27 +391,12 @@ async fn kill(hub: &mut UnixStream, request_id: u32, id: &ResourceId) {
 
 /// Poll the aggregate until none of `panes` is listed.
 async fn await_all_gone(hub: &mut UnixStream, panes: &[&ResourceId]) {
-    let deadline = Instant::now() + STEP_DEADLINE;
-    let mut request_id = 900;
-    loop {
-        let (result, _) = get_state_via_hub(hub, request_id).await;
-        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-            panic!("GET_STATE failed: {result:?}");
-        };
-        let left: Vec<_> = panes
+    state_until(hub, 900, "every pane gone after kill", |snapshot| {
+        !panes
             .iter()
-            .filter(|id| snapshot.resources.iter().any(|p| &&p.id == *id))
-            .collect();
-        if left.is_empty() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "still listed after kill: {left:?}"
-        );
-        request_id += 1;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+            .any(|id| snapshot.resources.iter().any(|p| &&p.id == id))
+    })
+    .await;
 }
 
 #[test]

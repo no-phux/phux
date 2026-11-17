@@ -20,7 +20,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -44,6 +44,48 @@ pub struct ServerGuard {
     pub xdg: super::ambient::XdgDirs,
     /// Instant the child was spawned, matching the server's idle-clock origin.
     pub spawned_at: Instant,
+    /// The private home [`ServerSpawn::isolated_home`] made, if any.
+    home: Option<IsolatedHome>,
+}
+
+/// `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` under one
+/// tempdir, removed when the [`ServerGuard`] that holds it drops.
+#[derive(Debug)]
+pub struct IsolatedHome {
+    dir: tempfile::TempDir,
+}
+
+impl IsolatedHome {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("isolated home tempdir");
+        for name in ["home", "config", "state", "runtime"] {
+            std::fs::create_dir(dir.path().join(name)).expect("create isolated home directory");
+        }
+        Self { dir }
+    }
+
+    /// The tempdir holding `home`, `config`, `state` and `runtime`.
+    pub fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// The four variables, pointing into [`Self::root`].
+    pub fn env(&self) -> Vec<(&'static str, PathBuf)> {
+        let root = self.root();
+        vec![
+            ("HOME", root.join("home")),
+            ("XDG_CONFIG_HOME", root.join("config")),
+            ("XDG_STATE_HOME", root.join("state")),
+            ("XDG_RUNTIME_DIR", root.join("runtime")),
+        ]
+    }
+
+    fn xdg(&self) -> super::ambient::XdgDirs {
+        super::ambient::XdgDirs {
+            state: self.root().join("state"),
+            config: self.root().join("config"),
+        }
+    }
 }
 
 impl fmt::Debug for ServerGuard {
@@ -73,6 +115,26 @@ impl ServerGuard {
         self.process.id()
     }
 
+    /// The private home this server was started with.
+    ///
+    /// # Panics
+    ///
+    /// When the builder did not ask for [`ServerSpawn::isolated_home`].
+    pub fn isolated_home(&self) -> &IsolatedHome {
+        self.home
+            .as_ref()
+            .expect("server was started without isolated_home()")
+    }
+
+    /// The server's isolated home when it has one, then its XDG pair (which
+    /// an explicit builder `env` may have moved).
+    fn apply_env(&self, cmd: &mut Command) {
+        if let Some(home) = &self.home {
+            cmd.envs(home.env());
+        }
+        self.xdg.apply(cmd);
+    }
+
     pub fn sigkill(&mut self) {
         self.process.sigkill();
     }
@@ -92,7 +154,7 @@ impl ServerGuard {
     pub fn cmd(&self, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
-        self.xdg.apply(&mut cmd);
+        self.apply_env(&mut cmd);
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -105,7 +167,7 @@ impl ServerGuard {
     #[must_use]
     pub fn cmd_global(&self, args: &[&str]) -> Command {
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
-        self.xdg.apply(&mut cmd);
+        self.apply_env(&mut cmd);
         cmd.arg("--socket")
             .arg(&self.socket)
             .args(args)
@@ -114,12 +176,12 @@ impl ServerGuard {
     }
 
     pub fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = self.cmd(args).output().expect("run phux verb");
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        super::Out::of(&mut self.cmd(args)).into_parts()
+    }
+
+    /// Stdout of a verb that must exit 0, parsed as one JSON document.
+    pub fn json(&self, args: &[&str]) -> serde_json::Value {
+        super::Out::of(&mut self.cmd(args)).json()
     }
 
     pub fn success(&self, args: &[&str]) -> String {
@@ -165,6 +227,7 @@ pub struct ServerSpawn {
     idle_secs: String,
     env_clear: bool,
     extra_env: Vec<(OsString, OsString)>,
+    home: Option<IsolatedHome>,
 }
 
 impl ServerSpawn {
@@ -177,6 +240,7 @@ impl ServerSpawn {
             idle_secs: SERVER_IDLE_LIMIT_SECS.to_owned(),
             env_clear: false,
             extra_env: Vec::new(),
+            home: None,
         }
     }
 
@@ -196,6 +260,25 @@ impl ServerSpawn {
     pub fn idle_secs(mut self, secs: u64) -> Self {
         self.idle_secs = secs.to_string();
         self
+    }
+
+    /// Give the server, and every [`ServerGuard::cmd`], a private `HOME`,
+    /// XDG config, state and runtime dir under one tempdir the guard holds.
+    /// An explicit [`Self::env`] for any of those keys still wins.
+    #[must_use]
+    pub fn isolated_home(mut self) -> Self {
+        self.home = Some(IsolatedHome::new());
+        self
+    }
+
+    /// The private home [`Self::isolated_home`] made, for preparing config
+    /// before [`Self::start`].
+    ///
+    /// # Panics
+    ///
+    /// When [`Self::isolated_home`] was not called.
+    pub fn home(&self) -> &IsolatedHome {
+        self.home.as_ref().expect("isolated_home() before home()")
     }
 
     #[must_use]
@@ -234,7 +317,7 @@ impl ServerSpawn {
     /// `Command` (isolation tables, extra flags).
     #[must_use]
     pub fn start_with(self, configure: impl FnOnce(&mut Command)) -> ServerGuard {
-        let (mut cmd, socket, xdg) = self.into_command(configure);
+        let (mut cmd, socket, xdg, home) = self.into_command(configure);
         let child = cmd.spawn().expect("spawn phux server");
         let spawned_at = Instant::now();
         let guard = ServerGuard {
@@ -242,6 +325,7 @@ impl ServerSpawn {
             socket,
             xdg,
             spawned_at,
+            home,
         };
         wait_for_socket(&guard.socket);
         guard
@@ -252,14 +336,25 @@ impl ServerSpawn {
     fn into_command(
         self,
         configure: impl FnOnce(&mut Command),
-    ) -> (Command, PathBuf, super::ambient::XdgDirs) {
+    ) -> (
+        Command,
+        PathBuf,
+        super::ambient::XdgDirs,
+        Option<IsolatedHome>,
+    ) {
         let socket = unique_socket(&self.prefix);
-        let mut xdg = super::ambient::XdgDirs::fresh(&self.prefix);
+        let mut xdg = self.home.as_ref().map_or_else(
+            || super::ambient::XdgDirs::fresh(&self.prefix),
+            IsolatedHome::xdg,
+        );
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
         if self.env_clear {
             cmd.env_clear();
         }
         xdg.apply(&mut cmd);
+        if let Some(home) = &self.home {
+            cmd.envs(home.env());
+        }
         for (key, value) in &self.extra_env {
             cmd.env(key, value);
             if key == "XDG_STATE_HOME" {
@@ -281,7 +376,7 @@ impl ServerSpawn {
         // After configure: `env_clear` on the builder or in the closure must
         // not reopen the release check for this process or a client it spawns.
         super::ambient::disable_update_check(&mut cmd);
-        (cmd, socket, xdg)
+        (cmd, socket, xdg, self.home)
     }
 }
 
@@ -315,13 +410,12 @@ mod tests {
 
     #[test]
     fn server_spawn_keeps_the_release_check_off_after_env_clear() {
-        let (cmd, socket, _xdg) =
-            super::ServerSpawn::new("notice")
-                .env_clear()
-                .into_command(|cmd| {
-                    cmd.env_clear();
-                    cmd.env("PATH", "/usr/bin:/bin");
-                });
+        let (cmd, socket, _xdg, _home) = super::ServerSpawn::new("notice")
+            .env_clear()
+            .into_command(|cmd| {
+                cmd.env_clear();
+                cmd.env("PATH", "/usr/bin:/bin");
+            });
         let _ = std::fs::remove_file(&socket);
         let value = cmd.get_envs().find_map(|(key, value)| {
             (key == super::super::ambient::NO_UPDATE_CHECK_ENV).then_some(value)

@@ -1,9 +1,11 @@
 //! Decoding organization commands from their field-tagged bodies.
 
 use super::{Command, DecodeError, Decoder, Fields, TerminateMode, enum_byte, req};
+use crate::wire::frame::command_codec::unknown_command;
 
 /// Decode the organization command with nested tag `tag` from its
-/// field-tagged body, or `None` (reading nothing) for another tag.
+/// field-tagged body; a tag in its range that names no command is
+/// `UnknownEnumValue { field: "Command" }`.
 #[allow(
     clippy::too_many_lines,
     reason = "one arm per organization command, kept as one flat decode table"
@@ -11,7 +13,7 @@ use super::{Command, DecodeError, Decoder, Fields, TerminateMode, enum_byte, req
 pub(in crate::wire) fn decode_org_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     use crate::wire::frame::{
         COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_GET_ORGANIZATION,
         COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO, COMMAND_TAG_RESOURCE_CREATE,
@@ -20,19 +22,9 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
         COMMAND_TAG_SESSION_SET_LIFETIME,
     };
-    let after_reserved = [
-        crate::wire::frame::COMMAND_TAG_GET_CREATION,
-        crate::wire::frame::COMMAND_TAG_DELEGATE_AGENT,
-        crate::wire::frame::COMMAND_TAG_REVOKE_DELEGATION,
-        crate::wire::frame::COMMAND_TAG_SESSION_KILL,
-        crate::wire::frame::COMMAND_TAG_SESSION_SET_PROJECT,
-        crate::wire::frame::COMMAND_TAG_ARRANGEMENT_LOCK,
-    ];
-    if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag)
-        && !after_reserved.contains(&tag)
-    {
-        return Ok(None);
-    }
+    // The body is read before the tag is matched: `decode_command` routes
+    // the whole organization range here, so a freed tag in it (`0x2a`) with
+    // a malformed body fails as malformed rather than as unknown.
     let f = Fields::read_from(dec)?;
     let command = match tag {
         crate::wire::frame::COMMAND_TAG_GET_CREATION => Command::GetCreation {
@@ -152,7 +144,7 @@ pub(in crate::wire) fn decode_org_command(
             session: f.session()?,
             project: f.project,
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }

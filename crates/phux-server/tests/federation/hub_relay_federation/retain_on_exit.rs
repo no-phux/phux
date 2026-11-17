@@ -28,28 +28,6 @@ async fn spawn_via_hub(
     id
 }
 
-/// Poll the satellite's own `GET_STATE` until `ready` accepts it.
-async fn wait_for_satellite_state(
-    satellite: &mut UnixStream,
-    first_request_id: u32,
-    what: &str,
-    ready: impl Fn(&SessionSnapshot) -> bool,
-) -> SessionSnapshot {
-    let deadline = Instant::now() + STEP_DEADLINE;
-    for request_id in first_request_id.. {
-        let (result, _) = get_state_via_hub(satellite, request_id).await;
-        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-            panic!("expected state, got {result:?}");
-        };
-        if ready(&snapshot) {
-            return snapshot;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    unreachable!()
-}
-
 fn find(snapshot: &SessionSnapshot, id: u32) -> Option<&ResourceInfo> {
     let id = ResourceId::local(id);
     snapshot.resources.iter().find(|r| r.id == id)
@@ -67,7 +45,8 @@ fn a_hub_relayed_retained_spawn_is_kept_on_the_satellite_after_exit() {
         let retained = spawn_via_hub(&mut hub, 9000, "exit 7", Some(600)).await;
         let plain = spawn_via_hub(&mut hub, 9001, "exit 3", None).await;
 
-        let snapshot = wait_for_satellite_state(
+        // The satellite's own `GET_STATE`, polled.
+        let (snapshot, _) = state_until(
             &mut satellite,
             9100,
             "the retained pane to exit and the plain pane to close",

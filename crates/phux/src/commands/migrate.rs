@@ -13,10 +13,10 @@ use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_config::socket::default_socket_path;
 use phux_config::theme::ThemeSelection;
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SessionLifetime, SpawnResult};
-use phux_server::runtime::default_socket_path;
 use serde_json::{Value, json};
 
 use crate::commands::json_err::{self, CliError, codes};

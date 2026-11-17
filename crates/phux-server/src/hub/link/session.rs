@@ -226,7 +226,10 @@ pub(super) async fn run_relay_session<C: LinkConn>(
     // ADR-0127: publish what this satellite advertised for dispatch.
     if let Some(journal) = journal {
         let features = session.satellite_features();
-        journal.with_mut(|s| s.set_satellite_features(host.clone(), features));
+        journal.with_mut(|s| {
+            s.federation_mut()
+                .set_satellite_features(host.clone(), features);
+        });
     }
     session.set_operation_fence(operations.clone());
     let (mut reader, writer) = conn.into_parts();

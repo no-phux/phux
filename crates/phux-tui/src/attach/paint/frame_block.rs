@@ -57,7 +57,7 @@ impl<'a, W: Write> FrameBlock<'a, W> {
             painted: false,
         };
         // Infallible for the same reason.
-        let _ = phux_protocol::kitty_replay::write_orphaned_deletes(&mut block);
+        let _ = phux_vt::kitty_replay::write_orphaned_deletes(&mut block);
         block
     }
 

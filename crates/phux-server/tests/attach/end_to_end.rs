@@ -17,9 +17,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, command,
-    expect_protocol_error_close, join_after_shutdown, recv_typed, recv_until, run_local,
-    send_frame, spawn_server_with, wait_for_raw_socket,
+    SpawnedServer, WIRE_RECV_TIMEOUT, attach_by_name, command, expect_protocol_error_close,
+    recv_typed, recv_until, run_local, send_frame,
 };
 
 fn hello_with(minor: u16, client_caps: ClientCapabilities) -> FrameKind {
@@ -57,25 +56,9 @@ const fn synth_only(limits: BootstrapLimits) -> ClientCapabilities {
     )
 }
 
-type Running = (
-    TempDir,
-    std::path::PathBuf,
-    phux_server_testkit::ServerHandles,
-);
-
-fn server() -> Running {
-    server_with(|_| {})
-}
-
-fn server_with(configure: impl FnOnce(&mut phux_server::ServerConfig)) -> Running {
-    let tmp = TempDir::new().unwrap();
-    let socket = tmp.path().join("phux.sock");
-    let handles = spawn_server_with(socket.clone(), Some("default"), configure);
-    (tmp, socket, handles)
-}
-
-async fn raw(socket: &std::path::Path) -> UnixStream {
-    wait_for_raw_socket(socket, SOCKET_CONNECT_DEADLINE).await
+/// A server pre-seeding session `default`, with `configure` applied.
+fn server_with<'a>(configure: impl FnOnce(&mut phux_server::ServerConfig) + 'a) -> SpawnedServer {
+    SpawnedServer::start(Some("default"), configure)
 }
 
 async fn attach_default(stream: &mut UnixStream) {
@@ -87,8 +70,8 @@ async fn attach_default(stream: &mut UnixStream) {
 #[test]
 fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
     run_local(async {
-        let (_tmp, socket, (shutdown, server)) = server();
-        let mut stream = raw(&socket).await;
+        let server = server_with(|_| {});
+        let mut stream = server.connect_raw().await;
         send_frame(&mut stream, &hello()).await;
         let FrameKind::HelloOk {
             protocol_major,
@@ -117,7 +100,7 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
         assert_eq!(bootstrap_limits, BootstrapLimits::default());
         assert_eq!(server_id.len(), 16);
 
-        let mut second = raw(&socket).await;
+        let mut second = server.connect_raw().await;
         send_frame(&mut second, &hello()).await;
         assert!(matches!(
             recv_typed(&mut second).await.1,
@@ -126,7 +109,7 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
 
         // An explicit synth-only offer selects it and intersects the limits.
         let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
-        let mut synth = raw(&socket).await;
+        let mut synth = server.connect_raw().await;
         send_frame(
             &mut synth,
             &hello_with(PROTOCOL_VERSION.minor, synth_only(limits)),
@@ -143,7 +126,7 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
 
         attach_default(&mut stream).await;
         drop((stream, second, synth));
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -153,14 +136,14 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
 #[test]
 fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
     run_local(async {
-        let (_tmp, socket, (shutdown, server)) = server();
+        let server = server_with(|_| {});
         let major = PROTOCOL_VERSION.major;
         for (minor, patch) in [
             (PROTOCOL_VERSION.minor + 1, 0),
             (PROTOCOL_VERSION.minor + 40, 7),
             (PROTOCOL_VERSION.minor, PROTOCOL_VERSION.patch + 3),
         ] {
-            let mut stream = raw(&socket).await;
+            let mut stream = server.connect_raw().await;
             send_frame(
                 &mut stream,
                 &hello_at(major, minor, patch, ClientCapabilities::new()),
@@ -191,8 +174,7 @@ fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
                 "{result:?}"
             );
         }
-        join_after_shutdown(shutdown, server).await;
-        assert!(!socket.exists(), "socket unlinked after shutdown");
+        server.stop().await;
     });
 }
 
@@ -203,7 +185,7 @@ fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
 #[allow(clippy::too_many_lines, reason = "one table of handshake cases")]
 fn handshake_violations_are_fatal_with_actionable_errors() {
     run_local(async {
-        let (_tmp, socket, (shutdown, server)) = server();
+        let server = server_with(|_| {});
         let native_only = ClientCapabilities::new().with_bootstrap(
             BootstrapCapabilities::new()
                 .with_profiles(BootstrapProfileSet::with(&[
@@ -299,7 +281,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
             ),
         ];
         for (frames, expected, fragments) in cases {
-            let mut stream = raw(&socket).await;
+            let mut stream = server.connect_raw().await;
             for frame in &frames {
                 send_frame(&mut stream, frame).await;
             }
@@ -316,7 +298,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
         }
 
         // PING is stateless before HELLO; a COMMAND is not.
-        let mut stream = raw(&socket).await;
+        let mut stream = server.connect_raw().await;
         send_frame(&mut stream, &FrameKind::Ping { nonce: 0x5eed }).await;
         assert!(matches!(
             recv_typed(&mut stream).await.1,
@@ -336,7 +318,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
         ));
         expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
 
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -345,9 +327,8 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let upload_dir = tmp.path().join("uploads");
-        let (_tmp, socket, (shutdown, server)) =
-            server_with(|cfg| cfg.env.upload_dir = Some(upload_dir.clone()));
-        let mut stream = raw(&socket).await;
+        let server = server_with(|cfg| cfg.env.upload_dir = Some(upload_dir.clone()));
+        let mut stream = server.connect_raw().await;
         send_frame(&mut stream, &hello()).await;
         recv_typed(&mut stream).await;
         send_frame(&mut stream, &attach_by_name("default")).await;
@@ -398,7 +379,7 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
         );
 
         drop(stream);
-        join_after_shutdown(shutdown, server).await;
+        server.stop().await;
     });
 }
 
@@ -408,23 +389,22 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
 #[test]
 fn server_survives_mid_frame_disconnect_and_shuts_down_with_live_clients() {
     run_local(async {
-        let (_tmp, socket, (shutdown, server)) = server();
+        let server = server_with(|_| {});
 
-        let mut partial = raw(&socket).await;
+        let mut partial = server.connect_raw().await;
         partial.write_all(&64u32.to_be_bytes()).await.unwrap();
         let _ = AsyncWriteExt::shutdown(&mut partial).await;
         drop(partial);
 
         let mut live = Vec::new();
         for _ in 0..2 {
-            let mut client = raw(&socket).await;
+            let mut client = server.connect_raw().await;
             send_frame(&mut client, &hello()).await;
             recv_typed(&mut client).await;
             attach_default(&mut client).await;
             live.push(client);
         }
-        join_after_shutdown(shutdown, server).await;
-        assert!(!socket.exists(), "socket unlinked after shutdown");
+        server.stop().await;
         drop(live);
     });
 }

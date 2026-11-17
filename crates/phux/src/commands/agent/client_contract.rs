@@ -13,8 +13,9 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, EventStamp};
 use serde_json::Value;
 
-use super::detect::infer_agent_state;
-use super::model::{PaneEvidence, SessionEvidence};
+use phux_client::agent::detect::{
+    PaneEvidence, SessionEvidence, agents_document, infer_agent_state,
+};
 
 const PAGE: &str = include_str!("../../../../../docs/build-a-client.md");
 
@@ -92,7 +93,7 @@ fn agent_list_matches_the_page() {
     });
     let mut report = infer_agent_state(&evidence, &[]);
     report.set_address(Some(Ok("%reviewer".to_owned())));
-    assert_documented("agent-list", &super::agents_document(&[report]));
+    assert_documented("agent-list", &agents_document(&[report]));
 }
 
 #[test]

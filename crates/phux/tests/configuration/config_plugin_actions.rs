@@ -48,17 +48,14 @@ fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
         .parent()
         .expect("fixture xdg has a parent")
         .join("state");
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", xdg)
-        .env("XDG_STATE_HOME", state)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    crate::common::phux_in(
+        [
+            ("XDG_CONFIG_HOME", xdg),
+            ("XDG_STATE_HOME", state.as_path()),
+        ],
+        args,
     )
+    .into_parts()
 }
 
 #[test]

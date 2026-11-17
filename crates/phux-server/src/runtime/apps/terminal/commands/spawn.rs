@@ -66,9 +66,9 @@ pub(in crate::runtime) fn register_pty_command(
     cmd: &mut phux_terminal_api::launch::LaunchCommand,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
-    let wire = s.intern_resource_wire(terminal);
+    let wire = s.idspace.intern_resource(terminal);
     phux_terminal_api::launch::apply_terminal_id(cmd, &wire);
-    phux_terminal_api::launch::apply_server_socket(cmd, s.server_socket_path());
+    phux_terminal_api::launch::apply_server_socket(cmd, s.config().server_socket_path());
     // Only with `[forward] agent = true`: otherwise the pane keeps whatever
     // agent the server's environment names.
     if let Some(agent) = s.forward_agent().socket() {
@@ -183,9 +183,9 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
             // ADR-0124: a spawn that did not ask gets the operator's default.
             let retain = attribution
                 .retain_secs
-                .or_else(|| s.retain_policy().resolve(None));
+                .or_else(|| s.config().retain.resolve(None));
             if let Some(secs) = retain {
-                s.note_retain_request(terminal, secs);
+                s.retained_mut().note_request(terminal, secs);
             }
         }
         journal_pane_spawned(s, &wire, attribution);
@@ -305,7 +305,7 @@ pub(in crate::runtime) fn exit_policy_for(
     let retained = has_pty
         && attribution
             .retain_secs
-            .or_else(|| s.retain_policy().resolve(None))
+            .or_else(|| s.config().retain.resolve(None))
             .is_some();
     if retained {
         phux_core::ExitPolicy::Retain

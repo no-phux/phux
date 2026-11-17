@@ -25,7 +25,7 @@ pub(crate) struct Request {
 }
 
 /// Run `phux organize`.
-pub(crate) fn run(request: &Request, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run_request(request: &Request, socket: Option<PathBuf>) -> ExitCode {
     let json = request.json;
     let (rt, server) = match ServerSpec::local(socket).prepare("organize", json) {
         Ok(prepared) => prepared,
@@ -212,5 +212,34 @@ async fn undo_on(conn: &mut phux_client::attach::connection::Connection, json: b
         ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Run `phux organize` as parsed: `--undo` reverts, anything else plans.
+pub(crate) fn run(args: crate::commands::OrganizeArgs, socket: Option<PathBuf>) -> ExitCode {
+    match args {
+        crate::commands::OrganizeArgs {
+            undo: true,
+            session,
+            json,
+            ..
+        } => run_undo(session.as_deref(), json, socket),
+        crate::commands::OrganizeArgs {
+            session,
+            dry_run,
+            offline,
+            min_confidence,
+            undo: false,
+            json,
+        } => run_request(
+            &Request {
+                session,
+                dry_run,
+                offline,
+                min_confidence,
+                json,
+            },
+            socket,
+        ),
     }
 }

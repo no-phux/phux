@@ -31,19 +31,16 @@ mod construct;
 mod controller;
 pub(crate) mod credentials;
 mod cwd;
-mod defaults;
 mod delegations;
 mod events;
+mod federation;
 mod hook_dispatch;
-mod hub;
-mod hub_state;
 mod id_space;
 mod journal;
 mod layout_translation;
 mod lease_table;
 mod leases;
 mod legacy_snapshot;
-mod lifecycle;
 
 static ACTIVATION_REPORT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -66,26 +63,24 @@ mod resolve;
 mod resource_table;
 mod retained;
 mod roles;
-mod satellite_spawns;
 mod session_table;
 mod sessions;
 mod snapshot;
 pub(crate) mod upgrade_blob;
 mod viewport;
-mod wire_ids;
 
 pub(crate) use app_slots::AppSlot;
 pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
-use config::ServerConfig;
+pub(crate) use config::StateConfig;
 pub use delegations::UnrestoredDelegation;
 pub use events::{
     EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
     journal_gap_frame,
 };
-use hub_state::HubState;
+pub(crate) use federation::{Federation, SatelliteLease};
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
@@ -96,7 +91,6 @@ pub use roles::RoleEffects;
 // share them without depending on each other.
 pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound};
 use lease_table::LeaseTable;
-pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
 pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
@@ -173,26 +167,24 @@ pub struct ServerState {
     /// Everything keyed on a live pane (handles, tokens, actor `JoinSet`,
     /// subscriptions, output pumps); see [`resource_table`].
     resources: ResourceTable,
-    /// Local and satellite input-lease ledgers (ADR-0033, L1 §9.1),
-    /// released together on detach; see [`lease_table`].
+    /// The local input-lease ledger (ADR-0033), released together with the
+    /// satellite ledger in [`Federation`] on detach; see [`lease_table`].
     leases: LeaseTable,
     /// Live delegated agent credentials (ADR-0163 §5); see
     /// [`crate::delegation`].
     delegations: crate::delegation::DelegationTable,
-    /// On a hub, who spawned each satellite resource and whether another
-    /// consumer attached it since (ADR-0109).
-    satellite_spawns: satellite_spawns::SatelliteSpawnLedger,
     /// Every core-id ↔ wire-id mapping and the wire-id allocators (see
     /// [`IdSpace`]).
     pub idspace: IdSpace,
     /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
     metadata: MetadataStore,
-    /// Boot-time configuration, set before the accept loops start and never
-    /// changed; see [`config`].
-    config: ServerConfig,
-    /// Hub handles (ADR-0007); all `None` on a non-hub server. See
-    /// [`hub_state`].
-    hub: HubState,
+    /// Boot-time configuration, built before the state and never changed;
+    /// see [`config`].
+    config: StateConfig,
+    /// Hub-only state (ADR-0007): satellite table, relays, links, spawn
+    /// ledger, and satellite leases; empty on a non-hub server. See
+    /// [`federation`].
+    federation: Federation,
     /// Satellite uplinks this server keeps to hubs (ADR-0182).
     uplinks: crate::uplink::Uplinks,
     /// The ssh-agent broker (`docs/forwarding.md#ssh-agent`).
@@ -252,12 +244,6 @@ impl Default for ServerState {
 }
 
 impl ServerState {
-    /// Return this state's stable, redaction-safe process incarnation.
-    #[must_use]
-    pub const fn server_incarnation(&self) -> ServerIncarnation {
-        self.lifecycle.server_incarnation()
-    }
-
     /// The push-grant registry (ADR-0155).
     pub(crate) const fn push_grants(&self) -> &crate::push::PushGrants {
         &self.push_grants
@@ -266,6 +252,52 @@ impl ServerState {
     /// Mutable push-grant registry (ADR-0155).
     pub(crate) const fn push_grants_mut(&mut self) -> &mut crate::push::PushGrants {
         &mut self.push_grants
+    }
+
+    /// The boot-time configuration this state was built with.
+    #[must_use]
+    pub(crate) const fn config(&self) -> &StateConfig {
+        &self.config
+    }
+
+    /// Mutable configuration, for tests that vary it after construction.
+    #[cfg(test)]
+    pub(crate) const fn config_mut(&mut self) -> &mut StateConfig {
+        &mut self.config
+    }
+
+    /// Hub-only state; empty on a non-hub server.
+    #[must_use]
+    pub(crate) const fn federation(&self) -> &Federation {
+        &self.federation
+    }
+
+    /// Mutable [`Self::federation`].
+    pub(crate) const fn federation_mut(&mut self) -> &mut Federation {
+        &mut self.federation
+    }
+
+    /// The uplinks this server keeps to hubs as a satellite (ADR-0182).
+    #[must_use]
+    pub(crate) const fn uplinks(&self) -> &crate::uplink::Uplinks {
+        &self.uplinks
+    }
+
+    /// Mutable [`Self::uplinks`], to arm, start, and stop them.
+    pub(crate) const fn uplinks_mut(&mut self) -> &mut crate::uplink::Uplinks {
+        &mut self.uplinks
+    }
+
+    /// The ssh-agent broker.
+    pub(crate) const fn forward_agent(&self) -> &crate::runtime::forward::agent::Broker {
+        &self.forward_agent
+    }
+
+    /// Mutable [`Self::forward_agent`].
+    pub(crate) const fn forward_agent_mut(
+        &mut self,
+    ) -> &mut crate::runtime::forward::agent::Broker {
+        &mut self.forward_agent
     }
 
     /// The shared operation dedupe record. Cloning the handle shares it.
@@ -316,6 +348,17 @@ impl SharedState {
             reason = "single-threaded current-thread runtime; Mutex+Arc safety not required"
         )]
         let state = Arc::new(Mutex::new(ServerState::new()));
+        Self(state)
+    }
+
+    /// Wrap a fresh [`ServerState`] built with `config`.
+    #[must_use]
+    pub(crate) fn with_config(config: StateConfig) -> Self {
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "single-threaded current-thread runtime; Mutex+Arc safety not required"
+        )]
+        let state = Arc::new(Mutex::new(ServerState::with_config(config)));
         Self(state)
     }
 

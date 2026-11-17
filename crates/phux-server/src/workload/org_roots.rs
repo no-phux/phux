@@ -15,7 +15,7 @@ use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
 use super::WorkloadError;
-use super::store::{self, FileRole, Stamp};
+use crate::secure_file::{self, FileRole, Stamp};
 
 /// The directory beside the registry holding each organization's roots.
 const ORG_ROOTS_DIR: &str = "workload-org-roots";
@@ -34,16 +34,18 @@ pub(super) fn replace_org_roots(
     registry: &Path,
     org: &str,
     pem: &str,
-    held: &store::HeldLock<'_>,
+    held: &secure_file::HeldLock<'_>,
 ) -> Result<(), WorkloadError> {
     let path = org_roots_dir(registry).join(format!("{org}.pem"));
-    store::open_owner_dir(&path)?;
-    let current = store::read_stable(&path, FileRole::OrgRoots)?.map(|(_, raw)| raw);
+    secure_file::open_owner_dir(&path)?;
+    let current = secure_file::read_stable(&path, FileRole::OrgRoots)?.map(|(_, raw)| raw);
     match current {
         Some(_) if pem.is_empty() => fs::remove_file(&path)?,
         None if pem.is_empty() => {}
         Some(raw) if raw == pem.as_bytes() => {}
-        _ => store::atomic_replace(&path, pem.as_bytes(), held)?,
+        _ => {
+            secure_file::atomic_replace(&path, pem.as_bytes(), held)?;
+        }
     }
     Ok(())
 }
@@ -128,7 +130,7 @@ impl OrgRoots {
                     && !name.to_string_lossy().starts_with('.')
             })
             .map(|name| {
-                let stamp = store::probe(&self.dir.join(&name), FileRole::OrgRoots)
+                let stamp = secure_file::probe(&self.dir.join(&name), FileRole::OrgRoots)
                     .ok()
                     .flatten();
                 (name, stamp)
@@ -143,7 +145,7 @@ impl OrgRoots {
     fn load(&self, observed: &Observed) -> Vec<CertificateDer<'static>> {
         let mut roots = Vec::new();
         for (name, _) in observed {
-            match store::read_stable(&self.dir.join(name), FileRole::OrgRoots) {
+            match secure_file::read_stable(&self.dir.join(name), FileRole::OrgRoots) {
                 Ok(Some((_, raw))) => roots.extend(
                     CertificateDer::pem_slice_iter(&raw)
                         .filter_map(Result::ok)

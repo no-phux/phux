@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
 use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError, image_size};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
@@ -195,7 +195,9 @@ pub(super) async fn resolve(
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     let selector = parse_selector(Some(target))?;
-    resolve_target(socket_path, &selector, verb, json).await
+    resolve_target(socket_path, &selector, verb)
+        .await
+        .map_err(|refusal| refusal.emit(json))
 }
 
 /// The pane a mirror binds to: `pane` when given, else the pane this process

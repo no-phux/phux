@@ -102,7 +102,7 @@ fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
     let (handle, mut mailbox) = RelayHandle::new(SatelliteHost::new("gpubox"));
     let relays = HubRelays::default();
     relays.insert(handle);
-    state.with_mut(|s| s.set_hub_relays(relays));
+    state.with_mut(|s| s.federation_mut().set_relays(relays));
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
     let client = ClientId(3);
     let scope = satellite_scope();
@@ -147,7 +147,7 @@ fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
 
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("scope-test"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     set(&state, &scope, "phux.test/v1", b"live");
     assert_eq!(get(&state, &scope, "phux.test/v1"), Some(b"live".to_vec()));
 
@@ -170,7 +170,7 @@ fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
 #[test]
 fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {
     let state = SharedState::new();
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(|s| s.config().metadata_value_bytes) as usize;
     set(
         &state,
         &Scope::Global,
@@ -227,7 +227,7 @@ fn clients_cannot_forge_server_owned_or_reserved_keys() {
     assert!(get(&state, &Scope::Global, &reserved_key).is_none());
 
     let (_session, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let key = phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
     let authoritative = br#"{"foreground":"zsh","is_pane_shell":true}"#.to_vec();
     state.with_mut(|s| s.metadata_set(&scope, key, authoritative.clone()));
@@ -249,7 +249,7 @@ fn controller_record_follows_the_typing_connection() {
     let key = phux_protocol::wire::frame::RESOURCE_CONTROLLER_KEY;
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("typed"));
-    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
+    let wire = state.with_mut(|s| s.idspace.intern_resource(pane));
     let scope = Scope::Resource(wire.clone());
     let record = || {
         get(&state, &scope, key)
@@ -258,8 +258,9 @@ fn controller_record_follows_the_typing_connection() {
     state.with_mut(|s| {
         let mut ssh = crate::runtime::test_support::owner_peer();
         ssh.transport = TransportType::SshTunnel;
-        s.set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
-        s.set_peer_identity(ClientId(2), ssh);
+        s.clients_mut()
+            .set_peer_identity(ClientId(1), crate::runtime::test_support::owner_peer());
+        s.clients_mut().set_peer_identity(ClientId(2), ssh);
         s.set_client_name(ClientId(2), "phux-mobile".to_owned());
         s.set_client_platform(ClientId(1), None);
         s.set_client_platform(
@@ -316,7 +317,7 @@ async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
         let session_id = |state: &SharedState| {
             state.with_mut(|s| {
                 s.idspace
-                    .intern_session(s.find_session_by_name("original").expect("session"))
+                    .intern_session(s.sessions().find_by_name("original").expect("session"))
                     .get()
             })
         };
@@ -356,8 +357,8 @@ async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
                 &root_token,
             );
         }
-        assert!(state.with(|s| s.session_by_name("first").is_some()));
-        assert!(state.with(|s| s.session_by_name("collision").is_none()));
+        assert!(state.with(|s| s.sessions().by_name("first").is_some()));
+        assert!(state.with(|s| s.sessions().by_name("collision").is_none()));
         root_token.cancel();
     })
     .await;
@@ -374,7 +375,7 @@ fn explicit_agent_record_writes_fire_agent_state_changed_on_real_edges() {
         s.set_hook_dispatcher(crate::hooks::HookDispatcher::from_sender(tx));
     });
     let (_session, pane) = state.with_mut(|s| s.seed_session("hook-test"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let mut next = || rx.try_recv().ok();
     let edge = |event: &crate::hooks::HookEvent| {
         (
@@ -435,7 +436,7 @@ fn an_agent_record_over_its_byte_limit_is_refused() {
 
     let state = SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("record-cap"));
-    let scope = Scope::Resource(state.with_mut(|s| s.intern_resource_wire(pane)));
+    let scope = Scope::Resource(state.with_mut(|s| s.idspace.intern_resource(pane)));
     let record_of = |len: usize| {
         let frame = br#"{"name":"a","session":""}"#.len();
         format!(r#"{{"name":"a","session":"{}"}}"#, "x".repeat(len - frame)).into_bytes()

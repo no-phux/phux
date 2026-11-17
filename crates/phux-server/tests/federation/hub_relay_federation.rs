@@ -18,8 +18,9 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
     InputMode, Scope, SpawnError, SpawnResource, SpawnResult,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::LaunchCommand;
-use phux_server::{ServerConfig, ServerError};
+use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
     Spawn, ascii_key, assert_command_error, bound_listener_addr, encode_frame, recv_typed,
     recv_until_deadline, send_frame, spawn_resource, terminal_server, wait_for_raw_socket,
@@ -34,6 +35,8 @@ use tokio_tungstenite::tungstenite::Message;
 mod checkout;
 mod clients;
 use clients::hub_client;
+mod commands;
+use commands::{focus_gained, on_satellite, report_asked};
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
@@ -101,7 +104,6 @@ async fn spawn_satellite_runtime(
     socket_path: PathBuf,
     seed: Option<LaunchCommand>,
 ) -> (u16, oneshot::Sender<()>, ServerTask) {
-    let (tx, rx) = oneshot::channel::<()>();
     let mut cfg = ServerConfig {
         socket_path: socket_path.clone(),
         pre_seeded_session: Some("sat-session".to_owned()),
@@ -113,16 +115,18 @@ async fn spawn_satellite_runtime(
     // engine (ADR-0072) so a certificate-less hub link on loopback is
     // admitted, which no `phux server` mode does (ADR-0179).
     phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
-    let handle = tokio::task::spawn_local(async move {
-        terminal_server(cfg)
-            .listen_ws("127.0.0.1:0".parse().unwrap())
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
+    let (tx, handle) = run_runtime(terminal_server(cfg).listen_ws("127.0.0.1:0".parse().unwrap()));
     let ws_addr = bound_listener_addr(&socket_path, RemoteListenerTransport::Wss).await;
     (ws_addr.port(), tx, handle)
+}
+
+/// Run `runtime` on the local set until the returned sender drops.
+fn run_runtime(runtime: ServerRuntime) -> (oneshot::Sender<()>, ServerTask) {
+    let (tx, rx) = oneshot::channel::<()>();
+    let task = tokio::task::spawn_local(runtime.run_async(async move {
+        let _ = rx.await;
+    }));
+    (tx, task)
 }
 
 async fn spawn_satellite(socket_path: PathBuf) -> (u16, oneshot::Sender<()>, ServerTask) {
@@ -149,7 +153,6 @@ fn spawn_hub_with_env(
     pre_seeded_session: Option<&str>,
     env: phux_server::ServerEnv,
 ) -> (oneshot::Sender<()>, ServerTask) {
-    let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
         socket_path,
         pre_seeded_session: pre_seeded_session.map(str::to_owned),
@@ -158,15 +161,7 @@ fn spawn_hub_with_env(
         env,
         ..ServerConfig::with_default_socket()
     };
-    let handle = tokio::task::spawn_local(async move {
-        terminal_server(cfg)
-            .hub(satellites)
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+    run_runtime(terminal_server(cfg).hub(satellites))
 }
 
 fn spawn_hub(
@@ -393,15 +388,38 @@ async fn get_state_via_hub(
     (result, errors)
 }
 
-fn on_satellite(host: &str, spawn: Spawn) -> Spawn {
-    Spawn {
-        satellite: Some(SatelliteHost::new(host)),
-        ..spawn
-    }
+/// [`get_state_via_hub`], which must answer a snapshot.
+async fn state_via_hub(
+    hub: &mut UnixStream,
+    request_id: u32,
+) -> (SessionSnapshot, Vec<(ErrorCode, String)>) {
+    let (result, errors) = get_state_via_hub(hub, request_id).await;
+    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+        panic!("GET_STATE must never fail, got {result:?}");
+    };
+    (snapshot, errors)
 }
 
-const fn focus_gained(terminal_id: ResourceId) -> Command {
-    phux_server_testkit::route_input(terminal_id, InputEvent::Focus(FocusEvent::Gained))
+/// Poll [`state_via_hub`] from `first_request_id` until `ready` accepts it.
+async fn state_until(
+    stream: &mut UnixStream,
+    first_request_id: u32,
+    what: &str,
+    ready: impl Fn(&SessionSnapshot) -> bool,
+) -> (SessionSnapshot, Vec<(ErrorCode, String)>) {
+    let deadline = Instant::now() + STEP_DEADLINE;
+    for request_id in first_request_id.. {
+        let (snapshot, errors) = state_via_hub(stream, request_id).await;
+        if ready(&snapshot) {
+            return (snapshot, errors);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {snapshot:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    unreachable!()
 }
 
 /// Wait for the next `EVENT` accepted by `pred`.
@@ -502,10 +520,7 @@ fn satellite_targeted_spawn_round_trips_and_routes() {
             get_screen_via_hub(&mut hub, 6000, spawned_id.clone()).await,
             CommandResult::OkWith(CommandValue::Json(ref json)) if json.contains("\"cols\"")
         ));
-        let (result, _) = get_state_via_hub(&mut hub, 6001).await;
-        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-            panic!("GET_STATE must succeed, got {result:?}");
-        };
+        let (snapshot, _) = state_via_hub(&mut hub, 6001).await;
         assert!(snapshot.resources.iter().any(|p| p.id == spawned_id));
 
         let unknown =
@@ -644,20 +659,10 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         let sat_id = ResourceId::satellite("sat", discover_satellite_pane(ws_port).await);
         let mut hub = hub_client(&tmp.path().join("hub.sock")).await;
 
-        let deadline = Instant::now() + STEP_DEADLINE;
-        let mut request_id = 4000;
-        let (snapshot, errors) = loop {
-            let (result, errors) = get_state_via_hub(&mut hub, request_id).await;
-            let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-                panic!("aggregated GET_STATE must never fail, got {result:?}");
-            };
-            if snapshot.resources.iter().any(|p| p.id == sat_id) {
-                break (snapshot, errors);
-            }
-            assert!(Instant::now() < deadline, "{snapshot:?}");
-            request_id += 1;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        let (snapshot, errors) = state_until(&mut hub, 4000, "the satellite pane", |s| {
+            s.resources.iter().any(|p| p.id == sat_id)
+        })
+        .await;
 
         assert!(
             snapshot
@@ -1035,20 +1040,10 @@ fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
         let hub_pane = fed.sat_id();
         let hub_session = ResourceId::satellite("sat", sat_session);
         let mut hub = fed.hub().await;
-        let deadline = Instant::now() + STEP_DEADLINE;
-        let mut request_id = 4000;
-        let snapshot = loop {
-            let (result, _) = get_state_via_hub(&mut hub, request_id).await;
-            let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
-                panic!("aggregated GET_STATE must never fail, got {result:?}");
-            };
-            if snapshot.resources.iter().any(|pane| pane.id == hub_session) {
-                break snapshot;
-            }
-            assert!(Instant::now() < deadline, "{snapshot:?}");
-            request_id += 1;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        let (snapshot, _) = state_until(&mut hub, 4000, "the satellite session", |s| {
+            s.resources.iter().any(|pane| pane.id == hub_session)
+        })
+        .await;
 
         let find = |id: &ResourceId| {
             snapshot

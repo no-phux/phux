@@ -713,9 +713,7 @@ mod deadline_tests {
     #[tokio::test]
     async fn a_peer_that_never_answers_hello_ends_the_wait_on_time() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("silent.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let peer = tokio::spawn(testkit::hold_silent(listener));
+        let (socket, peer) = testkit::spawn_hold_silent(dir.path());
 
         let (result, elapsed) = wait_for(&socket, BUDGET, "never printed").await;
         assert_timed_out_on_time(&result, elapsed);
@@ -725,11 +723,8 @@ mod deadline_tests {
     #[tokio::test]
     async fn a_peer_that_never_answers_get_screen_ends_the_wait_on_time() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("wedged.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let peer = tokio::spawn(testkit::serve_every(listener, || {
-            ScriptSpec::new().wedge_screen_reads()
-        }));
+        let (socket, peer) =
+            testkit::spawn_serve_every(dir.path(), || ScriptSpec::new().wedge_screen_reads());
 
         let (result, elapsed) = wait_for(&socket, BUDGET, "never printed").await;
         assert_timed_out_on_time(&result, elapsed);
@@ -745,12 +740,9 @@ mod deadline_tests {
             ("still building", WaitOutcome::TimedOut),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let socket = dir.path().join("zero.sock");
-            let listener = UnixListener::bind(&socket).expect("bind");
             let screen = showing(text);
-            let peer = tokio::spawn(testkit::serve_every(listener, move || {
-                ScriptSpec::new().screen(&screen)
-            }));
+            let (socket, peer) =
+                testkit::spawn_serve_every(dir.path(), move || ScriptSpec::new().screen(&screen));
 
             let (result, elapsed) = wait_for(&socket, Duration::ZERO, "READY").await;
             assert_eq!(result.outcome, outcome, "{text}");

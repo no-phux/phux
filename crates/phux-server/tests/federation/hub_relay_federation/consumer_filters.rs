@@ -57,13 +57,11 @@ fn hub_consumers_with_different_filters_each_receive_exactly_their_set() {
             CommandResult::Ok
         );
 
-        let ask = Command::ReportAsked {
-            terminal_id: sat_id.clone(),
-            id: "for-the-unfiltered".to_owned(),
-            question: "only one consumer admits this?".to_owned(),
-            suggestions: Vec::new(),
-            elapsed_seconds: None,
-        };
+        let ask = report_asked(
+            &sat_id,
+            "for-the-unfiltered",
+            "only one consumer admits this?",
+        );
         let (result, before) = command_via_hub(&mut unfiltered, 2, ask).await;
         assert_eq!(result, CommandResult::Ok);
         if !events(&before).any(is_asked) {

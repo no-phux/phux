@@ -52,16 +52,11 @@ async fn search(socket: &mut UnixStream, id: u32, root: &str, host: &str) -> Pat
 #[test]
 fn satellite_search_remaps_correlation_and_refuses_unknown_hosts() {
     phux_server_testkit::run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let tree = tmp.path().join("sat-tree");
+        let fed = Fed::boot().await;
+        let tree = fed.tmp.path().join("sat-tree");
         std::fs::create_dir_all(tree.join("nested")).unwrap();
         std::fs::write(tree.join("nested/file name.txt"), "test").unwrap();
-        let (port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
-        let (hub_shutdown, hub_task) = spawn_hub(
-            tmp.path().join("hub.sock"),
-            vec![satellite_entry("sat", port)],
-        );
-        let mut hub = connect(&tmp.path().join("hub.sock")).await;
+        let mut hub = connect(&fed.hub_path()).await;
         let root = tree.to_str().unwrap();
         let deadline = Instant::now() + STEP_DEADLINE;
         let mut id = 20;
@@ -86,9 +81,6 @@ fn satellite_search_remaps_correlation_and_refuses_unknown_hosts() {
         assert_eq!(missing.code, PathErrorCode::Other);
         assert!(missing.message.contains("ghost"));
         drop(hub);
-        drop(hub_shutdown);
-        hub_task.await.unwrap().unwrap();
-        drop(sat_shutdown);
-        sat_task.await.unwrap().unwrap();
+        fed.shutdown().await;
     });
 }

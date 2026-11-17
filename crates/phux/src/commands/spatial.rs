@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::spatial::{SpatialError, SpatialOp, SpatialOutcome};
-use phux_server::runtime::default_socket_path;
+use phux_config::socket::default_socket_path;
 
 use crate::commands::json_err::{self, CliError};
 use crate::commands::{SpawnSplit, cli_runtime};
@@ -158,6 +158,86 @@ fn print_success(json: bool, outcome: &SpatialOutcome) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     crate::output::json(&outcome.document)
+}
+
+/// Run `phux insert-pane` as parsed.
+pub(crate) fn insert_pane(
+    args: crate::commands::InsertPaneArgs,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    let crate::commands::InsertPaneArgs {
+        target,
+        new_pane,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_insert_pane(
+        &target,
+        &new_pane,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux mv` as parsed.
+pub(crate) fn mv(args: crate::commands::MvArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::MvArgs {
+        source,
+        dest,
+        split,
+        ratio,
+        projection,
+        json,
+    } = args;
+    run_mv(
+        &source,
+        &dest,
+        split.into(),
+        ratio,
+        projection,
+        json,
+        socket,
+    )
+}
+
+/// Run `phux swap-pane` as parsed.
+pub(crate) fn swap_pane(args: crate::commands::SwapPaneArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::SwapPaneArgs {
+        first,
+        second,
+        projection,
+        json,
+    } = args;
+    run_swap_pane(&first, &second, projection, json, socket)
+}
+
+/// Run `phux slot` as parsed.
+pub(crate) fn slot(args: crate::commands::SlotArgs, socket: Option<PathBuf>) -> ExitCode {
+    use crate::commands::SlotAction;
+    let (operation, json) = match args.action {
+        SlotAction::Add { pane, to, json } => (SpatialOp::SlotAdd { pane, to }, json),
+        SlotAction::Out {
+            pane,
+            split,
+            ratio,
+            json,
+        } => (
+            SpatialOp::SlotOut {
+                pane,
+                direction: split.into(),
+                ratio,
+            },
+            json,
+        ),
+        SlotAction::Next { pane, json } => (SpatialOp::SlotStep { pane, delta: 1 }, json),
+        SlotAction::Prev { pane, json } => (SpatialOp::SlotStep { pane, delta: -1 }, json),
+    };
+    run_slot(operation, json, socket)
 }
 
 #[cfg(test)]

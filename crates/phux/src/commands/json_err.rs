@@ -13,8 +13,9 @@
 //!
 //! Without `--json` the same failure prints the shared human error label and
 //! indented hints; message values and machine documents remain unchanged.
-//! The closed `code` vocabulary lives in
-//! [`codes`]; consumers read `docs/scripting.md#json-output-and-errors`.
+//! The document, its [`CliError`], and the closed `code` vocabulary in
+//! [`codes`] live in [`phux_client::contract`], shared with MCP; consumers
+//! read `docs/scripting.md#json-output-and-errors`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -22,67 +23,27 @@ use std::sync::Mutex;
 
 use phux_client::attach::AttachError;
 
-/// Version of the JSON error document. Additive fields do not bump it.
-pub(crate) const ERROR_SCHEMA_VERSION: u8 = 1;
+#[cfg(test)]
+pub(crate) use phux_client::contract::error_document;
+pub(crate) use phux_client::contract::{
+    ERROR_SCHEMA_VERSION, codes, error_line, transport_refusal, unreachable_socket_message,
+};
 
-/// The closed vocabulary of stable error codes. Consumers branch on these,
-/// so renaming one is a breaking change; add new codes here.
-pub(crate) mod codes;
+/// One CLI failure: the shared [`phux_client::contract::Refusal`], under the
+/// name the CLI's verbs already use.
+pub(crate) type CliError = phux_client::contract::Refusal;
 
-/// One CLI failure, carrying everything both output channels need: a stable
-/// machine `code`, the human `message`, and the `remedy` naming the way out.
-#[derive(Debug, Clone)]
-pub(crate) struct CliError {
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) remedy: String,
-    /// Why this process's auto-start of the server failed, when it tried;
-    /// emitted as `error.auto_start_error`.
-    pub(crate) auto_start_error: Option<String>,
-    /// Cold metadata stays off the common error's stack footprint.
-    context: Option<Box<ErrorContext>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ErrorContext {
-    recovery: Option<phux_client::recovery::Recovery>,
-    cause_code: Option<&'static str>,
-}
-
-impl CliError {
-    pub(crate) fn new(
-        code: &'static str,
-        message: impl Into<String>,
-        remedy: impl Into<String>,
-    ) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            remedy: remedy.into(),
-            auto_start_error: None,
-            context: None,
-        }
-    }
-}
-
-impl CliError {
-    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
-        self.context.get_or_insert_with(Box::default).recovery = Some(recovery);
-        self
-    }
-
-    pub(crate) fn with_cause_code(mut self, code: &'static str) -> Self {
-        self.context.get_or_insert_with(Box::default).cause_code = Some(code);
-        self
-    }
-}
-
-/// A verb's failure decided in one place: the error document and the status
-/// to exit with.
+/// A verb's failure decided in one place: the error document, the status
+/// to exit with, and, when the prose a human reads is not the document's
+/// message and remedy, the lines printed instead.
 #[derive(Debug)]
 pub(crate) struct Refusal {
-    pub(crate) err: CliError,
+    /// Boxed so a `Result<_, Refusal>` stays small on the happy path.
+    pub(crate) err: Box<CliError>,
     pub(crate) exit: u8,
+    /// The human rendering, first line the error and the rest hints, when it
+    /// differs from `err`. `None` prints `err` itself.
+    human: Option<Vec<String>>,
 }
 
 impl Refusal {
@@ -92,15 +53,55 @@ impl Refusal {
         remedy: impl Into<String>,
         exit: u8,
     ) -> Self {
+        Self::from_error(CliError::new(code, message, remedy), exit)
+    }
+
+    /// Refuse with an error built elsewhere.
+    pub(crate) fn from_error(err: CliError, exit: u8) -> Self {
         Self {
-            err: CliError::new(code, message, remedy),
+            err: Box::new(err),
             exit,
+            human: None,
         }
+    }
+
+    /// Print `lines` instead of the document without `--json`: the
+    /// verb-specific prose a human has always read for this failure.
+    pub(crate) fn with_human(mut self, lines: Vec<String>) -> Self {
+        self.human = Some(lines);
+        self
+    }
+
+    /// Attach what a retry needs to know to the error document.
+    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
+        self.err = Box::new(self.err.with_recovery(recovery));
+        self
+    }
+
+    /// The no-server refusal for a failed exchange with the local server at
+    /// `socket_path`: [`no_server_error`] under `--json`, the shared
+    /// no-server diagnostic otherwise, exit 1.
+    pub(crate) fn no_server(err: &AttachError, socket_path: &Path, verb: &str) -> Self {
+        Self::from_error(
+            no_server_error(err, socket_path, verb),
+            crate::exit_codes::EXIT_FAILURE,
+        )
+        .with_human(crate::commands::diagnostics::report_lines(
+            err,
+            socket_path,
+            verb,
+        ))
     }
 
     /// Report on the verb's own channels and return the exit code.
     pub(crate) fn emit(&self, json: bool) -> ExitCode {
-        emit(json, &self.err, self.exit)
+        match (&self.human, json) {
+            (Some(lines), false) => {
+                crate::output::error_block(lines.iter().map(String::as_str));
+                ExitCode::from(self.exit)
+            }
+            _ => emit(json, &self.err, self.exit),
+        }
     }
 }
 
@@ -125,42 +126,12 @@ fn auto_start_failure(socket_path: &Path) -> Option<String> {
         .map(|(_, error)| error.clone())
 }
 
-/// The JSON error document for `err`. `exit_code` is embedded because a
-/// consumer reading stderr may not see the process status.
-pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value {
-    let mut error = serde_json::json!({ "code": err.code, "message": err.message });
-    if let Some(auto_start_error) = &err.auto_start_error {
-        error["auto_start_error"] = serde_json::Value::from(auto_start_error.as_str());
-    }
-    if let Some(context) = &err.context {
-        if let Some(recovery) = &context.recovery {
-            error["recovery"] = serde_json::json!(recovery);
-        }
-        if let Some(code) = context.cause_code {
-            error["cause_code"] = serde_json::json!(code);
-        }
-    }
-    serde_json::json!({
-        "schema_version": ERROR_SCHEMA_VERSION,
-        "error": error,
-        "remedy": err.remedy,
-        "exit_code": exit_code,
-    })
-}
-
 /// Report `err` on stderr (one JSON line under `json`, prose plus indented
 /// remedy otherwise) and return the exit code. stdout is never touched.
 pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
     if json {
-        match serde_json::to_string(&error_document(err, exit_code)) {
-            // One unstyled JSON document is the stderr protocol.
-            Ok(line) => eprintln!("{line}"),
-            // A Value of strings and numbers cannot fail to serialize; the
-            // fallback keeps the failure visible rather than silent.
-            Err(_) => eprintln!(
-                "{{\"schema_version\":1,\"error\":{{\"code\":\"json_serialize\",\"message\":\"could not render JSON error\"}},\"remedy\":\"run phux doctor and report this bug\",\"exit_code\":{exit_code}}}"
-            ),
-        }
+        // One unstyled JSON document is the stderr protocol.
+        eprintln!("{}", error_line(err, exit_code));
     } else {
         error!("{}", err.message);
         if !err.remedy.is_empty() {
@@ -181,16 +152,13 @@ pub(crate) fn report_no_server(
     socket_path: &Path,
     verb: &str,
 ) -> ExitCode {
-    if !json {
-        return crate::commands::report_no_server(err, socket_path, verb);
-    }
-    emit(true, &no_server_error(err, socket_path, verb), 1)
+    Refusal::no_server(err, socket_path, verb).emit(json)
 }
 
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded
 /// by `phux status --json`.
 pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
-    let mut cli_err = connect_error(
+    let mut cli_err = transport_refusal(
         err,
         socket_path,
         verb,
@@ -209,143 +177,13 @@ pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str)
     cli_err
 }
 
-/// [`no_server_error`] before any auto-start context is added.
-fn connect_error(err: &AttachError, socket_path: &Path, verb: &str, pid: Option<i32>) -> CliError {
-    let server_log = phux_server::telemetry::server_log_path();
-    let doctor = format!(
-        "server log: {}; run `phux doctor` for a health check",
-        server_log.display()
-    );
-    match err {
-        AttachError::Io(io_err)
-            if matches!(
-                io_err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
-            ) =>
-        {
-            CliError::new(
-                codes::NO_SERVER,
-                format!("no server running at {}", socket_path.display()),
-                format!(
-                    "start one with `phux` (attaches, auto-starting a server) or `phux server`; {doctor}"
-                ),
-            )
-        }
-        AttachError::Disconnected => CliError::new(
-            codes::SERVER_DISCONNECTED,
-            format!("server closed the connection during {verb}"),
-            doctor,
-        ),
-        AttachError::Io(io_err) => CliError::new(
-            codes::TRANSPORT,
-            unreachable_socket_message(verb, io_err, socket_path),
-            doctor,
-        ),
-        // Same `transport` code as any other non-connect failure. The remedy
-        // is the old-server recovery, not a new JSON code.
-        AttachError::IncompatibleProtocol(_) => CliError::new(
-            codes::TRANSPORT,
-            format!("{verb} failed: {err}"),
-            crate::commands::diagnostics::old_server_recovery_lines(socket_path, pid).join("\n"),
-        ),
-        other => CliError::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
-    }
-}
-
-/// The sentence for a socket that exists in some form but cannot be dialed
-/// (permission denied, not a socket, a path too long for `sockaddr_un`):
-/// names the path and the OS reason, never the client's internal "attach
-/// loop" wording.
-pub(crate) fn unreachable_socket_message(
-    verb: &str,
-    io_err: &std::io::Error,
-    socket_path: &Path,
-) -> String {
-    format!(
-        "{verb}: cannot reach the server socket {}: {io_err}",
-        socket_path.display()
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn recovery_is_additive_and_never_extracted_from_message_text() {
-        use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
-        let error = super::CliError::new(
-            "session_create_failed",
-            "opaque diagnostic",
-            "inspect state",
-        )
-        .with_cause_code("outcome_unknown")
-        .with_recovery(Recovery::new(
-            ScopeKind::OrganizationAuthority,
-            Some("actual-operation".into()),
-            EffectCertainty::Unknown,
-            NextAction::Reconcile,
-        ));
-        let doc = super::error_document(&error, 1);
-        assert_eq!(doc["schema_version"], 1);
-        assert_eq!(doc["error"]["code"], "session_create_failed");
-        assert_eq!(doc["error"]["cause_code"], "outcome_unknown");
-        assert_eq!(doc["error"]["recovery"]["operation_id"], "actual-operation");
-        assert_eq!(
-            doc["error"]["recovery"]["scope"]["kind"],
-            "organization_authority"
-        );
-        assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
-    }
-
     use std::path::Path;
 
     use phux_client::attach::AttachError;
 
-    use super::{CliError, ERROR_SCHEMA_VERSION, codes, error_document, no_server_error};
-
-    /// The emit shape, pinned: `schema_version` 1, nested error object with
-    /// code and message, top-level `remedy` and `exit_code`.
-    #[test]
-    fn error_document_pins_the_contract_shape() {
-        let err = CliError::new(codes::NO_SERVER, "no server running at /tmp/x", "start one");
-        let doc = error_document(&err, 1);
-        assert_eq!(doc["schema_version"], u64::from(ERROR_SCHEMA_VERSION));
-        assert_eq!(doc["error"]["code"], "no_server");
-        assert_eq!(doc["error"]["message"], "no server running at /tmp/x");
-        assert_eq!(doc["remedy"], "start one");
-        assert_eq!(doc["exit_code"], 1);
-        // Exactly the four top-level keys; a consumer may deny-list nothing.
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
-        // The emitted form is one line.
-        let line = serde_json::to_string(&doc).unwrap_or_default();
-        assert!(!line.contains('\n'), "error line must be single-line");
-    }
-
-    /// The three attach-error arms map onto the closed vocabulary, each with
-    /// a non-empty remedy.
-    #[test]
-    fn no_server_errors_use_the_closed_vocabulary() {
-        let socket = Path::new("/tmp/phux-test.sock");
-        let refused = AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
-        let err = no_server_error(&refused, socket, "ls");
-        assert_eq!(err.code, codes::NO_SERVER);
-        assert!(err.message.contains("/tmp/phux-test.sock"));
-        assert!(err.remedy.contains("`phux server`"));
-        assert!(err.remedy.contains("phux doctor"));
-
-        let err = no_server_error(&AttachError::Disconnected, socket, "kill");
-        assert_eq!(err.code, codes::SERVER_DISCONNECTED);
-        assert!(err.message.contains("kill"));
-        assert!(!err.remedy.is_empty());
-
-        let err = no_server_error(
-            &AttachError::Refused("policy said no".to_owned()),
-            socket,
-            "tag",
-        );
-        assert_eq!(err.code, codes::TRANSPORT);
-        assert!(err.message.contains("policy said no"));
-        assert!(!err.remedy.is_empty());
-    }
+    use super::{codes, error_document, no_server_error};
 
     /// A failed auto-start for the same socket rides along on the connect
     /// error as the additive `error.auto_start_error`; another socket's does
@@ -378,114 +216,5 @@ mod tests {
 
         let gone = no_server_error(&AttachError::Disconnected, socket, "new");
         assert!(gone.auto_start_error.is_none());
-    }
-
-    /// An old-protocol server stays on the existing `transport` code. The
-    /// remedy is the stop-and-start recovery, with the pid when it is known.
-    #[test]
-    fn an_incompatible_server_keeps_transport_and_names_the_stop_recovery() {
-        let socket = Path::new("/tmp/old.sock");
-        let err = AttachError::IncompatibleProtocol(
-            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
-             update the phux server so protocol major.minor match"
-                .to_owned(),
-        );
-        let with_pid = super::connect_error(&err, socket, "ls", Some(4242));
-        assert_eq!(with_pid.code, codes::TRANSPORT);
-        assert!(
-            with_pid.message.contains("server refused the request"),
-            "{}",
-            with_pid.message
-        );
-        assert!(with_pid.remedy.contains("kill 4242"), "{}", with_pid.remedy);
-        assert!(
-            with_pid
-                .remedy
-                .contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
-            "{}",
-            with_pid.remedy
-        );
-        assert!(
-            with_pid
-                .remedy
-                .contains("phux server --ensure --socket '/tmp/old.sock'`"),
-            "{}",
-            with_pid.remedy
-        );
-        for forbidden in [
-            "stale",
-            "phux upgrade",
-            "survive",
-            "remove",
-            "pkill",
-            "killall",
-        ] {
-            assert!(
-                !with_pid.remedy.contains(forbidden),
-                "{forbidden}: {}",
-                with_pid.remedy
-            );
-            assert!(
-                !with_pid.message.contains(forbidden),
-                "{forbidden}: {}",
-                with_pid.message
-            );
-        }
-        let line = serde_json::to_string(&error_document(&with_pid, 1)).unwrap_or_default();
-        assert!(!line.contains('\n'), "error line must be single-line");
-
-        let unknown = super::connect_error(&err, socket, "ls", None);
-        assert_eq!(unknown.code, codes::TRANSPORT);
-        assert!(
-            unknown.remedy.contains("`lsof -nP -- '/tmp/old.sock'`"),
-            "{}",
-            unknown.remedy
-        );
-        assert!(!unknown.remedy.contains("`kill "), "{}", unknown.remedy);
-        for forbidden in [
-            "stale",
-            "phux upgrade",
-            "survive",
-            "remove",
-            "pkill",
-            "killall",
-        ] {
-            assert!(
-                !unknown.remedy.contains(forbidden),
-                "{forbidden}: {}",
-                unknown.remedy
-            );
-        }
-    }
-
-    /// The agent verbs' codes are part of the closed vocabulary frozen by
-    /// ADR-0071 point 6.
-    #[test]
-    fn the_agent_verb_codes_live_in_the_single_closed_vocabulary() {
-        assert_eq!(codes::NO_AGENT_RECORD, "no_agent_record");
-        assert_eq!(codes::AGENT_DEPARTED, "agent_departed");
-        assert_eq!(codes::AGENT_MISMATCH, "agent_mismatch");
-        assert_eq!(codes::INVALID_KEY_SPEC, "invalid_key_spec");
-        // Added after ADR-0071 point 6 was written.
-        assert_eq!(codes::INPUT_NOT_WRITTEN, "input_not_written");
-        assert_eq!(codes::DELIVERY_UNKNOWN, "delivery_unknown");
-    }
-
-    /// The agent session family (`agent session open|close`, `agent emit`,
-    /// `agent log`) spells its codes here, `snake_case`, so the Claude shim and
-    /// the MCP adapter branch on one vocabulary.
-    #[test]
-    fn the_agent_session_codes_live_in_the_single_closed_vocabulary() {
-        assert_eq!(codes::UNSUPPORTED_SERVER, "unsupported_server");
-        assert_eq!(codes::NO_AGENT_SESSION, "no_agent_session");
-        assert_eq!(codes::AGENT_SESSION_AMBIGUOUS, "agent_session_ambiguous");
-        assert_eq!(codes::WRONG_RESOURCE_KIND, "wrong_resource_kind");
-        assert_eq!(codes::NOT_PRODUCER, "not_producer");
-        assert_eq!(codes::RECORD_INVALID, "record_invalid");
-        assert_eq!(codes::OVERFLOW, "overflow");
-        assert_eq!(codes::PARENT_NOT_FOUND, "parent_not_found");
-        assert_eq!(codes::PARENT_KIND_MISMATCH, "parent_kind_mismatch");
-        assert_eq!(codes::AGENT_SESSION_REFUSED, "agent_session_refused");
-        assert_eq!(codes::AGENT_WITHDRAWN, "agent_withdrawn");
     }
 }

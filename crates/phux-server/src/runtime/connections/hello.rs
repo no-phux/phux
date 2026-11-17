@@ -6,8 +6,6 @@ use crate::auth::Standing;
 use crate::state::{ClientId, Outbound, SharedState};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet, QUIC_STREAMS,
@@ -191,7 +189,7 @@ pub(super) async fn negotiate_hello(
     });
     state.with_mut(|s| {
         // SPEC §6.2: the L3 arms gate on the negotiated layer set.
-        s.set_client_layers(client_id, client_caps.layers);
+        s.clients_mut().set_layers(client_id, client_caps.layers);
         // ADR-0123: an actor label, not an authenticated fact.
         s.set_client_name(client_id, client_name);
         s.set_client_platform(client_id, client_caps.platform);
@@ -205,7 +203,7 @@ pub(super) async fn negotiate_hello(
             .with_features(server_features)
             .with_features_ext(server_features_ext(state))
             .with_compression(compression),
-        server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
+        server_id: state.with(|server| server.lifecycle().server_incarnation().as_bytes().to_vec()),
         selected_profile,
         bootstrap_limits,
     };
@@ -218,7 +216,8 @@ pub(super) async fn negotiate_hello(
 /// What this server advertises: everything implemented, less what its
 /// configuration turns off.
 fn server_features_ext(state: &SharedState) -> ServerFeatureExtSet {
-    let (tcp, agent) = state.with(|s| (s.forward().tcp, s.forward_agent().socket().is_some()));
+    let (tcp, agent) =
+        state.with(|s| (s.config().forward.tcp, s.forward_agent().socket().is_some()));
     let mut features = runtime_server_features_ext();
     if !tcp {
         features = features.without(ServerFeatureExt::ForwardTcp);
@@ -271,8 +270,11 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
 /// AUTHENTICATION_FAILED }` (workload-auth §7).
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
     let identity = state.with(|s| {
-        let peer = s.peer_identity(client_id).cloned()?;
-        Some((peer, s.authenticated_credential(client_id).cloned()))
+        let peer = s.clients().peer_identity(client_id).cloned()?;
+        Some((
+            peer,
+            s.clients().authenticated_credential(client_id).cloned(),
+        ))
     });
     let Some((peer, credential)) = identity else {
         warn!(
@@ -321,7 +323,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         state.with_mut(|s| s.set_connection_grant(client_id, grant));
         return Ok(());
     }
-    let engine = state.with(|s| s.policy_engine().clone());
+    let engine = state.with(|s| s.config().policy_engine.clone());
     // workload-auth §5: the grant comes from the verified identity alone.
     match engine.authorize_hello(&peer, credential.as_ref()).await {
         Ok(grant) => {

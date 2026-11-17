@@ -16,16 +16,83 @@ pub enum Playground {
     Hive,
 }
 
+/// A playground view's row: what has the keyboard while it is open, and
+/// the Desk's ways in, out and through it.
+#[derive(Clone, Copy)]
+pub struct Scene {
+    pub playground: Playground,
+    pub modal: Modal,
+    pub toggle: fn(&mut Desk),
+    pub close: fn(&mut Desk),
+    /// Escape: lets go of a pick first, then closes.
+    pub escape: fn(&mut Desk),
+    /// Return: opens the pick.
+    pub enter: fn(&mut Desk),
+    tick: fn(&mut Desk, &mut rune::Tx) -> bool,
+}
+
 impl Playground {
-    const fn modal(self) -> Modal {
-        match self {
-            Self::Galaxy => Modal::Galaxy,
-            Self::Reef => Modal::Reef,
-            Self::Pitch => Modal::Pitch,
-            Self::Kitchen => Modal::Kitchen,
-            Self::PitLane => Modal::PitLane,
-            Self::Hive => Modal::Hive,
-        }
+    /// Every playground view, in the enum's order. A new view is one more row.
+    pub const ALL: [Scene; 6] = [
+        Scene {
+            playground: Self::Galaxy,
+            modal: Modal::Galaxy,
+            toggle: Desk::toggle_galaxy,
+            close: Desk::close_galaxy,
+            escape: Desk::close_galaxy,
+            enter: Desk::open_picked,
+            tick: Desk::tick_galaxy,
+        },
+        Scene {
+            playground: Self::Reef,
+            modal: Modal::Reef,
+            toggle: Desk::toggle_reef,
+            close: Desk::close_reef,
+            escape: Desk::reef_escape,
+            enter: Desk::open_fish,
+            tick: Desk::tick_scene::<crate::reef::Reef>,
+        },
+        Scene {
+            playground: Self::Pitch,
+            modal: Modal::Pitch,
+            toggle: Desk::toggle_pitch,
+            close: Desk::close_pitch,
+            escape: Desk::pitch_escape,
+            enter: Desk::open_player,
+            tick: Desk::tick_scene::<crate::pitch::Pitch>,
+        },
+        Scene {
+            playground: Self::Kitchen,
+            modal: Modal::Kitchen,
+            toggle: Desk::toggle_kitchen,
+            close: Desk::close_kitchen,
+            escape: Desk::kitchen_escape,
+            enter: Desk::open_chef,
+            tick: Desk::tick_scene::<crate::kitchen::Kitchen>,
+        },
+        Scene {
+            playground: Self::PitLane,
+            modal: Modal::PitLane,
+            toggle: Desk::toggle_pitlane,
+            close: Desk::close_pitlane,
+            escape: Desk::pitlane_escape,
+            enter: Desk::open_car,
+            tick: Desk::tick_scene::<crate::pitlane::PitLane>,
+        },
+        Scene {
+            playground: Self::Hive,
+            modal: Modal::Hive,
+            toggle: Desk::toggle_hive,
+            close: Desk::close_hive,
+            escape: Desk::hive_escape,
+            enter: Desk::open_bee,
+            tick: Desk::tick_scene::<crate::hive::Hive>,
+        },
+    ];
+
+    /// This view's row.
+    pub fn scene(self) -> Scene {
+        Self::ALL[self as usize]
     }
 }
 
@@ -47,11 +114,11 @@ pub enum Surface {
 }
 
 impl Surface {
-    pub(super) const fn modal(self) -> Modal {
+    pub(super) fn modal(self) -> Modal {
         match self {
             Self::PhoneNavigation => Modal::PhoneNavigation,
             Self::Inbox => Modal::Inbox,
-            Self::Playground(scene) => scene.modal(),
+            Self::Playground(scene) => scene.scene().modal,
             Self::Settings => Modal::Settings,
             Self::Machines => Modal::Machines,
             Self::News => Modal::News,
@@ -66,15 +133,8 @@ impl Surface {
 
 impl Desk {
     pub(super) fn tick_playground(&mut self, tx: &mut rune::Tx) -> bool {
-        match self.playground {
-            None => false,
-            Some(Playground::Galaxy) => self.tick_galaxy(tx),
-            Some(Playground::Reef) => self.tick_reef(tx),
-            Some(Playground::Pitch) => self.tick_pitch(tx),
-            Some(Playground::Kitchen) => self.tick_kitchen(tx),
-            Some(Playground::PitLane) => self.tick_pitlane(tx),
-            Some(Playground::Hive) => self.tick_hive(tx),
-        }
+        self.playground
+            .is_some_and(|scene| (scene.scene().tick)(self, tx))
     }
 
     /// Active surfaces in their paint order. The last one owns input; phone

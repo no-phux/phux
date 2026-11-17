@@ -1,7 +1,9 @@
 use phux_protocol::wire::frame::ControlClass;
-use phux_tree::{DocumentActor, DocumentResource as _, SnapshotRequest, TypedDocument};
 
 use super::super::*;
+use crate::runtime::apps::document::engine::{
+    DocumentActor, DocumentResource as _, PublishRequest, SnapshotRequest, TypedDocument,
+};
 
 const DOC: &[u8] = b"# before the upgrade";
 
@@ -13,7 +15,7 @@ fn old_image(
 ) -> (
     phux_protocol::ids::ResourceId,
     phux_protocol::ids::ResourceId,
-    tokio::sync::mpsc::Sender<phux_tree::PublishRequest>,
+    tokio::sync::mpsc::Sender<PublishRequest>,
 ) {
     let (_, pane) = s.seed_session("main");
     let live = crate::runtime::apps::terminal::test_support::seeded_terminal(20, 5, b"");
@@ -47,7 +49,7 @@ fn old_image(
             bundle.actor.run(),
         )
         .unwrap();
-    s.set_upgrade_context(
+    s.lifecycle_mut().set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
         RuntimeFlags::default(),
@@ -68,7 +70,7 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
             let (pane_wire, doc_wire, publish) = state.with_mut(old_image);
             let (reply, rx) = tokio::sync::oneshot::channel();
             publish
-                .send(phux_tree::PublishRequest {
+                .send(PublishRequest {
                     bytes: DOC.into(),
                     reply,
                 })
@@ -109,10 +111,10 @@ async fn upgrade_carries_documents_with_their_id_and_newest_document() {
                 })
                 .expect("rebuild");
             let (doc, snapshot) = resumed.with(|s| {
-                let doc = s.resource_from_wire(&doc_wire).expect("same `@N`");
-                let handle = s.resource_handle(doc).expect("engine");
+                let doc = s.idspace.resource_from_wire(&doc_wire).expect("same `@N`");
+                let handle = s.resources().handle(doc).expect("engine");
                 let snapshot = handle.document::<TypedDocument>().unwrap().snapshot.clone();
-                assert_eq!(handle.parent, s.resource_from_wire(&pane_wire));
+                assert_eq!(handle.parent, s.idspace.resource_from_wire(&pane_wire));
                 assert_eq!(s.resource_control(doc), Some(ControlClass::Window));
                 assert!(
                     s.resource_producer(doc).is_none(),

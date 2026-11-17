@@ -171,7 +171,7 @@ The shipping [`mission start`](./reference/cli.md#phux-mission-start) creates
 a task worktree, brief, session and configured harness worker, with a bounded
 agent cap and a revision-checked keeper commit. Queued is not launched. Its
 [CLI implementation](../crates/phux/src/commands/mission_start.rs),
-[pure launch planning](../crates/phux-mission/src/start.rs) and
+[pure launch planning](../crates/phux-work/src/mission/start.rs) and
 [keeper start transaction](../crates/phux-work/src/start.rs) own the sequence.
 
 The keeper projects each bound agent's state into the task. The binding's
@@ -205,7 +205,7 @@ open with an unsupported-schema error instead of failing on a task row
 in one of those states.
 
 The transition is pure in
-[state.rs](../crates/phux-mission/src/state.rs) and applied by
+[state.rs](../crates/phux-work/src/mission/state.rs) and applied by
 [the keeper projector](../crates/phux/src/commands/mission_project.rs).
 Journal wake-ups follow
 [ADR-0123](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0123-events-are-journaled.md)

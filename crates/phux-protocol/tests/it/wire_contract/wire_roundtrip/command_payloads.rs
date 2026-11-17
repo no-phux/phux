@@ -98,10 +98,8 @@ fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
             })],
         },
     };
-    let mut oversized_bytes = BytesMut::new();
-    oversized.encode(&mut oversized_bytes);
     assert_eq!(
-        FrameKind::decode(&oversized_bytes).unwrap_err(),
+        crate::common::decode_err(&oversized),
         DecodeError::ApplyInputLimitExceeded
     );
 }
@@ -121,11 +119,8 @@ fn command_put_file_and_ack_round_trip_with_limits() {
             sha256: Some([0x7c; 32]),
         },
     };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+    let encoded = crate::common::encode(&frame);
+    crate::common::assert_round_trip(&frame);
 
     let ack = FrameKind::CommandResult {
         request_id: 0x0a0b_0c0d,
@@ -140,7 +135,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
         .windows(16)
         .position(|window| window == [0x6b; 16])
         .expect("upload id bytes");
-    let mut zero_id = encoded.to_vec();
+    let mut zero_id = encoded;
     zero_id[id_offset..id_offset + 16].fill(0);
     assert_eq!(
         FrameKind::decode(&zero_id).unwrap_err(),
@@ -159,10 +154,8 @@ fn command_put_file_and_ack_round_trip_with_limits() {
             sha256: None,
         },
     };
-    let mut over_total_bytes = BytesMut::new();
-    over_total.encode(&mut over_total_bytes);
     assert_eq!(
-        FrameKind::decode(&over_total_bytes).unwrap_err(),
+        crate::common::decode_err(&over_total),
         DecodeError::FileUploadLimitExceeded
     );
 
@@ -178,10 +171,8 @@ fn command_put_file_and_ack_round_trip_with_limits() {
             sha256: None,
         },
     };
-    let mut over_chunk_bytes = BytesMut::new();
-    over_chunk.encode(&mut over_chunk_bytes);
     assert_eq!(
-        FrameKind::decode(&over_chunk_bytes).unwrap_err(),
+        crate::common::decode_err(&over_chunk),
         DecodeError::FileUploadLimitExceeded
     );
 }
@@ -197,11 +188,7 @@ fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
             max_bytes: 4096,
         },
     };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+    crate::common::assert_round_trip(&frame);
 
     for sha256 in [None, Some([0x7d; 32])] {
         let reply = FrameKind::CommandResult {
@@ -212,11 +199,7 @@ fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
                 sha256,
             })),
         };
-        let mut encoded = BytesMut::new();
-        reply.encode(&mut encoded);
-        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-        assert_eq!(decoded, reply);
-        assert!(tail.is_empty());
+        crate::common::assert_round_trip(&reply);
     }
 
     let over_request = FrameKind::Command {
@@ -228,10 +211,8 @@ fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
             max_bytes: u32::try_from(MAX_FILE_UPLOAD_CHUNK + 1).unwrap(),
         },
     };
-    let mut over_request_bytes = BytesMut::new();
-    over_request.encode(&mut over_request_bytes);
     assert_eq!(
-        FrameKind::decode(&over_request_bytes).unwrap_err(),
+        crate::common::decode_err(&over_request),
         DecodeError::FileUploadLimitExceeded
     );
 
@@ -243,10 +224,8 @@ fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
             sha256: None,
         })),
     };
-    let mut over_reply_bytes = BytesMut::new();
-    over_reply.encode(&mut over_reply_bytes);
     assert_eq!(
-        FrameKind::decode(&over_reply_bytes).unwrap_err(),
+        crate::common::decode_err(&over_reply),
         DecodeError::FileUploadLimitExceeded
     );
 }

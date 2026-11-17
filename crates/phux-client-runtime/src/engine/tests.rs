@@ -58,6 +58,16 @@ fn apply_batch_ok(owner: &EngineHandle, events: Vec<EngineEvent>) -> Vec<EngineO
     outcomes
 }
 
+fn output(terminal: &ResourceId, seq: u64, bytes: &[u8]) -> EngineEvent {
+    EngineEvent::Output {
+        terminal_id: terminal.clone(),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        seq,
+        bytes: bytes.to_vec().into(),
+    }
+}
+
 fn attach(owner: &EngineHandle, terminal_id: &ResourceId, bytes: &[u8]) {
     attach_many(owner, &[(terminal_id, bytes)]);
 }
@@ -88,39 +98,55 @@ fn attach_many_history(
         },
     );
     for (terminal_id, bytes) in terminals {
-        apply_ok(
-            owner,
-            EngineEvent::BootstrapBegin {
-                terminal_id: (*terminal_id).clone(),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: geometry.0,
-                rows: geometry.1,
-                base_seq: 0,
-            },
-        );
-        apply_ok(
-            owner,
-            EngineEvent::BootstrapChunk {
-                terminal_id: (*terminal_id).clone(),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                chunk_seq: 0,
-                payload: bytes.to_vec().into(),
-            },
-        );
-        apply_ok(
-            owner,
-            EngineEvent::BootstrapReady {
-                terminal_id: (*terminal_id).clone(),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                history_cursor: history_cursor.map(<[u8]>::to_vec),
-            },
-        );
+        for event in bootstrap_events(terminal_id, 1, geometry, bytes, history_cursor) {
+            apply_ok(owner, event);
+        }
     }
     apply_ok(owner, EngineEvent::AttachReady { attach_id: 7 });
+}
+
+/// A raw synthesized bootstrap of `terminal` on stream 1 as bootstrap
+/// `bootstrap_id`: begin, one chunk of `payload`, ready.
+fn bootstrap_events(
+    terminal: &ResourceId,
+    bootstrap_id: u64,
+    (cols, rows): (u16, u16),
+    payload: &[u8],
+    history_cursor: Option<&[u8]>,
+) -> [EngineEvent; 3] {
+    [
+        EngineEvent::BootstrapBegin {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols,
+            rows,
+            base_seq: 0,
+        },
+        EngineEvent::BootstrapChunk {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            chunk_seq: 0,
+            payload: payload.to_vec().into(),
+        },
+        EngineEvent::BootstrapReady {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(bootstrap_id),
+            history_cursor: history_cursor.map(<[u8]>::to_vec),
+        },
+    ]
+}
+
+/// Replace `terminal`'s 20x4 replica with bootstrap `bootstrap_id` of
+/// `payload`, outside any attach.
+#[cfg(feature = "engine")]
+fn rebootstrap(owner: &EngineHandle, terminal: &ResourceId, bootstrap_id: u64, payload: &[u8]) {
+    for event in bootstrap_events(terminal, bootstrap_id, (20, 4), payload, None) {
+        apply_ok(owner, event);
+    }
 }
 
 #[cfg(feature = "engine")]
@@ -141,16 +167,7 @@ fn a_published_replica_is_projected_and_generations_advance_on_output() {
     // Nothing applied: the generation does not move.
     assert_eq!(publication.generation(&terminal), Some(1));
 
-    apply_ok(
-        &owner,
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq: 1,
-            bytes: b"\x1b[3;1Hthird".to_vec().into(),
-        },
-    );
+    apply_ok(&owner, output(&terminal, 1, b"\x1b[3;1Hthird"));
     let second = publication.acquire(&terminal).expect("published");
     assert_eq!(second.generation, 2);
     assert_eq!(second.row_text(2), "third");
@@ -174,20 +191,8 @@ fn an_output_burst_projects_once_without_losing_event_outcomes() {
         .expect("published")
         .generation;
     let events = vec![
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq: 1,
-            bytes: b"\x1b[1;1Htop".to_vec().into(),
-        },
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq: 2,
-            bytes: b"\x1b[3;1Hthird".to_vec().into(),
-        },
+        output(&terminal, 1, b"\x1b[1;1Htop"),
+        output(&terminal, 2, b"\x1b[3;1Hthird"),
     ];
 
     let outcomes = apply_batch_ok(&owner, events);
@@ -204,17 +209,6 @@ fn an_output_burst_projects_once_without_losing_event_outcomes() {
         vec![0, 2],
         "one final projection preserves the burst's exact accumulated row damage"
     );
-}
-
-#[cfg(feature = "engine")]
-fn output(terminal: &ResourceId, seq: u64, bytes: &[u8]) -> EngineEvent {
-    EngineEvent::Output {
-        terminal_id: terminal.clone(),
-        stream_id: stream(1),
-        bootstrap_id: bootstrap(1),
-        seq,
-        bytes: bytes.to_vec().into(),
-    }
 }
 
 #[cfg(feature = "engine")]
@@ -324,22 +318,7 @@ fn a_fatal_event_stops_the_batch_before_later_terminals_mutate() {
     let second_generation = publication.generation(&second).expect("second published");
 
     let outcomes = owner
-        .apply_batch(vec![
-            EngineEvent::Output {
-                terminal_id: first,
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                seq: 2,
-                bytes: b"gap".to_vec().into(),
-            },
-            EngineEvent::Output {
-                terminal_id: second.clone(),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                seq: 1,
-                bytes: b"late".to_vec().into(),
-            },
-        ])
+        .apply_batch(vec![output(&first, 2, b"gap"), output(&second, 1, b"late")])
         .expect("owner response");
 
     assert_eq!(
@@ -373,47 +352,12 @@ fn scrolling_toward_uncached_history_emits_a_prefetch_request() {
     history_config.history = Some(HistoryCacheConfig::default());
     let owner = EngineHandle::start(&history_config, publication).expect("owner");
     let terminal = id(9);
-    apply_ok(
+    attach_many_history(
         &owner,
-        EngineEvent::AttachStarted {
-            attach_id: 7,
-            terminals: vec![terminal.clone()],
-        },
+        &[(&terminal, b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix")],
+        (20, 4),
+        Some(b"older"),
     );
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-    );
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapChunk {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            chunk_seq: 0,
-            payload: b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix"
-                .to_vec()
-                .into(),
-        },
-    );
-    apply_ok(
-        &owner,
-        EngineEvent::BootstrapReady {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            history_cursor: Some(b"older".to_vec()),
-        },
-    );
-    apply_ok(&owner, EngineEvent::AttachReady { attach_id: 7 });
     apply_ok(
         &owner,
         EngineEvent::HistoryRejected {
@@ -461,13 +405,7 @@ fn a_frame_queued_after_close_cannot_recreate_the_projection() {
         &owner,
         vec![
             EngineEvent::closed_unknown(terminal.clone()),
-            EngineEvent::Output {
-                terminal_id: terminal.clone(),
-                stream_id: stream(1),
-                bootstrap_id: bootstrap(1),
-                seq: 1,
-                bytes: b"stale".to_vec().into(),
-            },
+            output(&terminal, 1, b"stale"),
         ],
     );
 
@@ -500,16 +438,7 @@ fn the_headless_replica_keeps_bytes_until_taken() {
     attach(&owner, &terminal, b"ready");
     assert!(owner.has_projection(&terminal));
     assert_eq!(owner.take_output(&terminal), b"ready");
-    apply_ok(
-        &owner,
-        EngineEvent::Output {
-            terminal_id: terminal.clone(),
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            seq: 1,
-            bytes: b"more".to_vec().into(),
-        },
-    );
+    apply_ok(&owner, output(&terminal, 1, b"more"));
     assert_eq!(owner.take_output(&terminal), b"more");
     assert!(owner.take_output(&terminal).is_empty());
 }
@@ -556,16 +485,17 @@ fn missing_search_projection_is_typed_and_preserves_sibling_state() {
     );
 }
 
+/// Two searched terminals; once `retire` drops the first one's projection,
+/// it refuses search whichever anchor is offered and the sibling still pins.
 #[cfg(feature = "engine")]
-#[test]
-fn detached_search_projection_is_unavailable_before_anchor_lookup() {
+fn assert_retired_search_projection_unavailable(retire: fn(&EngineHandle, &ResourceId)) {
     let (owner, _) = owner();
     let terminal = id(1);
     let sibling = id(2);
     attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
     let old = owner.search(&terminal, "needle".into(), true).unwrap();
     let live = owner.search(&sibling, "needle".into(), true).unwrap();
-    assert!(owner.detach(terminal.clone()));
+    retire(&owner, &terminal);
     assert_search_projection_unavailable(&owner, &terminal, old[0].start);
     assert_search_projection_unavailable(&owner, &terminal, live[0].start);
     owner.pin_viewport(&sibling, live[0].start).unwrap();
@@ -573,17 +503,18 @@ fn detached_search_projection_is_unavailable_before_anchor_lookup() {
 
 #[cfg(feature = "engine")]
 #[test]
+fn detached_search_projection_is_unavailable_before_anchor_lookup() {
+    assert_retired_search_projection_unavailable(|owner, terminal| {
+        assert!(owner.detach(terminal.clone()));
+    });
+}
+
+#[cfg(feature = "engine")]
+#[test]
 fn non_retained_closed_search_projection_is_unavailable_before_anchor_lookup() {
-    let (owner, _) = owner();
-    let terminal = id(1);
-    let sibling = id(2);
-    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
-    let old = owner.search(&terminal, "needle".into(), true).unwrap();
-    let live = owner.search(&sibling, "needle".into(), true).unwrap();
-    apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
-    assert_search_projection_unavailable(&owner, &terminal, old[0].start);
-    assert_search_projection_unavailable(&owner, &terminal, live[0].start);
-    owner.pin_viewport(&sibling, live[0].start).unwrap();
+    assert_retired_search_projection_unavailable(|owner, terminal| {
+        apply_ok(owner, EngineEvent::closed_unknown(terminal.clone()));
+    });
 }
 
 #[cfg(feature = "engine")]

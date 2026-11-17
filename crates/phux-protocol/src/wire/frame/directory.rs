@@ -8,7 +8,7 @@
 //! [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
 
 use crate::ids::SatelliteHost;
-use crate::wire::decode::{Decoder, utf8_value};
+use crate::wire::decode::{Decoder, u8_value, u32_value, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
@@ -137,14 +137,6 @@ fn encode_listing_err(enc: &mut Encoder<'_>, error: &DirectoryListingError) {
     enc.write_field(field::directory_listing::MESSAGE, error.message.as_bytes());
 }
 
-fn read_u32(value: &[u8]) -> Result<u32, DecodeError> {
-    Decoder::new(value).read_u32_be()
-}
-
-fn read_u8(value: &[u8]) -> Result<u8, DecodeError> {
-    Decoder::new(value).read_u8()
-}
-
 /// A decoded `LIST_DIRECTORY` body: `(request_id, path, host)`.
 pub(in crate::wire) type ListDirectoryBody = (u32, String, Option<SatelliteHost>);
 
@@ -156,7 +148,7 @@ pub(in crate::wire) fn decode_list_directory(
     let mut path = String::new();
     let mut host = None;
     for_each_field!(d, value, {
-        field::list_directory::REQUEST_ID => request_id = read_u32(value)?,
+        field::list_directory::REQUEST_ID => request_id = u32_value(value)?,
         field::list_directory::PATH => path = utf8_value(value)?,
         field::list_directory::HOST => host = Some(SatelliteHost::new(utf8_value(value)?)),
     });
@@ -201,7 +193,7 @@ struct ListingFields {
 impl ListingFields {
     fn absorb(&mut self, id: u32, value: &[u8]) -> Result<(), DecodeError> {
         match id {
-            field::directory_listing::REQUEST_ID => self.request_id = read_u32(value)?,
+            field::directory_listing::REQUEST_ID => self.request_id = u32_value(value)?,
             field::directory_listing::PATH => self.path = utf8_value(value)?,
             field::directory_listing::PARENT => self.parent = Some(utf8_value(value)?),
             field::directory_listing::ENTRIES => self.entries = decode_entries(value)?,
@@ -209,7 +201,7 @@ impl ListingFields {
                 self.truncated = Decoder::new(value).read_bool("DirectoryListing.truncated")?;
             }
             field::directory_listing::ERROR => {
-                self.error = Some(DirectoryErrorCode::from_wire(read_u8(value)?));
+                self.error = Some(DirectoryErrorCode::from_wire(u8_value(value)?));
             }
             field::directory_listing::MESSAGE => self.message = utf8_value(value)?,
             _ => {}

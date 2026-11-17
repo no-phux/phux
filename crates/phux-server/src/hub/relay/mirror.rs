@@ -186,7 +186,9 @@ impl RelaySession {
         let host = self.host.clone();
         journal.with_mut(|state| {
             crate::hub::metadata_mirror::forget_mirrored_terminal(state, &host, terminal);
-            state.forget_satellite_lease_terminal(&host, terminal);
+            state
+                .federation_mut()
+                .forget_satellite_lease_terminal(&host, terminal);
         });
     }
 

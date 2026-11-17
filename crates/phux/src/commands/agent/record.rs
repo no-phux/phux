@@ -11,9 +11,9 @@ use phux_client::agent_meta::{
     AgentAttention, AgentMetaState, AgentRecord, MAX_AGENT_RECORD_BYTES,
 };
 use phux_client::attach::connection::{Answer, Connection};
+use phux_config::socket::default_socket_path;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::SessionSnapshot;
-use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::server_target::ServerTarget;

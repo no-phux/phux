@@ -5,13 +5,6 @@ use phux_client_runtime::control::Event;
 use phux_protocol::ids::OperationId;
 use phux_protocol::wire::frame::{ErrorCode, SpawnResult};
 
-fn home() -> (Arc<Client>, Runtime<Desk>) {
-    fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    )
-}
-
 fn start(rt: &mut Runtime<Desk>, client: &Client, mirror: bool) -> u32 {
     rt.state.launch.phux = Some("/dev/phux".into());
     rt.state.launch.socket = Ok("/dev/socket".into());
@@ -121,6 +114,19 @@ fn drain(rt: &mut Runtime<Desk>, client: &Client) {
     });
 }
 
+/// Whether the queued frames replace the arrangement.
+fn replaces_arrangement(client: &Client) -> bool {
+    outbound(client).iter().any(|frame| {
+        matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::ArrangementReplace { .. },
+                ..
+            }
+        )
+    })
+}
+
 fn cancelled(rt: &Runtime<Desk>, client: &Client) {
     assert!(rt.state.connection.pending_splits.is_empty());
     assert!(rt.state.connection.pending_spawns.is_empty());
@@ -135,29 +141,16 @@ fn cancelled(rt: &Runtime<Desk>, client: &Client) {
             .as_ref()
             .is_none_or(|(target, _)| *target != id(2))
     );
+    assert!(crate::test_support::notice(&rt.state).contains("Check the server’s panes"));
     assert!(
-        rt.state
-            .notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("Check the server’s panes")
-    );
-    assert!(
-        !outbound(client).iter().any(|frame| matches!(
-            frame,
-            FrameKind::Command {
-                command: Command::ArrangementReplace { .. },
-                ..
-            }
-        )),
+        !replaces_arrangement(client),
         "never arrange a reused handle from another incarnation"
     );
 }
 
 #[test]
 fn nonreplayable_mirror_failure_before_opened_settles_without_hello() {
-    let (client, mut rt) = home();
+    let (client, mut rt) = one_document();
     let request = start(&mut rt, &client, true);
     client.with_control(ControlPlane::connection_opened);
     drain(&mut rt, &client);
@@ -182,7 +175,7 @@ fn nonreplayable_mirror_failure_before_opened_settles_without_hello() {
 #[test]
 fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
     for server in [1, 2] {
-        let (client, mut rt) = home();
+        let (client, mut rt) = one_document();
         let request = start(&mut rt, &client, false);
         crate::wire_fixture::refuse(&client, request, ErrorCode::InvalidCommand, "spawn denied");
         client.with_control(ControlPlane::connection_opened);
@@ -190,14 +183,7 @@ fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
         drain(&mut rt, &client);
         assert!(rt.state.connection.pending_splits.is_empty());
         assert!(!rt.state.splits_waiting());
-        assert!(
-            rt.state
-                .notice
-                .as_ref()
-                .unwrap()
-                .text
-                .contains("spawn denied")
-        );
+        assert!(crate::test_support::notice(&rt.state).contains("spawn denied"));
     }
 }
 
@@ -205,7 +191,7 @@ fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
 fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
     for mirror in [false, true] {
         for server in [1, 2] {
-            let (client, mut rt) = home();
+            let (client, mut rt) = one_document();
             let request = start(&mut rt, &client, mirror);
             answer_spawn(&client, request);
             client.with_control(ControlPlane::connection_opened);
@@ -225,13 +211,7 @@ fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
                 rt.state.connection.resources.producers.contains_key(&id(2)),
                 mirror
             );
-            assert!(outbound(&client).iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::ArrangementReplace { .. },
-                    ..
-                }
-            )));
+            assert!(replaces_arrangement(&client));
         }
     }
 }
@@ -239,7 +219,7 @@ fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
 #[test]
 fn old_success_waits_for_fresh_hello_not_the_cached_server_identity() {
     for server in [1, 2] {
-        let (client, mut rt) = home();
+        let (client, mut rt) = one_document();
         let request = start(&mut rt, &client, false);
         answer_spawn(&client, request);
         client.with_control(ControlPlane::connection_opened);
@@ -267,7 +247,7 @@ fn old_success_waits_for_fresh_hello_not_the_cached_server_identity() {
 #[test]
 fn plain_terminal_spawn_receipt_cannot_focus_a_reused_handle() {
     for server in [1, 2] {
-        let (client, mut rt) = home();
+        let (client, mut rt) = one_document();
         outbound(&client);
         rt.update(|d, _| d.new_terminal());
         let request = rt.state.connection.pending_spawns[0];
@@ -295,7 +275,7 @@ fn plain_terminal_spawn_receipt_cannot_focus_a_reused_handle() {
 fn organization_outcomes_before_opened_settle_or_cancel_layout_correlations() {
     for server in [1, 2] {
         for success in [false, true] {
-            let (client, mut rt) = home();
+            let (client, mut rt) = one_document();
             let (operation, request_id) = pending_layout(&client, &mut rt);
             let result = if success {
                 CommandResult::Accepted { operation }
@@ -339,7 +319,7 @@ fn organization_outcomes_before_opened_settle_or_cancel_layout_correlations() {
 
 #[test]
 fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity() {
-    let (client, mut rt) = home();
+    let (client, mut rt) = one_document();
     client.with_control(ControlPlane::connection_opened);
     step(&mut rt); // no HELLO yet; the remembered server identity is stale.
     reattach(&client, 2); // the UI never observes this server's identity.
@@ -357,7 +337,7 @@ fn an_unobserved_intermediate_socket_does_not_borrow_the_previous_hello_identity
 
 #[test]
 fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
-    let (client, mut rt) = home();
+    let (client, mut rt) = one_document();
     let (operation, request_id) = pending_layout(&client, &mut rt);
     crate::wire_fixture::refuse(
         &client,
@@ -377,14 +357,7 @@ fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
             .as_ref()
             .is_none_or(|(target, _)| *target != id(2))
     );
-    assert!(
-        rt.state
-            .notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("unreadable layout reply")
-    );
+    assert!(crate::test_support::notice(&rt.state).contains("unreadable layout reply"));
     assert!(
         outbound(&client).is_empty(),
         "unknown receipt never generates a new layout operation"
@@ -393,7 +366,7 @@ fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
 
 #[test]
 fn failed_organization_outcome_settles_before_the_new_hello_without_retrying() {
-    let (client, mut rt) = home();
+    let (client, mut rt) = one_document();
     let (operation, request_id) = pending_layout(&client, &mut rt);
     crate::wire_fixture::refuse(
         &client,
@@ -405,19 +378,6 @@ fn failed_organization_outcome_settles_before_the_new_hello_without_retrying() {
     drain(&mut rt, &client);
     assert!(!rt.state.connection.layout_ops.contains(&operation));
     assert!(!rt.state.splits_waiting());
-    assert!(
-        rt.state
-            .notice
-            .as_ref()
-            .unwrap()
-            .text
-            .contains("layout denied before reconnect")
-    );
-    assert!(!outbound(&client).iter().any(|frame| matches!(
-        frame,
-        FrameKind::Command {
-            command: Command::ArrangementReplace { .. },
-            ..
-        }
-    )));
+    assert!(crate::test_support::notice(&rt.state).contains("layout denied before reconnect"));
+    assert!(!replaces_arrangement(&client));
 }

@@ -21,6 +21,18 @@ use super::{
     decode_resource_ids, decode_signal_terminal_command, decode_state_scope,
     decode_subscribe_terminal_events_command, decode_terminal_id,
 };
+use crate::wire::frame::{
+    COMMAND_TAG_AGENT_OFFER, COMMAND_TAG_AGENT_REPLY, COMMAND_TAG_ARRANGEMENT_LOCK,
+    COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_CHECKOUT, COMMAND_TAG_CREDENTIALS,
+    COMMAND_TAG_DELEGATE_AGENT, COMMAND_TAG_DESCRIBE_API, COMMAND_TAG_FORWARD_CLOSE,
+    COMMAND_TAG_FORWARD_OPEN, COMMAND_TAG_FORWARD_READ, COMMAND_TAG_FORWARD_WRITE,
+    COMMAND_TAG_GET_CREATION, COMMAND_TAG_GET_ORGANIZATION, COMMAND_TAG_HOST_CHECKLIST,
+    COMMAND_TAG_MIRROR, COMMAND_TAG_MIRROR_PROVIDE, COMMAND_TAG_NATIVE_AGENT,
+    COMMAND_TAG_PRIVACY_STATUS, COMMAND_TAG_REVOKE_DELEGATION, COMMAND_TAG_SEND_DOCUMENT_INPUT,
+    COMMAND_TAG_SERVICE_HTTP_CLOSE, COMMAND_TAG_SERVICE_HTTP_OPEN, COMMAND_TAG_SERVICE_HTTP_READ,
+    COMMAND_TAG_SESSION_KILL, COMMAND_TAG_SESSION_SET_PROJECT,
+};
+use crate::wire::info::decode_counted;
 
 pub(super) fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> {
     dec.read_record(decode_input_event_body)
@@ -37,87 +49,132 @@ pub(super) fn decode_input_event_body(dec: &mut Decoder<'_>) -> Result<InputEven
     }
 }
 
+/// Decode a `Command`: one flat dispatch from the tag byte to the decoder
+/// of the family that owns it. A tag no family owns, including a reserved or
+/// freed one, is `UnknownEnumValue { field: "Command" }`.
 pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    // Measured before the tag byte: `APPLY_INPUT`'s cap is on the whole
+    // command body.
     let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
-    if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
-        return Ok(Command::DescribeApi);
-    }
-    if tag == crate::wire::frame::COMMAND_TAG_CREDENTIALS {
-        let bytes = dec.read_bytes()?;
-        if bytes.len() > crate::credentials::MAX_CREDENTIAL_PAYLOAD {
-            return Err(DecodeError::InvalidCredentialPayload);
+    match tag {
+        COMMAND_TAG_DESCRIBE_API => Ok(Command::DescribeApi),
+        COMMAND_TAG_HOST_CHECKLIST => Ok(Command::HostChecklist),
+        COMMAND_TAG_PRIVACY_STATUS => Ok(Command::PrivacyStatus),
+        COMMAND_TAG_CREDENTIALS => decode_credentials_command(dec),
+        COMMAND_TAG_NATIVE_AGENT => decode_native_agent_command(dec),
+        COMMAND_TAG_ATTACH_RESOURCE
+        | COMMAND_TAG_DETACH_RESOURCE
+        | COMMAND_TAG_KILL_RESOURCE
+        | COMMAND_TAG_KILL_RESOURCE_IF => decode_terminal_subscription_command(tag, dec),
+        COMMAND_TAG_GET_SCREEN
+        | COMMAND_TAG_ROUTE_INPUT
+        | COMMAND_TAG_APPLY_INPUT
+        | COMMAND_TAG_GET_TERMINAL_STATE
+        | COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS
+        | COMMAND_TAG_PUT_FILE
+        | COMMAND_TAG_GET_FILE
+        | COMMAND_TAG_CHECKOUT
+        | COMMAND_TAG_TRANSCRIBE => decode_live_affordance_command(tag, dec, command_body_len),
+        COMMAND_TAG_ACQUIRE_INPUT | COMMAND_TAG_RELEASE_INPUT | COMMAND_TAG_SIGNAL_TERMINAL => {
+            decode_supervisory_command(tag, dec)
         }
-        let op: crate::credentials::CredentialOp =
-            serde_json::from_slice(bytes).map_err(|error| {
-                if crate::wire::error::names_unknown_json(&error.to_string()) {
-                    DecodeError::UnsupportedPayload {
-                        payload: "CredentialOp",
-                    }
-                } else {
-                    DecodeError::InvalidCredentialPayload
-                }
-            })?;
-        op.validate()
-            .map_err(|_| DecodeError::InvalidCredentialPayload)?;
-        return Ok(Command::Credentials { op });
-    }
-    if tag == crate::wire::frame::COMMAND_TAG_HOST_CHECKLIST {
-        return Ok(Command::HostChecklist);
-    }
-    if tag == crate::wire::frame::COMMAND_TAG_PRIVACY_STATUS {
-        return Ok(Command::PrivacyStatus);
-    }
-    if tag == crate::wire::frame::COMMAND_TAG_NATIVE_AGENT {
-        let bytes = dec.read_bytes()?;
-        if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
-            return Err(DecodeError::NativeAgentLimitExceeded);
+        COMMAND_TAG_REPORT_ASKED | COMMAND_TAG_REPORT_AGENT_STATE => {
+            decode_agent_report_command(tag, dec)
         }
-        let request =
-            crate::native_agent::NativeRequestPayload::decode(bytes).map_err(|message| {
-                if crate::wire::error::names_unknown_json(&message) {
-                    DecodeError::UnsupportedPayload {
-                        payload: "NativeRequest",
-                    }
-                } else {
-                    DecodeError::InvalidNativeAgentPayload
-                }
-            })?;
-        return Ok(Command::NativeAgent { request });
+        COMMAND_TAG_GET_STATE
+        | COMMAND_TAG_KILL_RESOURCES
+        | COMMAND_TAG_CLOSE_TAB_RESOURCES
+        | COMMAND_TAG_DETACH_CLIENTS
+        | COMMAND_TAG_UPGRADE
+        | COMMAND_TAG_SHUTDOWN
+        | COMMAND_TAG_OPEN_LISTENER
+        | COMMAND_TAG_GET_PERF
+        | COMMAND_TAG_PERF_CONTROL => decode_session_command(tag, dec),
+        COMMAND_TAG_APPEND_RESOURCE_OUTPUT
+        | COMMAND_TAG_PUBLISH_RESOURCE_STATE
+        | COMMAND_TAG_SEND_DOCUMENT_INPUT => decode_resource_command(tag, dec),
+        // The whole organization range, freed `0x2a` included: its
+        // field-tagged body is read before the tag is matched, so a freed tag
+        // with a malformed body fails as malformed.
+        COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE
+        | COMMAND_TAG_GET_CREATION
+        | COMMAND_TAG_DELEGATE_AGENT
+        | COMMAND_TAG_REVOKE_DELEGATION
+        | COMMAND_TAG_SESSION_KILL
+        | COMMAND_TAG_SESSION_SET_PROJECT
+        | COMMAND_TAG_ARRANGEMENT_LOCK => crate::wire::frame::org::decode_org_command(tag, dec),
+        COMMAND_TAG_SERVICE_HTTP_OPEN
+        | COMMAND_TAG_SERVICE_HTTP_READ
+        | COMMAND_TAG_SERVICE_HTTP_CLOSE => super::service_http::decode_command(tag, dec),
+        COMMAND_TAG_MIRROR | COMMAND_TAG_MIRROR_PROVIDE => super::mirror::decode_command(tag, dec),
+        COMMAND_TAG_FORWARD_OPEN
+        | COMMAND_TAG_FORWARD_READ
+        | COMMAND_TAG_FORWARD_WRITE
+        | COMMAND_TAG_FORWARD_CLOSE
+        | COMMAND_TAG_AGENT_OFFER
+        | COMMAND_TAG_AGENT_REPLY => {
+            super::forward::decode_op(tag, dec).map(|op| Command::Forward { op })
+        }
+        _ => Err(unknown_command(tag)),
     }
-    // Each family claims a disjoint tag set and returns `None` (reading
-    // nothing) for the rest.
-    if let Some(command) = decode_terminal_subscription_command(tag, dec)? {
-        return Ok(command);
+}
+
+/// A command tag no decoder owns.
+pub(in crate::wire) fn unknown_command(tag: u8) -> DecodeError {
+    DecodeError::unknown_enum("Command", tag)
+}
+
+/// Decode `CREDENTIALS`: a JSON `CredentialOp` that must also validate.
+fn decode_credentials_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let invalid = || DecodeError::InvalidCredentialPayload;
+    let bytes = json_body(dec, crate::credentials::MAX_CREDENTIAL_PAYLOAD, invalid())?;
+    let op: crate::credentials::CredentialOp = serde_json::from_slice(bytes)
+        .map_err(|error| json_error(&error.to_string(), "CredentialOp", invalid()))?;
+    op.validate().map_err(|_| invalid())?;
+    Ok(Command::Credentials { op })
+}
+
+/// Decode `NATIVE_AGENT`: a strict JSON `NativeRequest`.
+fn decode_native_agent_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let bytes = json_body(
+        dec,
+        crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES,
+        DecodeError::NativeAgentLimitExceeded,
+    )?;
+    let request = crate::native_agent::NativeRequestPayload::decode(bytes).map_err(|message| {
+        json_error(
+            &message,
+            "NativeRequest",
+            DecodeError::InvalidNativeAgentPayload,
+        )
+    })?;
+    Ok(Command::NativeAgent { request })
+}
+
+/// Read a length-prefixed JSON body, refusing one over `max` bytes with
+/// `too_large` before it is parsed.
+fn json_body<'a>(
+    dec: &mut Decoder<'a>,
+    max: usize,
+    too_large: DecodeError,
+) -> Result<&'a [u8], DecodeError> {
+    let bytes = dec.read_bytes()?;
+    if bytes.len() > max {
+        return Err(too_large);
     }
-    if let Some(command) = decode_live_affordance_command(tag, dec, command_body_len)? {
-        return Ok(command);
+    Ok(bytes)
+}
+
+/// A JSON parse failure as a decode error: a variant or field this build
+/// does not know is a newer peer's payload, refused as unsupported; any
+/// other failure is `invalid`.
+fn json_error(message: &str, payload: &'static str, invalid: DecodeError) -> DecodeError {
+    if crate::wire::error::names_unknown_json(message) {
+        DecodeError::UnsupportedPayload { payload }
+    } else {
+        invalid
     }
-    if let Some(command) = decode_supervisory_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = decode_agent_report_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = decode_session_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = decode_resource_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = crate::wire::frame::org::decode_org_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = super::service_http::decode_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(command) = super::mirror::decode_command(tag, dec)? {
-        return Ok(command);
-    }
-    if let Some(op) = super::forward::decode_op(tag, dec)? {
-        return Ok(Command::Forward { op });
-    }
-    Err(DecodeError::unknown_enum("Command", tag))
 }
 
 /// Decode the producer verbs `APPEND_RESOURCE_OUTPUT` and
@@ -125,7 +182,7 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
 pub(super) fn decode_resource_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_APPEND_RESOURCE_OUTPUT => decode_append_resource_output_command(dec)?,
         COMMAND_TAG_PUBLISH_RESOURCE_STATE => decode_publish_resource_state_command(dec)?,
@@ -147,9 +204,9 @@ pub(super) fn decode_resource_command(
                 Some(crate::wire::frame::OnBehalfOf::decode(dec)?)
             },
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Decode `PUBLISH_RESOURCE_STATE`, refusing an empty or over-
@@ -188,7 +245,7 @@ pub(super) fn decode_append_resource_output_command(
 pub(super) fn decode_terminal_subscription_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
@@ -211,9 +268,9 @@ pub(super) fn decode_terminal_subscription_command(
             precondition: decode_kill_precondition(dec)?,
             operation_id: decode_optional_key(dec)?,
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Read the presence-tagged `operation_id`; a present key must be 16
@@ -251,7 +308,7 @@ pub(super) fn decode_live_affordance_command(
     tag: u8,
     dec: &mut Decoder<'_>,
     command_body_len: usize,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_GET_SCREEN => decode_get_screen_command(dec)?,
         COMMAND_TAG_ROUTE_INPUT => Command::RouteInput {
@@ -268,45 +325,45 @@ pub(super) fn decode_live_affordance_command(
             upload_id: decode_file_upload_id(dec)?,
             terminal_id: decode_terminal_id(dec)?,
         },
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Decode the ADR-0033 supervisory verbs.
 pub(super) fn decode_supervisory_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_ACQUIRE_INPUT => decode_acquire_input_command(dec)?,
         COMMAND_TAG_RELEASE_INPUT => Command::ReleaseInput {
             terminal_id: decode_terminal_id(dec)?,
         },
         COMMAND_TAG_SIGNAL_TERMINAL => decode_signal_terminal_command(dec)?,
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Decode `REPORT_ASKED` (ADR-0036) and `REPORT_AGENT_STATE`.
 pub(super) fn decode_agent_report_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_REPORT_ASKED => decode_report_asked_command(dec)?,
         COMMAND_TAG_REPORT_AGENT_STATE => decode_report_agent_state_command(dec)?,
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Decode the session- and server-scoped commands.
 pub(super) fn decode_session_command(
     tag: u8,
     dec: &mut Decoder<'_>,
-) -> Result<Option<Command>, DecodeError> {
+) -> Result<Command, DecodeError> {
     let command = match tag {
         COMMAND_TAG_GET_STATE => Command::GetState {
             scope: decode_state_scope(dec)?,
@@ -333,9 +390,9 @@ pub(super) fn decode_session_command(
                 op => Command::PerfControl { op },
             }
         }
-        _ => return Ok(None),
+        _ => return Err(unknown_command(tag)),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 /// Decode an `OPEN_LISTENER` body. An unknown transport is a newer value,
@@ -388,14 +445,11 @@ pub(super) fn decode_apply_input_command(
     let bytes: [u8; 16] = dec.read_array()?;
     let operation_id = InputOperationId::new(bytes).ok_or(DecodeError::InvalidInputOperationId)?;
     let terminal_id = decode_terminal_id(dec)?;
-    let count = dec.read_u16_be()? as usize;
+    let count = usize::from(dec.read_u16_be()?);
     if count > MAX_APPLY_INPUT_EVENTS {
         return Err(DecodeError::ApplyInputLimitExceeded);
     }
-    let mut events = dec.bounded_capacity(count);
-    for _ in 0..count {
-        events.push(decode_input_event(dec)?);
-    }
+    let events = decode_counted(dec, count, decode_input_event)?;
     Ok(Command::ApplyInput {
         operation_id,
         terminal_id,

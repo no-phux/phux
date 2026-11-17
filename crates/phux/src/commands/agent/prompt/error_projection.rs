@@ -35,9 +35,8 @@ fn failure_details(
     if recovery.operation_id.is_none() {
         recovery.operation_id = Some(fallback_operation.to_owned());
     }
-    let project = |error: &json_err::CliError, exit| json_err::Refusal {
-        err: error.clone().with_recovery(recovery.clone()),
-        exit,
+    let project = |error: &json_err::CliError, exit| {
+        json_err::Refusal::from_error(error.clone().with_recovery(recovery.clone()), exit)
     };
     match err {
         PromptError::Refused(refusal) => project(

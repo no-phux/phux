@@ -22,8 +22,8 @@ render = [
     "dep:libghostty-vt",
     "dep:png",
     "dep:gif",
-    "dep:phux-protocol",
-    "phux-protocol/render-pool",
+    "dep:phux-vt",
+    "phux-vt/render-pool",
 ]
 
 [dependencies]
@@ -32,10 +32,10 @@ render = [
 # domain crate keeps this crate testable with hand-built frames and no
 # emulator in the loop.
 phux-core.workspace = true
-# Render-feature only: the shared render trio (`render-pool`), not the
-# `server` surface. The codec-only build (`default-features = false`) does
-# not depend on this crate. See ADR-0086.
-phux-protocol = { workspace = true, optional = true }
+# Render-feature only: the shared render trio (`render-pool`) and cell-style
+# projection, not the Kitty surface. The codec-only build
+# (`default-features = false`) does not depend on this crate. See ADR-0086.
+phux-vt = { workspace = true, optional = true }
 # asciicast is NDJSON: a JSON object header plus one JSON array per event.
 # We hand-order the header keys (serde_json's map is sorted, and the format
 # pins an order), but string escaping and number parsing are serde_json's.
@@ -45,7 +45,7 @@ thiserror.workspace = true
 # emulator the server drives, so an exported frame is what the terminal
 # would have shown. Gated behind `render` (ADR-0008).
 libghostty-vt = { workspace = true, optional = true }
-# APNG output. Already in the lockfile via phux-protocol's `server` feature,
+# APNG output. Already in the lockfile via phux-vt's dev-dependencies,
 # so declaring it here adds no new dependency; png 0.18 ships `set_animated`
 # plus rational per-frame delays, which is exactly the animated-truecolor
 # encoder this needs.

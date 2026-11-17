@@ -243,12 +243,10 @@ fn relay_kind_facts_follow_spawn_events_replies_and_connection_incarnations() {
     );
 
     let (reply, mut result) = oneshot::channel();
-    let mut request = spawn_request(reply);
-    if let RelayRequest::Spawn { spawn, .. } = &mut request {
-        spawn.resource = Some(Box::new(
-            phux_protocol::wire::frame::SpawnResource::agent_session(ResourceId::local(8), "test"),
-        ));
-    }
+    let request = spawn_with(
+        reply,
+        phux_protocol::wire::frame::SpawnResource::agent_session(ResourceId::local(8), "test"),
+    );
     let FrameKind::SpawnResource { request_id, .. } = decode(&session.handle_request(request))
     else {
         panic!("spawn request")

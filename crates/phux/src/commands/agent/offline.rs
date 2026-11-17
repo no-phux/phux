@@ -300,7 +300,7 @@ fn emit_prose(
     if let Some(reason) = &explanation.fallback_reason {
         outln!("         {reason}");
     }
-    let flags = super::detect::positive_flags(explanation);
+    let flags = phux_client::agent::detect::positive_flags(explanation);
     if !flags.is_empty() {
         outln!("         positive evidence: {}", flags.join(", "));
     }

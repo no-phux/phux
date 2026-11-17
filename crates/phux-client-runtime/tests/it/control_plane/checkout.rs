@@ -3,25 +3,12 @@ use phux_client_runtime::control::{CheckoutFailure, CheckoutOutcome, MAX_CHECKOU
 use phux_protocol::checkout::{CheckoutAnswer, CheckoutArea, CheckoutRequest, CheckoutStatus};
 
 fn plane_with_checkout() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
-    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
-        *server_caps =
-            server_caps.with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
-    }
-    plane.feed(hello).unwrap();
-    let _ = plane.take_outbound();
-    plane
+    browsing_with_ext(&[ServerFeatureExt::Checkout])
 }
 
 #[test]
 fn checkout_requires_the_capability_and_correlates_typed_answers() {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     let _ = plane.take_outbound();
     assert_eq!(plane.checkout(terminal(), CheckoutRequest::Status), 0);
     assert!(
@@ -60,13 +47,11 @@ fn checkout_requires_the_capability_and_correlates_typed_answers() {
     let denied = plane.checkout(terminal(), CheckoutRequest::Status);
     let _ = plane.take_outbound();
     plane
-        .feed(FrameKind::CommandResult {
-            request_id: denied,
-            result: CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: "satellite lacks CHECKOUT".to_owned(),
-            },
-        })
+        .feed(command_err(
+            denied,
+            ErrorCode::UnsupportedSatelliteRoute,
+            "satellite lacks CHECKOUT",
+        ))
         .unwrap();
     assert!(matches!(
         &plane.take_checkout_answers()[..],

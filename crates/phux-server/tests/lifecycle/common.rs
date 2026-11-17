@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, EventStamp, FrameKind, SESSION_CREATE_KEY,
-    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult, ViewportInfo,
+    AgentEvent, AttachTarget, Command, CommandResult, ControlAction, EventStamp, FrameKind,
+    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SpawnResource, SpawnResult,
+    ViewportInfo,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_server::{LaunchCommand, ServerConfig};
@@ -41,6 +41,17 @@ pub(crate) async fn demo(configure: impl FnOnce(&mut ServerConfig)) -> (Server, 
     let mut owner = server.connect().await;
     attach(&mut owner, "demo").await;
     (server, owner)
+}
+
+/// A server seeding `demo` (no PTY), `owner` attached to its seed pane, and
+/// a journal-aware `events` watcher.
+pub(crate) async fn journaled_demo() -> (Server, UnixStream, ResourceId, UnixStream) {
+    let server = Server::start(Some("demo"), |_| {});
+    let mut owner = server.connect().await;
+    let pane = attach(&mut owner, "demo").await.focused_resource;
+    let mut events = server.connect().await;
+    subscribe(&mut events, 1, None, Some(u64::MAX)).await;
+    (server, owner, pane, events)
 }
 
 /// [`demo`] plus a never-exiting parent Terminal (request 1) to bind under.
@@ -160,23 +171,10 @@ pub(crate) async fn next_output(stream: &mut UnixStream, id: &ResourceId) -> (u6
     .await
 }
 
-/// An unmodified Enter press with no text (the encoder synthesizes the CR).
-pub(crate) const fn enter_key() -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key: PhysicalKey::Enter,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
-
 /// Send Enter to `pane`: releases children blocked on `read _`, so their
 /// output or exit cannot race the spawn reply.
 pub(crate) async fn release(stream: &mut UnixStream, pane: &ResourceId) {
-    let key = phux_server_testkit::input_key(pane.clone(), enter_key());
+    let key = phux_server_testkit::input_key(pane.clone(), phux_server_testkit::enter_key());
     send_frame(stream, &key).await;
 }
 
@@ -316,6 +314,42 @@ pub(crate) async fn next_event(stream: &mut UnixStream, pred: impl Fn(&Seen) -> 
         _ => None,
     })
     .await
+}
+
+/// The next `TERMINAL_CONTROL { action }`.
+pub(crate) async fn next_control(events: &mut UnixStream, action: ControlAction) -> AgentEvent {
+    next_event(
+        events,
+        |e: &Seen| matches!(e.event, AgentEvent::TerminalControl { action: a, .. } if a == action),
+    )
+    .await
+    .event
+}
+
+/// No `TERMINAL_CONTROL` accepted by `pred` arrives within `quiet` (a timing
+/// assertion).
+pub(crate) async fn assert_no_control(
+    events: &mut UnixStream,
+    quiet: Duration,
+    pred: impl Fn(ControlAction) -> bool,
+) {
+    let found = tokio::time::timeout(quiet, async {
+        loop {
+            if let (
+                _,
+                FrameKind::Event {
+                    event: event @ AgentEvent::TerminalControl { action, .. },
+                    ..
+                },
+            ) = phux_server_testkit::recv_typed(events).await
+                && pred(action)
+            {
+                return event;
+            }
+        }
+    })
+    .await;
+    assert!(found.is_err(), "unexpected TERMINAL_CONTROL: {found:?}");
 }
 
 /// Accumulate `pane`'s output (live and bootstrap replay) until it contains `needle`.

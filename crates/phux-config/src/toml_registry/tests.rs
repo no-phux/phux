@@ -13,7 +13,7 @@ fn review_competing_registry_mutation_cannot_be_lost_during_publication() {
     let nested_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = nested_succeeded.clone();
     let competing_path = path.clone();
-    super::BEFORE_PUBLISH.with(|slot| {
+    crate::document::BEFORE_PUBLISH.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move || {
             observed
                 .set(super::forget_machine(&competing_path, raw, "remote", "b", "ssh://b").is_ok());
@@ -43,7 +43,7 @@ fn symlink_and_real_path_writers_cannot_interleave_during_publication() {
         let nested_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
         let observed = nested_succeeded.clone();
         let competing = competing.clone();
-        super::BEFORE_PUBLISH.with(|slot| {
+        crate::document::BEFORE_PUBLISH.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move || {
                 observed
                     .set(super::forget_machine(&competing, raw, "remote", "b", "ssh://b").is_ok());

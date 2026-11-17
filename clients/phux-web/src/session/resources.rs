@@ -299,7 +299,7 @@ impl Connection {
             self.layout = self
                 .layout
                 .take()
-                .and_then(|layout| layout.remove(&terminal_id));
+                .and_then(|layout| crate::panes::remove(layout, &terminal_id));
             self.place_documents();
             if self
                 .pending_kill

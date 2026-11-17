@@ -2,19 +2,27 @@
 
 use std::time::Duration;
 
-use phux_config::widget::CellStyle;
+use crate::render::chrome::status_bar::widgets::CellStyle;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
 #[allow(clippy::wildcard_imports)]
 use super::cells::*;
 use super::*;
-use phux_config::widget::WidgetRegistry;
+use crate::render::chrome::status_bar::widgets::WidgetRegistry;
 use phux_config::{StatusCfg, Widget, WidgetSpec};
 use std::time::UNIX_EPOCH;
 
 fn ctx_default(session: &str) -> StatusBarContext<'_> {
     make_context(session, UNIX_EPOCH)
+}
+
+/// `p` composed into a 40x10 buffer for session `main`.
+fn compose_main(p: &StatusBarPainter) -> Buffer {
+    let (buf, _, _) = p
+        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+        .expect("composes");
+    buf
 }
 
 /// The columns an emitted row advances the terminal, walked the way
@@ -312,9 +320,7 @@ fn the_bar_takes_its_fill_where_widgets_leave_no_background() {
         surface: fill,
         ..Theme::default()
     });
-    let (buf, _, _) = p
-        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
-        .expect("composes");
+    let buf = compose_main(&p);
     assert_eq!(buf[(0, 0)].bg, Color::Rgb(0x29, 0x36, 0x28));
     assert!((10..40).all(|x| buf[(x, 0)].bg == fill));
 }
@@ -362,9 +368,7 @@ fn a_themed_tab_follows_set_theme() {
         accent: Color::Rgb(9, 8, 7),
         ..Theme::default()
     });
-    let (buf, _, _) = p
-        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
-        .expect("composes");
+    let buf = compose_main(&p);
     assert_eq!(buf[(1, 0)].fg, Color::Rgb(9, 8, 7));
 }
 
@@ -378,9 +382,7 @@ fn notices_compose_in_theme_colors() {
     p.set_theme(&theme);
     let now = std::time::Instant::now();
     assert!(p.set_notice(Notice::info("hi"), now));
-    let (buf, _, _) = p
-        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
-        .expect("composes");
+    let buf = compose_main(&p);
     let cell = &buf[(39, 0)];
     assert_eq!(cell.fg, theme.selection_fg);
     assert_eq!(cell.bg, theme.selection_bg);
@@ -392,9 +394,7 @@ fn notices_compose_in_theme_colors() {
     );
 
     assert!(p.set_notice(Notice::warn("hi"), now));
-    let (buf, _, _) = p
-        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
-        .expect("composes");
+    let buf = compose_main(&p);
     assert_eq!(buf[(39, 0)].bg, theme.error);
     assert!(buf[(39, 0)].modifier.contains(Modifier::BOLD));
 }
@@ -405,9 +405,7 @@ fn the_error_line_rides_the_error_slot() {
     let theme = Theme::default();
     let mut p = StatusBarPainter::error_line("bad config");
     p.set_theme(&theme);
-    let (buf, _, _) = p
-        .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
-        .expect("composes");
+    let buf = compose_main(&p);
     assert_eq!(buf[(0, 0)].bg, theme.error);
     assert_eq!(buf[(0, 0)].fg, theme.selection_fg);
 }

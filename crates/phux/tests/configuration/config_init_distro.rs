@@ -24,17 +24,13 @@ fn repo_distros_dir() -> PathBuf {
 /// Run phux with an isolated `XDG_CONFIG_HOME` and a pinned
 /// `PHUX_DISTROS_DIR` so bundled-name resolution is hermetic.
 fn run(args: &[&str], xdg_config_home: &Path, distros_dir: &Path) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(crate::runner::phux_bin())
-        .env("XDG_CONFIG_HOME", xdg_config_home)
-        .env("PHUX_DISTROS_DIR", distros_dir)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+    crate::common::Out::of(
+        crate::common::phux_cmd(crate::runner::phux_bin())
+            .env("XDG_CONFIG_HOME", xdg_config_home)
+            .env("PHUX_DISTROS_DIR", distros_dir)
+            .args(args),
     )
+    .into_parts()
 }
 
 #[test]

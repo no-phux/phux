@@ -1,14 +1,14 @@
 use serde_json::{Value, json};
 
 use super::{
-    START_DEFAULT_TIMEOUT_SECS, TARGET_DESC, WAIT_DEFAULT_TIMEOUT_SECS, WAITABLE_STATES, bool_arg,
-    graced, push_target, run_until_transition, target_schema, timeout_secs, validated_until,
+    START_DEFAULT_TIMEOUT_SECS, TARGET_DESC, WAIT_DEFAULT_TIMEOUT_SECS, WAITABLE_STATES, graced,
+    push_target, run_until_transition, target_schema, timeout_secs, validated_until,
 };
 use crate::cli_adapter::{
     CliAdapter, DEFAULT_CALL_TIMEOUT, bounded_string, bounded_strings, push_socket,
 };
 use crate::cli_tools::{push_option, schema, string_schema};
-use crate::tools::{ToolError, strict_object};
+use crate::tools::{ToolError, strict_bool_arg, strict_object};
 
 #[cfg(test)]
 mod tests;
@@ -65,7 +65,7 @@ pub(super) async fn wait(args: &Value, adapter: &CliAdapter) -> Result<Value, To
         &["target", "any", "until", "timeout_secs", "socket"],
         &[],
     )?;
-    let any = bool_arg(args, "any")?;
+    let any = strict_bool_arg(args, "any")?;
     if any && args.get("target").is_some() {
         return Err(ToolError::new("`target` and `any` are mutually exclusive"));
     }
@@ -271,7 +271,7 @@ pub(super) async fn answer(args: &Value, adapter: &CliAdapter) -> Result<Value, 
     if choice.is_some() == answer_text.is_some() {
         return Err(ToolError::new("provide exactly one of `choice` or `text`"));
     }
-    let allow_unlisted = bool_arg(args, "allow_unlisted")?;
+    let allow_unlisted = strict_bool_arg(args, "allow_unlisted")?;
     if allow_unlisted && answer_text.is_none() {
         return Err(ToolError::new("`allow_unlisted` requires `text`"));
     }
@@ -352,7 +352,7 @@ pub(super) async fn start(args: &Value, adapter: &CliAdapter) -> Result<Value, T
         bounded_string(args, "integration", false)?,
     );
     argv.extend(["--timeout".to_owned(), timeout_secs.to_string()]);
-    if bool_arg(args, "force")? {
+    if strict_bool_arg(args, "force")? {
         argv.push("--force".to_owned());
     }
     argv.push("--json".to_owned());

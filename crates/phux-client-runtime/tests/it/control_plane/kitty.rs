@@ -55,10 +55,7 @@ fn local_cell_pixels_correct_a_snapshot_that_published_first() {
 }
 
 fn browse() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(ControlOptions::default(), hello_ok(PROTOCOL_VERSION.patch));
     plane.take_outbound();
     plane
 }
@@ -177,10 +174,8 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 fn resize_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
+    outbound(plane)
+        .into_iter()
         .filter(|frame| matches!(frame, FrameKind::ResizeTerminal { .. }))
         .collect()
 }

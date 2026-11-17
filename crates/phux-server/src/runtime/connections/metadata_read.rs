@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
 // L3 metadata dispatch (SPEC §7.4 / §11.L3). Replies are gated on
-// `client_speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
+// `ClientTable::speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
 
 pub(super) async fn handle_get_metadata(
     state: &SharedState,
@@ -21,7 +21,7 @@ pub(super) async fn handle_get_metadata(
     let (value, speaks_l3) = state.with(|s| {
         (
             read_metadata_value(s, client_id, scope, key, nonce_result),
-            s.client_speaks_l3(client_id),
+            s.clients().speaks_l3(client_id),
         )
     });
     let one_shot = value.is_some() && nonce_result;
@@ -67,7 +67,7 @@ fn read_metadata_value(
     if crate::runtime::whoami::is_whoami_key(scope, key) {
         return crate::runtime::whoami::record_for(s, client_id);
     }
-    if nonce_result && !s.owns_session_create_result(client_id, key) {
+    if nonce_result && !s.clients().owns_session_create_result(client_id, key) {
         return None;
     }
     s.metadata().get(scope, key)

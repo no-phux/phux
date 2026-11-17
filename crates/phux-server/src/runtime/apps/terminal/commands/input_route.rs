@@ -27,17 +27,17 @@ pub(crate) fn with_route_input_destination<R>(
     state.with(|s| {
         // workload-auth §7 step 2: nothing queued before a revocation lands.
         if s.connection_revoked(client_id) {
-            return Err(CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "permission denied".to_owned(),
-            });
+            return Err(CommandResult::error(
+                ErrorCode::PermissionDenied,
+                "permission denied",
+            ));
         }
         let local = match s.resolve_resource(terminal_id) {
             Resolved::Remote(_) => {
-                return Err(CommandResult::Error {
-                    code: ErrorCode::UnsupportedSatelliteRoute,
-                    message: format!("ROUTE_INPUT to satellite route unsupported: {terminal_id}"),
-                });
+                return Err(CommandResult::error(
+                    ErrorCode::UnsupportedSatelliteRoute,
+                    format!("ROUTE_INPUT to satellite route unsupported: {terminal_id}"),
+                ));
             }
             Resolved::Unknown => {
                 return Err(terminal_not_found(terminal_id));
@@ -52,19 +52,19 @@ pub(crate) fn with_route_input_destination<R>(
                     .to_owned(),
             });
         }
-        if s.retained_exit(pane).is_some() {
+        if s.retained().exit(pane).is_some() {
             return Err(exited_input_refusal());
         }
-        if s.input_blocked(pane, client_id) {
+        if s.leases().blocked(pane, client_id) {
             debug!(
                 ?client_id,
                 ?terminal_id,
                 "ROUTE_INPUT blocked: another client holds the input lease (ADR-0033)"
             );
-            return Err(CommandResult::Error {
-                code: ErrorCode::InputLeaseHeld,
-                message: "input lease held by another client".to_owned(),
-            });
+            return Err(CommandResult::error(
+                ErrorCode::InputLeaseHeld,
+                "input lease held by another client",
+            ));
         }
         let handle = local
             .handle
@@ -78,10 +78,10 @@ pub(crate) fn with_route_input_destination<R>(
 /// Input to a Terminal whose process exited and which is retained read-only
 /// (ADR-0124): nothing was written, as for a pane with no PTY (L1 §6.2.1).
 fn exited_input_refusal() -> CommandResult {
-    CommandResult::Error {
-        code: ErrorCode::InputNotWritten,
-        message: "the pane's process exited; it is retained read-only".to_owned(),
-    }
+    CommandResult::error(
+        ErrorCode::InputNotWritten,
+        "the pane's process exited; it is retained read-only",
+    )
 }
 
 pub(crate) fn terminal_input_from_event(event: InputEvent) -> Result<TerminalInput, CommandResult> {
@@ -90,10 +90,10 @@ pub(crate) fn terminal_input_from_event(event: InputEvent) -> Result<TerminalInp
         InputEvent::Mouse(event) => Ok(TerminalInput::Mouse(event)),
         InputEvent::Focus(event) => Ok(TerminalInput::Focus(event)),
         InputEvent::Paste(event) => Ok(TerminalInput::Paste(event)),
-        _ => Err(CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "unsupported ROUTE_INPUT event".to_owned(),
-        }),
+        _ => Err(CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "unsupported ROUTE_INPUT event",
+        )),
     }
 }
 
@@ -123,10 +123,10 @@ pub(crate) fn handle_route_input(
             );
             CommandResult::Ok
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for ROUTE_INPUT".to_owned(),
-        },
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for ROUTE_INPUT",
+        ),
     }
 }
 
@@ -137,8 +137,11 @@ pub(in crate::runtime) fn terminal_handle(
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Result<(phux_core::ids::ResourceId, ResourceHandle), CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
-    let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
-    let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+    let core = s
+        .idspace
+        .resource_from_wire(terminal_id)
+        .ok_or_else(not_found)?;
+    let handle = s.resources().handle(core).cloned().ok_or_else(not_found)?;
     handle.terminal().map_err(wrong_resource_kind)?;
     Ok((core, handle))
 }

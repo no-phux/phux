@@ -80,6 +80,13 @@ async fn command(ws: &mut Ws, request_id: u32, op: CredentialOp) -> CommandResul
     }
 }
 
+/// The provider's read of its next claimable job.
+fn next_op() -> CredentialOp {
+    CredentialOp::Next {
+        provider: super::common::PROVIDER.into(),
+    }
+}
+
 async fn pending_approval(approver: &mut Ws) -> phux_protocol::ids::ApprovalId {
     tokio::time::timeout(WIRE_RECV_TIMEOUT, async {
         loop {
@@ -109,14 +116,8 @@ async fn pending_approval(approver: &mut Ws) -> phux_protocol::ids::ApprovalId {
 async fn claimed_job(provider: &mut Ws) -> serde_json::Value {
     tokio::time::timeout(WIRE_RECV_TIMEOUT, async {
         loop {
-            if let CommandResult::OkWith(CommandValue::Json(job)) = command(
-                provider,
-                5,
-                CredentialOp::Next {
-                    provider: super::common::PROVIDER.into(),
-                },
-            )
-            .await
+            if let CommandResult::OkWith(CommandValue::Json(job)) =
+                command(provider, 5, next_op()).await
             {
                 break serde_json::from_str(&job).unwrap();
             }
@@ -153,14 +154,7 @@ fn all_three_roles_work_over_the_remote_websocket_transport() {
         let mut requester = connect(addr).await;
         let mut approver = connect(addr).await;
         assert_eq!(
-            command(
-                &mut provider,
-                1,
-                CredentialOp::Next {
-                    provider: super::common::PROVIDER.into()
-                }
-            )
-            .await,
+            command(&mut provider, 1, next_op()).await,
             CommandResult::Ok
         );
         send(
@@ -177,14 +171,7 @@ fn all_three_roles_work_over_the_remote_websocket_transport() {
         // Poll metadata on the approving connection; it never receives values.
         let id = pending_approval(&mut approver).await;
         assert_eq!(
-            command(
-                &mut provider,
-                3,
-                CredentialOp::Next {
-                    provider: super::common::PROVIDER.into()
-                }
-            )
-            .await,
+            command(&mut provider, 3, next_op()).await,
             CommandResult::Ok
         );
         send(

@@ -31,7 +31,9 @@ fn answered(state: &ServerState, client: ClientId) -> WhoamiRecord {
 fn announced_by(uid: u32) -> (ServerState, ClientId) {
     let mut state = ServerState::new();
     let client = ClientId(7);
-    state.set_peer_identity(client, peer(TransportType::UnixSocket, uid));
+    state
+        .clients_mut()
+        .set_peer_identity(client, peer(TransportType::UnixSocket, uid));
     admit_ssh_origin(&mut state, client, Some(ssh_origin()));
     (state, client)
 }
@@ -50,7 +52,9 @@ fn a_delegated_key_reports_on_behalf_of() {
 
     let mut state = ServerState::new();
     let client = ClientId(7);
-    state.set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
+    state
+        .clients_mut()
+        .set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
     state.set_connection_grant(client, ConnectionGrant::owner());
     let read = |state: &ServerState| -> serde_json::Value {
         serde_json::from_slice(&record_for(state, client).expect("a record")).expect("json")
@@ -96,7 +100,7 @@ fn a_same_uid_bridge_announcement_reports_ssh_stdio() {
 #[test]
 fn an_announcement_from_another_uid_is_ignored() {
     let (state, client) = announced_by(serving_uid().wrapping_add(1));
-    assert_eq!(state.ssh_origin(client), None);
+    assert_eq!(state.clients().ssh_origin(client), None);
     let record = answered(&state, client);
     assert_eq!(record.auth_route, "uds");
     assert_eq!(record.ssh_client, None);
@@ -107,7 +111,9 @@ fn an_announcement_from_another_uid_is_ignored() {
 fn no_announcement_reports_uds() {
     let mut state = ServerState::new();
     let client = ClientId(7);
-    state.set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
+    state
+        .clients_mut()
+        .set_peer_identity(client, peer(TransportType::UnixSocket, serving_uid()));
     admit_ssh_origin(&mut state, client, None);
     let record = answered(&state, client);
     assert_eq!(record.auth_route, "uds");

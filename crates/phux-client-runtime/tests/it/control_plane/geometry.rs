@@ -3,10 +3,7 @@ use phux_client_runtime::control::TerminalResizeOutcome as Resize;
 use phux_protocol::wire::frame::{RolePolicy, ViewportInfo};
 
 fn browse(options: ControlOptions) -> ControlPlane {
-    let mut plane = ControlPlane::new(options);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let mut plane = opened(options, hello_ok(PROTOCOL_VERSION.patch));
     plane.take_outbound();
     plane
 }
@@ -16,27 +13,7 @@ fn confirm(plane: &mut ControlPlane, request_id: u32) {
 }
 
 fn bootstrap(plane: &mut ControlPlane, id: &ResourceId, generation: u64) {
-    let stream_id = StreamId::new(generation).unwrap();
-    let bootstrap_id = BootstrapId::new(generation).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .unwrap();
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        })
-        .unwrap();
+    empty_bootstrap(plane, id, [generation, generation]);
 }
 
 fn ready(plane: &mut ControlPlane, id: &ResourceId) {
@@ -114,14 +91,8 @@ fn preserving_subscriptions_replay_without_global_resize_or_old_replica_readines
     assert_eq!(plane.attach_terminal(&terminal()), 0);
     assert!(plane.take_outbound().is_empty());
     plane.connection_lost(None);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let frames: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
+    let frames = outbound(&mut plane);
     assert!(!frames.iter().any(|frame| matches!(
         frame,
         FrameKind::ResizeTerminal { .. }
@@ -186,9 +157,7 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
         ..ControlOptions::default()
     });
     ready(&mut plane, &terminal());
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     assert!(plane.take_outbound().is_empty());
     plane.attach_terminal(&terminal());
     assert_eq!(
@@ -199,9 +168,7 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
     plane.detach_terminal(&terminal());
     plane.take_outbound();
     // Resolve the replaced attach correlation before starting a fresh intent.
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    reopen(&mut plane, hello_ok(PROTOCOL_VERSION.patch));
     plane.attach_terminal(&terminal());
     assert_eq!(
         plane.take_outbound().len(),
@@ -211,10 +178,8 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
 }
 
 fn geometry_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
+    outbound(plane)
+        .into_iter()
         .filter(|frame| {
             matches!(
                 frame,
@@ -353,14 +318,8 @@ fn stream_recovery_preserves_geometry() {
 
 fn reconnect(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane.connection_lost(None);
-    plane.connection_opened();
-    plane.take_outbound();
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect()
+    reopen(plane, hello_ok(PROTOCOL_VERSION.patch));
+    outbound(plane)
 }
 
 fn resource_attaches(frames: &[FrameKind]) -> Vec<ResourceId> {
@@ -423,22 +382,9 @@ fn browse_to_session_reconnect_defers_preserving_replay_until_inventory_is_ready
         .expect("current session target was queued");
     plane.attached(attach_id, snapshot());
     bootstrap(&mut plane, &terminal(), 2);
-    assert!(
-        resource_attaches(
-            &plane
-                .take_outbound()
-                .iter()
-                .map(|frame| decode(frame))
-                .collect::<Vec<_>>()
-        )
-        .is_empty()
-    );
+    assert!(resource_attaches(&outbound(&mut plane)).is_empty());
     plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
-    let frames: Vec<_> = plane
-        .take_outbound()
-        .iter()
-        .map(|frame| decode(frame))
-        .collect();
+    let frames = outbound(&mut plane);
     assert_eq!(resource_attaches(&frames), vec![foreign]);
     assert!(
         !frames.iter().any(|frame| matches!(

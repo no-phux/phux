@@ -48,30 +48,14 @@ async fn loop_before_drain_ext(
     features: ServerFeatureSet,
     features_ext: phux_protocol::ServerFeatureExtSet,
 ) -> (SessionLoop, Connection, Connection, Vec<u8>) {
-    let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let mut client = Connection::from_stream(a);
-    let server = Connection::from_stream(b);
-    let negotiated = NegotiatedBootstrap {
-        profile: BootstrapProfile::SynthesizedVtRaw,
-        limits: BootstrapLimits::default(),
-        server_features: features,
-        server_features_ext: features_ext,
-    };
-    let mut state = SessionLoop::new(
-        negotiated,
-        PredictiveConfig::disabled(),
-        false,
-        None,
-        EntryPick::default(),
-        None,
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    state
-        .bootstrap(&mut client, &mut out, initial_attached(), None)
-        .await
-        .unwrap();
-    (state, client, server, out)
+    let rig = LoopRig::new(features, features_ext);
+    let LoopRig {
+        state,
+        client,
+        server,
+        out,
+    } = Box::pin(rig.bootstrapped(initial_attached())).await;
+    (state, client, Connection::from_stream(server), out)
 }
 
 /// [`loop_before_drain`] with the deferred bootstrap outbound sent.

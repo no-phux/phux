@@ -278,7 +278,6 @@ impl OutputPumpContext {
     /// connection. `None` means the actor invalidated the cut mid-capture (a
     /// reflow, a replacement child, or teardown): a resync or the pane's
     /// close follows, so the generation is not lost.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) async fn capture_native_checkpoint(
         &self,
         bootstrap_id: BootstrapId,

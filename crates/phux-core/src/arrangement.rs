@@ -34,9 +34,13 @@ pub enum LayoutNode<L> {
     Split {
         /// The axis the split is taken along.
         dir: SplitDir,
-        /// Fraction of the parent dimension given to `left`, in the open
-        /// interval `(0.0, 1.0)` (ADR-0012). [`LayoutNode::split`] and
-        /// [`LayoutNode::validate_ratios`] enforce it; the type does not.
+        /// Fraction of the parent dimension given to `left`. Arrangement
+        /// trees hold the open interval `(0.0, 1.0)` (ADR-0012), which
+        /// [`LayoutNode::split`] and [`LayoutNode::validate_ratios`]
+        /// enforce; the type does not. Client trees
+        /// (`phux_client_core::layout::LayoutNode`) also hold the banked
+        /// endpoints `0.0` and `1.0` (ADR-0048), so they are never
+        /// validated.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top child.
         left: Box<Self>,
@@ -136,6 +140,18 @@ impl<L> LayoutNode<L> {
                 right: Box::new(right.try_map(f)?),
             },
         })
+    }
+
+    /// Pass every split ratio, depth-first, to `f` to edit in place.
+    pub fn for_each_ratio_mut(&mut self, f: &mut impl FnMut(&mut f32)) {
+        if let Self::Split {
+            ratio, left, right, ..
+        } = self
+        {
+            f(ratio);
+            left.for_each_ratio_mut(f);
+            right.for_each_ratio_mut(f);
+        }
     }
 
     /// Check every split ratio in the tree.

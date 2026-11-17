@@ -14,7 +14,7 @@ use tokio::net::UnixStream;
 
 use phux_server_testkit::{SpawnedServer, command, recv_until, run_local};
 
-use crate::common::{connect_as, full_caps};
+use crate::common::{advertises, connect_as, full_caps};
 
 fn get(service: &str, target: &str) -> Command {
     Command::ServiceHttpOpen {
@@ -29,13 +29,6 @@ fn get(service: &str, target: &str) -> Command {
     }
 }
 
-fn code(result: &CommandResult) -> ErrorCode {
-    match result {
-        CommandResult::Error { code, .. } => *code,
-        other => panic!("expected an error, got {other:?}"),
-    }
-}
-
 async fn serve(body: impl AsyncFnOnce(UnixStream, FrameKind)) {
     let server = SpawnedServer::start(None, |_| {});
     let (stream, hello_ok) = connect_as(&server.socket, "service-http-test", full_caps()).await;
@@ -46,48 +39,38 @@ async fn serve(body: impl AsyncFnOnce(UnixStream, FrameKind)) {
 #[test]
 fn the_bit_is_advertised_and_refusals_are_typed() {
     run_local(serve(async |mut stream, hello_ok| {
-        let FrameKind::HelloOk { server_caps, .. } = hello_ok else {
-            unreachable!()
-        };
-        assert!(
-            server_caps
-                .features_ext
-                .contains(ServerFeatureExt::HostServiceHttp)
-        );
+        assert!(advertises(&hello_ok, ServerFeatureExt::HostServiceHttp));
 
-        let unknown = command(&mut stream, 1, get("nginx", "/")).await;
-        assert_eq!(code(&unknown), ErrorCode::NotFound);
-        let bad_target = command(&mut stream, 2, get("opencode", "api")).await;
-        assert_eq!(code(&bad_target), ErrorCode::InvalidCommand);
-        let satellite = Command::ServiceHttpOpen {
-            request: Box::new(ServiceHttpRequest {
-                host: Some("ghost".to_owned()),
-                service: "opencode".to_owned(),
-                method: "GET".to_owned(),
-                target: "/".to_owned(),
-                headers: Vec::new(),
-                body: Vec::new(),
-            }),
-        };
-        let unrouted = command(&mut stream, 3, satellite).await;
-        assert_eq!(code(&unrouted), ErrorCode::UnsupportedSatelliteRoute);
-
-        let read = Command::ServiceHttpRead {
+        let mut satellite = get("opencode", "/");
+        if let Command::ServiceHttpOpen { request } = &mut satellite {
+            request.host = Some("ghost".to_owned());
+            request.headers.clear();
+        }
+        let read = |max_bytes| Command::ServiceHttpRead {
             exchange: 999,
-            max_bytes: 1,
+            max_bytes,
         };
-        assert_eq!(
-            code(&command(&mut stream, 4, read).await),
-            ErrorCode::NotFound
-        );
-        let empty = Command::ServiceHttpRead {
-            exchange: 999,
-            max_bytes: 0,
-        };
-        assert_eq!(
-            code(&command(&mut stream, 5, empty).await),
-            ErrorCode::InvalidCommand
-        );
+        let refusals = [
+            ("unknown service", get("nginx", "/"), ErrorCode::NotFound),
+            (
+                "relative target",
+                get("opencode", "api"),
+                ErrorCode::InvalidCommand,
+            ),
+            (
+                "unrouted satellite",
+                satellite,
+                ErrorCode::UnsupportedSatelliteRoute,
+            ),
+            ("unknown exchange", read(1), ErrorCode::NotFound),
+            ("zero-byte read", read(0), ErrorCode::InvalidCommand),
+        ];
+        for ((label, refused, code), request_id) in refusals.into_iter().zip(1..) {
+            match command(&mut stream, request_id, refused).await {
+                CommandResult::Error { code: got, .. } => assert_eq!(got, code, "{label}"),
+                other => panic!("{label}: expected {code:?}, got {other:?}"),
+            }
+        }
         let close = Command::ServiceHttpClose { exchange: 999 };
         assert_eq!(command(&mut stream, 6, close).await, CommandResult::Ok);
     }));

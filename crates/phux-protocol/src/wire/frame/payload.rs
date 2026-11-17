@@ -77,18 +77,9 @@ impl ActorRef {
         self
     }
 
-    /// Builder setter for [`Self::credential_id`].
-    #[must_use]
-    pub fn with_credential_id(mut self, credential_id: Option<String>) -> Self {
-        self.credential_id = credential_id;
-        self
-    }
-
-    /// Builder setter for [`Self::client_name`].
-    #[must_use]
-    pub fn with_client_name(mut self, client_name: Option<String>) -> Self {
-        self.client_name = client_name;
-        self
+    builder_setters! {
+        fn with_credential_id(credential_id: Option<String>) => credential_id;
+        fn with_client_name(client_name: Option<String>) => client_name;
     }
 }
 
@@ -121,18 +112,9 @@ impl EventStamp {
         }
     }
 
-    /// Builder setter for [`Self::actor`].
-    #[must_use]
-    pub fn with_actor(mut self, actor: Option<ActorRef>) -> Self {
-        self.actor = actor;
-        self
-    }
-
-    /// Builder setter for [`Self::operation_id`].
-    #[must_use]
-    pub const fn with_operation_id(mut self, operation_id: Option<IdempotencyKey>) -> Self {
-        self.operation_id = operation_id;
-        self
+    builder_setters! {
+        fn with_actor(actor: Option<ActorRef>) => actor;
+        const fn with_operation_id(operation_id: Option<IdempotencyKey>) => operation_id;
     }
 }
 
@@ -239,39 +221,12 @@ impl SpawnResource {
         }
     }
 
-    /// Builder setter for [`Self::retain_secs`].
-    #[must_use]
-    pub const fn with_retain_secs(mut self, retain_secs: Option<u32>) -> Self {
-        self.retain_secs = retain_secs;
-        self
-    }
-
-    /// Builder setter for [`Self::idempotency_key`].
-    #[must_use]
-    pub const fn with_idempotency_key(mut self, key: Option<IdempotencyKey>) -> Self {
-        self.idempotency_key = key;
-        self
-    }
-
-    /// Builder setter for [`Self::native_id`].
-    #[must_use]
-    pub fn with_native_id(mut self, native_id: Option<String>) -> Self {
-        self.native_id = native_id;
-        self
-    }
-
-    /// Builder setter for [`Self::control`].
-    #[must_use]
-    pub const fn with_control(mut self, control: Option<super::ControlClass>) -> Self {
-        self.control = control;
-        self
-    }
-
-    /// Builder setter for [`Self::bind_instance`].
-    #[must_use]
-    pub const fn with_bind_instance(mut self, bind_instance: bool) -> Self {
-        self.bind_instance = bind_instance;
-        self
+    builder_setters! {
+        const fn with_retain_secs(retain_secs: Option<u32>) => retain_secs;
+        const fn with_idempotency_key(key: Option<IdempotencyKey>) => idempotency_key;
+        fn with_native_id(native_id: Option<String>) => native_id;
+        const fn with_control(control: Option<super::ControlClass>) => control;
+        const fn with_bind_instance(bind_instance: bool) => bind_instance;
     }
 
     /// `true` iff every field is at its default: a plain Terminal spawn,

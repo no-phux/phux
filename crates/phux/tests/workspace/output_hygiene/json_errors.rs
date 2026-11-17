@@ -21,10 +21,7 @@ fn assert_no_server_json_contract(args: &[&str], xdg: Option<&std::path::Path>, 
 #[test]
 fn json_error_contract_holds_across_core_verbs_with_no_server() {
     let tmp = TempDir::new().expect("tempdir");
-    let sock_file = tmp.path().join("dead.sock");
-    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
-    assert!(sock_file.exists(), "the abandoned socket file must persist");
-    let sock = sock_file.to_str().expect("utf-8 temp path");
+    let sock = &abandoned_socket(tmp.path());
 
     // `play` validates its cast before dialing; give it a real one.
     let cast = tmp.path().join("demo.cast");
@@ -64,6 +61,81 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
     assert!(
         !std::path::Path::new(out).exists(),
         "a capture that never started must not leave an empty cast behind"
+    );
+}
+
+/// The verbs that run on the shared CLI context (`commands::ctx`) report
+/// every refusal through one renderer, so under `--json` each refused path
+/// is exactly ONE contract line on stderr: a dead server, a selector that
+/// does not parse, a malformed id. Nothing here needs a live server.
+#[test]
+fn every_ctx_verb_reports_a_refusal_as_one_contract_line() {
+    let tmp = TempDir::new().expect("tempdir");
+    let sock = &abandoned_socket(tmp.path());
+    let id = "0123456789abcdef0123456789abcdef";
+
+    for args in [
+        &["resize", "work", "80x24", "--json", "--socket", sock][..],
+        &["tag", "add", "work", "ci", "--json", "--socket", sock],
+        &["tag", "rm", "work", "ci", "--json", "--socket", sock],
+        // KEYS is variadic: flags go before the target.
+        &["send-keys", "--json", "--socket", sock, "work", "x"],
+        &["paste", "work", "text", "--json", "--socket", sock],
+        &["rename", "work", "other", "--json", "--socket", sock],
+        &["take", "work", "--json", "--socket", sock],
+        &["give", "work", "--json", "--socket", sock],
+        &["signal", "work", "freeze", "--json", "--socket", sock],
+        &["approvals", "--json", "--socket", sock],
+        &["approve", id, "--yes", "--json", "--socket", sock],
+        &["deny", id, "--json", "--socket", sock],
+        &["detach", "--yes", "--json", "--socket", sock],
+        &["whoami", "--json", "--socket", sock],
+    ] {
+        assert_no_server_json_contract(args, None, sock);
+    }
+
+    let bad = "work:1.x";
+    for args in [
+        &["resize", bad, "80x24", "--json", "--socket", sock][..],
+        &["send-keys", "--json", "--socket", sock, bad, "x"],
+        &["paste", bad, "text", "--json", "--socket", sock],
+        &["take", bad, "--json", "--socket", sock],
+        &["give", bad, "--json", "--socket", sock],
+        &["signal", bad, "freeze", "--json", "--socket", sock],
+    ] {
+        let _ = assert_json_error_contract(args, None, "invalid_selector", 1);
+    }
+    for args in [
+        &["approve", "not-an-id", "--yes", "--json", "--socket", sock][..],
+        &["deny", "not-an-id", "--json", "--socket", sock],
+    ] {
+        let _ = assert_json_error_contract(args, None, "usage_error", 2);
+    }
+}
+
+/// Without `--json` the same refusals keep the prose each verb has always
+/// printed: the shared no-server block, and the one-line selector error.
+#[test]
+fn ctx_verbs_keep_their_prose_without_json() {
+    let tmp = TempDir::new().expect("tempdir");
+    let sock = &abandoned_socket(tmp.path());
+
+    let (code, _stdout, stderr) = run(&["send-keys", "--socket", sock, "work", "x"]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains(sock) && stderr.contains("phux doctor"),
+        "the no-server block names the socket and its remedies; got {stderr:?}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err(),
+        "{stderr:?}"
+    );
+
+    let (code, _stdout, stderr) = run(&["resize", "work:1.x", "80x24", "--socket", sock]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stderr.contains("invalid target 'work:1.x'") && stderr.trim().lines().count() == 1,
+        "a bad selector is one prose line; got {stderr:?}"
     );
 }
 
@@ -138,18 +210,10 @@ fn json_error_contract_holds_across_registry_verbs() {
     let tmp = TempDir::new().expect("tempdir");
 
     // An empty-but-valid config: id/name lookups miss cleanly.
-    let empty_xdg = tmp.path().join("xdg-empty");
-    std::fs::create_dir_all(empty_xdg.join("phux")).expect("create config dir");
-    std::fs::write(empty_xdg.join("phux").join("config.toml"), "").expect("write config");
+    let empty_xdg = xdg_with_config(tmp.path(), "xdg-empty", "");
 
     // A config whose TOML does not parse: registry loads fail.
-    let broken_xdg = tmp.path().join("xdg-broken");
-    std::fs::create_dir_all(broken_xdg.join("phux")).expect("create config dir");
-    std::fs::write(
-        broken_xdg.join("phux").join("config.toml"),
-        "not = [valid\n",
-    )
-    .expect("write broken config");
+    let broken_xdg = xdg_with_config(tmp.path(), "xdg-broken", "not = [valid\n");
     let broken_toml = broken_xdg.join("phux").join("config.toml");
     let broken_toml = broken_toml.to_str().expect("utf-8 temp path");
 
@@ -179,9 +243,7 @@ fn json_error_contract_holds_across_registry_verbs() {
 #[test]
 fn alias_spellings_share_the_canonical_failure_paths() {
     let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
-    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+    let xdg = xdg_with_config(tmp.path(), "xdg", "");
 
     let canonical = run_with_xdg(&["plugin", "unlink", "no.such.plugin", "--json"], &xdg);
     let alias = run_with_xdg(&["plugin", "rm", "no.such.plugin", "--json"], &xdg);
@@ -195,9 +257,7 @@ fn alias_spellings_share_the_canonical_failure_paths() {
 #[test]
 fn doctor_json_failure_exit_is_json_only() {
     let tmp = TempDir::new().expect("tempdir");
-    let xdg = tmp.path().join("xdg");
-    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
-    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+    let xdg = xdg_with_config(tmp.path(), "xdg", "");
 
     let long_sock = format!("/tmp/{}/phux.sock", "x".repeat(200));
     let (code, stdout, stderr) = run_with_xdg(&["doctor", "--json", "--socket", &long_sock], &xdg);
@@ -235,4 +295,60 @@ fn no_server_without_json_stays_prose() {
         "prose keeps the remedy block; got {stderr:?}"
     );
     assert!(!stderr.contains(BANNER_FRAGMENT), "stderr={stderr:?}");
+}
+
+/// `resize --json` reports a refusal on the contract, not as prose: the
+/// pane resolves on the first connection and is gone from the read-back on
+/// the second, which `resize_to` refuses. Exactly one JSON stderr line.
+#[test]
+fn resize_json_reports_a_refusal_as_one_contract_line() {
+    use phux_client::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+    let snapshot = |resources: Vec<ResourceInfo>| {
+        let (session, window) = (SessionId::new(1), WindowId::new(1));
+        SessionSnapshot::new(session, window, ResourceId::local(7))
+            .with_sessions(vec![SessionInfo::new(session, "work")])
+            .with_windows(vec![WindowInfo::new(window, session, "shell")])
+            .with_resources(resources)
+    };
+    let present = snapshot(vec![ResourceInfo::new(
+        ResourceId::local(7),
+        WindowId::new(1),
+        80,
+        24,
+    )]);
+    let gone = snapshot(Vec::new());
+
+    let tmp = TempDir::new().expect("tempdir");
+    let socket = tmp.path().join("phux.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::UnixListener::from_std(listener).expect("listener");
+            ScriptedServer::accept(&listener, ScriptSpec::new().state(present)).await;
+            ScriptedServer::accept(&listener, ScriptSpec::new().state(gone)).await;
+        });
+    });
+
+    let sock = socket.to_str().expect("utf-8 temp path");
+    let doc = assert_json_error_contract(
+        &["resize", "@7", "100x30", "--json", "--socket", sock],
+        Some(tmp.path()),
+        "transport",
+        1,
+    );
+    assert!(
+        doc["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("cannot resize '@7': ")),
+        "{doc}"
+    );
+    server.join().expect("scripted server");
 }

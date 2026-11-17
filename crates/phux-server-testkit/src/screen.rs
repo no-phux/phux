@@ -9,7 +9,7 @@ use libghostty_vt::{
     point::{Coordinate as PointCoordinate, Point},
     terminal::ScrollViewport,
 };
-use phux_protocol::render_pool::{RenderPool, RenderWalk};
+use phux_vt::render_pool::{RenderPool, RenderWalk};
 
 /// One terminal per `Screen`, so the pool identity never changes.
 const POOL_GENERATION: u128 = 0;

@@ -16,7 +16,7 @@ use std::fmt;
 
 use libghostty_vt::Terminal;
 use libghostty_vt::render::{Colors, CursorVisualStyle, Dirty, Overscan, Snapshot};
-use phux_protocol::render_pool::{RenderPool, RenderWalk, TerminalGeneration};
+use phux_vt::render_pool::{RenderPool, RenderWalk, TerminalGeneration};
 use thiserror::Error;
 
 mod flatten;

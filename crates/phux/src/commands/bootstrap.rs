@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
+use phux_config::socket::default_socket_path;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{
     Command as WireCommand, CommandResult, CommandValue, ListenerTransport,
 };
-use phux_server::runtime::default_socket_path;
 
 use super::{cli_runtime, command_on};
 
@@ -41,7 +41,7 @@ pub(crate) struct BootstrapArgs {
 }
 
 /// Run `phux bootstrap`.
-pub(crate) fn run(args: &BootstrapArgs) -> ExitCode {
+pub(crate) fn run_request(args: &BootstrapArgs) -> ExitCode {
     let port_range = match args.port_range.as_deref().map(parse_port_range).transpose() {
         Ok(range) => range,
         Err(err) => {
@@ -167,6 +167,21 @@ pub(crate) fn parse_port_range(raw: &str) -> Result<(u16, u16), String> {
         return Err(format!("{raw:?} has its lower bound last"));
     }
     Ok((min, max))
+}
+
+/// Run the hidden `phux bootstrap` as parsed.
+pub(crate) fn run(args: crate::commands::BootstrapArgs, socket: Option<PathBuf>) -> ExitCode {
+    let crate::commands::BootstrapArgs {
+        client_version,
+        port_range,
+        linger,
+    } = args;
+    run_request(&BootstrapArgs {
+        socket,
+        client_version,
+        port_range,
+        linger,
+    })
 }
 
 #[cfg(test)]

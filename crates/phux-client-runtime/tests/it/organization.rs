@@ -7,11 +7,7 @@
 
 use phux_client_core::org_ops::{OrgOutcome, SubmitError};
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, ReplicaState};
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, Layer, LayerSet, ServerCapabilities, ServerFeature,
-    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
-};
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
 use phux_protocol::ids::{
     ActivationId, AuthorityId, OperationId, ResourceId, ResourceKey, Revision, ServerInstance,
     SessionId, SessionKey, WindowId,
@@ -23,35 +19,26 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
+use crate::embedded::{answer, commands, negotiate, opened, reopen, server_hello};
+
 mod empty_spawn;
-mod hello;
-use hello::hello;
 
-fn decode(frame: &[u8]) -> FrameKind {
-    let (decoded, rest) = FrameKind::decode(frame).expect("outbound frame decodes");
-    assert!(rest.is_empty());
-    decoded
-}
-
-/// Every outbound `COMMAND`, with its request id.
-fn commands(plane: &mut ControlPlane) -> Vec<(u32, Command)> {
-    plane
-        .take_outbound()
-        .iter()
-        .filter_map(|bytes| match decode(bytes) {
-            FrameKind::Command {
-                request_id,
-                command,
-            } => Some((request_id, command)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn answer(plane: &mut ControlPlane, request_id: u32, result: CommandResult) {
-    plane
-        .feed(FrameKind::CommandResult { request_id, result })
-        .expect("command result");
+/// The fixture server, advertising `ORGANIZATION` (and the session verbs
+/// that ride with it) when `organization`.
+fn hello(organization: bool) -> FrameKind {
+    let ext = if organization {
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+            ServerFeatureExt::SessionProject,
+        ])
+    } else {
+        ServerFeatureExtSet::new()
+    };
+    server_hello()
+        .features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources]))
+        .features_ext(ext)
+        .build()
 }
 
 fn event(plane: &mut ControlPlane, seq: Option<u64>, event: AgentEvent) {
@@ -110,30 +97,61 @@ fn committed(operation: OperationId, revision: u64) -> CommandResult {
 /// A browsing plane past `HELLO_OK`; returns the seed request's id when the
 /// server advertises `ORGANIZATION`.
 fn negotiated(organization: bool) -> (ControlPlane, Option<u32>) {
-    let mut plane = ControlPlane::new(ControlOptions::default());
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello(organization)).expect("HELLO_OK");
-    let seed = commands(&mut plane)
-        .into_iter()
-        .find(|(_, command)| {
-            matches!(
-                command,
+    let (plane, followups) = negotiate(ControlOptions::default(), hello(organization), None);
+    let seed = followups.into_iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command:
                 Command::GetOrganization {
                     filter: OrgFilter::All,
                     cursor: None,
                     ..
-                }
-            )
-        })
-        .map(|(id, _)| id);
+                },
+        } => Some(request_id),
+        _ => None,
+    });
     (plane, seed)
 }
 
+/// A plane seeded from `page(5)`, its post-seed commands drained.
 fn seeded() -> ControlPlane {
     let (mut plane, seed) = negotiated(true);
     answer(&mut plane, seed.expect("seed"), page_value(page(5)));
+    let _ = commands(&mut plane);
     plane
+}
+
+/// Drop and reopen the connection; returns the reseed request's id and the
+/// other commands sent after `HELLO_OK`.
+fn reconnect(plane: &mut ControlPlane) -> (u32, Vec<(u32, Command)>) {
+    plane.connection_lost(Some("reset".to_owned()));
+    reopen(plane, hello(true));
+    let after_hello = commands(plane);
+    let seed = after_hello
+        .iter()
+        .find(|(_, c)| matches!(c, Command::GetOrganization { .. }))
+        .expect("reseed")
+        .0;
+    (seed, after_hello)
+}
+
+/// Answer a fresh topology read with `snapshot`.
+fn refresh_topology_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
+    let refresh = plane.refresh_topology().unwrap();
+    let _ = commands(plane);
+    answer(
+        plane,
+        refresh,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
+}
+
+fn renamed(name: &str) -> AgentEvent {
+    AgentEvent::SessionRenamed {
+        session: skey(1),
+        name: name.to_owned(),
+        revision: Revision::new(3),
+    }
 }
 
 fn org_outcomes(events: &[Event]) -> Vec<(OperationId, OrgOutcome)> {
@@ -171,15 +189,7 @@ fn the_replica_seeds_across_pages_then_follows_the_journal() {
         .expect("the next page")
         .0;
     // An event during the seed is buffered and replayed past the cut.
-    event(
-        &mut plane,
-        Some(6),
-        AgentEvent::SessionRenamed {
-            session: skey(1),
-            name: "notes".to_owned(),
-            revision: Revision::new(3),
-        },
-    );
+    event(&mut plane, Some(6), renamed("notes"));
     answer(
         &mut plane,
         next,
@@ -229,7 +239,6 @@ fn the_replica_seeds_across_pages_then_follows_the_journal() {
 #[test]
 fn a_journal_gap_refetches_the_organization() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     event(
         &mut plane,
         None,
@@ -252,7 +261,6 @@ fn a_journal_gap_refetches_the_organization() {
 #[test]
 fn an_operation_is_resent_with_the_same_id_after_a_reconnect_and_deduped() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let operation = plane.rename_session(skey(1), "notes").expect("submitted");
     let sent = commands(&mut plane);
     assert!(matches!(
@@ -261,22 +269,13 @@ fn an_operation_is_resent_with_the_same_id_after_a_reconnect_and_deduped() {
     ));
 
     // The reply is lost with the connection.
-    plane.connection_lost(Some("reset".to_owned()));
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello(true)).expect("HELLO_OK");
-    let after_hello = commands(&mut plane);
+    let (seed, after_hello) = reconnect(&mut plane);
     assert!(
         !after_hello
             .iter()
             .any(|(_, c)| matches!(c, Command::SessionRename { .. })),
         "no resend before the seed names the authority"
     );
-    let seed = after_hello
-        .iter()
-        .find(|(_, c)| matches!(c, Command::GetOrganization { .. }))
-        .unwrap()
-        .0;
     answer(&mut plane, seed, page_value(page(8)));
     let resent = commands(&mut plane);
     let [(request_id, Command::SessionRename { operation: op, .. })] = resent.as_slice() else {
@@ -304,18 +303,9 @@ fn an_operation_is_resent_with_the_same_id_after_a_reconnect_and_deduped() {
 #[test]
 fn another_authority_after_a_reconnect_reports_the_outcome_unknown() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let operation = plane.rename_session(skey(1), "notes").unwrap();
     let _ = commands(&mut plane);
-    plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = plane.take_outbound();
-    plane.feed(hello(true)).unwrap();
-    let seed = commands(&mut plane)
-        .into_iter()
-        .find(|(_, c)| matches!(c, Command::GetOrganization { .. }))
-        .unwrap()
-        .0;
+    let (seed, _) = reconnect(&mut plane);
     let other = OrganizationPage::new(AuthorityId::new([2; 16]).unwrap(), Revision::new(1), 1);
     answer(&mut plane, seed, page_value(other));
     let outcomes = org_outcomes(&plane.take_events());
@@ -334,7 +324,6 @@ fn another_authority_after_a_reconnect_reports_the_outcome_unknown() {
 #[test]
 fn a_conflict_is_surfaced_to_the_consumer() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let operation = plane.rename_session(skey(1), "notes").unwrap();
     let (request_id, _) = commands(&mut plane).remove(0);
     answer(
@@ -392,7 +381,6 @@ fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
 #[test]
 fn close_terminals_terminates_each_under_organization() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let request = plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
     let sent = commands(&mut plane);
     let [
@@ -424,7 +412,6 @@ fn close_terminals_terminates_each_under_organization() {
 #[test]
 fn kill_session_is_one_server_command_resolved_like_any_other() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let operation = plane
         .kill_session(skey(1))
         .expect("SESSION_KILL advertised");
@@ -450,7 +437,6 @@ fn kill_session_is_one_server_command_resolved_like_any_other() {
 #[test]
 fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     assert!(plane.session_project_supported());
     let operation = plane
         .set_session_project(skey(1), Some("phux"))
@@ -468,14 +454,7 @@ fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
         panic!("expected one SESSION_SET_PROJECT, got {sent:?}");
     };
     assert_eq!((*session, project.as_deref()), (skey(1), Some("phux")));
-    answer(
-        &mut plane,
-        *id,
-        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
-            operation,
-            Revision::new(3),
-        )))),
-    );
+    answer(&mut plane, *id, committed(operation, 3));
     let seq = plane.organization().journal_seq() + 1;
     event(
         &mut plane,
@@ -507,7 +486,6 @@ fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
 #[test]
 fn the_topology_carries_keys_lifetimes_and_exec_state() {
     let mut plane = seeded();
-    let _ = commands(&mut plane);
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
         .with_sessions(vec![
             SessionInfo::new(SessionId::new(1), "work").with_key(Some(skey(1))),
@@ -516,13 +494,7 @@ fn the_topology_carries_keys_lifetimes_and_exec_state() {
             ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
                 .with_session(Some(SessionId::new(1))),
         ]);
-    let refresh = plane.refresh_topology().unwrap();
-    let _ = commands(&mut plane);
-    answer(
-        &mut plane,
-        refresh,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    refresh_topology_to(&mut plane, snapshot);
     let topology = plane.topology().expect("topology");
     assert_eq!(topology.sessions[0].key, Some(skey(1)));
     assert_eq!(topology.sessions[0].revision, Some(Revision::new(2)));
@@ -531,15 +503,7 @@ fn the_topology_carries_keys_lifetimes_and_exec_state() {
     assert_eq!(topology.panes[0].key, Some(rkey(1)));
     assert_eq!(topology.panes[0].exec, Some(ExecState::Running));
     assert_eq!(topology.handles.key(&ResourceId::local(1)), Some(rkey(1)));
-    event(
-        &mut plane,
-        Some(6),
-        AgentEvent::SessionRenamed {
-            session: skey(1),
-            name: "renamed-work".to_owned(),
-            revision: Revision::new(3),
-        },
-    );
+    event(&mut plane, Some(6), renamed("renamed-work"));
     let topology = plane.topology().unwrap();
     assert_eq!(topology.sessions[0].name, "renamed-work");
     assert_eq!(topology.sessions[0].key, Some(skey(1)));
@@ -566,13 +530,7 @@ fn membership_events_update_live_pane_ownership_without_another_state_snapshot()
             ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
                 .with_session(Some(SessionId::new(1))),
         ]);
-    let refresh = plane.refresh_topology().unwrap();
-    let _ = commands(&mut plane);
-    answer(
-        &mut plane,
-        refresh,
-        CommandResult::OkWith(CommandValue::State(snapshot)),
-    );
+    refresh_topology_to(&mut plane, snapshot);
     assert_eq!(plane.topology().unwrap().panes[0].session_id, 1);
     event(
         &mut plane,

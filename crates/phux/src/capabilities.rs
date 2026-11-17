@@ -164,7 +164,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux channel --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux whoami --json", "schema_version": phux_protocol::wire::frame::WHOAMI_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": crate::commands::run::RESULT_SCHEMA_VERSION, "kind": "document" },
-        { "invocation": "phux mission --json", "schema_version": phux_mission::SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux mission --json", "schema_version": phux_work::mission::SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux mail|claim --json", "schema_version": crate::commands::coord::SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux approvals --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent usage --json", "schema_version": null, "kind": "document", "note": "the published phux.usage/v1 snapshot, verbatim; `schema` is its version" },

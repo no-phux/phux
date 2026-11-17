@@ -8,13 +8,12 @@
 
 use crate::{common, listeners, paired};
 
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::time::Duration;
 
 use common::ServerGuard;
 
 const SESSION: &str = "work";
-const POLL: Duration = Duration::from_millis(50);
 
 /// Spawn `phux server` with a seed pane running `seed_command`, then block
 /// until the socket appears.
@@ -51,29 +50,6 @@ fn alive(pid: u32) -> bool {
     common::process_exists(pid)
 }
 
-/// The first direct child PID of `parent`, via `pgrep -P`.
-fn child_of(parent: u32) -> Option<u32> {
-    let out = Command::new("pgrep")
-        .args(["-P", &parent.to_string()])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|l| l.trim().parse().ok())
-}
-
-fn poll<F: FnMut() -> bool>(deadline: Duration, mut f: F) -> bool {
-    let end = Instant::now() + deadline;
-    while Instant::now() < end {
-        if f() {
-            return true;
-        }
-        std::thread::sleep(POLL);
-    }
-    false
-}
-
 #[test]
 #[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
 fn child_and_scrollback_survive_graceful_upgrade() {
@@ -89,8 +65,8 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     let child_pid = {
         let mut found = None;
         assert!(
-            poll(Duration::from_secs(10), || {
-                found = child_of(server_pid);
+            common::eventually(Duration::from_secs(10), || {
+                found = common::child_of(server_pid);
                 found.is_some()
             }),
             "the seed pane's child should spawn"
@@ -109,7 +85,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     // The decisive check: the server re-execed IN PLACE, so its PID survives.
     // A kill+restart would not preserve it.
     assert!(
-        poll(Duration::from_secs(10), || alive(server_pid)),
+        common::eventually(Duration::from_secs(10), || alive(server_pid)),
         "the server process (pid {server_pid}) must survive the in-place execve"
     );
     // The pane's child survived the upgrade with its master fd intact.
@@ -121,7 +97,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     // The resumed server rebuilt the tree + replayed the snapshot: reconnect
     // and confirm the session is back and the marker survived.
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
     let snap = server.stdout(&["snapshot", SESSION]);
@@ -141,13 +117,13 @@ fn child_and_scrollback_survive_graceful_upgrade() {
         "the resumed session should accept a kill"
     );
     assert!(
-        poll(Duration::from_secs(10), || !server
+        common::eventually(Duration::from_secs(10), || !server
             .stdout(&["ls"])
             .contains(SESSION)),
         "the killed resumed session should be reaped from the authoritative list"
     );
     assert!(
-        poll(Duration::from_secs(10), || !alive(child_pid)),
+        common::eventually(Duration::from_secs(10), || !alive(child_pid)),
         "killing the resumed session should terminate its pane child"
     );
 }
@@ -176,7 +152,7 @@ fn program_title_stays_out_of_the_user_title_across_upgrade() {
         "the seed pane should print its marker"
     );
     assert!(
-        poll(Duration::from_secs(10), || {
+        common::eventually(Duration::from_secs(10), || {
             json_of(&server, &["snapshot", SESSION, "--json"])["title"] == title.as_str()
         }),
         "the program title should be live before the upgrade"
@@ -188,7 +164,7 @@ fn program_title_stays_out_of_the_user_title_across_upgrade() {
 
     assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
 
@@ -215,7 +191,7 @@ fn agent_session_and_its_log_survive_graceful_upgrade() {
     let server = start_with_seed("exec sleep 600");
     let server_pid = server.pid();
     assert!(
-        poll(Duration::from_secs(10), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(10), || server.status(&["ls"]) == 0),
         "the server should accept connections"
     );
 
@@ -245,11 +221,11 @@ fn agent_session_and_its_log_survive_graceful_upgrade() {
 
     assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(10), || alive(server_pid)),
+        common::eventually(Duration::from_secs(10), || alive(server_pid)),
         "the server process must survive the in-place execve"
     );
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
 
@@ -330,7 +306,7 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
 
     // Armed before the upgrade: the idle screen is identified and published.
     assert!(
-        poll(Duration::from_secs(20), || agent_state(&server, SESSION)
+        common::eventually(Duration::from_secs(20), || agent_state(&server, SESSION)
             .is_some_and(|state| state == "idle")),
         "the detector should publish `idle` before the upgrade; last: {:?}",
         agent_state(&server, SESSION)
@@ -338,7 +314,7 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
 
     assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
 
@@ -359,7 +335,7 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
     std::fs::write(&trigger, b"").expect("let the fake agent paint its dialog");
 
     assert!(
-        poll(Duration::from_secs(20), || agent_state(&server, SESSION)
+        common::eventually(Duration::from_secs(20), || agent_state(&server, SESSION)
             .is_some_and(|state| state == "blocked")),
         "the resumed pane's detector should derive `blocked` from the screen \
          painted after the upgrade; last: {:?}",
@@ -399,7 +375,7 @@ fn program_status_and_inheritance_survive_graceful_upgrade() {
         server.status(&["wait", SESSION, "--until", &marker, "--timeout", "10"]),
         0,
     );
-    assert!(poll(Duration::from_secs(10), || {
+    assert!(common::eventually(Duration::from_secs(10), || {
         json_of(&server, &["resource", "show", SESSION, "--json"])["program_status"]["active"]["state"]
             == "blocked"
     }));
@@ -411,10 +387,10 @@ fn program_status_and_inheritance_survive_graceful_upgrade() {
 
     assert_eq!(server.status(&["upgrade"]), 0);
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
-    assert!(poll(Duration::from_secs(10), || {
+    assert!(common::eventually(Duration::from_secs(10), || {
         let shown = json_of(&server, &["resource", "show", SESSION, "--json"]);
         shown["program_status"] == before["program_status"] && shown["agent"]["state"] == "blocked"
     }));
@@ -424,7 +400,7 @@ fn program_status_and_inheritance_survive_graceful_upgrade() {
 
     assert_eq!(server.status(&["send-keys", SESSION, "go", "Enter"]), 0);
     assert!(
-        poll(Duration::from_secs(10), || {
+        common::eventually(Duration::from_secs(10), || {
             let shown = json_of(&server, &["resource", "show", SESSION, "--json"]);
             shown["program_status"]["active"]["state"] == "blocked"
                 && shown["program_status"]["active"]["app"].is_null()
@@ -455,8 +431,8 @@ fn an_upgrade_into_a_refused_policy_keeps_the_panes() {
     let child_pid = {
         let mut found = None;
         assert!(
-            poll(Duration::from_secs(10), || {
-                found = child_of(server_pid);
+            common::eventually(Duration::from_secs(10), || {
+                found = common::child_of(server_pid);
                 found.is_some()
             }),
             "the seed pane's child should spawn"
@@ -470,7 +446,7 @@ fn an_upgrade_into_a_refused_policy_keeps_the_panes() {
     assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
 
     assert!(
-        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
         "the resumed server should accept connections again"
     );
     assert!(alive(server_pid), "the server re-execed in place");

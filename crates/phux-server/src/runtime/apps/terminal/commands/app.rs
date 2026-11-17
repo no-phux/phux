@@ -13,8 +13,8 @@ use phux_terminal_api::actor::TerminalResource as _;
 use super::*;
 use crate::resource::ResourceKind;
 use crate::runtime::apps::{
-    FrameAdmission, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame, ResourceLaunch,
-    ResourceSpawn, RunningLane, SessionSeed, StreamBootstrap, UpgradeCut,
+    FrameAdmission, InteractiveApp, KindResume, NO_TERMINAL_PROFILE, ResourceApp, ResourceFrame,
+    ResourceLaunch, ResourceSpawn, RunningLane, SessionSeed, StreamBootstrap, UpgradeCut,
 };
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -24,12 +24,8 @@ use crate::runtime::operation_dedupe::OperationClaim;
 pub(crate) struct TerminalApp;
 
 impl ResourceApp for TerminalApp {
-    fn supports_organization_launch(&self) -> bool {
-        true
-    }
-
-    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
-        super::super::launch::execute(launch)
+    fn interactive(&self) -> Option<&'static dyn InteractiveApp> {
+        Some(&Self)
     }
 
     fn stage_session<'a>(
@@ -42,90 +38,12 @@ impl ResourceApp for TerminalApp {
         super::super::attach::stage_session(capture, staging, pane).boxed_local()
     }
 
-    fn refresh_for_attach<'a>(&'a self, state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
-        super::super::attach::refresh_registry_cwds(state).boxed_local()
-    }
-
-    fn prepare_attach<'a>(
-        &'a self,
-        attach: crate::runtime::session_attach::SessionAttach<'a>,
-        panes: &'a [crate::state::AttachSnapshotPane],
-    ) -> LocalBoxFuture<'a, ()> {
-        async move {
-            if attach.same_session {
-                let client = crate::runtime::wire_client(attach.client_id);
-                super::super::attach::detach_prior_state_sync_consumers(
-                    panes,
-                    client,
-                    attach.client_caps,
-                )
-                .await;
-            }
-            let colors = attach.client_caps.default_colors;
-            super::super::attach::apply_client_default_colors(panes, colors).await;
-        }
-        .boxed_local()
-    }
-
-    fn attach_viewport(
-        &self,
-        s: &mut crate::state::ServerState,
-        panes: &[crate::state::AttachSnapshotPane],
-        viewport: phux_protocol::wire::frame::ViewportInfo,
-    ) {
-        super::super::attach::apply_panes_viewport(s, panes, viewport);
-    }
-
-    fn after_attach<'a>(
-        &'a self,
-        attach: crate::runtime::session_attach::SessionAttach<'a>,
-        panes: &'a [crate::state::AttachSnapshotPane],
-        role: phux_protocol::wire::frame::RolePolicy,
-    ) -> LocalBoxFuture<'a, ()> {
-        let (state, client, was_subscribed) = (attach.state, attach.client_id, attach.same_session);
-        super::super::attach::apply_session_role(state, client, panes, role, was_subscribed)
-            .boxed_local()
-    }
-
-    fn abort_attach<'a>(
-        &'a self,
-        client: ClientId,
-        handles: &'a [ResourceHandle],
-    ) -> LocalBoxFuture<'a, ()> {
-        super::super::attach::release_aborted_consumers(client, handles).boxed_local()
-    }
-
-    fn defers_stream_bootstrap(&self) -> bool {
-        true
-    }
-
     fn resumes_from_cursor(&self) -> bool {
         false
     }
 
     fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
         Ok(())
-    }
-
-    fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
-        // The injected engine's rows; the app keeps none of its own.
-        state
-            .terminal_engine()
-            .map(|engine| engine.metrics())
-            .into_iter()
-            .collect()
-    }
-
-    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
-        release_terminal_consumer(handle, client);
-    }
-
-    fn fence_consumer<'a>(
-        &'a self,
-        handle: &'a ResourceHandle,
-        client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        fence_terminal_consumer(handle, client).boxed_local()
     }
 
     fn command<'a>(
@@ -189,14 +107,6 @@ impl ResourceApp for TerminalApp {
         Box::pin(std::future::ready(()))
     }
 
-    fn exit_retained(
-        &self,
-        s: &mut crate::state::ServerState,
-        wire: &phux_protocol::ids::ResourceId,
-    ) -> Option<crate::hooks::HookEvent> {
-        super::super::agent_state::retract_on_retained_exit(s, wire)
-    }
-
     fn claim_relaunch(
         &self,
         _ctx: &CommandContext,
@@ -208,10 +118,115 @@ impl ResourceApp for TerminalApp {
         None
     }
 
+    fn command_refused(
+        &self,
+        _s: &crate::state::ServerState,
+        _client: ClientId,
+        _command: &Command,
+        _result: &CommandResult,
+    ) {
+    }
+}
+
+impl InteractiveApp for TerminalApp {
+    fn supports_organization_launch(&self) -> bool {
+        true
+    }
+
+    fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String> {
+        super::super::launch::execute(launch)
+    }
+
+    fn refresh_for_attach<'a>(&'a self, state: &'a SharedState) -> LocalBoxFuture<'a, ()> {
+        super::super::attach::refresh_registry_cwds(state).boxed_local()
+    }
+
+    fn prepare_attach<'a>(
+        &'a self,
+        attach: crate::runtime::session_attach::SessionAttach<'a>,
+        panes: &'a [crate::state::AttachSnapshotPane],
+    ) -> LocalBoxFuture<'a, ()> {
+        async move {
+            if attach.same_session {
+                let client = crate::runtime::wire_client(attach.client_id);
+                super::super::attach::detach_prior_state_sync_consumers(
+                    panes,
+                    client,
+                    attach.client_caps,
+                )
+                .await;
+            }
+            let colors = attach.client_caps.default_colors;
+            super::super::attach::apply_client_default_colors(panes, colors).await;
+        }
+        .boxed_local()
+    }
+
+    fn attach_viewport(
+        &self,
+        s: &mut crate::state::ServerState,
+        panes: &[crate::state::AttachSnapshotPane],
+        viewport: phux_protocol::wire::frame::ViewportInfo,
+    ) {
+        super::super::attach::apply_panes_viewport(s, panes, viewport);
+    }
+
+    fn after_attach<'a>(
+        &'a self,
+        attach: crate::runtime::session_attach::SessionAttach<'a>,
+        panes: &'a [crate::state::AttachSnapshotPane],
+        role: phux_protocol::wire::frame::RolePolicy,
+    ) -> LocalBoxFuture<'a, ()> {
+        let (state, client, was_subscribed) = (attach.state, attach.client_id, attach.same_session);
+        super::super::attach::apply_session_role(state, client, panes, role, was_subscribed)
+            .boxed_local()
+    }
+
+    fn abort_attach<'a>(
+        &'a self,
+        client: ClientId,
+        handles: &'a [ResourceHandle],
+    ) -> LocalBoxFuture<'a, ()> {
+        super::super::attach::release_aborted_consumers(client, handles).boxed_local()
+    }
+
+    fn defers_stream_bootstrap(&self) -> bool {
+        true
+    }
+
+    fn metrics(&self, state: &SharedState) -> Vec<&'static [phux_perf::Metric]> {
+        // The injected engine's rows; the app keeps none of its own.
+        state
+            .terminal_engine()
+            .map(|engine| engine.metrics())
+            .into_iter()
+            .collect()
+    }
+
+    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
+        release_terminal_consumer(handle, client);
+    }
+
+    fn fence_consumer<'a>(
+        &'a self,
+        handle: &'a ResourceHandle,
+        client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        fence_terminal_consumer(handle, client).boxed_local()
+    }
+
+    fn exit_retained(
+        &self,
+        s: &mut crate::state::ServerState,
+        wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<crate::hooks::HookEvent> {
+        super::super::agent_state::retract_on_retained_exit(s, wire)
+    }
+
     fn start(&self, state: &SharedState) -> std::io::Result<Option<RunningLane>> {
         let lane = super::super::input_lane::start(state)?;
         // Off the runtime thread: a large upload directory is a walk.
-        let upload_env = state.with(crate::state::ServerState::server_env);
+        let upload_env = state.with(|s| s.config().server_env.clone());
         drop(tokio::task::spawn_blocking(move || {
             super::super::upload::sweep_stale_partials_at_startup(&upload_env);
         }));
@@ -241,15 +256,6 @@ impl ResourceApp for TerminalApp {
         handle_client_activity(state, client);
     }
 
-    fn command_refused(
-        &self,
-        _s: &crate::state::ServerState,
-        _client: ClientId,
-        _command: &Command,
-        _result: &CommandResult,
-    ) {
-    }
-
     fn keep_standing(
         &self,
         state: &SharedState,
@@ -276,7 +282,6 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     let Some(terminal) = routed_terminal(handle) else {
         return;
     };
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let _ = terminal
         .native_release
         .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
@@ -392,10 +397,10 @@ async fn serve(
                 lane.begin_apply(state, client_id, operation_id, terminal_id, events)
                     .await
             }
-            None => CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "acknowledged input lane unavailable".to_owned(),
-            },
+            None => CommandResult::error(
+                ErrorCode::InternalError,
+                "acknowledged input lane unavailable",
+            ),
         },
         Command::GetTerminalState {
             terminal_id,
@@ -474,10 +479,10 @@ async fn serve(
             terminal_id,
             state: reported,
         } => handle_report_agent_state(state, &terminal_id, reported).await,
-        _ => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message: "command not supported by this server".to_owned(),
-        },
+        _ => CommandResult::error(
+            ErrorCode::InvalidCommand,
+            "command not supported by this server",
+        ),
     }
 }
 
@@ -513,7 +518,7 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         });
     };
 
-    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    let Some(bootstrap_id) = state.with_mut(|s| s.resources_mut().next_bootstrap_id(client_id))
     else {
         return Err(AttachResourceFailure {
             code: ErrorCode::ResourceExhausted,
@@ -524,7 +529,7 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
-            state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
+            state.with_mut(|s| s.resources_mut().cancel_pump(client_id, core));
             return Err(AttachResourceFailure {
                 code: ErrorCode::WrongResourceKind,
                 message: error.to_string(),

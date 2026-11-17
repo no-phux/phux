@@ -313,7 +313,9 @@ fn a_delegated_connection_audits_on_behalf_of() {
 
     let mut state = ServerState::new();
     let client = ClientId(7);
-    state.set_peer_identity(client, crate::test_support::peer(TransportType::UnixSocket));
+    state
+        .clients_mut()
+        .set_peer_identity(client, crate::test_support::peer(TransportType::UnixSocket));
     state.set_connection_grant(client, ConnectionGrant::owner());
     assert_eq!(state.audit_actor(client).on_behalf_of, None);
     let delegated = ConnectionGrant::delegated(

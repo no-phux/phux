@@ -14,16 +14,8 @@ fn window(client: &Arc<Client>) -> Runtime<Desk> {
 #[test]
 fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() {
     for include_lost in [true, false] {
-        let (client, mut rt) = fixture(
-            &[record(1, ResourceKind::AccessibilityTree)],
-            &doc(LayoutNode::Leaf(id(1))),
-        );
-        publish(
-            &client,
-            1,
-            ResourceKind::AccessibilityTree,
-            b"{\"old\":true}",
-        );
+        let (client, mut rt) = one_document();
+        publish_tree(&client, b"{\"old\":true}");
         client
             .feed(FrameKind::ResourceOutput {
                 terminal_id: id(1),
@@ -46,12 +38,7 @@ fn one_observation_with_old_and_new_publications_uses_latest_incarnation_only() 
         let attach_id = seed(&client, &records).unwrap();
         install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
         attach_records(&client, attach_id, &records);
-        publish(
-            &client,
-            1,
-            ResourceKind::AccessibilityTree,
-            b"{\"latest\":true}",
-        );
+        publish_tree(&client, b"{\"latest\":true}");
         client.feed(FrameKind::AttachReady { attach_id }).unwrap();
         let observation = client.take_activity();
         let wakes = observation.events.iter().filter(|e| matches!(e, phux_client_runtime::control::Event::DocumentPublished { resource_id, .. } if *resource_id == id(1))).count();
@@ -100,12 +87,7 @@ fn first_connection_cut_before_attach_ready_survives_server_identity_establishme
     let attach_id = seed(&client, &records).unwrap();
     install_arrangement(&client, &records, &doc(LayoutNode::Leaf(id(1))));
     attach_records(&client, attach_id, &records);
-    publish(
-        &client,
-        1,
-        ResourceKind::AccessibilityTree,
-        b"{\"first_cut\":true}",
-    );
+    publish_tree(&client, b"{\"first_cut\":true}");
     step(&mut rt); // drain BootstrapReady, before the first AttachReady.
     assert_eq!(rt.state.connection.resources.pending.len(), 1);
     client.feed(FrameKind::AttachReady { attach_id }).unwrap();
@@ -116,10 +98,7 @@ fn first_connection_cut_before_attach_ready_survives_server_identity_establishme
 }
 
 fn foreign_fixture() -> (Arc<Client>, Runtime<Desk>) {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
+    let (client, mut rt) = one_document();
     let foreign = SessionKey::new([2; 16]).unwrap();
     let mut second = record(2, ResourceKind::AccessibilityTree);
     second.session = foreign;
@@ -370,11 +349,8 @@ fn dragging_a_secondary_json_selection_also_focuses_its_resource() {
 
 #[test]
 fn a_stale_document_wake_reads_nothing_and_the_newer_wake_applies() {
-    let (client, mut rt) = fixture(
-        &[record(1, ResourceKind::AccessibilityTree)],
-        &doc(LayoutNode::Leaf(id(1))),
-    );
-    publish(&client, 1, ResourceKind::AccessibilityTree, b"{\"cut\":0}");
+    let (client, mut rt) = one_document();
+    publish_tree(&client, b"{\"cut\":0}");
     step(&mut rt);
     client
         .feed(FrameKind::ResourceOutput {

@@ -205,13 +205,13 @@ pub(super) fn old_image_with_agent_sessions(
     s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run())
         .unwrap();
     let _ = spawn_agent_session(s, exited, "pi", None);
-    s.note_retain_request(exited, 60);
+    s.retained_mut().note_request(exited, 60);
     let _ = s
         .retain_exited(exited, phux_core::process::ExitOutcome::exited(1), 1)
         .unwrap();
 
     let _ = s.build_session_snapshot(sid);
-    s.set_upgrade_context(
+    s.lifecycle_mut().set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
         RuntimeFlags::default(),

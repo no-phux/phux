@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
@@ -31,25 +31,13 @@ esac
     )
 }
 
-pub(super) async fn assert_argv(
-    adapter: &CliAdapter,
-    log: &Path,
-    name: &str,
-    args: Value,
-    expected: &[&str],
-) -> Value {
-    let result = call_with_adapter(name, &args, adapter)
-        .await
-        .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-    assert_eq!(fake::logged(log), expected, "{name}");
-    result
-}
+pub(super) use fake::assert_argv;
 
 /// Every agent verb is its own tool: none carries an `action`
 /// discriminant, and the read and write shapes never merge.
 #[test]
 fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
-    let schemas = schemas();
+    let schemas: Vec<Value> = SPECS.iter().map(|spec| (spec.schema)()).collect();
     let names: Vec<&str> = schemas
         .iter()
         .filter_map(|schema| schema["name"].as_str())
@@ -60,7 +48,6 @@ fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
             "{} still multiplexes on `action`",
             schema["name"],
         );
-        assert!(owns(schema["name"].as_str().unwrap()));
     }
     let props = |name: &str| schemas[names.iter().position(|n| *n == name).unwrap()].clone();
     for read in ["phux_agent_list", "phux_agent_show", "phux_agent_explain"] {
@@ -92,10 +79,7 @@ fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
 async fn malformed_arguments_are_rejected_before_execution() {
     let adapter = CliAdapter::new("must-not-execute");
     for (name, args) in [
-        // Unknown key.
-        ("phux_agent_list", json!({ "target": "@1" })),
         // Missing required.
-        ("phux_agent_set", json!({ "target": "@1" })),
         ("phux_agent_send_keys", json!({ "target": "@1" })),
         ("phux_agent_send_keys", json!({ "keys": ["a"] })),
         // Empty key batch: all-or-nothing has nothing to deliver.
@@ -104,11 +88,6 @@ async fn malformed_arguments_are_rejected_before_execution() {
             json!({ "target": "@1", "keys": [] }),
         ),
         // Closed vocabularies.
-        ("phux_agent_set", json!({ "name": "b", "state": "busy" })),
-        (
-            "phux_agent_set",
-            json!({ "name": "b", "attention": "urgent" }),
-        ),
         ("phux_agent_wait", json!({ "until": ["unknown"] })),
         ("phux_agent_wait", json!({ "timeout_secs": 0 })),
         ("phux_agent_wait", json!({ "timeout_secs": 3601 })),
@@ -144,13 +123,81 @@ async fn malformed_arguments_are_rejected_before_execution() {
             "phux_agent_start",
             json!({ "name": "bot", "kind": "codex", "target": "@1", "force": "yes" }),
         ),
-        // The multiplexer's old shape is not silently accepted.
-        ("phux_agent_list", json!({ "action": "list" })),
     ] {
-        let result = match name {
-            "phux_agent_set" => identity::set(&args).await,
-            _ => call_with_adapter(name, &args, &adapter).await,
-        };
-        assert!(result.is_err(), "{name} accepted {args}");
+        let err = call_with_adapter(name, &args, &adapter)
+            .await
+            .expect_err(&format!("{name} accepted {args}"));
+        assert!(
+            !err.0.starts_with("not a CLI-backed tool"),
+            "{name} is not CLI-backed; test it in-process: {}",
+            err.0,
+        );
+    }
+}
+
+/// The in-process tools refuse a malformed call before dialing: with the
+/// socket at a dead path, the error names the argument, not `no_server`.
+#[tokio::test]
+async fn in_process_tools_reject_malformed_arguments_before_dialing() {
+    for (name, mut args, expected) in [
+        // Unknown key.
+        (
+            "phux_agent_list",
+            json!({ "target": "@1" }),
+            "unknown argument `target`",
+        ),
+        (
+            "phux_agent_show",
+            json!({ "until": ["idle"] }),
+            "unknown argument `until`",
+        ),
+        (
+            "phux_agent_explain",
+            json!({ "name": "bot" }),
+            "unknown argument `name`",
+        ),
+        (
+            "phux_agent_clear",
+            json!({ "name": "bot" }),
+            "unknown argument `name`",
+        ),
+        // The multiplexer's old shape is not silently accepted.
+        (
+            "phux_agent_list",
+            json!({ "action": "list" }),
+            "unknown argument `action`",
+        ),
+        (
+            "phux_agent_show",
+            json!({ "action": "show" }),
+            "unknown argument `action`",
+        ),
+        // Missing required.
+        (
+            "phux_agent_set",
+            json!({ "target": "@1" }),
+            "missing required argument `name`",
+        ),
+        // Closed vocabularies.
+        (
+            "phux_agent_set",
+            json!({ "name": "b", "state": "busy" }),
+            "state",
+        ),
+        (
+            "phux_agent_set",
+            json!({ "name": "b", "attention": "urgent" }),
+            "attention",
+        ),
+    ] {
+        args["socket"] = json!("/nonexistent/phux-mcp-agent-tools.sock");
+        let err = crate::tools::call_registered(name, &args)
+            .await
+            .expect_err(&format!("{name} accepted {args}"));
+        assert!(
+            err.0.contains(expected) && !err.0.contains("no_server"),
+            "{name} {args}: {}",
+            err.0,
+        );
     }
 }

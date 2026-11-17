@@ -37,6 +37,7 @@ pub mod policy;
 pub(crate) mod push;
 pub mod reconcile;
 pub mod runtime;
+pub(crate) mod secure_file;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
@@ -56,7 +57,7 @@ pub use org_store::OrgStoreLocation;
 pub use resource::{
     ResourceCore, ResourceFacet, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };
-pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime, default_socket_path};
+pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime};
 pub use state::{
     AttachError, AttachedClient, ClientId, DEFAULT_GROUP_ID, Outbound, ServerState, SharedState,
 };

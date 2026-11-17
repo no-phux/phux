@@ -7,11 +7,15 @@ use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    ToolError, num_arg, optional_string_array, parse_selector, required_str, resolve_kinded,
-    socket_or_default,
+    ToolError, ToolSpec, num_arg, optional_string_array, parse_selector, required_str,
+    resolve_kinded, socket_or_default,
 };
 
-pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
+pub(crate) const SPECS: &[ToolSpec] = &[ToolSpec::in_process("phux_ask", schema, |args| {
+    Box::pin(call(args))
+})];
+
+async fn call(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_selector(required_str(args, "target")?)?;
     let target = resolve_kinded(&socket, &selector, false).await?;
@@ -29,7 +33,7 @@ pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
     Ok(success_value(&target.id, &payload))
 }
 
-pub(crate) fn schema() -> Value {
+fn schema() -> Value {
     json!({
         "name": "phux_ask",
         "description": "Report that an agent in a pane is asking for human input, emitting the same asked event phux watch observes.",
