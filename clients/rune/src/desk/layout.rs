@@ -169,7 +169,7 @@ impl Desk {
             if self.is_document(&id) {
                 self.connection.others.insert(id, None);
                 changed = true;
-            } else if let Ok(view) = client.create_view(&id) {
+            } else if let Some(view) = self.create_view(client, &id) {
                 self.connection.others.insert(id, Some(view));
                 changed = true;
             }

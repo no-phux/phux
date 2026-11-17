@@ -3,7 +3,8 @@
 
 use std::time::Instant;
 
-use phux_client_runtime::Client;
+use phux_client_runtime::control::Status;
+use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
 
@@ -216,6 +217,24 @@ impl Desk {
         (client.selected_session() != Some(pane.session_id)).then(|| pane.session_name.clone())
     }
 
+    /// A view of `terminal`, or `None` while it has no replica. A terminal
+    /// the selected session lists but its attach never streamed (one moved
+    /// in from another session) would never get one, and clicking it would
+    /// do nothing forever: ask for it alone (#2223).
+    pub(super) fn create_view(&self, client: &Client, terminal: &ResourceId) -> Option<ViewId> {
+        let error = match client.create_view(terminal) {
+            Ok(view) => return Some(view),
+            Err(error) => error,
+        };
+        let here = (self.connection.topology.as_ref())
+            .and_then(|topology| topology.pane(terminal))
+            .is_some_and(|pane| client.selected_session() == Some(pane.session_id));
+        if here && client.status() == Status::Attached && client.attach_terminal(terminal) != 0 {
+            eprintln!("opening {terminal}: {error}; attaching it");
+        }
+        None
+    }
+
     /// What a terminal opening makes old news. A failure stays its full time:
     /// a warning raised by the reconnect that reopened this view is exactly
     /// what the person is about to need.
@@ -251,7 +270,7 @@ impl Desk {
         let view = if self.is_document(&target) {
             None
         } else {
-            let Ok(view) = client.create_view(&target) else {
+            let Some(view) = self.create_view(client, &target) else {
                 // Keep the first asking's clock, or the grace never runs out.
                 if self.connection.wanted.is_none() {
                     self.want_automatic(target.clone());
@@ -294,6 +313,9 @@ impl Desk {
 
 #[cfg(test)]
 mod reconnect;
+
+#[cfg(test)]
+mod unstreamed;
 
 #[cfg(test)]
 mod tests {
