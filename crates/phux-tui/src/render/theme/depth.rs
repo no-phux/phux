@@ -7,7 +7,7 @@
 //!   selection is reverse video.
 //! - Mono: every slot `Reset`; emphasis is bold and reverse video only.
 
-use phux_design::solve::{contrast, mix};
+use phux_design::solve::{mix, worst};
 use phux_design::{Mode, Params, Rgb8};
 use ratatui::style::Color;
 
@@ -52,11 +52,7 @@ pub fn nearest_256(c: Rgb8) -> u8 {
 /// never asked above what the 24-bit colour itself made.
 fn reach_256(c: Rgb8, extreme: Rgb8, bar: f64, under: &[Rgb8]) -> u8 {
     let lut = Params::house().srgb_lut;
-    let worst = |x: Rgb8| {
-        under
-            .iter()
-            .fold(f64::INFINITY, |m, s| m.min(contrast(x, *s, lut)))
-    };
+    let worst = |x: Rgb8| worst(x, under, lut);
     let target = bar.min(worst(c));
     let mut index = nearest_256(c);
     for step in 1..=10_u8 {
@@ -146,6 +142,7 @@ pub(super) fn mono(theme: &mut Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_design::solve::contrast;
 
     #[test]
     fn the_palette_and_its_nearest_entry() {

@@ -128,22 +128,13 @@ impl Theme {
     /// what does not load or parse is warned about and the default stands.
     #[must_use]
     pub fn from_cfg(cfg: &phux_config::ThemeCfg, plugins: &[PluginManifest]) -> Self {
-        Self::from_cfg_in(cfg, plugins, &Outer::detect())
-    }
-
-    /// [`Self::from_cfg`] for an explicit terminal.
-    #[must_use]
-    pub fn from_cfg_in(
-        cfg: &phux_config::ThemeCfg,
-        plugins: &[PluginManifest],
-        outer: &Outer,
-    ) -> Self {
+        let outer = Outer::detect();
         let base = match phux_config::theme::resolve_selected(cfg, plugins) {
-            Ok(Some(colors)) => Self::from_colors_in(&colors, outer),
-            Ok(None) => Self::house(outer),
+            Ok(Some(colors)) => Self::from_colors_in(&colors, &outer),
+            Ok(None) => Self::house(&outer),
             Err(err) => {
                 tracing::warn!(error = %err, "selected theme did not load; using the house look");
-                Self::house(outer)
+                Self::house(&outer)
             }
         };
         base.with_overrides(cfg)
@@ -209,15 +200,9 @@ impl Theme {
     }
 
     /// Map a theme's colours onto the chrome slots through the one solver
-    /// (spec §4.2): bg ← `background`, fg ← `foreground`, ANSI ←
-    /// `color0..15`, accent ← `accent`, selection ← `selection`, cursor ←
-    /// `cursor`. On a truecolor terminal that answered nothing.
-    #[must_use]
-    pub fn from_colors(colors: &ThemeColors) -> Self {
-        Self::from_colors_in(colors, &Outer::default())
-    }
-
-    /// [`Self::from_colors`] for an explicit terminal.
+    /// (spec §4.2) for the terminal `outer`: bg ← `background`, fg ←
+    /// `foreground`, ANSI ← `color0..15`, accent ← `accent`, selection ←
+    /// `selection`, cursor ← `cursor`.
     #[must_use]
     pub fn from_colors_in(colors: &ThemeColors, outer: &Outer) -> Self {
         let input = phux_design::Theme {
@@ -411,33 +396,8 @@ impl Theme {
     /// Mutable handle to the slot named `key`, or `None` if `key` is not
     /// a recognized slot. Slot names match the field names.
     fn slot_mut(&mut self, key: &str) -> Option<&mut Color> {
-        match key {
-            "accent" => Some(&mut self.accent),
-            "chord" => Some(&mut self.chord),
-            "action" => Some(&mut self.action),
-            "dim" => Some(&mut self.dim),
-            "border" => Some(&mut self.border),
-            "title" => Some(&mut self.title),
-            "section_header" => Some(&mut self.section_header),
-            "error" => Some(&mut self.error),
-            "surface" => Some(&mut self.surface),
-            "shadow" => Some(&mut self.shadow),
-            "selection_fg" => Some(&mut self.selection_fg),
-            "selection_bg" => Some(&mut self.selection_bg),
-            "attention" => Some(&mut self.attention),
-            "sidebar_section" => Some(&mut self.sidebar_section),
-            "agent_idle" => Some(&mut self.agent_idle),
-            "agent_working" => Some(&mut self.agent_working),
-            "agent_blocked" => Some(&mut self.agent_blocked),
-            "agent_done" => Some(&mut self.agent_done),
-            "agent_failed" => Some(&mut self.agent_failed),
-            "divider" => Some(&mut self.divider),
-            "divider_focus" => Some(&mut self.divider_focus),
-            "pane_title" => Some(&mut self.pane_title),
-            "pane_title_focus" => Some(&mut self.pane_title_focus),
-            "text" => Some(&mut self.text),
-            _ => None,
-        }
+        let mut slots = self.slots_mut().into_iter();
+        slots.find(|(name, _)| *name == key).map(|(_, slot)| slot)
     }
 }
 

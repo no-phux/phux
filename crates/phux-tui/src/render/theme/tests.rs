@@ -27,9 +27,6 @@ fn slot_specs_name_every_slot() {
             spec.key
         );
     }
-    let walked: std::collections::BTreeSet<_> =
-        theme.slots_mut().into_iter().map(|(key, _)| key).collect();
-    assert_eq!(walked, seen, "the depth fitters walk exactly the slots");
     // Every colour field is a row: probe the field count through Debug,
     // which lists one `name: Color` pair per field before the `term`.
     let debug = format!("{:?}", Theme::default());

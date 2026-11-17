@@ -10,7 +10,7 @@ pub mod status_bar;
 #[cfg(test)]
 mod gallery_tests;
 
-use phux_design::{Agent, State, Tone, ToneInput};
+use phux_design::{Agent, State, Tone, ToneInput, tone_of};
 use ratatui::style::Color;
 
 use crate::render::theme::{Glyphs, Theme};
@@ -29,17 +29,6 @@ pub struct AgentBadge {
     /// right now, failed, or holds an unread result.
     pub emphatic: bool,
 }
-
-/// Half-filled ring: actively working, not waiting.
-#[cfg(test)]
-pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";
-/// Filled diamond: finished, and nobody has looked yet (the driver tests
-/// pin the tab badge to it).
-#[cfg(test)]
-pub(crate) const AGENT_DONE_GLYPH: &str = "◆";
-/// Hollow ring: idle, or done and seen.
-#[cfg(test)]
-pub(crate) const AGENT_IDLE_GLYPH: &str = "○";
 
 /// The ladder column this process's terminal allows, as every theme built
 /// here gets it ([`crate::render::theme::Outer::detect`]).
@@ -61,7 +50,7 @@ pub(crate) fn glyph(state: State) -> &'static str {
 /// an unknown agent wears the dotted mark, not the idle ring.
 #[must_use]
 pub(crate) fn agent_state_glyph(state: AgentMetaState) -> &'static str {
-    glyph(state_of(&input(state, false, false)))
+    glyph(tone_of(&input(state, false, false)))
 }
 
 /// The vocabulary word for a declared agent state (`needs you`, never the
@@ -69,7 +58,7 @@ pub(crate) fn agent_state_glyph(state: AgentMetaState) -> &'static str {
 /// name instead.
 #[must_use]
 pub(crate) fn state_word(state: AgentMetaState) -> Option<&'static str> {
-    state_of(&input(state, false, false)).word()
+    tone_of(&input(state, false, false)).word()
 }
 
 /// The protocol state as the design language's agent fact.
@@ -90,10 +79,6 @@ fn input(state: AgentMetaState, attention: bool, seen: bool) -> ToneInput {
         seen,
         ..ToneInput::default()
     }
-}
-
-fn state_of(input: &ToneInput) -> State {
-    phux_design::tone_of(input)
 }
 
 /// The ladder mark for `state` in the theme's glyph column.
@@ -141,7 +126,7 @@ pub fn state_badge(theme: &Theme, state: State) -> AgentBadge {
 /// unread, `◐` working, `○` idle or done and seen, `·` unknown, `–` ended.
 #[must_use]
 pub fn pane_badge(theme: &Theme, facts: &ToneInput) -> AgentBadge {
-    state_badge(theme, state_of(facts))
+    state_badge(theme, tone_of(facts))
 }
 
 /// [`pane_badge`] for an agent pane's declared state, attention and seen
@@ -154,13 +139,6 @@ pub fn agent_badge(
     seen: bool,
 ) -> AgentBadge {
     pane_badge(theme, &input(state, attention, seen))
-}
-
-/// The badge for a non-agent pane that asked for a human (ADR-0035): the
-/// same filled dot as an agent that needs you.
-#[must_use]
-pub fn attention_badge(theme: &Theme) -> AgentBadge {
-    state_badge(theme, State::NeedsYou)
 }
 
 /// The mark and its count for the status bar, where there is no room for
@@ -202,7 +180,7 @@ mod tests {
     fn an_unknown_agent_that_asked_wears_the_attention_dot() {
         let theme = Theme::default();
         let asked = agent_badge(&theme, AgentMetaState::Unknown, true, false);
-        assert_eq!(asked, attention_badge(&theme));
+        assert_eq!(asked, state_badge(&theme, State::NeedsYou));
         let quiet = agent_badge(&theme, AgentMetaState::Unknown, false, false);
         assert_eq!(quiet.glyph, "·");
         assert_eq!(quiet.color, theme.sidebar_section);

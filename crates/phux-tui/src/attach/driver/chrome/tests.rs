@@ -253,7 +253,7 @@ fn badge_windows_marks_the_focused_agent() {
     let theme = crate::render::Theme::default();
     badge_windows(&mut infos, &workspace, &agents, &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_WORKING_GLYPH);
+    assert_eq!(badge.glyph, "◐");
     assert_eq!(
         badge.style.fg.as_deref(),
         Some(crate::render::theme::color_to_string(theme.agent_working).as_str())
@@ -267,9 +267,9 @@ fn badge_windows_marks_the_focused_agent() {
     };
     badge_windows(&mut infos, &workspace, std::slice::from_ref(&done), &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_DONE_GLYPH);
+    assert_eq!(badge.glyph, "◆");
     let reviewed = AgentEntry { seen: true, ..done };
     badge_windows(&mut infos, &workspace, &[reviewed], &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_IDLE_GLYPH);
+    assert_eq!(badge.glyph, "○");
 }
