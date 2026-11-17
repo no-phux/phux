@@ -3,15 +3,25 @@
 //! devices that can connect.
 
 use rune::{El, TextStyle, col, el, row, text};
+use rune_kit::ButtonVariant;
 
-use super::settings::{primary, secondary};
-use super::{CAPTION, Ink, pressable};
+use super::settings::{kit_button, medium, primary, secondary, semibold};
+use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 use crate::pair::{self, countdown, last_seen, needs_enable};
 
-const TITLE: TextStyle = TextStyle::new(13.0, 500.0);
-const COPY: TextStyle = TextStyle::new(12.0, 450.0).lh(16.0);
-const QR_SIDE: f32 = 200.0;
+/// The pairing panel's geometry: component sizes, not style.
+struct Geometry {
+    /// The QR plate's side: large enough for a phone camera at arm's length.
+    qr: f32,
+    /// The narrowest the code's copy column gets before it wraps under the QR.
+    side_min: f32,
+}
+
+const GEOMETRY: Geometry = Geometry {
+    qr: 200.0,
+    side_min: 180.0,
+};
 
 pub(super) const DETAIL: &str =
     "Scan a code with the phux app to reach this computer's sessions from your phone.";
@@ -21,52 +31,48 @@ const ENABLE: &str = "Phones can't connect to this computer yet. Allowing it tur
      mode: only devices you pair can connect, on your tailnet address, and nothing is opened \
      to your local network or the internet. The server restarts; your sessions keep running.";
 
-fn button(key: &'static str, label: &'static str, accent: bool, ink: &Ink, desk: &Desk) -> El {
-    let el = pressable(key, ink)
-        .focusable(true)
-        .role("button")
-        .label(label)
-        .min_h(44.0)
-        .px(12.0)
-        .py(6.0)
-        .radius(6.0)
-        .center()
-        .self_start();
-    let (el, color) = if accent {
-        (el.fill(ink.accent), ink.on_accent)
+/// A kit button at the touch target: `Submit` for the step's one primary
+/// action, `Outline` for the rest.
+fn button(key: &'static str, label: &'static str, accent: bool, t: &Tokens) -> El {
+    let variant = if accent {
+        ButtonVariant::Submit
     } else {
-        (el.border(1.0, ink.separator), ink.text)
+        ButtonVariant::Outline
     };
-    el.child(
-        text(label)
-            .font(primary(desk, CAPTION))
-            .color(color)
-            .a11y_hidden(),
-    )
+    kit_button(key, label, variant, t)
+        .min_h(t.space.touch_min)
+        .self_start()
 }
 
-fn words(words: impl Into<String>, desk: &Desk, ink: &Ink) -> El {
+/// A row title: the primary copy at the label weight.
+fn title(desk: &Desk, t: &Tokens) -> TextStyle {
+    medium(primary(desk, t))
+}
+
+fn words(words: impl Into<String>, desk: &Desk, t: &Tokens) -> El {
     text(words.into())
-        .font(secondary(desk, COPY))
-        .color(ink.dim)
+        .font(secondary(desk, t))
+        .color(t.roles.text.dim.paint())
         .wrap()
 }
 
-fn qr(desk: &Desk, ink: &Ink) -> El {
+/// The code on its plate: white by requirement, so any camera reads it in
+/// either mode.
+fn qr(desk: &Desk, t: &Tokens) -> El {
     let frame = el()
         .key("pair-qr")
-        .size(QR_SIDE, QR_SIDE)
-        .radius(8.0)
-        .clip_rounded(8.0)
+        .size(GEOMETRY.qr, GEOMETRY.qr)
+        .radius(t.radius.sm)
+        .clip_rounded(t.radius.sm)
         .fill(rune::Color::WHITE)
-        .border(1.0, ink.separator)
+        .border(t.space.hairline, t.roles.border.base.paint())
         .role("image")
         .label("Pairing QR code");
     match &desk.settings_ui.pairing.qr {
         Some(image) => frame.pixels(image.pixels()),
         None => frame.center().child(
             text("Copy the link instead")
-                .font(CAPTION)
+                .font(t.ty.caption)
                 .color(rune::Color::BLACK)
                 .a11y_hidden(),
         ),
@@ -74,28 +80,27 @@ fn qr(desk: &Desk, ink: &Ink) -> El {
 }
 
 /// The code and what to do with it, or how to get one.
-fn code(desk: &Desk, ink: &Ink) -> El {
+fn code(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
     let pairing = &desk.settings_ui.pairing;
     if pairing.minting {
-        return words("Making a code…", desk, ink).key("pair-minting");
+        return words("Making a code…", desk, t).key("pair-minting");
     }
     match &pairing.code {
-        None => button("pair-show", "Show code", false, ink, desk).on_press(Desk::new_pair_code),
+        None => button("pair-show", "Show code", false, t).on_press(Desk::new_pair_code),
         Some(Err(error)) if needs_enable(error) => col()
             .w_full()
-            .gap(10.0)
-            .child(words(ENABLE, desk, ink))
+            .gap(s.s3)
+            .child(words(ENABLE, desk, t))
             .child(
-                button("pair-allow", "Allow phones to connect", true, ink, desk)
+                button("pair-allow", "Allow phones to connect", true, t)
                     .on_press(Desk::allow_phones),
             ),
         Some(Err(error)) => col()
             .w_full()
-            .gap(10.0)
-            .child(words(error.clone(), desk, ink).key("pair-error"))
-            .child(
-                button("pair-retry", "Try again", false, ink, desk).on_press(Desk::new_pair_code),
-            ),
+            .gap(s.s3)
+            .child(words(error.clone(), desk, t).key("pair-error"))
+            .child(button("pair-retry", "Try again", false, t).on_press(Desk::new_pair_code)),
         Some(Ok(code)) => {
             let now = pair::now();
             let left = code.expires_at.map(|at| countdown(at - now));
@@ -106,67 +111,62 @@ fn code(desk: &Desk, ink: &Ink) -> El {
                 Some(None) => "This code expired.".to_owned(),
                 None => "Works until you make a new one or revoke it.".to_owned(),
             };
-            let mut buttons = row().w_full().gap(8.0).flex_wrap();
+            let mut buttons = row().w_full().gap(s.s2).flex_wrap();
             if !expired {
+                let copy = if pairing.copied {
+                    "Copied"
+                } else {
+                    "Copy link"
+                };
                 buttons = buttons.child(
-                    button(
-                        "pair-copy",
-                        if pairing.copied {
-                            "Copied"
-                        } else {
-                            "Copy link"
-                        },
-                        false,
-                        ink,
-                        desk,
-                    )
-                    .on_press_tx(|d: &mut Desk, tx| d.copy_pair_link(tx)),
+                    button("pair-copy", copy, false, t)
+                        .on_press_tx(|d: &mut Desk, tx| d.copy_pair_link(tx)),
                 );
             }
-            buttons = buttons.child(
-                button("pair-new", "New code", expired, ink, desk).on_press(Desk::new_pair_code),
-            );
+            buttons = buttons
+                .child(button("pair-new", "New code", expired, t).on_press(Desk::new_pair_code));
             let side = col()
                 .grow(1.0)
-                .min_w(180.0)
-                .gap(8.0)
+                .min_w(GEOMETRY.side_min)
+                .gap(s.s2)
                 .child(
                     text(status)
                         .key("pair-expiry")
-                        .font(primary(desk, TITLE))
-                        .color(ink.text)
+                        .font(title(desk, t))
+                        .color(t.roles.text.text.paint())
                         .wrap(),
                 )
-                .child(words(code.network.words(), desk, ink).key("pair-network"))
+                .child(words(code.network.words(), desk, t).key("pair-network"))
                 .child(words(
                     "The link and code are secrets: share them only with your own phone.",
                     desk,
-                    ink,
+                    t,
                 ))
                 .child(buttons);
             row()
                 .w_full()
-                .gap(16.0)
+                .gap(s.s4)
                 .flex_wrap()
                 .items_start()
-                .children((!expired).then(|| qr(desk, ink)))
+                .children((!expired).then(|| qr(desk, t)))
                 .child(side)
         }
     }
 }
 
-fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
+fn devices(desk: &Desk, t: &Tokens) -> Option<El> {
+    let s = &t.space;
     let listed = desk.settings_ui.pairing.devices.as_ref()?;
-    let mut list = col().key("pair-devices").w_full().gap(4.0).child(
+    let mut list = col().key("pair-devices").w_full().gap(s.s1).child(
         text("Paired devices")
-            .font(secondary(desk, TextStyle::new(12.0, 600.0)))
-            .color(ink.dim)
+            .font(semibold(secondary(desk, t)))
+            .color(t.roles.text.dim.paint())
             .role("heading")
             .level(3),
     );
     let now = pair::now();
     let devices: Vec<_> = match listed {
-        Err(error) => return Some(list.child(words(error.clone(), desk, ink))),
+        Err(error) => return Some(list.child(words(error.clone(), desk, t))),
         // An older CLI lists the code on screen too, until a phone uses it.
         Ok(devices) => devices
             .iter()
@@ -177,7 +177,7 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
             .collect(),
     };
     if devices.is_empty() {
-        return Some(list.child(words("No devices yet.", desk, ink)));
+        return Some(list.child(words("No devices yet.", desk, t)));
     }
     for (at, device) in devices.into_iter().enumerate() {
         let id = device.id.clone();
@@ -186,23 +186,23 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
             row()
                 .key(format!("pair-device-{at}"))
                 .w_full()
-                .min_h(48.0)
-                .gap(12.0)
+                .min_h(s.s12)
+                .gap(s.s3)
                 .items_center()
                 .child(
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .gap(2.0)
+                        .gap(s.s0_5)
                         .child(
                             text(name.clone())
-                                .font(primary(desk, TITLE))
-                                .color(ink.text),
+                                .font(title(desk, t))
+                                .color(t.roles.text.text.paint()),
                         )
-                        .child(words(last_seen(device.last_seen, now), desk, ink)),
+                        .child(words(last_seen(device.last_seen, now), desk, t)),
                 )
                 .child(
-                    button("pair-revoke", "Revoke", false, ink, desk)
+                    button("pair-revoke", "Revoke", false, t)
                         .key(format!("pair-revoke-{at}"))
                         .label(format!("Revoke {name}"))
                         .on_press(move |d: &mut Desk| d.revoke_device(id.clone())),
@@ -212,30 +212,31 @@ fn devices(desk: &Desk, ink: &Ink) -> Option<El> {
     Some(list.child(words(
         "Revoking a device stops it connecting again; it can pair again with a new code.",
         desk,
-        ink,
+        t,
     )))
 }
 
 /// The whole panel. Onboarding leaves the device list to Settings.
-pub(super) fn panel(desk: &Desk, ink: &Ink, with_devices: bool) -> El {
+pub(super) fn panel(desk: &Desk, t: &Tokens, with_devices: bool) -> El {
+    let s = &t.space;
     col()
         .key("pair-phone")
         .w_full()
-        .padding(16.0)
-        .gap(12.0)
+        .padding(s.s4)
+        .gap(s.s3)
         .child(
             col()
                 .w_full()
-                .gap(3.0)
+                .gap(s.s0_5)
                 .child(
                     text("Pair a phone")
-                        .font(primary(desk, TITLE))
-                        .color(ink.text)
+                        .font(title(desk, t))
+                        .color(t.roles.text.text.paint())
                         .role("heading")
                         .level(3),
                 )
-                .child(words(DETAIL, desk, ink)),
+                .child(words(DETAIL, desk, t)),
         )
-        .child(code(desk, ink))
-        .children(with_devices.then(|| devices(desk, ink)).flatten())
+        .child(code(desk, t))
+        .children(with_devices.then(|| devices(desk, t)).flatten())
 }

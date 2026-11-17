@@ -29,16 +29,13 @@ mod icons;
 mod inbox;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod kitchen;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod machines;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod news;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod onboarding;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod overlay;
 pub(crate) use overlay::key_hint;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod pair;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod palette;
@@ -62,7 +59,6 @@ mod questions;
 mod reef;
 #[allow(dead_code, reason = "adopted by the converting lanes")]
 pub(crate) mod rows;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod settings;
 #[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod sidebar;
@@ -75,7 +71,6 @@ mod tabs;
 #[allow(dead_code, reason = "adopted by the converting lanes")]
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
 pub(crate) mod tokens;
-#[allow(clippy::disallowed_methods)] // unconverted: the owning lane removes this
 mod updates;
 
 pub(crate) use tokens::{Paint, Tokens};
