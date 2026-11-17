@@ -307,7 +307,12 @@ fn render_fixture(theme: &Theme) -> (String, Vec<(&'static str, Buffer)>) {
 }
 
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gallery")
+    // Read at run time: a compiled-in path ties the build cache to one
+    // checkout (scripts/check-cache-portable.sh).
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR"),
+    )
+    .join("tests/fixtures/gallery")
 }
 
 /// The 16-colour xterm defaults, to preview what a named slot looks like.

@@ -32,7 +32,10 @@ fn the_shipped_config_lists_every_slot_at_its_house_value() {
 /// emitter; test code is exempt.
 #[test]
 fn no_literal_colors() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/render");
+    let root = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR"),
+    )
+    .join("src/render");
     let mut offenders = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
