@@ -96,25 +96,6 @@ impl Playground {
     }
 }
 
-/// Who opened a kit menu (`rune_kit::Menu`, `context_menu`): its open
-/// state lives in `Desk`, and its keys reach the menu, not the terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuOwner {
-    /// A terminal's context menu.
-    Pane,
-    /// A tab's context menu.
-    Tab,
-    /// A sidebar row's context menu.
-    Sidebar,
-}
-
-/// Which kit select (`rune_kit::Select`) is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectOwner {
-    /// Settings' terminal font.
-    Font,
-}
-
 /// Only floating surfaces belong here. In-pane find, confirmation and the
 /// onboarding stage keep their own layout and are considered below these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,10 +110,8 @@ pub enum Surface {
     Popup,
     Rename,
     Palette,
-    /// A kit menu (a terminal's or a tab's context menu among them), drawn in the kit layer.
-    Menu(MenuOwner),
-    /// A kit select's popup list, drawn in the kit layer.
-    Select(SelectOwner),
+    /// A terminal's or a tab's context menu at the pointer.
+    ContextMenu,
     /// The toast region: painted, but never the keyboard's owner.
     Toasts,
 }
@@ -152,7 +131,7 @@ impl Surface {
             Self::Popup => Modal::Popup,
             Self::Rename => Modal::Rename,
             Self::Palette => Modal::Palette,
-            Self::Menu(_) | Self::Select(_) => Modal::ContextMenu,
+            Self::ContextMenu => Modal::ContextMenu,
             Self::Toasts => return None,
         })
     }
@@ -185,10 +164,18 @@ impl Desk {
                 .as_ref()
                 .map(|_| Surface::Rename),
             self.palette_open.then_some(Surface::Palette),
+            self.toasts_surface(),
+            self.pointer.menu.map(|_| Surface::ContextMenu),
         ]
         .into_iter()
         .flatten()
-        .chain(self.kit_surfaces())
+    }
+
+    /// The toast region's surface while any toast shows: painted above the
+    /// panes and under a context menu, never the keyboard's owner. The
+    /// inbox's footer says the front one instead while the drawer is open.
+    pub fn toasts_surface(&self) -> Option<Surface> {
+        (!self.toasts().is_empty() && !self.inbox.open).then_some(Surface::Toasts)
     }
 
     pub(super) fn foreground(&self) -> Option<Modal> {

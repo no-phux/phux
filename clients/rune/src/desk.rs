@@ -36,7 +36,6 @@ pub mod hive;
 mod home;
 mod inbox;
 mod input;
-pub mod kit;
 pub mod kitchen;
 mod layout;
 pub mod link;
@@ -122,7 +121,6 @@ pub struct Desk {
     toasts: notice::Toasts,
     /// State the rune-kit components keep between runs: the open menu and
     /// select.
-    pub(crate) kit: kit::KitState,
     /// The system's reduce-transparency and text-size reads.
     pub(crate) accessibility: accessibility::Accessibility,
     /// The command palette, while open, and its field and highlighted row.
@@ -263,7 +261,6 @@ impl Desk {
             pending: None,
             notice: None,
             toasts: notice::Toasts::default(),
-            kit: kit::KitState::default(),
             accessibility: accessibility::Accessibility::load(&prefs),
             palette_open: false,
             palette_query: rune::TextEdit::new(""),

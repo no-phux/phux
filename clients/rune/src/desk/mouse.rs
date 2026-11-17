@@ -164,7 +164,7 @@ impl Desk {
             (self.connection.mouse_capture, self.connection.mouse_cell) = held;
             return;
         }
-        self.show_menu(super::surfaces::MenuOwner::Pane, Some(window));
+        self.pointer.menu = Some(window);
     }
 
     /// The pointer moved with nothing pressed: `MouseMode::Any` programs hear

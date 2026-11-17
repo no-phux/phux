@@ -7,7 +7,7 @@ use std::rc::Rc;
 use rune::{Cx, El, col, el, row};
 
 use crate::desk::Desk;
-use crate::desk::surfaces::{MenuOwner, Surface};
+use crate::desk::surfaces::Surface;
 use crate::features::changes;
 
 mod badge;
@@ -274,13 +274,13 @@ fn surface_view(
         )),
         // A terminal's or a tab's menu at the pointer; it mounts itself in
         // the kit layer (`kit_overlay`).
-        Surface::Menu(MenuOwner::Pane | MenuOwner::Tab) => desk
+        Surface::ContextMenu => desk
             .pointer
             .menu
             .map(|at| palette::context_menu(desk, at, p)),
-        // No sidebar menu or kit select opens yet; the toasts are drawn in
-        // the stage, clear of the live pill (`overlay::toast`).
-        Surface::Menu(MenuOwner::Sidebar) | Surface::Select(_) | Surface::Toasts => None,
+        // The toasts are drawn in the stage, clear of the live pill
+        // (`overlay::toast`).
+        Surface::Toasts => None,
     }
 }
 

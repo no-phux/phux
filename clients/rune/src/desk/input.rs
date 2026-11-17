@@ -120,12 +120,7 @@ impl Desk {
 
     fn dismiss_surface(&mut self, modal: Modal) -> bool {
         match modal {
-            // Every kit overlay (context menu, kit menu, select) owns input
-            // as this one modal; Escape closes whichever is up.
-            Modal::ContextMenu => {
-                self.close_menu();
-                self.close_select();
-            }
+            Modal::ContextMenu => self.close_menu(),
             Modal::Rename => self.cancel_rename(),
             Modal::News => self.close_news(),
             _ => return false,

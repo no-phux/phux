@@ -143,18 +143,17 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
 }
 
 impl Desk {
-    /// Close the open menu, context or kit, and any submenu.
     pub fn close_menu(&mut self) {
         self.pointer.menu = None;
         self.pointer.tab_menu = false;
-        self.kit.close_menu();
     }
 
     /// The right-click menu of the tab at `index`, which it selects first so
     /// the rows act on the active tab.
     pub fn open_tab_menu(&mut self, index: usize, at: rune::PointerPress) {
         self.select_tab(index);
-        self.show_menu(super::surfaces::MenuOwner::Tab, Some(at));
+        self.pointer.menu = Some(at);
+        self.pointer.tab_menu = true;
     }
 
     /// A row of the context menu.

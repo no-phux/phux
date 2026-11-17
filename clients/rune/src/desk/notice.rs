@@ -62,16 +62,8 @@ pub struct Notice {
 pub enum ToastInput {
     /// The pointer came onto the stack or moved over it: it expands.
     PointerOver,
-    /// The pointer left the stack: it collapses, unless a press holds it.
+    /// The pointer left the stack: it collapses.
     PointerLeft,
-    /// A press began on the stack.
-    Pressed,
-    /// That press let go.
-    Released,
-    /// The stack's hotkey expands it.
-    Hotkey,
-    /// Escape with focus in the stack collapses it.
-    Escape,
 }
 
 impl ToastInput {
@@ -79,32 +71,20 @@ impl ToastInput {
         match self {
             Self::PointerOver => ToastEvent::PointerOver { now },
             Self::PointerLeft => ToastEvent::PointerLeft { now },
-            Self::Pressed => ToastEvent::Pressed { now },
-            Self::Released => ToastEvent::Released { now },
-            Self::Hotkey => ToastEvent::Hotkey { now },
-            Self::Escape => ToastEvent::Escape { now },
         }
     }
 }
 
-/// The window's toasts: the kit stack and the last pulse it asked for.
+/// The window's toasts: the kit stack.
 #[derive(Debug, Default)]
 pub struct Toasts {
     stack: ToastStack<Notice>,
-    /// The front toast shown again, and how many pulses there have been, so
-    /// a view can key its pulse on the count.
-    pulse: Option<(u64, u64)>,
 }
 
 impl Toasts {
     /// Oldest first; the last is in front.
     pub fn entries(&self) -> &[ToastEntry<Notice>] {
         self.stack.entries()
-    }
-
-    /// The kit stack itself, for `ToastStack::place`.
-    pub const fn stack(&self) -> &ToastStack<Notice> {
-        &self.stack
     }
 
     /// Collapsed, expanded, or held by a press.
@@ -120,11 +100,6 @@ impl Toasts {
     /// The toast in front.
     pub fn front(&self) -> Option<&ToastEntry<Notice>> {
         self.stack.front()
-    }
-
-    /// The front toast that was shown again, and the running pulse count.
-    pub const fn pulse(&self) -> Option<(u64, u64)> {
-        self.pulse
     }
 
     /// The app-clock time the next timer comes due.
@@ -164,17 +139,10 @@ impl Desk {
         &self.toasts
     }
 
-    /// The toast region heard the pointer, a press, the hotkey or Escape.
+    /// The toast region heard the pointer.
     pub fn toast_input(&mut self, input: ToastInput, tx: &mut Tx) {
         let effects = self.toasts.stack.step(input.event(self.clock));
         self.toast_effects(effects, Some(tx));
-    }
-
-    /// The front toast's offer: the toast goes, then its action runs.
-    pub fn take_offer(&mut self) {
-        if let Some(id) = self.toasts.front().map(|e| e.id) {
-            self.take_offer_of(id);
-        }
     }
 
     /// Toast `id`'s offer: the toast goes, then its action runs.
@@ -348,16 +316,14 @@ impl Desk {
         !ids.is_empty()
     }
 
-    /// What a step asks for: a pulse to show, a wake for the next timer.
+    /// What a step asks for: a wake for the next timer (a repeat's pulse
+    /// is not drawn).
     /// True when a toast closed on its own.
     fn toast_effects(&mut self, effects: Effects<ToastEffect>, mut tx: Option<&mut Tx>) -> bool {
         let mut closed = false;
         for effect in effects {
             match effect {
-                ToastEffect::Pulse(id) => {
-                    let count = self.toasts.pulse.map_or(0, |(_, n)| n) + 1;
-                    self.toasts.pulse = Some((id, count));
-                }
+                ToastEffect::Pulse(_) => {}
                 ToastEffect::Closed(_) => closed = true,
                 ToastEffect::WakeAt(due) => {
                     if let Some(tx) = tx.as_deref_mut() {
@@ -445,14 +411,12 @@ mod tests {
     }
 
     #[test]
-    fn a_repeat_of_the_front_toast_pulses_in_place_and_restarts_its_time() {
+    fn a_repeat_of_the_front_toast_stays_in_place_and_restarts_its_time() {
         let mut desk = desk();
         desk.say(NoticeKind::Info, "Copied");
         desk.clock = 4.0;
         desk.say(NoticeKind::Info, "Copied");
         assert_eq!(texts(&desk), ["Copied"], "not a second copy");
-        let id = desk.toasts().front().map(|e| e.id).expect("a toast");
-        assert_eq!(desk.toasts().pulse(), Some((id, 1)));
         assert_eq!(desk.toasts().next_due(), Some(10.0), "six from the repeat");
     }
 
@@ -468,19 +432,6 @@ mod tests {
         desk.toast_input(ToastInput::PointerLeft, &mut Tx::default());
         assert_eq!(desk.toasts().next_due(), Some(34.0), "the four it had left");
         assert!(tick(&mut desk, 34.0));
-    }
-
-    #[test]
-    fn a_press_held_on_the_stack_keeps_it_open_past_the_pointer_leaving() {
-        let mut desk = desk();
-        desk.say(NoticeKind::Info, "Copied");
-        let mut tx = Tx::default();
-        desk.toast_input(ToastInput::PointerOver, &mut tx);
-        desk.toast_input(ToastInput::Pressed, &mut tx);
-        desk.toast_input(ToastInput::PointerLeft, &mut tx);
-        assert!(desk.toasts().expanded(), "the press still holds it");
-        desk.toast_input(ToastInput::Released, &mut tx);
-        assert_eq!(desk.toasts().state(), ToastStackState::Collapsed);
     }
 
     #[test]

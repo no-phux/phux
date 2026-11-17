@@ -166,18 +166,6 @@ impl Desk {
         true
     }
 
-    /// One step larger or smaller, stopping at either end.
-    pub fn step_text_scale(&mut self, larger: bool) -> bool {
-        let at = TEXT_SCALES.iter().position(|s| *s == self.text_scale());
-        let at = at.unwrap_or(0);
-        let next = if larger {
-            (at + 1).min(TEXT_SCALES.len() - 1)
-        } else {
-            at.saturating_sub(1)
-        };
-        self.set_text_scale(TEXT_SCALES[next])
-    }
-
     /// The phone host's report: Reduce Transparency and the
     /// `UIContentSizeCategory` raw value. True when either changed, so the
     /// bridge runs the view.
@@ -382,17 +370,17 @@ mod tests {
     }
 
     #[test]
-    fn the_desktop_text_size_steps_snaps_and_is_remembered() {
+    fn the_desktop_text_size_snaps_and_is_remembered() {
         let mut desk = desk();
         assert_eq!(desk.type_scale(), 1.0);
-        assert!(!desk.step_text_scale(false), "already the smallest");
+        assert!(!desk.set_text_scale(1.0), "already the smallest");
         let before = version(&desk);
-        assert!(desk.step_text_scale(true));
+        assert!(desk.set_text_scale(1.1));
         assert_eq!(desk.text_scale(), 1.1);
         assert_ne!(version(&desk), before, "the type roles grew");
         assert!(desk.set_text_scale(9.0), "snaps to the largest");
         assert_eq!(desk.type_scale(), 1.4);
-        assert!(!desk.step_text_scale(true));
+        assert!(!desk.set_text_scale(1.4));
         let remembered = Accessibility::load(&desk.prefs);
         assert_eq!(remembered.text_scale, 1.4);
     }
