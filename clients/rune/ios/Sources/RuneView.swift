@@ -48,9 +48,15 @@ final class RuneView: UIView {
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
         addSubview(editor)
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: RuneView, _:UITraitCollection) in view.refresh() }
-        NotificationCenter.default.addObserver(self,selector:#selector(preferencesChanged),
-            name:UIAccessibility.reduceMotionStatusDidChangeNotification,object:nil)
+        // The text size and contrast are the view's own traits; the
+        // appearance is the scene's (see `systemDark`).
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitAccessibilityContrast.self]) {
+            (view: RuneView, _:UITraitCollection) in view.refresh()
+        }
+        for name in [UIAccessibility.reduceMotionStatusDidChangeNotification,
+                     UIAccessibility.reduceTransparencyStatusDidChangeNotification] {
+            NotificationCenter.default.addObserver(self,selector:#selector(preferencesChanged),name:name,object:nil)
+        }
         tick.owner = self
         let link = CADisplayLink(target: tick, selector: #selector(DisplayTick.tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
@@ -77,15 +83,38 @@ final class RuneView: UIView {
             if bridge == nil {
                 let box = WakeBox(); box.view = self
                 bridge = try NativeBridge(layer: layer as! CAMetalLayer, size: bounds.size,
-                    scale: window?.screen.scale ?? 1, dark: traitCollection.userInterfaceStyle != .light,
+                    scale: window?.screen.scale ?? 1, dark: systemDark,
                     configuration: configuration, wake: box)
                 configuration.removeValue(forKey: "token")
             }
             bridge?.resize(bounds.size, scale: window?.screen.scale ?? 1)
-            bridge?.traits(dark: traitCollection.userInterfaceStyle != .light,
-                           reducedMotion: UIAccessibility.isReduceMotionEnabled)
+            bridge?.traits(dark: systemDark, reducedMotion: UIAccessibility.isReduceMotionEnabled,
+                           increasedContrast: traitCollection.accessibilityContrast == .high,
+                           reduceTransparency: UIAccessibility.isReduceTransparencyEnabled,
+                           contentSize: traitCollection.preferredContentSizeCategory)
             drawFrame()
         } catch { fail(error) }
+    }
+
+    /// The system's appearance. The window takes the terminal theme's mode
+    /// (`RuneController.paint`), so the view's own style is the theme's:
+    /// the scene's is the user's setting, which themes that follow the
+    /// system read.
+    private var systemDark: Bool {
+        (window?.windowScene?.traitCollection ?? traitCollection).userInterfaceStyle != .light
+    }
+
+    private weak var observedScene: UIWindowScene?
+    private var sceneObservation: (any UITraitChangeRegistration)?
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        let scene = window?.windowScene
+        guard scene !== observedScene else { return }
+        if let old = sceneObservation { observedScene?.unregisterForTraitChanges(old) }
+        observedScene = scene
+        sceneObservation = scene?.registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+            [weak self] (_: UIWindowScene, _: UITraitCollection) in self?.refresh()
+        }
     }
 
     /// Whether a point of the view shows a point of the drawable: unscaled

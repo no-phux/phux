@@ -23,6 +23,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         root = controller
         if let url = options.urlContexts.first?.url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
+        // UIKit's own controls take the house accent (phux-brand's
+        // AccentColor, with its dark and increased-contrast appearances).
+        window.tintColor = UIColor(named: "AccentColor")
         // Rune draws its own header; a UIKit bar above it would double the chrome.
         window.rootViewController = controller
         self.window = window
@@ -73,8 +76,16 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         guard ground != self.ground else { return }
         self.ground = ground
         view.backgroundColor = ground
+        matchThemeMode()
         setNeedsStatusBarAppearanceUpdate()
         surface?.editor.match(dark: groundIsDark)
+    }
+    /// UIKit's sheets, menus and alerts take the terminal theme's mode, as
+    /// Rune's chrome does, not the system appearance: a light terminal is
+    /// not framed by dark system sheets. The surface still reads the
+    /// system's own appearance from its scene (`RuneView.systemDark`).
+    private func matchThemeMode() {
+        view.window?.overrideUserInterfaceStyle = groundIsDark ? .dark : .light
     }
     private func showDisconnected() {
         empty.show(title: "No computer connected",
@@ -98,6 +109,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     }
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
+        matchThemeMode()
         guard !started else { return }
         started = true
         if let probe {

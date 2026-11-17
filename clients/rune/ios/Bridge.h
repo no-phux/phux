@@ -48,7 +48,10 @@ void phux_rune_ios_path_changed(void *host);
 // One step of terminal text size, from a pinch.
 void phux_rune_ios_zoom(void *host, bool larger);
 void phux_rune_ios_active(void *host, bool active);
-void phux_rune_ios_traits(void *host, bool dark, bool reduced_motion);
+// The system's appearance and accessibility settings. content_size is a
+// UIContentSizeCategory raw value; an unknown one reads as the default.
+void phux_rune_ios_traits(void *host, bool dark, bool reduced_motion, bool increased_contrast,
+                          bool reduce_transparency, const char *content_size);
 char *phux_rune_ios_report(void *host, const char *marker);
 char *phux_rune_ios_tree(void *host);
 // Read an error synchronously on the SAME OS THREAD as the failing call,

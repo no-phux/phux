@@ -129,7 +129,14 @@ final class NativeBridge {
     func pathChanged() { phux_rune_ios_path_changed(pointer) }
     func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }
     func active(_ active: Bool) { phux_rune_ios_active(pointer, active) }
-    func traits(dark: Bool, reducedMotion: Bool) { phux_rune_ios_traits(pointer, dark, reducedMotion) }
+    /// The system's appearance and the accessibility settings Rune has no
+    /// API for: increased contrast, Reduce Transparency and the text size.
+    func traits(dark: Bool, reducedMotion: Bool, increasedContrast: Bool,
+                reduceTransparency: Bool, contentSize: UIContentSizeCategory) {
+        contentSize.rawValue.withCString {
+            phux_rune_ios_traits(pointer, dark, reducedMotion, increasedContrast, reduceTransparency, $0)
+        }
+    }
 
     static func object(_ pointer: UnsafeMutablePointer<CChar>?) throws -> [String: Any] {
         guard let pointer else { throw NativeFailure.message(error()) }
