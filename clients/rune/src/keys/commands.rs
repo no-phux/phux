@@ -456,6 +456,24 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::ZoomOut, "Smaller Text", [m('-')], [l('-')]),
     row!(Shortcut::ZoomReset, "Default Text Size", [m('0')], [l('0')]),
     row!(
+        Shortcut::InterfaceBigger,
+        "Bigger Interface",
+        [m('=').alt(), m('=').shift().alt()],
+        [l('=').alt()]
+    ),
+    row!(
+        Shortcut::InterfaceSmaller,
+        "Smaller Interface",
+        [m('-').alt()],
+        [l('-').alt()]
+    ),
+    row!(
+        Shortcut::InterfaceReset,
+        "Default Interface Size",
+        [m('0').alt()],
+        [l('0').alt()]
+    ),
+    row!(
         Shortcut::ScrollTop,
         "Scroll to Top of History",
         [Chord::cmd(Cap::Home)],

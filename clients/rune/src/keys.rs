@@ -40,6 +40,10 @@ pub enum Shortcut {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    /// The sidebar, tabs, palette and Settings, not the terminal's text.
+    InterfaceBigger,
+    InterfaceSmaller,
+    InterfaceReset,
     ScrollTop,
     ScrollBottom,
     Palette,
@@ -141,6 +145,9 @@ impl Shortcut {
                 | Self::ZoomIn
                 | Self::ZoomOut
                 | Self::ZoomReset
+                | Self::InterfaceBigger
+                | Self::InterfaceSmaller
+                | Self::InterfaceReset
                 | Self::CheckForUpdates
                 | Self::ToggleFullScreen
         )

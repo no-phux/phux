@@ -272,6 +272,7 @@ there wins over the choice Rune saved, and Settings shows it as set in
 [rune]
 theme = "nord"          # a theme id; "" follows the system
 font-size = 14.0        # the size each window starts at
+interface-size = 125    # sidebar, tabs, palette and Settings in percent, 80 to 200
 font-family = ""        # "" is the built-in face
 notifications = true
 option-as-meta = false
