@@ -199,14 +199,19 @@ struct Row<'a> {
 }
 
 impl Row<'_> {
-    /// The second line: what the terminal is doing, else where it is.
+    /// The second line: what the terminal is doing, then where it is, so
+    /// two rows with one name always read differently.
     fn detail(&self) -> Option<(String, bool)> {
         let word = (self.mark != Mark::None && self.mark != Mark::Idle).then(|| self.mark.word());
-        match (self.agent, word) {
+        let doing = match (self.agent, word) {
             (Some(agent), Some(word)) => Some((format!("{agent} · {word}"), true)),
             (None, Some(word)) => Some((word.to_owned(), true)),
             (Some(agent), None) => Some((agent.to_owned(), false)),
-            (None, None) => self.place.clone().map(|place| (place, false)),
+            (None, None) => None,
+        };
+        match (doing, &self.place) {
+            (Some((doing, tinted)), Some(place)) => Some((format!("{doing} · {place}"), tinted)),
+            (doing, place) => doing.or_else(|| place.clone().map(|place| (place, false))),
         }
     }
 }

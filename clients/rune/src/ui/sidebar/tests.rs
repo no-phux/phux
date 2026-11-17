@@ -22,3 +22,26 @@ fn host_marks_read_in_every_theme() {
     }
     assert!(low.is_empty(), "{low:#?}");
 }
+
+#[test]
+fn twins_with_an_agent_still_name_their_pane() {
+    let id = phux_protocol::ids::ResourceId::local(90);
+    let detail = |place: Option<&str>| {
+        super::Row {
+            id: &id,
+            session: "rune-3",
+            name: "Shopify inventory sync to Meta".to_owned(),
+            place: place.map(str::to_owned),
+            key: None,
+            agent: Some("claude"),
+            mark: crate::activity::Mark::Done,
+            selected: false,
+            host: ("mini", 0),
+            color: None,
+        }
+        .detail()
+        .map(|(words, _)| words)
+    };
+    assert_eq!(detail(Some("@90")).as_deref(), Some("claude · done · @90"));
+    assert_eq!(detail(None).as_deref(), Some("claude · done"));
+}
