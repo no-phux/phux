@@ -129,3 +129,36 @@ next tick. Preserve a verified private signed OTA fallback when signing
 succeeds; opening that link and any Apple prompts still need on-phone approval.
 OTA publication is **not a silent remote installation**. Installed-version
 evidence is not launch, OS keyboard/IME, accessibility or physical-feel proof.
+
+## One permanent download page
+
+The existing private HTTPS host can serve a bookmarkable `/scheduled/` page
+using `serve_ota.py`. Point it at the **public site root**, whose `scheduled/`
+child contains the immutable published build directories, and the HTTPS URL
+already mapped to that root:
+
+```sh
+python3 clients/rune/ios/serve_ota.py \
+  --directory /absolute/existing-public-root \
+  --base-url https://private.example/rune-preview/ \
+  --port 18464
+```
+
+Use this handler in the existing host job and keep its loopback port and
+Tailscale HTTPS mapping. Do not start a second persistent server or expose a
+packaging directory, signing profile, delivery receipt or app container.
+Old versioned installation pages, manifests and IPA URLs remain unchanged.
+
+The page reads published children on each request and disables HTML caching.
+It selects the highest numeric marketing version, then numeric build number,
+from matching Rune device IPA/manifest metadata. Missing or incomplete copies,
+wrong bundles/platforms, mismatched versions, external asset URLs and symlinked
+candidates do not replace the last usable build. This is discovery of already
+published artifacts, not a replacement for the signing, qualification and
+complete HTTPS digest checks above. Publish only approved immutable sites.
+
+On the phone, turn on Tailscale, open the permanent page in Safari and use
+**Share → Add to Home Screen**. The same page shows future published builds
+without restarting the host or changing the bookmark. **Install on iPhone**
+opens Apple's explicit installation flow; a download page is not installation
+evidence and never silently updates the phone.
