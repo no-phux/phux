@@ -86,14 +86,15 @@ impl<'w, W: Write> SgrParams<'w, W> {
         Ok(())
     }
 
-    /// Emit the 24-bit foreground (`fg`) or background parameter for `color`,
-    /// or nothing when it does not override the terminal default.
+    /// Emit the foreground (`fg`) or background parameter for `color` at
+    /// its own depth, or nothing when it does not override the terminal
+    /// default.
     fn color(&mut self, color: Color, fg: bool) -> io::Result<()> {
-        let Some((kind, r, g, b)) = color_rgb(color, fg) else {
+        let Some(code) = SgrColor::of(color, fg) else {
             return Ok(());
         };
         self.separator()?;
-        write!(self.out, "{kind};2;{r};{g};{b}")
+        code.write(self.out)
     }
 
     /// Close the sequence with the `m` terminator; a no-op when the cell
@@ -108,49 +109,64 @@ impl<'w, W: Write> SgrParams<'w, W> {
 }
 
 /// Emit a standalone foreground or background SGR for `color` (for chrome
-/// painted outside the buffer path). Indexed colors stay `38;5;n`/`48;5;n`;
-/// `Reset` emits nothing.
+/// painted outside the buffer path); `Reset` emits nothing.
 pub fn write_sgr_color(out: &mut impl Write, color: Color, fg: bool) -> io::Result<()> {
-    let kind = if fg { 38 } else { 48 };
-    match color {
-        Color::Reset => Ok(()),
-        Color::Indexed(n) => write!(out, "\x1b[{kind};5;{n}m"),
-        other => {
-            if let Some((k, r, g, b)) = color_rgb(other, fg) {
-                write!(out, "\x1b[{k};2;{r};{g};{b}m")
-            } else {
-                Ok(())
-            }
-        }
-    }
+    let Some(code) = SgrColor::of(color, fg) else {
+        return Ok(());
+    };
+    out.write_all(b"\x1b[")?;
+    code.write(out)?;
+    out.write_all(b"m")
 }
 
-/// A ratatui [`Color`] as an SGR kind prefix (`"38"`/`"48"`) and 24-bit
-/// triple; `None` for `Reset`. Indexed colors map to a fixed palette.
-const fn color_rgb(color: Color, fg: bool) -> Option<(&'static str, u8, u8, u8)> {
-    let kind = if fg { "38" } else { "48" };
-    let (r, g, b) = match color {
-        Color::Reset => return None,
-        Color::Black => (0, 0, 0),
-        Color::Red => (170, 0, 0),
-        Color::Green => (0, 170, 0),
-        Color::Yellow => (170, 85, 0),
-        Color::Blue => (0, 0, 170),
-        Color::Magenta => (170, 0, 170),
-        Color::Cyan => (0, 170, 170),
-        Color::Gray => (170, 170, 170),
-        Color::DarkGray => (85, 85, 85),
-        Color::LightRed => (255, 85, 85),
-        Color::LightGreen => (85, 255, 85),
-        Color::LightYellow => (255, 255, 85),
-        Color::LightBlue => (85, 85, 255),
-        Color::LightMagenta => (255, 85, 255),
-        Color::LightCyan => (85, 255, 255),
-        Color::White => (255, 255, 255),
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Indexed(_) => (200, 200, 200),
-    };
-    Some((kind, r, g, b))
+/// One colour parameter at the depth the theme chose for it: a named colour
+/// stays an ANSI index (the user's palette), an indexed colour stays
+/// `5;n`, and only `Rgb` is 24-bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SgrColor {
+    /// `30`–`37`, `90`–`97` (or the `40`/`100` background forms).
+    Ansi(u8),
+    /// `38;5;n` / `48;5;n`.
+    Indexed(u8, u8),
+    /// `38;2;r;g;b` / `48;2;r;g;b`.
+    Rgb(u8, u8, u8, u8),
+}
+
+impl SgrColor {
+    const fn of(color: Color, fg: bool) -> Option<Self> {
+        let kind = if fg { 38 } else { 48 };
+        let base = if fg { 30 } else { 40 };
+        let bright = if fg { 90 } else { 100 };
+        Some(match color {
+            Color::Reset => return None,
+            Color::Black => Self::Ansi(base),
+            Color::Red => Self::Ansi(base + 1),
+            Color::Green => Self::Ansi(base + 2),
+            Color::Yellow => Self::Ansi(base + 3),
+            Color::Blue => Self::Ansi(base + 4),
+            Color::Magenta => Self::Ansi(base + 5),
+            Color::Cyan => Self::Ansi(base + 6),
+            Color::Gray => Self::Ansi(base + 7),
+            Color::DarkGray => Self::Ansi(bright),
+            Color::LightRed => Self::Ansi(bright + 1),
+            Color::LightGreen => Self::Ansi(bright + 2),
+            Color::LightYellow => Self::Ansi(bright + 3),
+            Color::LightBlue => Self::Ansi(bright + 4),
+            Color::LightMagenta => Self::Ansi(bright + 5),
+            Color::LightCyan => Self::Ansi(bright + 6),
+            Color::White => Self::Ansi(bright + 7),
+            Color::Indexed(n) => Self::Indexed(kind, n),
+            Color::Rgb(r, g, b) => Self::Rgb(kind, r, g, b),
+        })
+    }
+
+    fn write(self, out: &mut impl Write) -> io::Result<()> {
+        match self {
+            Self::Ansi(code) => write!(out, "{code}"),
+            Self::Indexed(kind, n) => write!(out, "{kind};5;{n}"),
+            Self::Rgb(kind, r, g, b) => write!(out, "{kind};2;{r};{g};{b}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,16 +182,30 @@ mod tests {
 
     #[test]
     fn indexed_color_is_preserved_not_flattened() {
-        // The reason this helper exists: the buffer path flattens Indexed to
-        // a gray; here it must emit the real palette index.
         assert_eq!(sgr(Color::Indexed(240), false), "\x1b[48;5;240m");
         assert_eq!(sgr(Color::Indexed(12), true), "\x1b[38;5;12m");
     }
 
+    /// The 16-colour theme speaks the user's own palette, so a named colour
+    /// is an ANSI index on both paths, never a fixed 24-bit guess.
     #[test]
-    fn rgb_and_named_emit_truecolor() {
+    fn named_colors_stay_ansi_and_rgb_stays_truecolor() {
         assert_eq!(sgr(Color::Rgb(10, 20, 30), false), "\x1b[48;2;10;20;30m");
-        assert_eq!(sgr(Color::White, true), "\x1b[38;2;255;255;255m");
+        assert_eq!(sgr(Color::White, true), "\x1b[97m");
+        assert_eq!(sgr(Color::Cyan, true), "\x1b[36m");
+        assert_eq!(sgr(Color::Gray, false), "\x1b[47m");
+        assert_eq!(sgr(Color::LightBlue, true), "\x1b[94m");
+        assert_eq!(sgr(Color::DarkGray, false), "\x1b[100m");
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_style(
+            ratatui::style::Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Indexed(236))
+                .add_modifier(Modifier::BOLD),
+        );
+        let mut out = Vec::new();
+        emit_cell_sgr(&mut out, &cell, &mut None).expect("emit");
+        assert_eq!(out, b"\x1b[0m\x1b[1;33;48;5;236m");
     }
 
     #[test]

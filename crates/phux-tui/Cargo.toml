@@ -40,6 +40,10 @@ phux-core.workspace = true
 # phux-nz4.5: status-bar composer (`StatusBar`) + widget contract live in
 # phux-config; this crate owns rendering the composed bar to VT.
 phux-config.workspace = true
+# The phux design language: the house look's roles, the theme-to-roles
+# solver the chrome slots are filled from, and the status ladder. No
+# dependencies of its own (spec §4.2).
+phux-design = { path = "../phux-design" }
 # phux-r82.5: the TUI executes plugin manifest actions through the same
 # child-process runtime `phux config run` uses -- workspace-internal crate,
 # no new external surface. The attach driver spawns the run off the input

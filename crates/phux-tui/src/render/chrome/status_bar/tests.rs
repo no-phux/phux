@@ -273,10 +273,11 @@ fn sidebar_insets_shift_or_narrow_the_bar() {
     p.set_windows(wins(&[("bash", true)]));
     p.set_supervisory(Some("[F]".to_owned()));
     let s = paint(&mut p, BarInset { left: 0, right: 20 }, 40, 10, "");
-    assert!(
-        s.contains("\x1b[10;1H") && s.contains("\x1b[10;18H\x1b[7;1m\x1b[38;2;190;242;100m[F]"),
-        "{s:?}"
-    );
+    let Color::Rgb(red, green, blue) = Theme::default().accent else {
+        panic!("the house accent is 24-bit");
+    };
+    let badge = format!("\x1b[10;18H\x1b[7;1m\x1b[38;2;{red};{green};{blue}m[F]");
+    assert!(s.contains("\x1b[10;1H") && s.contains(&badge), "{s:?}");
     assert_eq!(p.last_row.as_ref().map(|(x, w, _)| (*x, *w)), Some((0, 20)));
 }
 
@@ -386,8 +387,14 @@ fn notices_compose_in_theme_colors() {
     assert_eq!(cell.bg, theme.selection_bg);
     assert!(!cell.modifier.contains(Modifier::REVERSED));
     let live = paint(&mut p, BarInset::NONE, 40, 10, "main");
+    let (Color::Rgb(fr, fg, fb), Color::Rgb(br, bg, bb)) = (theme.selection_fg, theme.selection_bg)
+    else {
+        panic!("the house selection pair is 24-bit");
+    };
     assert!(
-        live.contains("\x1b[38;2;244;247;251;48;2;41;54;40m hi "),
+        live.contains(&format!(
+            "\x1b[38;2;{fr};{fg};{fb};48;2;{br};{bg};{bb}m hi "
+        )),
         "{live:?}"
     );
 
@@ -409,7 +416,7 @@ fn the_error_line_rides_the_error_slot() {
         .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
         .expect("composes");
     assert_eq!(buf[(0, 0)].bg, theme.error);
-    assert_eq!(buf[(0, 0)].fg, theme.selection_fg);
+    assert_eq!(buf[(0, 0)].fg, theme.surface);
 }
 
 mod chips;

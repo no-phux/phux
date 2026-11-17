@@ -594,9 +594,9 @@ impl SelectList {
         });
         if selected {
             // Own both colors so the selection reads on light terminals too.
-            let style = Style::default()
-                .fg(self.theme.selection_fg)
-                .bg(self.theme.selection_bg);
+            let style = self
+                .theme
+                .on_selection(Style::default().fg(self.theme.selection_fg));
             let mut spans = highlight_spans(
                 &label,
                 hits.as_deref(),

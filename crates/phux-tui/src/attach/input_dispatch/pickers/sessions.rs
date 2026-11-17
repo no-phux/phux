@@ -73,8 +73,15 @@ fn attached_session_row(
     );
     match counts.needs_you.get(&session.id).copied().unwrap_or(0) {
         0 => item,
-        waiting => item.secondary(format!("{waiting} need you")),
+        waiting => item.secondary(needs_you(waiting)),
     }
+}
+
+/// `count` panes that need you, in the vocabulary's plural ("1 needs you",
+/// "2 need you").
+fn needs_you(count: impl TryInto<u64>) -> String {
+    let count = count.try_into().unwrap_or(u64::MAX);
+    phux_design::plural("count.needs_you", count).unwrap_or_else(|| format!("{count} need you"))
 }
 
 /// Header for this host's group in the host-grouped session picker.
@@ -167,7 +174,7 @@ fn project_grouped_session_items(
     for group in groups {
         items.push(SelectItem::header(match group.needs_you {
             0 => group.name.clone(),
-            n => format!("{} - {n} need you", group.name),
+            n => format!("{} - {}", group.name, needs_you(n)),
         }));
         for member in group.members {
             let mut row = attached_session_row(ordered[member.index], counts).indented();
@@ -250,7 +257,7 @@ fn machine_items(host: &HostJson) -> Vec<SelectItem> {
         let exec = &session.exec;
         let needs = exec.failed.saturating_add(exec.lost);
         if needs > 0 {
-            details.push(format!("{needs} need you"));
+            details.push(needs_you(needs));
         }
         SelectItem::new(
             session.name.clone(),

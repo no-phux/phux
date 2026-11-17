@@ -158,7 +158,7 @@ fn agent_record_supplies_name_kind_glyph_and_state_word() {
     assert_eq!(items[0].secondary.as_deref(), Some("working"));
     assert!(!items[0].attention, "working is not high attention");
     assert_eq!(items[1].label, "● 0:main.1 builder");
-    assert_eq!(items[1].secondary.as_deref(), Some("blocked"));
+    assert_eq!(items[1].secondary.as_deref(), Some("needs you"));
     assert!(
         items[1].attention,
         "blocked derives high attention (ADR-0040) and must highlight"
@@ -197,7 +197,7 @@ fn stream_sessions_outrank_the_record_and_list_one_row_each() {
     let items = local_items(&workspace, &agents, &meta);
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].label, "● 0.0 reviewer [claude]");
-    assert_eq!(items[0].secondary.as_deref(), Some("blocked"));
+    assert_eq!(items[0].secondary.as_deref(), Some("needs you"));
     assert!(items[0].attention, "a blocked stream highlights");
     assert_eq!(items[1].label, "◐ 0.0 reviewer");
     assert_eq!(items[1].secondary.as_deref(), Some("working"));

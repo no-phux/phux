@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 
 use crate::render::theme::Theme;
 
@@ -25,13 +25,8 @@ impl NoticeSeverity {
     /// Full-row style for a notice of this severity.
     pub(super) fn style(self, theme: &Theme) -> Style {
         match self {
-            Self::Info => Style::default()
-                .fg(theme.selection_fg)
-                .bg(theme.selection_bg),
-            Self::Warn => Style::default()
-                .fg(theme.selection_fg)
-                .bg(theme.error)
-                .add_modifier(Modifier::BOLD),
+            Self::Info => theme.on_selection(Style::default().fg(theme.selection_fg)),
+            Self::Warn => theme.alarm(),
         }
     }
 }
