@@ -490,5 +490,6 @@ mod native;
 mod receipts;
 mod review;
 mod satellite;
+mod slots;
 mod streaming;
 mod typed;

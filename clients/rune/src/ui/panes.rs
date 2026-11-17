@@ -314,9 +314,25 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::history(desk, id, &frame, area, ink))
         .children(overlay::find_bar(desk, id, area, ink))
         .children(question.map(|card| card.content))
+        .children(tab_badge(desk, id, ink))
         // Panes without the keyboard sit back a little.
         .children((several && !focused).then(|| el().cover().fill(ground.alpha(0.42)).inert()));
     float(id, framed(desk, host, ground, lit, ink))
+}
+
+/// `2/3` in the corner of a pane among a split's tabs.
+fn tab_badge(desk: &Desk, id: &ResourceId, ink: &Ink) -> Option<El> {
+    let slot = (desk.connection.slots.iter()).find(|slot| slot.strip.contains(id))?;
+    let at = slot.strip.iter().position(|tab| tab == id)? + 1;
+    let label = format!("{at}/{}", slot.strip.len());
+    Some(
+        rune::text(label)
+            .key(format!("slot-tab-{id}"))
+            .font(super::CAPTION)
+            .color(ink.dim)
+            .pin(None, Some(4.0), Some(8.0), None)
+            .inert(),
+    )
 }
 
 /// A pane as a card, or bare on a phone, where the terminal runs edge to edge
