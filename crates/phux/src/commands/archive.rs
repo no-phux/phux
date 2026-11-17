@@ -1439,6 +1439,7 @@ fn build_restored_workspace(
     Ok(ArrangementDoc {
         groups: built,
         active: active_index,
+        slots: Vec::new(),
     })
 }
 
@@ -1973,21 +1974,18 @@ mod tests {
                 fixture.live(&b).expect("live pane"),
             );
             let (socket, server, _dir) = serve(fixture);
-            let workspace = ArrangementDoc {
-                groups: vec![Group::new(
-                    "restored".to_owned(),
-                    LayoutState {
-                        tree: Some(LayoutNode::Split {
-                            dir: SplitDir::Vertical,
-                            ratio: 0.5,
-                            left: Box::new(LayoutNode::Leaf(pane_a.clone())),
-                            right: Box::new(LayoutNode::Leaf(pane_b)),
-                        }),
-                        focus: Some(pane_a.clone()),
-                    },
-                )],
-                active: 0,
-            };
+            let workspace = ArrangementDoc::from_groups(vec![Group::new(
+                "restored".to_owned(),
+                LayoutState {
+                    tree: Some(LayoutNode::Split {
+                        dir: SplitDir::Vertical,
+                        ratio: 0.5,
+                        left: Box::new(LayoutNode::Leaf(pane_a.clone())),
+                        right: Box::new(LayoutNode::Leaf(pane_b)),
+                    }),
+                    focus: Some(pane_a.clone()),
+                },
+            )]);
 
             write_restored_layout(&socket, &pane_a, workspace)
                 .await

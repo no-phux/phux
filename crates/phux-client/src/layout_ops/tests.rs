@@ -70,6 +70,7 @@ fn two_window_workspace() -> ArrangementDoc {
             Group::new("tests".to_owned(), LayoutState::single(tid(3))),
         ],
         active: 0,
+        slots: Vec::new(),
     }
 }
 
@@ -203,6 +204,7 @@ fn close_collapses_nested_parent_and_repairs_focus() {
             },
         )],
         active: 0,
+        slots: Vec::new(),
     };
     apply_mutation(&mut workspace, &LayoutMutation::Close { target: tid(2) }).unwrap();
     assert_eq!(

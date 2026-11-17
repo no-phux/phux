@@ -500,6 +500,7 @@ mod tests {
                 Group::new("gone".to_owned(), LayoutState::single(id(9))),
             ],
             active: 0,
+            slots: Vec::new(),
         }
     }
 

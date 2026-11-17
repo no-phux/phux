@@ -305,6 +305,7 @@ mod tests {
         let workspace = ArrangementDoc {
             groups: vec![Group::new("1".to_owned(), state)],
             active: 0,
+            slots: Vec::new(),
         };
         let render = workspace.render_group(Some(&t(1))).unwrap();
         assert!(matches!(

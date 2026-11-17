@@ -16,6 +16,7 @@ mod recording;
 mod server;
 mod sessions;
 mod settings;
+mod slot;
 
 pub(crate) use self::agents::*;
 pub(crate) use self::attach::*;
@@ -32,6 +33,7 @@ pub(crate) use self::recording::*;
 pub(crate) use self::server::*;
 pub(crate) use self::sessions::*;
 pub(crate) use self::settings::*;
+pub(crate) use self::slot::*;
 
 use usage::Subcommands;
 
@@ -86,6 +88,9 @@ pub(crate) enum Command {
     #[usage(name = "swap-pane")]
     #[usage(help_heading = "Panes", display_order = 31)]
     SwapPane(SwapPaneArgs),
+
+    #[usage(help_heading = "Panes", display_order = 32)]
+    Slot(SlotArgs),
 
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize(ResizeArgs),

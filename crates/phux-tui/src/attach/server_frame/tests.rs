@@ -225,10 +225,7 @@ fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
 
 /// A single-window workspace wrapping `state`.
 fn ws1(state: LayoutState) -> ArrangementDoc {
-    ArrangementDoc {
-        groups: vec![Group::new("1".to_owned(), state)],
-        active: 0,
-    }
+    ArrangementDoc::from_groups(vec![Group::new("1".to_owned(), state)])
 }
 
 /// Leaves of a workspace's window at `idx`.
@@ -676,13 +673,10 @@ fn reconcile_accepts_authorized_replacement_and_keeps_trees() {
 /// ("open vim in one window, it shows in the other").
 #[test]
 fn reconcile_multi_window_does_not_alias_non_active_windows() {
-    let ws = ArrangementDoc {
-        groups: vec![
-            Group::new("1".to_owned(), LayoutState::single(tid(1))),
-            Group::new("2".to_owned(), LayoutState::single(tid(2))),
-        ],
-        active: 0,
-    };
+    let ws = ArrangementDoc::from_groups(vec![
+        Group::new("1".to_owned(), LayoutState::single(tid(1))),
+        Group::new("2".to_owned(), LayoutState::single(tid(2))),
+    ]);
     let out = super::reconcile_loaded_workspace(ws.clone(), &ws, Some(&tid(1)));
     assert_eq!(out.groups.len(), 2);
     assert_eq!(window_leaves(&out, 0), vec![tid(1)]);
@@ -696,13 +690,10 @@ fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
     let mut local = ArrangementDoc::single(tid(1));
     local.add_group("2".to_owned(), tid(2));
     local.add_group("3".to_owned(), tid(9));
-    let incoming = ArrangementDoc {
-        groups: vec![
-            Group::new("1".to_owned(), split2(1, 4, 4)),
-            Group::new("2".to_owned(), split2(2, 3, 3)),
-        ],
-        active: 0,
-    };
+    let incoming = ArrangementDoc::from_groups(vec![
+        Group::new("1".to_owned(), split2(1, 4, 4)),
+        Group::new("2".to_owned(), split2(2, 3, 3)),
+    ]);
     let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)));
     assert_eq!(out.active, 1, "removed local index clamps to last window");
     assert_eq!(out.groups[0].state.focus, Some(tid(1)));
@@ -805,6 +796,7 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
             Group::new("local-two".to_owned(), split2(3, 4, 4)),
         ],
         active: 1,
+        slots: Vec::new(),
     };
     let mut sibling = local.clone();
     sibling.active = 0;
@@ -1028,6 +1020,7 @@ fn layout_tombstone_resets_to_local_focused_pane() {
             Group::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 1,
+        slots: Vec::new(),
     };
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
     assert!(h.send(layout_changed(1, None)).layout_replaced);

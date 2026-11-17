@@ -615,16 +615,13 @@ mod tests {
     }
 
     fn workspace(name: &str, tree: LayoutNode, focus: u32) -> ArrangementDoc {
-        ArrangementDoc {
-            groups: vec![Group::new(
-                name.to_owned(),
-                LayoutState {
-                    tree: Some(tree),
-                    focus: Some(tid(focus)),
-                },
-            )],
-            active: 0,
-        }
+        ArrangementDoc::from_groups(vec![Group::new(
+            name.to_owned(),
+            LayoutState {
+                tree: Some(tree),
+                focus: Some(tid(focus)),
+            },
+        )])
     }
 
     fn snapshot(source_in_destination: bool, source_session_present: bool) -> SessionSnapshot {

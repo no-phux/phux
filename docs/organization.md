@@ -76,8 +76,10 @@ and the rest keep running at the slot's size, so switching never reflows.
   would drop the trailing fields and the tabs with them.
 - **Surface.** `phux slot add @N --to @M` makes terminal `@N` a tab of the
   slot showing `@M`. `phux slot out @N` gives a tab a slot of its own, split
-  beside the one it left. `phux slot next|prev [@M]` switches what a slot
-  shows. In the TUI the keys are `C-a }` and `C-a {`. In Rune they are
+  beside the one it left. `phux slot next|prev [@M]` moves the slot's
+  default, since a headless verb has no view of its own. In an attached
+  client the keys switch only what that client shows: `C-a }` and `C-a {`
+  in the TUI. In Rune they are
   Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
   terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. A slot with two
   or more tabs shows a one-row strip of their titles and agent states.
