@@ -267,7 +267,7 @@ impl Desk {
             Event::ApprovalDecision { outcome, .. } => {
                 match decision_notice(outcome) {
                     Some(text) => self.say(NoticeKind::Error, text),
-                    None => self.notice = None,
+                    None => self.dismiss_notice(),
                 }
                 true
             }
@@ -280,7 +280,7 @@ impl Desk {
                 match outcome {
                     DeliveryOutcome::Delivered => {
                         self.inbox.reply.clear();
-                        self.notice = None;
+                        self.dismiss_notice();
                     }
                     DeliveryOutcome::Refused => {
                         self.say(NoticeKind::Error, format!("Answer not sent: {message}"));

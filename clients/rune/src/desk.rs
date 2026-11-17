@@ -19,6 +19,7 @@ use rune::{Tx, Waker};
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
+pub mod accessibility;
 mod attach;
 pub(crate) mod bare;
 mod changes;
@@ -34,6 +35,7 @@ pub mod hive;
 mod home;
 mod inbox;
 mod input;
+pub mod kit;
 pub mod kitchen;
 mod layout;
 pub mod link;
@@ -42,7 +44,7 @@ pub mod machines;
 pub mod mouse;
 pub(crate) mod native_input;
 pub mod news;
-mod notice;
+pub mod notice;
 pub mod onboarding;
 mod palette;
 mod pending;
@@ -107,9 +109,18 @@ pub struct Desk {
     pub connection: connection::Connection,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
-    /// What the user was last told, until it expires or they dismiss it. A
-    /// terminal opening takes down only what was in passing.
+    /// The front toast: what the user was last told, until it expires or
+    /// they dismiss it. A terminal opening takes down only what was in
+    /// passing. A copy of `toasts`' front for one-line readers; change it
+    /// through `say`, `dismiss_notice` and the rest, never directly.
     pub notice: Option<Notice>,
+    /// Every toast, newest in front, and the kit stack's state.
+    toasts: notice::Toasts,
+    /// State the rune-kit components keep between runs: the open menu and
+    /// select.
+    pub(crate) kit: kit::KitState,
+    /// The system's reduce-transparency and text-size reads.
+    pub(crate) accessibility: accessibility::Accessibility,
     /// The command palette, while open, and its field and highlighted row.
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
@@ -240,6 +251,9 @@ impl Desk {
             connection: connection::Connection::default(),
             pending: None,
             notice: None,
+            toasts: notice::Toasts::default(),
+            kit: kit::KitState::default(),
+            accessibility: accessibility::Accessibility::load(&prefs),
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
@@ -315,6 +329,7 @@ impl Desk {
             | self.pump_links()
             | self.pump_settings(tx)
             | self.pump_onboarding(tx)
+            | self.follow_accessibility()
             | self.expire_notice(tx);
         let Some(client) = self.connection.client.clone() else {
             return updated | self.tend_link(tx);

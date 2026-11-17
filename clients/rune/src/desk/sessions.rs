@@ -290,6 +290,11 @@ impl Desk {
         if !focused {
             crate::handoff::offer(None);
         }
+        // A phone app out of the foreground is off screen; a desktop window
+        // that lost focus still shows its toasts.
+        if self.native.is_some() {
+            self.toasts_shown(focused);
+        }
         // Back at the window: what's on screen has now been seen, and a
         // laptop's socket may have died while it was away.
         if focused {
