@@ -228,13 +228,7 @@ fn action(key: impl Into<String>, label: String, accent: bool, t: &Tokens) -> El
     } else {
         ButtonVariant::Outline
     };
-    Button::new(label)
-        .variant(variant)
-        .control_size(ControlSize::Large)
-        .build(&t.kit)
-        .key(key)
-        .focusable(true)
-        .min_h(grown(t.ty.body, t.space.s2))
+    super::settings::kit_button(key, label, variant, t)
 }
 
 /// A neutral word on a hairline: Recommended. Not a status, so no tone.

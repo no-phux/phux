@@ -205,13 +205,8 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
             el().cover()
                 .center()
                 .inert()
-                .child(reveal(grip().fill(t.host))),
+                .child(super::reveal(grip().fill(t.host), true)),
         )
-}
-
-/// Shown only while the pointer is on the nearest hover group.
-fn reveal(e: El) -> El {
-    super::reveal(e, true)
 }
 
 /// How far one arrow press moves a divider, as a share of its split, and

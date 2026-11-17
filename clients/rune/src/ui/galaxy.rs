@@ -44,7 +44,7 @@ pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
         .filter(|star| star.mark.needs_you())
         .count();
     // Needs-you's tone: the galaxy's one status colour of its own.
-    let needs = hud::needs_you_ink(p);
+    let needs = p.status.tone(phux_design::Tone::NeedsYou).ink;
     let light = if waiting > 0 {
         needs
     } else {

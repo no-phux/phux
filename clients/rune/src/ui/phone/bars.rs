@@ -6,7 +6,7 @@ use crate::ui::tokens::layout::PHONE;
 use phux_design::State;
 use rune::{Color, El, col, el, row, text};
 
-use super::{Look, badge, glyph, icons, mark_ink, news, round, spatial, surface, touchable, word};
+use super::{Look, badge, glyph, icons, mark_ink, news, round, spatial, surface, touchable};
 use crate::desk::Desk;
 use crate::ui::tokens::Paint;
 
@@ -139,7 +139,7 @@ fn place_detail(desk: &Desk, session: &str) -> String {
         .connection
         .shown
         .as_ref()
-        .map(|shown| word(desk.activities.mark(&shown.resource)));
+        .map(|shown| desk.activities.mark(&shown.resource).word());
     match state.filter(|word| !word.is_empty()) {
         Some(word) => format!("{session} · {word}"),
         None => session.to_owned(),

@@ -6,7 +6,7 @@
 //! fallback), never a scene colour.
 
 use crate::ui::tokens::Voice;
-use phux_design::{State, Tone};
+use phux_design::State;
 use rune::{El, col, el, row, text};
 
 use super::super::badge;
@@ -190,10 +190,4 @@ pub(crate) fn esc_chip(t: &Tokens, close: fn(&mut Desk), right: f32) -> El {
             .color(t.roles.text.dim.paint())
             .a11y_hidden(),
     )
-}
-
-/// Needs-you's ink: what a scene's own chrome (the galaxy's command line)
-/// draws an agent that needs you in.
-pub(crate) fn needs_you_ink(t: &Tokens) -> rune::Color {
-    t.status.tone(Tone::NeedsYou).ink
 }

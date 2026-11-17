@@ -255,20 +255,12 @@ pub(super) fn state_of(mark: Mark) -> Option<State> {
     (mark != Mark::None).then(|| super::sidebar::state_of(mark))
 }
 
-/// `mark`'s word from the vocabulary (§1.3), empty for a plain shell.
-pub(super) fn word(mark: Mark) -> &'static str {
-    if mark == Mark::Bell {
-        return phux_design::tokens::VOCABULARY.words.bell;
-    }
-    state_of(mark).and_then(State::word).unwrap_or_default()
-}
-
 /// `mark` drawn: colour, mark and (as its accessible name) word, never
 /// colour alone.
 pub(super) fn status_mark(mark: Mark, size: f32, p: &Look) -> Option<El> {
     if mark == Mark::Bell {
         let tone = p.status.tone(phux_design::Tone::Bell);
-        return Some(glyph(&icons::BELL, size, tone.ink).label(word(mark)));
+        return Some(glyph(&icons::BELL, size, tone.ink).label(mark.word()));
     }
     state_of(mark).map(|state| badge::mark(p, state, size))
 }

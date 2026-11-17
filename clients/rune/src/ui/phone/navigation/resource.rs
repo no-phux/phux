@@ -7,7 +7,7 @@ use super::{Desk, Look, control, nested, row_h};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
 use crate::ui::icons;
-use crate::ui::phone::{status_mark, word};
+use crate::ui::phone::status_mark;
 use crate::ui::tokens::Paint;
 
 pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El {
@@ -98,7 +98,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
 /// the agent and its state, or the shell's folder, not repeated breadcrumbs.
 fn resource_detail(desk: &Desk, resource: &Addressable, mark: Mark) -> String {
     let agent = desk.activities.agent_name(&resource.id).unwrap_or_default();
-    let state = if mark == Mark::Idle { "" } else { word(mark) };
+    let state = if mark == Mark::Idle { "" } else { mark.word() };
     let activity = [agent, state]
         .into_iter()
         .filter(|part| !part.is_empty())

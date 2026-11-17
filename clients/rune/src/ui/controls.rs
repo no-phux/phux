@@ -175,9 +175,7 @@ pub(crate) fn reveal(e: El, on_hover: bool) -> El {
 }
 
 /// The selected row or tab: §1.10's one treatment.
-pub(crate) fn lifted(el: El, p: &Tokens) -> El {
-    super::rows::lifted(el, p)
-}
+pub(crate) use super::rows::lifted;
 
 /// A key as the chrome draws one, wherever it names a chord (kit `Keybind`).
 pub(crate) fn keycap(key: impl Into<String>, p: &Tokens) -> El {

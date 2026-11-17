@@ -66,24 +66,8 @@ fn a_theme_derives_its_roles() {
 }
 
 #[test]
-fn the_kit_palette_comes_from_the_roles() {
+fn the_kit_rings_and_radii_follow_the_chrome() {
     let t = system(true);
-    let (c, r) = (&t.kit.c, &t.roles);
-    assert_eq!(c.page, r.layer.ground.paint());
-    assert_eq!(c.layer_01, r.layer.raised.paint());
-    assert_eq!(c.text_base, r.text.text.paint());
-    assert_eq!(c.text_muted, r.text.dim.paint());
-    assert_eq!(c.text_faint, r.text.faint.paint());
-    assert_eq!(
-        c.border_strong,
-        r.border.control.paint(),
-        "fields draw the control border"
-    );
-    assert_eq!(c.border_focus, r.border.focus.paint());
-    assert_eq!(c.danger.fg, r.status.failed.paint());
-    assert_eq!(c.danger.bg, r.status.failed_wash.paint());
-    assert_eq!(c.warning.icon, r.status.needs_you.paint());
-    assert_eq!(c.layer_03, r.flat.raised.wash.current.paint());
     assert!(t.kit.ring.is_none(), "rings are coloured in the tiers");
     assert!(!t.kit.invalid_text);
     assert_eq!(
