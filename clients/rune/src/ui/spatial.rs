@@ -4,11 +4,13 @@
 //! The toolbar, minimap and picker are opaque (`layer.overlay`, the
 //! floating tier, `radius.md`): the phone's one blur is the session dock.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::PHONE;
 use phux_client_core::layout::Direction;
 use phux_protocol::ids::ResourceId;
 use rune::{Cursor, El, Key, col, el, row, text};
 
-use super::phone::{Look, ground_look, medium, touchable};
+use super::phone::{Look, ground_look, touchable};
 use super::tokens::{Paint, Tier};
 use super::{Tokens, panes};
 use crate::desk::Desk;
@@ -17,11 +19,6 @@ use crate::desk::phone::{
     spatial::{self, Rect},
 };
 use crate::ui::Cover;
-
-/// The minimap's box: a phone screen's 3:2 thumbnail on the 4-point grid.
-fn map_size(p: &Look) -> (f32, f32) {
-    (p.space.s12 * 2.0, p.space.s16)
-}
 
 pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
     let Some(shown) = desk.connection.shown.as_ref() else {
@@ -183,7 +180,7 @@ fn control(key: &str, label: &str, words: &str, p: &Look) -> El {
     .label(label.to_owned())
     .child(
         text(words.to_owned())
-            .font(medium(p.ty.label))
+            .font(p.ty.label.medium())
             .color(p.roles.text.text.paint()),
     )
 }
@@ -217,7 +214,8 @@ pub(super) fn minimap(desk: &Desk, p: &Look) -> Option<El> {
 }
 
 fn map(all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look) -> El {
-    let (w, h) = map_size(p);
+    // The minimap: a phone screen's 3:2 thumbnail on the 4-point grid.
+    let (w, h) = PHONE.minimap;
     let hairline = p.space.hairline;
     let ground = p.roles.layer.ground.paint();
     let map = el()

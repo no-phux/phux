@@ -3,11 +3,13 @@
 //! Machine rows are OWN rows on tokens (§4.1.3: kit `List` is label-only);
 //! their actions are kit buttons; the colour swatches are a radio group.
 
-use rune::{Color, El, TextStyle, col, el, row, text, text_input};
+use super::tokens::layout::MACHINES as GEOMETRY;
+use crate::ui::tokens::Voice;
+use rune::{Color, El, col, el, row, text, text_input};
 use rune_kit::{Button, ButtonVariant, ControlSize};
 
-use super::settings::{grown, section, semibold};
-use super::tokens::{MONO, Paint, Tokens};
+use super::settings::{grown, section};
+use super::tokens::{Paint, Tokens};
 use super::{Sheet, icons, pressable};
 use crate::desk::Desk;
 use crate::desk::machines::ssh::Offered;
@@ -18,29 +20,6 @@ use phux_config_core::host_color::PALETTE;
 mod checklist;
 #[cfg(test)]
 mod tests;
-
-/// The sheet's geometry: component sizes, not style.
-struct Geometry {
-    sheet_w: f32,
-    /// Where the sheet sits when the window has room.
-    sheet_top: f32,
-    /// What a row's swatches and checklist indent by: past its colour dot.
-    nested: f32,
-}
-
-const GEOMETRY: Geometry = Geometry {
-    sheet_w: 420.0,
-    sheet_top: 96.0,
-    nested: 40.0,
-};
-
-/// A machine noun (a host name) in the chrome's mono face (§1.4 voice).
-fn mono(style: TextStyle) -> TextStyle {
-    TextStyle {
-        family: MONO,
-        ..style
-    }
-}
 
 pub fn switch(desk: &Desk, p: &Tokens) -> El {
     let t = p;
@@ -62,7 +41,7 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         ))
         .child(
             text(desk.machines.label().to_owned())
-                .font(mono(semibold(t.ty.label)))
+                .font(t.ty.label.semibold().machine())
                 .color(t.roles.text.text.paint())
                 .truncate()
                 .a11y_hidden(),
@@ -265,7 +244,7 @@ fn row_shell(key: String, current: bool, t: &Tokens) -> El {
 
 fn name(words: String, t: &Tokens) -> El {
     text(words)
-        .font(mono(t.ty.label))
+        .font(t.ty.label.machine())
         .color(t.roles.text.text.paint())
         .truncate()
         .min_w(0.0)
@@ -405,7 +384,7 @@ fn field(desk: &Desk, t: &Tokens) -> El {
                 .fill(r.layer.ground.paint())
                 .border(s.hairline, r.border.control.paint())
                 .child(
-                    text_input(&desk.machines.field, mono(t.ty.body))
+                    text_input(&desk.machines.field, t.ty.body.machine())
                         .key("machine-field")
                         .label("Computer SSH address")
                         .single_line()
@@ -437,7 +416,7 @@ fn offer(desk: &Desk, t: &Tokens) -> Option<El> {
     let target = &offer.request.target;
     let mut ask = col().w_full().gap(s.s1).pb(s.s2).child(
         text(format!("Pair with {} as {target}?", offer.peer))
-            .font(semibold(t.ty.label))
+            .font(t.ty.label.semibold())
             .color(t.roles.text.text.paint())
             .wrap(),
     );

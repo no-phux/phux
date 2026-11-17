@@ -4,21 +4,16 @@
 
 mod phux;
 
+use super::tokens::layout::UPDATES as GEOMETRY;
+use crate::ui::tokens::Voice;
 use rune::{El, TextStyle, Transition, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 
-use super::settings::{Toggle, grown, kit_button, primary, secondary, section, semibold, toggle};
+use super::settings::{Toggle, grown, kit_button, primary, secondary, section, toggle};
 use super::tokens::{Paint, Tier, Tokens};
 use crate::desk::Desk;
 use crate::desk::updates::{Action, Updater, Work};
 use crate::updates::VERSION;
-
-/// The corner card's width: component geometry, not style.
-struct Geometry {
-    card_w: f32,
-}
-
-const GEOMETRY: Geometry = Geometry { card_w: 320.0 };
 
 /// The update's one primary action, a kit `Submit` button in the Tab
 /// order (§4.1.3).
@@ -30,7 +25,7 @@ fn act_button(action: Action, key: &'static str, t: &Tokens) -> El {
 /// Real transfer progress only; verifying has no percentage to show.
 fn progress(percent: u8, t: &Tokens) -> El {
     Progress::new(Some(f32::from(percent) / 100.0))
-        .build(&t.kit)
+        .build(t.controls(false))
         .key("update-progress")
         .label("Download progress")
 }
@@ -125,7 +120,7 @@ pub fn card(desk: &Desk, p: &Tokens, top: f32) -> Option<El> {
                 .items_start()
                 .child(
                     text(headline(updater))
-                        .font(semibold(t.ty.label))
+                        .font(t.ty.label.semibold())
                         .color(t.roles.text.text.paint())
                         .wrap()
                         .grow(1.0),
@@ -216,7 +211,7 @@ pub fn settings(desk: &Desk, t: &Tokens) -> El {
                 .gap(s.s0_5)
                 .child(
                     text(headline(updater))
-                        .font(super::settings::medium(primary(desk, t)))
+                        .font(primary(desk, t).medium())
                         .color(t.roles.text.text.paint())
                         .wrap(),
                 )

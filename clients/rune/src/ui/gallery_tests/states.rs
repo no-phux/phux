@@ -107,21 +107,28 @@ fn kit(t: &Tokens) -> El {
                         .label("On")
                         .state(s)
                         .on_toggle(|_: &mut Desk| {})
-                        .build(k),
+                        .build(t.controls(s == rune_kit::State::Disabled)),
                 )
                 .child(
                     Switch::new(false)
                         .label("Off")
                         .state(s)
                         .on_toggle(|_: &mut Desk| {})
-                        .build(k),
+                        .build(t.controls(s == rune_kit::State::Disabled)),
                 )
                 .child(
                     Checkbox::new(true)
                         .label("Checked")
                         .state(s)
                         .on_toggle(|_: &mut Desk| {})
-                        .build(k),
+                        .build(t.controls(s == rune_kit::State::Disabled)),
+                )
+                .child(
+                    Checkbox::new(false)
+                        .label("Unchecked")
+                        .state(s)
+                        .on_toggle(|_: &mut Desk| {})
+                        .build(t.controls(s == rune_kit::State::Disabled)),
                 )
         }))
         .child(
@@ -130,20 +137,31 @@ fn kit(t: &Tokens) -> El {
                 .items_center()
                 .child(
                     el().w(t.space.sidebar_w)
-                        .child(Progress::new(None).build(k)),
+                        .child(Progress::new(None).build(t.controls(false))),
                 )
                 .child(
                     el().w(t.space.sidebar_w)
-                        .child(Progress::new(Some(0.6)).build(k)),
+                        .child(Progress::new(Some(0.6)).build(t.controls(false))),
                 )
                 .child(Spinner::new().build(k)),
         )
+}
+
+thread_local! {
+    /// Paint the page with every focusable control's real ring forced on
+    /// (`Cx::force_focus_rings`), for the focus state's frame.
+    static FORCE_RINGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let tokens = Tokens::for_window(desk, cx);
     let t = &*tokens;
     cx.foreground(t.roles.text.text.paint());
+    let ring = t.space.focus_ring;
+    cx.focus_ring(ring.width, ring.offset, t.roles.border.focus.paint());
+    if FORCE_RINGS.get() {
+        cx.force_focus_rings();
+    }
     col()
         .key("states")
         .w_full()
@@ -164,9 +182,48 @@ fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 }
 
 pub(super) fn page(dark: bool, theme: Option<&'static Theme>) -> Runtime<Desk> {
+    FORCE_RINGS.set(false);
     let mut desk = crate::test_support::window();
     desk.settings.theme = theme;
     Runtime::new(desk, view, SIZE, Env::new(dark, SCALE))
+}
+
+/// The page with every focusable control drawing its real focus ring.
+pub(super) fn focus_page(dark: bool, theme: Option<&'static Theme>) -> Runtime<Desk> {
+    let rt = page(dark, theme);
+    FORCE_RINGS.set(true);
+    rt
+}
+
+/// A selection never masks an invalid row: the selected invalid row's
+/// edge is nearer `status.failed` than the selected resting row's is.
+pub(super) fn assert_invalid_shows(rt: &Runtime<Desk>, pixels: &[u8], t: &Tokens) {
+    let failed = t.roles.status.failed.rgb();
+    let edge = |key: &str| {
+        let r = crate::ui::element(rt, key).rect;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "on screen"
+        )]
+        let (x, y) = (
+            ((r[0] + r[2] / 2.0) * SCALE) as usize,
+            (r[1] * SCALE) as usize,
+        );
+        let at = (y * (SIZE.0 * SCALE) as usize + x) * 4;
+        let p = &pixels[at..at + 3];
+        [failed.r, failed.g, failed.b]
+            .iter()
+            .zip(p)
+            .map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs())
+            .sum::<i32>()
+    };
+    let invalid = edge("state-row-selected-invalid");
+    let rest = edge("state-row-selected-rest");
+    assert!(
+        invalid < rest,
+        "the selected invalid row lost its failed edge ({invalid} vs {rest})"
+    );
 }
 
 /// Every mark is named by its word, and the quiet pair by different words.

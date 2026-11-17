@@ -1,7 +1,7 @@
 //! The Agents step (and permissions, on macOS) and its grant sheet.
 
 use super::*;
-use crate::ui::Cover;
+use crate::ui::tokens::Voice;
 
 /// One of the Agents step's cards: opaque raised, `radius.lg`.
 fn card(key: &'static str, glyph: &'static rune::Icon, title: &'static str, t: &Tokens) -> El {
@@ -20,7 +20,7 @@ fn card(key: &'static str, glyph: &'static rune::Icon, title: &'static str, t: &
         .child(tile(glyph, GEOMETRY.card_tile, t))
         .child(
             text(title)
-                .font(semibold(t.ty.lead))
+                .font(t.ty.lead.semibold())
                 .color(t.roles.text.text.paint())
                 .align(Align::Center)
                 .role("heading")
@@ -71,7 +71,7 @@ fn skill_card(desk: &Desk, t: &Tokens) -> El {
             .gap(t.space.icon_gap)
             .child(
                 text(words::agent_name(&skill.agent))
-                    .font(semibold(t.ty.label))
+                    .font(t.ty.label.semibold())
                     .color(t.roles.text.text.paint()),
             )
             .child(el().grow(1.0))
@@ -211,7 +211,7 @@ pub(super) fn grant_sheet(desk: &Desk, t: &Tokens) -> El {
                         .gap(s.s0_5)
                         .child(
                             text(service.title())
-                                .font(semibold(t.ty.label))
+                                .font(t.ty.label.semibold())
                                 .color(r.text.text.paint()),
                         )
                         .child(
@@ -273,43 +273,23 @@ pub(super) fn grant_sheet(desk: &Desk, t: &Tokens) -> El {
         .border(s.hairline, r.border.base.paint())
         .on_screen_layout(|d: &mut Desk, at| d.onboarding.dock.sheet_at = at)
         .on_layout(|d: &mut Desk, at| d.onboarding.dock.sheet_in_window = at)
-        // Exits fade; entries scale up from `enter_scale` (§1.8).
-        .transition(Transition::asymmetric(
-            Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
-            Transition::opacity(),
+        .transition(t.enter())
+        .child(crate::ui::sheet_header(
+            "Manage permissions",
+            "grant",
+            None,
+            Desk::close_grant_sheet,
+            t,
         ))
-        .child(
-            row()
-                .w_full()
-                .items_center()
-                .child(
-                    text("Manage permissions")
-                        .font(t.ty.title)
-                        .color(r.text.text.paint())
-                        .role("heading")
-                        .level(2),
-                )
-                .child(el().grow(1.0))
-                .child(crate::ui::icon_press(
-                    &crate::ui::icons::CLOSE,
-                    "Close",
-                    "grant-close",
-                    t,
-                    Desk::close_grant_sheet,
-                )),
-        )
         .child(rows)
         .children(bundle);
-    col()
-        .key("grant-scrim")
-        .cover()
-        .padding(s.s4)
-        .center()
-        .fill(r.layer.scrim.paint())
-        .transition(Transition::opacity())
-        .modal(true, Desk::close_grant_sheet)
-        .label("Manage permissions")
-        .child(t.elevate(panel, Tier::Overlay))
+    crate::ui::scrim(
+        col().key("grant-scrim").padding(s.s4).center(),
+        "Manage permissions",
+        Some(Desk::close_grant_sheet),
+        t,
+    )
+    .child(t.elevate(panel, Tier::Overlay))
 }
 
 fn note_left(words: &'static str, t: &Tokens) -> El {

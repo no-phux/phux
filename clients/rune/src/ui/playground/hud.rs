@@ -5,8 +5,9 @@
 //! it is opaque: the overlay layer at the floating tier (§1.7, §1.9's
 //! fallback), never a scene colour.
 
+use crate::ui::tokens::Voice;
 use phux_design::{State, Tone};
-use rune::{El, TextStyle, col, el, row, text};
+use rune::{El, col, el, row, text};
 
 use super::super::badge;
 use super::super::tokens::{Paint, Tier, Tokens};
@@ -39,15 +40,6 @@ pub(crate) struct Picked {
     /// Its rank or form and work, when its machine publishes agent stats.
     pub card: Option<String>,
     pub open: fn(&mut Desk),
-}
-
-/// A font's role at its semibold weight.
-fn strong(role: TextStyle) -> TextStyle {
-    let semibold = phux_design::tokens::TYPE.weights.semibold;
-    TextStyle {
-        weight: f32::from(u16::try_from(semibold).unwrap_or(u16::MAX)),
-        ..role
-    }
 }
 
 /// An opaque chip floating over the scene.
@@ -124,7 +116,7 @@ fn next_waiting(t: &Tokens, key: &str, waiting: usize, next: fn(&mut Desk)) -> E
                 .color(ink)
                 .a11y_hidden(),
         )
-        .child(text(words).font(strong(t.ty.label)).color(ink))
+        .child(text(words).font(t.ty.label.semibold()).color(ink))
 }
 
 /// The picked agent: its mark, name, word and machine, then its card; a
@@ -149,7 +141,7 @@ fn picked(t: &Tokens, key: &str, p: Picked) -> El {
             .gap(s.s0_5)
             .child(
                 text(line)
-                    .font(strong(t.ty.label))
+                    .font(t.ty.label.semibold())
                     .color(t.roles.text.text.paint()),
             )
             .children(

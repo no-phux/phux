@@ -4,6 +4,10 @@
 
 use super::Shortcut;
 
+mod case;
+#[cfg(test)]
+use case::PROPER;
+pub use case::sentence_case;
 mod keycaps;
 
 /// The key of a chord.
@@ -193,6 +197,12 @@ pub struct Command {
 }
 
 impl Command {
+    /// The command as the in-app lists (the palette, the phone's actions)
+    /// say it: [`Self::title`] in sentence case.
+    pub fn label(&self) -> String {
+        sentence_case(self.title)
+    }
+
     /// This platform's chords.
     pub const fn chords(&self) -> &'static [Chord] {
         if cfg!(any(target_os = "macos", target_os = "ios")) {

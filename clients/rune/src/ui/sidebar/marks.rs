@@ -3,7 +3,7 @@
 //! chrome's names use.
 
 use phux_design::{State, Tone};
-use rune::{Color, El, Icon, TextStyle, el, row};
+use rune::{Color, El, Icon, el, row};
 
 use super::super::{Paint, Tokens, badge, icons};
 use crate::activity::Mark;
@@ -13,14 +13,9 @@ use crate::host_color;
 /// command counts as work under way; a bell asks for you, as the pane's
 /// attention flag does.
 pub(in crate::ui) const fn state_of(mark: Mark) -> State {
-    match mark {
-        Mark::Blocked | Mark::Bell => State::NeedsYou,
-        Mark::Failed => State::Failed,
-        Mark::Done => State::Done,
-        Mark::Working | Mark::Running | Mark::Background => State::Working,
-        Mark::Succeeded => State::DoneSeen,
-        Mark::Idle => State::Idle,
-        Mark::None => State::Unknown,
+    match mark.state() {
+        Some(state) => state,
+        None => State::NeedsYou,
     }
 }
 
@@ -54,19 +49,6 @@ pub(in crate::ui) fn face(mark: Mark, t: &Tokens) -> Face {
 /// A mark's colour: its tone's (§1.3), never a decoration.
 pub(in crate::ui) fn mark_color(mark: Mark, ink: &Tokens) -> Color {
     face(mark, ink).ink
-}
-
-/// `style` at one of the type scale's weights.
-pub(in crate::ui) fn weighted(style: TextStyle, weight: u32) -> TextStyle {
-    TextStyle {
-        weight: f32::from(u16::try_from(weight).unwrap_or(400)),
-        ..style
-    }
-}
-
-/// The label role, a step heavier: names that lead a group.
-pub(in crate::ui) fn strong(t: &Tokens) -> TextStyle {
-    weighted(t.ty.label, phux_design::tokens::TYPE.weights.semibold)
 }
 
 /// A small identity dot: a session's or machine's colour.

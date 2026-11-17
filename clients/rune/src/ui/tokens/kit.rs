@@ -157,6 +157,39 @@ const GLYPHS: Glyphs = Glyphs {
     ..rune_kit::glyphs::DEFAULT
 };
 
+/// The kit the chrome's selection controls build with (kit `Switch`,
+/// `Checkbox`, `Progress`): `kit` with each control's boundary drawn in
+/// `border.control`, opaque and at least 3:1 on every surface (§1.2,
+/// WCAG 1.4.11), and a checked box filled with the accent under an
+/// `on_accent` tick. `disabled` also dims a control's own label to
+/// `text.faint`, as every disabled OWN control is (§1.10).
+pub(super) fn controls(kit: &Kit, roles: &Roles, disabled: bool) -> Kit {
+    let mut k = kit.clone();
+    let control = roles.border.control.paint();
+    let accent = roles.accent.accent.paint();
+    // The off checkbox's outline, the progress track's edge, the standard
+    // switch's off track.
+    k.c.border_weak = control;
+    // A checked box: the accent, its edge and an `on_accent` tick.
+    k.c.surface_weak = accent;
+    k.c.std_border = accent;
+    k.c.std_icon = roles.accent.on_accent.paint();
+    // The off switch track: a hairline ring of the control boundary over
+    // its own fill, so the track reads on paper as on ink.
+    k.elevation.switch_off = vec![rune::Shadow {
+        x: 0.0,
+        y: 0.0,
+        blur: 0.0,
+        spread: phux_design::tokens::SPACE.hairline,
+        color: control,
+        inset: true,
+    }];
+    if disabled {
+        k.c.std_text = roles.text.faint.paint();
+    }
+    k
+}
+
 /// The kit for `roles`.
 pub(super) fn build(roles: &Roles, tiers: &Tiers, motion: &MotionPairs, scale: f32) -> Kit {
     #[allow(

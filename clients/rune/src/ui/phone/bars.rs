@@ -1,13 +1,12 @@
 //! The phone's top bar (back, the place capsule, news, more or the
 //! minimap) and its tab pills: 44-point touch targets on opaque surfaces.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::PHONE;
 use phux_design::State;
 use rune::{Color, El, col, el, row, text};
 
-use super::{
-    Look, badge, glyph, icons, mark_ink, medium, news, round, spatial, strong, surface, touchable,
-    word,
-};
+use super::{Look, badge, glyph, icons, mark_ink, news, round, spatial, surface, touchable, word};
 use crate::desk::Desk;
 use crate::ui::tokens::Paint;
 
@@ -63,7 +62,7 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
                 .shrink()
                 .child(
                     text(title)
-                        .font(strong(p.ty.lead))
+                        .font(p.ty.lead.semibold())
                         .color(p.roles.text.text.paint())
                         .truncate(),
                 )
@@ -223,7 +222,7 @@ fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
         .h(s.touch_min)
         .min_w(s.touch_min)
         // Two of the grid's largest steps: a long name truncates.
-        .max_w(s.s16 * 2.0)
+        .max_w(PHONE.tab_max_w)
         .px(s.s3)
         .gap(s.icon_gap)
         .radius(p.radius.full)
@@ -236,7 +235,7 @@ fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
         }))
         .child(
             text(desk.tab_label(tab))
-                .font(medium(p.ty.label))
+                .font(p.ty.label.medium())
                 .color(ink.paint())
                 .truncate(),
         );

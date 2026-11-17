@@ -1,10 +1,11 @@
 //! What's new: the bell (the title bar's, or the phone top bar's) and the
 //! sheet it opens.
 
+use crate::ui::tokens::Voice;
 use phux_design::Tone;
 use rune::{El, col, el, text};
 
-use super::overlay::{EXTENTS, key_hint, strong};
+use super::overlay::{EXTENTS, key_hint};
 use super::tokens::{Paint, Tokens};
 use super::{Sheet, icon_press, icons};
 use crate::desk::Desk;
@@ -71,7 +72,7 @@ pub fn view(_desk: &Desk, p: &Tokens) -> El {
                 .child(text(note.date).font(t.ty.caption).color(r.text.dim.paint()))
                 .child(
                     text(note.title)
-                        .font(strong(t.ty.label))
+                        .font(t.ty.label.semibold())
                         .color(r.text.text.paint())
                         .wrap(),
                 )

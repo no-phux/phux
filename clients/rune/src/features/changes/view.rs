@@ -5,6 +5,7 @@
 //! `DiffView` tints its lines from the status tones and solves its own
 //! syntax hues, so the runs stay phux's own on the tokens.
 
+use crate::ui::tokens::layout::CHANGES as EXTENTS;
 use rune::{Color, Cursor, El, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize};
 
@@ -12,20 +13,6 @@ use super::presentation::{Diff, Line, Row};
 use crate::desk::Desk;
 use crate::ui::rows::Row as ListRow;
 use crate::ui::{Paint, Sheet, Tokens, key_hint};
-
-/// The sheet's geometry: layout, which no token group holds.
-struct Extents {
-    width: f32,
-    list_w: f32,
-    /// The files and the diff each scroll inside this.
-    body_h: f32,
-}
-
-const EXTENTS: Extents = Extents {
-    width: 940.0,
-    list_w: 290.0,
-    body_h: 440.0,
-};
 
 fn message(words: impl Into<String>, t: &Tokens) -> El {
     el().w_full().padding(t.space.sheet_pad).child(

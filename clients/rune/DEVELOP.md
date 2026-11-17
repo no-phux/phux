@@ -209,6 +209,22 @@ the scene art and test fixtures are exempt, and a literal `const` counts
 only in a view (`src/ui*`, `src/features/`). `just rune-gallery DIR` paints every snapshot
 suite, the design fixture included, blended in sRGB as the app is.
 
+Idioms the audit's literal checks would otherwise flag, each with its
+reason:
+
+- **Hover reveal.** `ui::reveal` is the one `group_opacity` outside the
+  owner paths: a tab's chord and close button, and a pane's drag grip,
+  swap at 0 or 1 under the pointer without a view rebuild. It never dims.
+- **Unfocused split dim.** With several panes, the panes without the
+  keyboard sit under `layer.scrim` (§4.1.3). It is the modal scrim's role
+  used at pane scope, the one second meaning the role has: a pane behind
+  the focused one is set back the way a window behind a sheet is.
+- **BEL wash (audit row 28): n/a in Rune.** Rune draws no BEL wash; a bell
+  off screen is the bell mark and word on the row (`activity::Mark::Bell`).
+- **Lost and ended.** Rune sees no pane exit (a closed terminal leaves the
+  tree) and reports a lost link window-wide in the title bar, so rows reach
+  `tone_of` (`Activity::tone_input`) without `exit`, `crashed` or `link`.
+
 ### Kit deviations
 
 rune-kit is adopted where its look fits the schema. Where it does not, the

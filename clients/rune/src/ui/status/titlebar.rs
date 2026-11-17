@@ -2,19 +2,18 @@
 //! the session and terminal on screen, the tabs, the link's trouble, the
 //! terminal's size, and the toolbar that shows on hover.
 
+use crate::ui::tokens::Voice;
 use phux_client_runtime::control::Status;
 use phux_design::State;
 use rune::{ChromeInsets, Color, El, TextStyle, el, row, text};
 use rune_kit::WindowTitlebar;
 
-use super::super::sidebar::strong;
-use super::super::tokens::MONO;
 use super::{Desk, Paint, Shortcut, Tokens, badge, icon_press, icons, tabs, tip};
 
 /// The terminal's size in the title bar: quiet machine figures that keep
 /// their columns as the window is dragged.
 fn geometry_type(t: &Tokens) -> TextStyle {
-    t.ty.caption.family(MONO).features("'tnum' 1")
+    t.ty.readout
 }
 
 /// How the link is, when it isn't simply up: a healthy window says nothing.
@@ -79,7 +78,7 @@ fn place(desk: &Desk, t: &Tokens) -> El {
         .items_center()
         .child(
             text(session)
-                .font(strong(t))
+                .font(t.ty.label.semibold())
                 .color(t.roles.text.text.paint())
                 .truncate(),
         )

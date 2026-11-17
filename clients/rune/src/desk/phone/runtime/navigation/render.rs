@@ -81,6 +81,11 @@ fn paint(
     );
     let tree = rt.accessibility_json();
     touch_targets(&tree, name);
+    // §1.9: the dock is the phone's one blur.
+    assert!(
+        crate::ui::glass_panels(rt) <= 1,
+        "{name}: more than one blur on the phone"
+    );
     if let Some(directory) = std::env::var_os("RUNE_NAVIGATION_SNAP") {
         let directory = std::path::PathBuf::from(directory);
         let path = directory.join(format!("{name}-{}.png", size.0));

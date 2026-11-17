@@ -169,10 +169,12 @@ shape!(
     "phux-status-quiet",
     r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/>"#
 );
+// The dotted ring as eight dots on the ring's radius: Rune's rasteriser
+// draws a dashed stroke solid, which would read as the quiet ring.
 shape!(
     STATUS_UNKNOWN,
     "phux-status-unknown",
-    r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.2 2.2" stroke-linecap="round"/>"#
+    r#"<circle cx="8" cy="3.7" r="0.8" fill="currentColor"/><circle cx="11.04" cy="4.96" r="0.8" fill="currentColor"/><circle cx="12.3" cy="8" r="0.8" fill="currentColor"/><circle cx="11.04" cy="11.04" r="0.8" fill="currentColor"/><circle cx="8" cy="12.3" r="0.8" fill="currentColor"/><circle cx="4.96" cy="11.04" r="0.8" fill="currentColor"/><circle cx="3.7" cy="8" r="0.8" fill="currentColor"/><circle cx="4.96" cy="4.96" r="0.8" fill="currentColor"/>"#
 );
 icon!(STATUS_ENDED, "phux-status-ended", "M4.5 8h7");
 

@@ -11,7 +11,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use phux_design::State;
-use rune::{Color, Cursor, Cx, El, TextStyle, col, el};
+use rune::{Color, Cursor, Cx, El, col, el};
 
 use super::tokens::phone::{self as form, Scale};
 use super::tokens::{Paint, Tier, Tokens, Type};
@@ -56,23 +56,6 @@ impl Deref for Look {
     fn deref(&self) -> &Tokens {
         &self.t
     }
-}
-
-/// `role` at `weight` (`type.weights`): emphasis by weight, never size.
-fn weighted(role: TextStyle, weight: u32) -> TextStyle {
-    #[allow(clippy::cast_precision_loss, reason = "font weights are 100..=900")]
-    let weight = weight as f32;
-    TextStyle { weight, ..role }
-}
-
-/// `role` set semibold.
-pub(super) fn strong(role: TextStyle) -> TextStyle {
-    weighted(role, phux_design::tokens::TYPE.weights.semibold)
-}
-
-/// `role` set medium.
-pub(super) fn medium(role: TextStyle) -> TextStyle {
-    weighted(role, phux_design::tokens::TYPE.weights.medium)
 }
 
 /// The top bar's capsule and the gap under it: where a banner starts.
@@ -129,7 +112,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         cx,
     );
     let root = col().key("phone").w_full().h_full();
-    super::glassed(root, fill, p.glass_tint_alpha(desk.glass()))
+    super::glassed(root, fill, desk.glass(), &p)
         .child(content)
         .children(bar)
         .children(

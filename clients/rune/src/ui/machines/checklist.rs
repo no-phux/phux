@@ -1,15 +1,16 @@
 //! What works here, under a machine's row: each item's verdict and title,
 //! the reason, and the fix to copy or run there.
 
+use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize};
 
-use super::{GEOMETRY, chip, mono};
+use super::{GEOMETRY, chip};
 use crate::desk::Desk;
 use crate::desk::machines::checklist::{Item, Verdict};
 use crate::ui::badge::mark;
-use crate::ui::settings::semibold;
+
 use crate::ui::tokens::{Paint, Tokens};
 
 /// The verdict as a status mark, colour, mark and word together (§1.3):
@@ -44,7 +45,7 @@ fn item(item: &Item, here: &str, copied: bool, t: &Tokens) -> El {
                 .child(mark(t, state, t.icon.size.md).label(word))
                 .child(
                     text(item.title.clone())
-                        .font(semibold(t.ty.label))
+                        .font(t.ty.label.semibold())
                         .color(r.text.text.paint())
                         .wrap(),
                 ),
@@ -75,7 +76,7 @@ fn item(item: &Item, here: &str, copied: bool, t: &Tokens) -> El {
                     .fill(r.layer.sidebar.paint())
                     .child(
                         text(fix.clone())
-                            .font(mono(t.ty.caption))
+                            .font(t.ty.caption.machine())
                             .color(r.text.text.paint())
                             .wrap()
                             .selectable(true),
@@ -110,7 +111,7 @@ pub(super) fn checklist(machine: Option<&str>, desk: &Desk, t: &Tokens) -> Optio
         .items_center()
         .child(
             text("What works here")
-                .font(semibold(t.ty.label))
+                .font(t.ty.label.semibold())
                 .color(t.roles.text.text.paint()),
         )
         .child(el().grow(1.0))

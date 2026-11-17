@@ -6,14 +6,15 @@
 //! them, touch-height rows and the session dock, the phone's one pane of
 //! glass (§1.9).
 
+use crate::ui::tokens::Voice;
 use phux_design::State;
-use rune::{Color, El, Key, Tx, col, el, row, text, text_input};
+use rune::{El, Key, Tx, col, el, row, text, text_input};
 
-use super::{Desk, Look, medium, strong};
+use super::{Desk, Look};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
 use crate::keys::{self, Shortcut};
-use crate::ui::tokens::{Paint, Tier};
+use crate::ui::tokens::{GlassSurface, Paint, Tier};
 use crate::ui::{badge, icons, pressable};
 
 mod resource;
@@ -28,40 +29,52 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         Page::Sessions => "Sessions",
         Page::Actions => "Terminal actions",
     };
+    let heading = text(title)
+        .font(
+            (if page == Page::Sessions {
+                p.ty.title
+            } else {
+                p.ty.lead
+            })
+            .semibold(),
+        )
+        .color(p.roles.text.text.paint())
+        .role("heading")
+        .wrap()
+        .min_w(0.0)
+        .shrink();
+    let done = control("phone-navigation-close", "Done", p, |d, _| {
+        d.close_phone_navigation()
+    })
+    .radius(p.radius.full)
+    .child(
+        text("Done")
+            .font(p.ty.label.medium())
+            .color(p.roles.accent.accent_text.paint())
+            .a11y_hidden(),
+    );
     let header = row()
         .w_full()
         .max_w(column_max())
         .min_h(s.s16)
         .pl(crate::ui::tokens::phone::page_margin())
         .pr(s.s1)
-        .gap(s.s2)
-        .items_center()
-        .child(
-            text(title)
-                .font(strong(if page == Page::Sessions {
-                    p.ty.title
-                } else {
-                    p.ty.lead
-                }))
-                .color(p.roles.text.text.paint())
-                // At the largest text sizes the title wraps; Done stays.
-                .wrap()
-                .min_w(0.0)
-                .shrink(),
-        )
-        .child(el().grow(1.0))
-        .child(
-            control("phone-navigation-close", "Done", p, |d, _| {
-                d.close_phone_navigation()
-            })
-            .radius(p.radius.full)
-            .child(
-                text("Done")
-                    .font(medium(p.ty.label))
-                    .color(p.roles.accent.accent_text.paint())
-                    .a11y_hidden(),
-            ),
-        );
+        .gap(s.s2);
+    // At the accessibility text sizes the title takes its own line under
+    // Done, as iOS's large titles do, so the two never collide.
+    let header = if p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale {
+        header
+            .flex_wrap()
+            .child(el().grow(1.0))
+            .child(done)
+            .child(el().w_full().child(heading))
+    } else {
+        header
+            .items_center()
+            .child(heading)
+            .child(el().grow(1.0))
+            .child(done)
+    };
     let body = match page {
         Page::Sessions => sessions(desk, p),
         Page::Actions => actions(desk, p),
@@ -131,7 +144,7 @@ fn button(
 ) -> El {
     control(key, label, p, action).child(
         text(label.to_owned())
-            .font(medium(p.ty.label))
+            .font(p.ty.label.medium())
             .color(p.roles.text.text.paint())
             .truncate()
             .a11y_hidden(),
@@ -150,26 +163,12 @@ fn note(words: impl Into<String>, p: &Look) -> El {
 /// backdrop blur (§1.9). Opaque under increased contrast, Reduce
 /// Transparency and forced colours.
 fn dock(e: El, p: &Look) -> El {
-    let glass = phux_design::tokens::MATERIAL.glass;
-    let e = if p.glass_allowed() {
-        let tint = if p.dark() {
-            glass.tint.dark
-        } else {
-            glass.tint.light
-        };
-        let layer = match tint.layer {
-            "ground" => p.roles.layer.ground,
-            "raised" => p.roles.layer.raised,
-            "overlay" => p.roles.layer.overlay,
-            _ => p.roles.layer.sidebar,
-        };
-        e.backdrop_blur(glass.blur.phone_bar).fill(Color {
-            a: tint.alpha,
-            ..layer.paint()
-        })
-    } else {
-        e.fill(p.roles.layer.raised.paint())
-    };
+    let e = p.glass_panel(
+        e,
+        GlassSurface::PhoneBar,
+        p.glass_tint_layer(),
+        p.roles.layer.raised,
+    );
     p.elevate(e.continuous_corners(), Tier::Floating)
 }
 
@@ -233,7 +232,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
             "Open or create session"
         })
         .key("phone-session-new-label")
-        .font(medium(p.ty.label))
+        .font(p.ty.label.medium())
         .color(ink)
         .truncate()
         .a11y_hidden(),
@@ -267,8 +266,12 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .min_h(0.0)
                         .scroll(rune::ScrollSpec { stick_bottom: false })
                         // A real scroll tail: the last row can clear the
-                        // floating dock, also when the search keyboard is up.
-                        .child(list.pb(s.touch_min + s.s3)),
+                        // floating dock, also when the search keyboard is up
+                        // and at the largest text sizes, where the dock's
+                        // label line outgrows the touch minimum.
+                        .child(
+                            list.pb(s.touch_min.max(p.ty.lead.line_px() + s.s4) + s.s3),
+                        ),
                 )
                 .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
         )
@@ -387,7 +390,7 @@ fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
         .gap(p.space.s2)
         .child(
             text(title)
-                .font(strong(p.ty.lead))
+                .font(p.ty.lead.semibold())
                 .color(p.roles.text.text.paint()),
         )
         .child(
@@ -445,7 +448,7 @@ fn session_card(
                     .items_center()
                     .child(
                         text(session.name.clone())
-                            .font(strong(p.ty.lead))
+                            .font(p.ty.lead.semibold())
                             .color(p.roles.text.text.paint())
                             .truncate()
                             .a11y_hidden(),

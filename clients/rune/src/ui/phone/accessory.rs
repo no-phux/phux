@@ -2,9 +2,10 @@
 //! needs that a phone keyboard buries, and the arrow pad beside the
 //! keyboard toggle. Every key is a full touch target.
 
+use crate::ui::tokens::Voice;
 use rune::{Color, Cursor, El, Key, el, row, text};
 
-use super::{Look, glyph, icons, medium, round, surface, touchable};
+use super::{Look, glyph, icons, round, surface, touchable};
 use crate::desk::Desk;
 use crate::desk::phone::{Latch, Phone, Soft};
 use crate::keys::Shortcut;
@@ -32,7 +33,7 @@ fn chip(key: String, name: &'static str, label: &'static str, lit: bool, p: &Loo
         .fill(fill)
         .motion(p.motion.control.enter)
         .label(name)
-        .child(text(label).font(medium(p.ty.lead)).color(ink));
+        .child(text(label).font(p.ty.lead.medium()).color(ink));
     touchable(chip, p)
 }
 
@@ -130,7 +131,7 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
             "Commands"
         },
         text(if desk.settings_open { "✓" } else { "⌘" })
-            .font(medium(p.ty.lead))
+            .font(p.ty.lead.medium())
             .color(ink),
         p,
     )
@@ -161,7 +162,7 @@ fn keyboard_control(desk: &Desk, native_field: bool, p: &Look) -> El {
         )
         .label("Done editing")
         .on_press_tx(crate::desk::native_input::done)
-        .child(text("Done").font(medium(p.ty.label)).color(ink));
+        .child(text("Done").font(p.ty.label.medium()).color(ink));
     }
     let shown = desk.phone_keyboard_visible();
     touchable(

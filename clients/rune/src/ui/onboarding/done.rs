@@ -1,6 +1,7 @@
 //! The last step: an agent to start, keys worth knowing, then a session.
 
 use super::*;
+use crate::ui::tokens::Voice;
 
 /// A chord as kit key caps (`Keybind`): `⇧⌘S`, or `Ctrl+Shift+S`.
 fn caps(chord: &str, t: &Tokens) -> El {
@@ -126,7 +127,7 @@ pub(super) fn done(desk: &Desk, t: &Tokens) -> El {
                 .label(format!("{}, {}", command.title, command.hint()))
                 .child(
                     text(command.title)
-                        .font(medium(t.ty.label))
+                        .font(t.ty.label.medium())
                         .color(t.roles.text.text.paint())
                         .a11y_hidden(),
                 )

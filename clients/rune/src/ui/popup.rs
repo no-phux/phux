@@ -1,13 +1,13 @@
 //! The popup's box: a scrim, the command line with a close button, and its
 //! terminal drawn as any pane is.
 
-use rune::{El, Transition, col, el, row, text};
+use crate::ui::tokens::Voice;
+use rune::{El, col, el, row, text};
 
-use super::overlay::{EXTENTS, pop, strong};
+use super::overlay::{EXTENTS, pop};
 use super::tokens::{Paint, Tier};
 use super::{PAD, Tokens, icon_press, icons, panes, status};
 use crate::desk::Desk;
-use crate::ui::Cover;
 
 /// A command's popup: its terminal in a box over the window, with the
 /// question bar inside it when the command asks.
@@ -42,7 +42,7 @@ pub fn view(desk: &Desk, t: &Tokens) -> Option<El> {
         .items_center()
         .child(
             text(command.to_owned())
-                .font(strong(t.ty.mono))
+                .font(t.ty.mono.semibold())
                 .color(r.text.text.paint())
                 .grow(1.0)
                 .min_w(0.0),
@@ -78,15 +78,8 @@ pub fn view(desk: &Desk, t: &Tokens) -> Option<El> {
     let panel = t.elevate(panel, Tier::Overlay);
     let margin = || el().grow((1.0 - share) / 2.0);
     Some(
-        col()
-            .key("popup-scrim")
-            .cover()
-            .items_center()
-            .fill(r.layer.scrim.paint())
-            .transition(Transition::opacity())
-            // Escape is the command's: only the button and the chord close.
-            .modal(false, |_: &mut Desk| {})
-            .label("Popup")
+        // Escape is the command's: only the button and the chord close.
+        super::scrim(col().key("popup-scrim").items_center(), "Popup", None, t)
             .child(margin())
             .child(panel)
             .child(margin()),

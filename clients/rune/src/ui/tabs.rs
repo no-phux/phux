@@ -6,15 +6,17 @@
 //! at a fixed 28 points, colours busy dots with the accent and keys its
 //! tabs itself, where phux keeps `tab-N`, `Grab::Tab` and the menus.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::TABS;
 use phux_design::tokens::{SPACE, Space};
 use phux_design::{State, Tone};
 use rune::{El, row, text, text_input};
 use rune_kit::{Button, ButtonVariant, Dialog};
 
-use super::rows::State as Forced;
-use super::sidebar::{Face, face, state_of, weighted};
+use super::rows::{Base, State as Forced, forced_face};
+use super::sidebar::{Face, face, state_of};
 use super::tokens::Tier;
-use super::{Cover, Paint, Tokens, icon_press, icons, lifted, tip};
+use super::{Cover, Paint, Tokens, icon_press, icons, reveal, tip};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab, Renaming, Tab};
 use crate::keys::{self, Shortcut};
@@ -38,12 +40,12 @@ struct Fit {
 impl Fit {
     const fn of(s: &Space) -> Self {
         Self {
-            widest: s.s4 * 13.0,
+            widest: TABS.widest,
             narrowest: s.s8,
-            active_least: s.s4 * 8.0,
+            active_least: TABS.active_least,
             between: s.s1,
             after: s.pointer_min + s.s1,
-            roomy: s.s4 * 8.0 + s.s2,
+            roomy: TABS.roomy,
         }
     }
 
@@ -84,13 +86,6 @@ fn chord(index: usize) -> Option<String> {
     (hint.chars().count() <= 3).then_some(hint)
 }
 
-/// Shown at rest and hidden while the pointer is on the tab, or the other
-/// way round: one of two things in the same place.
-fn reveal(e: El, on_hover: bool) -> El {
-    let (rest, hover) = if on_hover { (0.0, 1.0) } else { (1.0, 0.0) };
-    e.group_opacity(rest, hover)
-}
-
 /// The tab's trailing slot: its chord at rest and its close button under the
 /// pointer, in the same place so neither moves the name. The active tab
 /// always shows its close.
@@ -109,24 +104,22 @@ fn trailing(index: usize, tab: &Tab, width: f32, t: &Tokens) -> Option<El> {
         let lock = rune::el().size(slot, slot).center().child(lock);
         return Some(lock.help("Locked: unlock it to close it"));
     }
-    let close = super::pressable(format!("tab-close-{index}"), t)
-        .size(slot, slot)
-        .radius(t.radius.xs)
-        .center()
+    let close = rune_kit::IconButton::new(&icons::CLOSE)
+        .variant(rune_kit::IconButtonVariant::Ghost)
+        .control_size(rune_kit::ControlSize::Small)
         .label("Close tab")
-        // Pointer only: the strip's arrows select what they reach, and ⌘W
-        // closes the tab from the keyboard.
-        .focusable(false)
         .on_press(move |d: &mut Desk| {
             // The question a busy tab asks is about the tab on screen.
             d.select_tab(index);
             d.close_tab(index);
         })
-        .child(
-            rune::icon(&icons::CLOSE, t.icon.size.xs)
-                .color(dim)
-                .a11y_hidden(),
-        );
+        .build(&t.kit)
+        .key(format!("tab-close-{index}"))
+        .max_w(slot)
+        .max_h(slot)
+        // Pointer only: the strip's arrows select what they reach, and ⌘W
+        // closes the tab from the keyboard.
+        .focusable(false);
     let close = tip(close, "Close tab", Shortcut::CloseTab);
     if active {
         return Some(close);
@@ -190,21 +183,14 @@ fn status_mark(mark: Mark, t: &Tokens) -> El {
     held
 }
 
-/// A tab's face for `state`: the live tab at `Rest`, or that look forced
-/// for the gallery's states page.
-fn face_for(base: El, state: Forced, t: &Tokens) -> El {
-    let s = &t.space;
-    match state {
-        Forced::Rest => t.kit.interactive(base),
-        Forced::Hover => base.fill(t.roles.wash.hover.paint()),
-        Forced::Press => base.fill(t.roles.wash.press.paint()),
-        Forced::Focus => base.outline(
-            s.focus_ring.width,
-            s.focus_ring.offset,
-            t.roles.border.focus.paint(),
-        ),
-        Forced::Invalid => base.border(s.hairline, t.roles.status.failed.paint()),
-        Forced::Disabled => base.disabled(true),
+/// A tab's face for `state` over its selection (`rows::forced_face`).
+fn face_for(base: El, active: bool, state: Forced, t: &Tokens) -> El {
+    let under = if active { Base::Selected } else { Base::Plain };
+    let face = forced_face(base, under, state, t);
+    if state == Forced::Rest {
+        t.kit.interactive(face)
+    } else {
+        face
     }
 }
 
@@ -233,10 +219,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
         _ => t.roles.text.dim,
     };
     let name = text(label.clone())
-        .font(weighted(
-            t.ty.label,
-            phux_design::tokens::TYPE.weights.medium,
-        ))
+        .font(t.ty.label.medium())
         .color(ink.paint())
         // A long name fades out, as a browser's does: no ellipsis taking
         // letters from a narrow tab.
@@ -253,7 +236,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
     let base = rune::el()
         .key(format!("tab-{index}"))
         .cursor(rune::Cursor::Pointer);
-    let base = face_for(base, state, t)
+    let base = face_for(base, tab.active, state, t)
         .h(s.row_h)
         .pl(if roomy { s.s2 + s.s0_5 } else { s.icon_gap })
         .pr(if roomy || tab.active { s.icon_gap } else { s.s1 })
@@ -276,8 +259,9 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
     };
     let base = if tab.active {
         // The one you are on never gives up its name to a crowd. It is
-        // §1.10's selected treatment, lifted onto the raised tier.
-        t.elevate(lifted(base, t), Tier::Raised)
+        // §1.10's selected treatment (`face_for`), lifted onto the raised
+        // tier.
+        t.elevate(base, Tier::Raised)
             .max_w(width.max(FIT.active_least))
     } else {
         // `shrink` clears the floor, so the floor is set after it.
@@ -438,7 +422,7 @@ pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
     Dialog::new("rename", title)
         .open(true)
         .fit()
-        .width(s.s10 * 9.0)
+        .width(TABS.rename_w)
         .on_close(Desk::cancel_rename)
         .child(body)
         .build(&t.kit, &mut layer);

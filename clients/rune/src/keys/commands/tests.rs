@@ -247,3 +247,31 @@ fn config_keys_add_a_chord_take_one_away_and_report_a_bad_name() {
     ids.dedup();
     assert_eq!(ids.len(), count);
 }
+
+/// The string lint for the chrome's casing: every in-app command label is
+/// sentence case, acronyms and proper nouns kept (the menu bar keeps
+/// `title`'s Title Case).
+#[test]
+fn in_app_labels_are_sentence_case() {
+    assert_eq!(
+        sentence_case("Copy Settings as TOML"),
+        "Copy settings as TOML"
+    );
+    assert_eq!(sentence_case("Open Pit Lane"), "Open Pit Lane");
+    assert_eq!(
+        sentence_case("Jump to What Needs You"),
+        "Jump to what needs you"
+    );
+    for command in COMMANDS {
+        let label = command.label();
+        for word in label.split(' ').skip(1) {
+            let bare = word.trim_matches(|c: char| !c.is_alphanumeric());
+            let capital = bare.chars().next().is_some_and(char::is_uppercase);
+            let acronym = bare.len() > 1 && bare.chars().all(|c| !c.is_lowercase());
+            assert!(
+                !capital || acronym || PROPER.contains(&bare),
+                "{label:?}: {word:?} is Title Case"
+            );
+        }
+    }
+}

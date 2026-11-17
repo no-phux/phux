@@ -1,10 +1,11 @@
 //! The command palette overlay: a scrim, a field, and ranked rows; and the
 //! context menu, the kit's.
 
+use crate::ui::tokens::Voice;
 use rune::{Cursor, El, PointerPress, Span, col, el, rich, row, text, text_input};
 use rune_kit::{MenuItem, context_menu as kit_menu};
 
-use super::overlay::{EXTENTS, Glass, empty_note, glass, key_hint, pop, strong};
+use super::overlay::{EXTENTS, Glass, empty_note, glass, key_hint, pop};
 use super::tokens::{Paint, Tier, Tokens};
 use super::{icons, kit_overlay};
 use crate::desk::{CONTEXT_MENU, Desk, TAB_MENU};
@@ -126,6 +127,9 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
+                // A row cut by the footer rule fades rather than slicing
+                // mid-glyph, and says more lies below.
+                .scroll_edge_fade(t.space.s6)
                 .child(results),
         )
         // A phone taps its rows; the keys this footer teaches are a desktop's.
@@ -309,7 +313,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
     let s = &t.space;
     let r = &t.roles;
     let title = &hit.item.title;
-    let heavy = strong(t.ty.label).weight;
+    let heavy = t.ty.label.semibold().weight;
     let spans = hit
         .matched
         .iter()
@@ -333,7 +337,8 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .py(s.s1)
         .px(s.s3)
         .gap(s.s3)
-        .radius(t.radius.sm)
+        // Nested in the palette's `lg` panel by the list's inset (§1.5).
+        .radius(t.nested(t.radius.lg, s.s1))
         .items_center()
         .focusable(true)
         .focus_selected(picked);
@@ -364,13 +369,30 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
             }
             _ => None,
         })
-        .child(
-            text(hit.item.detail.clone())
-                .font(t.ty.caption)
-                .color(detail.paint())
-                .truncate()
-                .a11y_hidden(),
-        )
+        .child(detail_text(&hit.item.detail, detail.paint(), t))
+}
+
+/// A row's detail in its voices (§1.4): the session's name in the ui face,
+/// a pane id (`@N`) after it as a machine noun, mono with tabular figures.
+fn detail_text(detail: &str, ink: rune::Color, t: &Tokens) -> El {
+    let words = |w: String, font| text(w).font(font).color(ink).truncate();
+    let id = detail.rsplit_once(" · ").filter(|(_, id)| {
+        id.strip_prefix('@')
+            .is_some_and(|n| n.parse::<u32>().is_ok())
+    });
+    match id {
+        Some((name, id)) => row()
+            .items_center()
+            .min_w(0.0)
+            .child(
+                words(format!("{name} · "), t.ty.caption)
+                    .shrink()
+                    .min_w(0.0),
+            )
+            .child(words(id.to_owned(), t.ty.readout))
+            .a11y_hidden(),
+        None => words(detail.to_owned(), t.ty.caption).a11y_hidden(),
+    }
 }
 
 #[cfg(test)]

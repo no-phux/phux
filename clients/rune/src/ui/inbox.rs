@@ -1,39 +1,24 @@
 //! The inbox: a drawer of everything waiting on you, answerable in place,
 //! and the card a focused pane shows when its agent is asking.
 
+use crate::ui::tokens::Voice;
 use phux_client_runtime::approvals::{Approval, Decision};
 use phux_design::{State, Tone};
 use phux_protocol::ids::ResourceId;
 use rune::{Cursor, Edge, El, Transition, col, el, row, text, text_input};
 use rune_kit::{Button, ButtonVariant, Card, ControlSize, Spinner};
 
-use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words, pop, readout, strong};
-use super::tokens::{MONO, Paint, Tier, Tokens};
+use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words, pop};
+use super::tokens::{Paint, Tier, Tokens};
 use super::{MOD, badge, icons, lifted};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
-use crate::ui::Cover;
-
-/// The ladder state a waiting mark draws as; `None` for the bell, which
-/// is an event with its own mark, not a state (§1.3).
-const fn state(mark: Mark) -> Option<State> {
-    Some(match mark {
-        Mark::Blocked => State::NeedsYou,
-        Mark::Failed => State::Failed,
-        Mark::Done => State::Done,
-        Mark::Succeeded => State::DoneSeen,
-        Mark::Working | Mark::Running | Mark::Background => State::Working,
-        Mark::Idle => State::Idle,
-        Mark::None => State::Unknown,
-        Mark::Bell => return None,
-    })
-}
 
 /// `mark`'s vector mark and tone, colour and shape together.
 fn mark_icon(mark: Mark, t: &Tokens) -> (El, rune::Color) {
     let size = t.icon.size.sm;
-    match state(mark) {
+    match mark.state() {
         Some(state) => (
             badge::mark(t, state, size).a11y_hidden(),
             t.status.state(state).tone.ink,
@@ -82,7 +67,7 @@ fn chip(
         )
         .children(index.filter(|i| *i < 9).map(|i| {
             text(format!("{MOD}{}", i + 1))
-                .font(readout(t))
+                .font(t.ty.readout)
                 .color(r.text.dim.paint())
                 .a11y_hidden()
         }));
@@ -123,7 +108,7 @@ fn header(mark: Mark, title: String, detail: String, busy: bool, t: &Tokens) -> 
         .child(icon)
         .child(
             text(title)
-                .font(strong(t.ty.label))
+                .font(t.ty.label.semibold())
                 .color(r.text.text.paint())
                 .truncate()
                 .min_w(0.0)
@@ -239,10 +224,7 @@ fn card(body: El, tone: rune::Color, t: &Tokens) -> El {
 fn approval_card(approval: &Approval, t: &Tokens) -> El {
     let r = &t.roles;
     let requester = inbox::approval_requester(approval);
-    let mono = rune::TextStyle {
-        family: MONO,
-        ..t.ty.caption
-    };
+    let mono = t.ty.mono_caption;
     let mut body = col()
         .w_full()
         .gap(t.space.s2)
@@ -332,7 +314,8 @@ fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, t: &Tokens) ->
         .child(body)
 }
 
-/// Nothing waiting: the done mark, large, and what lands here.
+/// Nothing waiting: a neutral illustration (no status tone is spent when
+/// nothing needs you), and what lands here.
 fn empty(t: &Tokens) -> El {
     let r = &t.roles;
     col()
@@ -340,7 +323,11 @@ fn empty(t: &Tokens) -> El {
         .py(t.space.s12)
         .gap(t.space.s2)
         .items_center()
-        .child(badge::mark(t, State::Done, t.icon.size.xl).a11y_hidden())
+        .child(
+            rune::icon(&icons::INBOX, t.icon.size.xl)
+                .color(r.text.faint.paint())
+                .a11y_hidden(),
+        )
         .child(
             text("Nothing needs you")
                 .font(t.ty.body)
@@ -371,6 +358,8 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
     let mut foot = row().w_full().px(s.s3).py(s.s2).gap(s.s3).items_center();
     foot = match &desk.notice {
         Some(notice) => foot.child(notice_words(notice, t)),
+        // Only the hints that apply: nothing to move to or open when empty.
+        None if items.is_empty() => foot.child(key_hint("esc", "close", t)),
         None => foot
             .child(key_hint("↑↓", "move", t))
             .child(key_hint("↩", "send or open", t))
@@ -402,7 +391,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                 .child(text("Inbox").font(t.ty.title).color(r.text.text.paint()))
                 .child(
                     text(items.len().to_string())
-                        .font(readout(t))
+                        .font(t.ty.readout)
                         .color(r.text.dim.paint()),
                 ),
         )
@@ -429,12 +418,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         ),
         Tier::Overlay,
     );
-    el().key("inbox-scrim")
-        .cover()
-        .fill(r.layer.scrim.paint())
-        .transition(Transition::opacity())
-        .modal(true, |d: &mut Desk| d.close_inbox())
-        .label("Inbox")
+    super::scrim(el().key("inbox-scrim"), "Inbox", Some(Desk::close_inbox), t)
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 

@@ -2,26 +2,15 @@
 //! link, how long the code lasts, which network the phone uses, and the
 //! devices that can connect.
 
+use super::tokens::layout::PAIR as GEOMETRY;
+use crate::ui::tokens::Voice;
 use rune::{El, TextStyle, col, el, row, text};
 use rune_kit::ButtonVariant;
 
-use super::settings::{kit_button, medium, primary, secondary, semibold};
+use super::settings::{kit_button, primary, secondary};
 use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 use crate::pair::{self, countdown, last_seen, needs_enable};
-
-/// The pairing panel's geometry: component sizes, not style.
-struct Geometry {
-    /// The QR plate's side: large enough for a phone camera at arm's length.
-    qr: f32,
-    /// The narrowest the code's copy column gets before it wraps under the QR.
-    side_min: f32,
-}
-
-const GEOMETRY: Geometry = Geometry {
-    qr: 200.0,
-    side_min: 180.0,
-};
 
 pub(super) const DETAIL: &str =
     "Scan a code with the phux app to reach this computer's sessions from your phone.";
@@ -46,7 +35,7 @@ fn button(key: &'static str, label: &'static str, accent: bool, t: &Tokens) -> E
 
 /// A row title: the primary copy at the label weight.
 fn title(desk: &Desk, t: &Tokens) -> TextStyle {
-    medium(primary(desk, t))
+    primary(desk, t).medium()
 }
 
 fn words(words: impl Into<String>, desk: &Desk, t: &Tokens) -> El {
@@ -159,7 +148,7 @@ fn devices(desk: &Desk, t: &Tokens) -> Option<El> {
     let listed = desk.settings_ui.pairing.devices.as_ref()?;
     let mut list = col().key("pair-devices").w_full().gap(s.s1).child(
         text("Paired devices")
-            .font(semibold(secondary(desk, t)))
+            .font(secondary(desk, t).semibold())
             .color(t.roles.text.dim.paint())
             .role("heading")
             .level(3),

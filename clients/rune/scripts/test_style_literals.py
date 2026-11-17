@@ -42,8 +42,24 @@ class Patterns(unittest.TestCase):
             "0x1e1f22",
             "Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 }",
             "const R: f32 = 7.0;",
+            ".fill(Color { a: alpha, ..tint })",
+            "TextStyle { weight: 600.0, ..t.ty.label }",
+            "TextStyle { family: MONO, ..t.ty.caption }",
+            "s.s4 * 13.0",
+            "t.space.s16 * 3.0",
+            "const G: Geometry = Geometry { sheet_w: 420.0 };",
         ]:
             self.assertEqual(style_literals.count(snippet), 1, snippet)
+
+    def test_a_view_table_counts_each_numeric_field(self):
+        table = "const G: Geometry = Geometry {\n    a: 1.0,\n    b: SPACE.s3,\n    c: 0.8,\n};"
+        self.assertEqual(style_literals.count(table), 2)
+        self.assertEqual(style_literals.count(table, "src/desk/touch.rs"), 0)
+
+    def test_struct_updates_count_only_in_a_view(self):
+        update = "Color { a: alpha, ..tint }"
+        self.assertEqual(style_literals.count(update, "src/ui/sidebar.rs"), 1)
+        self.assertEqual(style_literals.count(update, "src/grid/cursor.rs"), 0)
 
     def test_tokens_and_zero_do_not_count(self):
         for snippet in [
@@ -54,6 +70,9 @@ class Patterns(unittest.TestCase):
             "// .radius(7.0) in a comment",
             "const MAX: usize = 4;",
             "const GAP: f32 = SPACE.s3;",
+            "t.alpha(tint, alpha)",
+            "t.ty.label.semibold()",
+            "s.touch_min / 2.0",
         ]:
             self.assertEqual(style_literals.count(snippet), 0, snippet)
 

@@ -10,6 +10,33 @@ pub fn element(rt: &rune::Runtime<Desk>, key: &str) -> rune::ElementInfo {
         .unwrap_or_else(|| panic!("no {key}"))
 }
 
+/// The glass panels `rt`'s last frame draws (`Tokens::glass_panel`),
+/// asserting none sits inside a one-layer ancestor: a faded group or a
+/// card still scaling in, which would flatten its backdrop (§1.9).
+pub fn glass_panels(rt: &rune::Runtime<Desk>) -> usize {
+    let all = rt.elements();
+    let glass: Vec<usize> = (all.iter().enumerate())
+        .filter(|(_, e)| e.trace_name == Some(crate::ui::tokens::glass::GLASS_TRACE) && !e.exiting)
+        .map(|(i, _)| i)
+        .collect();
+    for &i in &glass {
+        let mut up = Some(i);
+        while let Some(j) = up {
+            let e = &all[j];
+            assert!(
+                e.opacity >= 0.999 && (e.scale - 1.0).abs() < 1e-3,
+                "glass {:?} under a one-layer ancestor {:?} (opacity {}, scale {})",
+                all[i].key,
+                e.key,
+                e.opacity,
+                e.scale
+            );
+            up = e.parent;
+        }
+    }
+    glass.len()
+}
+
 /// `rt`'s last frame painted `size` pixels big through Rune's real
 /// renderer, as RGBA.
 pub fn offscreen(

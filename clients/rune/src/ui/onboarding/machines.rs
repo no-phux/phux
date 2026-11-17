@@ -3,14 +3,12 @@
 
 use super::*;
 use crate::desk::machines::ssh::Offered;
+use crate::ui::tokens::Voice;
 
 /// A host name in the chrome's mono face (§1.4 voice).
 fn host(name: String, t: &Tokens) -> El {
     text(name)
-        .font(TextStyle {
-            family: crate::ui::tokens::MONO,
-            ..semibold(t.ty.label)
-        })
+        .font(t.ty.label.semibold().machine())
         .color(t.roles.text.text.paint())
 }
 
@@ -36,7 +34,7 @@ fn machine(target: String, name: String, state: Offered, t: &Tokens) -> El {
                     .label(name.clone())
                     .hide_label()
                     .on_toggle(move |d: &mut Desk| d.pick_machine(&target))
-                    .build(&t.kit);
+                    .build(t.controls(false));
                 line().child(
                     t.kit
                         .interactive(tick.key(key))

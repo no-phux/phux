@@ -28,27 +28,10 @@ impl Sheet {
         let t = p;
         let s = &t.space;
         let line = || rune::rule(s.hairline, t.roles.border.base.paint()).w_full();
-        let header = row()
-            .w_full()
+        let header = sheet_header(self.title, self.key, aside, self.close, p)
             .h(s.row_h + s.s4)
             .pl(s.sheet_pad)
-            .pr(s.s2)
-            .gap(s.s2)
-            .items_center()
-            .child(
-                text(self.title)
-                    .font(t.ty.title)
-                    .color(t.roles.text.text.paint()),
-            )
-            .child(el().grow(1.0))
-            .children(aside)
-            .child(icon_press(
-                &super::icons::CLOSE,
-                "Close",
-                format!("{}-close", self.key),
-                p,
-                self.close,
-            ));
+            .pr(s.s2);
         let panel = col()
             .key(self.key)
             // A narrow window (the phone form) takes what it has.
@@ -59,12 +42,10 @@ impl Sheet {
             .min_h(0.0)
             .radius(t.radius.lg)
             .clip_rounded(t.radius.lg)
+            // The one modal surface (§1.2): raised, edged in `border.base`.
             .fill(t.roles.layer.raised.paint())
-            // Exits fade; entries scale up from `enter_scale` (§1.8).
-            .transition(Transition::asymmetric(
-                Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
-                Transition::opacity(),
-            ))
+            .border(s.hairline, t.roles.border.base.paint())
+            .transition(t.enter())
             .child(header)
             .child(line().key("sheet-header-rule"))
             .child(
@@ -75,23 +56,72 @@ impl Sheet {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
+                    // What scrolls under the footer fades: there is more.
+                    .scroll_edge_fade(s.s6)
                     .child(body),
             )
             .child(line().key("sheet-footer-rule"))
             .child(el().w_full().px(s.card_inset).py(s.s2).child(foot));
         let panel = t.elevate(panel, Tier::Overlay);
-        col()
-            .key(format!("{}-scrim", self.key))
-            .cover()
-            .py(s.s4)
-            .px(s.s4)
-            .items_center()
-            .fill(t.roles.layer.scrim.paint())
-            .transition(Transition::opacity())
-            .modal(true, self.close)
-            .label(self.title)
-            .child(el().grow(1.0).max_h(self.top - s.s4))
-            .child(panel)
+        scrim(
+            col()
+                .key(format!("{}-scrim", self.key))
+                .py(s.s4)
+                .px(s.s4)
+                .items_center(),
+            self.title,
+            Some(self.close),
+            t,
+        )
+        .child(el().grow(1.0).max_h(self.top - s.s4))
+        .child(panel)
+    }
+}
+
+/// A modal sheet's header: its title (a heading) and close button, with
+/// `aside` between them. `{key}-close` keys the button.
+pub(crate) fn sheet_header(
+    title: &'static str,
+    key: &str,
+    aside: Option<El>,
+    close: fn(&mut Desk),
+    t: &Tokens,
+) -> El {
+    row()
+        .w_full()
+        .gap(t.space.s2)
+        .items_center()
+        .child(
+            text(title)
+                .font(t.ty.title)
+                .color(t.roles.text.text.paint())
+                .role("heading")
+                .level(2),
+        )
+        .child(el().grow(1.0))
+        .children(aside)
+        .child(icon_press(
+            &super::icons::CLOSE,
+            "Close",
+            format!("{key}-close"),
+            t,
+            close,
+        ))
+}
+
+/// The one scrim every modal sits on (§1.2 `layer.scrim`): `base` over the
+/// whole window, fading in and out, trapping focus as a modal named
+/// `label`. `close` is what Escape and a press on the scrim do; `None`
+/// leaves Escape to the content (the popup's command owns it).
+pub(crate) fn scrim(base: El, label: &str, close: Option<fn(&mut Desk)>, t: &Tokens) -> El {
+    let base = base
+        .cover()
+        .fill(t.roles.layer.scrim.paint())
+        .transition(Transition::opacity())
+        .label(label.to_owned());
+    match close {
+        Some(close) => base.modal(true, close),
+        None => base.modal(false, |_: &mut Desk| {}),
     }
 }
 
@@ -133,6 +163,17 @@ pub(crate) fn pressable(key: impl Into<String>, p: &Tokens) -> El {
         .cursor(rune::Cursor::Pointer)
 }
 
+/// Shown at rest and hidden while the pointer is on the nearest hover
+/// group, or (`on_hover`) the other way round: one of two things in the
+/// same place. The chrome's one sanctioned opacity outside the owner
+/// paths (DEVELOP.md, "Design tokens"): Rune's `group_opacity` swaps them
+/// on the pointer without rebuilding the view, which a token colour swap
+/// would need. It is a reveal of 0 or 1, never a dimmed look.
+pub(crate) fn reveal(e: El, on_hover: bool) -> El {
+    let (rest, hover) = if on_hover { (0.0, 1.0) } else { (1.0, 0.0) };
+    e.group_opacity(rest, hover)
+}
+
 /// The selected row or tab: §1.10's one treatment.
 pub(crate) fn lifted(el: El, p: &Tokens) -> El {
     super::rows::lifted(el, p)
@@ -151,27 +192,17 @@ pub(crate) fn tip(el: El, words: impl Into<String>, action: crate::keys::Shortcu
     el.help(words).help_keys(keys)
 }
 
-/// A secondary action in a row of them: the control outline, label type.
+/// A secondary action in a row of them: kit `Button`, outlined, with the
+/// kit's press scale on `spring.press` (§1.10), in the Tab order.
 pub(crate) fn button(
     label: &'static str,
     key: &'static str,
     p: &Tokens,
     press: fn(&mut Desk),
 ) -> El {
-    let t = p;
-    pressable(key, p)
+    super::settings::kit_button(key, label, rune_kit::ButtonVariant::Outline, p)
         .grow(1.0)
-        .min_h(t.space.pointer_min)
-        .py(t.space.s1)
-        .radius(t.radius.sm)
-        .center()
-        .border(t.space.hairline, t.roles.border.control.paint())
         .on_press(press)
-        .child(
-            text(label)
-                .font(t.ty.caption)
-                .color(t.roles.text.text.paint()),
-        )
 }
 
 /// `on_drag` for a surface floating over panes. Taking the press stops it,

@@ -6,9 +6,10 @@
 //! Rows are a full touch target tall; their width is the system
 //! keyboard's, ten letters to a row.
 
+use crate::ui::tokens::Voice;
 use rune::{Color, Edge, El, Key, Transition, col, el, row, text};
 
-use super::{Look, glyph, medium, surface, touchable};
+use super::{Look, glyph, surface, touchable};
 use crate::desk::Desk;
 use crate::desk::phone::{Phone, Soft};
 use crate::ui::icons;
@@ -88,7 +89,7 @@ pub(super) fn keyboard(phone: &Phone, visible: bool, p: &Look) -> El {
         cap(
             key.to_owned(),
             label.to_owned(),
-            text(label).font(medium(p.ty.label)).color(ink),
+            text(label).font(p.ty.label.medium()).color(ink),
             function,
             p,
         )

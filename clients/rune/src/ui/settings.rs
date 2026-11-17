@@ -4,36 +4,18 @@
 //! phone form is full bleed at `radius.xl` (§4.1.3). Everything is drawn
 //! from the window's [`Tokens`].
 
-use rune::{El, TextStyle, Transition, col, el, row, text, text_input};
+use super::tokens::layout::SETTINGS as GEOMETRY;
+use crate::ui::tokens::Voice;
+use rune::{El, TextStyle, col, el, row, text, text_input};
 
 use super::tokens::{Paint, Tier, Tokens};
 use super::{icons, pressable, updates};
 use crate::desk::{Desk, SettingsCategory as Category};
-use crate::ui::Cover;
 
 mod controls;
 mod entries;
 
 pub(super) use controls::{Toggle, grown, kit_button, section, toggle};
-
-/// Settings' own geometry: component sizes the token schema has no role
-/// for (§4.1.3 gives the sheet as 840×600 with a rail).
-struct Geometry {
-    sheet_w: f32,
-    sheet_h: f32,
-    rail_w: f32,
-    /// Where a phone row's title wraps above its value.
-    phone_title_min: f32,
-    phone_value_max: f32,
-}
-
-const GEOMETRY: Geometry = Geometry {
-    sheet_w: 840.0,
-    sheet_h: 600.0,
-    rail_w: 190.0,
-    phone_title_min: 100.0,
-    phone_value_max: 140.0,
-};
 
 /// Primary copy: a row's title. The phone reads a size up, `lead` for
 /// `body` (§4.1.3, the phone type bumps onto roles).
@@ -62,25 +44,7 @@ pub(super) fn heading_type(desk: &Desk, t: &Tokens) -> TextStyle {
     } else {
         t.ty.label
     };
-    semibold(base)
-}
-
-/// `style` a weight up, for emphasis (§1.4: weight, never size).
-pub(in crate::ui) fn semibold(style: TextStyle) -> TextStyle {
-    weighted(style, phux_design::tokens::TYPE.weights.semibold)
-}
-
-/// `style` at `medium`, the label weight.
-pub(in crate::ui) fn medium(style: TextStyle) -> TextStyle {
-    weighted(style, phux_design::tokens::TYPE.weights.medium)
-}
-
-#[allow(clippy::cast_precision_loss, reason = "font weights are 100..=900")]
-fn weighted(style: TextStyle, weight: u32) -> TextStyle {
-    TextStyle {
-        weight: weight as f32,
-        ..style
-    }
+    base.semibold()
 }
 
 /// The ground Settings' cards sit on: content lifted off the sheet.
@@ -96,7 +60,7 @@ fn search(desk: &Desk, t: &Tokens) -> El {
     let style = primary(desk, t);
     let field = text_input(&desk.settings_ui.query, style)
         .key("settings-query")
-        .label("Search Settings")
+        .label("Search settings")
         .single_line()
         .min_h(s.touch_min)
         // Native input lays out from its top inset, not the row's alignment.
@@ -105,7 +69,7 @@ fn search(desk: &Desk, t: &Tokens) -> El {
         .grow(1.0)
         .min_w(0.0)
         .color(t.roles.text.text.paint())
-        .placeholder("Search Settings", t.roles.text.faint.paint())
+        .placeholder("Search settings", t.roles.text.faint.paint())
         .on_edit(|d: &mut Desk| &mut d.settings_ui.query)
         .on_input_key(Desk::settings_field_key);
     row()
@@ -125,19 +89,16 @@ fn search(desk: &Desk, t: &Tokens) -> El {
         )
         .child(field)
         .children((!desk.settings_ui.query.text.is_empty()).then(|| {
-            pressable("settings-clear", t)
-                .size(s.touch_min, s.touch_min)
-                .focusable(true)
-                .preserve_focus_on_press(true)
-                .label("Clear search")
-                .center()
-                .radius(t.radius.sm)
-                .on_press(Desk::clear_settings_search)
-                .child(
-                    rune::icon(&icons::CLOSE, t.icon.grid)
-                        .color(t.roles.text.dim.paint())
-                        .a11y_hidden(),
-                )
+            super::icon_press(
+                &icons::CLOSE,
+                "Clear search",
+                "settings-clear",
+                t,
+                Desk::clear_settings_search,
+            )
+            .min_w(s.touch_min)
+            .min_h(s.touch_min)
+            .preserve_focus_on_press(true)
         }))
 }
 
@@ -297,21 +258,19 @@ fn detail(desk: &Desk, t: &Tokens) -> El {
     body
 }
 
+/// The sheet's close: kit `IconButton`, ghost, as every sheet's is; no
+/// rest fill (`wash.current` is the keyboard cursor's, §1.10).
 fn close(t: &Tokens) -> El {
     let side = t.space.touch_min;
-    pressable("settings-close", t)
-        .size(side, side)
-        .radius(t.radius.full)
-        .fill(t.roles.wash.current.paint())
-        .center()
-        .focusable(true)
-        .label("Close")
-        .on_press(Desk::close_settings)
-        .child(
-            rune::icon(&icons::CLOSE, t.icon.size.lg)
-                .color(t.roles.text.text.paint())
-                .a11y_hidden(),
-        )
+    super::icon_press(
+        &icons::CLOSE,
+        "Close",
+        "settings-close",
+        t,
+        Desk::close_settings,
+    )
+    .min_w(side)
+    .min_h(side)
 }
 
 fn title(t: &Tokens) -> El {
@@ -457,11 +416,7 @@ fn desktop(desk: &Desk, t: &Tokens) -> El {
         .clip_rounded(t.radius.lg)
         .fill(t.roles.layer.sidebar.paint())
         .border(s.hairline, rule)
-        // Exits fade; entries scale up from `enter_scale` (§1.8).
-        .transition(Transition::asymmetric(
-            Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
-            Transition::opacity(),
-        ))
+        .transition(t.enter())
         .child(heading(desk, t))
         .child(rune::rule(s.hairline, rule).w_full())
         .child(
@@ -486,16 +441,13 @@ fn desktop(desk: &Desk, t: &Tokens) -> El {
                         .child(scroller(desk, t)),
                 ),
         );
-    col()
-        .key("settings-scrim")
-        .cover()
-        .padding(s.s8)
-        .center()
-        .fill(t.roles.layer.scrim.paint())
-        .transition(Transition::opacity())
-        .modal(true, Desk::settings_escape)
-        .label("Settings")
-        .child(t.elevate(panel, Tier::Overlay))
+    super::scrim(
+        col().key("settings-scrim").padding(s.s8).center(),
+        "Settings",
+        Some(Desk::settings_escape),
+        t,
+    )
+    .child(t.elevate(panel, Tier::Overlay))
 }
 
 pub fn view(desk: &Desk, p: &Tokens) -> El {

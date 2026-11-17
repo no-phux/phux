@@ -1,8 +1,9 @@
 //! One screen-addressable resource: identity, useful detail and its state
 //! as the status ladder draws it (colour, mark and word together).
+use crate::ui::tokens::Voice;
 use rune::{El, col, el, text};
 
-use super::{Desk, Look, control, medium, nested, row_h};
+use super::{Desk, Look, control, nested, row_h};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
 use crate::ui::icons;
@@ -52,15 +53,20 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El 
     .gap(s.s2)
     .radius(nested(p))
     .focus_selected(current)
+    // The mark stays on the title's line when the detail wraps under it.
+    .items_start()
+    .py(s.s2)
     .children([
-        state_mark(mark, p),
+        el().h(p.ty.label.medium().line_px())
+            .center()
+            .child(state_mark(mark, p)),
         col()
             .grow(1.0)
             .min_w(0.0)
             .gap(s.s1)
             .child(
                 text(resource.label.clone())
-                    .font(medium(p.ty.label))
+                    .font(p.ty.label.medium())
                     .color(p.roles.text.text.paint())
                     .truncate()
                     .a11y_hidden(),

@@ -118,7 +118,7 @@ pub fn items(
     out.extend(session_items(topology, order));
     for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
-            title: command.title.to_owned(),
+            title: command.label(),
             detail: command.hint(),
             kind: "action",
             target: Target::Action(command.action),
@@ -185,10 +185,21 @@ pub fn session_items(topology: Option<&Topology>, order: &[SessionKey]) -> Vec<I
     session_order::list(&mut sessions, order, |s| s.key, |s| s.touched);
     let item = |index: usize, project: Option<(&str, bool)>| {
         let session = sessions[index];
+        // The live panes the graph holds, else the count the server sent.
+        let live = topology
+            .panes
+            .iter()
+            .filter(|p| p.session_id == session.id)
+            .count();
+        let members = if live > 0 {
+            live
+        } else {
+            session.members as usize
+        };
         let terminals = format!(
             "{} terminal{}",
-            session.members,
-            if session.members == 1 { "" } else { "s" }
+            members,
+            if members == 1 { "" } else { "s" }
         );
         Item {
             title: match project {
@@ -245,7 +256,7 @@ pub fn new_session_item(topology: Option<&Topology>, query: &str) -> Option<Item
     let name = query.trim();
     let taken = topology.is_some_and(|t| t.sessions.iter().any(|s| s.name == name));
     (!name.is_empty() && !taken).then(|| Item {
-        title: format!("New Session \u{201c}{name}\u{201d}"),
+        title: format!("New session \u{201c}{name}\u{201d}"),
         detail: "create".to_owned(),
         kind: "action",
         target: Target::NewSession(name.to_owned()),
@@ -256,7 +267,7 @@ pub fn new_session_item(topology: Option<&Topology>, query: &str) -> Option<Item
 pub fn new_worktree_item(query: &str) -> Option<Item> {
     let branch = query.trim();
     (!branch.is_empty() && !branch.contains(char::is_whitespace)).then(|| Item {
-        title: format!("New Worktree \u{201c}{branch}\u{201d}"),
+        title: format!("New worktree \u{201c}{branch}\u{201d}"),
         detail: "branch and session".to_owned(),
         kind: "action",
         target: Target::NewWorktree(branch.to_owned()),
@@ -291,7 +302,7 @@ pub fn shortcut_items() -> Vec<Item> {
         .filter(|c| !c.chords().is_empty() && c.action != Shortcut::Bare);
     bound
         .map(|command| Item {
-            title: command.title.to_owned(),
+            title: command.label(),
             detail: command.hints(),
             kind: "action",
             target: Target::Action(command.action),
@@ -305,7 +316,7 @@ pub fn action_items(actions: &[Shortcut]) -> Vec<Item> {
         .iter()
         .filter_map(|action| crate::keys::command(*action))
         .map(|command| Item {
-            title: command.title.to_owned(),
+            title: command.label(),
             detail: command.hints(),
             kind: "action",
             target: Target::Action(command.action),

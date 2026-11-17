@@ -164,7 +164,7 @@ fn settle(rt: &mut Runtime<Desk>) {
 }
 
 /// The frame as the app shows it: blended in sRGB, as every window is.
-fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name: &str) {
+fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name: &str) -> Vec<u8> {
     rt.set_srgb_blend(true);
     settle(rt);
     let (w, h) = ((size.0 * SCALE) as u32, (size.1 * SCALE) as u32);
@@ -178,6 +178,7 @@ fn paint(gpu: &rune::render::Gpu, rt: &mut Runtime<Desk>, size: (f32, f32), name
         std::fs::create_dir_all(dir).unwrap();
         rune::render::write_png(&dir.join(format!("{name}.png")), w, h, &pixels).unwrap();
     }
+    pixels
 }
 
 /// A surface page: its name and how the window opens it.
@@ -218,6 +219,90 @@ fn the_gallery_paints() {
     // still lines up.
     let mocha = crate::theme::find("catppuccin-mocha");
     surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
+}
+
+/// §1.5 nesting in the real tree: the palette's rows are inset in its
+/// panel, their radius the panel's less the inset.
+#[test]
+fn the_palettes_rows_nest_inside_its_panel() {
+    let mut rt = window(DESKTOP, true, None, Locale::En);
+    rt.update(|d, _| d.toggle_palette());
+    settle(&mut rt);
+    let panel = crate::ui::element(&rt, "palette");
+    let row = crate::ui::element(&rt, "palette-row-0");
+    let results = crate::ui::element(&rt, "palette-results");
+    let inset = row.rect[0] - results.rect[0];
+    let tokens = crate::ui::tokens_for(true, None);
+    assert!(
+        (row.radius - tokens.nested(panel.radius, inset)).abs() < 0.01,
+        "row {} in panel {} at {inset}",
+        row.radius,
+        panel.radius
+    );
+}
+
+/// Under reduced motion a modal opens and closes in place: no scale on
+/// its first frame, gone on the frame it closes (§1.11).
+#[test]
+fn reduced_motion_opens_and_closes_without_movement() {
+    let mut rt = window(DESKTOP, true, None, Locale::En);
+    rt.set_system_reduced_motion(true);
+    settle(&mut rt);
+    rt.update(|d, _| d.toggle_palette());
+    rt.frame(3.016);
+    let panel = crate::ui::element(&rt, "palette");
+    assert!((panel.scale - 1.0).abs() < 1e-3, "scale {}", panel.scale);
+    assert!(!panel.moving, "the palette moved under reduced motion");
+    rt.update(|d, _| d.toggle_palette());
+    rt.frame(3.032);
+    assert!(
+        rt.elements()
+            .iter()
+            .all(|e| e.key.as_deref() != Some("palette") || e.exiting),
+        "the palette lingered under reduced motion"
+    );
+}
+
+/// §1.9's budget over the gallery's surfaces with glass at its fullest:
+/// at most four blurs on the desktop, the modal's among them, none inside
+/// a one-layer ancestor; none at all under reduce transparency.
+#[test]
+fn glass_stays_within_its_budget() {
+    let pages: [Page; 4] = [
+        ("window", |_| {}),
+        ("palette", Desk::toggle_palette),
+        ("inbox", Desk::toggle_inbox),
+        ("find", Desk::open_find),
+    ];
+    let mut drawn = 0;
+    for look in [Look::HouseDark, Look::HouseLight] {
+        for (page, open) in pages {
+            let mut rt = window(DESKTOP, look.dark(), look.theme(), Locale::En);
+            rt.update(|d, _| {
+                d.settings.glass = 100;
+                open(d);
+            });
+            settle(&mut rt);
+            let n = crate::ui::glass_panels(&rt);
+            assert!(n <= 4, "{page}-{}: {n} blurs", look.tag());
+            // And as the renderer sees it: every backdrop blur drawn.
+            let drawn_blurs = (rt.instances.iter())
+                .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
+                .count();
+            assert!(drawn_blurs <= 4, "{page}: {drawn_blurs} blurs drawn");
+            drawn += n;
+            rt.update(|d, _| {
+                d.set_reduce_transparency(true);
+            });
+            settle(&mut rt);
+            assert_eq!(
+                crate::ui::glass_panels(&rt),
+                0,
+                "{page}: reduce transparency draws glass"
+            );
+        }
+    }
+    assert!(drawn > 0, "full glass drew no glass panel at all");
 }
 
 #[test]
@@ -294,19 +379,36 @@ fn the_gallery_paints_every_locale() {
 #[test]
 fn the_gallery_paints_the_states_page() {
     let gpu = rune::render::Gpu::headless();
+    // Focus is Rune's own ring on every focusable control, not one the
+    // page paints: forced on, as DevTools forces `:focus-visible`.
+    for look in [Look::HouseDark, Look::HouseLight] {
+        let mut rt = states::focus_page(look.dark(), look.theme());
+        paint(
+            &gpu,
+            &mut rt,
+            states::SIZE,
+            &format!("states-focus-{}", look.tag()),
+        );
+    }
     for look in Look::ALL {
         for (more, suffix) in [(false, ""), (true, "-contrast-more")] {
             let mut rt = states::page(look.dark(), look.theme());
             if more {
                 rt.set_system_increased_contrast(true);
             }
-            paint(
+            let pixels = paint(
                 &gpu,
                 &mut rt,
                 states::SIZE,
                 &format!("states-{}{suffix}", look.tag()),
             );
             states::assert_marks(&rt);
+            let tokens = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs {
+                theme: look.theme().copied(),
+                increased_contrast: more,
+                ..crate::ui::tokens::Inputs::system(look.dark())
+            });
+            states::assert_invalid_shows(&rt, &pixels, &tokens);
         }
     }
 }

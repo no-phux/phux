@@ -63,6 +63,22 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
     }
 }
 
+/// The pane ids (`@N`) in `message`, set as machine nouns (§1.4 voice):
+/// the mono face, so `@4` reads as an address, not a word.
+fn pane_ids(message: &str) -> Vec<rune::Span> {
+    let mut spans = Vec::new();
+    for (at, _) in message.match_indices('@') {
+        let digits = message[at + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        if digits > 0 {
+            spans.push(rune::Span::new(at, at + 1 + digits).mono());
+        }
+    }
+    spans
+}
+
 /// Whether confirming `pending` ends something: the destructive verbs
 /// (Close, End session) draw as the danger button (§1.10).
 pub(super) const fn destructive(pending: &Pending) -> bool {
@@ -122,7 +138,7 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
         .border(s.hairline, t.roles.border.base.paint())
         .transition(rune::Transition::opacity())
         .child(
-            text(message)
+            rune::rich(message.clone(), pane_ids(&message))
                 .font(t.ty.label)
                 .color(t.roles.text.text.paint())
                 .wrap()

@@ -2,11 +2,12 @@
 //! folded under its own, each opening to a glance at its sessions. A dot in
 //! the machine's colour leads each line.
 
+use crate::ui::tokens::Voice;
 use rune::{El, col, el, text};
 use rune_kit::SidebarRow;
 
 use super::super::{Paint, Tokens, icons, pressable};
-use super::{dot_size, strong};
+use super::dot_size;
 use crate::desk::Desk;
 use crate::host_color;
 use crate::machines::{Glance, LOCAL};
@@ -42,7 +43,7 @@ pub(super) fn host_header(
         .child(host_color::dot(label, s.s2, t.roles.layer.sidebar.paint()))
         .child(
             text(label.to_owned())
-                .font(strong(t))
+                .font(t.ty.label.semibold())
                 .color(t.roles.text.text.paint())
                 .truncate(),
         )

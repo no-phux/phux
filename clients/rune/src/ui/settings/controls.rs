@@ -1,6 +1,8 @@
 //! The few reusable settings controls. Shared switches also serve Updates
 //! and onboarding.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::RECORDER as GEOMETRY;
 use rune::{El, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Switch};
 
@@ -10,13 +12,6 @@ use crate::desk::INTERFACE_SIZES;
 use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::ui::pressable;
 use crate::ui::tokens::{Paint, Tokens};
-
-/// The shortcut recorder's width: room for a chord's caps.
-struct Geometry {
-    recorder_w: f32,
-}
-
-const GEOMETRY: Geometry = Geometry { recorder_w: 150.0 };
 
 /// A kit `Button` (§4.1.3 ADOPT) under phux's key, in the Tab order.
 /// `Submit` is the one primary action per view; `Outline` the others.
@@ -45,7 +40,7 @@ pub(in crate::ui) fn grown(style: rune::TextStyle, pad: f32) -> f32 {
 
 pub(in crate::ui) fn section(title: &'static str, t: &Tokens) -> El {
     text(title)
-        .font(super::semibold(t.ty.label))
+        .font(t.ty.label.semibold())
         .color(t.roles.text.dim.paint())
         .role("heading")
         .level(2)
@@ -85,7 +80,7 @@ fn copy(desk: &Desk, title: &'static str, detail: &'static str, t: &Tokens) -> E
         .gap(t.space.s0_5)
         .child(
             text(title)
-                .font(super::medium(primary(desk, t)))
+                .font(primary(desk, t).medium())
                 .color(t.roles.text.text.paint())
                 .wrap(),
         )
@@ -124,7 +119,7 @@ pub(in crate::ui) fn toggle(desk: &Desk, toggle: Toggle, t: &Tokens) -> El {
         .hide_label()
         .control_size(size)
         .disabled(!toggle.enabled)
-        .build(&t.kit)
+        .build(t.controls(!toggle.enabled))
         .focusable(false)
         .a11y_hidden();
     let row = row()
@@ -272,7 +267,7 @@ fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
         .on_step_limit(move |d: &mut Desk, max, _| limit(d, max))
         .child(
             text(spec.title)
-                .font(super::medium(primary(desk, t)))
+                .font(primary(desk, t).medium())
                 .color(t.roles.text.text.paint())
                 .grow(1.0)
                 .a11y_hidden(),
@@ -313,10 +308,6 @@ pub(super) fn preview(desk: &Desk, t: &Tokens) -> El {
                     crate::theme::color(theme.foreground),
                 )
             });
-    let mono = |style: rune::TextStyle| rune::TextStyle {
-        family: crate::ui::tokens::MONO,
-        ..style
-    };
     col()
         .key("settings-preview")
         .w_full()
@@ -337,17 +328,17 @@ pub(super) fn preview(desk: &Desk, t: &Tokens) -> El {
                 .label("Terminal preview")
                 .child(
                     text("~/workspace  ·  main")
-                        .font(mono(secondary(desk, t)))
+                        .font(secondary(desk, t).machine())
                         .color(fg),
                 )
                 .child(
                     text("❯ phux attach")
-                        .font(mono(super::medium(primary(desk, t))))
+                        .font(primary(desk, t).medium().machine())
                         .color(r.accent.accent_text.paint()),
                 )
                 .child(
                     text("Your sessions, right where you left them.")
-                        .font(mono(secondary(desk, t)))
+                        .font(secondary(desk, t).machine())
                         .color(fg)
                         .wrap(),
                 ),

@@ -1,6 +1,7 @@
 //! The Bring your setup step.
 
 use super::*;
+use crate::ui::tokens::Voice;
 
 /// An agent (or Skip) as a big square to press: a neutral tile on the
 /// control outline, the icon in `text` (D8: no decorative accent).
@@ -65,7 +66,7 @@ pub(super) fn migrate(desk: &Desk, t: &Tokens) -> El {
                     "{} is bringing over your config.",
                     words::agent_name(agent)
                 ))
-                .font(semibold(t.ty.label))
+                .font(t.ty.label.semibold())
                 .color(t.roles.text.text.paint())
                 .align(Align::Center)
                 .wrap(),

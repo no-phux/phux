@@ -9,14 +9,15 @@
 //! words and no variable pitch. They sit in one source list, as the kit's
 //! `Sidebar` keeps them: a single Tab stop whose arrows move the selection.
 
+use crate::ui::tokens::Voice;
 use std::collections::HashMap;
 
 use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Color, El, Key, col, el, memo, row, text};
 
-use super::rows::State as Forced;
-use super::{Paint, Tokens, icons, lifted, pressable};
+use super::rows::{Base, State as Forced, forced_face};
+use super::{Paint, Tokens, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab};
 use crate::host_color;
@@ -33,9 +34,7 @@ use projects::branch_mark;
 mod marks;
 mod satellites;
 use marks::lead;
-pub(super) use marks::{
-    Counts, Face, dot_size, face, histogram, mark_color, state_of, strong, weighted,
-};
+pub(super) use marks::{Counts, Face, dot_size, face, histogram, mark_color, state_of};
 use satellites::satellite_list;
 
 /// What a session header draws. Everything its handlers capture is here, so
@@ -122,7 +121,7 @@ fn session_header(session: &Header, t: &Tokens) -> El {
         .children(session.branch.then(|| branch_mark(t)))
         .child(
             text(session.name.to_owned())
-                .font(strong(t))
+                .font(t.ty.label.semibold())
                 .color(ink.paint())
                 .truncate(),
         );
@@ -236,7 +235,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
         let ink = if lit { f.ink } else { quiet.paint() };
         // What asks for you is set bold beside its mark (§1.3).
         let font = if lit && f.bold {
-            weighted(t.ty.caption, phux_design::tokens::TYPE.weights.semibold)
+            t.ty.caption.semibold()
         } else {
             t.ty.caption
         };
@@ -248,19 +247,16 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
     } else {
         t.roles.text.text
     };
-    let base = row().key(format!("pane-{}", pane.id));
-    let base = if selected { lifted(base, t) } else { base };
-    let base = match state {
-        Forced::Rest => t.kit.interactive(base),
-        Forced::Hover => base.fill(t.roles.wash.hover.paint()),
-        Forced::Press => base.fill(t.roles.wash.press.paint()),
-        Forced::Focus => base.outline(
-            t.space.focus_ring.width,
-            t.space.focus_ring.offset,
-            t.roles.border.focus.paint(),
-        ),
-        Forced::Invalid => base.border(t.space.hairline, t.roles.status.failed.paint()),
-        Forced::Disabled => base.disabled(true),
+    let under = if selected {
+        Base::Selected
+    } else {
+        Base::Plain
+    };
+    let base = forced_face(row().key(format!("pane-{}", pane.id)), under, state, t);
+    let base = if state == Forced::Rest {
+        t.kit.interactive(base)
+    } else {
+        base
     };
     let row = base
         .w_full()
@@ -284,10 +280,7 @@ fn pane_row(pane: &Row, t: &Tokens) -> El {
                 .min_w(0.0)
                 .child(
                     text(pane.name.clone())
-                        .font(weighted(
-                            t.ty.label,
-                            phux_design::tokens::TYPE.weights.medium,
-                        ))
+                        .font(t.ty.label.medium())
                         .color(name_ink.paint())
                         .truncate()
                         .a11y_hidden(),

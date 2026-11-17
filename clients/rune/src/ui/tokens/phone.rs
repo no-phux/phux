@@ -63,21 +63,7 @@ fn parse(source: &str, platform: &str) -> Option<Form> {
 /// The seven roles at the phone's sizes, times `scale`; `mono` is `label`
 /// in the chrome's mono face.
 pub(crate) fn ty(scale: f32) -> Type {
-    let [micro, caption, label, body, lead, title, display] =
-        form().roles.map(|r| style(&r, scale));
-    Type {
-        micro,
-        caption,
-        label,
-        body,
-        lead,
-        title,
-        display,
-        mono: rune::TextStyle {
-            family: super::MONO,
-            ..label
-        },
-    }
+    Type::from_roles(form().roles.map(|r| style(&r, scale)))
 }
 
 /// A phone page's inset from the screen's edge.

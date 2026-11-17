@@ -174,7 +174,7 @@ impl Row {
             .child(el().grow(1.0));
         e = wash(e, t, self.selected, self.current, self.state);
         if disabled {
-            return e.disabled(true);
+            return e;
         }
         e = e.focusable(true).focus_selected(self.selected);
         match self.press {
@@ -189,37 +189,87 @@ impl Row {
 
 /// The row's fill and edge for its selection and forced state.
 fn wash(e: El, t: &Tokens, selected: bool, current: bool, state: State) -> El {
-    let r = &t.roles;
-    let e = match state {
-        State::Hover => e.fill(r.wash.hover.paint()),
-        State::Press => e.fill(r.wash.press.paint()),
-        State::Focus => e.outline(
-            t.space.focus_ring.width,
-            t.space.focus_ring.offset,
-            r.border.focus.paint(),
-        ),
-        State::Invalid => e.border(t.space.hairline, r.status.failed.paint()),
-        State::Rest | State::Disabled => e,
+    let base = if selected {
+        Base::Selected
+    } else if current {
+        Base::Current
+    } else {
+        Base::Plain
     };
-    if selected {
-        return lifted(e, t);
+    forced_face(e, base, state, t)
+}
+
+/// What an OWN row or tab rests on under its interaction (§1.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Base {
+    Plain,
+    /// The keyboard cursor's row: `wash.current`.
+    Current,
+    /// The selected row or tab: [`lifted`].
+    Selected,
+}
+
+/// §1.10's states composed in one fixed order, for rows, tabs and the
+/// sidebar alike: the selected or current base first, the hover or press
+/// wash over it, then the invalid edge, which a selection never masks.
+/// `Rest` is the live element, which the caller makes wash itself under
+/// the pointer (`Kit::interactive`); the others are that look held still,
+/// for the gallery's states page. Focus draws Rune's own ring, never one painted
+/// here: the states page shows it under `Cx::force_focus_rings`.
+pub(crate) fn forced_face(e: El, base: Base, state: State, t: &Tokens) -> El {
+    let r = &t.roles;
+    let under = match base {
+        Base::Plain => None,
+        Base::Current => Some(r.wash.current),
+        Base::Selected => Some(r.wash.selected),
+    };
+    let held = match state {
+        State::Hover => Some(r.wash.hover),
+        State::Press => Some(r.wash.press),
+        _ => None,
+    };
+    let e = match (under, held) {
+        (Some(under), Some(held)) => e.fill(t.stack(held, under)),
+        (Some(one), None) | (None, Some(one)) => e.fill(one.paint()),
+        (None, None) => e,
+    };
+    let e = match (state, base) {
+        (State::Invalid, _) => e.border(t.space.hairline, r.status.failed.paint()),
+        (_, Base::Selected) => lit_edge(e, t),
+        _ => e,
+    };
+    let e = if base == Base::Selected {
+        contrast_cue(e, t)
+    } else {
+        e
+    };
+    if state == State::Disabled {
+        e.disabled(true)
+    } else {
+        e
     }
-    if current {
-        return e.fill(r.wash.current.paint());
-    }
-    e
 }
 
 /// §1.10's selected treatment: the selected wash, a lit edge from
 /// `border.strong` to `border.muted`, and under increased contrast a
 /// leading accent bar, so selection never rests on a wash alone.
 pub(crate) fn lifted(e: El, t: &Tokens) -> El {
+    contrast_cue(lit_edge(e.fill(t.roles.wash.selected.paint()), t), t)
+}
+
+/// The selected element's lit edge.
+fn lit_edge(e: El, t: &Tokens) -> El {
     let r = &t.roles;
-    let e = e.fill(r.wash.selected.paint()).border_gradient(
+    e.border_gradient(
         t.space.hairline,
         r.border.strong.paint(),
         r.border.muted.paint(),
-    );
+    )
+}
+
+/// Under increased contrast, selection's ≥ 3:1 cue: a leading accent bar.
+fn contrast_cue(e: El, t: &Tokens) -> El {
+    let r = &t.roles;
     if !t.increased_contrast {
         return e;
     }

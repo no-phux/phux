@@ -2,6 +2,7 @@
 //! together. Not a live region, so rows in long lists stay quiet; kit
 //! `Badge` cannot take a tone.
 
+use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, row, text};
 
@@ -25,12 +26,7 @@ pub(crate) fn tone_badge(t: &Tokens, state: State, words: Option<String>) -> El 
     let ink = t.status.state(state);
     let words = words.or_else(|| ink.word.map(str::to_owned));
     let font = if ink.bold {
-        rune::TextStyle {
-            weight: f32::from(
-                u16::try_from(phux_design::tokens::TYPE.weights.semibold).unwrap_or(600),
-            ),
-            ..t.ty.caption
-        }
+        t.ty.caption.semibold()
     } else {
         t.ty.caption
     };

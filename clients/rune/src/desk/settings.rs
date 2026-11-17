@@ -45,9 +45,9 @@ impl Category {
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
             Self::Notifications => "Notifications",
-            Self::RemoteHosts => "Remote Hosts",
+            Self::RemoteHosts => "Remote hosts",
             Self::Developer => "Developer",
-            Self::About => "About & Updates",
+            Self::About => "About & updates",
         }
     }
 

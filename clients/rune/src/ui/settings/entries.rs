@@ -1,5 +1,7 @@
 //! The searchable inventory is the inventory we render: no fake preferences.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::SETTINGS_LINK as GEOMETRY;
 use rune::{El, col, el, row, text};
 
 use super::super::{icons, pressable, updates};
@@ -360,7 +362,7 @@ impl Entry {
 
     fn link_copy(self, desk: &Desk, value: &str, t: &Tokens) -> El {
         let title = text(self.title())
-            .font(super::medium(super::primary(desk, t)))
+            .font(super::primary(desk, t).medium())
             .color(t.roles.text.text.paint())
             .wrap();
         let heading = if desk.phone.is_some() {
@@ -400,19 +402,6 @@ impl Entry {
     }
 }
 
-/// Widths a link row's value keeps: component sizes, not style.
-struct Geometry {
-    value_max: f32,
-    phone_title_min: f32,
-    phone_value_max: f32,
-}
-
-const GEOMETRY: Geometry = Geometry {
-    value_max: 120.0,
-    phone_title_min: 80.0,
-    phone_value_max: 140.0,
-};
-
 fn chevron(t: &Tokens) -> El {
     rune::icon(&icons::CHEVRON_RIGHT, t.icon.size.md)
         .color(t.roles.text.dim.paint())
@@ -445,7 +434,7 @@ fn diagnostics(desk: &Desk, t: &Tokens) -> El {
                             } else {
                                 "Copy diagnostics"
                             })
-                            .font(super::medium(super::primary(desk, t)))
+                            .font(super::primary(desk, t).medium())
                             .color(t.roles.text.text.paint()),
                         )
                         .child(

@@ -12,20 +12,26 @@ use std::rc::Rc;
 
 use phux_design::tokens as tok;
 use phux_design::{Mode, Rgb8, Rgba8, Roles};
-use rune::{Color, Cx, El, Family, Spring, SpringPair, TextStyle};
+use rune::{Color, Cx, El, Family, Spring, SpringPair};
 
 use crate::desk::Desk;
 use crate::theme::Theme;
 
+pub(crate) mod glass;
 mod kit;
+pub(crate) mod layout;
 pub(crate) mod phone;
 mod status;
 #[cfg(test)]
 mod tests;
 mod tiers;
+mod ty;
 
+pub(crate) use glass::GlassSurface;
 pub(crate) use status::StatusInk;
 pub(crate) use tiers::{Tier, Tiers};
+use ty::style;
+pub(crate) use ty::{Type, Voice};
 
 /// A token colour as Rune paints it: sRGB bytes decoded to linear light,
 /// straight alpha. The window blends in sRGB, so a translucent role lands
@@ -57,69 +63,12 @@ impl Paint for Rgb8 {
     }
 }
 
-/// The seven type roles (§1.4) at this window's text scale, plus `mono`:
-/// `label` in the chrome's mono face, for machine nouns.
-#[derive(Debug, Clone, Copy, PartialEq, Hash)]
-pub(crate) struct Type {
-    pub(crate) micro: TextStyle,
-    pub(crate) caption: TextStyle,
-    pub(crate) label: TextStyle,
-    pub(crate) body: TextStyle,
-    pub(crate) lead: TextStyle,
-    pub(crate) title: TextStyle,
-    pub(crate) display: TextStyle,
-    pub(crate) mono: TextStyle,
-}
-
 /// Space between the terminal area's edge and its grid: the terminal's
 /// own inset, not chrome spacing.
 pub(crate) const TERMINAL_PAD: f32 = 10.0;
-
-/// The tallest a sheet grows before its body scrolls: layout geometry,
-/// which no token group holds (§1.6 `layout`).
-pub(crate) const SHEET_MAX_H: f32 = 620.0;
-
+pub(crate) use layout::SHEET_MAX_H;
 /// The chrome's mono face (bundled in `grid::FONTS`).
 pub(crate) const MONO: Family = Family::Named("Paper Mono");
-
-impl Type {
-    fn new(scale: f32) -> Self {
-        let r = &tok::TYPE.role;
-        let mono = TextStyle {
-            family: MONO,
-            ..style(&r.label, scale)
-        };
-        Self {
-            micro: style(&r.micro, scale),
-            caption: style(&r.caption, scale),
-            label: style(&r.label, scale),
-            body: style(&r.body, scale),
-            lead: style(&r.lead, scale),
-            title: style(&r.title, scale),
-            display: style(&r.display, scale),
-            mono,
-        }
-    }
-}
-
-#[allow(clippy::cast_precision_loss, reason = "font weights are 100..=900")]
-fn style(role: &tok::TypeRole, scale: f32) -> TextStyle {
-    let size = role.size * scale;
-    let features = if role.features.contains(&"tnum") {
-        "'tnum' 1"
-    } else {
-        ""
-    };
-    TextStyle::new(size, role.weight as f32)
-        .lh(role.line_height * scale)
-        .tracking(role.tracking_em * size)
-        .features(features)
-        .family(if role.family == "mono" {
-            MONO
-        } else {
-            Family::Sans
-        })
-}
 
 /// §1.8's springs as Rune pairs, the curves and loops, and the enter scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -198,6 +147,31 @@ impl MotionPairs {
     }
 }
 
+/// Icon and mark sizes at the chrome's text scale (§1.4 text scaling): a
+/// mark keeps its size against the label beside it, so the largest text
+/// never sets 30 pt words beside 10 pt marks. The 16 pt drawing grid is
+/// the icons' coordinate space, not a size, and stays.
+fn icon_at(scale: f32) -> tok::Icon {
+    let s = |v: f32| (v * scale * 2.0).round() / 2.0;
+    let i = tok::ICON;
+    tok::Icon {
+        size: tok::IconSize {
+            xs: s(i.size.xs),
+            sm: s(i.size.sm),
+            md: s(i.size.md),
+            lg: s(i.size.lg),
+            xl: s(i.size.xl),
+            xxl: s(i.size.xxl),
+        },
+        grid: i.grid,
+        button: tok::IconButton {
+            sm: s(i.button.sm),
+            md: s(i.button.md),
+            lg: s(i.button.lg),
+        },
+    }
+}
+
 /// What a window's tokens depend on. Equal inputs share one `Tokens`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Inputs {
@@ -237,6 +211,8 @@ impl Inputs {
 pub(crate) struct Tokens {
     /// Palette, type, radius, motion and elevation for rune-kit components.
     pub(crate) kit: rune_kit::Kit,
+    /// The kit the selection controls build with ([`Self::controls`]).
+    controls: [rune_kit::Kit; 2],
     /// Every colour role (§1.2), the variant for increased contrast included.
     pub(crate) roles: Roles,
     pub(crate) space: tok::Space,
@@ -342,13 +318,15 @@ impl Tokens {
         let host = inputs
             .host
             .map_or_else(|| roles.accent.accent.paint(), |rgb| ease_host(rgb, &roles));
+        let controls = [false, true].map(|disabled| kit::controls(&kit, &roles, disabled));
         let mut t = Self {
             kit,
+            controls,
             status: StatusInk::new(&roles),
             roles,
             space: tok::SPACE,
             radius: tok::RADIUS,
-            icon: tok::ICON,
+            icon: icon_at(scale),
             ty,
             motion,
             tiers,
@@ -446,6 +424,66 @@ impl Tokens {
             .fold(e, El::box_shadow)
     }
 
+    /// The kit a switch, checkbox or progress bar builds with: control
+    /// boundaries in `border.control`, a checked box in the accent, and a
+    /// disabled control's label in `text.faint`.
+    pub(crate) const fn controls(&self, disabled: bool) -> &rune_kit::Kit {
+        &self.controls[disabled as usize]
+    }
+
+    /// `top` over `under`, both translucent, as one fill: the two washes
+    /// composited the way the window blends them (in sRGB, straight
+    /// alpha), so a held hover over a selection lands as the live one does.
+    pub(crate) fn stack(&self, top: Rgba8, under: Rgba8) -> Color {
+        let (ta, ua) = (f32::from(top.a) / 255.0, f32::from(under.a) / 255.0);
+        let a = ta + ua * (1.0 - ta);
+        if a <= 0.0 {
+            return Color::TRANSPARENT;
+        }
+        let mix = |t: u8, u: u8| {
+            let v = (f32::from(t) * ta + f32::from(u) * ua * (1.0 - ta)) / a;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "0..=255"
+            )]
+            let byte = v.round().clamp(0.0, 255.0) as u8;
+            byte
+        };
+        let (tr, ur) = (top.rgb(), under.rgb());
+        Rgb8 {
+            r: mix(tr.r, ur.r),
+            g: mix(tr.g, ur.g),
+            b: mix(tr.b, ur.b),
+        }
+        .with_alpha_byte({
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "0..=1"
+            )]
+            let byte = (a * 255.0).round() as u8;
+            byte
+        })
+        .paint()
+    }
+
+    /// The radius of a surface nested `inset` inside one of `outer` (§1.5
+    /// nesting): the outer radius minus the inset, never under `xs`, so the
+    /// two curves run parallel.
+    pub(crate) fn nested(&self, outer: f32, inset: f32) -> f32 {
+        (outer - inset).max(self.radius.xs)
+    }
+
+    /// The one modal entry (§1.8): exits fade; entries scale up from
+    /// `enter_scale` on the pop spring.
+    pub(crate) fn enter(&self) -> rune::Transition {
+        rune::Transition::asymmetric(
+            rune::Transition::scale(self.motion.enter_scale).springs(self.motion.pop),
+            rune::Transition::opacity(),
+        )
+    }
+
     /// `c` at opacity `a`, blend-correct (`Kit::alpha`).
     pub(crate) fn alpha(&self, c: Color, a: f32) -> Color {
         self.kit.alpha(c, a)
@@ -454,23 +492,5 @@ impl Tokens {
     /// Whether the window is drawn in its dark mode.
     pub(crate) const fn dark(&self) -> bool {
         self.roles.mode.is_dark()
-    }
-
-    /// Glass may draw: off under increased contrast and reduce
-    /// transparency (§1.9).
-    pub(crate) const fn glass_allowed(&self) -> bool {
-        !self.increased_contrast && !self.reduce_transparency && !self.forced
-    }
-
-    /// The glass tint's alpha for the `Settings.glass` fraction `g`:
-    /// `1 − g·(1 − tint_min)`, so full glass stops at the verified floor
-    /// (§1.9). Opaque when glass may not draw.
-    pub(crate) fn glass_tint_alpha(&self, g: f32) -> f32 {
-        if !self.glass_allowed() || g <= 0.0 {
-            return 1.0;
-        }
-        let min = tok::MATERIAL.glass.tint_min;
-        let floor = if self.dark() { min.dark } else { min.light };
-        1.0 - g.clamp(0.0, 1.0) * (1.0 - floor)
     }
 }

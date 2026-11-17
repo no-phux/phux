@@ -1,12 +1,14 @@
 //! The window's words about itself: the status line, the bar an action
 //! waits in, and what stands in for a terminal that isn't there.
 
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::STATUS;
 use phux_design::State;
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 
 use super::Tokens;
-use super::sidebar::{strong, weighted};
+
 use super::tokens::{MONO, Tier};
 use super::{Paint, badge, button, icon_press, icons, keep_from_pane, tabs, tip};
 use crate::desk::link::{Banner, Standing};
@@ -122,10 +124,10 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
 /// segment sweeping a track on the render clock. Reduced motion holds it.
 fn progress(label: &'static str, t: &Tokens) -> El {
     Progress::new(None)
-        .build(&t.kit)
+        .build(t.controls(false))
         .key("placeholder-progress")
         .label(label)
-        .w(t.space.s16 * 3.0)
+        .w(STATUS.progress_w)
 }
 
 /// The install line, to copy: a command, so in the mono face.
@@ -151,12 +153,7 @@ fn install_line(t: &Tokens) -> El {
 /// One of the window's own actions: the shared outlined button, sized to
 /// its words, a Tab stop.
 fn action(label: &'static str, key: &'static str, p: &Tokens, press: fn(&mut Desk)) -> El {
-    button(label, key, p, press)
-        .grow(0.0)
-        .px(p.space.s3)
-        .focusable(true)
-        .role("button")
-        .label(label)
+    button(label, key, p, press).grow(0.0).label(label)
 }
 
 /// The title and detail for `standing`, in this window's voice: the phone
@@ -211,11 +208,13 @@ fn retry(p: &Tokens) -> El {
 /// failed tone (§1.3: colour, word and mark together); anything else is
 /// quiet.
 fn title_line(title: String, failed: bool, t: &Tokens) -> El {
-    let font = weighted(t.ty.lead, phux_design::tokens::TYPE.weights.semibold);
+    let font = t.ty.lead.semibold();
     if !failed {
         return text(title)
             .font(font)
-            .color(t.roles.text.dim.paint())
+            .color(t.roles.text.text.paint())
+            .align(rune::Align::Center)
+            .wrap()
             .role("heading");
     }
     row()
@@ -274,16 +273,20 @@ pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
         .gap(s.s2)
         .pt(s.icon_gap)
         .children(actions.map(|button| touchable(desk, button)));
+    // Inset from the pane's edge whatever its width, heading and body both
+    // centred on one measure.
     col()
         .gap(s.icon_gap)
         .items_center()
-        .max_w(s.s16 * 8.0)
-        .px(if desk.phone.is_some() { s.s4 } else { 0.0 })
+        .w_full()
+        .max_w(STATUS.placeholder_w)
+        .px(s.sheet_pad)
         .child(title_line(title, failed, t))
         .child(
             text(detail)
                 .font(t.ty.label)
                 .color(t.roles.text.dim.paint())
+                .align(rune::Align::Center)
                 .wrap(),
         )
         .children(match standing {
@@ -326,7 +329,11 @@ pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
         .key("reconnect-banner")
         .on_drag(keep_from_pane)
         .w_full()
-        .max_w(if update { s.s16 * 9.0 } else { s.s16 * 7.0 })
+        .max_w(if update {
+            STATUS.update_banner_w
+        } else {
+            STATUS.banner_w
+        })
         .px(s.card_inset)
         .py(s.s2)
         .gap(s.s3)
@@ -343,7 +350,7 @@ pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
                 .min_w(0.0)
                 .child(
                     text(lost)
-                        .font(strong(t))
+                        .font(t.ty.label.semibold())
                         .color(t.roles.text.text.paint())
                         .truncate(),
                 )

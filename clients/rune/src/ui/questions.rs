@@ -2,6 +2,7 @@
 //! checkboxes and buttons, its fields as text, each sent only through the
 //! agent's protocol.
 
+use crate::ui::tokens::Voice;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::{NativeOption, NativeQuestion};
 use rune::{El, TextEdit, TextStyle, col, row, text, text_input};
@@ -9,8 +10,8 @@ use rune_kit::{Button, ButtonVariant, Checkbox, RadioGroup, RadioItem};
 use serde_json::{Value, json};
 
 use super::inbox::field_shell;
-use super::overlay::strong;
-use super::tokens::{MONO, Paint, Tokens};
+
+use super::tokens::{Paint, Tokens};
 use crate::activity::Ask;
 use crate::desk::Desk;
 use crate::desk::questions::{CLOSED, Draft, response};
@@ -48,16 +49,13 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
         .label(question.title.clone())
         .description(question.message.clone());
     if !question.title.is_empty() && question.title != ask.text {
-        panel = panel.child(say(&question.title, strong(t.ty.label), t));
+        panel = panel.child(say(&question.title, t.ty.label.semibold(), t));
     }
     if !question.message.is_empty() && question.message != ask.text {
         panel = panel.child(say(&question.message, t.ty.label, t));
     }
     if let Some(details) = details(question) {
-        let mono = TextStyle {
-            family: MONO,
-            ..t.ty.caption
-        };
+        let mono = t.ty.mono_caption;
         panel = panel.child(
             text(details)
                 .font(mono)
@@ -269,7 +267,7 @@ fn choices(
                 check
                     .disabled(at.held)
                     .on_toggle(pick(option))
-                    .build(&t.kit)
+                    .build(t.controls(at.held))
                     .key(format!("acp-{}-{item}-{}", at.question, option.id)),
             );
         }

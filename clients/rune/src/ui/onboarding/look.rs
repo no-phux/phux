@@ -5,6 +5,7 @@
 //! them (the choice rings, the groups and the glass slider) is on tokens.
 
 use super::*;
+use crate::ui::tokens::Voice;
 
 /// The drawings' own sizes and colours: illustration constants.
 mod art {
@@ -40,7 +41,7 @@ fn group(title: &'static str, body: El, t: &Tokens) -> El {
         .min_w(0.0)
         .child(
             text(title)
-                .font(semibold(t.ty.label))
+                .font(t.ty.label.semibold())
                 .color(t.roles.text.dim.paint())
                 .role("heading")
                 .level(2),
@@ -85,7 +86,11 @@ fn choice(
         )
         .child(
             text(word)
-                .font(if on { semibold(t.ty.label) } else { t.ty.label })
+                .font(if on {
+                    t.ty.label.semibold()
+                } else {
+                    t.ty.label
+                })
                 .color(
                     if on {
                         t.roles.text.text
@@ -370,7 +375,7 @@ fn theme_card(theme: Option<&'static Theme>, current: Option<&'static Theme>, t:
             row()
                 .gap(8.0)
                 .items_center()
-                .child(text("Aa").font(semibold(t.ty.lead)).color(ink))
+                .child(text("Aa").font(t.ty.lead.semibold()).color(ink))
                 .child(
                     el().px(4.0).radius(4.0).fill(accent.alpha(0.22)).child(
                         text("~/")
@@ -405,7 +410,7 @@ fn theme_card(theme: Option<&'static Theme>, current: Option<&'static Theme>, t:
         .child(
             text(name)
                 .font(if on {
-                    semibold(t.ty.caption)
+                    t.ty.caption.semibold()
                 } else {
                     t.ty.caption
                 })

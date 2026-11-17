@@ -10,7 +10,7 @@ use rune::{Align, Color, Cx, DragItem, El, TextStyle, Transition, col, el, row, 
 use rune_kit::{Button, ButtonVariant, ControlSize};
 
 use super::badge::tone_badge;
-use super::settings::{grown, medium, semibold};
+use super::settings::grown;
 use super::tokens::{Paint, Tier, Tokens};
 use super::{icons, panes};
 use crate::desk::Desk;
@@ -252,8 +252,19 @@ fn badge(words: impl Into<String>, t: &Tokens) -> El {
 }
 
 /// Done, as colour, mark and word: Installed, Granted.
+/// A step that is settled: a neutral check and its word, not the `done`
+/// status mark, which means an agent's unseen result (§1.3).
 fn good(word: &'static str, t: &Tokens) -> El {
-    tone_badge(t, State::Done, Some(word.to_owned()))
+    let ink = t.roles.text.dim.paint();
+    row()
+        .gap(t.space.s1)
+        .items_center()
+        .child(
+            rune::icon(&icons::CHECK, t.icon.size.sm)
+                .color(ink)
+                .a11y_hidden(),
+        )
+        .child(text(word).font(t.ty.caption).color(ink))
 }
 
 /// Back and Continue, under every step but the first and last.

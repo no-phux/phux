@@ -3,87 +3,22 @@
 //! back to live. Also the overlays' shared pieces: their extents, glass,
 //! icon buttons and key hints.
 
+pub(super) use super::tokens::layout::OVERLAY as EXTENTS;
 use phux_client_runtime::publication::GridFrame;
 use phux_design::{Rgba8, State};
 use phux_protocol::ids::ResourceId;
-use rune::{Edge, El, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{Edge, El, Transition, col, el, row, text, text_input};
 use rune_kit::toast_stack::{ToastEntry, VISIBLE};
 use rune_kit::{Button, ButtonVariant, ControlSize, SegmentedControl, ToastRegion};
 
-use super::tokens::{MONO, Paint, Tier, Tokens};
+use super::tokens::{Paint, Tier, Tokens};
 use super::{PAD, badge, icon_press, icons, keep_from_pane};
 use crate::desk::notice::ToastInput;
 use crate::desk::{Desk, Notice, NoticeKind};
 use crate::grid::Metrics;
 use crate::host_color::{dot, named};
 
-/// How large the overlays are: layout geometry, which no token group
-/// holds (§1.6 `layout` names only the phone column and the reader). One
-/// table, so a size is decided in one place.
-pub(super) struct Extents {
-    /// The command palette; the phone column's measure.
-    pub(super) palette_w: f32,
-    /// The path picker, narrower, at the cursor.
-    pub(super) paths_w: f32,
-    pub(super) paths_h: f32,
-    /// How tall the palette's rows may grow before they scroll.
-    pub(super) palette_rows_h: f32,
-    pub(super) paths_rows_h: f32,
-    /// The inbox drawer.
-    pub(super) drawer_w: f32,
-    /// A focused pane's ask card.
-    pub(super) ask_w: f32,
-    /// The narrowest pane an ask card still fits.
-    pub(super) ask_min_w: f32,
-    pub(super) find_w: f32,
-    pub(super) find_min_w: f32,
-    pub(super) toast_w: f32,
-    /// The share of the window the popup takes, each way.
-    pub(super) popup_share: f32,
-    pub(super) news_w: f32,
-}
-
-pub(super) const EXTENTS: Extents = Extents {
-    palette_w: phux_design::tokens::LAYOUT.content_max.phone_column,
-    paths_w: 460.0,
-    paths_h: 340.0,
-    palette_rows_h: 380.0,
-    paths_rows_h: 240.0,
-    drawer_w: 400.0,
-    ask_w: 340.0,
-    ask_min_w: 160.0,
-    find_w: 340.0,
-    find_min_w: 160.0,
-    toast_w: 420.0,
-    popup_share: 0.8,
-    news_w: 440.0,
-};
-
-/// Which glass surface a panel is (§1.9 `material.glass.where`).
-#[derive(Clone, Copy)]
-pub(super) enum Glass {
-    /// The open modal surface: the palette, the inbox.
-    Overlay,
-    /// The find bar.
-    Floating,
-}
-
-impl Glass {
-    const fn key(self) -> &'static str {
-        match self {
-            Self::Overlay => "overlay",
-            Self::Floating => "floating",
-        }
-    }
-
-    const fn blur(self) -> f32 {
-        let b = phux_design::tokens::MATERIAL.glass.blur;
-        match self {
-            Self::Overlay => b.overlay,
-            Self::Floating => b.floating,
-        }
-    }
-}
+pub(super) use super::tokens::GlassSurface as Glass;
 
 /// `panel` on `layer`, or glass over the terminal when the look puts glass
 /// on this surface and the window lets it draw: the layer as a tint at the
@@ -91,44 +26,15 @@ impl Glass {
 /// Opaque under increased contrast, reduce transparency and forced
 /// colours, and on a phone, whose one blur is its dock.
 pub(super) fn glass(panel: El, t: &Tokens, layer: Rgba8, surface: Glass, phone: bool) -> El {
-    let opaque = layer.paint();
-    let looked = phux_design::tokens::MATERIAL
-        .glass
-        .r#where
-        .contains(&surface.key());
-    let alpha = t.glass_tint_alpha(t.glass);
-    if phone || !looked || alpha >= 1.0 {
-        return panel.fill(opaque);
+    if phone {
+        return panel.fill(layer.paint());
     }
-    panel
-        .backdrop_blur(surface.blur())
-        .fill(t.alpha(opaque, alpha))
+    t.glass_panel(panel, surface, layer, layer)
 }
 
 /// Exits fade; entries scale up from `enter_scale` on the pop spring (§1.8).
 pub(super) fn pop(t: &Tokens) -> Transition {
-    Transition::asymmetric(
-        Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
-        Transition::opacity(),
-    )
-}
-
-/// `style` one weight step heavier, within the type weights (§1.4).
-pub(super) fn strong(style: TextStyle) -> TextStyle {
-    let semibold = phux_design::tokens::TYPE.weights.semibold;
-    TextStyle {
-        weight: f32::from(u16::try_from(semibold).unwrap_or(u16::MAX)),
-        ..style
-    }
-}
-
-/// Numbers that change in place, in the chrome's mono face (§1.4 `tnum`).
-pub(super) fn readout(t: &Tokens) -> TextStyle {
-    TextStyle {
-        family: MONO,
-        ..t.ty.caption
-    }
-    .features("'tnum' 1")
+    t.enter()
 }
 
 /// The held-⌘ link's underline, in grid points: a hairline of the accent's
@@ -178,9 +84,12 @@ fn named_machine<'a>(desk: &'a Desk, text: &str) -> Option<&'a str> {
 /// A notice's words, wrapping; read when it comes, an error at once. An
 /// error carries the failed mark beside its words, never colour alone.
 pub(super) fn notice_words(notice: &Notice, t: &Tokens) -> El {
-    let (ink, role) = match notice.kind {
-        NoticeKind::Info | NoticeKind::Tip => (t.roles.text.text, "status"),
-        NoticeKind::Error => (t.roles.status.failed, "alert"),
+    // The message reads in text ink; the failed tone stays on the mark and
+    // the toast's edge, so the words keep their full contrast.
+    let ink = t.roles.text.text;
+    let role = match notice.kind {
+        NoticeKind::Info | NoticeKind::Tip => "status",
+        NoticeKind::Error => "alert",
     };
     let words = text(notice.text.clone())
         .role(role)
@@ -320,15 +229,17 @@ fn toast_card(desk: &Desk, entry: &ToastEntry<Notice>, front: bool, t: &Tokens) 
         ),
         None => toast,
     };
+    // A button with its own wash at rest, so its cross never reads as a
+    // second failed mark beside an error's.
     toast.child(
-        icon_press(
-            &icons::CLOSE,
-            "Dismiss",
-            key("toast-close"),
-            t,
-            move |d: &mut Desk| d.dismiss_toast(id),
-        )
-        .help("Dismiss"),
+        rune_kit::IconButton::new(&icons::CLOSE)
+            .variant(rune_kit::IconButtonVariant::Neutral)
+            .control_size(ControlSize::Small)
+            .label("Dismiss")
+            .on_press(move |d: &mut Desk| d.dismiss_toast(id))
+            .build(&t.kit)
+            .key(key("toast-close"))
+            .help("Dismiss"),
     )
 }
 
@@ -386,7 +297,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .border(s.hairline, edge.paint())
         .transition(pop(t))
         .child(field)
-        .child(text(status).font(readout(t)).color(count.paint()))
+        .child(text(status).font(t.ty.readout).color(count.paint()))
         .child(case)
         .child(
             icon_press(&icons::ARROW_UP, "Older match", "find-older", p, |d| {

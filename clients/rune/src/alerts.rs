@@ -70,27 +70,14 @@ pub fn alert(item: &Item) -> Option<Alert> {
         }),
         Item::Terminal(waiting) => {
             let who = waiting.agent.as_deref().unwrap_or(&waiting.label);
+            // Who, then the status vocabulary's word: the same words the
+            // sidebar and every other client say.
+            let said = format!("{who} {}", waiting.mark.word());
             let (key, title, body) = match (waiting.mark, &waiting.ask) {
-                (Mark::Blocked, Some(ask)) => (
-                    format!("ask:{}", ask.id),
-                    format!("{who} is asking"),
-                    ask.text.clone(),
-                ),
-                (Mark::Blocked, None) => (
-                    "blocked".to_owned(),
-                    format!("{who} needs you"),
-                    waiting.label.clone(),
-                ),
-                (Mark::Done, _) => (
-                    "done".to_owned(),
-                    format!("{who} finished"),
-                    waiting.label.clone(),
-                ),
-                (Mark::Failed, _) => (
-                    "failed".to_owned(),
-                    "Command failed".to_owned(),
-                    waiting.label.clone(),
-                ),
+                (Mark::Blocked, Some(ask)) => (format!("ask:{}", ask.id), said, ask.text.clone()),
+                (Mark::Blocked, None) => ("blocked".to_owned(), said, waiting.label.clone()),
+                (Mark::Done, _) => ("done".to_owned(), said, waiting.label.clone()),
+                (Mark::Failed, _) => ("failed".to_owned(), said, waiting.label.clone()),
                 _ => return None,
             };
             Some(Alert {

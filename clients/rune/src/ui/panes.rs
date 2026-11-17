@@ -211,8 +211,7 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, t: &Tokens) -> El {
 
 /// Shown only while the pointer is on the nearest hover group.
 fn reveal(e: El) -> El {
-    let (rest, hover) = (0.0, 1.0);
-    e.group_opacity(rest, hover)
+    super::reveal(e, true)
 }
 
 /// How far one arrow press moves a divider, as a share of its split, and
@@ -374,7 +373,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         // Outlined while a dragged terminal would join its slot as a tab.
         .children(joining.then(|| {
             el().cover()
-                .border(t.space.focus_ring.width, t.roles.accent.accent.paint())
+                .border(t.space.hairline, t.roles.border.focus.paint())
                 .inert()
         }));
     float(id, framed(desk, host, ground, lit, t), t)

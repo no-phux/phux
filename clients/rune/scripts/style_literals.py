@@ -42,8 +42,23 @@ PATTERNS = {
     # A local style constant with a literal value: `const R: f32 = 7.0;`
     # then `.radius(R)`. A constant naming a token (`= SPACE.s3`) is fine.
     "const": r"const\s+\w+\s*:\s*(?:f32|TextStyle|Color)\s*=\s*(?:-?[0-9]|TextStyle::new|Color\s*\{)",
+    # A colour or type role rebuilt by struct update (`Color { a: x, ..c }`,
+    # `TextStyle { weight: w, ..role }`) skips `Tokens::alpha` and the
+    # `Voice` variants.
+    "color_update": r"Color\s*\{[^{}]*\.\.",
+    "type_update": r"TextStyle\s*\{(?![^{}]*size\s*:)[^{}]*\.\.",
+    # Geometry as a multiple of a spacing token (`s.s4 * 13.0`): a layout
+    # value under another name.
+    "space_multiple": r"\b(?:s|space)\.\w+\s*\*\s*[0-9]",
 }
 COMPILED = {name: re.compile(p) for name, p in PATTERNS.items()}
+
+# A view's own geometry table: a `const` struct literal. Each numeric field
+# counts as a literal.
+CONST_STRUCT = re.compile(r"\bconst\s+\w+\s*:\s*[A-Z]\w*\s*=\s*[A-Z]\w*\s*\{")
+NUMERIC_FIELD = re.compile(r"\b\w+\s*:\s*-?[0-9][0-9_.]*(?:f32)?\s*[,}]")
+# The forms counted only in a view, where a local table or update is style.
+VIEW_ONLY = ("const", "color_update", "type_update", "space_multiple")
 
 # Local style constants are a view's bypass; elsewhere (gesture slop, font
 # size limits, timing) a constant is not style.
@@ -79,12 +94,25 @@ def strip_comments(text):
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
+def const_tables(body):
+    """Numeric fields in a view's `const` struct literals."""
+    n = 0
+    for m in CONST_STRUCT.finditer(body):
+        depth, i = 1, m.end()
+        while depth and i < len(body):
+            depth += {"{": 1, "}": -1}.get(body[i], 0)
+            i += 1
+        n += len(NUMERIC_FIELD.findall(body[m.end():i]))
+    return n
+
+
 def count(text, rel=None):
-    """Raw literals in `text`; local style constants only in a view (`rel`
-    of None counts as one)."""
+    """Raw literals in `text`; local style constants, tables and struct
+    updates only in a view (`rel` of None counts as one)."""
     body = strip_comments(text)
     view = rel is None or rel.startswith(VIEWS)
-    return sum(len(rx.findall(body)) for name, rx in COMPILED.items() if view or name != "const")
+    n = sum(len(rx.findall(body)) for name, rx in COMPILED.items() if view or name not in VIEW_ONLY)
+    return n + (const_tables(body) if view else 0)
 
 
 def scan(root=ROOT):

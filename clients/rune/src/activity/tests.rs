@@ -235,3 +235,69 @@ fn an_idle_agent_with_work_in_the_background_is_told_apart() {
     a.apply(&background(false), &[]);
     assert_eq!(a.mark(&id(1)), Mark::Idle);
 }
+
+/// The brand's `tone_of` vectors through Rune's own path, facts to
+/// `Activity` to ladder state, for the facts Rune can see (§1.3.1): an
+/// agent, its attention, a question, and whether its result was seen.
+#[test]
+fn the_tone_of_vectors_hold_through_rune() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/phux-design/tokens/derive-vectors.json"
+    )))
+    .unwrap();
+    let mut ran = 0;
+    for case in vectors["tone_of"].as_array().unwrap() {
+        let input = &case["input"];
+        if ["exit", "link", "crashed"]
+            .iter()
+            .any(|k| !input[k].is_null())
+        {
+            continue;
+        }
+        let state = match input["agent"].as_str() {
+            Some("Working") => Some(AgentState::Working),
+            Some("Blocked") => Some(AgentState::Blocked),
+            Some("Idle") => Some(AgentState::Idle),
+            Some("Done") => Some(AgentState::Done),
+            Some(_) => Some(AgentState::Unknown),
+            None => None,
+        };
+        let attention = if input["attention"].as_bool().unwrap_or(false) {
+            AgentAttention::High
+        } else {
+            AgentAttention::Normal
+        };
+        let seen = input["seen"].as_bool().unwrap_or(false);
+        let activity = Activity {
+            agent: state.map(|state| Agent {
+                name: "agent".to_owned(),
+                kind: None,
+                state,
+                attention,
+            }),
+            asked: input["asked"].as_bool().unwrap_or(false),
+            done_unseen: state == Some(AgentState::Done) && !seen,
+            ..Activity::default()
+        };
+        assert_eq!(
+            activity.state().key(),
+            case["expect"].as_str().unwrap(),
+            "{input}"
+        );
+        ran += 1;
+    }
+    assert!(ran >= 8, "only {ran} vectors ran");
+}
+
+/// A command that succeeded off screen is a result not yet seen: `done`.
+#[test]
+fn a_command_that_succeeded_off_screen_is_done() {
+    let activity = Activity {
+        finished: Some(Some(0)),
+        ..Activity::default()
+    };
+    assert_eq!(activity.state(), phux_design::State::Done);
+    assert_eq!(activity.mark(), Mark::Succeeded);
+    assert_eq!(Mark::Succeeded.state(), Some(phux_design::State::Done));
+}

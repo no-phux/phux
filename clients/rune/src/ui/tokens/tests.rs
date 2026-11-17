@@ -8,6 +8,22 @@ fn system(dark: bool) -> Rc<Tokens> {
     Tokens::resolve(&Inputs::system(dark))
 }
 
+/// §1.5 nesting, as the chrome's surfaces nest: a menu's items inside its
+/// `md` panel by `s1` land on `sm`; anything inset past its outer radius
+/// clamps to `xs`.
+#[test]
+fn nested_radii_run_parallel() {
+    let t = system(true);
+    let (r, s) = (&t.radius, &t.space);
+    assert!((t.nested(r.md, s.s1) - r.sm).abs() < f32::EPSILON);
+    assert!((t.nested(r.lg, s.sheet_pad) - r.xs).abs() < f32::EPSILON);
+    for (outer, inset) in [(r.lg, s.s1), (r.lg, s.card_inset), (r.xl, s.s2)] {
+        let inner = t.nested(outer, inset);
+        assert!(inner <= outer - inset || (inner - r.xs).abs() < f32::EPSILON);
+        assert!(inner >= r.xs);
+    }
+}
+
 #[test]
 fn equal_inputs_share_one_tokens() {
     let a = system(true);

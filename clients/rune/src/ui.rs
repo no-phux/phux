@@ -4,7 +4,7 @@ use std::cell::RefCell;
 #[cfg(test)]
 use std::rc::Rc;
 
-use rune::{Color, Cx, El, col, el, row};
+use rune::{Cx, El, col, el, row};
 
 use crate::desk::Desk;
 use crate::desk::surfaces::{MenuOwner, Surface};
@@ -13,7 +13,8 @@ use crate::features::changes;
 mod badge;
 mod controls;
 pub(crate) use controls::{
-    Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, tip,
+    Cover, Sheet, button, icon_press, keep_from_pane, keycap, lifted, pressable, reveal, scrim,
+    sheet_header, tip,
 };
 mod documents;
 #[allow(clippy::disallowed_methods)] // illustration art (§5.1)
@@ -203,19 +204,19 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
 /// fill, so the tint is its first child. Increased contrast, reduce
 /// transparency and forced colours draw it opaque.
 fn ground(root: El, glass: f32, t: &Tokens) -> El {
-    glassed(
-        root,
-        t.roles.layer.sidebar.paint(),
-        t.glass_tint_alpha(glass),
-    )
+    glassed(root, t.roles.layer.sidebar.paint(), glass, t)
 }
 
-fn glassed(root: El, tint: Color, alpha: f32) -> El {
+/// `root` filled with `tint`, or the system's glass under `tint` at the
+/// alpha the `glass` fraction gives (`Tokens::glass_tint_alpha`), composed
+/// blend-correct (`Tokens::alpha`).
+fn glassed(root: El, tint: rune::Color, glass: f32, t: &Tokens) -> El {
+    let alpha = t.glass_tint_alpha(glass);
     if alpha >= 1.0 {
         return root.fill(tint);
     }
     root.system_material(rune::SystemMaterial::Glass)
-        .child(el().cover().fill(Color { a: alpha, ..tint }).inert())
+        .child(el().cover().fill(t.alpha(tint, alpha)).inert())
 }
 
 /// The kit's tooltip on the overlay layer at the menu radius, its chord in
@@ -265,7 +266,11 @@ fn surface_view(
         Surface::Palette => Some(palette::view(
             desk,
             p,
-            if desk.phone.is_some() { 8.0 } else { 96.0 },
+            if desk.phone.is_some() {
+                tokens::layout::OVERLAY.palette_top_phone
+            } else {
+                tokens::layout::OVERLAY.palette_top
+            },
         )),
         // A terminal's or a tab's menu at the pointer; it mounts itself in
         // the kit layer (`kit_overlay`).
@@ -313,7 +318,7 @@ fn bare(desk: &Desk, p: &Tokens, lights: f32, band_h: f32, cx: &mut Cx<Desk>) ->
 mod test_support;
 
 #[cfg(test)]
-pub use test_support::{element, offscreen, offscreen_as_app};
+pub use test_support::{element, glass_panels, offscreen, offscreen_as_app};
 
 #[cfg(test)]
 mod tests;
