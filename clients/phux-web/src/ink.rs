@@ -162,6 +162,17 @@ pub fn match_fill(roles: &Roles, bg: Rgb) -> Rgb {
     }
 }
 
+/// The fills a search hit and the current hit paint over the house ground,
+/// as RGB: what a pane with no palette of its own shows (`match.bg`
+/// composited, then `match.current_bg`).
+#[must_use]
+pub fn house_match_pixels() -> [[u8; 3]; 2] {
+    let roles = house();
+    let hit = match_fill(&roles, vt_rgb(roles.layer.ground));
+    let (_, current) = current_match(&roles);
+    [[hit.r, hit.g, hit.b], [current.r, current.g, current.b]]
+}
+
 /// The current search hit's ink and fill.
 #[must_use]
 pub const fn current_match(roles: &Roles) -> (Rgb, Rgb) {
