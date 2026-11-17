@@ -22,6 +22,8 @@ impl Desk {
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),
             Shortcut::PreviousTerminal => self.cycle(-1),
+            Shortcut::NextSlotTab => self.cycle_slot_tab(1),
+            Shortcut::PreviousSlotTab => self.cycle_slot_tab(-1),
             Shortcut::NextTerminalInSession => self.cycle_in_session(1),
             Shortcut::PreviousTerminalInSession => self.cycle_in_session(-1),
             Shortcut::NextSession => self.step_session(1),

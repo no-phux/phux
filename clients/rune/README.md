@@ -186,8 +186,8 @@ session (or `--session NAME`). It never creates a session on its own.
   that track the mouse get it; the wheel scrolls history, or sends arrows in
   full-screen programs that keep DEC 1007 on (a setting turns that off).
   Input methods compose at the cursor. Kitty images draw over their cells
-  (under the text for a negative z), Unicode placeholder runs included; each
-  image is uploaded once and an animation once per frame.
+  (under the text for a negative z), placeholders included, with one upload
+  per image or frame.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
@@ -265,6 +265,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
 | ⌘← / ⌘→ | Previous / next terminal in the session |
+| ⌘⇧← / ⌘⇧→ | Previous / next tab in the split |
 | ⌘↑ / ⌘↓ | Previous / next session |
 | ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |

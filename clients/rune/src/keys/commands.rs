@@ -424,6 +424,19 @@ pub const COMMANDS: &[Command] = &[
         [m('[').shift()],
         [Chord::ctrl(Cap::PageUp).shift()]
     ),
+    // Shift beside Command+Left/Right, which walk the session's terminals.
+    row!(
+        Shortcut::NextSlotTab,
+        "Next Tab in Split",
+        [Chord::cmd(Cap::Right).shift()],
+        [Chord::ctrl(Cap::Right).shift()]
+    ),
+    row!(
+        Shortcut::PreviousSlotTab,
+        "Previous Tab in Split",
+        [Chord::cmd(Cap::Left).shift()],
+        [Chord::ctrl(Cap::Left).shift()]
+    ),
     row!(
         Shortcut::ToggleSidebar,
         "Toggle Sidebar",
