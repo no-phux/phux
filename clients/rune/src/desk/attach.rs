@@ -170,8 +170,7 @@ impl Desk {
     /// "Uploading" is over with the last upload. A failure's notice stays.
     fn end_uploading_notice(&mut self) {
         if self.connection.uploads.is_empty() {
-            self.notice
-                .take_if(|notice| notice.kind == NoticeKind::Info);
+            self.dismiss_notices(|notice| notice.kind == NoticeKind::Info);
         }
     }
 }

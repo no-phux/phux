@@ -2,6 +2,7 @@
 use phux_protocol::ids::ResourceId;
 use rune::{Key, KeyEvent, Runtime, TextEdit, Tx};
 
+use super::super::kit::KitField;
 use super::super::{Desk, input::Modal};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,30 +106,44 @@ impl Field {
         resolved
     }
 
-    pub(super) fn edit<'a>(&self, d: &'a Desk) -> Option<&'a TextEdit> {
+    /// The kit field this is, for every target but a question's.
+    const fn kit(&self) -> Option<KitField> {
         Some(match self {
-            Self::Palette => &d.palette_query,
-            Self::Find => &d.connection.find_query,
-            Self::Settings => &d.settings_ui.query,
-            Self::Rename => &d.connection.tabs.rename_field,
-            Self::Inbox => &d.inbox.reply,
-            Self::Machine => &d.machines.field,
-            Self::PhoneSessions => &d.phone.as_ref()?.query,
-            Self::Question {
-                question, field, ..
-            } => d.inbox.questions.drafts.get(question)?.texts.get(field)?,
+            Self::Palette => KitField::Palette,
+            Self::Find => KitField::Find,
+            Self::Settings => KitField::SettingsSearch,
+            Self::Rename => KitField::Rename,
+            Self::Inbox => KitField::InboxReply,
+            Self::Machine => KitField::Machine,
+            Self::PhoneSessions => KitField::PhoneSessions,
+            Self::Question { .. } => return None,
         })
     }
 
+    pub(super) fn edit<'a>(&self, d: &'a Desk) -> Option<&'a TextEdit> {
+        // The phone's search is a target only on a phone.
+        if *self == Self::PhoneSessions && d.phone.is_none() {
+            return None;
+        }
+        if let Some(kit) = self.kit() {
+            return Some(d.field(kit));
+        }
+        match self {
+            Self::Question {
+                question, field, ..
+            } => d.inbox.questions.drafts.get(question)?.texts.get(field),
+            _ => None,
+        }
+    }
+
     pub(super) fn edit_mut<'a>(&self, d: &'a mut Desk) -> Option<&'a mut TextEdit> {
+        if *self == Self::PhoneSessions && d.phone.is_none() {
+            return None;
+        }
+        if let Some(kit) = self.kit() {
+            return Some(d.field_mut(kit));
+        }
         Some(match self {
-            Self::Palette => &mut d.palette_query,
-            Self::Find => &mut d.connection.find_query,
-            Self::Settings => &mut d.settings_ui.query,
-            Self::Rename => &mut d.connection.tabs.rename_field,
-            Self::Inbox => &mut d.inbox.reply,
-            Self::Machine => &mut d.machines.field,
-            Self::PhoneSessions => &mut d.phone.as_mut()?.query,
             Self::Question {
                 question, field, ..
             } => d
@@ -138,6 +153,7 @@ impl Field {
                 .get_mut(question)?
                 .texts
                 .get_mut(field)?,
+            _ => return None,
         })
     }
 

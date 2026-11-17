@@ -120,7 +120,12 @@ impl Desk {
 
     fn dismiss_surface(&mut self, modal: Modal) -> bool {
         match modal {
-            Modal::ContextMenu => self.close_menu(),
+            // Every kit overlay (context menu, kit menu, select) owns input
+            // as this one modal; Escape closes whichever is up.
+            Modal::ContextMenu => {
+                self.close_menu();
+                self.close_select();
+            }
             Modal::Rename => self.cancel_rename(),
             Modal::News => self.close_news(),
             _ => return false,
@@ -257,9 +262,7 @@ impl Desk {
         }
         self.nudge_typing(&client);
         self.reclaim_fits();
-        if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
-            self.notice = None;
-        }
+        self.dismiss_notices(|n| n.text == INPUT_PAUSED);
         if frame.is_some_and(|f| has_selection(&f))
             && let Some(engine) = client.engine()
         {
