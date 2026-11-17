@@ -39,6 +39,8 @@ mod tabs;
 mod updates;
 
 #[cfg(test)]
+mod gallery_tests;
+#[cfg(test)]
 mod separator_tests;
 
 /// The app chord's modifier as shown beside an action.
