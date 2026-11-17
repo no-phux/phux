@@ -2958,6 +2958,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-config",
  "phux-core",
+ "phux-design",
  "phux-dial",
  "phux-frozen",
  "phux-mission",
