@@ -48,6 +48,7 @@ pub fn doc() -> ArrangementDoc {
             },
         )],
         active: 0,
+        slots: Vec::new(),
     };
     doc.add_group("other".into(), id(5));
     doc.active = 0;

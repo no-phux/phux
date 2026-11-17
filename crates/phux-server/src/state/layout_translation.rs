@@ -87,6 +87,7 @@ impl ServerState {
                 owner: ArrangementOwner::Session(record.key),
                 expected,
                 groups,
+                slot_tabs: false,
             },
             actor,
         )
@@ -116,10 +117,7 @@ impl ServerState {
                         id: *id,
                     },
                 };
-                phux_core::LayoutNode::Leaf(EntryRef {
-                    entry: fresh.fresh(),
-                    target,
-                })
+                phux_core::LayoutNode::Leaf(EntryRef::new(fresh.fresh(), target))
             }
             LayoutNode::Split {
                 dir,
@@ -176,7 +174,11 @@ impl ServerState {
                 ))
             })
             .collect();
-        let doc = ArrangementDoc { groups, active: 0 };
+        let doc = ArrangementDoc {
+            groups,
+            active: 0,
+            slots: Vec::new(),
+        };
         let Ok(bytes) = doc.encode_topology_cbor() else {
             return;
         };
@@ -269,6 +271,7 @@ mod tests {
                 },
             )],
             active: 0,
+            slots: Vec::new(),
         };
         state
             .translate_layout_write(session, &doc.encode_cbor().unwrap(), &Actor::owner())

@@ -56,6 +56,10 @@ impl<'m> Marks<'m> {
             return;
         }
         if run.lone {
+            if content.starts_with(super::images::PLACEHOLDER) {
+                // The image layer draws this cell.
+                return;
+            }
             if content.chars().any(missing::nothing_draws) {
                 self.empty_box(run.col, run.cells, color);
             } else {
@@ -71,6 +75,9 @@ impl<'m> Marks<'m> {
             }
             if let Some((from, first)) = plain.take() {
                 self.ascii(&content[from..at], first, style, color);
+            }
+            if ch == super::images::PLACEHOLDER {
+                continue;
             }
             if missing::nothing_draws(ch) {
                 self.empty_box(col, 1, color);
@@ -235,6 +242,14 @@ mod tests {
         let mut marks = Marks::new(metrics);
         marks.run(content, &run(content, lone));
         marks
+    }
+
+    /// A Kitty Unicode placeholder cell is the image's, never a glyph.
+    #[test]
+    fn placeholder_cells_draw_no_text() {
+        let m = Metrics::new(13.0, 2.0);
+        assert!(marks(&m, "\u{10EEEE}\u{305}\u{305}", true).els.is_empty());
+        assert_eq!(marks(&m, "ab\u{10EEEE}\u{10EEEE}cd", false).els.len(), 2);
     }
 
     #[test]

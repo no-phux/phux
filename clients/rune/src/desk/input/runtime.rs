@@ -2,6 +2,8 @@
 use super::{Modal, Shortcut};
 use rune::{Key, KeyEvent, Mods};
 
+mod scroll_keys;
+
 #[test]
 fn find_clipboard_commands_cannot_escape_to_the_terminal() {
     let (client, mut rt) = crate::test_support::input_fixture();

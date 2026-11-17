@@ -891,6 +891,7 @@ rune_member() {
   case "${1#*/}" in
     phux-rune | phux-rune.release | README.md | LICENSE | NOTICE | THIRD-PARTY-NOTICES.txt | \
     Inter-OFL.txt | JetBrainsMono-OFL.txt | PaperMono-OFL.txt | \
+    tmd | tmd-LICENSE.txt | tmd-THIRD-PARTY-NOTICES.md | tmd-VERSION.txt | \
     sh.phux.rune.desktop | sh.phux.rune.png) return 0 ;;
     *) return 1 ;;
   esac

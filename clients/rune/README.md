@@ -185,7 +185,9 @@ session (or `--session NAME`). It never creates a session on its own.
   selection, on device-pixel cells. Each pane follows its own size. Programs
   that track the mouse get it; the wheel scrolls history, or sends arrows in
   full-screen programs that keep DEC 1007 on (a setting turns that off).
-  Input methods compose at the cursor.
+  Input methods compose at the cursor. Kitty images draw over their cells
+  (under the text for a negative z), Unicode placeholder runs included; each
+  image is uploaded once and an animation once per frame.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
@@ -213,7 +215,9 @@ session (or `--session NAME`). It never creates a session on its own.
   restores the old theme, both returning to Settings. **Font** steps through
   the system monospace, the bundled JetBrains Mono and two the platform ships;
   `font_family` in Rune's prefs can name any installed family, and one that
-  isn't installed shows the system's. Font, text size, notifications,
+  isn't installed shows the system's. **Interface size** (Appearance, 80% to
+  200%) scales the sidebar, tabs, palette and Settings and leaves the
+  terminal's text alone. Font, text size, interface size, notifications,
   Option as Meta (macOS), copy on select, wheel arrows, and close confirmation are remembered
   immediately. A `[rune]` table in `config.toml` overrides any of them
   ([config](../../docs/config.md#rune)). Diagnostics stays available in development builds; update errors
@@ -259,6 +263,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘-click | Open the link under it |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
+| ⌘⌥= / ⌘⌥- / ⌘⌥0 | Bigger / smaller / default interface (sidebar, tabs, palette, Settings) |
 | ⌘← / ⌘→ | Previous / next terminal in the session |
 | ⌘↑ / ⌘↓ | Previous / next session |
 | ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
@@ -281,7 +286,7 @@ each line; the window asks first (Return pastes, Esc cancels).
 ## Known gaps
 
 - One window, and the server has no call to rename a single terminal.
-- No Kitty images; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
+- The only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
@@ -303,6 +308,11 @@ each line; the window asks first (Return pastes, Esc cancels).
   has already replaced the files by then.
 
 ## Read-only mirrors
+
+Markdown documents render with bundled [tmd](https://github.com/jtnk/tmd),
+with a source switch and a [replaceable renderer](../../docs/config.md#markdown-viewer).
+The first adapter uses print mode in the native document pane, not a second
+terminal or browser runtime.
 
 The palette opens AccessibilityTree and PixelSurface resources beside
 terminals, and can start a page, tree or surface producer.

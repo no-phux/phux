@@ -158,7 +158,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 111,
+        lines <= 112,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

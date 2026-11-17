@@ -26,6 +26,7 @@ use crate::perf;
 use crate::theme::Selection;
 
 mod glyphs;
+mod images;
 mod missing;
 
 /// Inter, which replacing Rune's built-in fonts has to name again; a Nerd
@@ -87,6 +88,8 @@ pub struct Metrics {
     pub cell_h: f32,
     /// Added to the face's advance so it equals `cell_w`.
     tracking: f32,
+    /// An underline's thickness: a device pixel per 13 points of text.
+    line: f32,
 }
 
 impl Metrics {
@@ -108,6 +111,21 @@ impl Metrics {
             cell_w,
             cell_h: snap(font_size * 1.3),
             tracking: cell_w - natural,
+            line: (font_size / 13.0).round().max(1.0) / scale,
+        }
+    }
+
+    /// The same cells in a view zoomed `k` times (`Cx::zoom`): the same
+    /// device pixels, in points `k` times smaller. Measuring at the zoomed
+    /// size instead would shape a smaller face and drift a pixel.
+    pub fn zoomed(self, k: f32) -> Self {
+        Self {
+            font_size: self.font_size / k,
+            scale: self.scale * k,
+            cell_w: self.cell_w / k,
+            cell_h: self.cell_h / k,
+            tracking: self.tracking / k,
+            line: self.line / k,
         }
     }
 
@@ -298,8 +316,7 @@ fn cursor_shape(m: &Metrics, cursor: &CursorPaint<Color>) -> El {
 }
 
 fn decoration(m: &Metrics, line: &Decoration<Color>) -> El {
-    let px = 1.0 / m.scale;
-    let thick = (m.font_size / 13.0).round().max(1.0) * px;
+    let thick = m.line;
     let y = match line.kind {
         DecorationKind::Underline(_) => m.cell_h - thick * 2.0,
         DecorationKind::Strikethrough => m.cell_h * 0.55,
@@ -428,6 +445,10 @@ fn build(
         .fill(list.background)
         // A row that moves lands at once: output never slides or fades.
         .instant_changes();
+    let (under, over) = images::layers(frame, metrics);
+    if let Some(under) = under {
+        grid = grid.child(under);
+    }
     // Rows are named by what they show, so a scrolled row keeps its subtree;
     // equal rows are told apart by their order.
     let mut seen: HashMap<u64, u16> = HashMap::new();
@@ -437,6 +458,9 @@ fn build(
         let id = format!("r{version:x}-{twin}");
         *twin += 1;
         grid = grid.child(memo(id, version, || row_el(&list, row, metrics)));
+    }
+    if let Some(over) = over {
+        grid = grid.child(over);
     }
     grid
 }
@@ -509,69 +533,4 @@ pub fn background(frame: &GridFrame) -> Color {
 pub(crate) mod budget;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_missing_font_family_falls_back_to_the_default() {
-        assert_eq!(mono_family(" "), FAMILIES.1);
-        assert_eq!(
-            mono_family(" Menlo\" "),
-            format!("\"Menlo\", {}", FAMILIES.1)
-        );
-        let width = |mono: &str| {
-            let _scope = rune::text::with_families(FAMILIES.0, mono);
-            Metrics::new(DEFAULT_FONT_SIZE, 2.0).cell_w
-        };
-        assert_eq!(width(&mono_family("No Such Font")), width(FAMILIES.1));
-    }
-
-    #[test]
-    fn cells_land_on_device_pixels() {
-        for scale in [1.0, 2.0, 3.0] {
-            let m = Metrics::new(DEFAULT_FONT_SIZE, scale);
-            let px = m.cell_w * scale;
-            assert!(
-                (px - px.round()).abs() < 1e-3,
-                "{px} device px wide at {scale}x"
-            );
-            let px = m.cell_h * scale;
-            assert!(
-                (px - px.round()).abs() < 1e-3,
-                "{px} device px tall at {scale}x"
-            );
-        }
-    }
-
-    #[test]
-    fn fitting_floors_and_never_reaches_zero() {
-        let m = Metrics::new(DEFAULT_FONT_SIZE, 2.0);
-        let (cols, rows) = m.fit([m.cell_w * 80.5, m.cell_h * 24.9]);
-        assert_eq!((cols, rows), (80, 24));
-        assert_eq!(m.fit([0.0, 0.0]), (1, 1));
-    }
-
-    #[test]
-    fn hit_testing_clamps_to_the_grid() {
-        let m = Metrics::new(DEFAULT_FONT_SIZE, 2.0);
-        assert_eq!(m.cell_at(-5.0, -5.0, 80, 24), (0, 0));
-        assert_eq!(m.cell_at(m.cell_w * 3.5, m.cell_h * 2.5, 80, 24), (3, 2));
-        assert_eq!(m.cell_at(1e6, 1e6, 80, 24), (79, 23));
-    }
-
-    #[test]
-    fn colors_decode_srgb() {
-        let white = color(Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        });
-        assert!((white.r - 1.0).abs() < 1e-6);
-        let mid = color(Rgb {
-            r: 128,
-            g: 128,
-            b: 128,
-        });
-        assert!(mid.r > 0.2 && mid.r < 0.23, "linear {}", mid.r);
-    }
-}
+mod tests;

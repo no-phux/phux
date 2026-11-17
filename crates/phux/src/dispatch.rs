@@ -68,6 +68,7 @@ pub(crate) fn dispatch(
         })) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
         Some(Command::Organize(args)) => sessions::organize(args, socket),
         Some(Command::SwapPane(args)) => panes::swap_pane(args, socket),
+        Some(Command::Slot(args)) => panes::slot(args, socket),
         Some(Command::Resize(commands::ResizeArgs {
             target,
             geometry,
@@ -242,9 +243,10 @@ pub(crate) fn dispatch(
             flush,
             text,
         }) => commands::idea::run(private, flush, text.as_deref()),
-        Some(Command::Doctor(commands::DoctorArgs { json })) => {
-            commands::doctor::run_doctor(json, socket)
-        }
+        Some(Command::Doctor(commands::DoctorArgs { json, remote })) => match remote.remote {
+            Some(_) => commands::doctor::other_host::run(json, remote.with_socket(socket)),
+            None => commands::doctor::run_doctor(json, socket),
+        },
         Some(Command::Logs(commands::LogsArgs {
             server,
             client,

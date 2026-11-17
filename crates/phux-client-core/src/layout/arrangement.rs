@@ -16,6 +16,8 @@ pub struct ArrangementDoc {
     pub groups: Vec<Group>,
     /// Index of the active group into [`Self::groups`].
     pub active: usize,
+    /// Slots with more than one tab; each shows the leaf its tree holds.
+    pub slots: Vec<super::Slot>,
 }
 
 impl ArrangementDoc {
@@ -26,12 +28,23 @@ impl ArrangementDoc {
         Self::default()
     }
 
+    /// An arrangement of `groups`, the first active, with no slot tabs.
+    #[must_use]
+    pub const fn from_groups(groups: Vec<Group>) -> Self {
+        Self {
+            groups,
+            active: 0,
+            slots: Vec::new(),
+        }
+    }
+
     /// An arrangement with a single group named `"1"` holding one pane.
     #[must_use]
     pub fn single(pane: ResourceId) -> Self {
         Self {
             groups: vec![Group::new("1".to_owned(), LayoutState::single(pane))],
             active: 0,
+            slots: Vec::new(),
         }
     }
 
@@ -110,6 +123,10 @@ impl ArrangementDoc {
     /// * [`LayoutError::LastPane`] if `target` is the only remaining pane.
     /// * [`LayoutError::PaneNotInLayout`] if `target` is not in any group.
     pub fn close_pane(&mut self, target: &ResourceId) -> Result<(), LayoutError> {
+        // A tab leaves its slot, which keeps its leaf.
+        if self.drop_tab(target).is_some() {
+            return Ok(());
+        }
         if pane_count(self) == 1 {
             return Err(LayoutError::LastPane);
         }

@@ -41,6 +41,7 @@ fn two_window_workspace_ids(a: u32, b: u32, c: u32) -> ArrangementDoc {
             Group::new("logs".to_owned(), LayoutState::single(tid(c))),
         ],
         active: 0,
+        slots: Vec::new(),
     }
 }
 

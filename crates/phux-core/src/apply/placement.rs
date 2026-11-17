@@ -81,6 +81,7 @@ pub(super) fn place_created_resource(
         ArrangementOwner::Session(session),
         revision,
         &groups,
+        true,
     )?;
     Ok((key, entry.entry))
 }

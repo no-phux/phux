@@ -8,10 +8,10 @@ fn encoded(doc: &ArrangementDoc) -> Vec<u8> {
 
 fn split_doc() -> ArrangementDoc {
     let leaf = |byte| {
-        Box::new(ArrangementNode::Leaf(EntryRef {
-            entry: [byte; 16],
-            target: EntryTarget::Member(ResourceKey::new([byte; 16]).expect("non-zero key")),
-        }))
+        Box::new(ArrangementNode::Leaf(EntryRef::new(
+            [byte; 16],
+            EntryTarget::Member(ResourceKey::new([byte; 16]).expect("non-zero key")),
+        )))
     };
     ArrangementDoc {
         groups: vec![ArrangementGroup {
@@ -73,4 +73,32 @@ fn bytes_a_newer_peer_appends_to_a_document_are_skipped() {
     let node = group + 4 + 16 + 1 + 4 + 3;
     let grown_node = grow(&bytes, node, Some(group), &[0xEE; 2]);
     assert_eq!(decode_arrangement_doc(&grown_node), Ok(doc));
+}
+
+/// Slot tabs ride at the end of the leaf record: a leaf without them
+/// encodes as it always did, one with them round-trips, and a default
+/// placed past its tabs is refused.
+#[test]
+fn slot_tabs_trail_the_leaf_and_round_trip() {
+    let tabbed = |shown_at| {
+        let mut doc = split_doc();
+        if let ArrangementNode::Split { first, .. } = &mut doc.groups[0].tree
+            && let ArrangementNode::Leaf(slot) = first.as_mut()
+        {
+            slot.tabs = vec![EntryRef::new(
+                [7; 16],
+                EntryTarget::Member(ResourceKey::new([7; 16]).expect("non-zero key")),
+            )];
+            slot.shown_at = shown_at;
+        }
+        doc
+    };
+    let doc = tabbed(1);
+    let bytes = encoded(&doc);
+    assert_eq!(decode_arrangement_doc(&bytes), Ok(doc));
+    assert!(bytes.len() > encoded(&split_doc()).len());
+    assert_eq!(
+        decode_arrangement_doc(&encoded(&tabbed(2))),
+        Err(DecodeError::InvalidArrangement)
+    );
 }

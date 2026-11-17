@@ -170,10 +170,7 @@ mod tests {
                     locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(a),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(a))),
                 }],
             },
         );
@@ -244,10 +241,7 @@ mod tests {
                     locked: false,
                     id: [7; 16],
                     name: Some("main".to_owned()),
-                    tree: ArrangementNode::Leaf(EntryRef {
-                        entry: [1; 16],
-                        target: EntryTarget::Member(pane),
-                    }),
+                    tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(pane))),
                 }],
             },
         );

@@ -138,6 +138,10 @@ impl ArrangementDoc {
         }
         identity::validate(&groups)?;
         let active = (envelope.focused_window_index as usize).min(groups.len().saturating_sub(1));
-        Ok(Self { groups, active })
+        Ok(Self {
+            groups,
+            active,
+            slots: Vec::new(),
+        })
     }
 }

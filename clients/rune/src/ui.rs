@@ -126,6 +126,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
+    cx.zoom(desk.ui_zoom());
     let p = &*t;
     let s = &t.space;
     // `titlebar_inset` is the traffic lights' width; zero when the system

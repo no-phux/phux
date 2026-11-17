@@ -164,6 +164,31 @@ pub(super) fn swap_pane(args: commands::SwapPaneArgs, socket: Option<PathBuf>) -
     commands::spatial::run_swap_pane(&first, &second, projection, json, socket)
 }
 
+pub(super) fn slot(args: commands::SlotArgs, socket: Option<PathBuf>) -> ExitCode {
+    use phux_client::spatial::SpatialOp;
+    let (operation, json) = match args.action {
+        commands::SlotAction::Add { pane, to, json } => (SpatialOp::SlotAdd { pane, to }, json),
+        commands::SlotAction::Out {
+            pane,
+            split,
+            ratio,
+            json,
+        } => (
+            SpatialOp::SlotOut {
+                pane,
+                direction: split.into(),
+                ratio,
+            },
+            json,
+        ),
+        commands::SlotAction::Next { pane, json } => (SpatialOp::SlotStep { pane, delta: 1 }, json),
+        commands::SlotAction::Prev { pane, json } => {
+            (SpatialOp::SlotStep { pane, delta: -1 }, json)
+        }
+    };
+    commands::spatial::run_slot(operation, json, socket)
+}
+
 pub(super) fn signal(args: commands::SignalArgs, socket: Option<PathBuf>) -> ExitCode {
     let commands::SignalArgs {
         target,

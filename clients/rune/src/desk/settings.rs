@@ -9,6 +9,14 @@ use super::{Desk, NoticeKind};
 use crate::grid;
 use crate::theme::{self, Theme};
 
+/// The interface sizes ⌘⌥+ and ⌘⌥− step through, in percent.
+pub const INTERFACE_SIZES: [u16; 8] = [80, 90, 100, 110, 125, 150, 175, 200];
+
+/// A saved or configured interface size, held to 80–200%; 100% unset.
+pub fn interface_size(size: Option<u16>) -> u16 {
+    size.map_or(100, |s| s.clamp(INTERFACE_SIZES[0], INTERFACE_SIZES[7]))
+}
+
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -162,6 +170,7 @@ impl Desk {
             RuneCfg {
                 theme: Some(settings.theme.map_or(String::new(), |t| t.id.to_owned())),
                 font_size: Some(self.font_size),
+                interface_size: Some(self.interface_size),
                 font_family: Some(self.font_family.clone()),
                 notifications: Some(settings.notifications),
                 option_as_meta: Some(settings.option_as_meta),
@@ -173,6 +182,27 @@ impl Desk {
             .to_toml(),
         );
         self.say(NoticeKind::Info, "Copied settings as a [rune] table.");
+    }
+
+    /// Set the interface size; `None` is 100%. Like `zoom`, a file's
+    /// `interface-size` is only where a window starts.
+    pub fn set_interface_size(&mut self, size: Option<u16>) {
+        self.interface_size = interface_size(size);
+        let _ = self.prefs.set("interface_size", &self.interface_size);
+    }
+
+    /// Move `steps` along `INTERFACE_SIZES` from the current size.
+    pub fn step_interface_size(&mut self, steps: i32) {
+        let mut size = self.interface_size;
+        for _ in 0..steps.unsigned_abs() {
+            let next = if steps > 0 {
+                INTERFACE_SIZES.iter().find(|&&s| s > size)
+            } else {
+                INTERFACE_SIZES.iter().rev().find(|&&s| s < size)
+            };
+            size = next.copied().unwrap_or(size);
+        }
+        self.set_interface_size(Some(size));
     }
 
     // A file's `font-size` is where each window starts; zooming still works.

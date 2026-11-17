@@ -61,10 +61,7 @@ async fn a_failed_first_arrangement_read_never_overwrites_the_stored_record() {
             groups: vec![ArrangementGroup { locked: false,
                 id: [7; 16],
                 name: Some("build".to_owned()),
-                tree: ArrangementNode::Leaf(EntryRef {
-                    entry: [1; 16],
-                    target: EntryTarget::Member(shell),
-                }),
+                tree: ArrangementNode::Leaf(EntryRef::new([1; 16], EntryTarget::Member(shell))),
             }],
         },
     );

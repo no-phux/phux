@@ -13,25 +13,23 @@
 //! through a client never drops presentation of work it could not show.
 //!
 //! Satellite leaves pass through unchanged as
-//! [`EntryTarget::Satellite`]; only member leaves need the map.
+//! [`EntryTarget::Satellite`](phux_protocol::wire::frame::EntryTarget::Satellite);
+//! only member leaves need the map.
 
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{
-    ArrangementDoc as WireDoc, ArrangementGroup as WireGroup, ArrangementNode as WireNode,
-    EntryRef, EntryTarget, SplitDirection,
+    ArrangementDoc as WireDoc, ArrangementGroup as WireGroup, ArrangementNode as WireNode, EntryRef,
 };
 use thiserror::Error;
 
-use super::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir, identity, leaves};
+use super::{ArrangementDoc, Group, LayoutState, leaves};
 
 mod handle_map;
+mod nodes;
 pub use handle_map::HandleMap;
-
-/// Smallest ratio a written split carries; the wire requires the open
-/// interval `(0, 1)`, while a client may bank the closed endpoints.
-const MIN_WIRE_RATIO: f32 = 0.001;
+use nodes::{append_leaf, node_from_wire, node_to_wire, unique_entry};
 
 /// A member entry the client document could not place, because its resource
 /// has no live handle.
@@ -103,10 +101,17 @@ pub enum WireError {
 #[must_use]
 pub fn from_protocol(doc: &WireDoc, map: &HandleMap) -> (ArrangementDoc, EntryBinding) {
     let mut binding = EntryBinding::default();
+    let mut slots = Vec::new();
     let mut groups = Vec::with_capacity(doc.groups.len());
     for (index, group) in doc.groups.iter().enumerate() {
         let mut unplaced = Vec::new();
-        let tree = node_from_wire(&group.tree, map, &mut binding.entries, &mut unplaced);
+        let tree = node_from_wire(
+            &group.tree,
+            map,
+            &mut binding.entries,
+            &mut unplaced,
+            &mut slots,
+        );
         match tree {
             Some(tree) => {
                 binding
@@ -132,7 +137,14 @@ pub fn from_protocol(doc: &WireDoc, map: &HandleMap) -> (ArrangementDoc, EntryBi
             }),
         }
     }
-    (ArrangementDoc { groups, active: 0 }, binding)
+    (
+        ArrangementDoc {
+            groups,
+            active: 0,
+            slots,
+        },
+        binding,
+    )
 }
 
 /// Write a client document as a stored arrangement.
@@ -158,7 +170,7 @@ pub fn to_protocol(
         let Some(tree) = group.state.tree.as_ref() else {
             continue;
         };
-        let mut node = node_to_wire(tree, map, binding, &mut used_entries)?;
+        let mut node = node_to_wire(tree, map, binding, &doc.slots, &mut used_entries)?;
         for unplaced in binding.unplaced.iter().filter(|u| u.group == group.id) {
             let entry = unique_entry(unplaced.entry.clone(), &mut used_entries);
             node = append_leaf(node, entry);
@@ -200,136 +212,6 @@ pub fn to_protocol(
     Ok(WireDoc { groups })
 }
 
-fn node_from_wire(
-    node: &WireNode,
-    map: &HandleMap,
-    entries: &mut HashMap<ResourceId, [u8; 16]>,
-    unplaced: &mut Vec<EntryRef>,
-) -> Option<LayoutNode> {
-    match node {
-        WireNode::Leaf(entry) => {
-            let handle = match &entry.target {
-                EntryTarget::Member(key) => map.handle(key).cloned(),
-                EntryTarget::Satellite { host, id } => Some(ResourceId::Satellite {
-                    host: host.clone(),
-                    id: *id,
-                }),
-                // A target kind this build does not know cannot be shown;
-                // keep it for the write-back.
-                _ => None,
-            };
-            match handle {
-                Some(handle) if !entries.contains_key(&handle) => {
-                    entries.insert(handle.clone(), entry.entry);
-                    Some(LayoutNode::Leaf(handle))
-                }
-                // A second entry for one handle cannot be shown twice.
-                _ => {
-                    unplaced.push(entry.clone());
-                    None
-                }
-            }
-        }
-        WireNode::Split {
-            dir,
-            ratio,
-            first,
-            second,
-        } => {
-            let first = node_from_wire(first, map, entries, unplaced);
-            let second = node_from_wire(second, map, entries, unplaced);
-            match (first, second) {
-                (Some(left), Some(right)) => Some(LayoutNode::Split {
-                    dir: split_from_wire(*dir),
-                    ratio: *ratio,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                }),
-                (Some(only), None) | (None, Some(only)) => Some(only),
-                (None, None) => None,
-            }
-        }
-    }
-}
-
-fn node_to_wire(
-    node: &LayoutNode,
-    map: &HandleMap,
-    binding: &EntryBinding,
-    used: &mut HashSet<[u8; 16]>,
-) -> Result<WireNode, WireError> {
-    match node {
-        LayoutNode::Leaf(handle) => {
-            let target = match handle {
-                ResourceId::Local { .. } => EntryTarget::Member(
-                    map.key(handle)
-                        .ok_or_else(|| WireError::UnknownHandle(handle.clone()))?,
-                ),
-                ResourceId::Satellite { host, id } => EntryTarget::Satellite {
-                    host: host.clone(),
-                    id: *id,
-                },
-            };
-            let entry = EntryRef {
-                entry: binding.entry(handle).unwrap_or_else(identity::fresh_id),
-                target,
-            };
-            Ok(WireNode::Leaf(unique_entry(entry, used)))
-        }
-        LayoutNode::Split {
-            dir,
-            ratio,
-            left,
-            right,
-        } => Ok(WireNode::Split {
-            dir: split_to_wire(*dir),
-            ratio: wire_ratio(*ratio),
-            first: Box::new(node_to_wire(left, map, binding, used)?),
-            second: Box::new(node_to_wire(right, map, binding, used)?),
-        }),
-    }
-}
-
-/// `entry` with an id no earlier entry of this document used.
-fn unique_entry(mut entry: EntryRef, used: &mut HashSet<[u8; 16]>) -> EntryRef {
-    while entry.entry == [0; 16] || !used.insert(entry.entry) {
-        entry.entry = identity::fresh_id();
-    }
-    entry
-}
-
-/// `tree` with `entry` split in below it.
-fn append_leaf(tree: WireNode, entry: EntryRef) -> WireNode {
-    WireNode::Split {
-        dir: SplitDirection::Vertical,
-        ratio: 0.5,
-        first: Box::new(tree),
-        second: Box::new(WireNode::Leaf(entry)),
-    }
-}
-
-fn wire_ratio(ratio: f32) -> f32 {
-    if ratio.is_nan() {
-        0.5
-    } else {
-        ratio.clamp(MIN_WIRE_RATIO, 1.0 - MIN_WIRE_RATIO)
-    }
-}
-
-const fn split_from_wire(dir: SplitDirection) -> SplitDir {
-    match dir {
-        SplitDirection::Horizontal => SplitDir::Horizontal,
-        SplitDirection::Vertical => SplitDir::Vertical,
-    }
-}
-
-const fn split_to_wire(dir: SplitDir) -> SplitDirection {
-    match dir {
-        SplitDir::Horizontal => SplitDirection::Horizontal,
-        SplitDir::Vertical => SplitDirection::Vertical,
-    }
-}
-
 /// Every entry of a stored tree, depth-first.
 #[must_use]
 pub fn wire_leaves(node: &WireNode) -> Vec<EntryRef> {
@@ -352,8 +234,9 @@ fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::layout::split_at;
+    use crate::layout::{LayoutNode, SplitDir, split_at};
     use phux_protocol::ids::{ResourceKey, SatelliteHost};
+    use phux_protocol::wire::frame::{EntryTarget, SplitDirection};
 
     /// The keys of every stored member entry that has no live handle.
     fn unplaced_keys(binding: &EntryBinding) -> Vec<ResourceKey> {
@@ -396,10 +279,7 @@ mod tests {
     }
 
     fn entry(n: u8, target: EntryTarget) -> EntryRef {
-        EntryRef {
-            entry: [0xe0 | n; 16],
-            target,
-        }
+        EntryRef::new([0xe0 | n; 16], target)
     }
 
     fn member(n: u8) -> WireNode {

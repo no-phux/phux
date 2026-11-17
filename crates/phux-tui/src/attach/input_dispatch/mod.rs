@@ -23,6 +23,8 @@ mod tests_actions;
 mod tests_events;
 #[cfg(test)]
 mod tests_plugin_actions;
+#[cfg(test)]
+mod tests_slot_tabs;
 
 pub(super) use ctx::{DispatchCtx, DragGrab};
 pub(super) use deferred::{DeferredArrangementEdit, apply_deferred_arrangement_edits};

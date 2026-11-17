@@ -6,7 +6,7 @@
 //! that session's members. Clients edit trees in their own leaf type (live
 //! handles) and translate to [`EntryRef`] leaves with [`LayoutNode::map`].
 //!
-//! Spec ref: `docs/organization.md` Layout (binary subset). Pane-rect
+//! Spec ref: `docs/organization.md` (arrangements, slot tabs). Pane-rect
 //! tiling and directional focus live client-side in `phux-client-core`.
 
 use std::collections::HashSet;
@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::keys::{ArrangementKey, FreshKeys, ResourceKey, Revision, SessionKey, WorkspaceKey};
+
+mod slot;
+
+pub use slot::carry_tabs;
 
 /// A node in a binary split tree whose leaves are `L`.
 ///
@@ -268,16 +272,32 @@ pub struct EntryRef {
     pub entry: [u8; 16],
     /// What the entry shows.
     pub target: EntryTarget,
+    /// The slot's other tabs in strip order, this entry excluded
+    /// (`docs/organization.md#slot-tabs`); a tab has none of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<Self>,
+    /// Where this entry, the slot's default tab, sits among `tabs` in the
+    /// strip: `0..=tabs.len()`.
+    #[serde(default, skip_serializing_if = "slot::is_zero")]
+    pub shown_at: u16,
 }
 
 impl EntryRef {
+    /// An entry showing `target`, alone in its slot.
+    #[must_use]
+    pub const fn new(entry: [u8; 16], target: EntryTarget) -> Self {
+        Self {
+            entry,
+            target,
+            tabs: Vec::new(),
+            shown_at: 0,
+        }
+    }
+
     /// An entry showing a member resource.
     #[must_use]
     pub const fn member(entry: [u8; 16], resource: ResourceKey) -> Self {
-        Self {
-            entry,
-            target: EntryTarget::Member(resource),
-        }
+        Self::new(entry, EntryTarget::Member(resource))
     }
 
     /// The member resource this entry shows, if it shows one.
@@ -391,6 +411,9 @@ pub enum ArrangementError {
     /// A split ratio is NaN or outside `(0.0, 1.0)`.
     #[error("invalid split ratio: {0}")]
     InvalidRatio(f32),
+    /// A slot tab has tabs of its own, or `shown_at` is past its tabs.
+    #[error("invalid slot tabs on entry")]
+    InvalidSlot([u8; 16]),
 }
 
 impl Arrangement {
@@ -414,24 +437,23 @@ impl Arrangement {
     pub fn resources(&self) -> Vec<ResourceKey> {
         self.groups
             .iter()
-            .flat_map(|g| g.tree.leaves().into_iter().filter_map(EntryRef::resource))
+            .flat_map(|g| g.tree.leaves())
+            .flat_map(EntryRef::slot_entries)
+            .filter_map(EntryRef::resource)
             .collect()
     }
 
     /// Drop every entry naming `resource`, collapsing splits and dropping
-    /// groups left empty. Returns whether anything changed.
+    /// groups left empty. A slot keeps its leaf while any tab is left; the
+    /// next tab in strip order takes the place of a default it loses.
+    /// Returns whether anything changed.
     pub fn prune(&mut self, resource: ResourceKey) -> bool {
         let before = self.groups.len();
         let mut changed = false;
         self.groups = std::mem::take(&mut self.groups)
             .into_iter()
             .filter_map(|g| {
-                if !g
-                    .tree
-                    .leaves()
-                    .iter()
-                    .any(|e| e.resource() == Some(resource))
-                {
+                if !g.tree.leaves().iter().any(|e| e.names(resource)) {
                     return Some(g);
                 }
                 changed = true;
@@ -441,10 +463,11 @@ impl Arrangement {
                     tree,
                     locked,
                 } = g;
-                collapse(tree, &|e: &EntryRef| e.resource() == Some(resource)).map(|tree| Group {
+                let kept = tree.map(&mut |e: &EntryRef| e.without(resource));
+                collapse(kept, &Option::is_none).map(|tree| Group {
                     id,
                     name,
-                    tree,
+                    tree: tree.map(&mut |e| e.clone().unwrap_or_else(|| unreachable!())),
                     locked,
                 })
             })
@@ -471,6 +494,7 @@ pub fn locked_tab_closed_by(org: &crate::org::Org, closing: &[ResourceKey]) -> O
                 .tree
                 .leaves()
                 .into_iter()
+                .flat_map(EntryRef::slot_entries)
                 .filter_map(EntryRef::resource)
                 .collect();
             let emptied = !members.is_empty() && members.iter().all(|m| closing.contains(m));
@@ -508,14 +532,17 @@ pub fn validate_groups<'a>(
             LayoutError::InvalidRatio(r) => ArrangementError::InvalidRatio(r),
             LayoutError::PaneNotInLayout(_) => ArrangementError::InvalidRatio(f32::NAN),
         })?;
-        for leaf in group.tree.leaves() {
-            if !entry_ids.insert(leaf.entry) {
-                return Err(ArrangementError::DuplicateEntry(leaf.entry));
-            }
-            if let Some(resource) = leaf.resource()
-                && !members.contains(&resource)
-            {
-                return Err(ArrangementError::NotAMember(resource));
+        for slot in group.tree.leaves() {
+            slot.validate_slot()?;
+            for leaf in slot.slot_entries() {
+                if !entry_ids.insert(leaf.entry) {
+                    return Err(ArrangementError::DuplicateEntry(leaf.entry));
+                }
+                if let Some(resource) = leaf.resource()
+                    && !members.contains(&resource)
+                {
+                    return Err(ArrangementError::NotAMember(resource));
+                }
             }
         }
     }

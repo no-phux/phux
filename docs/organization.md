@@ -32,6 +32,58 @@ ending the session. A natural exit is not a close, so it isn't refused. The
 flag is stored in the arrangement record, so it survives a hot upgrade, and on
 the wire it is a trailing byte of the group record that older peers skip.
 
+### Slot tabs
+
+A layout slot (a leaf) can hold several terminals as **slot tabs**: one shows,
+and the rest keep running at the slot's size, so switching never reflows.
+"Stacked" already means a vertical split, so the feature isn't called that.
+
+- **Shape.** The leaf's own entry is the slot's default tab. Its other tabs
+  ride on the leaf as `tabs`, an ordered list of entries, with `shown_at` giving
+  the default's place in the strip. On the wire they are trailing fields
+  of the leaf record, which older peers skip, the same way they skip the
+  lock byte. In the stored JSON (the org store and upgrade blob) they are
+  default-empty fields an older server ignores. A tab holds one terminal,
+  never a subtree.
+- **Older peers.** An older client sees and edits the default tab only; the
+  others are session members with no place in its layout. An older server
+  loads the record without them, so a rollback starts and their terminals
+  keep running, unarranged. A new node kind would instead make every older
+  client's `ARRANGEMENT_GET` unreadable, block the TUI's layout writes, and
+  stop an older server from loading its store, so there is none.
+- **Carry-over.** An `ARRANGEMENT_REPLACE` from a client that doesn't know
+  tabs cannot drop them: the server carries each slot's tabs over by the
+  leaf's entry id, then by its default's member key (the legacy layout
+  adapter mints fresh ids). A tab the replacement places somewhere else
+  leaves the slot, because an explicit placement wins. If the replacement
+  removed the slot, its tabs become unarranged members; nothing is closed.
+- **Invariants.** A member appears at most once in an arrangement, tabs
+  included, and every tab is a member of the session. Moving a member out
+  (`phux mv`) or ending it removes it from its slot. When it was the default,
+  the next tab in strip order takes the leaf. The last tab leaving
+  removes the leaf, and its split collapses as today. Undo restores whole
+  groups, so it restores tabs with them.
+- **What shows is client-local.** Which tab a client shows is client-local,
+  like the active group, so switching on a phone never flips a desktop. The
+  stored default is what a fresh attach and an older client show; it moves
+  only when tabs are added, removed or reordered.
+- **Layout verbs.** A slot is one unit for split, zoom, swap and move.
+  `name:G.P` counts slots, not tabs, and `@N` names any tab. Clients keep
+  their split tree as it is and hold each group's slot tabs beside it, keyed
+  by the shown leaf, so no tree walker changes.
+- **Advertised.** The server advertises `features_ext.SLOT_TABS`. A client
+  writes tabs only to a server that advertises it, because an older server
+  would drop the trailing fields and the tabs with them.
+- **Surface.** `phux slot add @N --to @M` makes terminal `@N` a tab of the
+  slot showing `@M`. `phux slot out @N` gives a tab a slot of its own, split
+  beside the one it left. `phux slot next|prev [@M]` moves the slot's
+  default, since a headless verb has no view of its own. In an attached
+  client the keys switch only what that client shows: `C-a }` and `C-a {`
+  in the TUI. In Rune they are
+  Cmd+Shift+→ and Cmd+Shift+← on macOS (beside Cmd+← and Cmd+→, which walk
+  terminals) and Ctrl+Shift+→ and Ctrl+Shift+← elsewhere. A slot with two
+  or more tabs shows a one-row strip of their titles and agent states.
+
 The pure [core apply function](../crates/phux-core/src/apply.rs) owns these
 invariants; [arrangement validation](../crates/phux-core/src/arrangement.rs)
 owns tree validity. Expected revisions, operation ids and live activation

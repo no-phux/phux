@@ -71,9 +71,20 @@ case "$archive" in
 *) fail "not a release archive: $archive" ;;
 esac
 
-for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt; do
+for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt \
+    tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
     [[ -s "$notices/$name" ]] || fail "the archive has no $name"
 done
+helper="$(dirname "$binary")/tmd"
+[[ -x "$helper" ]] || fail "the archive has no tmd viewer"
+if [[ "$archive" == *.zip ]]; then
+    PHUX_MACOS_MIN_MAX="$floor" bash "$repo/scripts/check-binary-portability.sh" "$helper"
+else
+    PHUX_GLIBC_MAX="$glibc_floor" bash "$repo/scripts/check-binary-portability.sh" "$helper"
+fi
+printf '**Bundled renderer**\n' | "${clean[@]}" "$helper" --print --no-images --plain-headings \
+    > "$scratch/viewer.txt"
+grep -Fxq 'Bundled renderer' "$scratch/viewer.txt" || fail "the bundled viewer did not render"
 
 version="$(basename "$archive")"
 version="${version#phux-rune-}"

@@ -65,13 +65,13 @@ fn documents_round_trip() {
                 [2; 16],
                 phux_core::ResourceKey::from_bytes([4; 16]),
             ))),
-            right: Box::new(phux_core::LayoutNode::Leaf(phux_core::EntryRef {
-                entry: [3; 16],
-                target: phux_core::EntryTarget::Satellite {
+            right: Box::new(phux_core::LayoutNode::Leaf(phux_core::EntryRef::new(
+                [3; 16],
+                phux_core::EntryTarget::Satellite {
                     host: "far".to_owned(),
                     id: 9,
                 },
-            })),
+            ))),
         },
     }];
     assert_eq!(core_groups(&document(&groups)), Some(groups));

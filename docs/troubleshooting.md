@@ -47,6 +47,21 @@ phux mobile shows the same list for each host, and so does the desktop app
 palette): it asks the server (`HOST_CHECKLIST`), and the server answers with
 the `checklist` of its own `phux doctor --json`. The checklist never changes doctor's exit code.
 
+`phux doctor --remote HOST` shows another machine's list the same way, from
+here. Each fix becomes one command that runs it on that machine, in a pane
+that stays open on a shell so you can read the result:
+
+```text
+What works on mini
+phux: error: Agent status          no agent integration for pi
+  fix: phux new --remote 'mini' -- sh -lc 'pi install npm:@phux/pi; exec "${SHELL:-sh}" -l'
+```
+
+Agent integrations are per machine, so a host added with `phux host add` has
+none until they are set up there. `host add` checks right away and prints
+the same command for any agent it finds without one. With `--json`, the
+document is `{"schema_version": 1, "host": "mini", "checklist": {...}}`.
+
 In `--json` it is `checklist`, a versioned document:
 
 ```json

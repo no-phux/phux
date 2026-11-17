@@ -6,6 +6,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Switch};
 
 use super::{primary, secondary, surface};
 use crate::desk::Desk;
+use crate::desk::INTERFACE_SIZES;
 use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::ui::pressable;
 use crate::ui::tokens::{Paint, Tokens};
@@ -181,10 +182,62 @@ pub(super) fn shortcut(desk: &Desk, title: &'static str, detail: &'static str, t
         .child(recorder)
 }
 
-/// Text size: a stepper on the control outline, its value in `tnum`.
-pub(super) fn stepper(desk: &Desk, t: &Tokens) -> El {
+pub(super) fn text_size(desk: &Desk, t: &Tokens) -> El {
+    stepper(
+        desk,
+        t,
+        Stepper {
+            key: "text",
+            title: "Text size",
+            shown: format!("{:.0} pt", desk.font_size),
+            value: f64::from(desk.font_size),
+            range: (f64::from(MIN_FONT_SIZE), f64::from(MAX_FONT_SIZE)),
+            step: |d, steps| d.zoom(Some(d.font_size + steps as f32)),
+            limit: |d, max| d.zoom(Some(if max { MAX_FONT_SIZE } else { MIN_FONT_SIZE })),
+        },
+    )
+}
+
+pub(super) fn interface_size(desk: &Desk, t: &Tokens) -> El {
+    let sizes = INTERFACE_SIZES;
+    stepper(
+        desk,
+        t,
+        Stepper {
+            key: "interface",
+            title: "Interface size",
+            shown: format!("{}%", desk.interface_size),
+            value: f64::from(desk.interface_size),
+            range: (f64::from(sizes[0]), f64::from(sizes[sizes.len() - 1])),
+            step: Desk::step_interface_size,
+            limit: |d, max| {
+                d.set_interface_size(Some(if max {
+                    INTERFACE_SIZES[7]
+                } else {
+                    INTERFACE_SIZES[0]
+                }))
+            },
+        },
+    )
+}
+
+/// A value with − and + beside it, which VoiceOver steps as one control.
+struct Stepper {
+    /// `{key}-size`, `{key}-smaller` and `{key}-bigger`.
+    key: &'static str,
+    title: &'static str,
+    shown: String,
+    value: f64,
+    range: (f64, f64),
+    step: fn(&mut Desk, i32),
+    limit: fn(&mut Desk, bool),
+}
+
+/// A stepper on the control outline, its value in `tnum`.
+fn stepper(desk: &Desk, t: &Tokens, spec: Stepper) -> El {
     let s = &t.space;
-    let step = |glyph: &'static str, name, key: &'static str, press: fn(&mut Desk)| {
+    let button = |glyph: &'static str, name: String, key: String, by: i32| {
+        let step = spec.step;
         pressable(key, t)
             .size(s.touch_min, s.touch_min)
             .focusable(true)
@@ -192,7 +245,7 @@ pub(super) fn stepper(desk: &Desk, t: &Tokens) -> El {
             .center()
             .border(s.hairline, t.roles.border.control.paint())
             .label(name)
-            .on_press(press)
+            .on_press(move |d: &mut Desk| step(d, by))
             .child(
                 text(glyph)
                     .font(t.ty.lead)
@@ -200,49 +253,50 @@ pub(super) fn stepper(desk: &Desk, t: &Tokens) -> El {
                     .a11y_hidden(),
             )
     };
-    let size = format!("{:.0} pt", desk.font_size);
+    let lower = spec.title.to_lowercase();
+    let (step, limit) = (spec.step, spec.limit);
     row()
-        .key("text-size")
+        .key(format!("{}-size", spec.key))
         .w_full()
         .min_h(s.touch_min)
         .px(s.s4)
         .py(s.s2)
         .gap(s.s1)
         .items_center()
-        .label("Text size")
+        .label(spec.title)
         .focusable(true)
-        .range_value(
-            f64::from(desk.font_size),
-            f64::from(MIN_FONT_SIZE),
-            f64::from(MAX_FONT_SIZE),
-        )
+        .range_value(spec.value, spec.range.0, spec.range.1)
         .range_step(1.0)
-        .a11y_value(size.clone())
-        .on_step(|d: &mut Desk, steps, _| d.zoom(Some(d.font_size + steps as f32)))
-        .on_step_limit(|d: &mut Desk, max, _| {
-            d.zoom(Some(if max { MAX_FONT_SIZE } else { MIN_FONT_SIZE }))
-        })
+        .a11y_value(spec.shown.clone())
+        .on_step(move |d: &mut Desk, steps, _| step(d, steps))
+        .on_step_limit(move |d: &mut Desk, max, _| limit(d, max))
         .child(
-            text("Text size")
+            text(spec.title)
                 .font(super::medium(primary(desk, t)))
                 .color(t.roles.text.text.paint())
                 .grow(1.0)
                 .a11y_hidden(),
         )
-        .child(step("−", "Smaller text", "text-smaller", |d| {
-            d.zoom(Some(d.font_size - 1.0))
-        }))
+        .child(button(
+            "−",
+            format!("Smaller {lower}").replace(" size", ""),
+            format!("{}-smaller", spec.key),
+            -1,
+        ))
         .child(
             el().w(t.icon.button.lg).center().child(
-                text(size)
+                text(spec.shown)
                     .font(t.ty.micro)
                     .color(t.roles.text.text.paint())
                     .a11y_hidden(),
             ),
         )
-        .child(step("+", "Larger text", "text-bigger", |d| {
-            d.zoom(Some(d.font_size + 1.0))
-        }))
+        .child(button(
+            "+",
+            format!("Larger {lower}").replace(" size", ""),
+            format!("{}-bigger", spec.key),
+            1,
+        ))
 }
 
 /// The chosen theme as a terminal shows it: its own ground and ink (terminal

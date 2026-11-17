@@ -58,6 +58,31 @@ pub enum LayoutMutation {
         /// Existing pane to remove.
         target: ResourceId,
     },
+    /// Make `pane` the last tab of the slot showing `to`
+    /// (`docs/organization.md#slot-tabs`).
+    SlotAdd {
+        /// The pane to make a tab, taken from wherever it is.
+        pane: ResourceId,
+        /// Any tab of the slot it joins.
+        to: ResourceId,
+    },
+    /// Give the tab `pane` a leaf of its own, split beside its slot.
+    SlotOut {
+        /// The tab to take out.
+        pane: ResourceId,
+        /// Split axis.
+        dir: SplitDir,
+        /// Fraction left to the slot, in `(0, 1)`.
+        ratio: f32,
+    },
+    /// Move the stored default of `pane`'s slot `delta` places, wrapping:
+    /// what a fresh attach and older clients show.
+    SlotStep {
+        /// Any tab of the slot.
+        pane: ResourceId,
+        /// Places to move; negative moves back.
+        delta: isize,
+    },
 }
 
 /// Why [`apply_mutation`] refused.
@@ -78,6 +103,9 @@ pub enum MutationError {
     /// Closing the final pane would produce an unencodable empty workspace.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,
+    /// A slot tab edit named a pane that is no tab of any slot.
+    #[error("pane is not a tab of a slot: {0:?}")]
+    NotATab(ResourceId),
 }
 
 /// Apply one mutation without doing I/O.
@@ -111,6 +139,17 @@ pub fn apply_mutation(
         } => apply_move(workspace, source, target, *dir, *ratio),
         LayoutMutation::Swap { first, second } => apply_swap(workspace, first, second),
         LayoutMutation::Close { target } => apply_close(workspace, target),
+        LayoutMutation::SlotAdd { pane, to } => workspace.add_tab(pane, to),
+        LayoutMutation::SlotOut { pane, .. } | LayoutMutation::SlotStep { pane, .. }
+            if workspace.slot_of(pane).is_none() =>
+        {
+            Err(MutationError::NotATab(pane.clone()))
+        }
+        LayoutMutation::SlotOut { pane, dir, ratio } => workspace.take_tab(pane, *dir, *ratio),
+        LayoutMutation::SlotStep { pane, delta } => workspace
+            .step_default(pane, *delta)
+            .map(|_| ())
+            .ok_or_else(|| MutationError::NotATab(pane.clone())),
     }
 }
 
@@ -281,6 +320,9 @@ pub fn adopt_unarranged_groups(workspace: &mut ArrangementDoc, fallback: &Arrang
 }
 
 fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize> {
+    if workspace.slot_of(target).is_some() {
+        return workspace.group_of(target);
+    }
     workspace.groups.iter().position(|window| {
         window
             .state
@@ -290,7 +332,11 @@ fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize>
     })
 }
 
-fn swap_leaves(node: &LayoutNode, first: &ResourceId, second: &ResourceId) -> LayoutNode {
+pub(super) fn swap_leaves(
+    node: &LayoutNode,
+    first: &ResourceId,
+    second: &ResourceId,
+) -> LayoutNode {
     match node {
         LayoutNode::Leaf(id) if id == first => LayoutNode::Leaf(second.clone()),
         LayoutNode::Leaf(id) if id == second => LayoutNode::Leaf(first.clone()),

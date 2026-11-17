@@ -243,6 +243,62 @@ fn window_phase() {
     assert!(!runtime.animating, "output doesn't keep the window drawing");
 }
 
+/// A Kitty transmit-and-place of a 128x128 image whose colour `index` picks,
+/// as image 1 placement 1 over 40x20 cells at the top left: each call
+/// replaces the last, as an animating program does.
+fn kitty_frame(index: u64) -> String {
+    const SIDE: usize = 128;
+    let shade = (index % 256) as u8;
+    let rgba: Vec<u8> = [shade, 255 - shade, 128, 255].repeat(SIDE * SIDE);
+    format!(
+        "\x1b[1;1H\x1b_Ga=T,f=32,s={SIDE},v={SIDE},i=1,p=1,c=40,r=20,C=1,q=2;{}\x1b\\",
+        base64(&rgba)
+    )
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+/// A still image is uploaded once however often the pane redraws; a looping
+/// animation once per new frame. `tick_us` is the pacing record.
+fn image_phases() {
+    const FRAMES: u64 = 120;
+    let (mut replica, mut runtime) = fixture(80, 24, 1);
+    replica.feed(kitty_frame(0));
+    draw(&mut runtime);
+    let uploads = || perf::IMAGE_UPLOADS.get();
+    let before = uploads();
+    let still = phase("image_still", FRAMES, |index| {
+        let letter = if index % 2 == 0 { 'X' } else { 'Y' };
+        replica.feed(format!("\x1b[24;1H{letter}"));
+        draw(&mut runtime);
+    });
+    assert_eq!(still.patched, FRAMES, "image_still redraws the pane");
+    assert_eq!(uploads() - before, 0, "image_still uploads nothing again");
+    let before = uploads();
+    phase("image_animation", FRAMES, |index| {
+        replica.feed(kitty_frame(index + 1));
+        draw(&mut runtime);
+    });
+    assert_eq!(uploads() - before, FRAMES, "one upload per animation frame");
+}
+
 /// Set in the child that does the measuring.
 const ALONE: &str = "RUNE_BUDGET_ALONE";
 
@@ -304,6 +360,7 @@ fn perf_budget() {
         wide_phases();
         split_phase();
         window_phase();
+        image_phases();
         return;
     }
     let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
@@ -320,7 +377,10 @@ fn perf_budget() {
         String::from_utf8_lossy(&output.stderr)
     );
     // A renamed module would match no test and pass with nothing measured.
-    assert!(stdout.contains("window_stream"), "no budget ran: {stdout}");
+    assert!(
+        stdout.contains("image_animation"),
+        "no budget ran: {stdout}"
+    );
     for line in stdout.lines().filter(|line| line.starts_with('{')) {
         println!("{line}");
     }

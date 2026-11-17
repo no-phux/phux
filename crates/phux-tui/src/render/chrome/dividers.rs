@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use phux_protocol::ResourceId;
 use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect as RataRect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 
 use crate::attach::multi_pane::PaneLayout;
 use crate::layout::Rect;
@@ -42,6 +42,9 @@ const CELL_BYTES: usize = 16;
 pub struct PaneLabel<'a> {
     /// The pane's display name — its OSC-2 title in practice.
     pub text: &'a str,
+    /// The pane's place among its slot's tabs, `(position, count)` from 1,
+    /// drawn as `2/3` ahead of the title.
+    pub slot_tab: Option<(usize, usize)>,
     /// The pane's declared agent lifecycle state, when it runs an agent
     /// (ADR-0040). `None` for an ordinary shell pane.
     pub agent: Option<AgentMetaState>,
@@ -98,136 +101,10 @@ impl PaneLabel<'_> {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Cell buffer
-// -----------------------------------------------------------------------------
-
-/// One cell's grapheme, stored inline so composing a frame allocates nothing
-/// per cell.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Sym {
-    buf: [u8; CELL_BYTES],
-    len: u8,
-}
-
-impl Sym {
-    /// A positioned cell that paints nothing: the trailing half of a wide
-    /// glyph. The emitter skips it and breaks its run, so the next cell
-    /// re-anchors with its own CUP.
-    const EMPTY: Self = Self {
-        buf: [0; CELL_BYTES],
-        len: 0,
-    };
-
-    /// Store `s`, truncated to whole UTF-8 characters that fit.
-    fn new(s: &str) -> Self {
-        let mut out = Self::EMPTY;
-        for ch in s.chars() {
-            out.push(ch);
-        }
-        out
-    }
-
-    /// Append `ch` if the remaining room holds it; otherwise drop it.
-    fn push(&mut self, ch: char) {
-        let len = usize::from(self.len);
-        let room = CELL_BYTES - len;
-        if ch.len_utf8() > room {
-            return;
-        }
-        let written = ch.encode_utf8(&mut self.buf[len..]).len();
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "len + written <= CELL_BYTES = 16, which fits u8"
-        )]
-        {
-            self.len = (len + written) as u8;
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        // Every push wrote whole chars, so this cannot fail; a failure would
-        // degrade to an unpainted cell.
-        std::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-/// One painted chrome cell.
-#[derive(Clone, Copy)]
-struct ChromeCell {
-    x: u16,
-    y: u16,
-    sym: Sym,
-    style: Style,
-}
-
-/// The chrome cells of one frame in paint order: a few hundred cells, not a
-/// viewport-sized buffer, so a title change is not an O(viewport) event.
-#[derive(Default)]
-struct ChromeCells {
-    cells: Vec<ChromeCell>,
-}
-
-impl ChromeCells {
-    fn clear(&mut self) {
-        self.cells.clear();
-    }
-
-    /// Lay `fill` under every chrome cell: [`Theme::ground_fill`], the
-    /// surface when the terminal's background is unknown, so no rule or
-    /// title ink sits on a ground it was not solved against.
-    fn fill_ground(&mut self, fill: Color) {
-        if fill == Color::Reset {
-            return;
-        }
-        for cell in &mut self.cells {
-            cell.style = cell.style.bg(fill);
-        }
-    }
-
-    /// Record one cell. A later write to the same coordinate wins, which
-    /// is what lets a title overwrite the rule the rail laid down first.
-    fn put(&mut self, x: u16, y: u16, sym: Sym, style: Style) {
-        self.cells.push(ChromeCell { x, y, sym, style });
-    }
-
-    fn put_str(&mut self, x: u16, y: u16, symbol: &str, style: Style) {
-        self.put(x, y, Sym::new(symbol), style);
-    }
-
-    /// Sort for emission and drop duplicates (last write wins) and anything
-    /// inside a pane interior: the skip-cell carve-out, applied once here.
-    fn finalize(&mut self, layout: &PaneLayout) {
-        let (cols, rows) = layout.viewport;
-        self.cells
-            .retain(|c| c.x < cols && c.y < rows && !in_any_pane(layout, c.x, c.y));
-        // Stable, so the insertion order of equal coordinates survives
-        // and "last write wins" is well defined.
-        self.cells.sort_by_key(|c| (c.y, c.x));
-        let mut kept: usize = 0;
-        for i in 0..self.cells.len() {
-            let last_of_run = i + 1 == self.cells.len()
-                || (self.cells[i + 1].y, self.cells[i + 1].x) != (self.cells[i].y, self.cells[i].x);
-            if last_of_run {
-                self.cells[kept] = self.cells[i];
-                kept += 1;
-            }
-        }
-        self.cells.truncate(kept);
-    }
-}
-
-/// `true` when `(x, y)` sits inside any pane's interior rectangle.
-fn in_any_pane(layout: &PaneLayout, x: u16, y: u16) -> bool {
-    layout
-        .rects
-        .values()
-        .any(|r| x >= r.x && y >= r.y && x < r.x.saturating_add(r.w) && y < r.y.saturating_add(r.h))
-}
+mod cells;
+mod emit;
+use cells::{ChromeCells, Sym};
+use emit::emit_cells;
 
 thread_local! {
     /// Scratch cells reused across frames (single-threaded, never
@@ -467,9 +344,10 @@ fn draw_one_title(
 ) {
     let text = label.text.trim();
     let host = label.host.map(str::trim).filter(|host| !host.is_empty());
+    let tab = label.slot_tab.map(|(at, of)| format!("{at}/{of}"));
     let mut origin = label.origin.filter(|origin| !origin.text.trim().is_empty());
     let scroll = draw_scroll_mark(cells, rect, y, label.scrolled_back, theme, focused);
-    if text.is_empty() && host.is_none() && origin.is_none() {
+    if text.is_empty() && host.is_none() && origin.is_none() && tab.is_none() {
         return;
     }
     let badge = label.badge(theme);
@@ -480,10 +358,11 @@ fn draw_one_title(
     let badge_cells = badge.map_or(0, |b| text_columns(b.glyph) + 1);
     // Host badge plus the space that separates it from the title.
     let host_cells = host.map_or(0, |host| text_columns(host) + 1);
-    if budget <= badge_cells + host_cells {
+    let tab_cells = tab.as_deref().map_or(0, |tab| text_columns(tab) + 1);
+    if budget <= badge_cells + host_cells + tab_cells {
         return;
     }
-    budget -= badge_cells + host_cells;
+    budget -= badge_cells + host_cells + tab_cells;
     // `[origin]` plus the space before the title. Drop it when it will not fit.
     if let Some(mark) = origin {
         let need = text_columns(mark.text.trim()) + 3;
@@ -517,6 +396,10 @@ fn draw_one_title(
             style = style.add_modifier(Modifier::BOLD);
         }
         x = put_measured(cells, x, y, b.glyph, style);
+        x = put_measured(cells, x, y, " ", pad);
+    }
+    if let Some(tab) = tab.as_deref() {
+        x = put_measured(cells, x, y, tab, Style::default().fg(theme.dim));
         x = put_measured(cells, x, y, " ", pad);
     }
     if let Some(host) = host {
@@ -653,62 +536,6 @@ fn put_clipped(
         cur = put_measured(cells, cur, y, ELLIPSIS.encode_utf8(&mut [0u8; 4]), style);
     }
     cur
-}
-
-// -----------------------------------------------------------------------------
-// Emission
-// -----------------------------------------------------------------------------
-
-/// Emit `cells` as positioned VT: consecutive same-style cells in a row are
-/// one CUP + SGR run; a gap, style change, or empty symbol re-anchors.
-fn emit_cells<W: Write>(out: &mut W, cells: &[ChromeCell]) -> io::Result<()> {
-    out.write_all(b"\x1b[0m")?;
-    let mut style: Option<Style> = None;
-    // The column the current run would continue at; `None` = no open run.
-    let mut run: Option<(u16, u16)> = None;
-    for cell in cells {
-        if cell.sym.is_empty() {
-            run = None;
-            continue;
-        }
-        if style != Some(cell.style) {
-            write_style(out, cell.style)?;
-            style = Some(cell.style);
-            run = None;
-        }
-        if run != Some((cell.y, cell.x)) {
-            // CUP is 1-based.
-            write!(
-                out,
-                "\x1b[{};{}H",
-                cell.y.saturating_add(1),
-                cell.x.saturating_add(1)
-            )?;
-        }
-        out.write_all(cell.sym.as_str().as_bytes())?;
-        run = Some((cell.y, cell.x.saturating_add(1)));
-    }
-    // Trailing reset so the next layer (status bar, focused pane render)
-    // doesn't inherit any chrome SGR.
-    out.write_all(b"\x1b[0m")?;
-    out.flush()
-}
-
-/// Emit the SGR for one chrome cell: a full reset, then bold, then the
-/// foreground and any ground fill. The reset is what makes a run boundary
-/// cheap to reason about — no attribute can survive from the previous run.
-fn write_style<W: Write>(out: &mut W, style: Style) -> io::Result<()> {
-    out.write_all(b"\x1b[0m")?;
-    if style.add_modifier.contains(Modifier::BOLD) {
-        out.write_all(b"\x1b[1m")?;
-    }
-    if let Some(color) = style.fg {
-        crate::render::sgr::write_sgr_color(out, color, true)?;
-    }
-    match style.bg {
-        None | Some(Color::Reset) => Ok(()),
-        Some(color) => crate::render::sgr::write_sgr_color(out, color, false),
-    }
 }
 
 // -----------------------------------------------------------------------------

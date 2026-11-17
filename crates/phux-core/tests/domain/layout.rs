@@ -126,13 +126,13 @@ fn satellite_entries_skip_membership_but_member_entries_are_checked() {
 
     let member = ResourceKey::from_bytes([7; 16]);
     let stranger = ResourceKey::from_bytes([8; 16]);
-    let satellite = EntryRef {
-        entry: [2; 16],
-        target: EntryTarget::Satellite {
+    let satellite = EntryRef::new(
+        [2; 16],
+        EntryTarget::Satellite {
             host: "mini".to_owned(),
             id: 4,
         },
-    };
+    );
     let group = |right: EntryRef| Group {
         locked: false,
         id: [9; 16],

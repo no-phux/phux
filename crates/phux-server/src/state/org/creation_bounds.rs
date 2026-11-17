@@ -117,6 +117,7 @@ fn sqlite_reopens_every_accepted_near_limit_arrangement_and_receipt() {
         owner: phux_core::ArrangementOwner::Session(session),
         expected: arrangement.revision,
         groups: arrangement.groups,
+        slot_tabs: false,
     });
     if replace.is_err() {
         assert_eq!(state.org(), &before);

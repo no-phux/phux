@@ -52,6 +52,7 @@ Panes:
   swap-pane     Swap two panes in a layout
   terminal      Create and place terminals; inspect API and receipts
   resource      Inspect a resource or wait for its process to exit
+  slot          Keep several panes in one layout slot, as tabs
 
 Agents:
   agent         See and drive the agents running in panes
@@ -2819,16 +2820,31 @@ server is a normal state and not a broken install.
 
 It ends with "What works here": agent status, notifications, remote reach, file
 transfer, restore after restart and the agent skill, each with the reason and
-the fix. `--json` carries it as `checklist`.
+the fix. `--json` carries it as `checklist`. `--remote HOST` asks that machine's
+server for its list instead.
 
-Usage: phux doctor [--json]
+Usage: phux doctor [--json] [--remote <[USER@]HOST[:PORT]>]
 
 Flags:
-      --json           Emit a stable JSON document instead of human text.
-  -h, --help           Print help
+      --json                      Emit a stable JSON document instead of human
+                                  text.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (except `upload`, `download`,
+                                  and calls with `--json`: these never pair
+                                  and refuse unregistered hosts, naming
+                                  remedies). PORT defaults to 8788. Cannot
+                                  combine with `--socket`.
+  -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux download`
@@ -6821,6 +6837,115 @@ Flags:
                        directory's.
       --json           Print the per-agent result as JSON
                        (`phux.skill-setup/v1`).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot`
+
+```text
+Keep several panes in one layout slot, as tabs
+
+A slot shows one of its tabs and keeps the others running at its size, so
+switching never reflows. Attached clients switch what they show with their own
+keys; `next` and `prev` here move the slot's default, what a fresh attach and
+older clients show.
+
+Usage: phux slot <SUBCOMMAND>
+
+Commands:
+  add   Make PANE the last tab of the slot showing TO.
+  next  Make the next tab the slot's default.
+  out   Give the tab PANE a slot of its own, split beside the one it left.
+  prev  Make the previous tab the slot's default.
+  help  Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot add`
+
+```text
+Make PANE the last tab of the slot showing TO.
+
+PANE leaves wherever it was: its own split collapses, or it leaves another slot.
+
+Usage: phux slot add <--to <PANE>> [--json] <PANE>
+
+Arguments:
+  <PANE>  The pane to make a tab.
+
+Flags:
+      --to <PANE>      Any tab of the slot it joins.
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot next`
+
+```text
+Make the next tab the slot's default.
+
+Usage: phux slot next [--json] [PANE]
+
+Arguments:
+  [PANE]  Any tab of the slot; `.` for the focused pane.
+          (default: .)
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot out`
+
+```text
+Give the tab PANE a slot of its own, split beside the one it left.
+
+Usage: phux slot out [FLAGS] <PANE>
+
+Arguments:
+  <PANE>  The tab to take out.
+
+Flags:
+      --split <SPLIT>  Split axis: `horizontal` stacks the panes, `vertical`
+                       places them side by side.
+                       [possible values: horizontal, h, vertical, v]
+                       (default: vertical)
+      --ratio <RATIO>  Fraction left to the slot; strictly between 0 and 1.
+                       (default: 0.5)
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux slot prev`
+
+```text
+Make the previous tab the slot's default.
+
+Usage: phux slot prev [--json] [PANE]
+
+Arguments:
+  [PANE]  Any tab of the slot; `.` for the focused pane.
+          (default: .)
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 
 Global flags:

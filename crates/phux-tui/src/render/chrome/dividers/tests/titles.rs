@@ -257,3 +257,21 @@ fn a_zero_height_leaf_is_not_labelled() {
         .count();
     assert_eq!(titles, 1);
 }
+
+/// A pane among a slot's tabs shows its place, `2/3`, ahead of its title.
+#[test]
+fn a_slot_tab_shows_its_place_ahead_of_the_title() {
+    let content = railed(80, 24);
+    let layout = split_layout(content);
+    let s = render_label(
+        &layout,
+        content,
+        Some(PaneLabel {
+            slot_tab: Some((2, 3)),
+            ..label("editor")
+        }),
+    );
+    let tab = s.find("2/3").expect("the tab place");
+    assert!(tab < s.find("editor").expect("the title"), "{s:?}");
+    assert!(!render_label(&layout, content, Some(label("editor"))).contains("2/3"));
+}

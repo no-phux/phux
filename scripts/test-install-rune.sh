@@ -56,6 +56,11 @@ pack() {
   mkdir -p "$dir"
   printf '#!/bin/sh\n# %s\necho "phux-rune %s"\n' "$marker" "$reported" > "$dir/phux-rune"
   chmod 755 "$dir/phux-rune"
+  printf '#!/bin/sh\necho "tmd 0.2.0"\n' > "$dir/tmd"
+  chmod 755 "$dir/tmd"
+  printf 'tmd license\n' > "$dir/tmd-LICENSE.txt"
+  printf 'tmd notices\n' > "$dir/tmd-THIRD-PARTY-NOTICES.md"
+  printf 'tmd 0.2.0\n' > "$dir/tmd-VERSION.txt"
   printf '%s\n' "$VERSION" > "$dir/phux-rune.release"
   printf 'license\n' > "$dir/LICENSE"
   printf 'notice\n' > "$dir/NOTICE"
@@ -121,9 +126,11 @@ grep -Fxq "sha256: $(printf 'd%.0s' {1..64})" <<<"$out" || fail "arm64 Linux dig
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 bundle="$XDG_DATA_HOME/phux-rune"
 grep -q first "$bundle/phux-rune" || fail "binary not installed"
-for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt; do
+for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt \
+  tmd tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
+[[ "$("$bundle/tmd" --version)" == "tmd 0.2.0" ]] || fail "bundled viewer does not run"
 # One plain line; the SHA-256-only check is a detail for --verbose.
 [[ ! -s $TMP/err ]] || fail "a default install said more: $(cat "$TMP/err")"
 grep -Fxq 'Phux Rune is installed. Open Phux Rune from your apps (or run `phux-rune`).' "$TMP/out" \

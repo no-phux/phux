@@ -39,6 +39,8 @@ pub static PREPARE_PATCHED: Counter = Counter::new();
 pub static ROWS_BUILT: Counter = Counter::new();
 /// Text elements built: Rune shapes each one it has not seen.
 pub static SHAPED: Counter = Counter::new();
+/// Kitty image contents handed to the GPU: one per image change, not per frame.
+pub static IMAGE_UPLOADS: Counter = Counter::new();
 
 /// The table, in render order.
 pub static TABLE: &[Metric] = &[
@@ -50,6 +52,7 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("rune.prepare_patched", Unit::Count, &PREPARE_PATCHED),
     Metric::counter("rune.rows_built", Unit::Count, &ROWS_BUILT),
     Metric::counter("rune.shaped", Unit::Count, &SHAPED),
+    Metric::counter("rune.image_uploads", Unit::Count, &IMAGE_UPLOADS),
 ];
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);

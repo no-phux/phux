@@ -2,6 +2,8 @@ use super::*;
 
 use std::collections::HashMap;
 
+use ratatui::style::Color;
+
 use crate::attach::multi_pane::{DividerCell, compute_layout_in};
 use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
 use crate::render::chrome::agent_badge;
@@ -45,6 +47,7 @@ fn label(text: &'static str) -> PaneLabel<'static> {
         origin: None,
         scrolled_back: None,
         exit: None,
+        slot_tab: None,
     }
 }
 
