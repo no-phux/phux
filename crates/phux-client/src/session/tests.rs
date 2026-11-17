@@ -145,3 +145,46 @@ async fn create_rides_session_create_with_the_seed_launch() {
         "the create is not the legacy metadata write"
     );
 }
+
+/// A seed whose command did not start reads as failed, with the server's
+/// reason, instead of a created session.
+#[tokio::test]
+async fn a_seed_that_did_not_start_is_reported_with_its_reason() {
+    use phux_protocol::api::{LaunchDiagnostic, LaunchStage};
+    let missing = LaunchDiagnostic {
+        stage: LaunchStage::Exec,
+        errno: Some(2),
+    };
+    let fixture = crate::testkit::OrgFixture::new().launches_fail(missing);
+    let (socket, _dir, _server) = scripted(org_spec(fixture));
+    let mut conn = Connection::connect(&socket).await.expect("connect");
+    let env = BTreeMap::new();
+    let command = ["no-such-command".to_owned()];
+    let mut request = work_request(&env);
+    request.command = Some(&command);
+    let outcome = create_session(&mut conn, &request, &mut Vec::new())
+        .await
+        .expect("answered");
+    let CreateOutcome::LaunchFailed { diagnostic, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(diagnostic, Some(missing));
+    assert_eq!(
+        launch_failure_reason(diagnostic.as_ref()),
+        "command not found"
+    );
+}
+
+#[test]
+fn launch_failure_reasons_name_the_stage() {
+    use phux_protocol::api::{LaunchDiagnostic, LaunchStage};
+    let reason = |stage, errno| launch_failure_reason(Some(&LaunchDiagnostic { stage, errno }));
+    assert_eq!(reason(LaunchStage::Exec, Some(2)), "command not found");
+    assert!(reason(LaunchStage::Exec, Some(13)).starts_with("it could not be run: "));
+    assert!(reason(LaunchStage::Cwd, Some(2)).starts_with("its working directory is unusable: "));
+    assert_eq!(
+        reason(LaunchStage::Handshake, None),
+        "its launch failed at Handshake"
+    );
+    assert_eq!(launch_failure_reason(None), "it did not start");
+}

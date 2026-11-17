@@ -69,6 +69,7 @@ pub struct OrgFixture {
     page_size: Option<usize>,
     refusals: VecDeque<(&'static str, Refusal)>,
     terminate_holds: bool,
+    failing_launch: Option<phux_protocol::api::LaunchDiagnostic>,
 }
 
 impl Default for OrgFixture {
@@ -95,6 +96,7 @@ impl OrgFixture {
             page_size: None,
             refusals: VecDeque::new(),
             terminate_holds: false,
+            failing_launch: None,
         }
     }
 
@@ -132,6 +134,14 @@ impl OrgFixture {
     #[must_use]
     pub const fn terminate_holds(mut self) -> Self {
         self.terminate_holds = true;
+        self
+    }
+
+    /// A seed launch fails as the server records it before answering the
+    /// create: the activation `Failed`, carrying `diagnostic`.
+    #[must_use]
+    pub const fn launches_fail(mut self, diagnostic: phux_protocol::api::LaunchDiagnostic) -> Self {
+        self.failing_launch = Some(diagnostic);
         self
     }
 

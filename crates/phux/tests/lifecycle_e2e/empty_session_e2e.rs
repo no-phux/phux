@@ -113,30 +113,44 @@ fn new_json_for_a_taken_name_is_a_json_error() {
 }
 
 /// A seed pane that ends before its layout is stored (a command that exits
-/// at once, or one that never executes) still makes `phux new --json`
-/// answer success with the terminal id (#2403). The race is timing
-/// dependent, so it is run many times.
+/// at once) still makes `phux new --json` answer success with the terminal
+/// id (#2403). One that never executes (not on PATH) answers
+/// `spawn_failed` with the reason instead of success or a layout error. The
+/// race is timing dependent, so it is run many times.
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
-fn new_json_with_a_seed_that_ends_at_once_succeeds() {
+fn new_json_answers_a_brief_seed_and_names_a_missing_one() {
     let (dir, socket, server) = parked_server("parked");
 
     for i in 0..40 {
         let name = format!("brief{i}");
-        let seed = if i % 2 == 0 {
-            "true"
-        } else {
-            "/nonexistent/phux-seed"
-        };
+        if i % 2 == 0 {
+            let out = common::backstopped(&socket, &["new", "--json", "-s", &name, "--", "true"]);
+            assert!(
+                out.success(),
+                "{name} must be created.\nstderr: {}",
+                out.stderr
+            );
+            let doc: serde_json::Value = serde_json::from_str(&out.stdout).expect("new json");
+            assert_eq!(doc["session"], name.as_str(), "{doc}");
+            assert!(doc["terminal_id"].is_u64(), "{doc}");
+            continue;
+        }
+        let seed = "/nonexistent/phux-seed";
         let out = common::backstopped(&socket, &["new", "--json", "-s", &name, "--", seed]);
         assert!(
-            out.success(),
-            "{name} ({seed}) must be created.\nstderr: {}",
-            out.stderr
+            !out.success(),
+            "{name} ({seed}) must fail.\nstdout: {}",
+            out.stdout
         );
-        let doc: serde_json::Value = serde_json::from_str(&out.stdout).expect("new json");
-        assert_eq!(doc["session"], name.as_str(), "{doc}");
-        assert!(doc["terminal_id"].is_u64(), "{doc}");
+        let doc: serde_json::Value = serde_json::from_str(&out.stderr).expect("error json");
+        assert_eq!(doc["error"]["code"], "spawn_failed", "{doc}");
+        assert!(
+            doc["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("command not found")),
+            "{doc}"
+        );
     }
 
     drop(server);
