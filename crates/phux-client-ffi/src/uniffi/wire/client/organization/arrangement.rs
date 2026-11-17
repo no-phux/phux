@@ -17,8 +17,14 @@
 //! `invalid_session_key`, `arrangement_not_held` (call `fetch_arrangement`),
 //! `stale_arrangement`, `invalid_terminal_id`, `invalid_group_id`,
 //! `invalid_node`, `invalid_ratio`, `invalid_group_index`, `foreign_target`,
-//! `duplicate_pane`, `same_pane`, `last_pane`, `unkeyed_pane`, and the
-//! submission words of the organization surface.
+//! `duplicate_pane`, `same_pane`, `last_pane`, `not_a_tab`,
+//! `slot_tabs_unsupported`, `unkeyed_pane`, and the submission words of the
+//! organization surface.
+//!
+//! A leaf can be a slot with several tabs (docs/organization.md#slot-tabs):
+//! the leaf names the slot's stored default, and [`SlotDescriptor`] lists
+//! every tab. Which tab a phone shows is its own business, like focus; the
+//! slot edits change what is stored.
 
 use phux_client_core::layout::{
     ArrangementDoc, LayoutError, LayoutMutation, LayoutNode, MutationError, SplitDir,
@@ -89,6 +95,16 @@ pub struct ArrangementGroupDescriptor {
     pub nodes: Vec<ArrangementNodeDescriptor>,
 }
 
+/// One leaf holding several terminals as tabs, one shown at a time.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SlotDescriptor {
+    /// The tabs' `terminal_id`s in strip order, the leaf's among them.
+    pub tabs: Vec<String>,
+    /// Index in `tabs` of the stored default: the one the leaf names, and
+    /// what a fresh attach shows.
+    pub default_tab: u32,
+}
+
 /// A session's arrangement at one revision.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct ArrangementDescriptor {
@@ -100,6 +116,8 @@ pub struct ArrangementDescriptor {
     /// Arranged entries that do not execute here, kept on write-back but not
     /// shown.
     pub unplaced: u32,
+    /// The leaves that hold more than one tab.
+    pub slots: Vec<SlotDescriptor>,
 }
 
 /// One edit of a session's arrangement. Panes are named by `terminal_id`.
@@ -133,6 +151,27 @@ pub enum ArrangementEdit {
     Close { target: String },
     /// Move the group at index `from` to index `to`.
     MoveGroup { from: u32, to: u32 },
+    /// Make `pane` the last tab of the slot holding `to`, taking it from
+    /// wherever it is.
+    SlotAdd { pane: String, to: String },
+    /// Give the tab `pane` a leaf of its own, split beside its slot;
+    /// `ratio` is the slot's share.
+    SlotOut {
+        pane: String,
+        dir: WireSplitDir,
+        ratio: f32,
+    },
+    /// Move the stored default of `pane`'s slot `delta` places, wrapping.
+    SlotStep { pane: String, delta: i32 },
+}
+
+impl ArrangementEdit {
+    fn is_slot_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::SlotAdd { .. } | Self::SlotOut { .. } | Self::SlotStep { .. }
+        )
+    }
 }
 
 fn reason(word: &str) -> WireError {
@@ -190,6 +229,18 @@ fn describe(document: &ArrangementDoc) -> Vec<ArrangementGroupDescriptor> {
                 name: group.name.clone(),
                 nodes,
             }
+        })
+        .collect()
+}
+
+/// The document's slots, by `terminal_id`.
+fn describe_slots(document: &ArrangementDoc) -> Vec<SlotDescriptor> {
+    document
+        .slots
+        .iter()
+        .map(|slot| SlotDescriptor {
+            tabs: slot.strip.iter().map(id::encode).collect(),
+            default_tab: index(slot.default),
         })
         .collect()
 }
@@ -320,6 +371,23 @@ fn apply_edit(document: &mut ArrangementDoc, edit: &ArrangementEdit) -> Result<(
         ArrangementEdit::Close { target } => LayoutMutation::Close {
             target: pane(target)?,
         },
+        ArrangementEdit::SlotAdd { pane: tab, to } => LayoutMutation::SlotAdd {
+            pane: pane(tab)?,
+            to: pane(to)?,
+        },
+        ArrangementEdit::SlotOut {
+            pane: tab,
+            dir,
+            ratio,
+        } => LayoutMutation::SlotOut {
+            pane: pane(tab)?,
+            dir: (*dir).into(),
+            ratio: valid_ratio(*ratio)?,
+        },
+        ArrangementEdit::SlotStep { pane: tab, delta } => LayoutMutation::SlotStep {
+            pane: pane(tab)?,
+            delta: isize::try_from(*delta).unwrap_or_default(),
+        },
     };
     apply_mutation(document, &mutation).map_err(mutation_error)
 }
@@ -365,6 +433,7 @@ impl RemoteClient {
                 revision: revision.get(),
                 groups: describe(&document),
                 unplaced: index(binding.unplaced_count()),
+                slots: describe_slots(&document),
             }))
     }
 
@@ -390,11 +459,21 @@ impl RemoteClient {
         if revision.get() != expected_revision {
             return Err(reason("stale_arrangement"));
         }
+        // An older server would keep its own tabs and lose this one.
+        if edit.is_slot_edit() && !client.slot_tabs_supported() {
+            return Err(reason("slot_tabs_unsupported"));
+        }
         apply_edit(&mut document, &edit)?;
         client
             .replace_arrangement(key, &document)
             .map(|operation| operation_text(&operation))
             .map_err(submit_error)
+    }
+
+    /// Whether the server keeps slot tabs, so the slot edits are offered.
+    pub fn slot_tabs_supported(&self) -> bool {
+        self.runtime_client()
+            .is_some_and(|client| client.slot_tabs_supported())
     }
 
     /// Subscribe to a pane without voting on its size, so it can be shown
