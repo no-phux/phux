@@ -61,15 +61,16 @@ and gets the server's view, which is what `phux snapshot` does.
 ## Crates
 
 All under `crates/`. Every crate is `publish = false` except
-`phux-protocol`. Rows describe responsibilities, not a dependency ordering;
-Cargo manifests define the actual edges.
+`phux-protocol`. Rows are responsibilities; Cargo manifests define the
+dependency edges.
 
 | Crate | Role |
 | --- | --- |
-| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty |
+| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog (also the authorization classifier); pure Rust, no libghostty |
 | `phux-vt` | libghostty glue for native crates |
 | `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
 | `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
+| `phux-design` | [design tokens](./design-language.md) |
 | `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
 | `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and the branch's pull request; behind the server's `CHECKOUT` methods |
 | `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
@@ -102,7 +103,7 @@ Cargo manifests define the actual edges.
 `phux-core` and `phux-protocol` do not depend on each other; the server
 bridges their id spaces through [IdBridge](../crates/phux-server/src/id_bridge.rs):
 core generational keys are not wire ids; wire ids are monotonically allocated
-and retired, not recycled within an incarnation. Where both are in scope, import the protocol type
+and retired, not recycled within an incarnation. Where both are in scope, alias the protocol type
 with a `Wire` prefix (`use phux_protocol::ids::ResourceId as WireResourceId`).
 
 Outside the root workspace: `clients/rune` (Phux Rune, the desktop client,
@@ -125,9 +126,8 @@ that takes wire frames in and produces effects (paint this, send that),
 with no I/O of its own. `phux-client-runtime` wraps it with the async
 parts: dialing, reconnecting, the engine thread that owns libghostty
 replicas, and one publication table for terminal grids and whole
-documents. The TUI, the desktop app, and the FFI bindings all sit on the
-runtime; the browser client sits on the core alone and does its own I/O in
-the page.
+documents. The TUI, the desktop app, and the FFI bindings sit on the
+runtime; the browser client sits on the core alone, doing its own I/O.
 
 The TUI paints pane interiors from libghostty through a cell-diffed front
 buffer and paints chrome with ratatui in disjoint regions. Phux Rune paints the
@@ -162,7 +162,7 @@ either has space held for it or floats over the content:
   layout adoption seeds display preferences; navigation restores destination
   tabs/splits without replacing the current window's display preferences.
 
-Regression tests assert bounds are identical across the interaction.
+Regression tests assert identical bounds across the interaction.
 
 ## Frames, wakes, and input
 

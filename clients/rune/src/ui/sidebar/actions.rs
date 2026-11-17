@@ -3,11 +3,11 @@
 use phux_protocol::ids::SessionKey;
 use rune::{El, el};
 
-use super::super::{Ink, icon_press, icons};
+use super::super::{Tokens, icon_press, icons};
 
 /// A fixed close slot for local sessions. Satellites have no supported
 /// session mutation on this connection, so expose no misleading button.
-pub(super) fn session_controls(key: Option<SessionKey>, name: &str, ink: &Ink) -> El {
+pub(super) fn session_controls(key: Option<SessionKey>, name: &str, t: &Tokens) -> El {
     let Some(key) = key else { return el() };
     let label = format!("Close session {name}");
     // Its own press handler owns the hit, including pointer moves: Rune
@@ -16,11 +16,15 @@ pub(super) fn session_controls(key: Option<SessionKey>, name: &str, ink: &Ink) -
         &icons::CLOSE,
         "Close session",
         format!("session-close-{key}"),
-        ink,
+        t,
         move |d| d.close_session_key(key),
     )
-    .size(22.0, 22.0)
-    .radius(5.0)
+    .size(t.space.pointer_min, t.space.pointer_min)
+    .radius(t.radius.sm)
+    // Pointer only: the list's arrows press what they reach, so a Tab stop
+    // here would ask to end the session as focus passed. The palette and
+    // the session's menu close it from the keyboard.
+    .focusable(false)
     .label(label.clone())
     .help(label)
 }
@@ -39,14 +43,15 @@ mod tests {
     }
 
     fn header(_: &Desk, _: &mut Cx<Desk>) -> El {
-        let ink = crate::ui::ink(true, rune::oklch(0.6, 0.15, 250.0), None);
+        let ink = crate::ui::tokens_for(true, None);
+        let t: &Tokens = ink.as_ref();
         let header = row()
-            .size(200.0, 30.0)
+            .size(t.space.sidebar_w, t.space.row_h)
             .items_center()
             .on_press(|d: &mut Desk| d.show_session("empty"))
             .on_double_press(|d: &mut Desk| d.rename_session(key(), "empty"))
-            .child(session_controls(Some(key()), "cached label", &ink));
-        super::super::drag::reorderable(header, Some(key()), false, &ink)
+            .child(session_controls(Some(key()), "cached label", t));
+        super::super::drag::reorderable(header, Some(key()), false, t)
     }
 
     #[test]
@@ -76,7 +81,8 @@ mod tests {
         let button = format!("session-close-{}", key());
         let (x, y) = rt.find(&button).expect("an always-visible close control");
         let rect = rt.presented(&button).unwrap().0;
-        assert_eq!((rect[2], rect[3]), (22.0, 22.0));
+        let side = phux_design::tokens::SPACE.pointer_min;
+        assert_eq!((rect[2], rect[3]), (side, side), "a pointer target");
         let _ = client.take_outbound();
 
         rt.pointer_down(x, y);
@@ -125,8 +131,8 @@ mod tests {
     #[test]
     fn a_satellite_exposes_no_close_button() {
         fn satellite(_: &Desk, _: &mut Cx<Desk>) -> El {
-            let ink = crate::ui::ink(true, rune::oklch(0.6, 0.15, 250.0), None);
-            session_controls(None, "satellite", &ink)
+            let ink = crate::ui::tokens_for(true, None);
+            session_controls(None, "satellite", ink.as_ref())
         }
         let desk = crate::test_support::window();
         let mut rt = Runtime::new(desk, satellite, (80.0, 30.0), Env::new(true, 1.0));

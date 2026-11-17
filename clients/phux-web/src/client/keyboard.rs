@@ -261,6 +261,7 @@ pub(super) fn send_input(
     let sent = send_events(app, events);
     let app = app.borrow();
     if sent {
+        app.acknowledge_input();
         app.clear_selection();
         if app.session.scroll_to_bottom() {
             app.request_paint();

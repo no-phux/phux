@@ -138,9 +138,7 @@ impl Desk {
                 let _ = engine.release_view_anchor(mode.view, anchor);
             }
         }
-        if self.notice.as_ref().is_some_and(|n| n.text == HINT) {
-            self.notice = None;
-        }
+        self.dismiss_notices(|n| n.text == HINT);
         self.generation += 1;
     }
 

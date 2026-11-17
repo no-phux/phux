@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The hive: the fleet as beehives, each machine a comb frame with its
 //! stamped plaque, every agent it can reach a bee in its harness's colours
 //! acting out its state. A press on a bee selects it and the camera follows
@@ -10,24 +11,24 @@
 //! the vignette; then the selection ring, name pills, the bees' press
 //! targets and the readout.
 
+use crate::ui::Paint;
 use std::f32::consts::TAU;
 
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
+use super::Tokens;
 use super::playground::edges::edges;
+use super::playground::hud::{self, Picked, Readout};
+use super::playground::labels;
 use super::playground::pen::{Pen, clip_convex, rgba};
-use super::playground::readout::{Picked, Readout, working};
-use super::{CAPTION, Ink, TITLEBAR_H};
 use crate::creature;
 use crate::desk::Desk;
-use crate::hive::{AMBER, Hive, RANKS, place_pills};
+use crate::hive::{Hive, RANKS, place_pills};
 use crate::playground::{Mood, Pt, Rgb, mix};
 
 mod bee;
 mod comb;
 mod scene;
-
-const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
 
 /// A hexagonal cell's outline, point up.
 fn hex(c: Pt, r: f32) -> Vec<Pt> {
@@ -69,8 +70,11 @@ fn hgrad(pen: &mut Pen, x: f32, y: f32, w: f32, h: f32, n: usize, at: impl Fn(f3
     }
 }
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    desk.hive.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.hive
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.hive.still.set(cx.is_reduced_motion());
     let h = &desk.hive.scene;
     let count = |m: Mood| h.bees.iter().filter(|b| b.who.mood == m).count();
@@ -88,13 +92,13 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .clip_rounded(0.0)
         .modal(false, Desk::close_hive)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.hive_laid_out(rect[2], rect[3]));
     if h.frames.is_empty() {
-        return root.child(readout(h, waiting, p));
+        return root.child(foot(h, waiting, t));
     }
     let (z, o) = h.view();
     let backdrop = {
@@ -178,7 +182,7 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 .w_full()
                 .h_full(),
         )
-        .children((0..h.frames.len()).map(|i| plaque(h, i)))
+        .children((0..h.frames.len()).map(|i| plaque(h, i, t)))
         .child(
             canvas(front.into_shape())
                 .key("hive-front")
@@ -187,9 +191,9 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .on_press(Desk::hive_deselect),
         )
-        .children(pills(h))
+        .children(pills(h, t))
         .children(targets)
-        .child(readout(h, waiting, p))
+        .child(foot(h, waiting, t))
 }
 
 /// The shell's selection ring: white dashes turning round the bee, in
@@ -208,7 +212,7 @@ fn ring(pen: &mut Pen, at: Pt, rad: f32, t: f32) {
 
 /// A frame's stamped plaque on its top bar: the host and how many of its
 /// agents need you.
-fn plaque(h: &Hive, i: usize) -> El {
+fn plaque(h: &Hive, i: usize, t: &Tokens) -> El {
     let f = &h.frames[i];
     let (z, nt) = (h.cam.z, h.nt);
     let at = h.to_screen([f.x + f.w / 2.0, f.y + f.bar / 2.0]);
@@ -224,16 +228,17 @@ fn plaque(h: &Hive, i: usize) -> El {
     let w8 = h.waiting_in(i);
     let pulse = 1.0 + 0.08 * (h.t * 5.0).sin();
     let badge = (w8 > 0).then(|| {
+        let (fill, ink) = labels::count_colors(t);
         let d = bh - 4.0 * z;
         el().size(d, d)
             .radius(d / 2.0)
             .center()
             .scale(pulse)
-            .fill(rgba(AMBER, 1.0))
+            .fill(fill)
             .child(
                 text(w8.to_string())
                     .font(TextStyle::new(size, 600.0))
-                    .color(rgba(ON_AMBER, 1.0)),
+                    .color(ink),
             )
     });
     row()
@@ -263,7 +268,7 @@ fn plaque(h: &Hive, i: usize) -> El {
 
 /// Name pills: always for a bee that needs you, and for the selected and
 /// hovered ones; stacked upward so none overlap.
-fn pills(h: &Hive) -> Vec<El> {
+fn pills(h: &Hive, t: &Tokens) -> Vec<El> {
     let z = h.cam.z;
     let mut shown: Vec<(Pt, String, bool)> = h
         .bees
@@ -276,68 +281,61 @@ fn pills(h: &Hive) -> Vec<El> {
         .map(|b| {
             let at = h.to_screen([b.x, b.y]);
             let r = b.len(h.s) * 0.6 * z;
-            let amber = b.who.mood == Mood::Waiting;
-            let label = if amber {
-                format!("{} · needs you", b.who.name)
+            let needs_you = b.who.mood == Mood::Waiting;
+            let label = if needs_you {
+                format!("{} · {}", b.who.name, Mood::Waiting.word())
             } else {
                 b.who.name.clone()
             };
-            ([at[0], at[1] - r - 14.0], label, amber)
+            ([at[0], at[1] - r - 14.0], label, needs_you)
         })
         .collect();
     shown.sort_by(|a, b| b.0[1].total_cmp(&a.0[1]));
     let spots: Vec<(Pt, usize)> = shown
         .iter()
-        .map(|(at, l, _)| (*at, l.chars().count()))
+        // Needs-you's mark is about two characters wide.
+        .map(|(at, l, needs_you)| (*at, l.chars().count() + 2 * usize::from(*needs_you)))
         .collect();
     place_pills(&spots, h.w)
         .into_iter()
         .zip(shown)
-        .map(|([x, y, w], (_, label, amber))| {
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
-                .absolute(x, y - 9.5)
-                .w(w)
-                .h(19.0)
-                .radius(9.5)
+        .map(|([x, y, w], (_, label, needs_you))| {
+            labels::name_tag(t, label, needs_you)
+                .absolute(x, y - labels::tag_h(t) / 2.0)
+                .min_w(w)
                 .justify_center()
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(CAPTION).color(ink))
         })
         .collect()
 }
 
-fn readout(h: &Hive, waiting: usize, p: &Ink) -> El {
+/// The readout's counts and the picked bee's card.
+fn foot(h: &Hive, waiting: usize, t: &Tokens) -> El {
+    let working = (h.bees.iter())
+        .filter(|b| b.who.mood == Mood::Working)
+        .count();
     let picked = h.selected_bee().map(|b| Picked {
-        name: &b.who.name,
+        name: b.who.name.clone(),
         mood: b.who.mood,
-        host: &h.frame_of(b).host,
+        host: h.frame_of(b).host.clone(),
         // Its rank and work, when its machine publishes agent stats.
         card: b.who.work.map(|w| {
             let rank = RANKS[b.who.tier.min(4)];
             format!("Rank: {rank} · Work: {}", creature::work_line(&w))
         }),
-    });
-    let readout = Readout {
-        scene: "hive",
-        hosts: h.frames.len(),
-        agents: h.bees.len(),
-        working: working(h.bees.iter().map(|b| b.who.mood)),
-        waiting,
-        h: h.h,
-        unlaid_y: TITLEBAR_H + 4.0,
-        picked,
         open: Desk::open_bee,
-        next_waiting: Desk::hive_next_waiting,
-        close: Desk::close_hive,
-    };
-    super::playground::readout::readout(readout, p)
+    });
+    hud::readout(
+        t,
+        Readout {
+            key: "hive",
+            h: h.h,
+            hosts: h.frames.len(),
+            agents: h.bees.len(),
+            working,
+            waiting,
+            next: Desk::hive_next_waiting,
+            close: Desk::close_hive,
+            picked,
+        },
+    )
 }

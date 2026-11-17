@@ -12,5 +12,10 @@ integrations/opencode-v2/tui.js linguist-generated=true
 integrations/opencode-v2/dist/gui-experimental.cjs linguist-generated=true
 crates/phux-record/assets/*.bdf linguist-vendored=true
 docs/spec/wire-schema.json linguist-generated=true
+# Design tokens synced from phux-brand (brand.config.json). JSON carries no
+# @generated header, so the size gate exempts every token JSON destination.
+crates/phux-design/tokens/themes.json linguist-generated=true
+crates/phux-design/tokens/derive-vectors.subset.json linguist-generated=true
+clients/rune/ios/Assets/AccentColor.colorset/Contents.json linguist-generated=true
 
 crates/phux-mcp/tests/golden/catalog.json linguist-generated=true

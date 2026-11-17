@@ -129,3 +129,69 @@ icon!(
     "phux-bell",
     "M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1H3zM6.5 14h3"
 );
+
+/// A mark drawn from filled shapes rather than one stroke.
+macro_rules! shape {
+    ($id:ident, $name:literal, $body:literal) => {
+        pub static $id: Icon = Icon {
+            name: $name,
+            view: 16.0,
+            body: $body,
+        };
+    };
+}
+
+// The status ladder's marks (§1.3): shape carries the state, so each still
+// reads in monochrome. `done` (seen) and `idle` share the ring; their words
+// tell them apart.
+shape!(
+    STATUS_NEEDS_YOU,
+    "phux-status-needs-you",
+    r#"<circle cx="8" cy="8" r="4.5" fill="currentColor"/>"#
+);
+icon!(
+    STATUS_FAILED,
+    "phux-status-failed",
+    "M4.75 4.75l6.5 6.5M11.25 4.75l-6.5 6.5"
+);
+shape!(
+    STATUS_DONE,
+    "phux-status-done",
+    r#"<path d="M8 2.75L13.25 8 8 13.25 2.75 8z" fill="currentColor"/>"#
+);
+shape!(
+    STATUS_WORKING,
+    "phux-status-working",
+    r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 3.7a4.3 4.3 0 0 0 0 8.6z" fill="currentColor"/>"#
+);
+shape!(
+    STATUS_QUIET,
+    "phux-status-quiet",
+    r#"<circle cx="8" cy="8" r="4.3" fill="none" stroke="currentColor" stroke-width="1.4"/>"#
+);
+// The dotted ring as eight dots on the ring's radius: Rune's rasteriser
+// draws a dashed stroke solid, which would read as the quiet ring.
+shape!(
+    STATUS_UNKNOWN,
+    "phux-status-unknown",
+    r#"<circle cx="8" cy="3.7" r="0.8" fill="currentColor"/><circle cx="11.04" cy="4.96" r="0.8" fill="currentColor"/><circle cx="12.3" cy="8" r="0.8" fill="currentColor"/><circle cx="11.04" cy="11.04" r="0.8" fill="currentColor"/><circle cx="8" cy="12.3" r="0.8" fill="currentColor"/><circle cx="4.96" cy="11.04" r="0.8" fill="currentColor"/><circle cx="3.7" cy="8" r="0.8" fill="currentColor"/><circle cx="4.96" cy="4.96" r="0.8" fill="currentColor"/>"#
+);
+icon!(STATUS_ENDED, "phux-status-ended", "M4.5 8h7");
+
+#[allow(dead_code, reason = "right-to-left layout reads it")]
+/// Whether `icon` points along the reading direction, so a right-to-left
+/// layout mirrors it (§1.11).
+pub fn mirrors(icon: &Icon) -> bool {
+    [
+        &CHEVRON_RIGHT,
+        &CHEVRON_LEFT,
+        &ARROW_RIGHT,
+        &ARROW_LEFT,
+        &BRING,
+        &RETURN,
+        &BACKSPACE,
+        &PROMPT,
+    ]
+    .iter()
+    .any(|known| std::ptr::eq(*known, icon))
+}

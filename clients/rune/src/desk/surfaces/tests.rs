@@ -102,3 +102,17 @@ fn settings_theme_palette_returns_to_its_parent_on_both_forms() {
         assert_eq!(rt.state.modal(), Some(Modal::Settings));
     }
 }
+
+#[test]
+fn toasts_paint_under_a_menu_and_hide_behind_the_inbox() {
+    let mut desk = Desk::new(&crate::launch::Resolved::offline("toasts"));
+    desk.say(super::super::NoticeKind::Info, "Copied");
+    desk.pointer.menu = Some(rune::PointerPress { x: 10.0, y: 20.0 });
+    let up: Vec<_> = desk.surfaces().collect();
+    assert_eq!(up, [Surface::Toasts, Surface::ContextMenu]);
+    assert_eq!(Surface::Toasts.modal(), None, "never the keyboard's");
+    assert_eq!(desk.foreground(), Some(Modal::ContextMenu));
+    desk.pointer.menu = None;
+    desk.inbox.open = true;
+    assert_eq!(desk.toasts_surface(), None, "the footer says it");
+}

@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pit lane in motion: the prototype's `step`, less its demo's random
 //! state changes, and keeping the cars in step with the fleet.
 //!

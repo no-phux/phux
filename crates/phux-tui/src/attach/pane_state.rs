@@ -271,6 +271,11 @@ pub(super) fn pane_label<'a>(
         unreachable: slot.satellite_down,
         origin: origin_badge(slot, Instant::now()).or_else(super::sync_input::badge),
         scrolled_back: published_terminal(kernel, id).and_then(rows_scrolled_back),
+        // A signal death reads as a failure; an unreported status as clean.
+        exit: slot.exited.map(|mark| {
+            mark.status
+                .unwrap_or_else(|| if mark.signal.is_some() { 128 } else { 0 })
+        }),
     })
 }
 

@@ -1,62 +1,33 @@
-//! Updates on screen: a corner card that never takes the keyboard, the
-//! status-line pill that reopens it, and the section in settings.
+//! Updates on screen: a corner card that never takes the keyboard by
+//! itself, the status-line pill that reopens it, and the section in
+//! settings.
 
 mod phux;
 
-use rune::{Color, El, TextStyle, Transition, col, el, row, text};
+use super::tokens::layout::UPDATES as GEOMETRY;
+use crate::ui::tokens::Voice;
+use rune::{El, TextStyle, Transition, col, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 
-use super::settings::{primary, secondary, section, toggle};
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use super::settings::{Toggle, grown, kit_button, primary, secondary, section, toggle};
+use super::tokens::{Paint, Tier, Tokens};
 use crate::desk::Desk;
 use crate::desk::updates::{Action, Updater, Work};
 use crate::updates::VERSION;
 
-const CARD_W: f32 = 320.0;
-
-fn act_button(action: Action, key: &'static str, ink: &Ink, style: TextStyle) -> El {
-    el().key(key)
-        .label(action.label())
-        .px(12.0)
-        .py(6.0)
-        .radius(6.0)
-        .fill(ink.accent)
-        .cursor(rune::Cursor::Pointer)
+/// The update's one primary action, a kit `Submit` button in the Tab
+/// order (§4.1.3).
+fn act_button(action: Action, key: &'static str, t: &Tokens) -> El {
+    kit_button(key, action.label(), ButtonVariant::Submit, t)
         .on_press_tx(|d: &mut Desk, tx| d.update_act(tx))
-        .child(text(action.label()).font(style).color(ink.on_accent).wrap())
-}
-
-fn quiet_button(
-    label: &'static str,
-    key: &'static str,
-    press: fn(&mut Desk),
-    ink: &Ink,
-    style: TextStyle,
-) -> El {
-    pressable(key, ink)
-        .focusable(true)
-        .label(label)
-        .min_h(44.0)
-        .px(12.0)
-        .py(6.0)
-        .radius(6.0)
-        .border(1.0, ink.separator)
-        .on_press(press)
-        .child(text(label).font(style).color(ink.text))
 }
 
 /// Real transfer progress only; verifying has no percentage to show.
-fn progress(percent: u8, ink: &Ink) -> El {
-    el().key("update-progress")
-        .w_full()
-        .h(3.0)
-        .radius(1.5)
-        .fill(ink.separator)
-        .child(
-            el().w_frac(f32::from(percent) / 100.0)
-                .h(3.0)
-                .radius(1.5)
-                .fill(ink.accent),
-        )
+fn progress(percent: u8, t: &Tokens) -> El {
+    Progress::new(Some(f32::from(percent) / 100.0))
+        .build(t.controls(false))
+        .key("update-progress")
+        .label("Download progress")
 }
 
 fn headline(updater: &Updater) -> String {
@@ -108,16 +79,23 @@ fn detail(updater: &Updater, remote: Option<&str>) -> Vec<String> {
     lines
 }
 
-fn lines(desk: &Desk, ink: &Ink, style: TextStyle) -> El {
+fn lines(desk: &Desk, t: &Tokens, style: TextStyle) -> El {
     let remote = desk.machines.current.as_deref();
-    let mut list = col().w_full().gap(2.0);
+    let mut list = col().w_full().gap(t.space.s0_5);
     for line in detail(&desk.updater, remote) {
-        list = list.child(text(line).font(style).color(ink.dim).wrap());
+        list = list.child(
+            text(line)
+                .font(style)
+                .color(t.roles.text.dim.paint())
+                .wrap(),
+        );
     }
     list
 }
 
-pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
+pub fn card(desk: &Desk, p: &Tokens, top: f32) -> Option<El> {
+    let t = p;
+    let s = &t.space;
     let updater = &desk.updater;
     if !updater.card_open() {
         return None;
@@ -128,99 +106,96 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
     };
     let body = col()
         .key("update-card")
-        .w(CARD_W)
-        .padding(14.0)
-        .gap(8.0)
-        .radius(12.0)
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(10.0, 32.0, Color::BLACK.alpha(0.35))
+        .w(GEOMETRY.card_w)
+        .padding(s.card_inset)
+        .gap(s.s2)
+        .radius(t.radius.md)
+        .fill(t.roles.layer.raised.paint())
+        .border(s.hairline, t.roles.border.base.paint())
         .transition(Transition::opacity())
         .child(
             row()
                 .w_full()
-                .gap(8.0)
+                .gap(s.s2)
+                .items_start()
                 .child(
                     text(headline(updater))
-                        .font(LABEL_STRONG)
-                        .color(ink.text)
+                        .font(t.ty.label.semibold())
+                        .color(t.roles.text.text.paint())
                         .wrap()
                         .grow(1.0),
                 )
-                .child(
-                    el().key("update-dismiss")
-                        .cursor(rune::Cursor::Pointer)
-                        .on_press(|d: &mut Desk| d.updater.dismiss())
-                        .child(
-                            rune::icon(&super::icons::CLOSE, 12.0)
-                                .color(ink.dim)
-                                .a11y_hidden(),
-                        ),
-                ),
+                .child(super::icon_press(
+                    &super::icons::CLOSE,
+                    "Dismiss",
+                    "update-dismiss",
+                    t,
+                    |d: &mut Desk| d.updater.dismiss(),
+                )),
         )
-        .child(lines(desk, ink, CAPTION))
-        .children(percent.map(|percent| progress(percent, ink).key("update-card-progress")))
+        .child(lines(desk, t, t.ty.caption))
+        .children(percent.map(|percent| progress(percent, t).key("update-card-progress")))
         .children(
             updater
                 .action()
-                .map(|action| row().child(act_button(action, "update-act", ink, CAPTION))),
+                .map(|action| row().child(act_button(action, "update-act", t))),
         );
     Some(
         row()
             .key("update-corner")
-            .absolute(0.0, top + 8.0)
+            .absolute(0.0, top + s.s2)
             .w_full()
-            .pr(14.0)
+            .pr(s.card_inset)
             .justify_end()
-            .child(body),
+            .child(t.elevate(body, Tier::Raised)),
     )
 }
 
 /// Reopens a closed card, so closing it never loses the update.
-pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
+pub fn pill(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
     let updater = &desk.updater;
     let due = updater.action().is_some() || !matches!(updater.work, Work::Idle | Work::Checking);
     (due && !updater.card_open()).then(|| {
-        super::pressable("update-pill", ink)
-            .h(20.0)
-            .px(8.0)
-            .radius(10.0)
-            .center()
-            .fill(ink.accent.alpha(0.16))
+        Button::new("Update ready")
+            .variant(ButtonVariant::Submit)
+            .control_size(ControlSize::Small)
             .on_press(|d: &mut Desk| d.updater.reopen())
-            .child(text("Update ready").font(CAPTION).color(ink.accent))
+            .build(&t.kit)
+            .key("update-pill")
+            .focusable(true)
+            .min_h(grown(t.ty.caption, t.space.icon_gap))
+            .radius(t.radius.full)
     })
 }
 
-pub fn settings(desk: &Desk, ink: &Ink) -> El {
+pub fn settings(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    let dim = t.roles.text.dim.paint();
     if desk.native.is_some() {
-        return col().w_full().gap(8.0)
-            .child(section("Updates", ink))
-            .child(text(format!("Phux Rune {VERSION}")).font(primary(desk, LABEL)).color(ink.text))
+        return col().w_full().gap(s.s2)
+            .child(section("Updates", t))
+            .child(text(format!("Phux Rune {VERSION}")).font(primary(desk, t)).color(t.roles.text.text.paint()))
             .child(text("Native iOS builds update through their distribution channel. This app never installs a desktop binary or starts a local server.")
-                .font(secondary(desk, CAPTION)).color(ink.dim).wrap());
+                .font(secondary(desk, t)).color(dim).wrap());
     }
     let updater = &desk.updater;
     // The containing phone card already supplies its row gutter.
-    let toggle_inset = if desk.phone.is_some() { 0.0 } else { 16.0 };
-    let mut buttons = row().w_full().gap(8.0).flex_wrap();
+    let toggle_inset = if desk.phone.is_some() { 0.0 } else { s.s4 };
+    let mut buttons = row().w_full().gap(s.s2).flex_wrap();
     if let Some(action) = updater.action() {
-        let mut button = act_button(action, "update-act-settings", ink, primary(desk, CAPTION))
-            .focusable(true)
-            .min_h(44.0);
+        let mut button = act_button(action, "update-act-settings", t).min_h(s.touch_min);
         if desk.phone.is_some() {
             button = button.w_full().min_w(0.0);
         }
         buttons = buttons.child(button);
     }
     if !updater.busy() {
-        buttons = buttons.child(quiet_button(
-            "Check now",
-            "update-check",
-            |d| d.updater.check_now(),
-            ink,
-            primary(desk, CAPTION),
-        ));
+        buttons = buttons.child(
+            kit_button("update-check", "Check now", ButtonVariant::Outline, t)
+                .min_h(s.touch_min)
+                .on_press(|d: &mut Desk| d.updater.check_now()),
+        );
     }
     let installed = updater
         .cli
@@ -228,55 +203,52 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         .map_or(String::new(), |cli| format!(" · phux {}", cli.current));
     let mut section = col()
         .w_full()
-        .gap(8.0)
-        .child(section("Updates", ink).font(secondary(desk, TextStyle::new(12.0, 600.0))))
+        .gap(s.s2)
+        .child(section("Updates", t).font(super::settings::heading_type(desk, t)))
         .child(
             col()
                 .w_full()
-                .gap(1.0)
+                .gap(s.s0_5)
                 .child(
                     text(headline(updater))
-                        .font(primary(desk, LABEL))
-                        .color(ink.text)
+                        .font(primary(desk, t).medium())
+                        .color(t.roles.text.text.paint())
                         .wrap(),
                 )
                 .child(
                     text(format!("Phux Rune {VERSION}{installed}"))
-                        .font(secondary(desk, CAPTION))
-                        .color(ink.dim)
+                        .font(secondary(desk, t))
+                        .color(dim)
                         .wrap(),
                 ),
         )
-        .child(lines(desk, ink, secondary(desk, CAPTION)));
+        .child(lines(desk, t, secondary(desk, t)));
     if let Work::Downloading(percent) = updater.work {
-        section = section.child(progress(percent, ink));
+        section = section.child(progress(percent, t));
     }
     if let Err(reason) = updater.install {
-        return section.child(
-            text(reason)
-                .font(secondary(desk, CAPTION))
-                .color(ink.dim)
-                .wrap(),
-        );
+        return section.child(text(reason).font(secondary(desk, t)).color(dim).wrap());
     }
-    section = section.child(buttons).child(
-        toggle(
-            desk,
-            "set-update-auto",
-            "Check automatically",
-            "At launch and every six hours. Nothing installs without a click.",
-            updater.automatic,
-            Desk::toggle_update_automatic,
-            ink,
-        )
-        .px(toggle_inset),
-    );
-    section.child(phux::settings(desk, ink, toggle_inset))
+    let automatic = Toggle {
+        key: "set-update-auto",
+        title: "Check automatically",
+        detail: "At launch and every six hours. Nothing installs without a click.",
+        on: updater.automatic,
+        press: Desk::toggle_update_automatic,
+        enabled: true,
+    };
+    section = section
+        .child(buttons)
+        .child(toggle(desk, automatic, t).px(toggle_inset));
+    section.child(phux::settings(desk, t, toggle_inset))
 }
 
 /// Failures and compatibility warnings stay in view even when search hides
 /// the About & Updates category. Informational update details stay there.
-pub(super) fn warnings(desk: &Desk, ink: &Ink) -> Option<El> {
+/// The invalid treatment (§1.10): a `status.failed` edge, the words in
+/// `text`.
+pub(super) fn warnings(desk: &Desk, t: &Tokens) -> Option<El> {
+    let s = &t.space;
     let updater = &desk.updater;
     let mut messages: Vec<_> = updater.message.iter().cloned().collect();
     if let Some((now, incoming)) = updater.protocol_warning() {
@@ -287,21 +259,22 @@ pub(super) fn warnings(desk: &Desk, ink: &Ink) -> Option<El> {
     if messages.is_empty() {
         return None;
     }
+    let failed = t.status.tone(phux_design::Tone::Failed);
     Some(
         col()
             .key("settings-update-warning")
             .w_full()
-            .padding(16.0)
-            .gap(6.0)
-            .radius(12.0)
-            .fill(ink.raised)
-            .border(1.0, ink.danger)
+            .padding(s.s4)
+            .gap(s.s1)
+            .radius(t.radius.md)
+            .fill(t.roles.layer.raised.paint())
+            .border(s.hairline, failed.ink)
             .role("alert")
             .label(messages.join(" "))
             .children(messages.into_iter().map(|message| {
                 text(message)
-                    .font(secondary(desk, CAPTION))
-                    .color(ink.text)
+                    .font(secondary(desk, t))
+                    .color(t.roles.text.text.paint())
                     .wrap()
                     .a11y_hidden()
             })),
@@ -319,8 +292,10 @@ mod tests {
         assert!(detail(&desk.updater, Some("mini")).is_empty());
     }
 
+    /// Every pressable is focusable (§1.10), the card's action included;
+    /// opening the card never moves focus into it.
     #[test]
-    fn main_window_update_card_never_adds_a_tab_stop() {
+    fn main_window_update_card_joins_tab_order_without_taking_focus() {
         let mut desk = Desk::new(&Resolved::offline("update card focus"));
         desk.updater.install = Ok("/not-an-installed-app".into());
         desk.updater.staged = Some("999.0.0".into());
@@ -332,9 +307,8 @@ mod tests {
         );
         rt.frame(0.0);
         let action = crate::ui::element(&rt, "update-act");
-        assert!(
-            !action.focusable,
-            "only the Settings update action participates in Tab order"
-        );
+        assert!(action.focusable, "the card's action is a Tab stop");
+        assert!(!action.focused, "the card never takes the keyboard");
+        assert!(crate::ui::element(&rt, "update-dismiss").focusable);
     }
 }

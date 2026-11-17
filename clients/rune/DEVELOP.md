@@ -143,7 +143,7 @@ do about a bad release.
 | `inbox` | what is waiting on you, most urgent first |
 | `alerts`, `dock` | system notifications, their clicks, and the Dock count |
 | `handoff` | the pane in front as an `NSUserActivity` (`sh.phux.pane`) the phone app continues; advertised only from the signed bundle |
-| `theme` | built-in terminal palettes and the chrome drawn from them |
+| `theme` | terminal themes: the shared catalog, Ghostty and Omarchy adapters, the desktop appearance |
 | `palette` | palette items and fuzzy ranking |
 | `onboarding`, `desk/onboarding`, `ui/onboarding` | first-run steps: the CLI's `--json` answers parsed, step state in settings, the view |
 | `grid` | cell metrics and the draw list as Rune elements |
@@ -175,3 +175,87 @@ Keep feature state transitions with the feature, with small `Desk` adapters
 for window effects. Pure presentation and the Rune view remain separate
 responsibilities inside that module. Shared chrome belongs in `ui`; test
 fixtures belong in `test_support`, not a benchmark or another feature.
+
+## Design tokens
+
+The chrome draws only from `ui::tokens::Tokens`, built per appearance from
+phux-brand's tokens through `phux_design` ([design language](../../docs/design-language.md)).
+`Tokens::for_window` gives the window's (the chosen theme derived, or the
+house look in the system appearance; the increased-contrast variant and
+forced colours when the system asks); `Tokens::for_phone` gives the phone's,
+in the terminal ground's mode at the iOS text size. Both read reduce
+transparency and the text size from `Desk`. Memos key on `tokens.version`, never on a
+theme id: Omarchy swaps palettes under one id.
+
+- Colours are roles (`t.roles.layer.raised`, `t.roles.status.needs_you_wash`),
+  painted with `Paint::paint`. Translucent roles carry their alpha.
+- Type is `t.ty.{micro,caption,label,body,lead,title,display,mono}`; space,
+  radius and icon sizes are `t.space`, `t.radius`, `t.icon`; springs are
+  `t.motion` pairs; shadows are `t.elevate(e, Tier::…)`.
+- Status is `t.status.state(phux_design::State::…)`: ink, companions,
+  vector mark and word. `ui::badge::{mark, tone_badge}` draw it.
+- phux's own rows are `ui::rows::Row`, with a forced `State` for the
+  gallery; kit components take `&t.kit`.
+- Kit overlays mount above the window through `ui::kit_overlay`, and their
+  open state is a `Surface` (`Menu`, `Select`, `Toasts`).
+
+Two guards keep raw styling out. `clippy.toml` disallows the raw calls
+(`El::shadow`, `TextStyle::new`, `Color::alpha`, …); only owner and art
+modules carry an outer `#[allow(clippy::disallowed_methods)]` on their
+`mod` item (`ui::tokens`, `theme`, `grid`, the scenes, the onboarding
+windows). `scripts/style_literals.py` counts raw literals per file against
+`scripts/style_literals.baseline.json`, which is empty: a new literal fails.
+Owner paths (`src/ui/tokens*`, `src/theme*`, the terminal's own `src/grid*`),
+the scene art and test fixtures are exempt, and a literal `const` counts
+only in a view (`src/ui*`, `src/features/`). `just rune-gallery DIR` paints every snapshot
+suite, the design fixture included, blended in sRGB as the app is.
+
+Idioms the audit's literal checks would otherwise flag, each with its
+reason:
+
+- **Hover reveal.** `ui::reveal` is the one `group_opacity` outside the
+  owner paths: a tab's chord and close button, and a pane's drag grip,
+  swap at 0 or 1 under the pointer without a view rebuild. It never dims.
+- **Unfocused split dim.** With several panes, the panes without the
+  keyboard sit under `layer.scrim` (§4.1.3). It is the modal scrim's role
+  used at pane scope, the one second meaning the role has: a pane behind
+  the focused one is set back the way a window behind a sheet is.
+- **BEL wash (audit row 28): n/a in Rune.** Rune draws no BEL wash; a bell
+  off screen is the bell mark and word on the row (`activity::Mark::Bell`).
+- **Lost and ended.** Rune sees no pane exit (a closed terminal leaves the
+  tree) and reports a lost link window-wide in the title bar, so rows reach
+  `tone_of` (`Activity::tone_input`) without `exit`, `crashed` or `link`.
+
+### Kit deviations
+
+rune-kit is adopted where its look fits the schema. Where it does not, the
+difference is accepted and listed here, or phux keeps its own component.
+The gallery's states page paints each, so a kit bump is reviewed.
+
+| Deviation | Why it stands | Upstream candidate |
+| --- | --- | --- |
+| Literal kit radii: compact `Menu` 6, `Dialog` 6, `SegmentedControl` 6 and a fixed 28 height, `Toast` 8/4, `Select` 4/6, `Keybind` 2, radio 8/3, `Card` rule 2, `TabStrip` 6, tooltip 4, compact `Badge` 2, `SidebarRow` badge 8, switch tracks | Accepted where adopted; the tooltip takes `.radius(t.radius.md)`; `Dialog` and phone pills are phux's own | kit geometry reads `k.radius` |
+| Kit `md` means "control", so `kit.radius = {xs, xs, sm, md, lg}` and `Card`, `Popover` and standard `Menu` panels draw at `radius.sm` | Accepted | separate control and surface radii |
+| `SegmentedControl` focus ring (2, 1) against the tokens' offset 2 | Accepted | kit rings read `cx.focus_ring` |
+| Kit controls draw disabled with `layer_opacity` 0.4–0.5 | Accepted for kit controls; phux's own use faint ink | kit disabled through `text_faint` |
+| `Dialog` and `Menu` enter on `k.motion.overlay` with no scale | Accepted; phux's own surfaces scale from `motion.enter_scale` | an overlay enter-scale token |
+| `TabStrip` (active treatment, fixed 28 row, `MORPH` lift, accent busy dot, no done word, internal keys) | Tabs are phux's own | selected-treatment and status hooks, `TabWords::done`, a height setting |
+| `List` is label-only at 14/500 | Rows are phux's own (`ui::rows`) | a row builder with details and spans |
+| `Badge` fills are fixed and it is a live region | `ui::badge::tone_badge` | `Badge::tone` and `.live(false)` |
+| `Dialog` has a fixed height, no footer or scrolling body | `ui::Sheet` is phux's own, on Rune's `.modal` | a footer slot, top offset and scroll body |
+| English kit strings (`SidebarHeader` "N items", `SidebarRow` state words) | Row descriptions are overridden; "N items" stands | kit `Words` |
+| No spacing scale in the kit; `INDENT` 16 is a constant | Kit settings are set from `t.space` | kit `Space` tokens |
+| `SplitView`'s 48 pt band and opaque root | Not adopted | `band_height`, a ground-fill option |
+| No kit slider | Settings' glass slider is phux's own | a kit `Slider` |
+| No reduce-transparency, low-power or layout-direction API on `Cx` | `Desk` reads reduce transparency itself (macOS `NSWorkspace`, the iOS bridge's `phux_rune_ios_traits`) with the iOS text size, and `Tokens` hashes both into `version`; the `ar` gallery page shows the script, not mirrored chrome | `cx.reduced_transparency()`, `cx.low_power()`, a layout direction |
+| `SystemMaterial` has no iOS implementation | Phone glass is `backdrop_blur` only | `SystemMaterial` on iOS |
+| `cx.web_focus()` (every pressable a Tab stop) | Off: it moves a modal's first focus onto its first control and focuses a control on press, so Enter no longer blurs Settings search (phone and window), the phone's top buttons and browser take focus, and a pointer-opened context menu walks from a different item. Rows, tabs and kit controls are focusable without it, and the update card's action is a Tab stop | a web-focus mode that leaves a modal's first focus to `El::autofocus` |
+| Kit `TextInput` keys its editor `input` | Fields stay Rune `text_input` in a control-outline shell (`border.control`, `radius.sm`, the invalid state): native IME and tests find `palette-query`, `find-query`, `inbox-reply`, `settings-query`, `machine-field`, `rename-field` and the ACP fields by their own keys | `TextInput` takes an editor key |
+| Kit `DiffView` tints from status tones and solves its own syntax hues | The changes diff is phux's own on `diff.*` and `syntax.*` (D8) | `DiffView` takes explicit diff and syntax roles |
+| Kit `Toast` view: fixed width 320, truncated title, close named "Close", unkeyed actions | The toast is phux's own on tokens inside the kit `ToastRegion`, drawing the desk's kit `ToastStack` | `Toast` width, wrap and keys |
+| `SegmentedControl` fixed height 28 | Find's case toggle is a one-segment control; the update channel is phux's own 44 pt radio group (touch minimum) | a height setting |
+| Kit `Sidebar` puts every child in one `focus_follows` group and owns the scroll | The window's sidebar is phux's own list (`sidebar-list`, a following focus group) with other machines in their own non-following group of kit `SidebarRow`s; buttons inside rows are pointer-only, with reasons | a Sidebar section that does not follow focus |
+| Kit button heights are fixed | Kit buttons get `.min_h(line + pad)` so they grow with the text size | buttons that size from their type |
+| Kit `Switch` carries no row semantics | The setting row carries the switch role, name, description and state; the kit control inside it is `focusable(false)` and hidden from assistive tech | a switch row |
+| Kit `Checkbox` label uses the kit's small type | Accepted | label type from `k.ty` roles |
+| Kit `Select` needs its own open state | `Desk` holds it (`select_open`, `toggle_select`); the font setting stays a cycling row until it adopts one | — |

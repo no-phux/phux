@@ -1,150 +1,202 @@
 //! The tab strip, shown once a session has more than one tab, and the
-//! rename sheet.
+//! rename dialog.
+//!
+//! Tabs are phux's own (§4.1.3 OWN), on tokens: kit `TabStrip` draws the
+//! active tab as a pressed overlay with no lifted edge or elevation, sits
+//! at a fixed 28 points, colours busy dots with the accent and keys its
+//! tabs itself, where phux keeps `tab-N`, `Grab::Tab` and the menus.
 
-use rune::{El, TextStyle, col, el, row, text, text_input};
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::TABS;
+use phux_design::tokens::{SPACE, Space};
+use phux_design::{State, Tone};
+use rune::{El, row, text, text_input};
+use rune_kit::{Button, ButtonVariant, Dialog};
 
-use super::{CAPTION, Ink, Sheet, button, icon_press, icons, pressable, tip};
+use super::rows::{Base, State as Forced, forced_face};
+use super::sidebar::{Face, face, state_of};
+use super::tokens::Tier;
+use super::{Cover, Paint, Tokens, icon_press, icons, reveal, tip};
 use crate::activity::Mark;
 use crate::desk::{Desk, Grab, Renaming, Tab};
 use crate::keys::{self, Shortcut};
 
-/// A tab's name: one weight whether or not it is the active one, so
-/// switching never moves a neighbour.
-const NAME: TextStyle = TextStyle::new(12.0, 500.0);
-const HEIGHT: f32 = 26.0;
-/// The widest a tab grows, and the least it keeps: the start of its name.
-const WIDEST: f32 = 208.0;
-const NARROWEST: f32 = 30.0;
-/// The active tab stays readable however many crowd it.
-const ACTIVE_LEAST: f32 = 124.0;
-/// The gap a divider stands in, and the new-tab button after the strip.
-const BETWEEN: f32 = 5.0;
-const AFTER: f32 = 30.0;
-/// Narrower than this, a resting tab is its name alone: no chord, and no
-/// close button waiting under the pointer for room the name needs.
-const ROOMY: f32 = 132.0;
-
-/// A resting tab's share of `room` points among `count`, never past the
-/// widest. The active tab keeps its least first, so a crowd squeezes the
-/// others. A bar not laid out yet has no room to report and gives every tab
-/// its fill.
-fn share(room: f32, count: usize) -> f32 {
-    if room <= 0.0 || count == 0 {
-        return WIDEST;
-    }
-    let rest = count.saturating_sub(1) as f32;
-    let free = room - AFTER - BETWEEN * rest;
-    let even = free / count as f32;
-    if even >= ACTIVE_LEAST || rest == 0.0 {
-        return even.min(WIDEST);
-    }
-    ((free - ACTIVE_LEAST) / rest).clamp(NARROWEST, WIDEST)
+/// How tabs share the bar, in points on the 4 point grid.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    /// The widest a tab grows, and the least it keeps: the start of its name.
+    widest: f32,
+    narrowest: f32,
+    /// The active tab stays readable however many crowd it.
+    active_least: f32,
+    /// The gap a divider stands in, and the new-tab button after the strip.
+    between: f32,
+    after: f32,
+    /// Narrower than this, a resting tab is its name alone: no chord, and
+    /// no close button waiting under the pointer for room the name needs.
+    roomy: f32,
 }
 
-/// Whether `count` tabs at their least still overrun `room`.
-fn crowded(room: f32, count: usize) -> bool {
-    let rest = count.saturating_sub(1) as f32;
-    room > 0.0 && ACTIVE_LEAST + rest * (NARROWEST + BETWEEN) + AFTER > room
+impl Fit {
+    const fn of(s: &Space) -> Self {
+        Self {
+            widest: TABS.widest,
+            narrowest: s.s8,
+            active_least: TABS.active_least,
+            between: s.s1,
+            after: s.pointer_min + s.s1,
+            roomy: TABS.roomy,
+        }
+    }
+
+    /// A resting tab's share of `room` points among `count`, never past the
+    /// widest. The active tab keeps its least first, so a crowd squeezes
+    /// the others. A bar not laid out yet has no room to report and gives
+    /// every tab its fill.
+    #[allow(clippy::cast_precision_loss, reason = "a strip holds few tabs")]
+    fn share(self, room: f32, count: usize) -> f32 {
+        if room <= 0.0 || count == 0 {
+            return self.widest;
+        }
+        let rest = count.saturating_sub(1) as f32;
+        let free = room - self.after - self.between * rest;
+        let even = free / count as f32;
+        if even >= self.active_least || rest == 0.0 {
+            return even.min(self.widest);
+        }
+        ((free - self.active_least) / rest).clamp(self.narrowest, self.widest)
+    }
+
+    /// Whether `count` tabs at their least still overrun `room`.
+    #[allow(clippy::cast_precision_loss, reason = "a strip holds few tabs")]
+    fn crowded(self, room: f32, count: usize) -> bool {
+        let rest = count.saturating_sub(1) as f32;
+        room > 0.0 && self.active_least + rest * (self.narrowest + self.between) + self.after > room
+    }
 }
+
+const FIT: Fit = Fit::of(&SPACE);
 
 /// The chord that reaches the tab at `index`, where the platform writes
 /// chords short enough to sit in a tab (⌘1; `Ctrl+Shift+1` waits in the
 /// tooltip).
 fn chord(index: usize) -> Option<String> {
-    let digit = u8::try_from(index).ok().filter(|i| *i < 9)?;
-    let hint = keys::command(Shortcut::Tab(digit))?.hint();
+    let n = u8::try_from(index).ok().filter(|i| *i < 9)?;
+    let hint = keys::command(Shortcut::Tab(n))?.hint();
     (hint.chars().count() <= 3).then_some(hint)
 }
 
 /// The tab's trailing slot: its chord at rest and its close button under the
 /// pointer, in the same place so neither moves the name. The active tab
 /// always shows its close.
-fn trailing(index: usize, tab: &Tab, width: f32, ink: &Ink) -> Option<El> {
+fn trailing(index: usize, tab: &Tab, width: f32, t: &Tokens) -> Option<El> {
     let active = tab.active;
-    if !active && width < ROOMY {
+    if !active && width < FIT.roomy {
         return None;
     }
+    let slot = t.icon.button.sm;
+    let dim = t.roles.text.dim.paint();
     // A locked tab has no close to offer: its lock sits where close would.
     if tab.locked {
-        let lock = rune::icon(&icons::LOCK, 11.0).color(ink.dim).a11y_hidden();
-        let lock = el().size(16.0, 16.0).center().child(lock);
+        let lock = rune::icon(&icons::LOCK, t.icon.size.xs)
+            .color(dim)
+            .a11y_hidden();
+        let lock = rune::el().size(slot, slot).center().child(lock);
         return Some(lock.help("Locked: unlock it to close it"));
     }
-    let close = pressable(format!("tab-close-{index}"), ink)
-        .size(16.0, 16.0)
-        .radius(5.0)
-        .center()
+    let close = rune_kit::IconButton::new(&icons::CLOSE)
+        .variant(rune_kit::IconButtonVariant::Ghost)
+        .control_size(rune_kit::ControlSize::Small)
         .label("Close tab")
         .on_press(move |d: &mut Desk| {
             // The question a busy tab asks is about the tab on screen.
             d.select_tab(index);
             d.close_tab(index);
         })
-        .child(rune::icon(&icons::CLOSE, 10.0).color(ink.dim).a11y_hidden());
+        .build(&t.kit)
+        .key(format!("tab-close-{index}"))
+        .max_w(slot)
+        .max_h(slot)
+        // Pointer only: the strip's arrows select what they reach, and ⌘W
+        // closes the tab from the keyboard.
+        .focusable(false);
     let close = tip(close, "Close tab", Shortcut::CloseTab);
     if active {
         return Some(close);
     }
     let hint = chord(index).map(|hint| {
-        text(hint)
-            .font(CAPTION)
-            .color(ink.dim.alpha(0.7))
-            .group_opacity(1.0, 0.0)
-            .a11y_hidden()
+        reveal(
+            text(hint)
+                .font(t.ty.caption)
+                .color(t.roles.text.faint.paint()),
+            false,
+        )
+        .a11y_hidden()
     });
     Some(
         row()
-            .h(16.0)
-            .min_w(16.0)
+            .h(slot)
+            .min_w(slot)
             .items_center()
             .justify_end()
             .children(hint)
-            .child(
-                close
-                    .pin(None, Some(0.0), Some(0.0), None)
-                    .group_opacity(0.0, 1.0),
-            ),
+            .child(reveal(close.pin(None, Some(0.0), Some(0.0), None), true)),
     )
 }
 
-fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
-    let waiting = tab
-        .resources
-        .iter()
-        .any(|id| desk.activities.mark(id).needs_you());
-    let dot = waiting.then(|| {
-        let alert = super::sidebar::mark_color(Mark::Blocked, ink);
-        el().size(6.0, 6.0)
-            .radius(3.0)
-            .fill(alert)
-            .shadow(0.0, 6.0, alert.alpha(0.55))
-            .a11y_hidden()
-    });
-    let label = desk.tab_label(tab);
-    let name = text(label.clone())
-        .font(NAME)
-        .color(if tab.active { ink.text } else { ink.dim })
-        // A long name fades out, as a browser's does: no ellipsis taking
-        // letters from a narrow tab.
-        .truncate_fade_width(1.2);
-    let name = if tab.active {
-        name
-    } else {
-        name.group_color(ink.text)
+/// The loudest state among a tab's terminals, when it is one a tab shows:
+/// what needs you, failed, finished unseen, or is working.
+fn loudest(desk: &Desk, tab: &Tab) -> Option<Mark> {
+    let shown = |s: State| {
+        matches!(
+            s,
+            State::NeedsYou | State::Failed | State::Done | State::Working
+        )
     };
-    let roomy = width >= ROOMY;
-    let grab = Grab::Tab(tab.id);
-    let target = desk.connection.reorder.target() == Some(grab);
-    let base = pressable(format!("tab-{index}"), ink)
-        .h(HEIGHT)
-        .pl(if roomy { 10.0 } else { 7.0 })
-        .pr(if roomy || tab.active { 7.0 } else { 5.0 })
-        .gap(7.0)
-        .radius(8.0)
-        .continuous_corners()
-        .items_center()
-        .hover_group()
-        .on_press(move |d: &mut Desk| d.select_tab(index))
+    (tab.resources.iter())
+        .map(|id| desk.activities.mark(id))
+        .filter(|m| shown(state_of(*m)))
+        .min_by_key(|m| state_of(*m).rank())
+}
+
+/// The tab's status mark (§1.3), named by its word. Needs-you glows, the
+/// one coloured shadow a mark may cast.
+fn status_mark(mark: Mark, t: &Tokens) -> El {
+    let Face {
+        ink, icon, word, ..
+    } = face(mark, t);
+    let size = t.icon.size.sm;
+    let glyph = rune::icon(icon, size).color(ink);
+    let glyph = match word {
+        Some(word) => glyph.label(word),
+        None => glyph.a11y_hidden(),
+    };
+    let held = rune::el()
+        .size(size, size)
+        .radius(t.radius.full)
+        .center()
+        .child(glyph);
+    if state_of(mark) == State::NeedsYou {
+        let glow = t.status.tone(Tone::NeedsYou).glow;
+        return t.elevate_glowing(held, Tier::Flat, glow);
+    }
+    held
+}
+
+/// A tab's face for `state` over its selection (`rows::forced_face`).
+fn face_for(base: El, active: bool, state: Forced, t: &Tokens) -> El {
+    let under = if active { Base::Selected } else { Base::Plain };
+    let face = forced_face(base, under, state, t);
+    if state == Forced::Rest {
+        t.kit.interactive(face)
+    } else {
+        face
+    }
+}
+
+/// What a live tab answers to: select, rename, its menu and a drag.
+fn handled(base: El, index: usize, grab: Grab) -> El {
+    base.on_press(move |d: &mut Desk| d.select_tab(index))
         .on_double_press(move |d: &mut Desk| d.rename_tab(index))
         .on_secondary_press_local(move |d: &mut Desk, event, _| {
             d.open_tab_menu(index, event.window());
@@ -153,148 +205,228 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, ink: &Ink) -> El {
         .on_layout_tx(move |d: &mut Desk, rect, tx| {
             d.connection.reorder.laid_out(grab, rect);
             tx.live_only();
-        });
+        })
+}
+
+fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forced) -> El {
+    let s = &t.space;
+    let loud = loudest(desk, tab);
+    let word = loud.and_then(|m| face(m, t).word);
+    let label = desk.tab_label(tab);
+    let ink = match state {
+        Forced::Disabled => t.roles.text.faint,
+        _ if tab.active || state == Forced::Hover => t.roles.text.text,
+        _ => t.roles.text.dim,
+    };
+    let name = text(label.clone())
+        .font(t.ty.label.medium())
+        .color(ink.paint())
+        // A long name fades out, as a browser's does: no ellipsis taking
+        // letters from a narrow tab.
+        .truncate_fade_width(1.2)
+        .a11y_hidden();
+    let name = if tab.active {
+        name
+    } else {
+        name.group_color(t.roles.text.text.paint())
+    };
+    let roomy = width >= FIT.roomy;
+    let grab = Grab::Tab(tab.id);
+    let target = desk.connection.reorder.target() == Some(grab);
+    let base = rune::el()
+        .key(format!("tab-{index}"))
+        .cursor(rune::Cursor::Pointer);
+    let base = face_for(base, tab.active, state, t)
+        .h(s.row_h)
+        .pl(if roomy { s.s2 + s.s0_5 } else { s.icon_gap })
+        .pr(if roomy || tab.active { s.icon_gap } else { s.s1 })
+        .gap(s.icon_gap)
+        .radius(t.radius.sm)
+        .continuous_corners()
+        .items_center()
+        .hover_group()
+        .role("tab")
+        .label(label.clone())
+        .description(word.unwrap_or_default())
+        .focusable(state != Forced::Disabled)
+        .focus_selected(tab.active)
+        // The selection moves between tabs on the select spring.
+        .token_motion(t.motion.select.enter);
+    let base = if state == Forced::Disabled {
+        base
+    } else {
+        handled(base, index, grab)
+    };
     let base = if tab.active {
-        // The one you are on never gives up its name to a crowd. It is lit
-        // as the keyboard's card is: the rim runs into the machine's colour.
-        base.fill(ink.current)
-            .border_gradient(1.0, ink.text.alpha(0.18), ink.host.alpha(0.5))
-            .shadow(1.0, 3.0, ink.shade)
-            .shadow(0.0, 12.0, ink.host.alpha(0.12))
-            .max_w(width.max(ACTIVE_LEAST))
+        // The one you are on never gives up its name to a crowd. It is
+        // §1.10's selected treatment (`face_for`), lifted onto the raised
+        // tier.
+        t.elevate(base, Tier::Raised)
+            .max_w(width.max(FIT.active_least))
     } else {
         // `shrink` clears the floor, so the floor is set after it.
-        base.max_w(width).shrink().min_w(NARROWEST.min(width))
+        base.max_w(width).shrink().min_w(FIT.narrowest.min(width))
     };
-    // Where a dragged tab would land.
+    // Where a dragged tab would land (§1.10 drag).
     let base = if target {
-        base.border(1.0, ink.accent)
+        base.border(s.hairline, t.roles.border.focus.paint())
     } else {
         base
     };
-    let digit = u8::try_from(index).ok().filter(|i| *i < 9);
-    let base = match digit {
-        Some(digit) => tip(base, label, Shortcut::Tab(digit)),
+    let n = u8::try_from(index).ok().filter(|i| *i < 9);
+    let base = match n {
+        Some(n) => tip(base, label, Shortcut::Tab(n)),
         None => base.help(label),
     };
-    base.children(dot)
+    base.children(loud.map(|m| status_mark(m, t)))
         .child(name)
-        .child(el().grow(1.0))
-        .children(trailing(index, tab, width, ink))
+        .child(rune::el().grow(1.0))
+        .children(trailing(index, tab, width, t))
 }
 
 /// The hairline between two resting tabs. Beside the active tab it keeps its
 /// room and draws nothing, so the row never shifts as the tab moves.
-fn divider(shown: bool, ink: &Ink) -> El {
-    let line = el().w(1.0).h(12.0).radius(0.5);
-    el().w(BETWEEN)
-        .h(HEIGHT)
+fn divider(shown: bool, t: &Tokens) -> El {
+    let line = rune::el().w(t.space.hairline).h(t.space.s3);
+    rune::el()
+        .w(FIT.between)
+        .h(t.space.row_h)
         .center()
         .a11y_hidden()
         .child(if shown {
-            line.fill(ink.text.alpha(0.1))
+            line.fill(t.roles.border.muted.paint())
         } else {
             line
         })
 }
 
-pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
+pub fn strip(desk: &Desk, ink: &Tokens) -> Option<El> {
+    let t = ink;
     let tabs = &desk.connection.tabs.list;
     if tabs.len() < 2 {
         return None;
     }
-    let width = share(desk.connection.tabs.room, tabs.len());
-    let mut line = row().key("tabs").shrink().min_w(0.0).items_center();
-    if crowded(desk.connection.tabs.room, tabs.len()) {
+    let room = desk.connection.tabs.room;
+    let width = FIT.share(room, tabs.len());
+    // One Tab stop; the arrows move among the tabs and select as they go.
+    let mut line = row()
+        .key("tabs")
+        .role("tablist")
+        .label("Tabs")
+        .focus_group()
+        .shrink()
+        .min_w(0.0)
+        .items_center();
+    if FIT.crowded(room, tabs.len()) {
         // More tabs than the bar holds fade out at its end, never over it.
-        line = line.clip_fade(0.0, 0.0, 14.0, 0.0);
+        line = line.clip_fade(0.0, 0.0, t.space.s4, 0.0);
     }
     for (index, item) in tabs.iter().enumerate() {
         if index > 0 {
             let beside_active = item.active || tabs[index - 1].active;
-            line = line.child(divider(!beside_active, ink));
+            line = line.child(divider(!beside_active, t));
         }
-        line = line.child(tab(desk, item, index, width, ink));
+        line = line.child(tab(desk, item, index, width, t, Forced::Rest));
     }
-    let add = icon_press(&icons::PLUS, "New tab", "tab-new", ink, |d: &mut Desk| {
+    let add = icon_press(&icons::PLUS, "New tab", "tab-new", t, |d: &mut Desk| {
         d.new_tab();
     });
     Some(
         row()
             .shrink()
             .min_w(0.0)
-            .gap(4.0)
+            .gap(t.space.s1)
             .items_center()
             .child(line)
             .child(tip(add, "New tab", Shortcut::NewTerminal)),
     )
 }
 
-pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
+/// The rename field: the kit field's look (the control outline,
+/// `radius.sm`) around Rune's own editor, which keeps the `rename-field`
+/// key the native input routes by.
+fn rename_field(desk: &Desk, t: &Tokens) -> El {
+    let s = &t.space;
+    row()
+        .w_full()
+        .min_h(s.row_h)
+        .px(s.s2)
+        .py(s.s1)
+        .radius(t.radius.sm)
+        .items_center()
+        .fill(t.roles.layer.ground.paint())
+        .border(s.hairline, t.roles.border.control.paint())
+        .child(
+            text_input(&desk.connection.tabs.rename_field, t.ty.body)
+                .key("rename-field")
+                .label("New name")
+                .single_line()
+                .grow(1.0)
+                .color(t.roles.text.text.paint())
+                .on_edit(|d: &mut Desk| &mut d.connection.tabs.rename_field)
+                .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
+                .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
+        )
+}
+
+/// Renaming a tab or session: a short question, so the kit's fitted dialog.
+pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
+    let t = ink;
+    let s = &t.space;
     let title = match desk.connection.tabs.renaming.as_ref()? {
         Renaming::Session(_) => "Rename session",
         Renaming::Tab(_) => "Rename tab",
     };
-    let field = row()
-        .w_full()
-        .px(10.0)
-        .py(7.0)
-        .radius(7.0)
-        .fill(ink.separator)
-        .child(
-            text_input(
-                &desk.connection.tabs.rename_field,
-                TextStyle::new(14.0, 400.0).lh(20.0),
-            )
-            .key("rename-field")
-            .label("New name")
-            .single_line()
-            .grow(1.0)
-            .color(ink.text)
-            .on_edit(|d: &mut Desk| &mut d.connection.tabs.rename_field)
-            .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
-            .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
-        );
-    // A phone has no Return or Esc to name.
-    let (save_words, cancel_words) = if desk.phone.is_some() {
+    // A phone has no Return or Esc to name, and takes a thumb.
+    let touch = desk.phone.is_some();
+    let (save_words, cancel_words) = if touch {
         ("Save", "Cancel")
     } else {
         ("Save (Return)", "Cancel (Esc)")
     };
-    let save = pressable("rename-save", ink)
-        .px(12.0)
-        .py(6.0)
-        .radius(6.0)
-        .fill(ink.accent)
-        .focusable(true)
-        .role("button")
-        .label("Save")
-        .default_button()
+    let sized = |e: El| {
+        if touch {
+            e.min_h(s.touch_min).min_w(s.touch_min)
+        } else {
+            e
+        }
+    };
+    let save = Button::new(save_words)
+        .variant(ButtonVariant::Submit)
         .on_press_tx(|d: &mut Desk, tx| d.submit_rename(tx))
-        .child(text(save_words).font(CAPTION).color(ink.on_accent));
-    let cancel = button(cancel_words, "rename-cancel", ink, Desk::cancel_rename)
-        .grow(0.0)
-        .px(12.0)
-        .focusable(true)
-        .role("button")
+        .build(&t.kit)
+        .key("rename-save")
+        .label("Save")
+        .default_button();
+    let cancel = Button::new(cancel_words)
+        .variant(ButtonVariant::Outline)
+        .on_press(Desk::cancel_rename)
+        .build(&t.kit)
+        .key("rename-cancel")
         .label("Cancel");
     let foot = row()
         .w_full()
-        .gap(8.0)
-        .child(el().grow(1.0))
-        .child(cancel)
-        .child(save);
-    Some(
-        Sheet {
-            key: "rename",
-            title,
-            width: 360.0,
-            top: 140.0,
-            scrim: 0.3,
-            close: Desk::cancel_rename,
-        }
-        .build(None, col().w_full().padding(16.0).child(field), foot, ink),
-    )
+        .gap(s.s2)
+        .items_center()
+        .child(rune::el().grow(1.0))
+        .child(sized(cancel))
+        .child(sized(save));
+    let body = rune::col()
+        .w_full()
+        .px(s.s4)
+        .pb(s.s4)
+        .gap(s.s3)
+        .child(rename_field(desk, t))
+        .child(foot);
+    let mut layer = Vec::new();
+    Dialog::new("rename", title)
+        .open(true)
+        .fit()
+        .width(TABS.rename_w)
+        .on_close(Desk::cancel_rename)
+        .child(body)
+        .build(&t.kit, &mut layer);
+    Some(rune::el().cover().children(layer))
 }
 
 #[cfg(test)]
@@ -343,7 +475,7 @@ mod tests {
             // none is drawn past its own box.
             let last = rt.presented(&format!("tab-{}", count - 1));
             if let Some((last, ..)) =
-                last.filter(|_| !crowded(rt.state.connection.tabs.room, count.into()))
+                last.filter(|_| !FIT.crowded(rt.state.connection.tabs.room, count.into()))
             {
                 assert!(
                     last[0] + last[2] <= add[0] + 0.5,
@@ -366,21 +498,27 @@ mod tests {
         let rt = laid_out(12, 5, (900.0, 500.0));
         let active = rt.presented("tab-5").expect("the active tab").0;
         let resting = rt.presented("tab-0").expect("a resting tab").0;
-        assert!(active[2] >= ACTIVE_LEAST - 0.5, "active: {active:?}");
+        assert!(active[2] >= FIT.active_least - 0.5, "active: {active:?}");
         assert!(resting[2] < active[2], "resting: {resting:?}");
-        assert!(resting[2] >= NARROWEST - 0.5, "resting: {resting:?}");
+        assert!(resting[2] >= FIT.narrowest - 0.5, "resting: {resting:?}");
     }
 
     #[test]
     fn tabs_share_the_room_and_stop_at_their_widest() {
-        assert_eq!(share(0.0, 3), WIDEST, "before the bar is laid out");
-        assert_eq!(share(2000.0, 2), WIDEST);
-        let even = share(600.0, 3);
-        assert!((ACTIVE_LEAST..WIDEST).contains(&even), "{even}");
+        let Fit {
+            widest,
+            narrowest,
+            active_least,
+            ..
+        } = FIT;
+        assert_eq!(FIT.share(0.0, 3), widest, "before the bar is laid out");
+        assert_eq!(FIT.share(2000.0, 2), widest);
+        let even = FIT.share(600.0, 3);
+        assert!((active_least..widest).contains(&even), "{even}");
         // Past an even split the active tab keeps its least first.
-        let squeezed = share(500.0, 8);
-        assert!((NARROWEST..ACTIVE_LEAST).contains(&squeezed), "{squeezed}");
-        assert_eq!(share(100.0, 20), NARROWEST);
-        assert!(crowded(300.0, 20) && !crowded(900.0, 4));
+        let squeezed = FIT.share(500.0, 8);
+        assert!((narrowest..active_least).contains(&squeezed), "{squeezed}");
+        assert_eq!(FIT.share(100.0, 20), narrowest);
+        assert!(FIT.crowded(300.0, 20) && !FIT.crowded(900.0, 4));
     }
 }

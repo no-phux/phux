@@ -14,6 +14,7 @@
 //! records every frame's timing there with `rune-perf`. `PHUX_ECHO_HOPS`
 //! adds Rune's hops to the keystroke-echo trace (DEVELOP.md).
 
+use crate::ui::Paint;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -134,7 +135,7 @@ fn frame_recorder() -> Option<rune_perf::Recorder> {
 
 /// What the last view build came to, for `RUNE_PERF_HUD`. It redraws only
 /// with the view, so it never keeps an idle window awake.
-pub fn hud(color: rune::Color) -> Option<El> {
+pub fn hud(t: &crate::ui::Tokens) -> Option<El> {
     if !*HUD {
         return None;
     }
@@ -150,9 +151,10 @@ pub fn hud(color: rune::Color) -> Option<El> {
     Some(
         text(line)
             .key("perf-hud")
-            .absolute(8.0, 4.0)
-            .font(crate::ui::CAPTION.family(rune::Family::SystemMono))
-            .color(color)
+            .absolute(t.space.s2, t.space.s1)
+            // A readout: the chrome's mono face, figures that hold still.
+            .font(t.ty.mono.features("'tnum' 1"))
+            .color(t.roles.text.dim.paint())
             .single_line()
             .inert(),
     )

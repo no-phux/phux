@@ -58,7 +58,7 @@ impl SidebarPainter {
             right.push(Span::styled(
                 format!(
                     "{}{}",
-                    crate::render::chrome::AGENT_BLOCKED_GLYPH,
+                    crate::render::chrome::mark(&self.theme, phux_design::State::NeedsYou),
                     group.needs_you
                 ),
                 Style::default().fg(self.theme.agent_blocked),

@@ -719,7 +719,7 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     );
     // The current match paints in the current-match color, the other
     // match on screen in the match color.
-    let expected = [[0x8a, 0x72, 0x1c], [0xf2, 0xb1, 0x3a]];
+    let expected = phux_web::ink::house_match_pixels();
     let mut marks = Vec::new();
     poll(|| {
         let rows = client.rows_text();

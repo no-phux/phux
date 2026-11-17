@@ -110,12 +110,17 @@ pub enum Surface {
     Popup,
     Rename,
     Palette,
+    /// A terminal's or a tab's context menu at the pointer.
     ContextMenu,
+    /// The toast region: painted, but never the keyboard's owner.
+    Toasts,
 }
 
 impl Surface {
-    pub(super) fn modal(self) -> Modal {
-        match self {
+    /// The input owner this surface is, if any: toasts never take the
+    /// keyboard from the terminal.
+    pub(super) fn modal(self) -> Option<Modal> {
+        Some(match self {
             Self::PhoneNavigation => Modal::PhoneNavigation,
             Self::Inbox => Modal::Inbox,
             Self::Playground(scene) => scene.scene().modal,
@@ -127,7 +132,8 @@ impl Surface {
             Self::Rename => Modal::Rename,
             Self::Palette => Modal::Palette,
             Self::ContextMenu => Modal::ContextMenu,
-        }
+            Self::Toasts => return None,
+        })
     }
 }
 
@@ -158,19 +164,27 @@ impl Desk {
                 .as_ref()
                 .map(|_| Surface::Rename),
             self.palette_open.then_some(Surface::Palette),
+            self.toasts_surface(),
             self.pointer.menu.map(|_| Surface::ContextMenu),
         ]
         .into_iter()
         .flatten()
     }
 
+    /// The toast region's surface while any toast shows: painted above the
+    /// panes and under a context menu, never the keyboard's owner. The
+    /// inbox's footer says the front one instead while the drawer is open.
+    pub fn toasts_surface(&self) -> Option<Surface> {
+        (!self.toasts().is_empty() && !self.inbox.open).then_some(Surface::Toasts)
+    }
+
     pub(super) fn foreground(&self) -> Option<Modal> {
-        let surface = self.surfaces().next_back()?;
+        let surface = self.surfaces().rev().find(|s| s.modal().is_some())?;
         // A popup asks inside its own box, above its terminal, not behind it.
         if surface == Surface::Popup && self.pending.is_some() {
             return Some(Modal::Confirm);
         }
-        Some(surface.modal())
+        surface.modal()
     }
 
     pub(super) fn close_playground(&mut self, scene: Playground) {

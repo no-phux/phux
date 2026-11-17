@@ -2,8 +2,12 @@ use super::*;
 
 use std::collections::HashMap;
 
+use ratatui::style::Color;
+
 use crate::attach::multi_pane::{DividerCell, compute_layout_in};
 use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
+use crate::render::chrome::agent_badge;
+mod titles;
 
 fn t(id: u32) -> ResourceId {
     ResourceId::local(id)
@@ -42,6 +46,7 @@ fn label(text: &'static str) -> PaneLabel<'static> {
         unreachable: false,
         origin: None,
         scrolled_back: None,
+        exit: None,
         slot_tab: None,
     }
 }
@@ -243,6 +248,60 @@ fn focus_tints_rules_and_nothing_else() {
     assert!(!s.contains(&sgr_fg(theme().divider_focus)) && s.contains(&sgr_fg(theme().divider)));
 }
 
+/// Rules and titles sit on the terminal's own background only when the
+/// roles were solved against it; otherwise every chrome cell carries the
+/// surface fill (spec §4.2).
+#[test]
+fn an_unknown_ground_fills_rules_and_titles_with_the_surface() {
+    let content = railed(80, 24);
+    let layout = split_layout(content);
+    let paint = |theme: &Theme| {
+        let mut bytes: Vec<u8> = Vec::new();
+        render_dividers(
+            &mut bytes,
+            &layout,
+            content,
+            rail_row(content),
+            Some(&t(1)),
+            theme,
+            |_| Some(label("build")),
+        )
+        .unwrap();
+        String::from_utf8(bytes).unwrap()
+    };
+    let unknown = theme();
+    let mut fill = Vec::new();
+    crate::render::sgr::write_sgr_color(&mut fill, unknown.surface, false).unwrap();
+    let fill = String::from_utf8(fill).unwrap();
+    let s = paint(&unknown);
+    assert!(s.contains(&fill), "{s:?}");
+    let known = Theme::house(&crate::render::theme::Outer {
+        background: Some(phux_design::Rgb8::hex(0x14_1619)),
+        ..crate::render::theme::Outer::default()
+    });
+    assert!(!paint(&known).contains("\x1b[48;"), "known ground: no fill");
+}
+
+/// A retained pane that exited wears its ladder mark on the title: the
+/// failed cross for a nonzero status, the ended dash for a clean one.
+#[test]
+fn an_exited_pane_wears_failed_or_ended() {
+    let th = theme();
+    let with_exit = |code| PaneLabel {
+        exit: Some(code),
+        ..label("build")
+    };
+    let failed = with_exit(2).badge(&th).expect("badge");
+    assert_eq!((failed.glyph, failed.color), ("✕", th.agent_failed));
+    assert!(failed.emphatic);
+    let ended = with_exit(0).badge(&th).expect("badge");
+    assert_eq!(ended.glyph, "–");
+    assert!(
+        label("build").badge(&th).is_none(),
+        "a live shell wears none"
+    );
+}
+
 /// Emphasis follows the client's focused pane, not the layout tree's
 /// remembered focus (the two diverge until the layout is persisted).
 #[test]
@@ -335,7 +394,9 @@ fn styled_cells(s: &str) -> HashMap<(u16, u16), (String, bool)> {
         {
             y = rn.saturating_sub(1);
             x = cn.saturating_sub(1);
-        } else if seq.ends_with('m') {
+        } else if seq == "\x1b[0m" {
+            // Every run opens with a full reset; a ground fill after the
+            // focus colour does not end the emphasis.
             accented = false;
         }
         rest = &tail[end..];
@@ -406,5 +467,3 @@ fn extract_cups(s: &str) -> Vec<(u16, u16)> {
         })
         .collect()
 }
-
-mod titles;

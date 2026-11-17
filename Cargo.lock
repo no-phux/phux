@@ -2958,6 +2958,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-config",
  "phux-core",
+ "phux-design",
  "phux-dial",
  "phux-frozen",
  "phux-perf",
@@ -3201,6 +3202,13 @@ dependencies = [
  "libc",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "phux-design"
+version = "0.157.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3484,6 +3492,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-crash",
+ "phux-design",
  "phux-frozen",
  "phux-perf",
  "phux-plugin",

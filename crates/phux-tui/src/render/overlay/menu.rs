@@ -227,9 +227,8 @@ impl ContextMenu {
                     // One run across the interior: a solid selection bar.
                     Line::from(Span::styled(
                         format!("{lead}{label}{}{sec}{trail}", " ".repeat(gap)),
-                        Style::default()
-                            .fg(self.theme.selection_fg)
-                            .bg(self.theme.selection_bg),
+                        self.theme
+                            .on_selection(Style::default().fg(self.theme.selection_fg)),
                     ))
                 } else {
                     Line::from(vec![

@@ -8,11 +8,12 @@ use crate::desk::updates::Work;
 
 mod a11y;
 mod editing;
+mod modes;
 mod overflow;
 mod quick;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let ink = super::super::ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let ink = super::super::tokens_for(cx.system_dark(), desk.settings.theme);
     view(desk, &ink)
 }
 
@@ -103,10 +104,11 @@ fn phone_typography_and_wrapping_fit_long_labels_and_values_without_shrinking() 
         d.machines.current = Some("a-very-long-remote-machine-name.example".into());
     });
     rt.frame(1.0);
-    assert_eq!(super::primary(&rt.state, COPY).size, 17.0);
-    assert_eq!(super::primary(&rt.state, COPY).line_px(), 22.0);
-    assert_eq!(super::secondary(&rt.state, CAPTION).size, 13.0);
-    assert_eq!(super::secondary(&rt.state, CAPTION).line_px(), 18.0);
+    // The phone reads a role up: lead for body, body for caption (§1.4).
+    let t = tokens(&rt.state);
+    assert_eq!(super::primary(&rt.state, &t), t.ty.lead);
+    assert_eq!(super::secondary(&rt.state, &t), t.ty.body);
+    assert!(super::primary(&rt.state, &t).size > t.ty.body.size);
     for category in Category::ALL {
         let [x, _, width, height] = rect(&rt, category.key());
         assert!(height >= 56.0, "{}", category.name());
@@ -242,16 +244,34 @@ fn phone_update_preference_text_shares_the_card_content_gutter() {
     );
 }
 
+fn tokens(desk: &Desk) -> std::rc::Rc<crate::ui::Tokens> {
+    crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs {
+        theme: desk.settings.theme.copied(),
+        ..crate::ui::tokens::Inputs::system(false)
+    })
+}
+
+/// Every word Settings draws reaches 4.5:1 on both its grounds (the sheet
+/// and its cards), and the control outline 3:1 (§1.2, D4), for the house
+/// look and every built-in theme in both modes.
 #[test]
 fn settings_ink_keeps_text_and_control_contrast_on_its_surfaces() {
-    use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
+    let lut = phux_design::Params::house().srgb_lut;
     for theme in std::iter::once(None).chain(crate::theme::all().map(Some)) {
         for dark in [true, false] {
-            let ink = crate::ui::ink(dark, rune::oklch(0.6, 0.15, 250.0), theme);
-            for ground in [ink.sidebar, super::surface(&ink)] {
-                assert!(contrast(ink.text, ground) >= TEXT_BAR);
-                assert!(contrast(ink.dim, ground) >= DIM_BAR);
-                assert!(contrast(ink.accent, ground) >= DIM_BAR);
+            let t = crate::ui::Tokens::resolve(&crate::ui::tokens::Inputs {
+                theme: theme.copied(),
+                ..crate::ui::tokens::Inputs::system(dark)
+            });
+            let r = &t.roles;
+            let name = theme.map_or("house", |t| t.id);
+            for ground in [r.layer.sidebar, r.layer.raised].map(phux_design::Rgba8::rgb) {
+                let reads =
+                    |ink: phux_design::Rgba8| phux_design::solve::contrast(ink.rgb(), ground, lut);
+                for ink in [r.text.text, r.text.dim, r.text.faint, r.accent.accent_text] {
+                    assert!(reads(ink) >= 4.5, "{name} dark={dark}: {ink:?}");
+                }
+                assert!(reads(r.border.control) >= 3.0, "{name}: control outline");
             }
         }
     }

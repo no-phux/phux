@@ -1,108 +1,124 @@
 //! What works here, under a machine's row: each item's verdict and title,
 //! the reason, and the fix to copy or run there.
 
-use rune::{El, TextStyle, col, el, row, text};
+use crate::ui::tokens::Voice;
+use phux_design::State;
+use rune::{El, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize};
 
-use super::chip;
+use super::{GEOMETRY, chip};
 use crate::desk::Desk;
 use crate::desk::machines::checklist::{Item, Verdict};
-use crate::ui::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use crate::ui::badge::mark;
 
-const MONO: TextStyle = TextStyle::new(11.5, 400.0).mono();
+use crate::ui::tokens::{Paint, Tokens};
 
-/// The verdict's mark, its colour, and what a screen reader says.
-fn mark(verdict: Verdict, ink: &Ink) -> (&'static str, rune::Color, &'static str) {
+/// The verdict as a status mark, colour, mark and word together (§1.3):
+/// works is done, off failed, waiting working, unknown the dotted ring.
+const fn state(verdict: Verdict) -> (State, &'static str) {
     match verdict {
-        Verdict::Ok => ("✓", ink.marks.good, "works"),
-        Verdict::Off => ("✕", ink.danger, "off"),
-        Verdict::Waiting => ("…", ink.marks.working, "waiting"),
-        Verdict::Unknown => ("?", ink.dim, "unknown"),
+        Verdict::Ok => (State::Done, "works"),
+        Verdict::Off => (State::Failed, "off"),
+        Verdict::Waiting => (State::Working, "waiting"),
+        Verdict::Unknown => (State::Unknown, "unknown"),
     }
 }
 
-fn item(item: &Item, here: &str, copied: bool, ink: &Ink) -> El {
-    let (glyph, color, word) = mark(item.verdict, ink);
+fn item(item: &Item, here: &str, copied: bool, t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let (state, word) = state(item.verdict);
     let mut card = col()
         .key(format!("check-{}", item.id))
         .w_full()
-        .gap(3.0)
-        .px(10.0)
-        .py(8.0)
-        .radius(7.0)
-        .fill(ink.current)
+        .gap(s.s1)
+        .px(s.s3)
+        .py(s.s2)
+        .radius(t.radius.md)
+        .fill(r.layer.ground.paint())
+        .border(s.hairline, r.border.base.paint())
         .child(
             row()
                 .w_full()
-                .gap(7.0)
+                .gap(s.icon_gap)
                 .items_center()
-                .child(text(glyph).font(LABEL_STRONG).color(color).label(word))
-                .child(text(item.title.clone()).font(LABEL).color(ink.text).wrap()),
+                .child(mark(t, state, t.icon.size.md).label(word))
+                .child(
+                    text(item.title.clone())
+                        .font(t.ty.label.semibold())
+                        .color(r.text.text.paint())
+                        .wrap(),
+                ),
         )
         .child(
             text(item.reason.clone())
-                .font(CAPTION)
-                .color(ink.dim)
+                .font(t.ty.caption)
+                .color(r.text.dim.paint())
                 .wrap(),
         );
     if let Some(fix) = &item.fix {
         let (copy, run) = (item.id.clone(), item.id.clone());
-        let copy = pressable(format!("check-copy-{}", item.id), ink)
-            .px(6.0)
-            .radius(5.0)
+        let copy = Button::new(if copied { "Copied" } else { "Copy" })
+            .variant(ButtonVariant::Ghost)
+            .control_size(ControlSize::Small)
             .on_press_tx(move |d: &mut Desk, tx| d.copy_fix(&copy, tx))
-            .child(
-                text(if copied { "Copied" } else { "Copy" })
-                    .font(CAPTION)
-                    .color(ink.accent),
-            );
+            .build(&t.kit)
+            .key(format!("check-copy-{}", item.id))
+            .focusable(true)
+            .min_h(crate::ui::settings::grown(t.ty.caption, t.space.icon_gap));
         card = card
             .child(
                 el().w_full()
-                    .mt(2.0)
-                    .px(8.0)
-                    .py(6.0)
-                    .radius(5.0)
-                    .fill(ink.bg)
+                    .mt(s.s0_5)
+                    .px(s.s2)
+                    .py(s.s1)
+                    .radius(t.radius.xs)
+                    .fill(r.layer.sidebar.paint())
                     .child(
                         text(fix.clone())
-                            .font(MONO)
-                            .color(ink.text)
+                            .font(t.ty.caption.machine())
+                            .color(r.text.text.paint())
                             .wrap()
                             .selectable(true),
                     ),
             )
-            .child(row().gap(6.0).child(copy).child(chip(
+            .child(row().gap(s.s1).child(copy).child(chip(
                 "Run in a new pane",
                 format!("check-run-{}", item.id),
-                ink,
+                t,
                 move |d: &mut Desk| d.run_fix(&run),
             )))
             .child(
                 text(format!("Runs on {here}."))
-                    .font(CAPTION)
-                    .color(ink.dim),
+                    .font(t.ty.caption)
+                    .color(r.text.dim.paint()),
             );
     }
     card
 }
 
 /// `machine`'s checklist, when it is the one out.
-pub(super) fn checklist(machine: Option<&str>, desk: &Desk, ink: &Ink) -> Option<El> {
+pub(super) fn checklist(machine: Option<&str>, desk: &Desk, t: &Tokens) -> Option<El> {
     let shown = desk.machines.checklist.as_ref()?;
     if shown.machine.as_deref() != machine {
         return None;
     }
+    let s = &t.space;
     let here = machine.unwrap_or(crate::machines::LOCAL);
     let held = shown.machine.clone();
     let head = row()
         .w_full()
         .items_center()
-        .child(text("What works here").font(LABEL_STRONG).color(ink.text))
+        .child(
+            text("What works here")
+                .font(t.ty.label.semibold())
+                .color(t.roles.text.text.paint()),
+        )
         .child(el().grow(1.0))
         .child(chip(
             "Refresh",
             "check-refresh".to_owned(),
-            ink,
+            t,
             move |d: &mut Desk| {
                 d.ask_checklist(held.clone());
             },
@@ -110,18 +126,23 @@ pub(super) fn checklist(machine: Option<&str>, desk: &Desk, ink: &Ink) -> Option
     let body = col()
         .key("checklist")
         .w_full()
-        .pl(40.0)
-        .pb(6.0)
-        .gap(5.0)
+        .pl(GEOMETRY.nested)
+        .pb(s.s2)
+        .gap(s.s1)
         .child(head);
-    let note = |words: String| text(words).font(CAPTION).color(ink.dim).wrap();
+    let note = |words: String| {
+        text(words)
+            .font(t.ty.caption)
+            .color(t.roles.text.dim.paint())
+            .wrap()
+    };
     Some(match &shown.answer {
         None => body.child(note(format!("Asking {here}…"))),
         Some(Err(why)) => body.child(note(why.clone()).key("check-failure")),
         Some(Ok(items)) if items.is_empty() => body.child(note("Nothing to report.".to_owned())),
         Some(Ok(items)) => items.iter().fold(body, |body, it| {
             let copied = shown.copied.as_deref() == Some(it.id.as_str());
-            body.child(item(it, here, copied, ink))
+            body.child(item(it, here, copied, t))
         }),
     })
 }

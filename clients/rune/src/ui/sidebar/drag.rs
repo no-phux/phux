@@ -4,7 +4,7 @@
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::El;
 
-use super::super::Ink;
+use super::super::{Paint, Tokens};
 use crate::desk::{Desk, Grab};
 
 /// Bound sidebar drops to the list's actual scroll viewport, not its footer.
@@ -16,7 +16,7 @@ pub(super) fn region(handle: El) -> El {
 }
 
 /// A local resource row drags its resource, not the session it belongs to.
-pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey, _ink: &Ink) -> El {
+pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey) -> El {
     let Some(id) = id.local_id() else {
         return handle;
     };
@@ -30,9 +30,10 @@ pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey, _ink: &
         })
 }
 
-/// `handle` dragging the session `key` names, outlined while a drop would
-/// land on it. A handle with no key (a satellite's) stays put.
-pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, ink: &Ink) -> El {
+/// `handle` dragging the session `key` names, outlined in the focus ring's
+/// colour while a drop would land on it (§1.10 drag). A handle with no key
+/// (a satellite's) stays put.
+pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, t: &Tokens) -> El {
     let Some(key) = key else { return handle };
     let grab = Grab::Session(key);
     handle
@@ -42,9 +43,9 @@ pub(super) fn reorderable(handle: El, key: Option<SessionKey>, target: bool, ink
             tx.live_only();
         })
         .border(
-            1.0,
+            t.space.hairline,
             if target {
-                ink.accent
+                t.roles.border.focus.paint()
             } else {
                 rune::Color::TRANSPARENT
             },

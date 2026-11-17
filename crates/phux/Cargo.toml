@@ -69,6 +69,9 @@ phux-tui.workspace = true
 # In-process performance telemetry: `phux perf` renders a `PerfReport`.
 phux-perf.workspace = true
 phux-config.workspace = true
+# The status vocabulary and its plurals (`phux ls` header counts), from the
+# brand tokens. No dependencies of its own.
+phux-design.workspace = true
 # `phux agent surface standing` exits once `phux update` replaced its binary.
 phux-resource.workspace = true
 # `phux mission`: the mission documents, and the work store's keeper and

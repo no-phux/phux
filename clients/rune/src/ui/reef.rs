@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The reef: the fleet as an aquarium, each machine a reef with its buoy,
 //! every machine's agents it can reach as fish of their harness's species
 //! acting out their state. A press on a fish selects it and the camera follows it
@@ -8,12 +9,13 @@
 //! in one canvas, the caustics as a scrolling tile, the rest in another,
 //! then labels, the fish's press targets and the readout.
 
+use crate::ui::Paint;
 use rune::{Cx, El, canvas, el};
 
+use super::Tokens;
+use super::playground::hud::{self, Picked, Readout};
 use super::playground::labels::{Label, pill};
 use super::playground::pen::Pen;
-use super::playground::readout::{Picked, Readout, working};
-use super::{Ink, TITLEBAR_H};
 use crate::creature;
 use crate::desk::Desk;
 use crate::playground::Mood;
@@ -32,8 +34,11 @@ impl Pen {
     }
 }
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    desk.reef.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.reef
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.reef.still.set(cx.is_reduced_motion());
     let r = &desk.reef.scene;
     let count = |m: Mood| r.fish.iter().filter(|f| f.who.mood == m).count();
@@ -51,12 +56,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_reef)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.reef_laid_out(rect[2], rect[3]));
     if r.zones.is_empty() {
-        return root.child(readout(r, waiting, p));
+        return root.child(foot(r, waiting, t));
     }
     let pal = r.pal();
 
@@ -133,9 +138,9 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             .h_full()
             .on_press(Desk::reef_deselect),
     )
-    .children(labels.iter().map(|l| pill(l, to(l.at), r.w)))
+    .children(labels.iter().map(|l| pill(t, l, to(l.at), r.w)))
     .children(targets)
-    .child(readout(r, waiting, p))
+    .child(foot(r, waiting, t))
 }
 
 /// The prototype's two scrolling layers of caustic light on the sand, cut
@@ -177,30 +182,34 @@ fn caustics(desk: &Desk, r: &Reef) -> Vec<El> {
         .collect()
 }
 
-fn readout(r: &Reef, waiting: usize, p: &Ink) -> El {
+/// The readout's counts and the picked fish's card.
+fn foot(r: &Reef, waiting: usize, t: &Tokens) -> El {
+    let working = (r.fish.iter())
+        .filter(|f| f.who.mood == Mood::Working)
+        .count();
     let picked = r.selected_fish().map(|f| Picked {
-        name: &f.who.name,
+        name: f.who.name.clone(),
         mood: f.who.mood,
-        host: &r.zone_of(f).host,
+        host: r.zone_of(f).host.clone(),
         // Its form and work, when its machine publishes agent stats.
         card: f.who.work.map(|w| {
             let form = creature::form_name(f.tier, f.who.species.form);
             format!("Form: {form} · Work: {}", creature::work_line(&w))
         }),
-    });
-    // Along the foot once laid out, clear of the buoys' labels on the surface.
-    let readout = Readout {
-        scene: "reef",
-        hosts: r.zones.len(),
-        agents: r.fish.len(),
-        working: working(r.fish.iter().map(|f| f.who.mood)),
-        waiting,
-        h: r.h,
-        unlaid_y: TITLEBAR_H + 4.0,
-        picked,
         open: Desk::open_fish,
-        next_waiting: Desk::reef_next_waiting,
-        close: Desk::close_reef,
-    };
-    super::playground::readout::readout(readout, p)
+    });
+    hud::readout(
+        t,
+        Readout {
+            key: "reef",
+            h: r.h,
+            hosts: r.zones.len(),
+            agents: r.fish.len(),
+            working,
+            waiting,
+            next: Desk::reef_next_waiting,
+            close: Desk::close_reef,
+            picked,
+        },
+    )
 }

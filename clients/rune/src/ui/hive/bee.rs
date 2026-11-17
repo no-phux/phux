@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! A bee, as the prototype's `bee()`: shadow, beating wings, a striped
 //! abdomen shaded from belly to body, the fuzzy thorax in the harness's fin
 //! colour, head, eyes and antennae, with its tier's flourishes (antenna

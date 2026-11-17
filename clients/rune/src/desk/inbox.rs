@@ -326,7 +326,7 @@ impl Desk {
             Event::ApprovalDecision { outcome, .. } => {
                 match decision_notice(outcome) {
                     Some(text) => self.say(NoticeKind::Error, text),
-                    None => self.notice = None,
+                    None => self.dismiss_notice(),
                 }
                 true
             }

@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! A fish, as the prototype's `drawFish`: its mood's aura, a legendary's
 //! orbiting motes and a level-up's gold ring, then its tier's form (an
 //! exotic one from `forms`, else the reef fish's tail and fins, a body
@@ -148,15 +149,15 @@ pub fn fish(pen: &mut Pen, r: &Reef, pal: &Pal, f: &Fish, labels: &mut Vec<Label
     let named = selected || hovered;
     if mood == Mood::Waiting {
         let text = if named {
-            format!("{} · needs you", f.who.name)
+            format!("{} · {}", f.who.name, Mood::Waiting.word())
         } else {
-            "needs you".to_owned()
+            Mood::Waiting.word().to_owned()
         };
         labels.push(Label {
             at: [f.x, f.y - l * 0.9],
             text,
             badge: None,
-            amber: true,
+            needs_you: true,
             host: None,
         });
     } else if named {
@@ -164,7 +165,7 @@ pub fn fish(pen: &mut Pen, r: &Reef, pal: &Pal, f: &Fish, labels: &mut Vec<Label
             at: [f.x, f.y + l * 0.95],
             text: f.who.name.clone(),
             badge: None,
-            amber: false,
+            needs_you: false,
             host: None,
         });
     }

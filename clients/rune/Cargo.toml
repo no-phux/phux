@@ -20,6 +20,8 @@ phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 # The host palette and hash every client shares.
 phux-config-core = { path = "../../crates/phux-config-core" }
+# The design tokens, the theme solver and the theme catalog every client shares.
+phux-design = { path = "../../crates/phux-design" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).

@@ -1,12 +1,17 @@
-//! One screen-addressable resource: identity, useful detail and a quiet state.
+//! One screen-addressable resource: identity, useful detail and its state
+//! as the status ladder draws it (colour, mark and word together).
+use crate::ui::tokens::Voice;
 use rune::{El, col, el, text};
 
-use super::{CAP_WORD, Desk, INSET, Ink, ROW_HEIGHT, SUBTITLE, control};
+use super::{Desk, Look, control, nested, row_h};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
-use crate::ui::{icons, sidebar};
+use crate::ui::icons;
+use crate::ui::phone::status_mark;
+use crate::ui::tokens::Paint;
 
-pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Ink) -> El {
+pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Look) -> El {
+    let s = &p.space;
     let mark = desk.activities.mark(&resource.id);
     let current = desk
         .connection
@@ -32,7 +37,9 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Ink) -> El {
         resource.session,
         if current { " · current pane" } else { "" }
     );
-    control(
+    // Faint never sits on a wash: the selected row's detail is dim.
+    let detail_ink = p.roles.text.dim.paint();
+    let row = control(
         &format!("phone-session-pane-{}", resource.id),
         &label,
         p,
@@ -42,40 +49,49 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, p: &Ink) -> El {
         },
     )
     .w_full()
-    .min_h(ROW_HEIGHT)
-    .gap(8.0)
+    .min_h(row_h(p))
+    .gap(s.s2)
+    .radius(nested(p))
     .focus_selected(current)
-    .fill(if current {
-        p.current
-    } else {
-        rune::Color::TRANSPARENT
-    })
+    // The mark stays on the title's line when the detail wraps under it.
+    .items_start()
+    .py(s.s2)
     .children([
-        state_mark(mark, p),
+        el().h(p.ty.label.medium().line_px())
+            .center()
+            .child(state_mark(mark, p)),
         col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(INSET)
+            .gap(s.s1)
             .child(
                 text(resource.label.clone())
-                    .font(CAP_WORD)
-                    .color(p.text)
+                    .font(p.ty.label.medium())
+                    .color(p.roles.text.text.paint())
                     .truncate()
                     .a11y_hidden(),
             )
+            // The detail carries the status word: it wraps, never cut, at
+            // the largest text sizes (audit row 25).
             .children((!detail.is_empty()).then(|| {
                 text(detail)
-                    .font(SUBTITLE)
-                    .color(p.dim)
-                    .truncate()
+                    .font(p.ty.caption)
+                    .color(detail_ink)
+                    .wrap()
                     .a11y_hidden()
             })),
-        el().size(16.0, 16.0).children(current.then(|| {
-            rune::icon(&icons::CHECK, 16.0)
-                .color(p.accent)
-                .a11y_hidden()
-        })),
-    ])
+        el().size(p.icon.grid, p.icon.grid)
+            .children(current.then(|| {
+                rune::icon(&icons::CHECK, p.icon.grid)
+                    .color(p.roles.accent.accent_text.paint())
+                    .a11y_hidden()
+            })),
+    ]);
+    if current {
+        crate::ui::lifted(row, p)
+    } else {
+        row
+    }
 }
 
 /// Session membership is already the group heading. Spend the second line on
@@ -111,17 +127,12 @@ fn resource_detail(desk: &Desk, resource: &Addressable, mark: Mark) -> String {
         .to_owned()
 }
 
-/// Quiet work is neutral, live work is a ring, attention is a solid themed
-/// signal. No idle greens or ambient animation competing with what needs you.
-fn state_mark(mark: Mark, p: &Ink) -> El {
-    let dot = if mark.needs_you() {
-        el().size(8.0, 8.0)
-            .radius(INSET)
-            .fill(sidebar::mark_color(mark, p))
-    } else if mark.live() || mark == Mark::Background {
-        el().size(8.0, 8.0).radius(INSET).border(1.5, p.dim)
-    } else {
-        el().size(INSET, INSET).radius(INSET / 2.0).fill(p.dim)
-    };
-    el().size(16.0, 16.0).center().child(dot).a11y_hidden()
+/// The terminal's state mark, a plain shell's slot left empty so names
+/// line up. Never animated: a busy agent costs no frames.
+fn state_mark(mark: Mark, p: &Look) -> El {
+    let size = p.icon.grid;
+    el().size(size, size)
+        .center()
+        .children(status_mark(mark, p.icon.size.md, p))
+        .a11y_hidden()
 }

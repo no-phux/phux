@@ -207,13 +207,16 @@ fn compact_attention_rows_keep_same_session_agents_distinguishable() {
     assert_ne!(text("claude"), text("codex"));
 }
 
-/// An asking window (ADR-0035) carries `!`; a retained exited pane
-/// (ADR-0124) carries `x<status>`. Either flip re-emits.
+/// An asking window (ADR-0035) carries the needs-you mark; a retained
+/// exited pane (ADR-0124) carries the failed mark and its status, or the
+/// ended dash for a clean exit. Either flip re-emits.
 #[test]
 fn window_markers_for_attention_and_retained_exit() {
     for (marked, text) in [
-        (win_attention("shell", false), "shell !"),
-        (win_exited("shell", false, "3"), "shell x3"),
+        (win_attention("shell", false), "shell ●"),
+        (win_exited("shell", false, "3"), "shell ✕3"),
+        (win_exited("shell", false, "sig9"), "shell ✕sig9"),
+        (win_exited("shell", false, "0"), "shell –"),
     ] {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_roster(vec![active_roster()]);
@@ -221,7 +224,7 @@ fn window_markers_for_attention_and_retained_exit() {
         let rect = r(0, 0, 20, 14);
         let plain = strip_ansi(&paint_to_string(&mut p, rect));
         assert!(
-            !plain.contains("shell !") && !plain.contains(" x"),
+            !plain.contains("shell ●") && !plain.contains('✕') && !plain.contains('–'),
             "{plain:?}"
         );
         assert!(p.set_windows(vec![win("editor", true), marked]));

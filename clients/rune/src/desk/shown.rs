@@ -239,8 +239,7 @@ impl Desk {
     /// a warning raised by the reconnect that reopened this view is exactly
     /// what the person is about to need.
     fn clear_passing_notice(&mut self) {
-        self.notice
-            .take_if(|n| n.kind == NoticeKind::Info || n.text == input::INPUT_PAUSED);
+        self.dismiss_notices(|n| n.kind == NoticeKind::Info || n.text == input::INPUT_PAUSED);
     }
 
     /// Open the target terminal once its replica is ready. Retried on every

@@ -7,11 +7,13 @@
 
 #![deny(missing_docs)]
 
+pub mod bell;
 pub mod canvas;
 pub mod client;
 mod fonts;
 pub mod framing;
 pub use fonts::load as load_terminal_font;
+pub mod ink;
 pub mod input;
 pub mod links;
 mod panes;
@@ -23,13 +25,14 @@ pub mod touch;
 pub use panes::PaneRect;
 
 pub use session::approvals::{Approval, CredentialApproval, Requester as ApprovalRequester};
-pub use session::{AgentBadge, AttachPreference, Connection, Outcome, WebDocument};
+pub use session::{AgentBadge, AttachPreference, Connection, Outcome, PaneExit, WebDocument};
 
 use std::cell::RefCell;
 use std::ops::Range;
 
 use futures_channel::oneshot;
 use futures_util::future::{Either, select};
+use phux_design::Roles;
 use phux_vt_web::{Grid, GridCell, Rgb};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -312,7 +315,7 @@ pub struct Mark {
 }
 
 /// What is drawn over the grid's own colors: the selection (inverted) and
-/// search matches.
+/// search matches (`match.*`, never a status tone).
 #[derive(Clone, Debug, Default)]
 pub struct Overlay<'a> {
     /// Row-major indices of the selected cells.
@@ -321,22 +324,9 @@ pub struct Overlay<'a> {
     pub marks: &'a [Mark],
 }
 
-/// Background of a search match, and of the current one; both draw their
-/// text in [`MARK_TEXT`].
-const MARK_BG: Rgb = Rgb {
-    r: 0x8a,
-    g: 0x72,
-    b: 0x1c,
-};
-const CURRENT_MARK_BG: Rgb = Rgb {
-    r: 0xf2,
-    g: 0xb1,
-    b: 0x3a,
-};
-const MARK_TEXT: Rgb = Rgb { r: 0, g: 0, b: 0 };
-
 /// Paint a [`Grid`] onto a 2D canvas context, row by row, under `overlay`
-/// (selected cells inverted, search matches highlighted). When `cursor_on`
+/// (selected cells inverted, search matches highlighted in the roles the
+/// grid's own palette solves to, [`ink::roles_of`]). When `cursor_on`
 /// and the grid's cursor is visible, an inverted block cursor is drawn over
 /// its cell (the caller toggles `cursor_on` to blink). `glass` leaves
 /// default-background cells transparent.
@@ -348,10 +338,10 @@ pub fn render(
     overlay: &Overlay<'_>,
     glass: bool,
 ) {
-    ctx.set_font(&m.font);
-    ctx.set_text_baseline("top");
+    set_cell_text(ctx, m);
+    let roles = ink::roles_of(grid);
     for row in 0..grid.rows {
-        draw_row(ctx, grid, m, row, overlay, glass);
+        draw_row(ctx, grid, m, row, overlay, glass, &roles);
     }
     if cursor_on {
         draw_cursor(ctx, grid, m);
@@ -370,12 +360,23 @@ pub fn render_cursor_row(
     overlay: &Overlay<'_>,
     glass: bool,
 ) {
-    ctx.set_font(&m.font);
-    ctx.set_text_baseline("top");
-    draw_row(ctx, grid, m, grid.cursor_row, overlay, glass);
+    set_cell_text(ctx, m);
+    let roles = ink::roles_of(grid);
+    draw_row(ctx, grid, m, grid.cursor_row, overlay, glass, &roles);
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
+}
+
+/// Glyphs are drawn from their cell's top-left corner. Terminal cells run
+/// left to right whatever the page's direction, so the alignment is the
+/// physical `left`, never `start` (which a right-to-left page would flip).
+fn set_cell_text(ctx: &CanvasRenderingContext2d, m: &Metrics) {
+    // The canvas element is `direction: ltr` (index.html), so `fillText`
+    // never reorders a row's glyphs on a right-to-left page.
+    ctx.set_font(&m.font);
+    ctx.set_text_baseline("top");
+    ctx.set_text_align("left");
 }
 
 /// Paint one row: every cell's background first, then every glyph. A wide
@@ -389,6 +390,7 @@ fn draw_row(
     row: u16,
     overlay: &Overlay<'_>,
     glass: bool,
+    roles: &Roles,
 ) {
     let start = usize::from(row) * usize::from(grid.cols);
     let Some(cells) = grid.cells.get(start..start + usize::from(grid.cols)) else {
@@ -404,14 +406,14 @@ fn draw_row(
         if glass && !cell_has_background(cell, index, overlay) {
             continue;
         }
-        let (_, bg) = cell_colors(grid, cell, index, overlay);
-        ctx.set_fill_style_str(&css(bg));
+        let (_, bg) = cell_colors(grid, cell, index, overlay, roles);
+        ctx.set_fill_style_str(&ink::css_rgb(bg));
         ctx.fill_rect(f64::from(col) * m.cell_w, y, m.cell_w, m.cell_h);
     }
     for (col, cell) in (0..grid.cols).zip(cells) {
         if has_glyph(cell.ch) {
-            let (fg, _) = cell_colors(grid, cell, start + usize::from(col), overlay);
-            ctx.set_fill_style_str(&css(fg));
+            let (fg, _) = cell_colors(grid, cell, start + usize::from(col), overlay, roles);
+            ctx.set_fill_style_str(&ink::css_rgb(fg));
             draw_glyph(ctx, cell.ch, f64::from(col) * m.cell_w, y);
         }
     }
@@ -425,8 +427,15 @@ fn cell_has_background(cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> 
 }
 
 /// A cell's foreground and background under the overlay: the selection
-/// inverts them, a search match takes the match colors.
-fn cell_colors(grid: &Grid, cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> (Rgb, Rgb) {
+/// inverts them; a search match lays `match.bg` under the cell's own ink,
+/// and the current one takes `match.current_bg` and `match.current_fg`.
+fn cell_colors(
+    grid: &Grid,
+    cell: &GridCell,
+    index: usize,
+    overlay: &Overlay<'_>,
+    roles: &Roles,
+) -> (Rgb, Rgb) {
     let (fg, bg) = base_cell_colors(grid, cell);
     if overlay.selected.contains(&index) {
         return (bg, fg);
@@ -436,8 +445,8 @@ fn cell_colors(grid: &Grid, cell: &GridCell, index: usize, overlay: &Overlay<'_>
         .iter()
         .find(|mark| mark.cells.contains(&index))
     {
-        Some(mark) if mark.current => (MARK_TEXT, CURRENT_MARK_BG),
-        Some(_) => (MARK_TEXT, MARK_BG),
+        Some(mark) if mark.current => ink::current_match(roles),
+        Some(_) => (fg, ink::match_fill(roles, bg)),
         None => (fg, bg),
     }
 }
@@ -475,21 +484,17 @@ fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
     let (fg, bg) = cell.map_or((grid.default_fg, grid.default_bg), |cell| {
         base_cell_colors(grid, cell)
     });
-    ctx.set_fill_style_str(&css(fg));
+    ctx.set_fill_style_str(&ink::css_rgb(fg));
     ctx.fill_rect(x, y, m.cell_w, m.cell_h);
     if let Some(c) = cell.filter(|c| has_glyph(c.ch)) {
         ctx.save();
         ctx.begin_path();
         ctx.rect(x, y, m.cell_w, m.cell_h);
         ctx.clip();
-        ctx.set_fill_style_str(&css(bg));
+        ctx.set_fill_style_str(&ink::css_rgb(bg));
         draw_glyph(ctx, c.ch, x, y);
         ctx.restore();
     }
-}
-
-fn css(c: Rgb) -> String {
-    format!("rgb({} {} {})", c.r, c.g, c.b)
 }
 
 #[cfg(test)]

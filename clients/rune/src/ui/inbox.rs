@@ -1,54 +1,49 @@
 //! The inbox: a drawer of everything waiting on you, answerable in place,
 //! and the card a focused pane shows when its agent is asking.
 
+use crate::ui::tokens::Voice;
 use phux_client_runtime::approvals::{Approval, Decision};
+use phux_design::{State, Tone};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, El, Family, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{Cursor, Edge, El, TextStyle, Transition, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, Card, ControlSize, Spinner};
 
-use super::sidebar::mark_color;
-use super::status::notice_line;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words};
+use super::tokens::{Paint, Tier, Tokens};
+use super::{MOD, badge, icons, lifted, pressable};
 use crate::activity::{Ask, Mark};
 use crate::desk::{Desk, NoticeKind};
 use crate::inbox::{self, Item, Waiting};
-use crate::ui::Cover;
 
-#[cfg(test)]
-mod tests;
+mod inline;
+mod reply;
+pub use inline::ask_card;
 
-const WIDTH: f32 = 400.0;
-const CARD_W: f32 = 340.0;
-const TOUCH_TEXT: TextStyle = TextStyle::new(15.0, 400.0).lh(21.0);
-
-fn body_font(phone: bool) -> TextStyle {
-    if phone { TOUCH_TEXT } else { LABEL }
-}
-/// Decisions' chords, shown on their buttons.
-const DENY: &str = if cfg!(target_os = "macos") {
-    "Deny  ⌘⌫"
-} else {
-    "Deny  Ctrl+Shift+⌫"
-};
-const APPROVE: &str = if cfg!(target_os = "macos") {
-    "Approve  ⌘↩"
-} else {
-    "Approve  Ctrl+Shift+↩"
-};
-
-fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
-    row()
-        .gap(5.0)
-        .items_center()
-        .child(
-            el().px(5.0)
-                .radius(4.0)
-                .fill(ink.separator)
-                .child(text(keys).font(CAPTION).color(ink.text)),
-        )
-        .child(text(what).font(CAPTION).color(ink.dim))
+/// What an ask says: the label role on the desktop, the body role on a
+/// phone, where it is read at arm's length.
+fn words_font(t: &Tokens, phone: bool) -> TextStyle {
+    if phone { t.ty.body } else { t.ty.label }
 }
 
-/// One suggested answer. `index` is its ⌘ digit, while the row is picked.
+/// `mark`'s vector mark and tone, colour and shape together.
+fn mark_icon(mark: Mark, t: &Tokens) -> (El, rune::Color) {
+    let size = t.icon.size.sm;
+    match mark.state() {
+        Some(state) => (
+            badge::mark(t, state, size).a11y_hidden(),
+            t.status.state(state).tone.ink,
+        ),
+        None => {
+            let ink = t.status.tone(Tone::Bell).ink;
+            (rune::icon(&icons::BELL, size).color(ink).a11y_hidden(), ink)
+        }
+    }
+}
+
+/// One suggested answer (§4.1.3 OWN chip): the selected wash inside the
+/// control outline. `index` is its ⌘ digit, while the row is picked. While
+/// the answer sends, every chip is disabled, not hidden (§1.10 loading). On
+/// a phone it is a full-width touch target whose answer wraps.
 fn chip(
     terminal: &ResourceId,
     question: &str,
@@ -56,49 +51,62 @@ fn chip(
     index: Option<usize>,
     busy: bool,
     phone: bool,
-    ink: &Ink,
+    t: &Tokens,
 ) -> El {
+    let s = &t.space;
+    let r = &t.roles;
     let (terminal, question, send) = (terminal.clone(), question.to_owned(), answer.to_owned());
-    let mut chip = row()
+    let (ink, edge) = if busy {
+        (r.text.faint, r.border.muted)
+    } else {
+        (r.text.text, r.border.control)
+    };
+    let chip = row()
         .key(format!("chip-{terminal}-{answer}"))
-        .px(9.0)
-        .py(4.0)
-        .gap(6.0)
-        .radius(6.0)
+        .role("button")
+        .label(answer.to_owned())
+        .px(s.s2)
+        .gap(s.icon_gap)
+        .radius(t.radius.sm)
         .items_center()
-        .border(1.0, ink.accent.alpha(0.5))
-        .hover(ink.accent.alpha(0.16))
-        .cursor(rune::Cursor::Pointer);
-    chip = if phone {
-        chip.w_full()
-            .min_h(44.0)
-            .border(1.0, ink.separator)
-            .fill(ink.text.alpha(0.035))
+        .border(s.hairline, edge.paint());
+    let chip = if phone {
+        chip.w_full().min_h(s.touch_min).py(s.s1).child(
+            text(answer.to_owned())
+                .w_full()
+                .font(t.ty.body)
+                .color(ink.paint())
+                .wrap()
+                .a11y_hidden(),
+        )
+    } else {
+        chip.min_h(s.pointer_min)
             .child(
                 text(answer.to_owned())
-                    .w_full()
-                    .font(TOUCH_TEXT)
-                    .color(ink.text)
-                    .wrap(),
+                    .font(t.ty.caption)
+                    .color(ink.paint())
+                    .a11y_hidden(),
             )
-    } else {
-        chip.child(text(answer.to_owned()).font(CAPTION).color(ink.text))
             .children(index.filter(|i| *i < 9).map(|i| {
-                text(format!("{}{}", super::MOD, i + 1))
-                    .font(CAPTION)
-                    .color(ink.dim)
+                text(format!("{MOD}{}", i + 1))
+                    .font(t.ty.readout)
+                    .color(r.text.dim.paint())
+                    .a11y_hidden()
             }))
     };
     if busy {
-        return chip.opacity(0.5);
+        return chip.disabled(true);
     }
-    chip.on_press(move |d: &mut Desk| d.answer(&terminal, &question, &send))
+    t.kit
+        .interactive(chip.fill(r.wash.selected.paint()))
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(move |d: &mut Desk| d.answer(&terminal, &question, &send))
 }
 
-fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, phone: bool, ink: &Ink) -> El {
-    let mut line = if phone { col() } else { row().flex_wrap() }
-        .w_full()
-        .gap(6.0);
+fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, phone: bool, t: &Tokens) -> El {
+    let line = if phone { col() } else { row().flex_wrap() };
+    let mut line = line.w_full().gap(t.space.icon_gap);
     for (index, answer) in ask.suggestions.iter().enumerate() {
         line = line.child(chip(
             terminal,
@@ -107,44 +115,98 @@ fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, phone: bool,
             keyed.then_some(index),
             busy,
             phone,
-            ink,
+            t,
         ));
     }
     line
 }
 
-fn header(dot: Color, title: String, detail: String, phone: bool, ink: &Ink) -> El {
+/// A card's top line: the mark, who, and the state word with its age. A
+/// send in flight shows the kit spinner beside its word. On a phone the
+/// word drops under the name, so a long name keeps its width.
+fn header(mark: Mark, title: String, detail: String, busy: bool, phone: bool, t: &Tokens) -> El {
+    let r = &t.roles;
+    let (icon, _) = mark_icon(mark, t);
+    let name = text(title)
+        .font(t.ty.label.semibold())
+        .color(r.text.text.paint())
+        .truncate()
+        .min_w(0.0)
+        .shrink();
+    let spinner = busy.then(|| {
+        Spinner::new()
+            .size(t.icon.size.sm)
+            .color(r.text.dim.paint())
+            .build(&t.kit)
+    });
+    let detail = text(detail).font(t.ty.caption).color(r.text.dim.paint());
     if phone {
         return col()
             .w_full()
-            .gap(4.0)
+            .gap(t.space.s1)
             .child(
-                text(title)
+                row()
                     .w_full()
-                    .font(TextStyle::new(15.0, 600.0))
-                    .color(ink.text)
-                    .truncate(),
+                    .gap(t.space.s2)
+                    .items_center()
+                    .child(icon)
+                    .child(name),
             )
             .child(
                 row()
                     .w_full()
-                    .gap(6.0)
+                    .gap(t.space.s2)
                     .items_center()
-                    .child(el().size(6.0, 6.0).radius(3.0).fill(dot))
-                    .child(text(detail).font(CAPTION).color(ink.dim)),
+                    .children(spinner)
+                    .child(detail),
             );
     }
     row()
         .w_full()
-        .gap(8.0)
+        .gap(t.space.s2)
         .items_center()
-        .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
-        .child(text(title).font(LABEL_STRONG).color(ink.text).truncate())
+        .child(icon)
+        .child(name)
         .child(el().grow(1.0))
-        .child(text(detail).font(CAPTION).color(ink.dim))
+        .children(spinner)
+        .child(detail)
 }
 
-fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
+/// A reply field in the control outline (`TextInput`'s look). The editor
+/// keeps its own key: native text input finds fields by it.
+pub(super) fn field_shell(input: El, t: &Tokens, enabled: bool) -> El {
+    let s = &t.space;
+    let edge = if enabled {
+        t.roles.border.control
+    } else {
+        t.roles.border.muted
+    };
+    row()
+        .w_full()
+        .min_h(s.row_h)
+        .px(s.s2)
+        .py(s.s1)
+        .radius(t.radius.sm)
+        .items_center()
+        .border(s.hairline, edge.paint())
+        .child(input)
+}
+
+/// A text input that is a full touch target on a phone: at least the touch
+/// minimum tall, its line centred in it, and free to narrow.
+pub(super) fn touch_input(input: El, font: TextStyle, phone: bool, t: &Tokens) -> El {
+    if !phone {
+        return input;
+    }
+    let s = &t.space;
+    input
+        .min_h(s.touch_min)
+        .min_w(0.0)
+        .py((s.touch_min - font.line_px()) / 2.0)
+}
+
+fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El {
+    let r = &t.roles;
     let phone = desk.phone.is_some();
     let who = waiting
         .agent
@@ -162,350 +224,315 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
     } else {
         waiting.mark.word()
     };
-    let mut card = col().w_full().gap(8.0).child(header(
-        mark_color(waiting.mark, ink),
-        who,
-        format!("{word}{age}"),
-        phone,
-        ink,
-    ));
+    let (_, tone) = mark_icon(waiting.mark, t);
     let place = match &waiting.kind {
         Some(kind) if Some(kind) != waiting.agent.as_ref() => {
             format!("{} · {} · {kind}", waiting.label, waiting.session)
         }
         _ => format!("{} · {}", waiting.label, waiting.session),
     };
-    card = card.child(text(place).font(CAPTION).color(ink.dim).truncate());
+    let mut body = col()
+        .w_full()
+        .gap(t.space.s2)
+        .child(header(
+            waiting.mark,
+            who,
+            format!("{word}{age}"),
+            busy,
+            phone,
+            t,
+        ))
+        .child(
+            text(place)
+                .font(t.ty.caption)
+                .color(r.text.dim.paint())
+                .truncate(),
+        );
     let Some(ask) = &waiting.ask else {
         let hint = (waiting.mark == Mark::Blocked).then(|| {
             text("Waiting on you in its terminal.")
-                .font(LABEL)
-                .color(ink.text)
+                .font(words_font(t, phone))
+                .color(r.text.text.paint())
+                .wrap()
         });
-        return card.children(hint);
+        return card(body.children(hint), tone, t);
     };
-    card = card.child(
+    body = body.child(
         text(ask.text.clone())
-            .font(body_font(phone))
-            .color(ink.text)
+            .font(words_font(t, phone))
+            .color(r.text.text.paint())
             .wrap(),
     );
     if !ask.typed() {
-        return card.child(super::questions::panel(desk, &waiting.terminal, ask, ink));
+        let panel = super::questions::panel(desk, &waiting.terminal, ask, t);
+        return card(body.child(panel), tone, t);
     }
     if !ask.suggestions.is_empty() {
-        card = card.child(chips(&waiting.terminal, ask, picked, busy, phone, ink));
+        body = body.child(chips(&waiting.terminal, ask, picked, busy, phone, t));
     }
+    // A phone pins the reply under the list, above the keyboard.
     if picked && !phone {
-        card = card.child(reply(desk, ink));
+        body = body.child(reply::reply(desk, t));
     }
-    card
+    card(body, tone, t)
 }
 
-fn reply(desk: &Desk, ink: &Ink) -> El {
-    let phone = desk.phone.is_some();
-    let mut input = text_input(
-        &desk.inbox.reply,
-        if phone {
-            TOUCH_TEXT
-        } else {
-            TextStyle::new(13.0, 400.0).lh(18.0)
-        },
-    )
-    .key("inbox-reply")
-    .label("Reply to question")
-    .single_line()
-    .grow(1.0)
-    .color(ink.text)
-    .placeholder("Reply…", ink.dim)
-    .on_edit(|d: &mut Desk| &mut d.inbox.reply)
-    .on_input_key(|d: &mut Desk, event, tx| d.inbox_key(event, tx))
-    .on_submit(|d: &mut Desk, tx| d.submit_picked(tx));
+/// The kit card: a rule in the item's tone beside its content.
+fn card(body: El, tone: rune::Color, t: &Tokens) -> El {
+    Card::new().accent(tone).child(body).build(&t.kit)
+}
+
+/// An approval's subject: one truncated line on the desktop; on a phone,
+/// wrapped, so the whole target is readable.
+fn approval_subject(subject: &str, phone: bool, t: &Tokens) -> El {
+    let line = text(subject.to_owned())
+        .font(t.ty.mono_caption)
+        .color(t.roles.text.text.paint());
     if phone {
-        input = input
-            .min_h(44.0)
-            .min_w(0.0)
-            .py((44.0 - TOUCH_TEXT.line_px()) / 2.0);
+        line.w_full().wrap()
+    } else {
+        line.truncate()
     }
-    let mut field = row()
-        .w_full()
-        .px(10.0)
-        .py(if phone { 0.0 } else { 7.0 })
-        .radius(7.0)
-        .fill(ink.separator)
-        .child(input);
-    if phone {
-        field = field.gap(8.0).pr(0.0).child(send_reply(desk, ink));
-    }
-    field
 }
 
-/// A local, named action beside the phone's editor; Return is not its only hint.
-fn send_reply(desk: &Desk, ink: &Ink) -> El {
-    let items = desk.inbox_items();
-    let busy = desk
-        .picked_index(&items)
-        .and_then(|i| items.get(i))
-        .is_some_and(|item| matches!(item, Item::Terminal(w) if desk.answering(&w.terminal)));
-    let mut send = pressable("inbox-send", ink)
-        .label(if busy { "Sending answer" } else { "Send reply" })
-        .size(44.0, 44.0)
-        .radius(22.0)
-        .center()
-        .fill(ink.accent)
-        .preserve_focus_on_press(true)
-        .on_press(|d: &mut Desk| d.send_picked_reply())
-        .child(
-            text(if busy { "…" } else { "↑" })
-                .font(TextStyle::new(22.0, 600.0))
-                .color(ink.raised),
-        );
-    if busy || desk.inbox.reply.text.trim().is_empty() {
-        send = send.disabled(true).opacity(0.45);
-    }
-    send
-}
-
-fn approval_card(approval: &Approval, phone: bool, ink: &Ink) -> El {
+fn approval_card(approval: &Approval, phone: bool, t: &Tokens) -> El {
+    let r = &t.roles;
     let requester = inbox::approval_requester(approval);
-    let mut card = col().w_full().gap(8.0).child(header(
-        ink.danger,
-        inbox::approval_title(approval),
-        inbox::expiry(approval),
-        phone,
-        ink,
-    ));
-    card = card.child(
-        text(format!("Held for {requester}"))
-            .font(CAPTION)
-            .color(ink.dim)
-            .truncate(),
-    );
+    let mono = t.ty.mono_caption;
+    let mut body = col()
+        .w_full()
+        .gap(t.space.s2)
+        .child(header(
+            Mark::Blocked,
+            inbox::approval_title(approval),
+            inbox::expiry(approval),
+            false,
+            phone,
+            t,
+        ))
+        .child(
+            text(format!("Held for {requester}"))
+                .font(t.ty.caption)
+                .color(r.text.dim.paint())
+                .truncate(),
+        );
     if let Some(credential) = &approval.credential {
         for detail in inbox::credential_details(approval) {
-            card = card.child(text(detail).font(CAPTION).color(ink.text).wrap());
+            body = body.child(
+                text(detail)
+                    .font(t.ty.caption)
+                    .color(r.text.text.paint())
+                    .wrap(),
+            );
         }
         for reference in &credential.request.references {
-            card = card.child(
+            body = body.child(
                 text(reference.clone())
-                    .font(CAPTION.family(Family::SystemMono))
-                    .color(ink.text)
+                    .font(mono)
+                    .color(r.text.text.paint())
                     .wrap(),
             );
         }
     }
     for subject in &approval.subjects {
-        card = card.child(approval_subject(subject, phone, ink));
+        body = body.child(approval_subject(subject, phone, t));
     }
-    let decide = |decision, key: &'static str, label: &'static str, primary: bool| {
+    // Deny is destructive; Approve is the one primary action (§1.10). A
+    // phone has no chords to show, and each is a full touch target.
+    let decide = |decision, label: &'static str, chord: &'static str, variant| {
         let id = approval.id.clone();
-        let mut button = pressable(format!("decide-{key}-{id}"), ink)
-            .grow(1.0)
-            .py(6.0)
-            .radius(6.0)
-            .center()
-            .on_press(move |d: &mut Desk| d.decide(&id, decision))
-            .child(
-                text(label)
-                    .font(if phone { TOUCH_TEXT } else { CAPTION })
-                    .color(ink.text),
-            );
-        if phone {
-            button = button.min_h(44.0).min_w(44.0);
-        }
-        if primary {
-            button.fill(ink.accent.alpha(0.3))
+        let key = format!("decide-{label}-{id}");
+        let button = Button::new(label)
+            .variant(variant)
+            .control_size(ControlSize::Large);
+        let button = if phone {
+            button
         } else {
-            button.border(1.0, ink.separator)
+            button.shortcut(format!("{MOD}{chord}"))
+        };
+        let button = button
+            .on_press(move |d: &mut Desk| d.decide(&id, decision))
+            .build(&t.kit)
+            .key(key)
+            .grow(1.0);
+        if phone {
+            button.min_h(t.space.touch_min).min_w(t.space.touch_min)
+        } else {
+            button
         }
     };
-    card.child(
+    body = body.child(
         row()
             .w_full()
-            .gap(6.0)
-            .child(decide(
-                Decision::Deny,
-                DENY,
-                if phone { "Deny" } else { DENY },
-                false,
-            ))
+            .gap(t.space.icon_gap)
+            .child(decide(Decision::Deny, "Deny", "⌫", ButtonVariant::Danger))
             .child(decide(
                 Decision::Approve,
-                APPROVE,
-                if phone { "Approve" } else { APPROVE },
-                true,
+                "Approve",
+                "↩",
+                ButtonVariant::Submit,
             )),
-    )
+    );
+    card(body, t.status.state(State::NeedsYou).tone.ink, t)
 }
 
-fn approval_subject(subject: &str, phone: bool, ink: &Ink) -> El {
-    let label = text(subject.to_owned())
-        .font(
-            if phone {
-                TextStyle::new(12.0, 400.0)
-            } else {
-                CAPTION
-            }
-            .family(Family::SystemMono),
-        )
-        .color(ink.text);
-    if phone {
-        label.w_full().wrap()
-    } else {
-        label.truncate()
-    }
-}
-
-fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, ink: &Ink) -> El {
+fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, t: &Tokens) -> El {
     let body = match item {
-        Item::Approval(approval) => approval_card(approval, desk.phone.is_some(), ink),
-        Item::Terminal(waiting) => waiting_card(desk, waiting, picked, ink),
+        Item::Approval(approval) => approval_card(approval, desk.phone.is_some(), t),
+        Item::Terminal(waiting) => waiting_card(desk, waiting, picked, t),
     };
-    let mut card = pressable(format!("inbox-item-{index}"), ink)
+    let row = el()
+        .key(format!("inbox-item-{index}"))
         .w_full()
-        .padding(12.0)
-        .radius(10.0)
-        .fill(if picked {
-            ink.selected
-        } else {
-            ink.text.alpha(0.025)
-        })
+        .padding(t.space.s1)
+        .radius(t.radius.md)
+        .border(t.space.hairline, t.roles.border.muted.paint());
+    let row = if picked { lifted(row, t) } else { row };
+    t.kit
+        .interactive(row)
+        .cursor(Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.pick_item(index, tx))
-        .child(body);
-    if desk.phone.is_some() {
-        card = card.radius(12.0).fill(ink.text.alpha(0.035)).border(
-            1.0,
-            if picked {
-                ink.accent.alpha(0.4)
-            } else {
-                ink.separator
-            },
-        );
-    }
-    card
+        .child(body)
 }
 
-fn empty(ink: &Ink) -> El {
+/// Nothing waiting: a neutral illustration (no status tone is spent when
+/// nothing needs you), and what lands here.
+fn empty(t: &Tokens) -> El {
+    let r = &t.roles;
     col()
         .w_full()
-        .py(48.0)
-        .gap(6.0)
+        .py(t.space.s12)
+        .gap(t.space.s2)
         .items_center()
         .child(
-            text("✓")
-                .font(TextStyle::new(22.0, 500.0))
-                .color(mark_color(Mark::Succeeded, ink)),
+            rune::icon(&icons::INBOX, t.icon.size.xl)
+                .color(r.text.faint.paint())
+                .a11y_hidden(),
         )
-        .child(text("Nothing needs you").font(LABEL_STRONG).color(ink.text))
+        .child(
+            text("Nothing needs you")
+                .font(t.ty.body)
+                .color(r.text.text.paint()),
+        )
         .child(
             text("Asks, approvals and finished agents land here.")
-                .font(CAPTION)
-                .color(ink.dim),
+                .font(t.ty.caption)
+                .color(r.text.dim.paint()),
         )
 }
 
-fn footer(desk: &Desk, ink: &Ink) -> El {
-    let mut foot = row().w_full().px(14.0).py(8.0).gap(12.0).items_center();
-    foot = match &desk.notice {
-        Some(notice) if desk.phone.is_some() && notice.kind == NoticeKind::Info => return el(),
-        Some(notice) => foot.child(notice_line(Some(notice), ink)),
-        None if desk.phone.is_some() => return el(),
+/// The drawer's foot: a notice, or the keys that apply. A phone has no
+/// keys to hint, so without a notice it has no foot.
+fn footer(desk: &Desk, empty: bool, t: &Tokens) -> El {
+    let s = &t.space;
+    let foot = row().w_full().px(s.s3).py(s.s2).gap(s.s3).items_center();
+    match &desk.notice {
+        // A phone's confirmation sits in the fixed header (`title`).
+        Some(notice) if desk.phone.is_some() && notice.kind == NoticeKind::Info => el(),
+        Some(notice) => foot.child(notice_words(notice, t)),
+        None if desk.phone.is_some() => el(),
+        // Only the hints that apply: nothing to move to or open when empty.
+        None if empty => foot.child(key_hint("esc", "close", t)),
         None => foot
-            .child(pick_hint("↑↓", "move", ink))
-            .child(pick_hint("↩", "send or open", ink))
-            .child(pick_hint("esc", "close", ink)),
-    };
-    foot
+            .child(key_hint("↑↓", "move", t))
+            .child(key_hint("↩", "send or open", t))
+            .child(key_hint("esc", "close", t)),
+    }
 }
 
-fn title(desk: &Desk, count: usize, ink: &Ink) -> El {
-    let phone = desk.phone.is_some();
-    let heading = text("Inbox")
-        .font(TextStyle::new(if phone { 20.0 } else { 14.0 }, 650.0))
-        .color(ink.text);
-    let count = text(count.to_string()).font(CAPTION).color(ink.dim);
-    let mut title = row()
+/// The drawer's title and count. A phone has no Escape key, so it also
+/// shows Close, a full touch target that dismisses as Escape does.
+fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
+    let s = &t.space;
+    let r = &t.roles;
+    let heading = text("Inbox").font(t.ty.title).color(r.text.text.paint());
+    let count = text(count.to_string())
+        .font(t.ty.readout)
+        .color(r.text.dim.paint());
+    let title = row()
         .w_full()
-        .h(if desk.phone.is_some() { 56.0 } else { 48.0 })
-        .px(16.0)
+        .h(s.s12)
+        .px(s.s4)
         .items_center()
         .justify_between();
-    if phone {
-        let mut leading = col()
-            .grow(1.0)
-            .min_w(0.0)
-            .gap(2.0)
-            .child(row().gap(10.0).items_center().child(heading).child(count));
-        // Confirmations stay in the fixed header; errors wrap beside the editor.
-        if let Some(notice) = &desk.notice
-            && notice.kind == NoticeKind::Info
-        {
-            leading = leading.child(
-                text(notice.text.clone())
-                    .key("inbox-receipt-status")
-                    .role("status")
-                    .font(CAPTION)
-                    .color(ink.text)
-                    .w_full()
-                    .truncate(),
-            );
-        }
-        title = title.gap(8.0).child(leading);
-        title = title.child(
-            pressable("inbox-close", ink)
-                .label("Close Inbox")
-                .min_w(44.0)
-                .h(44.0)
-                .px(8.0)
-                .radius(7.0)
-                .center()
-                .child(text("Close").font(TOUCH_TEXT).color(ink.accent))
-                .on_press_tx(|d: &mut Desk, tx| {
-                    // The same dismissal as Escape, including clearing the draft.
-                    d.close_inbox();
-                    tx.blur();
-                }),
+    if desk.phone.is_none() {
+        return title.child(heading).child(count);
+    }
+    let close = pressable("inbox-close", t)
+        .role("button")
+        .label("Close Inbox")
+        .min_w(s.touch_min)
+        .h(s.touch_min)
+        .px(s.s2)
+        .radius(t.radius.sm)
+        .center()
+        .child(
+            text("Close")
+                .font(t.ty.body)
+                .color(r.accent.accent_text.paint())
+                .a11y_hidden(),
+        )
+        .on_press_tx(|d: &mut Desk, tx| {
+            // The same dismissal as Escape, including clearing the draft.
+            d.close_inbox();
+            tx.blur();
+        });
+    let mut leading = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(s.s1)
+        .child(row().gap(s.s2).items_center().child(heading).child(count));
+    // Confirmations stay in the fixed header, so they do not displace the
+    // question above a keyboard; errors wrap in the footer.
+    if let Some(notice) = &desk.notice
+        && notice.kind == NoticeKind::Info
+    {
+        leading = leading.child(
+            text(notice.text.clone())
+                .key("inbox-receipt-status")
+                .role("status")
+                .font(t.ty.caption)
+                .color(r.text.text.paint())
+                .w_full()
+                .truncate(),
         );
-    } else {
-        title = title.child(heading).child(count);
     }
-    title
+    title.gap(s.s2).child(leading).child(close)
 }
 
-/// On phones the active reply stays above the keyboard while questions scroll.
-fn phone_reply(desk: &Desk, items: &[Item], picked: Option<usize>, ink: &Ink) -> Option<El> {
-    desk.phone.as_ref()?;
-    let Item::Terminal(waiting) = items.get(picked?)? else {
-        return None;
-    };
-    if !waiting.ask.as_ref()?.typed() {
-        return None;
-    }
-    Some(col().w_full().px(14.0).py(8.0).child(reply(desk, ink)))
-}
-
-pub fn view(desk: &Desk, ink: &Ink) -> El {
+/// The drawer, on the trailing edge: it slides in on the drawer spring and
+/// fades out.
+pub fn view(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
+    let s = &t.space;
+    let r = &t.roles;
     let items = desk.inbox_items();
     let picked = desk.picked_index(&items);
-    let mut list = col().key("inbox-list").w_full().padding(10.0).gap(8.0);
+    let mut list = col().key("inbox-list").w_full().padding(s.s2).gap(s.s2);
     for (index, item) in items.iter().enumerate() {
-        list = list.child(item_row(desk, item, index, Some(index) == picked, ink));
+        list = list.child(item_row(desk, item, index, Some(index) == picked, t));
     }
     if items.is_empty() {
-        list = list.child(empty(ink));
+        list = list.child(empty(t));
     }
+    let rule = |key: &'static str| {
+        rune::rule(s.hairline, r.border.base.paint())
+            .w_full()
+            .key(key)
+    };
     let drawer = col()
         .key("inbox")
         // The phone form is narrower than the drawer.
         .w_full()
-        .max_w(WIDTH)
+        .max_w(EXTENTS.drawer_w)
         .h_full()
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.4))
-        .transition(Transition::opacity())
-        .child(title(desk, items.len(), ink))
-        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-header-rule"))
+        .border(s.hairline, r.border.base.paint())
+        .transition(Transition::asymmetric(
+            Transition::move_edge(Edge::Trailing).springs(t.motion.drawer),
+            Transition::opacity(),
+        ))
+        .child(title(desk, items.len(), t))
+        .child(rule("inbox-header-rule"))
         .child(
             col()
                 .key("inbox-scroll")
@@ -517,110 +544,22 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
                 })
                 .child(list),
         )
-        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
-        .children(phone_reply(desk, &items, picked, ink))
-        .child(footer(desk, ink));
-    el().key("inbox-scrim")
-        .cover()
-        .fill(Color::BLACK.alpha(0.16))
-        .transition(Transition::opacity())
-        .modal(true, |d: &mut Desk| d.close_inbox())
-        .label("Inbox")
+        .child(rule("inbox-footer-rule"))
+        .children(reply::phone_reply(desk, &items, picked, t))
+        .child(footer(desk, items.is_empty(), t));
+    let drawer = t.elevate(
+        glass(
+            drawer,
+            t,
+            r.layer.raised,
+            Glass::Overlay,
+            desk.phone.is_some(),
+        ),
+        Tier::Overlay,
+    );
+    super::scrim(el().key("inbox-scrim"), "Inbox", Some(Desk::close_inbox), t)
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 
-/// A visible inline question and its text-input ownership.
-pub struct AskCard {
-    pub content: El,
-    /// Only a field in the card actually shown can take the terminal's IME.
-    pub editing: bool,
-}
-
-fn inline_size(area: [f32; 2], phone: bool) -> Option<[f32; 2]> {
-    let width = CARD_W.min(area[0] - 20.0);
-    let height = area[1] - 20.0;
-    if width < 160.0 || (phone && height < 64.0) {
-        return None;
-    }
-    Some([width, height])
-}
-
-/// A focused pane's agent is asking: the question over the pane's corner,
-/// answerable with a click. Hidden while find or the inbox covers it.
-pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
-    if desk.connection.find.is_some() || desk.inbox.open {
-        return None;
-    }
-    let pane = desk.connection.topology.as_ref()?.pane(id)?;
-    let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
-    let [width, height] = inline_size(area, desk.phone.is_some())?;
-    let busy = desk.answering(id);
-    let who = desk.activities.agent_name(id).unwrap_or("Agent").to_owned();
-    let mut card = col()
-        .key(format!("ask-{id}"))
-        .absolute(super::PAD + area[0] - width - 10.0, super::PAD + 10.0)
-        .w(width)
-        .padding(12.0)
-        .gap(8.0)
-        .radius(10.0)
-        .fill(ink.raised)
-        .border(1.0, mark_color(Mark::Blocked, ink).alpha(0.5))
-        .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
-        .child(header(
-            mark_color(Mark::Blocked, ink),
-            who,
-            ask_hint(busy, ask.typed(), desk.phone.is_some()),
-            desk.phone.is_some(),
-            ink,
-        ))
-        .child(
-            text(ask.text.clone())
-                .font(body_font(desk.phone.is_some()))
-                .color(ink.text)
-                .wrap(),
-        );
-    if desk.phone.is_some() {
-        card = card.max_h(height).scroll(rune::ScrollSpec {
-            stick_bottom: false,
-        })
-        // Keep background/text presses here instead of the terminal's
-        // immediate drag handler, so Rune can pan this scroll viewport.
-            .role("group")
-            .label("Agent question")
-            .on_background_press(|_: &mut Desk| {});
-    }
-    Some(inline_answers(desk, id, &ask, card, ink))
-}
-
-fn inline_answers(desk: &Desk, id: &ResourceId, ask: &Ask, mut card: El, ink: &Ink) -> AskCard {
-    if !ask.typed() {
-        return AskCard {
-            editing: desk.inbox.questions.field_focused(id, &ask.id),
-            content: card.child(super::questions::panel(desk, id, ask, ink)),
-        };
-    }
-    if !ask.suggestions.is_empty() {
-        card = card.child(chips(
-            id,
-            ask,
-            false,
-            desk.answering(id),
-            desk.phone.is_some(),
-            ink,
-        ));
-    }
-    AskCard {
-        content: card,
-        editing: false,
-    }
-}
-
-fn ask_hint(busy: bool, typed: bool, phone: bool) -> String {
-    match (busy, typed, phone) {
-        (true, _, _) => "sending…".to_owned(),
-        (false, true, true) => "Reply in Inbox".to_owned(),
-        (false, true, false) => format!("{}I to reply", super::MOD),
-        (false, false, _) => "ACP".to_owned(),
-    }
-}
+#[cfg(test)]
+mod tests;

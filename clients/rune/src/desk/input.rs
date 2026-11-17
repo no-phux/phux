@@ -259,9 +259,7 @@ impl Desk {
         }
         self.nudge_typing(&client);
         self.reclaim_fits();
-        if self.notice.as_ref().is_some_and(|n| n.text == INPUT_PAUSED) {
-            self.notice = None;
-        }
+        self.dismiss_notices(|n| n.text == INPUT_PAUSED);
         if frame.is_some_and(|f| has_selection(&f))
             && let Some(engine) = client.engine()
         {

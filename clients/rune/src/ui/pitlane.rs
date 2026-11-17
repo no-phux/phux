@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The pit lane: the fleet as a race circuit, each machine a team garage on
 //! the pit lane, every machine's agents it can reach as race cars in their
 //! harness's livery acting out their state. A press on a car selects it; a
@@ -9,11 +10,13 @@
 //! one canvas, then the garages' boards, name pills, the cars' press targets
 //! and the readout. The camera stays put: a car laps too fast to follow.
 
+use crate::ui::Paint;
 use rune::{Cx, El, canvas, el, row, text};
 
+use super::Tokens;
+use super::playground::hud::{self, Picked, Readout};
+use super::playground::labels;
 use super::playground::pen::{Pen, rgba};
-use super::playground::readout::{Picked, Readout, working};
-use super::{CAPTION, Ink, TITLEBAR_H};
 use crate::creature;
 use crate::desk::Desk;
 use crate::pitlane::{AMBER, Mode, PitLane, RANKS};
@@ -22,11 +25,13 @@ use crate::playground::{Mood, Pt};
 mod car;
 mod ground;
 
-const ON_AMBER: [f32; 3] = [42.0, 22.0, 0.0];
 const PILL_H: f32 = 19.0;
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    desk.pitlane.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.pitlane
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.pitlane.still.set(cx.is_reduced_motion());
     let r = &desk.pitlane.scene;
     let count = |m: Mood| r.cars.iter().filter(|c| c.who.mood == m).count();
@@ -44,12 +49,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_pitlane)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.pitlane_laid_out(rect[2], rect[3]));
     if r.trk.is_empty() {
-        return root.child(readout(r, waiting, p));
+        return root.child(foot(r, waiting, t));
     }
     let (day, night) = grounds(desk, r);
 
@@ -98,10 +103,10 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
             }
         }))
         .child(full(pen.into_shape(), "pitlane-cars").on_press(Desk::pitlane_deselect))
-        .children(r.garages.iter().enumerate().map(|(i, _)| board(r, i)))
-        .children(pills(r))
+        .children(r.garages.iter().enumerate().map(|(i, _)| board(r, i, t)))
+        .children(pills(r, t))
         .children(targets)
-        .child(readout(r, waiting, p))
+        .child(foot(r, waiting, t))
 }
 
 /// The grounds by day and by night, redrawn only when the layout changes.
@@ -114,8 +119,8 @@ fn grounds(desk: &Desk, r: &PitLane) -> (rune::Shape, rune::Shape) {
 }
 
 /// A garage's board under it: the machine's name in its team colour, in
-/// whichever ink reads on it, and the amber count of its agents that need you.
-fn board(r: &PitLane, i: usize) -> El {
+/// whichever ink reads on it, and the count of its agents that need you.
+fn board(r: &PitLane, i: usize, t: &Tokens) -> El {
     let g = &r.garages[i];
     let waiting = r.waiting_in(i);
     let at = r.to_s(
@@ -135,25 +140,14 @@ fn board(r: &PitLane, i: usize) -> El {
                 .radius(4.0)
                 .items_center()
                 .fill(rgba(g.c, 1.0))
-                .child(text(g.host.to_uppercase()).font(CAPTION).color(ink))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .border(1.0, ink)
-                        .child(
-                            text(waiting.to_string())
-                                .font(CAPTION)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .child(text(g.host.to_uppercase()).font(t.ty.caption).color(ink))
+                .children((waiting > 0).then(|| labels::count(t, waiting, 15.0))),
         )
 }
 
 /// Name pills over the cars that need you, the selected one and the
 /// hovered one, stacked so none overlaps.
-fn pills(r: &PitLane) -> Vec<El> {
+fn pills(r: &PitLane, t: &Tokens) -> Vec<El> {
     let mut shown: Vec<_> = r
         .cars
         .iter()
@@ -169,39 +163,24 @@ fn pills(r: &PitLane) -> Vec<El> {
     let items: Vec<(String, bool, Pt, f32)> = shown
         .iter()
         .map(|c| {
-            let amber = c.who.mood == Mood::Waiting;
-            let text = if amber {
-                format!("{} · needs you", c.who.name)
+            let needs_you = c.who.mood == Mood::Waiting;
+            let text = if needs_you {
+                format!("{} · {}", c.who.name, Mood::Waiting.word())
             } else {
                 c.who.name.clone()
             };
             // ponytail: an estimated width (the pill sizes to its text) for
             // keeping pills apart and in view; measure if they ever overlap.
-            let w = text.chars().count() as f32 * 5.6 + 14.0;
-            (text, amber, [c.x, c.y - c.r(r.k) - 14.0], w)
+            let w = labels::tag_w(t, text.chars().count(), needs_you);
+            (text, needs_you, [c.x, c.y - c.r(r.k) - 14.0], w)
         })
         .collect();
     let spots = stack(&items.iter().map(|i| (i.2, i.3)).collect::<Vec<_>>(), r.w);
     items
         .into_iter()
         .zip(spots)
-        .map(|((label, amber, _, _), [x, y])| {
-            let (fill, ink) = if amber {
-                (rgba(AMBER, 0.96), rgba(ON_AMBER, 1.0))
-            } else {
-                (
-                    rgba([10.0, 14.0, 20.0], 0.78),
-                    rgba([238.0, 242.0, 246.0], 1.0),
-                )
-            };
-            row()
-                .absolute(x, y - PILL_H / 2.0)
-                .h(PILL_H)
-                .px(7.0)
-                .radius(PILL_H / 2.0)
-                .items_center()
-                .fill(fill)
-                .child(text(label).font(CAPTION).color(ink))
+        .map(|((label, needs_you, _, _), [x, y])| {
+            labels::name_tag(t, label, needs_you).absolute(x, y - PILL_H / 2.0)
         })
         .collect()
 }
@@ -228,11 +207,15 @@ fn stack(pills: &[(Pt, f32)], view_w: f32) -> Vec<Pt> {
     placed.into_iter().map(|p| [p[0], p[1]]).collect()
 }
 
-fn readout(r: &PitLane, waiting: usize, p: &Ink) -> El {
+/// The readout's counts and the picked car's card.
+fn foot(r: &PitLane, waiting: usize, t: &Tokens) -> El {
+    let working = (r.cars.iter())
+        .filter(|c| c.who.mood == Mood::Working)
+        .count();
     let picked = r.selected_car().map(|c| Picked {
-        name: &c.who.name,
+        name: c.who.name.clone(),
         mood: c.who.mood,
-        host: r.garages.get(r.host_of(c)).map_or("", |g| g.host.as_str()),
+        host: (r.garages.get(r.host_of(c))).map_or_else(String::new, |g| g.host.clone()),
         // Its rank and work, when its machine publishes agent stats.
         card: c.who.work.map(|w| {
             format!(
@@ -241,21 +224,22 @@ fn readout(r: &PitLane, waiting: usize, p: &Ink) -> El {
                 creature::work_line(&w)
             )
         }),
-    });
-    let readout = Readout {
-        scene: "pitlane",
-        hosts: r.garages.len(),
-        agents: r.cars.len(),
-        working: working(r.cars.iter().map(|c| c.who.mood)),
-        waiting,
-        h: r.h,
-        unlaid_y: TITLEBAR_H + 4.0,
-        picked,
         open: Desk::open_car,
-        next_waiting: Desk::pitlane_next_waiting,
-        close: Desk::close_pitlane,
-    };
-    super::playground::readout::readout(readout, p)
+    });
+    hud::readout(
+        t,
+        Readout {
+            key: "pitlane",
+            h: r.h,
+            hosts: r.garages.len(),
+            agents: r.cars.len(),
+            working,
+            waiting,
+            next: Desk::pitlane_next_waiting,
+            close: Desk::close_pitlane,
+            picked,
+        },
+    )
 }
 
 #[cfg(test)]

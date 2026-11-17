@@ -77,7 +77,7 @@ impl SidebarPainter {
         let rule_x = rule.column(rect.w);
         for x in (0..rect.w).filter(|x| *x != rule_x) {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_bg(self.theme.selection_bg);
+                cell.set_style(self.theme.on_selection(Style::default()));
             }
         }
     }
@@ -186,10 +186,11 @@ impl SidebarPainter {
     /// same layout the hit test reads.
     fn agent_filter_line(&self, text_w: u16) -> Line<'static> {
         let chips = agent_filter::filter_chips(text_w, self.counts().agent_host_chip);
-        let active = Style::default()
-            .fg(self.theme.accent)
-            .bg(self.theme.selection_bg)
-            .add_modifier(Modifier::BOLD);
+        let active = self.theme.on_selection(
+            Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        );
         let idle = Style::default().fg(self.theme.dim);
         let mut spans = Vec::with_capacity(chips.len() * 2);
         let mut x = 0u16;

@@ -6,32 +6,43 @@ use phux_client_runtime::control::SessionDescriptor;
 use phux_client_runtime::project_groups::Block;
 use rune::{El, col, el, memo, row, text};
 
-use super::super::{CAPTION, Ink, LABEL};
-use super::waiting_badge;
+use super::super::{Paint, Tokens};
+use super::{Counts, histogram};
 use crate::palette::project_blocks;
 
 /// The `└` a linked worktree's name follows.
-pub(super) fn branch_mark(ink: &Ink) -> El {
-    text("└").font(CAPTION).color(ink.dim)
+pub(super) fn branch_mark(t: &Tokens) -> El {
+    text("└")
+        .font(t.ty.caption)
+        .color(t.roles.text.dim.paint())
+        .a11y_hidden()
 }
 
 /// A project's name over its sessions, and what needs you across them.
-fn project_header(name: &str, waiting: usize, ink: &Ink) -> El {
+fn project_header(name: &str, waiting: usize, t: &Tokens) -> El {
+    let s = &t.space;
     row()
         .w_full()
-        .pt(12.0)
-        .pb(2.0)
-        .px(8.0)
-        .gap(6.0)
+        .pt(s.s3)
+        .pb(s.s0_5)
+        .px(s.s2)
+        .gap(s.icon_gap)
         .items_center()
+        .role("heading")
         .child(
             text(name.to_owned())
-                .font(LABEL)
-                .color(ink.text.alpha(0.82))
+                .font(t.ty.label)
+                .color(t.roles.text.dim.paint())
                 .truncate(),
         )
         .child(el().grow(1.0))
-        .children((waiting > 0).then(|| waiting_badge(waiting, ink)))
+        .child(histogram(
+            Counts {
+                needs_you: waiting,
+                ..Counts::default()
+            },
+            t,
+        ))
 }
 
 /// `sessions`, already in the stored order, onto `list` in project order:
@@ -42,8 +53,8 @@ pub(super) fn grouped(
     mut list: El,
     sessions: &[&SessionDescriptor],
     waiting: impl Fn(u32) -> usize,
-    theme: Option<&str>,
-    ink: &Ink,
+    version: u64,
+    t: &Tokens,
     rows: impl Fn(&SessionDescriptor, bool) -> Vec<El>,
 ) -> El {
     for block in project_blocks(sessions, waiting) {
@@ -52,11 +63,11 @@ pub(super) fn grouped(
             Block::Project(project) => list
                 .child(memo(
                     format!("project-{}", project.key),
-                    (&project.name, project.needs_you, theme),
-                    || project_header(&project.name, project.needs_you, ink),
+                    (&project.name, project.needs_you, version),
+                    || project_header(&project.name, project.needs_you, t),
                 ))
                 .child(
-                    col().w_full().gap(1.0).pl(10.0).children(
+                    col().w_full().gap(t.space.s0_5).pl(t.space.s3).children(
                         project
                             .members
                             .iter()

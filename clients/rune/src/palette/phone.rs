@@ -43,12 +43,12 @@ const DESKTOP: [Shortcut; 11] = [
 /// computer at a time, so its machines command says what it does there.
 fn action(command: &Command, native: bool) -> Item {
     let title = if native && command.action == Shortcut::Machines {
-        "Change Computer"
+        "Change computer".to_owned()
     } else {
-        command.title
+        command.label()
     };
     Item {
-        title: title.to_owned(),
+        title,
         detail: String::new(),
         kind: "action",
         target: Target::Action(command.action),
@@ -87,8 +87,8 @@ mod tests {
     fn a_phone_lists_its_commands_first_without_chords_or_desktop_rows() {
         let list = items(None, &[], true, Vec::new());
         let titles: Vec<&str> = list.iter().map(|item| item.title.as_str()).collect();
-        assert_eq!(&titles[..3], ["New Tab", "Paste", "Find in Terminal"]);
-        assert!(titles.contains(&"Change Computer"));
+        assert_eq!(&titles[..3], ["New tab", "Paste", "Find in terminal"]);
+        assert!(titles.contains(&"Change computer"));
         assert!(!titles.contains(&"Switch or Add Machine"));
         for desktop in ["Toggle Sidebar", "Keyboard Shortcuts", "Check for Updates"] {
             assert!(!titles.contains(&desktop), "{desktop}");
@@ -102,7 +102,7 @@ mod tests {
         assert!(
             preview
                 .iter()
-                .any(|item| item.title == "Switch or Add Machine")
+                .any(|item| item.title == "Switch or add machine")
         );
     }
 }

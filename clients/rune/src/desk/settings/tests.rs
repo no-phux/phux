@@ -4,7 +4,7 @@ use rune::{Env, Runtime, TouchPhase};
 use serde_json::{Value, json};
 
 use crate::desk::SettingsCategory as Category;
-use crate::desk::{Desk, Notice, NoticeKind};
+use crate::desk::{Desk, NoticeKind};
 use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::launch::Resolved;
 
@@ -235,7 +235,7 @@ fn the_tour_is_offered_once() {
         .expect("a first connection offers the tour");
     assert_eq!(first.kind, NoticeKind::Tip);
     assert!(first.action.is_some());
-    desk.notice = None;
+    desk.clear_notices();
     desk.offer_tour();
     assert!(
         desk.notice.is_none(),
@@ -247,12 +247,7 @@ fn the_tour_is_offered_once() {
 fn a_notice_is_announced_and_an_error_at_once() {
     for (kind, role) in [(NoticeKind::Info, "status"), (NoticeKind::Error, "alert")] {
         let mut desk = Desk::new(&Resolved::offline("a11y"));
-        desk.notice = Some(Notice {
-            kind,
-            text: "Copied".into(),
-            action: None,
-            expires: f64::MAX,
-        });
+        desk.say(kind, "Copied");
         let tree = runtime(desk).accessibility_json();
         let notice = find_by(&tree, "role", role);
         assert_eq!(notice["name"], "Copied", "{kind:?}");

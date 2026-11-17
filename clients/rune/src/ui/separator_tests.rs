@@ -4,25 +4,24 @@ use super::*;
 use rune::{Env, Runtime};
 
 fn sheet(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = tokens_for(cx.system_dark(), desk.settings.theme);
     Sheet {
         key: "test-sheet",
         title: "Sheet",
         width: 420.0,
         top: 40.0,
-        scrim: 0.2,
         close: |_| {},
     }
     .build(None, el().h(80.0), el().h(20.0), &p)
 }
 
 fn palette(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = tokens_for(cx.system_dark(), desk.settings.theme);
     super::palette::view(desk, &p, 40.0)
 }
 
 fn inbox(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
+    let p = tokens_for(cx.system_dark(), desk.settings.theme);
     super::inbox::view(desk, &p)
 }
 

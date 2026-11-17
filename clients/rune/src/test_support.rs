@@ -9,6 +9,7 @@ use rune::{Env, Runtime};
 use crate::desk::{Desk, Shown};
 use crate::launch::Resolved;
 
+pub mod server;
 pub mod terminal;
 pub mod visual;
 

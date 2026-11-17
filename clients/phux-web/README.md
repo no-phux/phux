@@ -117,6 +117,28 @@ wasm-pack test --node                 # session/codec, input, search, and link r
 nix develop .#browser -c bun tools/main.ts web-browser
 ```
 
+## Design tokens
+
+The client's colours, type and spacing come from phux-brand. Nothing in
+`src/` or `index.html` spells its own. The canvas paints with `phux-design`
+roles. `src/ink.rs` solves them from the pane's palette, or uses the house
+look when the program set no palette. The backdrop is the ground, the pane
+borders are the strong and muted borders, and search hits use the match
+roles. The DOM reads the same roles from `assets/phux-tokens.css` (synced
+by `brand.config.json`). An embedder that loads no stylesheet falls back to
+the house dark values.
+
+Agent badges show a mark, the provider and the status word, all from
+`phux_design::tone_of`. An agent whose pane exited nonzero shows as failed.
+When the transport is gone, it shows as lost. Entering needs you or failed is
+announced once on a polite `#phux-agent-announce` node. The badge list is
+not a live region.
+
+The bell washes the canvas at most once a second. If the page prefers
+reduced motion, the bell shows an unread dot instead, until the next
+input. `src/style_literals_tests.rs` stops raw colour literals and physical
+inline properties from coming back.
+
 ## Scope
 
 Up to four independent terminal panes on one transport, with text, color, and

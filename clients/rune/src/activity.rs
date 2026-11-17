@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use phux_client_core::agent_record::{AgentAttention, AgentState, parse_agent_record};
 use phux_client_runtime::control::Event;
+use phux_design::{State, ToneInput};
 use phux_protocol::ids::ResourceId;
 
 /// A shell command this long that finishes off screen is worth a mark.
@@ -109,19 +110,38 @@ impl Mark {
         matches!(self, Self::Working | Self::Running)
     }
 
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Blocked => "needs you",
-            Self::Done => "done",
-            Self::Failed => "failed",
-            Self::Bell => "bell",
-            Self::Working => "working",
-            Self::Running => "running",
-            Self::Background => "background",
-            Self::Succeeded => "finished",
-            Self::Idle => "idle",
-            Self::None => "",
+    /// The ladder state this mark draws as (§1.3); `None` for the bell,
+    /// an event with its own mark, not a state. A command that succeeded
+    /// off screen is a result not yet seen, so `done`.
+    pub const fn state(self) -> Option<State> {
+        Some(match self {
+            Self::Blocked => State::NeedsYou,
+            Self::Failed => State::Failed,
+            Self::Done | Self::Succeeded => State::Done,
+            Self::Working | Self::Running | Self::Background => State::Working,
+            Self::Idle => State::Idle,
+            Self::None => State::Unknown,
+            Self::Bell => return None,
+        })
+    }
+
+    /// The mark's word, from the status vocabulary; empty for none.
+    pub fn word(self) -> &'static str {
+        match self.state() {
+            Some(state) => state.word().unwrap_or_default(),
+            None => phux_design::word("bell").unwrap_or_default(),
         }
+    }
+}
+
+/// The protocol's declared state as the design language's agent fact.
+const fn agent_fact(state: AgentState) -> phux_design::Agent {
+    match state {
+        AgentState::Working => phux_design::Agent::Working,
+        AgentState::Blocked => phux_design::Agent::Blocked,
+        AgentState::Idle => phux_design::Agent::Idle,
+        AgentState::Done => phux_design::Agent::Done,
+        _ => phux_design::Agent::Unknown,
     }
 }
 
@@ -230,40 +250,80 @@ impl Activity {
         }
     }
 
-    fn needs_answer(&self) -> bool {
-        let agent = self.agent.as_ref();
-        self.asked
-            || agent.is_some_and(|a| {
-                a.state == AgentState::Blocked || a.attention == AgentAttention::High
-            })
+    /// The terminal's facts as the design language's input (§1.3.1), for
+    /// [`phux_design::tone_of`], the one mapping every client shares. A
+    /// long shell command that ended off screen is the terminal's result:
+    /// failed on a nonzero code, else done and not yet seen. A shell
+    /// command under way, or work left in the background, is work. Rune
+    /// sees no pane exit (a closed terminal leaves the tree) and reports a
+    /// lost link window-wide, so `exit`, `crashed` and `link` stay unset.
+    pub(crate) fn tone_input(&self) -> ToneInput {
+        let declared = self.agent.as_ref().map(|a| agent_fact(a.state));
+        let (agent, failed) = match self.finished {
+            Some(Some(code)) if code != 0 => (declared, true),
+            // A working or blocked agent outranks a shell result.
+            Some(_) => match declared {
+                Some(phux_design::Agent::Working | phux_design::Agent::Blocked) => {
+                    (declared, false)
+                }
+                _ => (Some(phux_design::Agent::Done), false),
+            },
+            None => (declared, false),
+        };
+        // Shell work under an agent at rest is work, below a held result.
+        let shell_work = self.command_since.is_some() || self.background;
+        let held = self.done_unseen || self.finished.is_some();
+        let agent = match agent {
+            Some(phux_design::Agent::Working | phux_design::Agent::Blocked) => agent,
+            _ if shell_work && !held => Some(phux_design::Agent::Working),
+            other => other,
+        };
+        let done = agent == Some(phux_design::Agent::Done);
+        ToneInput {
+            agent,
+            attention: self
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.attention == AgentAttention::High),
+            asked: self.asked,
+            // A failed command reads as a failed exit; tone_of ranks it.
+            exit: failed.then_some(1),
+            // A result is unseen while it is held for you off screen.
+            seen: done && !self.done_unseen && self.finished.is_none(),
+            ..ToneInput::default()
+        }
     }
 
-    /// What it holds for you off screen, strongest first.
-    const fn held(&self) -> Option<Mark> {
-        if self.done_unseen {
-            return Some(Mark::Done);
-        }
-        match self.finished {
-            Some(Some(code)) if code != 0 => Some(Mark::Failed),
-            _ if self.bell => Some(Mark::Bell),
-            Some(_) => Some(Mark::Succeeded),
-            None => None,
-        }
+    /// The ladder state, through [`phux_design::tone_of`].
+    pub(crate) fn state(&self) -> State {
+        phux_design::tone_of(&self.tone_input())
     }
 
+    /// The row's mark: the ladder state, refined by what Rune knows of the
+    /// shell (a running command, background work, a command's result) and
+    /// with an unanswered bell above the quiet rungs.
     fn mark(&self) -> Mark {
-        if self.needs_answer() {
-            return Mark::Blocked;
-        }
-        if let Some(held) = self.held() {
-            return held;
-        }
-        match self.agent.as_ref().map(|agent| agent.state) {
-            Some(AgentState::Working) => Mark::Working,
-            _ if self.command_since.is_some() => Mark::Running,
-            _ if self.background => Mark::Background,
-            Some(AgentState::Idle | AgentState::Done) => Mark::Idle,
-            _ => Mark::None,
+        let shell = || {
+            if self.command_since.is_some() {
+                Mark::Running
+            } else {
+                Mark::Background
+            }
+        };
+        let agent_working = self
+            .agent
+            .as_ref()
+            .is_some_and(|a| a.state == AgentState::Working);
+        match self.state() {
+            State::NeedsYou => Mark::Blocked,
+            State::Failed | State::Lost => Mark::Failed,
+            State::Done if self.done_unseen => Mark::Done,
+            State::Done => Mark::Succeeded,
+            _ if self.bell => Mark::Bell,
+            State::Working if agent_working => Mark::Working,
+            State::Working => shell(),
+            State::DoneSeen | State::Idle => Mark::Idle,
+            State::Unknown | State::Ended => Mark::None,
         }
     }
 

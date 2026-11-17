@@ -46,7 +46,7 @@ fn the_shortcut_list_fits_and_shows_only_bound_commands() {
     let list = shortcut_items();
     assert!(list.len() <= ROWS, "{}", list.len());
     assert!(list.iter().all(|item| !item.detail.is_empty()));
-    let tab = list.iter().find(|i| i.title == "Close Tab");
+    let tab = list.iter().find(|i| i.title == "Close tab");
     assert!(tab.is_some());
 }
 

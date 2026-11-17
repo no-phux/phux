@@ -68,17 +68,20 @@ fn dir() -> Option<PathBuf> {
 /// The theme in `dir`. `None` without its Ghostty config.
 fn read_in(dir: &Path) -> Option<Theme> {
     let theme = parse(&super::read_config(&dir.join("ghostty.conf"))?)?;
-    let accent = super::read_config(&dir.join("colors.toml"))
-        .and_then(|colors| {
-            lines(&colors)
-                .filter(|(key, _)| *key == "accent")
+    let colors = super::read_config(&dir.join("colors.toml"));
+    let named = |name: &str| {
+        colors.as_deref().and_then(|colors| {
+            lines(colors)
+                .filter(|(key, _)| *key == name)
                 .find_map(|(_, value)| hex(value))
         })
-        .unwrap_or(theme.accent);
+    };
     Some(Theme {
         id: "omarchy",
         name: "Omarchy",
-        accent,
+        accent: named("accent").unwrap_or(theme.accent),
+        // The theme's own selection, which the solver keeps (§2.1).
+        selection: named("selection_background"),
         ..theme
     })
 }
@@ -99,7 +102,7 @@ mod tests {
         let blue = read_in(&dir).expect("a theme");
         std::fs::write(
             dir.join("colors.toml"),
-            "mode = \"dark\"\naccent = \"#ff9e64\"\n",
+            "mode = \"dark\"\naccent = \"#ff9e64\"\nselection_background = \"#33467c\"\n",
         )
         .unwrap();
         let theme = read_in(&dir).expect("a theme");
@@ -108,6 +111,8 @@ mod tests {
         assert_eq!((theme.background, theme.foreground), (0x1a1b26, 0xa9b1d6));
         assert!(theme.dark);
         assert_eq!(theme.accent, 0xff9e64);
+        assert_eq!(theme.selection, Some(0x33467c));
+        assert_eq!(blue.selection, None);
         assert_eq!(blue.accent, 0x7aa2f7, "without colors.toml, the blue slot");
     }
 

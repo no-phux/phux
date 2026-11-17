@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The hive: the fleet as beehives. Each machine is a comb frame, each agent
 //! a bee in its harness's colours that acts out its state: a working bee
 //! forages between the meadow and its cell, one that needs you waggle-dances

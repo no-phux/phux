@@ -131,11 +131,28 @@ fn a_down_satellite_pane_badges_its_host_on_the_status_bar() {
     );
 }
 
+/// The bar's needs-you chip is the ladder mark and the count of asking
+/// panes across every window; nothing asks, no chip.
 #[test]
-fn attention_hint_formats_every_count() {
-    assert_eq!(format_attention_hint(0), None);
-    assert_eq!(format_attention_hint(1).as_deref(), Some(" ask "));
-    assert_eq!(format_attention_hint(3).as_deref(), Some(" ask·3 "));
+fn the_needs_you_chip_counts_asking_panes() {
+    let (_kernel, _effects, mut panes) = published_test_state(&[
+        (&ResourceId::local(1), 20, 4, b""),
+        (&ResourceId::local(2), 20, 4, b""),
+        (&ResourceId::local(3), 20, 4, b""),
+    ]);
+    assert_eq!(needs_you_count(&panes), 0);
+    for id in [1, 3] {
+        panes
+            .get_mut(&ResourceId::local(id))
+            .expect("slot")
+            .attention = true;
+    }
+    assert_eq!(needs_you_count(&panes), 2);
+    let theme = crate::render::Theme::default();
+    assert_eq!(
+        crate::render::chrome::needs_you_chip(&theme, 2).as_deref(),
+        Some(" ●2 ")
+    );
 }
 
 #[test]
@@ -236,7 +253,7 @@ fn badge_windows_marks_the_focused_agent() {
     let theme = crate::render::Theme::default();
     badge_windows(&mut infos, &workspace, &agents, &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_WORKING_GLYPH);
+    assert_eq!(badge.glyph, "◐");
     assert_eq!(
         badge.style.fg.as_deref(),
         Some(crate::render::theme::color_to_string(theme.agent_working).as_str())
@@ -250,9 +267,9 @@ fn badge_windows_marks_the_focused_agent() {
     };
     badge_windows(&mut infos, &workspace, std::slice::from_ref(&done), &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_DONE_GLYPH);
+    assert_eq!(badge.glyph, "◆");
     let reviewed = AgentEntry { seen: true, ..done };
     badge_windows(&mut infos, &workspace, &[reviewed], &theme);
     let badge = infos[0].badge.as_ref().expect("badged");
-    assert_eq!(badge.glyph, crate::render::chrome::AGENT_IDLE_GLYPH);
+    assert_eq!(badge.glyph, "○");
 }

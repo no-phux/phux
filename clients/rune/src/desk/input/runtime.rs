@@ -86,6 +86,9 @@ fn find_clipboard_commands_cannot_escape_to_the_terminal() {
 }
 
 #[test]
+// Rune paints a field's selection as its foreground at 0.2; the test
+// derives the same colour to find it, it styles nothing.
+#[allow(clippy::disallowed_methods)]
 fn native_field_ink_follows_live_themes_in_both_forms() {
     for phone in [false, true] {
         let (_, mut rt) = crate::test_support::input_fixture();
@@ -115,7 +118,14 @@ fn native_field_ink_follows_live_themes_in_both_forms() {
             rt.frame(0.0);
             let field = crate::ui::element(&rt, "palette-query");
             let caret = field.caret.expect("focused caret");
-            let ink = theme.roles().text;
+            let ink = {
+                use crate::ui::Paint;
+                let input = crate::ui::tokens::theme_input(theme);
+                phux_design::derive(&input, &phux_design::Params::house())
+                    .text
+                    .text
+                    .paint()
+            };
             let drawn = rt
                 .instances
                 .iter()

@@ -96,6 +96,6 @@ impl Desk {
         self.palette_mode = crate::palette::Mode::All;
         self.close_settings();
         self.settings_ui = Default::default();
-        self.notice = None;
+        self.clear_notices();
     }
 }

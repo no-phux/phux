@@ -403,7 +403,9 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 }
 
 mod host;
-pub use host::{edge_srgb, paste, path_changed, take_requests, viewport_changed, zoom};
+pub use host::{
+    edge_srgb, paste, path_changed, set_accessibility, take_requests, viewport_changed, zoom,
+};
 
 #[cfg(test)]
 mod pairing_tests;

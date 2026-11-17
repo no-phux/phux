@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! What playground scenes paint with: Rune's shapes, which are flat fills and
 //! strokes, standing in for the prototype's canvas. A gradient is bands, a
 //! radial glow is rings of discs, and a clip is a polygon cut to shape.

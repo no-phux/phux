@@ -74,34 +74,38 @@ right = [
 # [theme]
 # name            = "tokyo-night"
 # file            = "~/.local/state/omarchy/current/theme/colors.toml"
-# accent          = "#bef264"  # modal titles, query caret, active focus
-# title           = "#bef264"  # section/window titles (tracks accent)
-# chord           = "#86efac"  # keybinding chords in help + which-key
-# action          = "reset"    # action labels — inherit your terminal fg
-# dim             = "#9aa4b2"  # the recessive register: hints, sub-lines
-# border          = "#7c8696"  # rules and modal borders
-# section_header  = "#9aa4b2"  # headings inside help / pickers
-# error           = "#f87171"  # error and alarm text
-# text            = "#f4f7fb"  # body copy ON a filled panel (see surface)
-# surface         = "#171b23"  # sidebar + modal fill; "reset" = transparent
+# accent          = "#dad6cf"  # focus: modal titles, query caret, active tab
+# title           = "#e8e5df"  # section/window titles (tracks text)
+# chord           = "#e8e5df"  # keybinding chords (body text, drawn bold)
+# action          = "#dad6cf"  # action labels (tracks accent)
+# dim             = "#aeb2b7"  # the recessive register: hints, sub-lines
+# border          = "#8d9298"  # rules and modal borders
+# section_header  = "#aeb2b7"  # headings inside help / pickers
+# error           = "#f09b94"  # error and alarm text (the failed tone)
+# text            = "#e8e5df"  # body copy ON a filled panel (see surface)
+# surface         = "#191c20"  # sidebar + modal fill; "reset" = transparent
 # shadow          = "reset"    # floating-modal drop shadow; reset = off
-# selection_fg    = "#f4f7fb"  # selected list row / copy-mode strip fg
-# selection_bg    = "#293628"  # selected list row / copy-mode strip bg
-# attention       = "#fde047"  # "needs you": asked-marker, blocked agents
-# sidebar_section = "#9aa4b2"  # the sidebar's section headers
-# agent_idle      = "#9aa4b2"  # agent lifecycle: nothing needs you
-# agent_working   = "#86efac"  # agent lifecycle: live progress
-# agent_blocked   = "#fde047"  # agent lifecycle: waiting on a human
-# agent_done      = "#bef264"  # agent lifecycle: finished
-# divider         = "#7c8696"  # pane rules off the focused frame
-# divider_focus   = "#bef264"  # the focused pane's own rules (also bold)
-# pane_title      = "#9aa4b2"  # an unfocused pane's label on its top rule
-# pane_title_focus = "#bef264" # the focused pane's label (also bold)
+# selection_fg    = "#f4f2ee"  # selected list row / copy-mode strip fg
+# selection_bg    = "#4a5b70"  # selected list row / copy-mode strip bg
+# attention       = "#e9ae4e"  # needs you: the status-bar count, asked marker
+# sidebar_section = "#8d9298"  # sidebar section headers, unknown/ended marks
+# agent_idle      = "#acb2b9"  # agent lifecycle: nothing needs you
+# agent_working   = "#91b5da"  # agent lifecycle: live progress
+# agent_blocked   = "#e9ae4e"  # agent lifecycle: needs you
+# agent_done      = "#7bc0a0"  # agent lifecycle: finished
+# agent_failed    = "#f09b94"  # a pane that failed (nonzero exit, lost host)
+# divider         = "#8d9298"  # pane rules off the focused frame
+# divider_focus   = "#dad6cf"  # the focused pane's own rules (also bold)
+# pane_title      = "#aeb2b7"  # an unfocused pane's label on its top rule
+# pane_title_focus = "#dad6cf" # the focused pane's label (also bold)
 #
-# Every slot above that paints text or a rule clears 4.5:1 (WCAG AA)
-# against `surface`, in three ordered rungs: rules, recessive text,
-# then lime focus plus BOLD. Retinting one slot is fine; dropping a
-# rung below the floor makes chrome that some people cannot see at all.
+# These are the house look in dark mode on a 24-bit terminal. phux solves
+# every slot from the selected theme (or the house look) so each one that
+# paints text or a rule clears 4.5:1 (WCAG AA) against `surface`, in three
+# ordered rungs: rules, recessive text, then focus plus BOLD. A slot set
+# here is used exactly as written, on any terminal. Retinting one slot is
+# fine; dropping a rung below the floor makes chrome that some people
+# cannot see at all.
 
 # The sidebar (prefix-b toggles it), ON by default.
 #

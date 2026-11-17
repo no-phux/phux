@@ -15,6 +15,7 @@ import zipfile
 
 MAX_BYTES = 100 * 1024 * 1024
 PUBLIC_BASE = "https://phux.sh/brand/releases"
+CONSUMERS = ("phux", "mobile", "website", "org")
 
 
 def digest(data):
@@ -54,7 +55,7 @@ def asset_destination(root, name):
 
 def config(root):
     value = json.loads((root / "brand.config.json").read_bytes())
-    if value.get("schema") != 1 or value.get("consumer") not in ("phux", "mobile", "website"):
+    if value.get("schema") != 1 or value.get("consumer") not in CONSUMERS:
         raise ValueError("unsupported consumer configuration")
     targets = value["targets"]
     if not targets or len(set(targets.values())) != len(targets):

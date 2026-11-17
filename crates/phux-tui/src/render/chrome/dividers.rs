@@ -18,11 +18,11 @@ use std::io::{self, Write};
 use phux_protocol::ResourceId;
 use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect as RataRect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 
 use crate::attach::multi_pane::PaneLayout;
 use crate::layout::Rect;
-use crate::render::chrome::{AgentBadge, agent_badge, attention_badge};
+use crate::render::chrome::{AgentBadge, agent_fact, pane_badge};
 use crate::render::theme::Theme;
 use crate::render::{ELLIPSIS, cell_width};
 use phux_client::agent_meta::AgentMetaState;
@@ -66,6 +66,9 @@ pub struct PaneLabel<'a> {
     /// has scrolled into history; `None` at the tail. Drawn as `↑ N` at the
     /// right end of the rule.
     pub scrolled_back: Option<u64>,
+    /// The retained pane's exit status (ADR-0124), once it exited: nonzero
+    /// wears the failed mark, zero the ended (or done) one.
+    pub exit: Option<i32>,
 }
 
 /// A fading `[origin]` mark inset into the pane's title rule.
@@ -78,134 +81,30 @@ pub struct OriginBadge<'a> {
 }
 
 impl PaneLabel<'_> {
-    /// The badge to draw ahead of the label, if any.
+    /// The badge to draw ahead of the label, if any: the pane's ladder
+    /// state through [`phux_design::tone_of`]. A plain shell pane that is
+    /// alive and quiet wears none.
     fn badge(&self, theme: &Theme) -> Option<AgentBadge> {
-        match (self.agent, self.attention) {
-            (Some(state), _) => Some(agent_badge(theme, state, self.attention, self.seen)),
-            (None, true) => Some(attention_badge(theme)),
-            (None, false) => None,
+        match (self.agent, self.attention, self.exit) {
+            (None, false, None) => None,
+            (agent, attention, exit) => Some(pane_badge(
+                theme,
+                &phux_design::ToneInput {
+                    agent: agent.map(agent_fact),
+                    attention,
+                    exit,
+                    seen: self.seen,
+                    ..phux_design::ToneInput::default()
+                },
+            )),
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// Cell buffer
-// -----------------------------------------------------------------------------
-
-/// One cell's grapheme, stored inline so composing a frame allocates nothing
-/// per cell.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Sym {
-    buf: [u8; CELL_BYTES],
-    len: u8,
-}
-
-impl Sym {
-    /// A positioned cell that paints nothing: the trailing half of a wide
-    /// glyph. The emitter skips it and breaks its run, so the next cell
-    /// re-anchors with its own CUP.
-    const EMPTY: Self = Self {
-        buf: [0; CELL_BYTES],
-        len: 0,
-    };
-
-    /// Store `s`, truncated to whole UTF-8 characters that fit.
-    fn new(s: &str) -> Self {
-        let mut out = Self::EMPTY;
-        for ch in s.chars() {
-            out.push(ch);
-        }
-        out
-    }
-
-    /// Append `ch` if the remaining room holds it; otherwise drop it.
-    fn push(&mut self, ch: char) {
-        let len = usize::from(self.len);
-        let room = CELL_BYTES - len;
-        if ch.len_utf8() > room {
-            return;
-        }
-        let written = ch.encode_utf8(&mut self.buf[len..]).len();
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "len + written <= CELL_BYTES = 16, which fits u8"
-        )]
-        {
-            self.len = (len + written) as u8;
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        // Every push wrote whole chars, so this cannot fail; a failure would
-        // degrade to an unpainted cell.
-        std::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-/// One painted chrome cell.
-#[derive(Clone, Copy)]
-struct ChromeCell {
-    x: u16,
-    y: u16,
-    sym: Sym,
-    style: Style,
-}
-
-/// The chrome cells of one frame in paint order: a few hundred cells, not a
-/// viewport-sized buffer, so a title change is not an O(viewport) event.
-#[derive(Default)]
-struct ChromeCells {
-    cells: Vec<ChromeCell>,
-}
-
-impl ChromeCells {
-    fn clear(&mut self) {
-        self.cells.clear();
-    }
-
-    /// Record one cell. A later write to the same coordinate wins, which
-    /// is what lets a title overwrite the rule the rail laid down first.
-    fn put(&mut self, x: u16, y: u16, sym: Sym, style: Style) {
-        self.cells.push(ChromeCell { x, y, sym, style });
-    }
-
-    fn put_str(&mut self, x: u16, y: u16, symbol: &str, style: Style) {
-        self.put(x, y, Sym::new(symbol), style);
-    }
-
-    /// Sort for emission and drop duplicates (last write wins) and anything
-    /// inside a pane interior: the skip-cell carve-out, applied once here.
-    fn finalize(&mut self, layout: &PaneLayout) {
-        let (cols, rows) = layout.viewport;
-        self.cells
-            .retain(|c| c.x < cols && c.y < rows && !in_any_pane(layout, c.x, c.y));
-        // Stable, so the insertion order of equal coordinates survives
-        // and "last write wins" is well defined.
-        self.cells.sort_by_key(|c| (c.y, c.x));
-        let mut kept: usize = 0;
-        for i in 0..self.cells.len() {
-            let last_of_run = i + 1 == self.cells.len()
-                || (self.cells[i + 1].y, self.cells[i + 1].x) != (self.cells[i].y, self.cells[i].x);
-            if last_of_run {
-                self.cells[kept] = self.cells[i];
-                kept += 1;
-            }
-        }
-        self.cells.truncate(kept);
-    }
-}
-
-/// `true` when `(x, y)` sits inside any pane's interior rectangle.
-fn in_any_pane(layout: &PaneLayout, x: u16, y: u16) -> bool {
-    layout
-        .rects
-        .values()
-        .any(|r| x >= r.x && y >= r.y && x < r.x.saturating_add(r.w) && y < r.y.saturating_add(r.h))
-}
+mod cells;
+mod emit;
+use cells::{ChromeCells, Sym};
+use emit::emit_cells;
 
 thread_local! {
     /// Scratch cells reused across frames (single-threaded, never
@@ -250,6 +149,7 @@ where
         let mut cells = scratch.borrow_mut();
         cells.clear();
         build_cells(&mut cells, layout, content, rail, focused, theme, label_of);
+        cells.fill_ground(theme.ground_fill());
         cells.finalize(layout);
         emit_cells(out, &cells.cells)
     })
@@ -281,6 +181,7 @@ where
     }
     let mut cells = ChromeCells::default();
     build_cells(&mut cells, layout, content, rail, focused, theme, label_of);
+    cells.fill_ground(theme.ground_fill());
     cells.finalize(layout);
     for c in &cells.cells {
         if let Some(cell) = buf.cell_mut((c.x, c.y)) {
@@ -635,59 +536,6 @@ fn put_clipped(
         cur = put_measured(cells, cur, y, ELLIPSIS.encode_utf8(&mut [0u8; 4]), style);
     }
     cur
-}
-
-// -----------------------------------------------------------------------------
-// Emission
-// -----------------------------------------------------------------------------
-
-/// Emit `cells` as positioned VT: consecutive same-style cells in a row are
-/// one CUP + SGR run; a gap, style change, or empty symbol re-anchors.
-fn emit_cells<W: Write>(out: &mut W, cells: &[ChromeCell]) -> io::Result<()> {
-    out.write_all(b"\x1b[0m")?;
-    let mut style: Option<Style> = None;
-    // The column the current run would continue at; `None` = no open run.
-    let mut run: Option<(u16, u16)> = None;
-    for cell in cells {
-        if cell.sym.is_empty() {
-            run = None;
-            continue;
-        }
-        if style != Some(cell.style) {
-            write_style(out, cell.style)?;
-            style = Some(cell.style);
-            run = None;
-        }
-        if run != Some((cell.y, cell.x)) {
-            // CUP is 1-based.
-            write!(
-                out,
-                "\x1b[{};{}H",
-                cell.y.saturating_add(1),
-                cell.x.saturating_add(1)
-            )?;
-        }
-        out.write_all(cell.sym.as_str().as_bytes())?;
-        run = Some((cell.y, cell.x.saturating_add(1)));
-    }
-    // Trailing reset so the next layer (status bar, focused pane render)
-    // doesn't inherit any chrome SGR.
-    out.write_all(b"\x1b[0m")?;
-    out.flush()
-}
-
-/// Emit the SGR for one chrome cell: a full reset, then bold, then the
-/// foreground. The reset is what makes a run boundary cheap to reason
-/// about — no attribute can survive from the previous run.
-fn write_style<W: Write>(out: &mut W, style: Style) -> io::Result<()> {
-    out.write_all(b"\x1b[0m")?;
-    if style.add_modifier.contains(Modifier::BOLD) {
-        out.write_all(b"\x1b[1m")?;
-    }
-    match style.fg {
-        None | Some(Color::Reset) => Ok(()),
-        Some(color) => crate::render::sgr::write_sgr_color(out, color, true),
-    }
 }
 
 // -----------------------------------------------------------------------------

@@ -1,6 +1,7 @@
-//! Pane titles in the rule above each pane.
+//! Pane titles inset into the rail: clipping, badges, origins, and hostile text.
 
 use super::*;
+
 /// A title is inset into the rule above its pane, accented when focused;
 /// an empty title draws nothing (no invented names).
 #[test]

@@ -294,7 +294,7 @@ fn a_replaced_client_keeps_the_notice_clock() {
     desk.clock = 100.0;
     desk.renew();
     desk.say(NoticeKind::Error, "after the retry");
-    let expires = desk.notice.as_ref().map_or(0.0, |notice| notice.expires);
+    let expires = desk.toasts().next_due().unwrap_or(0.0);
     assert!(expires > 100.0);
 }
 

@@ -66,6 +66,7 @@ pack() {
   printf 'notice\n' > "$dir/NOTICE"
   printf 'ofl\n' > "$dir/Inter-OFL.txt"
   printf 'ofl\n' > "$dir/JetBrainsMono-OFL.txt"
+  printf 'ofl\n' > "$dir/PaperMono-OFL.txt"
   cp "$ROOT/clients/rune/packaging/sh.phux.rune.desktop" "$dir/"
   printf 'png' > "$dir/sh.phux.rune.png"
 }
@@ -125,7 +126,7 @@ grep -Fxq "sha256: $(printf 'd%.0s' {1..64})" <<<"$out" || fail "arm64 Linux dig
 installer >"$TMP/out" 2>"$TMP/err" || fail "install: $(cat "$TMP/err")"
 bundle="$XDG_DATA_HOME/phux-rune"
 grep -q first "$bundle/phux-rune" || fail "binary not installed"
-for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt \
+for file in phux-rune.release LICENSE NOTICE Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt \
   tmd tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done

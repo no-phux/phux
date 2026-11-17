@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! What drifts over the reef: bubbles, marine snow (plankton lit by a
 //! passing fish at night), and the vignette over it all.
 

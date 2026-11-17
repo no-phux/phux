@@ -196,12 +196,85 @@ fn the_glance_groups_sessions_by_project() {
     assert_eq!(
         lines,
         [
-            "phux (project, 1 need you)",
+            "phux (project, 1 needs you)",
             "  phux: 1 running",
             "    feat-auth: needs you (1 agent waiting), 1 running",
             "other: 1 running",
             "scratch: 1 running",
         ]
+    );
+}
+
+/// The project header counts what needs you in the vocabulary's plural
+/// (spec §1.3 rule 6): nothing for none, `1 needs you`, `2 need you`.
+#[test]
+fn the_project_header_count_agrees_with_its_number() {
+    use super::glance_rows::needs_you_count;
+    assert_eq!(needs_you_count(0), None);
+    assert_eq!(needs_you_count(1).as_deref(), Some("1 needs you"));
+    assert_eq!(needs_you_count(2).as_deref(), Some("2 need you"));
+    assert_eq!(needs_you_count(12).as_deref(), Some("12 need you"));
+}
+
+/// Two sessions of one project that both need you: the header says so in
+/// the plural.
+#[test]
+fn a_project_of_two_that_need_you_says_need() {
+    use phux_client::glance::SessionGlance;
+    use phux_core::project_identity::SessionProject;
+
+    let project = |linked| SessionProject {
+        id: "github.com/no-phux/phux".to_owned(),
+        name: "phux".to_owned(),
+        checkout: "/w".to_owned(),
+        branch: None,
+        linked_worktree: linked,
+        host: Some("mini".to_owned()),
+    };
+    let row = |name: &str| SessionGlance {
+        name: name.to_owned(),
+        waiting: 1,
+        ..SessionGlance::default()
+    };
+    let of = |identity| super::glance_rows::RowProject {
+        identity,
+        link: None,
+    };
+    let lines = super::glance_rows::collapse_by_project(vec![
+        (row("phux"), of(Some(project(false)))),
+        (row("feat"), of(Some(project(true)))),
+    ]);
+    assert_eq!(lines[0], "phux (project, 2 need you)", "{lines:?}");
+}
+
+/// The collapse line agrees with its count: one hidden session that needs
+/// you "needs" you, more "need" you.
+#[test]
+fn the_collapse_line_agrees_with_its_count() {
+    use phux_client::glance::SessionGlance;
+    let swarm = |loud: usize| {
+        let mut rows: Vec<SessionGlance> = (0..super::glance_rows::GLANCE_ROWS + 3)
+            .map(|n| SessionGlance {
+                name: format!("s{n:04}"),
+                waiting: 1,
+                ..SessionGlance::default()
+            })
+            .collect();
+        // Every row past the shown ones plus `loud` needs you; the rest is quiet.
+        let quiet = rows.len() - super::glance_rows::GLANCE_ROWS - loud;
+        for row in rows.iter_mut().rev().take(quiet) {
+            row.waiting = 0;
+            row.running = 1;
+        }
+        super::glance_rows::collapse(rows).pop().unwrap_or_default()
+    };
+    assert_eq!(
+        swarm(1),
+        "+1 more session that needs you, +2 quiet sessions; `phux ls -l` lists every session"
+    );
+    assert_eq!(
+        swarm(3),
+        "+3 more sessions that need you; `phux ls -l` lists every session"
     );
 }
 

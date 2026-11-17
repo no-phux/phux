@@ -1,4 +1,5 @@
-//! Populated full-window Inbox cases, not an empty drawer over a shell prompt.
+//! The inbox drawer: its empty state, its answer chips and its rules, and
+//! populated full-window cases, not an empty drawer over a shell prompt.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,6 +12,9 @@ use rune::{Key, Runtime};
 use crate::desk::Desk;
 
 mod delivery;
+mod scene;
+
+use scene::Scene;
 
 const QUESTION: &str = "release-review";
 const WORDS: &str = "The arm64 build is ready. Should I run the native input checks before publishing the phone update?";
@@ -20,152 +24,6 @@ const ANSWERS: [&str; 3] = [
     "Wait",
 ];
 const APPROVAL_ID: &str = "0123456789abcdef0123456789abcdef";
-
-#[derive(Clone, Copy)]
-enum Scene {
-    Question,
-    Reply,
-    Approval,
-    Empty,
-    Scrolled,
-    NativeReply,
-    Inline,
-    InlineNoChoices,
-    Sending,
-    Delivered,
-    Refused,
-    Unknown,
-    NewDraft,
-    OtherQuestion,
-}
-
-impl Scene {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Question => "question",
-            Self::Reply => "reply",
-            Self::Approval => "approval",
-            Self::Empty => "empty",
-            Self::Scrolled => "scrolled",
-            Self::NativeReply => "native-reply",
-            Self::Inline => "inline",
-            Self::InlineNoChoices => "inline-no-choices",
-            Self::Sending => "sending",
-            Self::Delivered => "delivered",
-            Self::Refused => "refused",
-            Self::Unknown => "unknown",
-            Self::NewDraft => "new-draft",
-            Self::OtherQuestion => "other-question",
-        }
-    }
-
-    fn populate(self, desk: &mut Desk) {
-        match self {
-            Self::Empty => {}
-            Self::Approval | Self::Scrolled => {
-                question(desk, &ANSWERS);
-                desk.inbox.approvals.push(approval());
-                if matches!(self, Self::Scrolled) {
-                    for index in 1..6 {
-                        let mut approval = approval();
-                        approval.id = format!("{index:032x}");
-                        desk.inbox.approvals.push(approval);
-                    }
-                }
-            }
-            Self::Question | Self::Reply | Self::NativeReply | Self::Inline => {
-                question(desk, &ANSWERS)
-            }
-            Self::InlineNoChoices => question(desk, &[]),
-            Self::Sending
-            | Self::Delivered
-            | Self::Refused
-            | Self::Unknown
-            | Self::NewDraft
-            | Self::OtherQuestion => question(desk, &ANSWERS),
-        }
-        if matches!(self, Self::Inline | Self::InlineNoChoices) {
-            desk.phone.as_mut().unwrap().keyboard = matches!(self, Self::Inline);
-            return;
-        }
-        if matches!(self, Self::NativeReply) {
-            desk.native = Some(crate::mobile::Platform::test());
-        }
-        desk.toggle_inbox();
-        desk.inbox.reply.focused = false;
-        if let Some(phone) = desk.phone.as_mut() {
-            phone.keyboard = !matches!(
-                self,
-                Self::Question | Self::Approval | Self::Empty | Self::Scrolled | Self::NativeReply
-            );
-        }
-    }
-
-    fn check(self, rt: &mut Runtime<Desk>) {
-        match self {
-            Self::Reply | Self::NativeReply => {
-                assert!(rt.accessibility_action(
-                    "inbox-reply",
-                    rune::accesskit::Action::Focus,
-                    None
-                ));
-                rt.key(crate::keys::plain(Key::Text(
-                    "Please keep the existing pairing and run the checks.".into(),
-                )));
-                settle(rt);
-                assert!(rt.state.inbox.reply.text.contains("existing pairing"));
-            }
-            Self::Scrolled => {
-                let key = format!(
-                    "chip-{}-Wait",
-                    rt.state.connection.shown.as_ref().unwrap().resource
-                );
-                rt.update(|_, tx| tx.scroll_into_view(&key));
-                settle(rt);
-                let [_, y, _, h] = rt.presented(&key).unwrap().0;
-                assert!(y >= 0.0 && y + h <= rt.viewport.1);
-                assert_eq!(rt.state.inbox_items().len(), 7);
-            }
-            Self::Inline | Self::InlineNoChoices => {
-                let id = rt.state.connection.shown.as_ref().unwrap().resource.clone();
-                assert!(
-                    rt.find(&format!("ask-{id}")).is_some(),
-                    "actual pane owns the inline question"
-                );
-            }
-            Self::Question => {
-                assert!(
-                    rt.elements()
-                        .iter()
-                        .any(|e| e.text.as_deref() == Some(WORDS))
-                );
-                assert_eq!(rt.state.inbox_items().len(), 1);
-            }
-            Self::Approval => {
-                assert_eq!(rt.state.inbox_items().len(), 2);
-                assert!(
-                    rt.accessibility_json()
-                        .to_string()
-                        .contains("Signal terminal")
-                );
-            }
-            Self::Empty => {
-                assert!(rt.state.inbox_items().is_empty());
-                assert!(
-                    rt.accessibility_json()
-                        .to_string()
-                        .contains("Nothing needs you")
-                );
-            }
-            Self::Sending
-            | Self::Delivered
-            | Self::Refused
-            | Self::Unknown
-            | Self::NewDraft
-            | Self::OtherQuestion => delivery::prepare(rt, self),
-        }
-    }
-}
 
 fn fixture(size: (u32, u32), phone: bool, scale: f32) -> (Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = crate::test_support::input_fixture_showing(
@@ -435,7 +293,7 @@ fn phone_approval_cancel_and_plain_return_never_decide() {
     for size in [(393, 852), (320, 568)] {
         let (client, mut rt) = fixture(size, true, 1.0);
         prepare(&mut rt, Scene::Approval, true);
-        for label in [super::DENY, super::APPROVE] {
+        for label in ["Deny", "Approve"] {
             let key = format!("decide-{label}-{APPROVAL_ID}");
             reveal(&mut rt, &key);
             touch(&mut rt, &key, rune::TouchPhase::Cancelled);
@@ -496,7 +354,7 @@ fn completed_phone_touches_use_the_existing_answer_and_decision_protocols() {
 
     let (client, mut rt) = fixture((320, 568), true, 1.0);
     prepare(&mut rt, Scene::Approval, false);
-    let key = format!("decide-{}-{APPROVAL_ID}", super::APPROVE);
+    let key = format!("decide-Approve-{APPROVAL_ID}");
     reveal(&mut rt, &key);
     no_actions(&client);
     touch(&mut rt, &key, rune::TouchPhase::Ended);
@@ -561,4 +419,59 @@ fn inline_phone_answers_scroll_within_the_pane_and_no_choices_has_an_honest_hint
     let tree = rt.accessibility_json().to_string();
     assert!(tree.contains("Reply in Inbox"));
     assert!(!tree.contains("Tap an answer"));
+}
+
+fn asked(rt: &mut Runtime<Desk>, suggestions: &[&str]) {
+    let terminal_id = rt.state.connection.shown.as_ref().unwrap().resource.clone();
+    rt.state.connection.topology = rt
+        .state
+        .connection
+        .client
+        .as_ref()
+        .and_then(|c| c.topology());
+    rt.state.activities.apply(
+        &Event::AgentAsked {
+            terminal_id,
+            question_id: "q-1".into(),
+            text: "Continue?".into(),
+            suggestions: suggestions.iter().map(|s| (*s).to_owned()).collect(),
+            waiting_seconds: None,
+        },
+        &[],
+    );
+}
+
+#[test]
+fn an_empty_inbox_says_nothing_needs_you_under_the_done_mark() {
+    let (_, mut rt) = crate::test_support::input_fixture();
+    rt.update(|d, _| d.toggle_inbox());
+    rt.frame(0.0);
+    let text = rt.accessibility_json().to_string();
+    assert!(text.contains("Nothing needs you"));
+    for key in [
+        "inbox-header-rule",
+        "inbox-footer-rule",
+        "inbox",
+        "inbox-scrim",
+    ] {
+        assert!(rt.find(key).is_some(), "{key}");
+    }
+}
+
+#[test]
+fn suggested_answers_are_named_buttons() {
+    let (_, mut rt) = crate::test_support::input_fixture();
+    rt.frame(0.0);
+    asked(&mut rt, &["yes", "no"]);
+    rt.update(|d, _| d.toggle_inbox());
+    rt.frame(0.0);
+    let chips: Vec<_> = (rt.elements().into_iter())
+        .filter(|e| e.key.as_deref().is_some_and(|k| k.starts_with("chip-")))
+        .collect();
+    assert_eq!(chips.len(), 2, "one chip per answer");
+    for chip in &chips {
+        assert_eq!(chip.role, "button");
+        assert!(chip.focusable, "a chip is a Tab stop");
+        assert!(matches!(chip.label.as_deref(), Some("yes" | "no")));
+    }
 }

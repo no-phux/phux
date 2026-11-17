@@ -3,11 +3,13 @@
 use phux_protocol::ids::ResourceId;
 use rune::{El, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, PAD};
+use super::PAD;
+use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 use crate::desk::resources::Body;
 
-pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
+pub fn view(desk: &Desk, id: &ResourceId, p: &Tokens) -> El {
+    let ink = p;
     let focused = id.clone();
     let selected = id.clone();
     let measured = id.clone();
@@ -49,8 +51,8 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
             }
         })
         .padding(PAD)
-        .gap(8.0)
-        .fill(ink.bg)
+        .gap(ink.space.s2)
+        .fill(ink.roles.layer.ground.paint())
         .on_press(move |d: &mut Desk| d.focus_pane(&focused))
         .child(
             text(format!(
@@ -58,8 +60,8 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
                 detail.unwrap_or_default()
             ))
             .wrap()
-            .font(CAPTION)
-            .color(ink.dim),
+            .font(ink.ty.caption)
+            .color(ink.roles.text.dim.paint()),
         )
         .children(viewer_controls(desk, id, ink))
         .child(if interactive {
@@ -69,7 +71,7 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         })
 }
 
-fn viewer_controls(desk: &Desk, id: &ResourceId, ink: &Ink) -> Option<El> {
+fn viewer_controls(desk: &Desk, id: &ResourceId, ink: &Tokens) -> Option<El> {
     if !matches!(
         desk.connection.resources.entries.get(id)?.body,
         Body::Tree(_)
@@ -86,8 +88,10 @@ fn viewer_controls(desk: &Desk, id: &ResourceId, ink: &Ink) -> Option<El> {
             .is_none_or(|argv| !argv.is_empty());
     let button = enabled.then(|| {
         super::pressable(format!("document-source-{id}"), ink)
-            .w(100.0)
-            .h(26.0)
+            .px(ink.space.s3)
+            .min_h(ink.space.row_h)
+            .radius(ink.radius.sm)
+            .border(ink.space.hairline, ink.roles.border.control.paint())
             .center()
             .label(if viewer.source {
                 "Show rendered Markdown"
@@ -97,20 +101,20 @@ fn viewer_controls(desk: &Desk, id: &ResourceId, ink: &Ink) -> Option<El> {
             .on_press(move |d: &mut Desk| d.toggle_document_source(&target))
             .child(
                 text(if viewer.source { "Rendered" } else { "Source" })
-                    .font(CAPTION)
-                    .color(ink.text),
+                    .font(ink.ty.caption)
+                    .color(ink.roles.text.text.paint()),
             )
     });
     Some(
         row()
             .w_full()
-            .h(28.0)
+            .min_h(ink.space.row_h)
             .items_center()
-            .gap(8.0)
+            .gap(ink.space.s2)
             .child(
                 text(viewer.status().to_owned())
-                    .font(CAPTION)
-                    .color(ink.dim)
+                    .font(ink.ty.caption)
+                    .color(ink.roles.text.dim.paint())
                     .grow(1.0)
                     .min_w(0.0),
             )
@@ -143,17 +147,17 @@ fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
         })
 }
 
-fn message(words: impl Into<String>, ink: &Ink) -> El {
+fn message(words: impl Into<String>, ink: &Tokens) -> El {
     el().w_full().h_full().center().child(
         text(words.into())
             .wrap()
             .w_full()
-            .font(LABEL)
-            .color(ink.dim),
+            .font(ink.ty.label)
+            .color(ink.roles.text.dim.paint()),
     )
 }
 
-fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
+fn body(body: &Body, area: [f32; 2], ink: &Tokens, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
         Body::Decoding => message("Decoding image…", ink),
@@ -164,7 +168,7 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
     }
 }
 
-fn source_text(words: &str, ink: &Ink, id: &ResourceId) -> El {
+fn source_text(words: &str, ink: &Tokens, id: &ResourceId) -> El {
     el().w_full()
         .h_full()
         .min_h(0.0)
@@ -176,12 +180,12 @@ fn source_text(words: &str, ink: &Ink, id: &ResourceId) -> El {
                 .key(crate::desk::resources::text_key(id))
                 .selectable(true)
                 .wrap_anywhere()
-                .font(rune::TextStyle::new(12.0, 400.0).mono())
-                .color(ink.text),
+                .font(ink.ty.mono)
+                .color(ink.roles.text.text.paint()),
         )
 }
 
-fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
+fn surface(image: &rune::Image, area: [f32; 2], ink: &Tokens) -> El {
     if let Some(error) = image.error() {
         return message(format!("Invalid image: {error}"), ink);
     }
@@ -192,7 +196,7 @@ fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
     el().w_full()
         .h_full()
         .center()
-        .child(el().size(w, h).pixels(image.pixels()))
+        .child(el().w(w).h(h).pixels(image.pixels()))
 }
 
 pub(super) fn letterbox([w, h]: [u32; 2], [aw, ah]: [f32; 2]) -> [f32; 2] {

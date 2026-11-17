@@ -1,63 +1,40 @@
 //! The window's words about itself: the status line, the bar an action
 //! waits in, and what stands in for a terminal that isn't there.
 
-use phux_client_runtime::control::Status;
-use rune::{Color, El, Family, LoopSpec, TextStyle, col, el, row, text};
+use crate::ui::tokens::Voice;
+use crate::ui::tokens::layout::STATUS;
+use phux_design::State;
+use rune::{El, col, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, Progress};
 
-use super::{
-    CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
-    pressable, tabs, tip,
-};
+use super::Tokens;
+
+use super::tokens::{MONO, Tier};
+use super::{Paint, badge, button, icon_press, icons, keep_from_pane, tabs, tip};
 use crate::desk::link::{Banner, Standing};
-use crate::desk::{Desk, Notice, NoticeKind, Pending};
+use crate::desk::{Desk, Pending};
 use crate::keys::Shortcut;
 use crate::launch::INSTALL;
 
 mod confirm;
 mod phone;
+mod titlebar;
 pub use confirm::confirm_bar;
 #[cfg(test)]
 use confirm::question;
 pub(in crate::ui) use confirm::question_bar;
+pub use titlebar::{hover_toolbar, title_bar};
+#[cfg(test)]
+mod chrome_gallery;
 
-/// The terminal's size in the title bar: quiet figures that keep their
-/// columns as the window is dragged.
-const GEOMETRY: TextStyle = TextStyle::new(10.5, 500.0)
-    .family(Family::SystemMono)
-    .features("tnum");
-
-/// The least height of something a thumb presses, in points.
-const TOUCH: f32 = 44.0;
-
-/// A button as this window is used: on a phone, tall enough to touch.
+/// A button as this window is used: on a phone, big enough to touch.
 fn touchable(desk: &Desk, button: El) -> El {
     if desk.phone.is_some() {
-        button.min_h(TOUCH)
+        let min = phux_design::tokens::SPACE.touch_min;
+        button.min_h(min).min_w(min)
     } else {
         button
     }
-}
-
-/// A notice's words, wrapping; with none it draws nothing.
-pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
-    let (line, kind) = notice.map_or((String::new(), NoticeKind::Error), |notice| {
-        (notice.text.clone(), notice.kind)
-    });
-    let color = match kind {
-        NoticeKind::Info | NoticeKind::Tip => p.text,
-        NoticeKind::Error => p.danger,
-    };
-    text(line)
-        // A screen reader reads a notice when it comes: an error at once.
-        .role(match kind {
-            NoticeKind::Info | NoticeKind::Tip => "status",
-            NoticeKind::Error => "alert",
-        })
-        .font(CAPTION)
-        .color(color)
-        .wrap()
-        .grow(1.0)
-        .min_w(0.0)
 }
 
 /// The refusal says the server is the one behind.
@@ -73,7 +50,6 @@ fn updates_can_fix(standing: &Standing, remote: bool) -> bool {
         _ => false,
     }
 }
-
 /// What stands in for the terminal: the words, then what can be done.
 fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, String) {
     // Every use below is mid-sentence, where the local label reads lowercase.
@@ -144,51 +120,40 @@ fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, Str
     }
 }
 
-/// An indeterminate bar for a wait with no known end, as the platform draws
-/// a download it can't measure: a segment sweeping a track on the render
-/// clock. Reduced motion holds it at the midpoint.
-fn progress(label: &'static str, p: &Ink) -> El {
-    const TRACK: f32 = 200.0;
-    const SEGMENT: f32 = 60.0;
-    el().key("placeholder-progress")
-        .role("progressbar")
+/// An indeterminate bar for a wait with no known end (kit `Progress`): a
+/// segment sweeping a track on the render clock. Reduced motion holds it.
+fn progress(label: &'static str, t: &Tokens) -> El {
+    Progress::new(None)
+        .build(t.controls(false))
+        .key("placeholder-progress")
         .label(label)
-        .size(TRACK, 4.0)
-        .radius(2.0)
-        .fill(p.separator)
-        .clip_rounded(2.0)
-        .child(
-            el().absolute(0.0, 0.0)
-                .size(SEGMENT, 4.0)
-                .radius(2.0)
-                .fill(p.accent)
-                .looping(LoopSpec::slide(1.4, [-1.0, 0.0], [TRACK / SEGMENT, 0.0])),
-        )
+        .w(STATUS.progress_w)
 }
 
-/// The install line, to copy.
-fn install_line(p: &Ink) -> El {
+/// The install line, to copy: a command, so in the mono face.
+fn install_line(t: &Tokens) -> El {
     row()
-        .gap(8.0)
+        .gap(t.space.s2)
         .items_center()
         .child(
             text(INSTALL)
-                .font(CAPTION.family(Family::SystemMono))
-                .color(p.text),
+                .font(t.ty.caption.family(MONO))
+                .color(t.roles.text.text.paint()),
         )
         .child(
-            pressable("placeholder-copy", p)
-                .px(10.0)
-                .py(6.0)
-                .radius(6.0)
-                .border(1.0, p.separator)
+            Button::new("Copy")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
                 .on_press_tx(|_: &mut Desk, tx| tx.copy(INSTALL.to_owned()))
-                .child(text("Copy").font(CAPTION).color(p.text)),
+                .build(&t.kit)
+                .key("placeholder-copy"),
         )
 }
 
-fn action(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
-    button(label, key, p, press).grow(0.0).px(12.0)
+/// One of the window's own actions: the shared outlined button, sized to
+/// its words, a Tab stop.
+fn action(label: &'static str, key: &'static str, p: &Tokens, press: fn(&mut Desk)) -> El {
+    button(label, key, p, press).grow(0.0).label(label)
 }
 
 /// The title and detail for `standing`, in this window's voice: the phone
@@ -207,7 +172,7 @@ fn said(desk: &Desk, standing: &Standing) -> (String, String) {
 
 /// The one thing to do about `standing`, when there is one. `updates` is
 /// whether this computer's can fix it.
-fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
+fn remedy(standing: &Standing, updates: bool, p: &Tokens) -> Option<El> {
     Some(match standing {
         Standing::Starting | Standing::Installing | Standing::Connecting(_) | Standing::Opening => {
             return None;
@@ -235,11 +200,39 @@ fn remedy(standing: &Standing, updates: bool, p: &Ink) -> Option<El> {
     })
 }
 
-fn retry(p: &Ink) -> El {
+fn retry(p: &Tokens) -> El {
     action("Retry", "placeholder-retry", p, Desk::reconnect)
 }
 
-pub fn placeholder(desk: &Desk, p: &Ink) -> El {
+/// A placeholder's title: a failure leads with its mark and reads in the
+/// failed tone (§1.3: colour, word and mark together); anything else is
+/// quiet.
+fn title_line(title: String, failed: bool, t: &Tokens) -> El {
+    let font = t.ty.lead.semibold();
+    if !failed {
+        return text(title)
+            .font(font)
+            .color(t.roles.text.text.paint())
+            .align(rune::Align::Center)
+            .wrap()
+            .role("heading");
+    }
+    row()
+        .gap(t.space.icon_gap)
+        .items_center()
+        .role("heading")
+        .label(title.clone())
+        .child(badge::mark(t, State::Failed, t.icon.size.md))
+        .child(
+            text(title)
+                .font(font)
+                .color(t.roles.status.failed.paint())
+                .a11y_hidden(),
+        )
+}
+
+pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
+    let t = p;
     let standing = desk.standing();
     let native = desk.native.is_some();
     let (title, detail) = said(desk, &standing);
@@ -255,7 +248,6 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
         standing,
         Standing::Unreachable(_) | Standing::Incompatible(_) | Standing::NoCli(Some(_))
     );
-    let color = if failed { p.danger } else { p.dim };
     let actions = repair
         .then(|| phone::pair_again("placeholder-pair", p))
         .into_iter()
@@ -274,31 +266,43 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
                 Desk::toggle_machines,
             )
         }));
+    let s = &t.space;
     let buttons = row()
         .w_full()
         .center()
-        .gap(8.0)
-        .pt(6.0)
+        .gap(s.s2)
+        .pt(s.icon_gap)
         .children(actions.map(|button| touchable(desk, button)));
+    // Inset from the pane's edge whatever its width, heading and body both
+    // centred on one measure.
     col()
-        .gap(6.0)
+        .gap(s.icon_gap)
         .items_center()
-        .max_w(520.0)
-        .px(if desk.phone.is_some() { 16.0 } else { 0.0 })
-        .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
-        .child(text(detail).font(LABEL).color(p.dim).wrap())
+        .w_full()
+        .max_w(STATUS.placeholder_w)
+        .px(s.sheet_pad)
+        .child(title_line(title, failed, t))
+        .child(
+            text(detail)
+                .font(t.ty.label)
+                .color(t.roles.text.dim.paint())
+                .align(rune::Align::Center)
+                .wrap(),
+        )
         .children(match standing {
-            Standing::Installing => Some(progress("Installing phux", p)),
-            Standing::Starting => Some(progress("Starting phux", p)),
+            Standing::Installing => Some(progress("Installing phux", t)),
+            Standing::Starting => Some(progress("Starting phux", t)),
             _ => None,
         })
-        .children(matches!(standing, Standing::NoCli(_)).then(|| install_line(p)))
+        .children(matches!(standing, Standing::NoCli(_)).then(|| install_line(t)))
         .child(buttons)
 }
 
 /// Over panes that have stopped updating: what happened, and a way to act.
-/// It floats, so it never resizes a terminal.
-pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
+/// It floats, so it never resizes a terminal. On the raised tier, opaque.
+pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
+    let t = p;
+    let s = &t.space;
     let banner = desk.banner()?;
     let machine = desk.machines.label();
     let remote = desk.machines.current.is_some();
@@ -320,179 +324,53 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
         .into_iter()
         .chain(repair.then(|| phone::pair_again("banner-pair", p)))
         .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
+    let raised = t.roles.layer.raised.paint();
+    let surface = row()
+        .key("reconnect-banner")
+        .on_drag(keep_from_pane)
+        .w_full()
+        .max_w(if update {
+            STATUS.update_banner_w
+        } else {
+            STATUS.banner_w
+        })
+        .px(s.card_inset)
+        .py(s.s2)
+        .gap(s.s3)
+        .radius(t.radius.md)
+        .continuous_corners()
+        .items_center()
+        .fill(raised)
+        .border(s.hairline, t.roles.border.base.paint())
+        .child(crate::host_color::dot(machine, s.s2, raised))
+        .child(
+            col()
+                .gap(s.s0_5)
+                .grow(1.0)
+                .min_w(0.0)
+                .child(
+                    text(lost)
+                        .font(t.ty.label.semibold())
+                        .color(t.roles.text.text.paint())
+                        .truncate(),
+                )
+                .child(
+                    text(why)
+                        .font(t.ty.caption)
+                        .color(t.roles.text.dim.paint())
+                        .wrap(),
+                ),
+        )
+        .children(actions.map(|button| touchable(desk, button)));
     Some(
         col()
             .absolute(0.0, phone::banner_top(desk))
             .w_full()
-            .px(12.0)
+            .px(s.s3)
             .items_center()
             .transition(rune::Transition::opacity())
-            .child(
-                row()
-                    .key("reconnect-banner")
-                    .on_drag(keep_from_pane)
-                    .w_full()
-                    .max_w(if update { 560.0 } else { 420.0 })
-                    .px(14.0)
-                    .py(8.0)
-                    .gap(12.0)
-                    .radius(9.0)
-                    .items_center()
-                    .fill(p.raised)
-                    .border(1.0, p.separator)
-                    .child(crate::host_color::dot(machine, 8.0, p.raised))
-                    .child(
-                        col()
-                            .gap(2.0)
-                            .grow(1.0)
-                            .min_w(0.0)
-                            .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
-                            .child(text(why).font(CAPTION).color(p.dim).wrap()),
-                    )
-                    .children(actions.map(|button| touchable(desk, button))),
-            ),
+            .child(t.elevate(surface, Tier::Raised)),
     )
-}
-
-/// How the link is, when it isn't simply up: a healthy window says nothing.
-fn link_trouble(desk: &Desk, p: &Ink) -> Option<(&'static str, Color)> {
-    match desk.connection.status {
-        _ if desk.connection.client.is_none() && desk.link_word() != "connecting" => {
-            Some(("not connected", p.dim))
-        }
-        Status::Attached => None,
-        Status::Idle | Status::Connecting => Some(("connecting", p.dim)),
-        Status::Negotiated => Some(("negotiated", p.dim)),
-        Status::Closed => Some(("closed", p.dim)),
-        Status::Failed => Some(("failed", p.danger)),
-    }
-}
-
-/// What is on screen, unless tabs say that already.
-fn place(desk: &Desk, p: &Ink) -> El {
-    let session = desk.selected_session_name().unwrap_or_default();
-    let title = desk.window_title().to_owned();
-    // The window title ends in its session; here that sits in front.
-    let title = title
-        .strip_suffix(&format!(" — {session}"))
-        .map_or(title.clone(), str::to_owned);
-    // The terminal's title grows from nothing into what is left, so a narrow
-    // window cuts it before it cuts the session's name.
-    // With no terminal on screen the window title is the app's own name.
-    let terminal =
-        (desk.connection.shown.is_some() && title != session && !title.is_empty()).then(|| {
-            el().w(0.0)
-                .grow(1.0)
-                .min_w(0.0)
-                .child(text(title).font(LABEL).color(p.dim).truncate())
-        });
-    row()
-        .gap(7.0)
-        .min_w(0.0)
-        .shrink()
-        .grow(8.0)
-        .items_center()
-        .child(text(session).font(LABEL_STRONG).color(p.text).truncate())
-        .children(terminal)
-}
-
-/// With "Show toolbar on hover", a strip along the top edge that grows into
-/// the toolbar while the pointer is over it. It floats over the panes, so
-/// showing it never resizes a terminal.
-pub fn hover_toolbar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> Option<El> {
-    const EDGE: f32 = 6.0;
-    let shown = desk.pointer.toolbar;
-    desk.settings.hover_toolbar.then(|| {
-        el().key("toolbar-reveal")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h(if shown { TITLEBAR_H } else { EDGE })
-            .on_hover_change(|d: &mut Desk, over, _| d.pointer.toolbar = over)
-            .children(shown.then(|| title_bar(desk, p, lights, trailing).fill(p.sidebar)))
-    })
-}
-
-/// The band over the terminal: draggable, under the traffic lights when the
-/// sidebar is folded, clear of the caption buttons Rune draws on Linux
-/// (`trailing`), and holding what a status line would.
-pub fn title_bar(desk: &Desk, p: &Ink, lights: f32, trailing: f32) -> El {
-    let geometry = desk
-        .connection
-        .client
-        .as_ref()
-        .zip(desk.connection.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view?))
-        .map(|frame| format!("{}×{}", frame.cols, frame.rows))
-        .unwrap_or_default();
-    let folded = !desk.sidebar_shown();
-    let sidebar = icon_press(
-        &icons::SIDEBAR,
-        "Sidebar",
-        "sidebar-toggle",
-        p,
-        Desk::toggle_sidebar,
-    )
-    .expanded(desk.sidebar_shown());
-    let settings = icon_press(
-        &icons::SETTINGS,
-        "Settings",
-        "settings-button",
-        p,
-        Desk::toggle_settings,
-    );
-    // Where a ⌘-click goes, as a browser shows it: in the room the tabs
-    // leave, so pointing at a link never squeezes them.
-    let link = desk.pointer.hover.as_ref().map(|(_, link)| {
-        text(link.url.clone())
-            .font(CAPTION)
-            .color(p.accent)
-            .truncate()
-    });
-    // Everything between the sidebar's button and the window's own words:
-    // its width is the room the tabs are cut from.
-    let lane = row()
-        .key("titlebar-lane")
-        .grow(1.0)
-        .min_w(0.0)
-        .h_full()
-        .gap(8.0)
-        .items_center()
-        .on_layout(|d: &mut Desk, rect| d.connection.tabs.room = rect[2])
-        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
-        .child(
-            row()
-                .grow(1.0)
-                .min_w(0.0)
-                .justify_end()
-                .items_center()
-                .children(link),
-        );
-    row()
-        .key("titlebar")
-        .w_full()
-        .h(TITLEBAR_H)
-        .pl(if folded { lights + 8.0 } else { 2.0 })
-        .pr(10.0 + trailing)
-        .gap(8.0)
-        .items_center()
-        .window_drag()
-        .child(tip(sidebar, "Sidebar", Shortcut::ToggleSidebar))
-        .child(lane)
-        .children(link_trouble(desk, p).map(|(word, color)| text(word).font(CAPTION).color(color)))
-        .children(super::updates::pill(desk, p))
-        .child(
-            text(geometry)
-                .font(GEOMETRY)
-                .color(p.dim.alpha(0.8))
-                .a11y_hidden(),
-        )
-        .child(
-            row()
-                .gap(2.0)
-                .items_center()
-                .child(super::news::bell(desk, p))
-                .child(tip(settings, "Settings", Shortcut::Settings)),
-        )
 }
 
 #[cfg(test)]

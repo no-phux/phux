@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! Screen-space edge shading shared by playground scenes.
 
 use super::pen::Pen;

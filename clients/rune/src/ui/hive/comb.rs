@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The hive's still backdrop, the prototype's `paint`: the meadow's sky and
 //! grass, the hive box's planks and the comb frames with every cell, by day
 //! or by night. Painted once per layout in world points and stretched

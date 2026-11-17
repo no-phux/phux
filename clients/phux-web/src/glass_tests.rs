@@ -99,14 +99,86 @@ async fn glass_selection_search_and_their_removal_keep_correct_alpha() {
         pixel(&ctx, 0),
         [grid.default_fg.r, grid.default_fg.g, grid.default_fg.b, 255]
     );
-    assert_eq!(
-        pixel(&ctx, 1),
-        [CURRENT_MARK_BG.r, CURRENT_MARK_BG.g, CURRENT_MARK_BG.b, 255]
-    );
+    let (_, current) = ink::current_match(&ink::roles_of(&grid));
+    assert_eq!(pixel(&ctx, 1), [current.r, current.g, current.b, 255]);
     assert_eq!(pixel(&ctx, 2), [0, 0, 0, 0]);
     render(&ctx, &grid, &metrics, false, &Overlay::default(), true);
     assert_eq!(pixel(&ctx, 0), [0, 0, 0, 0]);
     assert_eq!(pixel(&ctx, 1), [0, 0, 0, 0]);
+}
+
+#[wasm_bindgen_test]
+async fn search_hits_paint_match_roles_never_a_status_tone() {
+    let vt = Vt::load().await.unwrap();
+    // Blank cells, so the samples read fills rather than glyph edges.
+    let term = vt.terminal(5, 2);
+    let grid = term.grid();
+    let roles = ink::roles_of(&grid);
+    let (ctx, metrics) = surface();
+    let marks = [
+        Mark {
+            cells: 0..1,
+            current: false,
+        },
+        Mark {
+            cells: 1..2,
+            current: true,
+        },
+    ];
+    let overlay = Overlay {
+        selected: 0..0,
+        marks: &marks,
+    };
+    render(&ctx, &grid, &metrics, false, &overlay, false);
+    // A hit lays the translucent `match.bg` over the cell's own background.
+    let hit = ink::match_fill(&roles, grid.default_bg);
+    assert_eq!(pixel(&ctx, 0), [hit.r, hit.g, hit.b, 255]);
+    assert_ne!(hit, grid.default_bg, "the hit is visible");
+    let (_, current) = ink::current_match(&roles);
+    assert_eq!(pixel(&ctx, 1), [current.r, current.g, current.b, 255]);
+    for tone in phux_design::Tone::ALL {
+        let ink = roles.tone(tone).ink.rgb();
+        assert_ne!([current.r, current.g, current.b], [ink.r, ink.g, ink.b]);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn the_house_palette_paints_the_house_ground() {
+    let vt = Vt::load().await.unwrap();
+    let term = vt.terminal(5, 2);
+    let mut grid = term.grid();
+    let engine = (grid.default_bg, grid.default_fg);
+    ink::adopt_house_palette(&mut grid, engine);
+    let (ctx, metrics) = surface();
+    render(&ctx, &grid, &metrics, false, &Overlay::default(), false);
+    let ground = phux_design::tokens::TERMINAL.dark.bg;
+    assert_eq!(pixel(&ctx, 1), [ground.r, ground.g, ground.b, 255]);
+    assert_eq!(*ink::roles_of(&grid), ink::house());
+}
+
+#[wasm_bindgen_test]
+async fn glyphs_stay_in_their_cells_on_a_right_to_left_page() {
+    let vt = Vt::load().await.unwrap();
+    let term = vt.terminal(5, 2);
+    term.write(b"M");
+    let grid = term.grid();
+    let (ctx, metrics) = surface();
+    let document = web_sys::window().unwrap().document().unwrap();
+    let host = document.create_element("div").unwrap();
+    host.set_attribute("dir", "rtl").unwrap();
+    host.append_child(&ctx.canvas().unwrap()).unwrap();
+    document.body().unwrap().append_child(&host).unwrap();
+    render(&ctx, &grid, &metrics, false, &Overlay::default(), true);
+    let ink = |x0: i32| {
+        ctx.get_image_data(x0, 0, 10, 20)
+            .unwrap()
+            .data()
+            .chunks(4)
+            .filter(|px| px[3] > 0)
+            .count()
+    };
+    assert!(ink(0) > 0, "the glyph is drawn in its own cell");
+    host.remove();
 }
 
 #[wasm_bindgen_test]

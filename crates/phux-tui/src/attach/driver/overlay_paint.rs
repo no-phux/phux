@@ -203,6 +203,9 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     // Selection strip from the theme (`selection_bg`/`selection_fg`), padded
     // to the pane columns only; then reset + hide the cursor.
     out.write_all(b"\x1b[0m")?;
+    if theme.selection_reverses() {
+        out.write_all(b"\x1b[7m")?;
+    }
     crate::render::write_sgr_color(out, theme.selection_bg, false)?;
     crate::render::write_sgr_color(out, theme.selection_fg, true)?;
     out.write_all(status.as_bytes())?;

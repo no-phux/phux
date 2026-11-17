@@ -71,7 +71,7 @@ case "$archive" in
 *) fail "not a release archive: $archive" ;;
 esac
 
-for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-OFL.txt \
+for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-OFL.txt PaperMono-OFL.txt \
     tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
     [[ -s "$notices/$name" ]] || fail "the archive has no $name"
 done

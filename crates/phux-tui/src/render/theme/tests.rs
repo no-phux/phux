@@ -1,6 +1,11 @@
 use super::*;
 use std::collections::BTreeMap;
 
+use phux_design::Params;
+
+mod contrast;
+mod lint;
+
 /// ADR-0101: the settings page's theme rows (also the vocabulary `phux
 /// config check` validates `[theme]` against) are exactly the slots the
 /// renderer reads, no more and no fewer.
@@ -22,14 +27,15 @@ fn slot_specs_name_every_slot() {
             spec.key
         );
     }
-    // Every slot is a row: probe the field count through Debug, which
-    // lists one `name: Color` pair per field.
+    // Every colour field is a row: probe the field count through Debug,
+    // which lists one `name: Color` pair per field before the `term`.
     let debug = format!("{:?}", Theme::default());
-    let field_count = debug.matches(": ").count();
+    let colours = debug.split(", term:").next().unwrap_or_default();
+    let field_count = colours.matches(": ").count();
     assert_eq!(
         field_count,
         SLOT_SPECS.len(),
-        "Theme has {field_count} fields but SLOT_SPECS has {} rows",
+        "Theme has {field_count} colour fields but SLOT_SPECS has {} rows",
         SLOT_SPECS.len()
     );
 }
@@ -150,46 +156,33 @@ fn cfg(pairs: &[(&str, &str)]) -> phux_config::ThemeCfg {
     phux_config::ThemeCfg { slots }
 }
 
-/// The shipped palette is a system, not a bag of colors: the slots
-/// that are documented as sharing a tone must actually share it, so a
-/// future retune of one cannot silently split the pair.
+/// The slot map of spec §4.2 is a system, not a bag of colours: slots
+/// that share a token must stay equal, and the pairs the old palette
+/// conflated (chord and working, done and focus) must stay apart.
 #[test]
 fn shared_register_slots_stay_in_step() {
-    let t = Theme::default();
-    assert_eq!(t.title, t.accent, "titles ride the accent hue");
-    assert_eq!(t.sidebar_section, t.dim, "section headers are dim-register");
-    assert_eq!(
-        t.agent_idle, t.dim,
-        "an idle agent recedes like any dim chrome"
-    );
-    assert_eq!(
-        t.agent_blocked, t.attention,
-        "a blocked agent and an attention marker are one semantic"
-    );
-    assert_eq!(
-        t.agent_working, t.chord,
-        "working shares the live-progress green"
-    );
-    assert_eq!(
-        t.divider, t.border,
-        "every rule in the chrome is one material"
-    );
-    assert_eq!(
-        t.divider_focus, t.accent,
-        "the focused frame rides the one phux hue"
-    );
-    assert_eq!(
-        t.pane_title, t.dim,
-        "an unfocused pane label recedes like any dim chrome"
-    );
-    assert_eq!(
-        t.pane_title_focus, t.accent,
-        "the focused pane label rides the same hue as its frame"
-    );
-    assert_eq!(
-        t.text, t.selection_fg,
-        "panel body copy and a selected row are the same text"
-    );
+    for t in [
+        Theme::default(),
+        Theme::house(&Outer {
+            hinted_mode: Some(Mode::Light),
+            ..Outer::default()
+        }),
+    ] {
+        assert_eq!(t.title, t.text, "titles are body text");
+        assert_eq!(t.chord, t.text, "a chord is body text, drawn bold");
+        assert_eq!(t.section_header, t.dim);
+        assert_eq!(t.pane_title, t.dim);
+        assert_eq!(t.sidebar_section, t.border, "headers and rules: faint");
+        assert_eq!(t.divider, t.border, "every rule is one material");
+        assert_eq!(t.agent_blocked, t.attention, "needs you is one tone");
+        assert_eq!(t.error, t.agent_failed, "an error is the failed tone");
+        assert_eq!(t.divider_focus, t.accent);
+        assert_eq!(t.pane_title_focus, t.accent);
+        assert_eq!(t.action, t.accent);
+        assert_ne!(t.chord, t.agent_working, "chords never read as working");
+        assert_ne!(t.agent_done, t.accent, "done never reads as focus");
+        assert_eq!(t.shadow, Color::Reset, "a sheet, not a window");
+    }
 }
 
 /// Every settings-page slot is overridable in every color syntax (an
@@ -250,6 +243,10 @@ impl ThemeDir {
         std::fs::write(dir.join("colors.toml"), colors).expect("write colors.toml");
         Self(dir)
     }
+
+    fn file(&self) -> String {
+        self.0.join("colors.toml").display().to_string()
+    }
 }
 
 impl Drop for ThemeDir {
@@ -258,29 +255,51 @@ impl Drop for ThemeDir {
     }
 }
 
-/// `[theme] file` selects a palette; its semantic keys land on the slots
-/// per the documented mapping, a light theme fills panels with its
-/// background a shade darker (not the mid-grey derived `dark_background`),
-/// and explicit slot keys still win (ADR-0026 layering).
+/// The solver's roles for the colours `path` holds.
+fn roles_of(path: &str) -> phux_design::Roles {
+    let colors = phux_config::theme::load_file(std::path::Path::new(path)).expect("loads");
+    let rgb = |c: phux_config::theme::Rgb| Rgb8 {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+    };
+    let input = phux_design::Theme {
+        bg: rgb(colors.background()),
+        fg: rgb(colors.foreground()),
+        ansi: colors.ansi16().map(rgb),
+        cursor: Some(rgb(colors.cursor())),
+        accent: Some(rgb(colors.accent())),
+        selection_bg: Some(rgb(colors.selection())),
+        dark: Some(colors.mode == ThemeMode::Dark),
+    };
+    phux_design::derive(&input, &Params::house())
+}
+
+const fn ink(c: Rgba8) -> Color {
+    Color::Rgb(c.r, c.g, c.b)
+}
+
+/// `[theme] file` selects a palette; the solver derives every slot from
+/// it per the documented map, and explicit slot keys still win (ADR-0026
+/// layering).
 #[test]
 fn a_selected_theme_maps_onto_the_slots_and_overrides_still_win() {
     let dir = ThemeDir::new("light", LIGHT_COLORS);
-    let file = dir.0.join("colors.toml").display().to_string();
+    let file = dir.file();
     let t = Theme::from_cfg(&cfg(&[("file", &file), ("error", "#000001")]), &[]);
-    assert_eq!(t.accent, Color::Rgb(0x1e, 0x66, 0xf5));
-    assert_eq!(t.title, t.accent);
-    assert_eq!(t.divider_focus, t.accent);
-    assert_eq!(t.chord, Color::Rgb(0x40, 0xa0, 0x2b));
-    assert_eq!(t.attention, Color::Rgb(0xdf, 0x8e, 0x1d));
-    assert_eq!(
-        t.surface,
-        Color::Rgb(0xe3, 0xe5, 0xe9),
-        "light: the background a shade darker"
-    );
-    assert_eq!(t.border, Color::Rgb(0xac, 0xb0, 0xbe));
-    assert_eq!(t.selection_bg, Color::Rgb(0xcc, 0xd0, 0xda));
-    assert_eq!(t.text, Color::Rgb(0x4c, 0x4f, 0x69));
-    assert_eq!(t.action, Color::Reset);
+    let roles = roles_of(&file);
+    assert_eq!(roles.mode, Mode::Light);
+    assert_eq!(t.accent, ink(roles.accent.accent_text));
+    assert_eq!(t.surface, ink(roles.layer.sidebar));
+    assert_eq!(t.text, ink(roles.text.text));
+    assert_eq!(t.dim, ink(roles.text.dim));
+    assert_eq!(t.border, ink(roles.text.faint));
+    assert_eq!(t.attention, ink(roles.status.needs_you));
+    assert_eq!(t.agent_working, ink(roles.status.working));
+    assert_eq!(t.agent_done, ink(roles.status.done));
+    assert_eq!(t.agent_failed, ink(roles.status.failed));
+    assert_eq!(t.selection_bg, ink(roles.selection.bg));
+    assert_eq!(t.selection_fg, ink(roles.selection.fg));
     assert_eq!(
         t.error,
         Color::Rgb(0, 0, 1),
@@ -289,115 +308,22 @@ fn a_selected_theme_maps_onto_the_slots_and_overrides_still_win() {
     assert!(Theme::resolve(&cfg(&[("file", &file)]), &[]).is_ok());
 }
 
-/// A dark theme fills panels with `lighter_background`; a selection
-/// that does not load is a warning for the tolerant build and a refusal
-/// for the strict one.
+/// A dark theme fills panels with the solver's sidebar step off its own
+/// background; a selection that does not load is a warning for the
+/// tolerant build and a refusal for the strict one.
 #[test]
 fn dark_surface_and_missing_theme_handling() {
     let dark = LIGHT_COLORS.replace("mode = \"light\"", "mode = \"dark\"");
     let dir = ThemeDir::new("dark", &dark);
-    let file = dir.0.join("colors.toml").display().to_string();
-    let t = Theme::from_cfg(&cfg(&[("file", &file)]), &[]);
-    assert_eq!(
-        t.surface,
-        Color::Rgb(0xdc, 0xe0, 0xe8),
-        "dark: lighter_background"
-    );
+    let t = Theme::from_cfg(&cfg(&[("file", &dir.file())]), &[]);
+    let roles = roles_of(&dir.file());
+    assert_eq!(roles.mode, Mode::Dark);
+    assert_eq!(t.surface, ink(roles.layer.sidebar));
+    assert_ne!(t.surface, ink(roles.layer.ground), "a panel is a step off");
 
     let missing = cfg(&[("name", "no-such-theme-xyz"), ("accent", "#123456")]);
     let tolerant = Theme::from_cfg(&missing, &[]);
     assert_eq!(tolerant.accent, Color::Rgb(0x12, 0x34, 0x56));
     assert_eq!(tolerant.dim, Theme::default().dim);
     assert!(Theme::resolve(&missing, &[]).is_err());
-}
-
-/// Relative luminance per WCAG 2.1, for the contrast assertion below.
-fn channel(v: u8) -> f64 {
-    let v = f64::from(v) / 255.0;
-    if v <= 0.03928 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn luminance(c: Color) -> f64 {
-    let Color::Rgb(r, g, b) = c else {
-        panic!("contrast is only defined for the rgb slots: {c:?}")
-    };
-    0.0722f64.mul_add(
-        channel(b),
-        0.2126f64.mul_add(channel(r), 0.7152 * channel(g)),
-    )
-}
-
-fn contrast(a: Color, b: Color) -> f64 {
-    let (x, y) = (luminance(a), luminance(b));
-    let (hi, lo) = if x > y { (x, y) } else { (y, x) };
-    (hi + 0.05) / (lo + 0.05)
-}
-
-/// The accessibility floor: every text or rule slot clears WCAG AA (4.5:1)
-/// against `surface` (a first cut shipped a 1.7:1 divider).
-#[test]
-fn contrast_floor_is_met() {
-    let t = Theme::default();
-    let bg = t.surface;
-    for (name, slot) in [
-        ("divider", t.divider),
-        ("divider_focus", t.divider_focus),
-        ("pane_title", t.pane_title),
-        ("pane_title_focus", t.pane_title_focus),
-        ("border", t.border),
-        ("dim", t.dim),
-        ("sidebar_section", t.sidebar_section),
-        ("agent_idle", t.agent_idle),
-        ("agent_working", t.agent_working),
-        ("agent_blocked", t.agent_blocked),
-        ("agent_done", t.agent_done),
-        ("accent", t.accent),
-        ("chord", t.chord),
-        ("text", t.text),
-        ("section_header", t.section_header),
-        ("error", t.error),
-        ("attention", t.attention),
-    ] {
-        let ratio = contrast(slot, bg);
-        assert!(
-            ratio >= 4.5,
-            "{name} is {ratio:.2}:1 against surface; the floor is 4.5:1"
-        );
-    }
-}
-
-#[test]
-fn selection_text_and_sidebar_context_clear_contrast_floor() {
-    let t = Theme::default();
-    for fg in [t.selection_fg, t.dim, t.accent, t.attention] {
-        assert!(
-            contrast(fg, t.selection_bg) >= 4.5,
-            "selection contrast: {fg:?}"
-        );
-    }
-}
-
-/// The three rungs stay ordered. Focus must read as brighter than
-/// recessive text, which must read as brighter than the rules — a
-/// retune that clears the floor by flattening the hierarchy would
-/// otherwise pass `contrast_floor_is_met` and look wrong.
-#[test]
-fn the_recessive_rungs_stay_ordered() {
-    let t = Theme::default();
-    let bg = t.surface;
-    let rules = contrast(t.divider, bg);
-    let recessive = contrast(t.dim, bg);
-    let focus = contrast(t.accent, bg);
-    assert!(
-        rules < recessive,
-        "rules ({rules:.2}) must recede behind recessive text ({recessive:.2})"
-    );
-    assert!(
-        recessive < focus,
-        "recessive text ({recessive:.2}) must recede behind focus ({focus:.2})"
-    );
 }

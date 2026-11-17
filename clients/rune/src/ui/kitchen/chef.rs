@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! A chef, as the prototype's `chef`: legs, arms acting out its pose,
 //! jacket and harness-coloured apron, head, and the toque whose height is
 //! its rank (gold, with glints, for the star). Then what's on the stations

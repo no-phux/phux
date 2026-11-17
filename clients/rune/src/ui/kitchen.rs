@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The kitchen: the fleet as a restaurant, each machine a line with its
 //! sign, every agent it can reach a chef in its harness's colours acting out
 //! its state. A press on a chef selects it; a press on the selected one (or
@@ -8,16 +9,17 @@
 //! canvas, the stations, pass, chefs, air and night in another, then the
 //! line signs, the neon, name pills, the chefs' press targets and the readout.
 
+use crate::ui::Paint;
 use rune::{Cx, El, TextStyle, canvas, el, row, text};
 
-use super::playground::labels::{Label, pill};
+use super::Tokens;
+use super::playground::hud::{self, Picked, Readout};
+use super::playground::labels::{self, Label, pill};
 use super::playground::pen::{Pen, rgba};
-use super::playground::readout::{Picked, Readout, working};
-use super::{CAPTION, Ink};
 use crate::creature;
 use crate::desk::Desk;
 use crate::kitchen::{Goal, Kitchen, PartKind, RANK};
-use crate::playground::{Mood, Pt, Rgb};
+use crate::playground::{Mood, Pt};
 
 mod chef;
 mod room;
@@ -26,10 +28,12 @@ use chef::{AMBER, MINT, pool};
 
 /// The night's darkness is worked out on a grid this many points across.
 const CELL: f32 = 4.0;
-const ON_AMBER: Rgb = [42.0, 22.0, 0.0];
 
-pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    desk.kitchen.night.set(p.bg.luminance() < 0.5);
+pub(super) fn view(desk: &Desk, p: &Tokens, cx: &mut Cx<Desk>) -> El {
+    let t = p;
+    desk.kitchen
+        .night
+        .set(p.roles.layer.ground.paint().luminance() < 0.5);
     desk.kitchen.still.set(cx.is_reduced_motion());
     let k = &desk.kitchen.scene;
     let count = |m: Mood| k.chefs.iter().filter(|c| c.who.mood == m).count();
@@ -47,12 +51,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.roles.layer.ground.paint())
         .modal(false, Desk::close_kitchen)
         .label(summary)
         .on_layout(|desk: &mut Desk, rect| desk.kitchen_laid_out(rect[2], rect[3]));
     if k.lines.is_empty() {
-        return root.child(readout(k, waiting, p));
+        return root.child(foot(k, waiting, t));
     }
     let room = {
         let mut cache = desk.kitchen.backdrop.room.borrow_mut();
@@ -114,12 +118,12 @@ pub(super) fn view(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
         k.lines
             .iter()
             .enumerate()
-            .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0])),
+            .map(|(i, l)| sign(k, i, [l.x0 + 2.0, l.y0], t)),
     )
     .child(neon(k))
-    .children(pills(k))
+    .children(pills(k, t))
     .children(targets)
-    .child(readout(k, waiting, p))
+    .child(foot(k, waiting, t))
 }
 
 /// Everything that moves, in the prototype's order.
@@ -257,7 +261,7 @@ fn night(k: &Kitchen) -> (u32, u32, Vec<u8>) {
 }
 
 /// A line's sign: its machine, a lamp, and how many there need you.
-fn sign(k: &Kitchen, i: usize, [x, y]: Pt) -> El {
+fn sign(k: &Kitchen, i: usize, [x, y]: Pt, t: &Tokens) -> El {
     let l = &k.lines[i];
     let waiting = k.waiting_in(i);
     let lamp = if l.known {
@@ -289,17 +293,7 @@ fn sign(k: &Kitchen, i: usize, [x, y]: Pt) -> El {
                         .color(rgba([242.0, 239.0, 228.0], 1.0)),
                 )
                 .child(el().size(5.0, 5.0).radius(2.5).fill(lamp))
-                .children((waiting > 0).then(|| {
-                    el().size(15.0, 15.0)
-                        .radius(7.5)
-                        .center()
-                        .fill(rgba(AMBER, 1.0))
-                        .child(
-                            text(waiting.to_string())
-                                .font(CAPTION)
-                                .color(rgba(ON_AMBER, 1.0)),
-                        )
-                })),
+                .children((waiting > 0).then(|| labels::count(t, waiting, 15.0))),
         )
 }
 
@@ -320,7 +314,7 @@ fn neon(k: &Kitchen) -> El {
 
 /// Name pills: always for a chef that needs you, else for the selected or
 /// hovered one; stacked upward from the lowest so neighbours stay readable.
-fn pills(k: &Kitchen) -> Vec<El> {
+fn pills(k: &Kitchen, t: &Tokens) -> Vec<El> {
     let mut shown: Vec<_> = k
         .chefs
         .iter()
@@ -335,15 +329,15 @@ fn pills(k: &Kitchen) -> Vec<El> {
     shown
         .into_iter()
         .map(|c| {
-            let amber = c.who.mood == Mood::Waiting;
-            let text = if amber {
-                format!("{} · needs you", c.who.name)
+            let needs_you = c.who.mood == Mood::Waiting;
+            let text = if needs_you {
+                format!("{} · {}", c.who.name, Mood::Waiting.word())
             } else {
                 c.who.name.clone()
             };
             let (at, r) = k.hit(c);
             // As `ui::playground::labels::pill` estimates and clamps its width.
-            let w = text.chars().count() as f32 * 6.6 + 14.0;
+            let w = labels::tag_w(t, text.chars().count(), needs_you);
             let x = (at[0] - w / 2.0).clamp(6.0, (k.w - w - 6.0).max(6.0));
             let mut y = at[1] - r - 14.0;
             for _ in 0..6 {
@@ -357,11 +351,12 @@ fn pills(k: &Kitchen) -> Vec<El> {
             }
             placed.push([x, y, w]);
             pill(
+                t,
                 &Label {
                     at: [at[0], y],
                     text,
                     badge: None,
-                    amber,
+                    needs_you,
                     host: None,
                 },
                 [at[0], y],
@@ -371,29 +366,33 @@ fn pills(k: &Kitchen) -> Vec<El> {
         .collect()
 }
 
-fn readout(k: &Kitchen, waiting: usize, p: &Ink) -> El {
+/// The readout's counts and the picked chef's card.
+fn foot(k: &Kitchen, waiting: usize, t: &Tokens) -> El {
+    let working = (k.chefs.iter())
+        .filter(|c| c.who.mood == Mood::Working)
+        .count();
     let picked = k.selected_chef().map(|c| Picked {
-        name: &c.who.name,
+        name: c.who.name.clone(),
         mood: c.who.mood,
-        host: &k.line_of(c).host,
-        // Its rank always; its work when its machine publishes agent stats.
+        host: k.line_of(c).host.clone(),
         card: Some(match c.who.work {
             Some(w) => format!("Rank: {} · Work: {}", RANK[c.tier], creature::work_line(&w)),
             None => format!("Rank: {}", RANK[c.tier]),
         }),
-    });
-    let readout = Readout {
-        scene: "kitchen",
-        hosts: k.lines.len(),
-        agents: k.chefs.len(),
-        working: working(k.chefs.iter().map(|c| c.who.mood)),
-        waiting,
-        h: k.h,
-        unlaid_y: 42.0,
-        picked,
         open: Desk::open_chef,
-        next_waiting: Desk::kitchen_next_waiting,
-        close: Desk::close_kitchen,
-    };
-    super::playground::readout::readout(readout, p)
+    });
+    hud::readout(
+        t,
+        Readout {
+            key: "kitchen",
+            h: k.h,
+            hosts: k.lines.len(),
+            agents: k.chefs.len(),
+            working,
+            waiting,
+            next: Desk::kitchen_next_waiting,
+            close: Desk::close_kitchen,
+            picked,
+        },
+    )
 }

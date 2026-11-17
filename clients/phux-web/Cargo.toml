@@ -25,11 +25,20 @@ opt-level = "z"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The raw-style-literal ratchet (design spec §5.1) reads the source tree
+# through Node's `fs`, so it runs in the Node suite rather than as a browser
+# `lib` unit test.
+[[test]]
+name = "style_literals"
+path = "src/style_literals_tests.rs"
+
 [dependencies]
 phux-vt-web = { path = "../phux-vt-web" }
 # The browser client speaks the exact Rust wire codec (ADR-0024 made it wasm-safe).
 phux-protocol = { path = "../../crates/phux-protocol" }
 phux-client-core = { path = "../../crates/phux-client-core" }
+# The design tokens, the theme solver and the status vocabulary (spec §4.4).
+phux-design = { path = "../../crates/phux-design" }
 bytes = "1"
 serde_json = "1"
 wasm-bindgen = "=0.2.130"

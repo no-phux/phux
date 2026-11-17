@@ -1,6 +1,5 @@
 ---
 source: crates/phux-tui/src/attach/input_dispatch/tests_actions.rs
-assertion_line: 2517
 expression: text
 ---
 
@@ -30,7 +29,7 @@ expression: text
                          │ down - unreachable                             │
                          │ mini                                           │
                          │   build                                on mini │
-                         │   phall                    on mini, 1 need you │
+                         │   phall                   on mini, 1 needs you │
                          │ spare                                          │
                          │ xps - unreachable                              │
                          │ + New session…                          create │

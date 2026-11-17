@@ -39,6 +39,7 @@ use crate::{Mark, Metrics, Overlay, render, render_cursor_row};
 
 mod app;
 mod approvals;
+mod badges;
 mod connect;
 mod documents;
 mod find;
@@ -53,6 +54,7 @@ mod receive;
 mod transport;
 
 use app::*;
+pub use badges::{ANNOUNCE_ID, BELL_DOT_CLASS, agent_of, announcement, ladder, mark};
 pub use connect::*;
 pub use documents::DOCUMENTS_CONTAINER_ID;
 use gestures::*;
@@ -109,20 +111,15 @@ pub const TITLE_ATTRIBUTE: &str = "data-phux-title";
 pub const TITLE_EVENT: &str = "phux-title";
 
 /// Bubbling `CustomEvent` dispatched on the canvas when the program rings
-/// the bell (BEL). The canvas also flashes briefly, unless the page prefers
-/// reduced motion.
+/// the bell (BEL). The canvas also washes in `status.bell`, at most once a
+/// second ([`crate::bell`]); a page that prefers reduced motion gets the
+/// bell's unread dot beside the canvas instead, until the next input.
 pub const BELL_EVENT: &str = "phux-bell";
 
 /// Bubbling event after a full real canvas paint. `detail` has canonical
 /// `panes`, total cell `cols`/`rows`, and backing `pixelWidth`/`pixelHeight`.
 /// Cursor-only blink redraws do not emit it. Listeners may call the client.
 pub const RENDER_EVENT: &str = "phux-render";
-
-/// How long the visual bell shows, and the least time between two flashes.
-const BELL_FLASH_MS: u32 = 150;
-
-/// The visual bell: a translucent wash over the whole canvas.
-const BELL_FLASH_FILL: &str = "rgba(255, 255, 255, 0.18)";
 
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
@@ -282,8 +279,15 @@ struct App {
     /// An on-screen Ctrl held for the next typed key (a page's key bar sets
     /// it; a phone keyboard has no Ctrl of its own).
     ctrl_latch: Cell<bool>,
-    /// When the visual bell last started, on the monotonic clock.
-    bell_started_ms: Cell<f64>,
+    /// The visual bell's flash gate, and whether a bell is unread (reduce
+    /// motion shows a dot instead of a wash).
+    bell: Cell<crate::bell::BellGate>,
+    bell_unread: Cell<bool>,
+    /// Badge states between paints, for announcements and "done, seen".
+    badges: RefCell<badges::BadgeMemory>,
+    /// A fresh terminal's default background and foreground: a pane still
+    /// on them set no palette, so it paints the house terminal palette.
+    engine_palette: (phux_vt_web::Rgb, phux_vt_web::Rgb),
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,

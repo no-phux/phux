@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! A car, as the prototype's `car`: its night light trail and headlight,
 //! its mood's glow, speed lines, then the car in its harness's livery with
 //! its tier's flourishes (wing in its fin colour, stripes, gold trim, a

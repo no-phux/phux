@@ -15,6 +15,8 @@ mod dock;
 mod document_viewer;
 mod features;
 mod galaxy;
+#[allow(clippy::disallowed_methods)]
+// terminal content: SGR faint and underlines are the VT's, not chrome
 mod grid;
 mod handoff;
 mod hive;
@@ -45,6 +47,7 @@ mod session_color;
 mod ssh_config;
 mod standing;
 mod system_settings;
+#[allow(clippy::disallowed_methods)] // owner path: theme adapters and catalog
 mod theme;
 mod ui;
 mod updates;
@@ -136,7 +139,7 @@ pub fn run_desktop() {
     // frame (GNOME), Rune takes its bar away and adds the caption buttons;
     // KDE, Hyprland and X11 keep theirs.
     #[cfg(target_os = "linux")]
-    let app = app.titlebar(rune::Titlebar::new(ui::TITLEBAR_H));
+    let app = app.titlebar(rune::Titlebar::new(phux_design::tokens::SPACE.titlebar_h));
     let app = app
         .init(move || {
             let mut desk = Desk::new(&resolved).with_phone(phone);
