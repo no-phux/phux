@@ -59,7 +59,7 @@ pub enum InnerAccepted {
         /// The decrypted stream, its handshake done.
         stream: Box<dyn InnerIo>,
         /// The registry credential its certificate maps to.
-        workload: Option<crate::auth::AuthenticatedCredential>,
+        workload: Option<Box<crate::auth::AuthenticatedCredential>>,
     },
     /// An enrollment was answered; nothing else rides this stream.
     Enrolled,
@@ -148,7 +148,7 @@ impl InnerTls {
         };
         InnerAccepted::Terminal {
             stream: Box::new(stream),
-            workload,
+            workload: workload.map(Box::new),
         }
     }
 }

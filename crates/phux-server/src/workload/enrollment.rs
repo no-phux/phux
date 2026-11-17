@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Datelike, Utc};
+use jiff::Timestamp;
 use rcgen::{
     CertificateParams, CertificateSigningRequestParams, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyUsagePurpose, PublicKeyData, SanType,
@@ -180,7 +180,7 @@ pub(super) fn client_certificate_params(
     expires_at: i64,
     credential_id: &str,
 ) -> Result<CertificateParams, WorkloadError> {
-    let expiry = DateTime::from_timestamp(expires_at, 0).ok_or(WorkloadError::InvalidExpiry)?;
+    let expiry = Timestamp::from_second(expires_at).map_err(|_| WorkloadError::InvalidExpiry)?;
     let mut params = CertificateParams::default();
     params.subject_alt_names = vec![SanType::URI(rcgen::string::Ia5String::try_from(
         credential_id,
@@ -194,18 +194,23 @@ pub(super) fn client_certificate_params(
     params.use_authority_key_identifier_extension = true;
     // Day granularity with a day of slack on each side: the registry expiry,
     // not the certificate, is the authoritative policy time.
-    let (year, month, day) = calendar_day(Utc::now() - chrono::Duration::days(1));
+    let (year, month, day) = calendar_day(Timestamp::now() - jiff::SignedDuration::from_hours(24));
     params.not_before = rcgen::date_time_ymd(year, month, day);
-    let (year, month, day) = calendar_day(expiry + chrono::Duration::days(1));
+    let (year, month, day) = calendar_day(expiry + jiff::SignedDuration::from_hours(24));
     params.not_after = rcgen::date_time_ymd(year, month, day);
     Ok(params)
 }
 
-/// `(year, month, day)` in UTC. chrono's month (1..=12) and day (1..=31)
-/// always fit a `u8`, and [`MAX_EXPIRY_SECONDS`] keeps the year in range.
-fn calendar_day(at: DateTime<Utc>) -> (i32, u8, u8) {
-    let narrow = |value: u32| u8::try_from(value).unwrap_or(u8::MAX);
-    (at.year(), narrow(at.month()), narrow(at.day()))
+/// `(year, month, day)` in UTC. The month (1..=12) and day (1..=31) always
+/// fit a `u8`, and [`MAX_EXPIRY_SECONDS`] keeps the year in range.
+fn calendar_day(at: Timestamp) -> (i32, u8, u8) {
+    let date = at.to_zoned(jiff::tz::TimeZone::UTC).date();
+    let narrow = |value: i8| u8::try_from(value).unwrap_or(u8::MAX);
+    (
+        i32::from(date.year()),
+        narrow(date.month()),
+        narrow(date.day()),
+    )
 }
 
 pub(super) fn subject_public_key_info(certificate: &[u8]) -> Result<Vec<u8>, WorkloadError> {

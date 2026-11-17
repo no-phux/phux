@@ -253,7 +253,10 @@ async fn settle_stream(
             if let super::inner_tls::InnerAccepted::Terminal { stream, workload } =
                 inner.accept(io).await
             {
-                return Some((WtStream::Inner(tokio::io::split(stream)), workload));
+                return Some((
+                    WtStream::Inner(tokio::io::split(stream)),
+                    workload.map(|w| *w),
+                ));
             }
             debug!(%remote, "webtransport end-to-end session refused or done");
             None

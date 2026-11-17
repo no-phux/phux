@@ -33,9 +33,10 @@ pub(crate) fn jwt_claims(token: &str) -> Option<Value> {
 /// RFC 3339 / ISO 8601 to Unix milliseconds.
 #[must_use]
 pub(crate) fn iso_ms(text: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(text.trim())
+    text.trim()
+        .parse::<jiff::Timestamp>()
         .ok()
-        .map(|t| t.timestamp_millis())
+        .map(jiff::Timestamp::as_millisecond)
 }
 
 /// A JSON number as `f64`.

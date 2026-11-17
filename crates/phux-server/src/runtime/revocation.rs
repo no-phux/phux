@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use phux_protocol::kinds::Verbs;
 use phux_protocol::scope::{EffectiveClause, Selector, TerminalScopeSet};
 use tokio_util::sync::CancellationToken;
@@ -93,7 +93,7 @@ impl Watcher {
         }
         let registry = self.observe(state);
         let mut stores = BearerStores::default();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut next_expiry = None;
         for connection in &watched {
             match judge(connection, &registry, &mut stores, now) {
@@ -178,7 +178,7 @@ enum RegistryView {
 struct BearerStores(Vec<(Arc<ReloadingTokenStore>, Option<TokenStore>)>);
 
 impl BearerStores {
-    fn standing(&mut self, bearer: &BearerAdmission, now: DateTime<Utc>) -> Option<Standing> {
+    fn standing(&mut self, bearer: &BearerAdmission, now: Timestamp) -> Option<Standing> {
         self.snapshot_of(bearer.store())
             .map(|store| store.standing_at(&bearer.id, bearer.generation, now))
     }
@@ -199,13 +199,13 @@ impl BearerStores {
 /// A connection whose authority still stands.
 struct Kept {
     /// When it is next due to be judged for expiry.
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
     /// A newer registry state that still contains its grant.
     refresh: Option<RegistryStamp>,
 }
 
 impl Kept {
-    const fn unchanged(expires_at: Option<DateTime<Utc>>) -> Self {
+    const fn unchanged(expires_at: Option<Timestamp>) -> Self {
         Self {
             expires_at,
             refresh: None,
@@ -241,7 +241,7 @@ fn judge(
     connection: &WatchedConnection,
     registry: &RegistryView,
     stores: &mut BearerStores,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Kept, Revocation> {
     let bearer_expiry = match &connection.bearer {
         Some(bearer) => judge_bearer(stores.standing(bearer, now))?,
@@ -254,7 +254,7 @@ fn judge(
 
 /// A bearer that a clean, non-empty store shows revoked, removed, or
 /// expired ends the connection. No verdict keeps it.
-const fn judge_bearer(standing: Option<Standing>) -> Result<Option<DateTime<Utc>>, Revocation> {
+const fn judge_bearer(standing: Option<Standing>) -> Result<Option<Timestamp>, Revocation> {
     match standing {
         Some(Standing::Revoked) => Err(Revocation::Revoked),
         Some(Standing::Expired) => Err(Revocation::Expired),
@@ -269,7 +269,7 @@ const fn judge_bearer(standing: Option<Standing>) -> Result<Option<DateTime<Utc>
 fn judge_grant(
     grant: &ConnectionGrant,
     registry: &RegistryView,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Kept, Revocation> {
     let Authority::Scoped { effective, .. } = &grant.authority else {
         return Ok(Kept::unchanged(None));
@@ -325,14 +325,14 @@ fn confirmed_by(grant: &ConnectionGrant, snapshot: &WorkloadRegistry) -> bool {
 fn judge_record(
     record: &WorkloadCredential,
     clauses: &[EffectiveClause],
-    now: DateTime<Utc>,
-) -> Result<Option<DateTime<Utc>>, Revocation> {
+    now: Timestamp,
+) -> Result<Option<Timestamp>, Revocation> {
     if record.revoked_at.is_some() {
         return Err(Revocation::Revoked);
     }
     let expires_at = record
         .expires_at
-        .and_then(|seconds| DateTime::from_timestamp(seconds, 0));
+        .and_then(|seconds| Timestamp::from_second(seconds).ok());
     if expires_at.is_some_and(|expiry| expiry <= now) {
         return Err(Revocation::Expired);
     }
@@ -402,10 +402,10 @@ fn covers(outer: &Selector, inner: &Selector) -> bool {
     }
 }
 
-fn earliest(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+fn earliest(a: Option<Timestamp>, b: Option<Timestamp>) -> Option<Timestamp> {
     a.into_iter().chain(b).min()
 }
 
-fn until(when: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
-    (when - now).to_std().unwrap_or(Duration::ZERO)
+fn until(when: Timestamp, now: Timestamp) -> Duration {
+    Duration::try_from(when.duration_since(now)).unwrap_or(Duration::ZERO)
 }

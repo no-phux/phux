@@ -18,7 +18,7 @@ fn standing_follows_the_stores_current_generation() {
     );
     assert_eq!(store.standing("someone-else", 1), Some(Standing::Revoked));
 
-    rotate_credential(&path, "test-credential", Duration::zero()).unwrap();
+    rotate_credential(&path, "test-credential", SignedDuration::ZERO).unwrap();
     assert_eq!(
         store.standing("test-credential", 1),
         Some(Standing::Expired),
@@ -157,15 +157,15 @@ fn deferred_store_admits_nobody_until_the_file_loads_then_adopts_it() {
 
 #[test]
 fn expiry_and_revocation_fail_closed() {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let token = [0x44; TOKEN_LEN];
     let base = CredentialRecord {
         id: "cred".to_owned(),
         verifier: verifier(&token),
         principal: "device:test".to_owned(),
         scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
-        issued_at: now - Duration::minutes(1),
-        expires_at: Some(now + Duration::seconds(1)),
+        issued_at: now - SignedDuration::from_mins(1),
+        expires_at: Some(now + SignedDuration::from_secs(1)),
         revoked_at: None,
         generation: 1,
         last_seen: None,
@@ -180,7 +180,7 @@ fn expiry_and_revocation_fail_closed() {
     assert!(store.authenticate_at(&token, now).is_some());
     assert!(
         store
-            .authenticate_at(&token, now + Duration::seconds(1))
+            .authenticate_at(&token, now + SignedDuration::from_secs(1))
             .is_none()
     );
     let mut revoked = base;
@@ -310,7 +310,7 @@ fn list_summarizes_credentials_and_prune_revokes_unused() {
     assert!(stale_row.last_seen.is_none());
     assert!(!stale_row.revoked);
 
-    let pruned = prune_unused(&path, Duration::hours(1)).unwrap();
+    let pruned = prune_unused(&path, SignedDuration::from_hours(1)).unwrap();
     assert_eq!(pruned.revoked_ids, vec![stale.id.clone()]);
     assert!(
         list_credentials(&path)
@@ -377,10 +377,10 @@ fn authenticate_and_touch_records_last_seen() {
 fn a_single_use_link_expires_unused_and_its_first_admission_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
-    let deadline = Utc::now() + Duration::minutes(10);
+    let deadline = Timestamp::now() + SignedDuration::from_mins(10);
     let unused = mint_terminal_credential(&path, None, None, Some(deadline)).unwrap();
     let used = mint_terminal_credential(&path, None, None, Some(deadline)).unwrap();
-    let after = deadline + Duration::seconds(1);
+    let after = deadline + SignedDuration::from_secs(1);
 
     let store = ReloadingTokenStore::load(path.clone()).unwrap();
     assert!(store.authenticate_and_touch(&secret(&used)).is_some());

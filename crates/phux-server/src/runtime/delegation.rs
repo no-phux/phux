@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_core::ids::SessionId;
 use phux_protocol::ids::{OperationId, SessionKey as WireSessionKey};
 use phux_protocol::policy::{PeerIdentity, TransportType};
@@ -64,7 +64,7 @@ pub fn delegate_agent(
     root_token: &CancellationToken,
 ) -> Result<DelegatedAgent, DelegationError> {
     let credential =
-        state.with_mut(|s| s.mint_delegation(launcher, session, request, Utc::now()))?;
+        state.with_mut(|s| s.mint_delegation(launcher, session, request, Timestamp::now()))?;
     let opened = open_socket(state, &credential);
     let (listener, socket_path) = match opened {
         Ok(opened) => opened,
@@ -114,7 +114,7 @@ pub(super) fn handle_delegate_agent(
 ) -> CommandResult {
     let key = crate::org_wire::core_session_key(session);
     let prior = state.with(|s| {
-        let credential = s.delegation_minted_by(operation.as_bytes(), Utc::now())?;
+        let credential = s.delegation_minted_by(operation.as_bytes(), Timestamp::now())?;
         let path = s.delegations().socket_path(&credential.id)?.to_path_buf();
         let same_session = s.registry().session_key(credential.session) == Some(key);
         Some((credential.clone(), path, same_session))
@@ -189,14 +189,14 @@ fn delegation_value(session: WireSessionKey, agent: &DelegatedAgent) -> CommandR
         agent.credential.id.clone(),
         session,
         agent.socket_path.to_string_lossy().into_owned(),
-        u64::try_from(agent.credential.expires_at.timestamp_millis()).unwrap_or(0),
+        u64::try_from(agent.credential.expires_at.as_millisecond()).unwrap_or(0),
     ))))
 }
 
 /// Withdraw delegated credential `id`: close its socket and revoke every
 /// live connection acting as it. `false` when `id` named nothing live.
 pub fn revoke_delegated_agent(state: &SharedState, id: &str) -> bool {
-    let live = state.with(|s| s.delegations().live(id, Utc::now()).is_some());
+    let live = state.with(|s| s.delegations().live(id, Timestamp::now()).is_some());
     let clients = state.with_mut(|s| s.withdraw_delegation(id));
     for client in clients {
         super::revocation::revoke_connection(state, client, Revocation::Revoked);
@@ -235,7 +235,7 @@ fn stamp(credential: &DelegatedCredential) -> AuthenticatedCredential {
             .iter()
             .map(ToString::to_string)
             .collect(),
-        issued_at: Utc::now(),
+        issued_at: Timestamp::now(),
         expires_at: Some(credential.expires_at),
         generation: 0,
         registry_instance: None,

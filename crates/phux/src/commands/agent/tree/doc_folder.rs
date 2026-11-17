@@ -133,11 +133,10 @@ fn render(root: &Path, dir: &Path, entries: &[Entry]) -> String {
             || (format!("{}/", entry.name), String::new()),
             |bytes| (entry.name.clone(), human(bytes)),
         );
-        let when = entry.modified.map_or_else(String::new, |at| {
-            chrono::DateTime::<chrono::Local>::from(at)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        });
+        let when = entry
+            .modified
+            .and_then(|at| jiff::Zoned::try_from(at).ok())
+            .map_or_else(String::new, |at| at.strftime("%Y-%m-%d %H:%M").to_string());
         let _ = writeln!(doc, "| {} | {size} | {when} |", name.replace('|', "\\|"));
     }
     if entries.len() > MAX_ENTRIES {

@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::kinds::Verb;
 use phux_protocol::scope::{ScopeGrant, Selector};
 use phux_protocol::wire::frame::ControlClass;
@@ -107,7 +107,7 @@ fn server_pair_paths() -> (Option<PathBuf>, Option<PathBuf>) {
 
 pub(super) fn list(paths: &WorkloadPaths, public_keys: bool) -> Result<Report, CliError> {
     let registry = WorkloadRegistry::load(&paths.registry).map_err(|error| cli_error(&error))?;
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     let credentials = registry.credentials();
     let mut prose = vec![format!(
         "registry generation {}, {} credential(s)",

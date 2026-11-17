@@ -351,7 +351,7 @@ fn next_fence(tx: &Transaction<'_>) -> Result<i64, Error> {
 }
 
 fn now_secs() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+    jiff::Timestamp::now().as_second().try_into().unwrap_or(0)
 }
 fn sql_secs(secs: u64) -> i64 {
     i64::try_from(secs).unwrap_or(i64::MAX)

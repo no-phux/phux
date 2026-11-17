@@ -85,7 +85,7 @@ pub(crate) fn run(args: MigrateArgs, socket: Option<PathBuf>) -> ExitCode {
     );
     let reference = prompt::reference();
     let prefix = setup.chosen_prefix();
-    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let date = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
     let text = prompt::render(
         &found,
         &prompt::Context {

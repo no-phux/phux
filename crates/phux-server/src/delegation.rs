@@ -17,7 +17,7 @@ use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use phux_core::PrincipalId;
 use phux_core::ids::SessionId;
 use phux_protocol::kinds::{Verb, Verbs};
@@ -104,7 +104,7 @@ pub struct DelegatedCredential {
     /// own grant).
     pub delegator: PrincipalId,
     /// When it stops admitting anything.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 impl DelegatedCredential {
@@ -171,7 +171,7 @@ impl DelegationTable {
 
     /// The credential `id` names, while it is live at `now`.
     #[must_use]
-    pub fn live(&self, id: &str, now: DateTime<Utc>) -> Option<&DelegatedCredential> {
+    pub fn live(&self, id: &str, now: Timestamp) -> Option<&DelegatedCredential> {
         self.live
             .get(id)
             .filter(|credential| credential.expires_at > now)
@@ -206,7 +206,7 @@ impl DelegationTable {
     /// Every credential live at `now` whose socket is open, as a hot
     /// upgrade carries it.
     #[must_use]
-    pub fn carried(&self, now: DateTime<Utc>) -> Vec<CarriedDelegation> {
+    pub fn carried(&self, now: Timestamp) -> Vec<CarriedDelegation> {
         let mut carried: Vec<CarriedDelegation> = self
             .listeners
             .iter()

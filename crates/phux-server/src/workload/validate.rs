@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, TerminalScopeSet};
 use sha2::{Digest, Sha256};
 
@@ -127,7 +127,7 @@ fn refuse_restartable_ids(scopes: &[String]) -> Result<(), WorkloadError> {
 ///
 /// [`WorkloadError::InvalidExpiry`].
 pub fn validate_expiry(expires_at: i64) -> Result<(), WorkloadError> {
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     if expires_at > now && expires_at - now <= MAX_EXPIRY_SECONDS {
         Ok(())
     } else {

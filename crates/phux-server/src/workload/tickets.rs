@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -162,7 +162,7 @@ fn mint(
     getrandom::fill(&mut secret).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut handle = [0_u8; 4];
     getrandom::fill(&mut handle).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     let record = TicketRecord {
         id: format!("t-{}", hex::encode(handle)),
         secret_sha256: hex::encode(Sha256::digest(secret)),
@@ -206,7 +206,7 @@ fn mint(
 /// failure.
 pub fn redeem_ticket(path: &Path, secret: &[u8]) -> Result<Redeemed, WorkloadError> {
     let digest = hex::encode(Sha256::digest(secret));
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     secure_file::with_lock(path, |held| {
         let mut file = load(path)?;
         let mut found = None;
@@ -255,7 +255,7 @@ pub fn is_ticket_id(id: &str) -> bool {
 ///
 /// [`WorkloadError::NotFound`] for an unknown handle, or a store failure.
 pub fn revoke_ticket(path: &Path, id: &str) -> Result<bool, WorkloadError> {
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     secure_file::with_lock(path, |held| {
         let mut file = load(path)?;
         let ticket = file
@@ -400,7 +400,7 @@ mod tests {
         let redeemed = redeem_ticket(&path, &secret).unwrap();
         assert_eq!(redeemed.id, minted.id);
         assert_eq!(redeemed.scopes, scopes());
-        assert!(redeemed.credential_expires_at > Utc::now().timestamp() + 3000);
+        assert!(redeemed.credential_expires_at > Timestamp::now().as_second() + 3000);
 
         // Adversarial: replay of a consumed ticket.
         assert!(matches!(
@@ -419,7 +419,7 @@ mod tests {
         ));
         // Expire it in place.
         let mut file = load(&path).unwrap();
-        file.tickets[0].expires_at = Utc::now().timestamp() - 1;
+        file.tickets[0].expires_at = Timestamp::now().as_second() - 1;
         secure_file::with_lock(&path, |held| commit(&path, &file, held)).unwrap();
         let secret = hex::decode(&minted.secret_hex).unwrap();
         assert!(matches!(

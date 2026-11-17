@@ -151,7 +151,7 @@ pub fn enforce(
     };
     // Expiry is a policy time bound to the grant (workload-auth §5): past
     // it, nothing is admitted, whether or not the connection is still open.
-    if grant.is_expired_at(chrono::Utc::now()) {
+    if grant.is_expired_at(jiff::Timestamp::now()) {
         return Err(Denial::EXPIRED);
     }
     let request = unwrap_command(request);

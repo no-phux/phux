@@ -41,7 +41,7 @@ fn an_expired_grant_admits_nothing() {
         &grant,
         get_screen(world.alpha.clone())
     ));
-    grant.expires_at = Some(Utc::now() - chrono::Duration::seconds(1));
+    grant.expires_at = Some(Timestamp::now() - jiff::SignedDuration::from_secs(1));
     assert!(!admits_command(
         &world,
         &grant,

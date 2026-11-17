@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use chrono::Utc;
+use jiff::Timestamp;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -172,7 +172,7 @@ pub(super) fn workload_identity(id: &str, cached: &[&str]) -> ConnectionIdentity
             id: id.to_owned(),
             principal: id.to_owned(),
             scopes: cached.iter().map(|scope| (*scope).to_owned()).collect(),
-            issued_at: Utc::now(),
+            issued_at: Timestamp::now(),
             expires_at: None,
             generation: 1,
             registry_instance: None,

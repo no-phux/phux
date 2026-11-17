@@ -64,7 +64,7 @@ pub(super) fn prepare_transaction(
         "schema_version": MANIFEST_SCHEMA,
         "version": previous_version,
         "binaries": saved,
-        "saved_at": chrono::Utc::now().to_rfc3339(),
+        "saved_at": jiff::Timestamp::now().to_string(),
     });
     let rendered = serde_json::to_string_pretty(&manifest).map_err(|err| {
         UpdateError::Install(format!("could not render the backup manifest: {err}"))

@@ -50,7 +50,7 @@ phux-plugin.workspace = true
 # Hook `when` predicates are `toml::Value`s.
 toml.workspace = true
 # `GET_SCREEN` JSON timestamps and workload certificate dates.
-chrono.workspace = true
+jiff.workspace = true
 # The graceful-upgrade state blob and JSON records.
 serde.workspace = true
 serde_json.workspace = true

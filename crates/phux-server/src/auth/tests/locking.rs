@@ -113,7 +113,7 @@ fn concurrent_rotation_cannot_resurrect_revocation() {
     let rotate_barrier = barrier.clone();
     let rotate = std::thread::spawn(move || {
         rotate_barrier.wait();
-        rotate_credential(&rotate_path, &rotate_id, Duration::minutes(5))
+        rotate_credential(&rotate_path, &rotate_id, SignedDuration::from_mins(5))
     });
     let revoke_path = path.clone();
     let revoke_id = first.id;

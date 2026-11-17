@@ -86,7 +86,7 @@ pub(super) fn workload_authority_check(
     };
     match WorkloadRegistry::load(registry) {
         Ok(snapshot) => {
-            let now = chrono::Utc::now().timestamp();
+            let now = jiff::Timestamp::now().as_second();
             let active = snapshot
                 .credentials()
                 .iter()
@@ -117,7 +117,7 @@ pub(super) fn workload_authority_check(
 /// certificates the `[[remote]]` entries name, never a key.
 pub(super) fn check_client_certs() -> Check {
     match crate::commands::remote::load_registry() {
-        Ok(entries) => client_certs_check(&entries, chrono::Utc::now().timestamp()),
+        Ok(entries) => client_certs_check(&entries, jiff::Timestamp::now().as_second()),
         Err(err) => Check::warn(
             "client-certs",
             format!("could not read the remote registry ({err})"),

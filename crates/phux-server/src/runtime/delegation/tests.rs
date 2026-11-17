@@ -44,7 +44,12 @@ fn carried_by_old_image(dir: &Path) -> (DelegationBlob, PathBuf) {
     let (old, session) = server(dir, &root);
     let credential = old
         .with_mut(|s| {
-            s.mint_delegation(LAUNCHER, session, DelegationRequest::default(), Utc::now())
+            s.mint_delegation(
+                LAUNCHER,
+                session,
+                DelegationRequest::default(),
+                Timestamp::now(),
+            )
         })
         .unwrap();
     let path = socket_path_for(&dir.join("phux.sock"), &credential.id);
@@ -79,12 +84,12 @@ async fn a_hot_upgrade_carries_a_live_credential_and_its_socket() {
             1
         );
         let credential = new
-            .with(|s| s.delegations().live(&carried.id, Utc::now()).cloned())
+            .with(|s| s.delegations().live(&carried.id, Timestamp::now()).cloned())
             .expect("reinstated");
         assert_eq!(credential.on_behalf_of, phux_core::PrincipalId::Owner);
         assert_eq!(
             new.with(|s| {
-                s.delegation_minted_by(&[7; 16], Utc::now())
+                s.delegation_minted_by(&[7; 16], Timestamp::now())
                     .map(|minted| minted.id.clone())
             }),
             Some(carried.id.clone()),
@@ -133,7 +138,7 @@ async fn a_carried_credential_no_longer_valid_is_revoked_and_its_socket_removed(
         let cases: [(&str, Invalidate); 2] = [
             ("its session is gone", |carried| carried.group += 100),
             ("it expired meanwhile", |carried| {
-                carried.expires_at_ms = Utc::now().timestamp_millis() - 1;
+                carried.expires_at_ms = Timestamp::now().as_millisecond() - 1;
             }),
         ];
         for (label, invalidate) in cases {
@@ -149,7 +154,10 @@ async fn a_carried_credential_no_longer_valid_is_revoked_and_its_socket_removed(
                 "{label}"
             );
             assert!(
-                new.with(|s| s.delegations().live(&carried.id, Utc::now()).is_none()),
+                new.with(|s| s
+                    .delegations()
+                    .live(&carried.id, Timestamp::now())
+                    .is_none()),
                 "{label}"
             );
             assert!(!path.exists(), "{label}: its socket file is removed");

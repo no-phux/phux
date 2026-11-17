@@ -76,7 +76,7 @@ fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
         .authenticate(&bearer(token))
         .expect("secret must admit");
     let expiry = admitted.expires_at.expect("expires");
-    assert!(expiry > chrono::Utc::now() + chrono::Duration::minutes(14));
+    assert!(expiry > jiff::Timestamp::now() + jiff::SignedDuration::from_mins(14));
     assert_eq!(credential_count(&state, &tokens), 1);
 }
 

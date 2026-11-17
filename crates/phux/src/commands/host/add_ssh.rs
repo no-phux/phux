@@ -172,7 +172,7 @@ pub(super) fn already_current(
         return None;
     }
     let (cert, _) = entry.client_identity_paths()?;
-    let renewal = enroll::renewal_due(cert, chrono::Utc::now().timestamp());
+    let renewal = enroll::renewal_due(cert, jiff::Timestamp::now().as_second());
     match (saved_route_answers(&entry), renewal) {
         (Some(Ok(())), None) => return Some(HostRow::from_remote(entry)),
         (Some(Ok(())), Some(detail)) => {

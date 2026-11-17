@@ -358,7 +358,7 @@ where
 {
     let deadline = crate::transport::HANDSHAKE_DEADLINE;
     let (mut stream, workload) = match tokio::time::timeout(deadline, inner.accept(io)).await {
-        Ok(InnerAccepted::Terminal { stream, workload }) => (stream, workload),
+        Ok(InnerAccepted::Terminal { stream, workload }) => (stream, workload.map(|w| *w)),
         Ok(InnerAccepted::Enrolled) => return None,
         Ok(InnerAccepted::Refused) | Err(_) => {
             refused(refusals, relay, "end-to-end TLS refused");

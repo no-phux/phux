@@ -267,7 +267,7 @@ fn issue_server_cert(files: &HubFiles) {
 }
 
 fn register_satellite(files: &HubFiles, name: &str) {
-    let expires = chrono::Utc::now().timestamp() + 3600;
+    let expires = jiff::Timestamp::now().as_second() + 3600;
     phux_server::workload::WorkloadRegistry::register_satellite(
         &files.workload.registry,
         b"minimal-test-key",
