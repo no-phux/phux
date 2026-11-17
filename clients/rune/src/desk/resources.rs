@@ -52,6 +52,8 @@ pub struct Resources {
     viewers: crate::document_viewer::Pool,
     /// OSC 52 reads: this window's grants and recent questions.
     pub(super) clipboard_reads: super::clipboard_read::ClipboardReads,
+    /// OSC 52 writes: this window's policy and held question.
+    pub(super) clipboard_writes: super::clipboard_write::ClipboardWrites,
 }
 
 struct PendingDocument {

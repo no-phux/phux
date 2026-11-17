@@ -23,6 +23,7 @@ mod attach;
 pub(crate) mod bare;
 mod changes;
 mod clipboard_read;
+mod clipboard_write;
 pub mod connection;
 mod copy_mode;
 mod events;

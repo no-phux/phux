@@ -119,14 +119,18 @@ and kitty's OSC 5522 writes are treated the same way.
 
 - Every selection (`c`, `p`, `s`, and the rest) means the clipboard of the
   user's machine.
-- Only a write from the pane the user's TUI has focused, from live output,
+- Only a write from the pane the client has focused (in Rune, while its
+  window has focus), from live output,
   of UTF-8 `text/plain` at most 1 MiB decoded, is used. phux drops a write
   replayed from history, a clear, and anything else. Only the last write in
   one chunk of output counts.
 - The user's `defaults.clipboard-write` decides: `allow` (the default) sets
-  the clipboard, `ask` shows the size and asks first, `deny` drops it.
-- phux passes the text on to the user's terminal as OSC 52, which may have
-  its own policy.
+  the clipboard, `ask` shows the size and asks first, `deny` drops it. Rune
+  asks one write at a time, ignores Return for the prompt's first half
+  second, and treats a config it cannot parse as `deny`. Copies the user
+  makes themselves never pass through this policy.
+- The TUI passes the text on to the user's terminal as OSC 52, which may
+  have its own policy; Rune sets its own clipboard.
 
 `OSC 52 ; c ; ? ST` asks to read the clipboard. By default it gets no
 reply, so a program MUST NOT wait for one without a timeout.
