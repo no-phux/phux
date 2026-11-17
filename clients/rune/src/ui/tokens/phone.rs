@@ -2,13 +2,12 @@
 //! page margin at the brand's iOS values, the iOS text size the bridge
 //! reports, and the tokens for a terminal ground.
 //!
-//! The generated Rust carries desktop values only, so the phone values are
-//! read from the same brand document (`phux.tokens.json`, platform-valued)
-//! that generated it: embedded, parsed once, never copied by hand.
+//! The generated Rust carries desktop values only; the phone's sizes are
+//! phux-brand's iOS values (`type.role.*.ios`, `space.page_margin.ios`),
+//! with every other field of a role taken from the generated desktop role.
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 use phux_design::tokens as tok;
 use rune::{Color, Cx};
@@ -18,57 +17,42 @@ use crate::desk::Desk;
 use crate::desk::accessibility::ContentSize;
 use crate::theme::Theme;
 
-const SOURCE: &str = include_str!("../../../../../crates/phux-design/tokens/phux.tokens.json");
+/// The phone's (size, line height) per role, `micro` to `display`.
+const IOS_ROLES: [(f32, f32); 7] = [
+    (11.0, 13.0),
+    (12.0, 16.0),
+    (14.0, 18.0),
+    (14.0, 20.0),
+    (16.0, 22.0),
+    (22.0, 28.0),
+    (28.0, 34.0),
+];
 
-/// The phone's values from the brand document.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Form {
-    roles: [tok::TypeRole; 7],
-    page_margin: f32,
-}
+/// A phone page's inset from the screen's edge (`space.page_margin.ios`).
+const IOS_PAGE_MARGIN: f32 = 16.0;
 
-fn form() -> &'static Form {
-    static FORM: OnceLock<Form> = OnceLock::new();
-    FORM.get_or_init(|| parse(SOURCE, "ios").expect("the brand tokens carry iOS values"))
-}
-
-/// `platform`'s type roles and page margin in the brand document `source`.
-fn parse(source: &str, platform: &str) -> Option<Form> {
-    let doc: serde_json::Value = serde_json::from_str(source).ok()?;
-    #[allow(clippy::cast_possible_truncation, reason = "points fit an f32")]
-    let at = |v: &serde_json::Value| v.get(platform)?.as_f64().map(|n| n as f32);
+/// The seven roles at the phone's sizes, unscaled.
+fn roles() -> [tok::TypeRole; 7] {
     let r = &tok::TYPE.role;
-    let base = [
-        ("micro", r.micro),
-        ("caption", r.caption),
-        ("label", r.label),
-        ("body", r.body),
-        ("lead", r.lead),
-        ("title", r.title),
-        ("display", r.display),
+    let mut roles = [
+        r.micro, r.caption, r.label, r.body, r.lead, r.title, r.display,
     ];
-    let mut roles = base.map(|(_, role)| role);
-    for (slot, (name, role)) in roles.iter_mut().zip(base) {
-        let json = doc.get("type")?.get("role")?.get(name)?;
-        *slot = tok::TypeRole {
-            size: at(json.get("size")?)?,
-            line_height: at(json.get("line_height")?)?,
-            ..role
-        };
+    for (role, (size, line_height)) in roles.iter_mut().zip(IOS_ROLES) {
+        role.size = size;
+        role.line_height = line_height;
     }
-    let page_margin = at(doc.get("space")?.get("page_margin")?)?;
-    Some(Form { roles, page_margin })
+    roles
 }
 
 /// The seven roles at the phone's sizes, times `scale`; `mono` is `label`
 /// in the chrome's mono face.
 pub(crate) fn ty(scale: f32) -> Type {
-    Type::from_roles(form().roles.map(|r| style(&r, scale)))
+    Type::from_roles(roles().map(|r| style(&r, scale)))
 }
 
 /// A phone page's inset from the screen's edge.
-pub(crate) fn page_margin() -> f32 {
-    form().page_margin
+pub(crate) const fn page_margin() -> f32 {
+    IOS_PAGE_MARGIN
 }
 
 /// The system contrast the phone's view read on its latest run, for the
@@ -140,19 +124,6 @@ impl Tokens {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_brand_document_reads_back_the_generated_desktop_values() {
-        let desktop = parse(SOURCE, "desktop").expect("desktop values");
-        let r = &tok::TYPE.role;
-        assert_eq!(
-            desktop.roles,
-            [
-                r.micro, r.caption, r.label, r.body, r.lead, r.title, r.display
-            ]
-        );
-        assert_eq!(desktop.page_margin, tok::SPACE.page_margin);
-    }
 
     #[test]
     fn the_phone_reads_at_its_own_sizes() {

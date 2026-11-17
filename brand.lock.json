@@ -45,17 +45,9 @@
       "destination": "clients/phux-web/assets/phux-tokens.css",
       "sha256": "ed2a32faea5811d074b6ae25c054c5e91e0b0891cb043bd6ea7d968964746fbb"
     },
-    "tokens/derive-vectors.json": {
-      "destination": "crates/phux-design/tokens/derive-vectors.json",
-      "sha256": "9e02f317f4ce4d16e9da11220837d6a0f4fc6b29f06393406b404ecba7503044"
-    },
     "tokens/ios/AccentColor.colorset/Contents.json": {
       "destination": "clients/rune/ios/Assets/AccentColor.colorset/Contents.json",
       "sha256": "f30c65d08246111295503c0c31842627c51f35e8bd6951a81d08e1d0553d0156"
-    },
-    "tokens/phux.tokens.json": {
-      "destination": "crates/phux-design/tokens/phux.tokens.json",
-      "sha256": "9edb93077cd5c763284b7efd3126188d03953f5b2325db9877fe39e8d7529587"
     },
     "tokens/rust/phux_tokens.rs": {
       "destination": "crates/phux-design/src/generated/tokens.rs",
@@ -64,10 +56,6 @@
     "tokens/themes.json": {
       "destination": "crates/phux-design/tokens/themes.json",
       "sha256": "ccaf7cc773caeb5ba89b3a18140dbc46109aed0ea57b1d138655943c421ac51c"
-    },
-    "tokens/vocabulary.json": {
-      "destination": "crates/phux-design/tokens/vocabulary.json",
-      "sha256": "9834329807ad96296861b02157f414610b4a8cf65c78ae7b39201d114d8b5079"
     },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",

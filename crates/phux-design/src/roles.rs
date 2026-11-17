@@ -63,12 +63,6 @@ impl Roles {
         Self::from_tokens(mode, pick(mode, &tokens::CONTRAST_MORE))
     }
 
-    /// The docs reader variant.
-    #[must_use]
-    pub fn reader(mode: Mode) -> Self {
-        Self::from_tokens(mode, pick(mode, &tokens::READER))
-    }
-
     /// An owned copy of generated roles.
     #[must_use]
     pub fn from_tokens(mode: Mode, r: &tokens::Roles) -> Self {

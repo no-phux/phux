@@ -6,11 +6,11 @@
 //!
 //! - [`derive()`]: one terminal theme to the full role set (spec §2.2–2.3),
 //!   bit for bit with phux-brand's `tools/derive.ts`;
-//! - [`verify`]: the floor checks (§2.5);
 //! - [`tone_of`], [`plural`] and [`word`]: the status vocabulary (§1.3);
 //! - [`catalog()`]: the unified theme catalog (`tokens/themes.json`).
 //!
-//! `tests/vectors.rs` holds all of it to `tokens/derive-vectors.json`. The
+//! `tests/vectors.rs` spot-checks it against a subset of phux-brand's golden
+//! vectors (the brand's CI runs the full set). The
 //! crate has no dependencies and no I/O, so it builds for `wasm32` as is.
 
 #[rustfmt::skip]
@@ -21,7 +21,6 @@ mod color;
 mod roles;
 pub mod solve;
 mod status;
-mod verify;
 
 /// phux-brand's generated constants: the house look, its variants and every
 /// non-colour group (type, radius, space, motion, elevation, materials…).
@@ -33,7 +32,6 @@ pub use roles::{Layer, Roles, ToneInk};
 pub use solve::{Theme, contrast_more, derive};
 pub use status::{Agent, Link, State, Tone, ToneInput, plural, plural_message, tone_of, word};
 pub use tokens::Params;
-pub use verify::{Context, HouseExtras, Severity, VerifyOptions, Violation, verify};
 
 impl Params {
     /// The solver parameters phux-brand fitted from the house look.

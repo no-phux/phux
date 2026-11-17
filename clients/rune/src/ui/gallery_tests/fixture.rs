@@ -86,7 +86,7 @@ fn edge(id: &'static str) -> &'static Theme {
     static EDGE: OnceLock<Theme> = OnceLock::new();
     EDGE.get_or_init(|| {
         let doc: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../crates/phux-design/tokens/derive-vectors.json"
+            "../../../../../crates/phux-design/tests/vectors.json"
         ))
         .unwrap();
         let case = (doc["cases"].as_array().unwrap().iter())

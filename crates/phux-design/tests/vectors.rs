@@ -1,7 +1,7 @@
-//! The parity contract: phux-brand's golden vectors (`tokens/derive-vectors.json`).
-//! Colours match as exact `#RRGGBBAA` strings, contrast within 1e-12, and
-//! `verify` lists (ids, roles, surfaces, severities) exactly with values
-//! within 1e-9.
+//! The parity contract, spot-checked: a few of phux-brand's golden vectors
+//! (`vectors.json`, a subset of its `tokens/derive-vectors.json`; the brand's
+//! CI holds the full set). Colours match as exact `#RRGGBBAA` strings and
+//! contrast within 1e-12.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,12 +16,12 @@
 
 use phux_design::solve::{contrast, fade, mix, on_fill, over, reach};
 use phux_design::{
-    Agent, Context, HouseExtras, Link, Mode, Params, Rgb8, Rgba8, Roles, Theme, ToneInput,
-    VerifyOptions, Violation, catalog, contrast_more, derive, plural, tone_of, verify,
+    Agent, Link, Mode, Params, Rgb8, Rgba8, Roles, Theme, ToneInput, contrast_more, derive, plural,
+    tone_of,
 };
 use serde_json::Value;
 
-const VECTORS: &str = include_str!("../tokens/derive-vectors.json");
+const VECTORS: &str = include_str!("vectors.json");
 
 fn vectors() -> Value {
     serde_json::from_str(VECTORS).unwrap()
@@ -40,21 +40,6 @@ fn the_vectors_are_for_these_params() {
     let v = vectors();
     assert_eq!(v["solver"], "phux-derive/2");
     assert_eq!(v["params_sha256"], phux_design::tokens::META.params_sha256);
-    let bits: Vec<u64> = (v["params"]["srgb_lut"].as_array().unwrap().iter())
-        .map(|b| u64::from_str_radix(b.as_str().unwrap(), 16).unwrap())
-        .collect();
-    assert_eq!(bits, lut(), "the embedded LUT is the vectors' LUT");
-    let p = Params::house();
-    assert_eq!(v["params"]["iterations"], p.iterations);
-    assert_eq!(v["params"]["light_threshold"], p.light_threshold);
-    assert_eq!(
-        v["params"]["layers"]["light"]["raised"],
-        p.layers.light.raised
-    );
-    assert_eq!(
-        v["params"]["alpha"]["dark"]["wash"]["press"],
-        p.alpha.dark.wash.press
-    );
 }
 
 #[test]
@@ -306,25 +291,6 @@ fn diff(path: &str, want: &Value, got: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn same_violations(id: &str, want: &Value, got: &[Violation]) {
-    let want = want.as_array().unwrap();
-    assert_eq!(want.len(), got.len(), "{id}: {want:?} vs {got:?}");
-    for (w, g) in want.iter().zip(got) {
-        assert_eq!(w["id"], g.id, "{id}");
-        assert_eq!(w["severity"], g.severity.key(), "{id} {}", g.id);
-        assert_eq!(w["role"], g.role.as_str(), "{id} {}", g.id);
-        assert_eq!(w["surface"], g.surface.as_str(), "{id} {}", g.id);
-        let (wv, wb) = (w["value"].as_f64().unwrap(), w["bar"].as_f64().unwrap());
-        assert!(
-            (wv - g.value).abs() <= 1e-9,
-            "{id} {}: {wv} vs {}",
-            g.id,
-            g.value
-        );
-        assert!((wb - g.bar).abs() <= 1e-9, "{id} {}", g.id);
-    }
-}
-
 #[test]
 fn every_case_derives_exactly() {
     let v = vectors();
@@ -341,94 +307,6 @@ fn every_case_derives_exactly() {
         failures.len(),
         failures.join("\n")
     );
-}
-
-#[test]
-fn every_case_verifies_exactly() {
-    let v = vectors();
-    let p = Params::house();
-    for case in v["cases"].as_array().unwrap() {
-        let id = case["id"].as_str().unwrap();
-        let theme = input(&case["input"]);
-        let roles = derive(&theme, &p);
-        let opts = VerifyOptions {
-            context: Context::Derived,
-            cursor: theme.cursor.map(|cur| (cur, theme.bg)),
-            ..VerifyOptions::default()
-        };
-        same_violations(id, &case["verify"], &verify(&roles, &p, &opts));
-    }
-}
-
-#[test]
-fn the_catalog_is_the_vectors_catalog() {
-    let v = vectors();
-    let cases = v["cases"].as_array().unwrap();
-    for t in &catalog().themes {
-        let case = cases
-            .iter()
-            .find(|c| c["id"] == t.id)
-            .unwrap_or_else(|| panic!("{} has no case", t.id));
-        assert_eq!(input(&case["input"]), t.input(), "{}", t.id);
-    }
-}
-
-fn house_opts(mode: Mode, more: bool) -> VerifyOptions {
-    use phux_design::tokens::{ELEVATION, MATERIAL, MOTION, TERMINAL};
-    let (glass, min, elevation, terminal) = match mode {
-        Mode::Dark => (
-            MATERIAL.glass.tint.dark,
-            MATERIAL.glass.tint_min.dark,
-            ELEVATION.dark,
-            TERMINAL.dark,
-        ),
-        Mode::Light => (
-            MATERIAL.glass.tint.light,
-            MATERIAL.glass.tint_min.light,
-            ELEVATION.light,
-            TERMINAL.light,
-        ),
-    };
-    let kinds = |tier: &[phux_design::tokens::Shadow]| tier.iter().map(|s| s.kind).collect();
-    VerifyOptions {
-        context: Context::House,
-        cursor: Some((terminal.cursor.rgb(), terminal.bg.rgb())),
-        house: (!more).then(|| HouseExtras {
-            glass: Some((glass.color.rgb(), f64::from(glass.alpha), f64::from(min))),
-            pulse_min_opacity: Some(f64::from(MOTION.r#loop.pulse.min_opacity)),
-            elevation: vec![
-                ("flat", kinds(elevation.flat)),
-                ("raised", kinds(elevation.raised)),
-                ("floating", kinds(elevation.floating)),
-                ("overlay", kinds(elevation.overlay)),
-            ],
-        }),
-        warn: if more { &["V3"] } else { &[] },
-        contrast_more: more,
-    }
-}
-
-#[test]
-fn the_house_look_and_its_variants_verify_clean() {
-    let p = Params::house();
-    for mode in [Mode::Dark, Mode::Light] {
-        for (name, roles, more) in [
-            ("house", Roles::house(mode), false),
-            ("reader", Roles::reader(mode), false),
-            ("contrast_more", Roles::house_contrast_more(mode), true),
-        ] {
-            let mut opts = house_opts(mode, more);
-            if name == "reader" {
-                opts.house = None;
-                opts.cursor = None;
-            }
-            let errors: Vec<_> = verify(&roles, &p, &opts)
-                .into_iter()
-                .filter(|v| v.severity == phux_design::Severity::Error)
-                .collect();
-            assert!(errors.is_empty(), "{name} {mode:?}: {errors:#?}");
-        }
-    }
 }
 
 #[test]

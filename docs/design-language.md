@@ -16,10 +16,7 @@ with `just brand-sync`; `just brand-check` refuses a hand edit.
 | Export | Destination | Read by |
 | --- | --- | --- |
 | `tokens/rust/phux_tokens.rs` | `crates/phux-design/src/generated/tokens.rs` | `phux_design::tokens` |
-| `tokens/phux.tokens.json` | `crates/phux-design/tokens/phux.tokens.json` | the resolved document, for tests and tools |
-| `tokens/derive-vectors.json` | `crates/phux-design/tokens/derive-vectors.json` | `crates/phux-design/tests/vectors.rs` |
 | `tokens/themes.json` | `crates/phux-design/tokens/themes.json` | `phux_design::catalog()` |
-| `tokens/vocabulary.json` | `crates/phux-design/tokens/vocabulary.json` | status words and plurals |
 | `tokens/css/phux-tokens.css` | `clients/phux-web/assets/phux-tokens.css` | phux-web |
 | `tokens/ios/AccentColor.colorset/Contents.json` | `clients/rune/ios/Assets/AccentColor.colorset/Contents.json` | the Rune iOS shell |
 
@@ -28,8 +25,8 @@ and the code exports carry an `@generated` header.
 
 ## The house look and derived themes
 
-The house look is authored in phux-brand and must pass `verify` with no
-errors in both modes, as must its increased-contrast and reader variants.
+The house look is authored in phux-brand, whose CI holds it (and its
+increased-contrast and reader variants) to the floor checks in both modes.
 With no theme picked, a client draws the house look in the system
 appearance, and the house terminal palette ships as the catalog theme `phux`
 (`phux-light`).
@@ -39,14 +36,16 @@ terminal palette (background, foreground, the 16 ANSI colours, an optional
 accent and selection) into every role. The solver keeps the ground, steps
 the layers toward the ink, and then moves each word-carrying ink toward
 white or black only as far as it must to read on every surface it can land
-on, washes included. `verify` then reports what still falls short. A derived
-theme with warnings still ships, because the person chose it.
+on, washes included. A derived theme that still falls short of a floor
+ships anyway, because the person chose it.
 
 The solver exists once per language and every port matches the brand's
 golden vectors exactly: colours as `#RRGGBBAA` strings, contrast within
-1e-12, `verify` lists check for check. Luminance goes through the shipped
-table, never `pow`, and arithmetic is IEEE-754 binary64 with no fused
-multiply-add. A port that drifts fails its vectors test.
+1e-12. Luminance goes through the shipped table, never `pow`, and
+arithmetic is IEEE-754 binary64 with no fused multiply-add. phux-brand's CI
+runs the full vector set and the floor checks; `crates/phux-design/tests/vectors.rs`
+spot-checks this port against a subset (`vectors.json`) pinned to the
+synced parameters, so a drift or a stale subset fails here too.
 
 ## Roles
 
