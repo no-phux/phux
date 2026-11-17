@@ -63,8 +63,8 @@
     }
   },
   "schema": 1,
-  "sha256": "e82668ca59542ba3d4afd0cbcd3a5fa72f4e279a956bd8672339281addef02f9",
-  "source_revision": "2beae1fadad94eab91247b19a775890f1016ce92",
+  "sha256": "4b3afbd3e0f74ef3591a991daddbce41fea4942ada9911d2ae1e2a568713366f",
+  "source_revision": "82d6d4d9c08723530688708421e5c0d9994338c5",
   "url": "https://phux.sh/brand/releases/1.7.0/phux-brand.zip",
   "version": "1.7.0"
 }
