@@ -1,16 +1,20 @@
 //! The popup's box: a scrim, the command line with a close button, and its
 //! terminal drawn as any pane is.
 
-use rune::{Color, El, Transition, col, el, row, text};
+use rune::{El, Transition, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL_STRONG, PAD, icons, overlay, panes, status};
+use super::overlay::{EXTENTS, icon_button, pop, strong};
+use super::tokens::{Paint, Tier};
+use super::{Ink, PAD, icons, panes, status};
 use crate::desk::Desk;
 use crate::ui::Cover;
 
-/// The share of the window the box takes, each way.
-const SHARE: f32 = 0.8;
-
+/// `p` stays the lane-period `Ink`: the pane and the question bar inside
+/// the box still take it.
 pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
+    let t = &*p.tokens;
+    let s = &t.space;
+    let r = &t.roles;
     let command = desk.connection.popup.command()?;
     let body = match desk.connection.popup.terminal() {
         Some(id) => panes::pane(desk, id, false, p),
@@ -23,39 +27,43 @@ pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
             .on_layout(|d: &mut Desk, [_, _, w, h]| {
                 d.popup_laid_out([w - 2.0 * PAD, h - 2.0 * PAD]);
             })
-            .child(text("Opening…").font(CAPTION).color(p.dim)),
+            .child(
+                text("Opening…")
+                    .font(t.ty.caption)
+                    .color(r.text.dim.paint()),
+            ),
     };
     let header = row()
         .w_full()
-        .h(34.0)
-        .pl(12.0)
-        .pr(6.0)
-        .gap(8.0)
+        .min_h(s.row_h + s.s1)
+        .pl(s.s3)
+        .pr(s.s1)
+        .gap(s.s2)
         .items_center()
         .child(
             text(command.to_owned())
-                .font(LABEL_STRONG)
-                .color(p.text)
+                .font(strong(t.ty.mono))
+                .color(r.text.text.paint())
                 .grow(1.0)
                 .min_w(0.0),
         )
-        .child(overlay::icon_button(
+        .child(icon_button(
             &icons::CLOSE,
             "Close",
             "popup-close",
-            p,
+            t,
             Desk::dismiss_popup,
         ));
+    let share = EXTENTS.popup_share;
     let panel = col()
         .key("popup")
-        .w_frac(SHARE)
-        .grow(SHARE)
+        .w_frac(share)
+        .grow(share)
         .min_h(0.0)
-        .radius(12.0)
-        .fill(p.raised)
-        .border(1.0, p.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
+        .radius(t.radius.lg)
+        .fill(r.layer.raised.paint())
+        .border(s.hairline, r.border.base.paint())
+        .transition(pop(t))
         .child(header)
         .child(
             el().grow(1.0)
@@ -64,13 +72,14 @@ pub fn view(desk: &Desk, p: &Ink) -> Option<El> {
                 .child(body)
                 .children(status::question_bar(desk, p)),
         );
-    let margin = || el().grow((1.0 - SHARE) / 2.0);
+    let panel = t.elevate(panel, Tier::Overlay);
+    let margin = || el().grow((1.0 - share) / 2.0);
     Some(
         col()
             .key("popup-scrim")
             .cover()
             .items_center()
-            .fill(Color::BLACK.alpha(0.4))
+            .fill(r.layer.scrim.paint())
             .transition(Transition::opacity())
             // Escape is the command's: only the button and the chord close.
             .modal(false, |_: &mut Desk| {})

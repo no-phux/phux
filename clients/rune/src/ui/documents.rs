@@ -3,11 +3,13 @@
 use phux_protocol::ids::ResourceId;
 use rune::{El, col, el, text};
 
-use super::{CAPTION, Ink, LABEL, PAD};
+use super::PAD;
+use super::tokens::{Paint, Tokens};
 use crate::desk::Desk;
 use crate::desk::resources::Body;
 
-pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
+pub fn view(desk: &Desk, id: &ResourceId, p: &impl AsRef<Tokens>) -> El {
+    let ink = p.as_ref();
     let focused = id.clone();
     let selected = id.clone();
     let measured = id.clone();
@@ -42,8 +44,8 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
             }
         })
         .padding(PAD)
-        .gap(8.0)
-        .fill(ink.bg)
+        .gap(ink.space.s2)
+        .fill(ink.roles.layer.ground.paint())
         .on_press(move |d: &mut Desk| d.focus_pane(&focused))
         .child(
             text(format!(
@@ -51,8 +53,8 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
                 detail.unwrap_or_default()
             ))
             .wrap()
-            .font(CAPTION)
-            .color(ink.dim),
+            .font(ink.ty.caption)
+            .color(ink.roles.text.dim.paint()),
         )
         .child(if interactive {
             takes_input(surface, id, area)
@@ -86,17 +88,17 @@ fn takes_input(surface: El, id: &ResourceId, area: [f32; 2]) -> El {
         })
 }
 
-fn message(words: impl Into<String>, ink: &Ink) -> El {
+fn message(words: impl Into<String>, ink: &Tokens) -> El {
     el().w_full().h_full().center().child(
         text(words.into())
             .wrap()
             .w_full()
-            .font(LABEL)
-            .color(ink.dim),
+            .font(ink.ty.label)
+            .color(ink.roles.text.dim.paint()),
     )
 }
 
-fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
+fn body(body: &Body, area: [f32; 2], ink: &Tokens, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
         Body::Decoding => message("Decoding image…", ink),
@@ -114,14 +116,14 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
                     .key(crate::desk::resources::text_key(id))
                     .selectable(true)
                     .wrap_anywhere()
-                    .font(rune::TextStyle::new(12.0, 400.0).mono())
-                    .color(ink.text),
+                    .font(ink.ty.mono)
+                    .color(ink.roles.text.text.paint()),
             ),
         Body::Surface(image) => surface(image, area, ink),
     }
 }
 
-fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
+fn surface(image: &rune::Image, area: [f32; 2], ink: &Tokens) -> El {
     if let Some(error) = image.error() {
         return message(format!("Invalid image: {error}"), ink);
     }
@@ -132,7 +134,7 @@ fn surface(image: &rune::Image, area: [f32; 2], ink: &Ink) -> El {
     el().w_full()
         .h_full()
         .center()
-        .child(el().size(w, h).pixels(image.pixels()))
+        .child(el().w(w).h(h).pixels(image.pixels()))
 }
 
 pub(super) fn letterbox([w, h]: [u32; 2], [aw, ah]: [f32; 2]) -> [f32; 2] {

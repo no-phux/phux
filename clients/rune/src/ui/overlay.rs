@@ -1,119 +1,275 @@
 //! What floats over the terminals: the find bar, a held-⌘ link's underline,
 //! a toast, and, while history is scrolled back, a position rail and a way
-//! back to live.
+//! back to live. Also the overlays' shared pieces: their extents, glass,
+//! icon buttons and key hints.
 
 use phux_client_runtime::publication::GridFrame;
+use phux_design::{Rgba8, State};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, El, Family, TextStyle, Transition, el, row, text, text_input};
+use rune::{Edge, El, TextStyle, Transition, col, el, row, text, text_input};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, SegmentedControl,
+    ToastRegion,
+};
 
-use super::status::notice_line;
-use super::{CAPTION, Ink, PAD, icons, keep_from_pane, pressable};
-use crate::desk::{Desk, NoticeKind};
+use super::tokens::{MONO, Paint, Tier, Tokens};
+use super::{PAD, badge, icons, keep_from_pane};
+use crate::desk::{Desk, Notice, NoticeKind};
 use crate::grid::Metrics;
 use crate::host_color::{dot, named};
 
-const FIND_W: f32 = 340.0;
-const PILL_W: f32 = 132.0;
-const RAIL_W: f32 = 3.0;
-const TOAST_W: f32 = 420.0;
+/// How large the overlays are: layout geometry, which no token group
+/// holds (§1.6 `layout` names only the phone column and the reader). One
+/// table, so a size is decided in one place.
+pub(super) struct Extents {
+    /// The command palette; the phone column's measure.
+    pub(super) palette_w: f32,
+    /// The path picker, narrower, at the cursor.
+    pub(super) paths_w: f32,
+    pub(super) paths_h: f32,
+    /// How tall the palette's rows may grow before they scroll.
+    pub(super) palette_rows_h: f32,
+    pub(super) paths_rows_h: f32,
+    /// The inbox drawer.
+    pub(super) drawer_w: f32,
+    /// A focused pane's ask card.
+    pub(super) ask_w: f32,
+    /// The narrowest pane an ask card still fits.
+    pub(super) ask_min_w: f32,
+    pub(super) find_w: f32,
+    pub(super) find_min_w: f32,
+    pub(super) toast_w: f32,
+    /// The share of the window the popup takes, each way.
+    pub(super) popup_share: f32,
+    pub(super) news_w: f32,
+}
 
-/// The held-⌘ link's underline, in grid points.
-pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> Vec<El> {
+pub(super) const EXTENTS: Extents = Extents {
+    palette_w: phux_design::tokens::LAYOUT.content_max.phone_column,
+    paths_w: 460.0,
+    paths_h: 340.0,
+    palette_rows_h: 380.0,
+    paths_rows_h: 240.0,
+    drawer_w: 400.0,
+    ask_w: 340.0,
+    ask_min_w: 160.0,
+    find_w: 340.0,
+    find_min_w: 160.0,
+    toast_w: 420.0,
+    popup_share: 0.8,
+    news_w: 440.0,
+};
+
+/// Which glass surface a panel is (§1.9 `material.glass.where`).
+#[derive(Clone, Copy)]
+pub(super) enum Glass {
+    /// The open modal surface: the palette, the inbox.
+    Overlay,
+    /// The find bar.
+    Floating,
+}
+
+impl Glass {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Overlay => "overlay",
+            Self::Floating => "floating",
+        }
+    }
+
+    const fn blur(self) -> f32 {
+        let b = phux_design::tokens::MATERIAL.glass.blur;
+        match self {
+            Self::Overlay => b.overlay,
+            Self::Floating => b.floating,
+        }
+    }
+}
+
+/// `panel` on `layer`, or glass over the terminal when the look puts glass
+/// on this surface and the window lets it draw: the layer as a tint at the
+/// `Settings.glass` alpha, never thinner than the verified floor (§1.9).
+/// Opaque under increased contrast, reduce transparency and forced
+/// colours, and on a phone, whose one blur is its dock.
+pub(super) fn glass(panel: El, t: &Tokens, layer: Rgba8, surface: Glass, phone: bool) -> El {
+    let opaque = layer.paint();
+    let looked = phux_design::tokens::MATERIAL
+        .glass
+        .r#where
+        .contains(&surface.key());
+    let alpha = t.glass_tint_alpha(t.glass);
+    if phone || !looked || alpha >= 1.0 {
+        return panel.fill(opaque);
+    }
+    panel
+        .backdrop_blur(surface.blur())
+        .fill(t.alpha(opaque, alpha))
+}
+
+/// Exits fade; entries scale up from `enter_scale` on the pop spring (§1.8).
+pub(super) fn pop(t: &Tokens) -> Transition {
+    Transition::asymmetric(
+        Transition::scale(t.motion.enter_scale).springs(t.motion.pop),
+        Transition::opacity(),
+    )
+}
+
+/// `style` one weight step heavier, within the type weights (§1.4).
+pub(super) fn strong(style: TextStyle) -> TextStyle {
+    let semibold = phux_design::tokens::TYPE.weights.semibold;
+    TextStyle {
+        weight: f32::from(u16::try_from(semibold).unwrap_or(u16::MAX)),
+        ..style
+    }
+}
+
+/// Numbers that change in place, in the chrome's mono face (§1.4 `tnum`).
+pub(super) fn readout(t: &Tokens) -> TextStyle {
+    TextStyle {
+        family: MONO,
+        ..t.ty.caption
+    }
+    .features("'tnum' 1")
+}
+
+/// The held-⌘ link's underline, in grid points: a hairline of the accent's
+/// text ink.
+pub fn link_underline(
+    desk: &Desk,
+    id: &ResourceId,
+    m: &Metrics,
+    p: &impl AsRef<Tokens>,
+) -> Vec<El> {
+    let t = p.as_ref();
     let Some((_, link)) = desk.pointer.hover.as_ref().filter(|(t, _)| t == id) else {
         return Vec::new();
     };
+    let thick = t.space.hairline;
+    let ink = t.roles.accent.accent_text.paint();
     link.spans
         .iter()
         .map(|&(row, start, end)| {
             el().absolute(
                 f32::from(start) * m.cell_w,
-                f32::from(row + 1) * m.cell_h - 1.5,
+                f32::from(row + 1) * m.cell_h - thick,
             )
-            .size(f32::from(end.saturating_sub(start)) * m.cell_w, 1.5)
-            .fill(ink.accent)
+            .w(f32::from(end.saturating_sub(start)) * m.cell_w)
+            .h(thick)
+            .fill(ink)
             .inert()
         })
         .collect()
 }
 
-/// An icon to press; `name` is what a screen reader says for it.
-pub(super) fn icon_button(
+/// An icon to press (kit `IconButton`, ghost); `name` is what a screen
+/// reader says for it and what its tooltip shows.
+pub(crate) fn icon_button(
     glyph: &'static rune::Icon,
     name: &'static str,
     key: impl Into<String>,
-    ink: &Ink,
+    p: &impl AsRef<Tokens>,
     press: fn(&mut Desk),
 ) -> El {
-    pressable(key, ink)
-        .size(24.0, 24.0)
-        .radius(6.0)
-        .center()
+    IconButton::new(glyph)
+        .variant(IconButtonVariant::Ghost)
         .label(name)
         .help(name)
         .on_press(press)
-        .hover_group()
-        .child(
-            rune::icon(glyph, 14.0)
-                .color(ink.dim)
-                .group_color(ink.text)
-                .a11y_hidden(),
-        )
+        .build(&p.as_ref().kit)
+        .key(key)
 }
 
 /// A key and what it does, as a sheet's footer lists them.
-pub(crate) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
+pub(crate) fn key_hint(key: &'static str, what: &'static str, p: &impl AsRef<Tokens>) -> El {
+    let t = p.as_ref();
     row()
-        .gap(5.0)
+        .gap(t.space.s1)
         .items_center()
-        .child(super::keycap(key, ink))
-        .child(text(what).font(CAPTION).color(ink.dim))
+        .child(super::keycap(key, p))
+        .child(
+            text(what)
+                .font(t.ty.caption)
+                .color(t.roles.text.dim.paint()),
+        )
 }
 
-/// The current notice, bottom left (top on a phone), clear of the live pill. The inbox's
-/// footer says it instead while the drawer is open.
 /// The machine a notice is about, when it names one.
 fn named_machine<'a>(desk: &'a Desk, text: &str) -> Option<&'a str> {
     let hosts = desk.machines.hosts.iter().map(|host| host.name.as_str());
     named(text, std::iter::once(crate::machines::LOCAL).chain(hosts))
 }
 
-pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
-    let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
-    let edge = match notice.kind {
-        NoticeKind::Info => ink.separator,
-        NoticeKind::Tip => ink.accent.alpha(0.6),
-        NoticeKind::Error => ink.danger.alpha(0.6),
+/// A notice's words, wrapping; read when it comes, an error at once. An
+/// error carries the failed mark beside its words, never colour alone.
+pub(super) fn notice_words(notice: &Notice, t: &Tokens) -> El {
+    let (ink, role) = match notice.kind {
+        NoticeKind::Info | NoticeKind::Tip => (t.roles.text.text, "status"),
+        NoticeKind::Error => (t.roles.status.failed, "alert"),
     };
+    let words = text(notice.text.clone())
+        .role(role)
+        .font(t.ty.caption)
+        .color(ink.paint())
+        .wrap()
+        .grow(1.0)
+        .min_w(0.0);
+    match notice.kind {
+        NoticeKind::Error => row()
+            .gap(t.space.icon_gap)
+            .items_center()
+            .grow(1.0)
+            .min_w(0.0)
+            .child(badge::mark(t, State::Failed, t.icon.size.sm).a11y_hidden())
+            .child(words),
+        NoticeKind::Info | NoticeKind::Tip => words,
+    }
+}
+
+/// The current notice, bottom left (top on a phone), clear of the live
+/// pill, in the kit's notifications region. The inbox's footer says it
+/// instead while the drawer is open. Opaque: the house look keeps glass off
+/// toasts (§1.9 `where`).
+pub fn toast(desk: &Desk, p: &impl AsRef<Tokens>) -> Option<El> {
+    let t = p.as_ref();
+    let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
+    let s = &t.space;
+    let edge = match notice.kind {
+        NoticeKind::Info | NoticeKind::Tip => t.roles.border.base,
+        NoticeKind::Error => t.roles.status.failed_edge,
+    };
+    let phone = desk.phone.is_some();
+    let ground = t.roles.layer.overlay.paint();
     let toast = row()
         .key("toast")
         .on_drag(keep_from_pane)
         .shrink()
-        .max_w(TOAST_W)
-        .pl(12.0)
-        .pr(4.0)
-        .py(4.0)
-        .gap(8.0)
+        .max_w(EXTENTS.toast_w)
+        .min_h(s.row_h + s.s2)
+        .pl(s.s3)
+        .pr(s.s1)
+        .py(s.s1)
+        .gap(s.s2)
         .items_center()
-        .radius(9.0)
+        .radius(t.radius.md)
         .continuous_corners()
-        // Frosted: the terminal under it blurs through a tint of the chrome.
-        .backdrop_blur(super::FROST)
-        .fill(ink.raised.alpha(0.82))
-        .border(1.0, edge)
-        .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
-        .transition(Transition::opacity())
-        .children(named_machine(desk, &notice.text).map(|host| dot(host, 8.0, ink.raised)))
-        .child(notice_line(Some(notice), ink));
+        .fill(ground)
+        .border(s.hairline, edge.paint())
+        .transition(Transition::asymmetric(
+            Transition::move_edge(if phone { Edge::Top } else { Edge::Bottom })
+                .springs(t.motion.pop),
+            Transition::opacity(),
+        ))
+        .children(named_machine(desk, &notice.text).map(|host| dot(host, s.s2, ground)))
+        .child(notice_words(notice, t));
+    let toast = t.elevate(toast, Tier::Floating);
     let toast = match notice.action {
         Some((label, _)) => toast.child(
-            pressable("toast-offer", ink)
-                .label(label)
-                .px(8.0)
-                .py(3.0)
-                .radius(6.0)
-                .border(1.0, ink.separator)
+            Button::new(label)
+                .variant(ButtonVariant::Neutral)
+                .control_size(ControlSize::Small)
                 .on_press(Desk::take_offer)
-                .child(text(label).font(CAPTION).color(ink.text)),
+                .build(&t.kit)
+                .key("toast-offer"),
         ),
         None => toast,
     };
@@ -121,178 +277,188 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         &icons::CLOSE,
         "Dismiss",
         "toast-close",
-        ink,
+        p,
         Desk::dismiss_notice,
     ));
     // The host gives the words a width to wrap at. A phone's prompt sits on
-    // the stage's last row, so a notice there goes to the top instead.
-    let (top, bottom) = if desk.phone.is_some() {
-        (Some(12.0), None)
+    // the stage's last row, so a notice there goes to the top instead,
+    // centred, where it is a passing word, not a place to act.
+    let (top, bottom) = if phone {
+        (Some(s.s3), None)
     } else {
-        (None, Some(12.0))
+        (None, Some(s.s3))
     };
-    let line = row().pin(Some(12.0), top, Some(12.0), bottom);
-    // Centred on a phone, where it is a passing word, not a place to act.
-    Some(if desk.phone.is_some() {
-        line.center().child(toast)
-    } else {
-        line.child(toast)
-    })
+    // A row gives the words the line's width to wrap at.
+    let line = row().w_full().child(toast);
+    let line = if phone { line.center() } else { line };
+    let region =
+        ToastRegion::new()
+            .toast(line)
+            .build(&t.kit)
+            .pin(Some(s.s3), top, Some(s.s3), bottom);
+    Some(region)
 }
 
-/// The find bar, top right of the pane find belongs to.
-pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<El> {
+/// The find bar, top right of the pane find belongs to: a field, the
+/// match count, case and the steps. A query that matches nothing is the
+/// field's invalid state (§1.10).
+pub fn find_bar(
+    desk: &Desk,
+    id: &ResourceId,
+    area: [f32; 2],
+    p: &impl AsRef<Tokens>,
+) -> Option<El> {
+    let t = p.as_ref();
+    let s = &t.space;
+    let r = &t.roles;
     let find = desk
         .connection
         .find
         .as_ref()
         .filter(|f| &f.terminal == id)?;
-    let width = FIND_W.min(area[0] - 8.0).max(160.0);
-    let left = (PAD + area[0] - width - 6.0).max(0.0);
-    let field = text_input(
-        &desk.connection.find_query,
-        TextStyle::new(13.0, 400.0).lh(20.0),
-    )
-    .key("find-query")
-    .label("Find in terminal")
-    .single_line()
-    .grow(1.0)
-    .min_w(0.0)
-    .color(ink.text)
-    .placeholder("Find", ink.dim)
-    .on_edit(|d: &mut Desk| &mut d.connection.find_query)
-    .on_input_key(|d: &mut Desk, event, tx| d.find_key(event, tx))
-    .on_input_change(|d: &mut Desk, _| d.run_search());
-    let case = pressable("find-case", ink)
-        .size(26.0, 22.0)
-        .radius(5.0)
-        .center()
-        .fill(if find.case_sensitive {
-            ink.selected
-        } else {
-            Color::TRANSPARENT
-        })
-        .role("switch")
+    let width = EXTENTS.find_w.min(area[0] - s.s2).max(EXTENTS.find_min_w);
+    let left = (PAD + area[0] - width - s.s1).max(0.0);
+    let query = &desk.connection.find_query;
+    let miss = find.index.is_none() && !query.text.is_empty();
+    let field = text_input(query, t.ty.body)
+        .key("find-query")
+        .label("Find in terminal")
+        .single_line()
+        .grow(1.0)
+        .min_w(0.0)
+        .color(r.text.text.paint())
+        .placeholder("Find", r.text.faint.paint())
+        .invalid(miss)
+        .on_edit(|d: &mut Desk| &mut d.connection.find_query)
+        .on_input_key(|d: &mut Desk, event, tx| d.find_key(event, tx))
+        .on_input_change(|d: &mut Desk, _| d.run_search());
+    let case = SegmentedControl::new(&["Aa"], find.case_sensitive.then_some(0))
         .label("Match case")
-        .checked(find.case_sensitive)
-        .on_press(Desk::toggle_find_case)
-        .child(
-            text("Aa")
-                .font(CAPTION)
-                .color(if find.case_sensitive {
-                    ink.text
-                } else {
-                    ink.dim
-                })
-                .a11y_hidden(),
-        );
-    let status = find.status(&desk.connection.find_query.text);
-    let miss = find.index.is_none() && !desk.connection.find_query.text.is_empty();
-    Some(
-        row()
-            .key("find-bar")
-            .absolute(left, PAD + 4.0)
-            .w(width)
-            .on_drag(keep_from_pane)
-            .h(36.0)
-            .pl(12.0)
-            .pr(4.0)
-            .gap(4.0)
-            .items_center()
-            .radius(9.0)
-            .fill(ink.raised)
-            .border(
-                1.0,
-                if miss {
-                    ink.danger.alpha(0.6)
-                } else {
-                    ink.separator
-                },
-            )
-            .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
-            .transition(Transition::scale(0.97).combined(Transition::opacity()))
-            .child(field)
-            .child(
-                text(status)
-                    .font(CAPTION.family(Family::SystemMono))
-                    .color(if miss { ink.danger } else { ink.dim }),
-            )
-            .child(case)
-            .child(icon_button(
-                &icons::ARROW_UP,
-                "Older match",
-                "find-older",
-                ink,
-                |d| d.step_find(-1),
-            ))
-            .child(icon_button(
-                &icons::ARROW_DOWN,
-                "Newer match",
-                "find-newer",
-                ink,
-                |d| d.step_find(1),
-            ))
-            .child(icon_button(
-                &icons::CLOSE,
-                "Close find",
-                "find-close",
-                ink,
-                Desk::close_find,
-            )),
-    )
+        .fit()
+        .on_pick(|d: &mut Desk, _, _| d.toggle_find_case())
+        .build(&t.kit)
+        .key("find-case");
+    let status = find.status(&query.text);
+    let (edge, count) = if miss {
+        (r.status.failed, r.status.failed)
+    } else {
+        (r.border.base, r.text.dim)
+    };
+    let bar = row()
+        .key("find-bar")
+        .absolute(left, PAD + s.s1)
+        .w(width)
+        .on_drag(keep_from_pane)
+        .min_h(s.row_h + s.s2)
+        .pl(s.s3)
+        .pr(s.s1)
+        .gap(s.s1)
+        .items_center()
+        .radius(t.radius.md)
+        .border(s.hairline, edge.paint())
+        .transition(pop(t))
+        .child(field)
+        .child(text(status).font(readout(t)).color(count.paint()))
+        .child(case)
+        .child(icon_button(
+            &icons::ARROW_UP,
+            "Older match",
+            "find-older",
+            p,
+            |d| d.step_find(-1),
+        ))
+        .child(icon_button(
+            &icons::ARROW_DOWN,
+            "Newer match",
+            "find-newer",
+            p,
+            |d| d.step_find(1),
+        ))
+        .child(icon_button(
+            &icons::CLOSE,
+            "Close find",
+            "find-close",
+            p,
+            Desk::close_find,
+        ));
+    let bar = glass(
+        bar,
+        t,
+        r.layer.overlay,
+        Glass::Floating,
+        desk.phone.is_some(),
+    );
+    Some(t.elevate(bar, Tier::Floating))
+}
+
+/// The pill's words: how much arrived while you were back in history.
+fn live_words(unread: u64) -> String {
+    match unread {
+        0 => "Back to live".to_owned(),
+        1 => "1 new line".to_owned(),
+        n => format!("{n} new lines"),
+    }
 }
 
 /// Where the viewport sits in history, and a pill back to the live tail,
-/// only while scrolled back.
+/// only while scrolled back. The pill is a button: the primary fill while
+/// lines wait, quiet otherwise.
 pub fn history(
     desk: &Desk,
     id: &ResourceId,
     frame: &GridFrame,
     area: [f32; 2],
-    ink: &Ink,
+    p: &impl AsRef<Tokens>,
 ) -> Vec<El> {
+    let t = p.as_ref();
+    let s = &t.space;
     let bar = frame.scrollbar;
     if bar.at_tail() || bar.total == 0 {
         return Vec::new();
     }
     let track = area[1];
-    let thumb = (bar.len as f32 / bar.total as f32 * track).clamp(24.0_f32.min(track), track);
+    let thumb = (bar.len as f32 / bar.total as f32 * track).clamp(s.s6.min(track), track);
     // Not at the tail, so there is history above or below to travel.
     let travel = bar.total.saturating_sub(bar.len).max(1) as f32;
     let top = bar.offset as f32 / travel * (track - thumb);
+    let rail_w = s.s1;
     let rail = el()
         .key(format!("rail-{id}"))
         .absolute(
-            PAD + area[0] + (PAD - RAIL_W) / 2.0,
+            PAD + area[0] + (PAD - rail_w) / 2.0,
             PAD + top.clamp(0.0, track - thumb),
         )
-        .size(RAIL_W, thumb)
-        .radius(RAIL_W / 2.0)
-        .fill(ink.dim.alpha(0.55))
+        .w(rail_w)
+        .h(thumb)
+        .radius(t.radius.full)
+        .fill(t.roles.border.strong.paint())
         .inert();
     let unread = desk.unread_rows(id);
-    let label = match unread {
-        0 => "↓  Back to live".to_owned(),
-        1 => "↓  1 new line".to_owned(),
-        n => format!("↓  {n} new lines"),
-    };
     let target = id.clone();
-    let pill = el()
-        .key(format!("live-{id}"))
-        .absolute(PAD + area[0] - PILL_W - 10.0, PAD + area[1] - 38.0)
-        .size(PILL_W, 28.0)
-        .radius(14.0)
-        .center()
-        .fill(if unread > 0 { ink.accent } else { ink.raised })
-        .border(1.0, ink.separator)
-        .shadow(6.0, 18.0, Color::BLACK.alpha(0.35))
-        .cursor(rune::Cursor::Pointer)
-        .transition(Transition::scale(0.9).combined(Transition::opacity()))
+    let variant = if unread > 0 {
+        ButtonVariant::Submit
+    } else {
+        ButtonVariant::Neutral
+    };
+    let pill = Button::new(live_words(unread))
+        .variant(variant)
+        .icon(&icons::ARROW_DOWN)
         .on_press(move |d: &mut Desk| d.follow_live(&target))
-        .child(
-            text(label)
-                .font(CAPTION)
-                .color(if unread > 0 { ink.on_accent } else { ink.text }),
-        );
-    vec![rail, pill]
+        .build(&t.kit)
+        .key(format!("live-{id}"))
+        .pin(None, None, Some(PAD + s.s2), Some(PAD + s.s2))
+        .transition(pop(t));
+    vec![rail, t.elevate(pill, Tier::Floating)]
 }
+
+/// A column of words a surface shows in place of content.
+pub(super) fn empty_note(words: impl Into<String>, t: &Tokens) -> El {
+    col().w_full().py(t.space.s4).items_center().child(
+        text(words.into())
+            .font(t.ty.caption)
+            .color(t.roles.text.dim.paint()),
+    )
+}
+
+#[cfg(test)]
+mod tests;

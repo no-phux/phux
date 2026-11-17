@@ -148,7 +148,12 @@ pub fn hud(color: rune::Color) -> Option<El> {
         text(line)
             .key("perf-hud")
             .absolute(8.0, 4.0)
-            .font(crate::ui::CAPTION.family(rune::Family::SystemMono))
+            // A readout: the chrome's mono face, figures that hold still.
+            .font(
+                crate::ui::CAPTION
+                    .family(crate::ui::tokens::MONO)
+                    .features("'tnum' 1"),
+            )
             .color(color)
             .single_line()
             .inert(),

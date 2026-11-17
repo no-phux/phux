@@ -2,78 +2,102 @@
 //! and the card a focused pane shows when its agent is asking.
 
 use phux_client_runtime::approvals::{Approval, Decision};
+use phux_design::{State, Tone};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, El, Family, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{Cursor, Edge, El, Transition, col, el, row, text, text_input};
+use rune_kit::{Button, ButtonVariant, Card, ControlSize, Spinner};
 
-use super::sidebar::mark_color;
-use super::status::notice_line;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words, pop, readout, strong};
+use super::tokens::{MONO, Paint, Tier, Tokens};
+use super::{MOD, badge, icons, lifted};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
 use crate::ui::Cover;
 
-const WIDTH: f32 = 400.0;
-const CARD_W: f32 = 340.0;
-/// Decisions' chords, shown on their buttons.
-const DENY: &str = if cfg!(target_os = "macos") {
-    "Deny  ⌘⌫"
-} else {
-    "Deny  Ctrl+Shift+⌫"
-};
-const APPROVE: &str = if cfg!(target_os = "macos") {
-    "Approve  ⌘↩"
-} else {
-    "Approve  Ctrl+Shift+↩"
-};
-
-fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
-    row()
-        .gap(5.0)
-        .items_center()
-        .child(
-            el().px(5.0)
-                .radius(4.0)
-                .fill(ink.separator)
-                .child(text(keys).font(CAPTION).color(ink.text)),
-        )
-        .child(text(what).font(CAPTION).color(ink.dim))
+/// The ladder state a waiting mark draws as; `None` for the bell, which
+/// is an event with its own mark, not a state (§1.3).
+const fn state(mark: Mark) -> Option<State> {
+    Some(match mark {
+        Mark::Blocked => State::NeedsYou,
+        Mark::Failed => State::Failed,
+        Mark::Done => State::Done,
+        Mark::Succeeded => State::DoneSeen,
+        Mark::Working | Mark::Running | Mark::Background => State::Working,
+        Mark::Idle => State::Idle,
+        Mark::None => State::Unknown,
+        Mark::Bell => return None,
+    })
 }
 
-/// One suggested answer. `index` is its ⌘ digit, while the row is picked.
+/// `mark`'s vector mark and tone, colour and shape together.
+fn mark_icon(mark: Mark, t: &Tokens) -> (El, rune::Color) {
+    let size = t.icon.size.sm;
+    match state(mark) {
+        Some(state) => (
+            badge::mark(t, state, size).a11y_hidden(),
+            t.status.state(state).tone.ink,
+        ),
+        None => {
+            let ink = t.status.tone(Tone::Bell).ink;
+            (rune::icon(&icons::BELL, size).color(ink).a11y_hidden(), ink)
+        }
+    }
+}
+
+/// One suggested answer (§4.1.3 OWN chip): the selected wash inside the
+/// control outline. `index` is its ⌘ digit, while the row is picked. While
+/// the answer sends, every chip is disabled, not hidden (§1.10 loading).
 fn chip(
     terminal: &ResourceId,
     question: &str,
     answer: &str,
     index: Option<usize>,
     busy: bool,
-    ink: &Ink,
+    t: &Tokens,
 ) -> El {
+    let s = &t.space;
+    let r = &t.roles;
     let (terminal, question, send) = (terminal.clone(), question.to_owned(), answer.to_owned());
+    let (ink, edge) = if busy {
+        (r.text.faint, r.border.muted)
+    } else {
+        (r.text.text, r.border.control)
+    };
     let chip = row()
         .key(format!("chip-{terminal}-{answer}"))
-        .px(9.0)
-        .py(4.0)
-        .gap(6.0)
-        .radius(6.0)
+        .role("button")
+        .label(answer.to_owned())
+        .min_h(s.pointer_min)
+        .px(s.s2)
+        .gap(s.icon_gap)
+        .radius(t.radius.sm)
         .items_center()
-        .border(1.0, ink.accent.alpha(0.5))
-        .hover(ink.accent.alpha(0.16))
-        .cursor(rune::Cursor::Pointer)
-        .child(text(answer.to_owned()).font(CAPTION).color(ink.text))
+        .border(s.hairline, edge.paint())
+        .child(
+            text(answer.to_owned())
+                .font(t.ty.caption)
+                .color(ink.paint())
+                .a11y_hidden(),
+        )
         .children(index.filter(|i| *i < 9).map(|i| {
-            text(format!("{}{}", super::MOD, i + 1))
-                .font(CAPTION)
-                .color(ink.dim)
+            text(format!("{MOD}{}", i + 1))
+                .font(readout(t))
+                .color(r.text.dim.paint())
+                .a11y_hidden()
         }));
     if busy {
-        return chip.opacity(0.5);
+        return chip.disabled(true);
     }
-    chip.on_press(move |d: &mut Desk| d.answer(&terminal, &question, &send))
+    t.kit
+        .interactive(chip.fill(r.wash.selected.paint()))
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(move |d: &mut Desk| d.answer(&terminal, &question, &send))
 }
 
-fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, ink: &Ink) -> El {
-    let mut line = row().w_full().gap(6.0).flex_wrap();
+fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, t: &Tokens) -> El {
+    let mut line = row().w_full().gap(t.space.icon_gap).flex_wrap();
     for (index, answer) in ask.suggestions.iter().enumerate() {
         line = line.child(chip(
             terminal,
@@ -81,24 +105,62 @@ fn chips(terminal: &ResourceId, ask: &Ask, keyed: bool, busy: bool, ink: &Ink) -
             answer,
             keyed.then_some(index),
             busy,
-            ink,
+            t,
         ));
     }
     line
 }
 
-fn header(dot: Color, title: String, detail: String, ink: &Ink) -> El {
+/// A card's top line: the mark, who, and the state word with its age. A
+/// send in flight shows the kit spinner beside its word.
+fn header(mark: Mark, title: String, detail: String, busy: bool, t: &Tokens) -> El {
+    let r = &t.roles;
+    let (icon, _) = mark_icon(mark, t);
     row()
         .w_full()
-        .gap(8.0)
+        .gap(t.space.s2)
         .items_center()
-        .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
-        .child(text(title).font(LABEL_STRONG).color(ink.text).truncate())
+        .child(icon)
+        .child(
+            text(title)
+                .font(strong(t.ty.label))
+                .color(r.text.text.paint())
+                .truncate()
+                .min_w(0.0)
+                .shrink(),
+        )
         .child(el().grow(1.0))
-        .child(text(detail).font(CAPTION).color(ink.dim))
+        .children(busy.then(|| {
+            Spinner::new()
+                .size(t.icon.size.sm)
+                .color(r.text.dim.paint())
+                .build(&t.kit)
+        }))
+        .child(text(detail).font(t.ty.caption).color(r.text.dim.paint()))
 }
 
-fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
+/// A reply field in the control outline (`TextInput`'s look). The editor
+/// keeps its own key: native text input finds fields by it.
+pub(super) fn field_shell(input: El, t: &Tokens, enabled: bool) -> El {
+    let s = &t.space;
+    let edge = if enabled {
+        t.roles.border.control
+    } else {
+        t.roles.border.muted
+    };
+    row()
+        .w_full()
+        .min_h(s.row_h)
+        .px(s.s2)
+        .py(s.s1)
+        .radius(t.radius.sm)
+        .items_center()
+        .border(s.hairline, edge.paint())
+        .child(input)
+}
+
+fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, t: &Tokens) -> El {
+    let r = &t.roles;
     let who = waiting
         .agent
         .clone()
@@ -115,198 +177,236 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
     } else {
         waiting.mark.word()
     };
-    let mut card = col().w_full().gap(8.0).child(header(
-        mark_color(waiting.mark, ink),
-        who,
-        format!("{word}{age}"),
-        ink,
-    ));
+    let (_, tone) = mark_icon(waiting.mark, t);
     let place = match &waiting.kind {
         Some(kind) if Some(kind) != waiting.agent.as_ref() => {
             format!("{} · {} · {kind}", waiting.label, waiting.session)
         }
         _ => format!("{} · {}", waiting.label, waiting.session),
     };
-    card = card.child(text(place).font(CAPTION).color(ink.dim).truncate());
+    let mut body = col()
+        .w_full()
+        .gap(t.space.s2)
+        .child(header(waiting.mark, who, format!("{word}{age}"), busy, t))
+        .child(
+            text(place)
+                .font(t.ty.caption)
+                .color(r.text.dim.paint())
+                .truncate(),
+        );
     let Some(ask) = &waiting.ask else {
         let hint = (waiting.mark == Mark::Blocked).then(|| {
             text("Waiting on you in its terminal.")
-                .font(LABEL)
-                .color(ink.text)
+                .font(t.ty.label)
+                .color(r.text.text.paint())
         });
-        return card.children(hint);
+        return card(body.children(hint), tone, t);
     };
-    card = card.child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
+    body = body.child(
+        text(ask.text.clone())
+            .font(t.ty.label)
+            .color(r.text.text.paint())
+            .wrap(),
+    );
     if !ask.typed() {
-        return card.child(super::questions::panel(desk, &waiting.terminal, ask, ink));
+        let panel = super::questions::panel(desk, &waiting.terminal, ask, t);
+        return card(body.child(panel), tone, t);
     }
     if !ask.suggestions.is_empty() {
-        card = card.child(chips(&waiting.terminal, ask, picked, busy, ink));
+        body = body.child(chips(&waiting.terminal, ask, picked, busy, t));
     }
     if picked {
-        card = card.child(
-            row()
-                .w_full()
-                .px(10.0)
-                .py(7.0)
-                .radius(7.0)
-                .fill(ink.separator)
-                .child(
-                    text_input(&desk.inbox.reply, TextStyle::new(13.0, 400.0).lh(18.0))
-                        .key("inbox-reply")
-                        .label("Reply to question")
-                        .single_line()
-                        .grow(1.0)
-                        .color(ink.text)
-                        .placeholder("Reply…", ink.dim)
-                        .on_edit(|d: &mut Desk| &mut d.inbox.reply)
-                        .on_input_key(|d: &mut Desk, event, tx| d.inbox_key(event, tx))
-                        .on_submit(|d: &mut Desk, tx| d.submit_picked(tx)),
-                ),
-        );
+        let input = text_input(&desk.inbox.reply, t.ty.body)
+            .key("inbox-reply")
+            .label("Reply to question")
+            .single_line()
+            .grow(1.0)
+            .color(r.text.text.paint())
+            .placeholder("Reply…", r.text.faint.paint())
+            .on_edit(|d: &mut Desk| &mut d.inbox.reply)
+            .on_input_key(|d: &mut Desk, event, tx| d.inbox_key(event, tx))
+            .on_submit(|d: &mut Desk, tx| d.submit_picked(tx));
+        body = body.child(field_shell(input, t, true));
     }
-    card
+    card(body, tone, t)
 }
 
-fn approval_card(approval: &Approval, ink: &Ink) -> El {
+/// The kit card: a rule in the item's tone beside its content.
+fn card(body: El, tone: rune::Color, t: &Tokens) -> El {
+    Card::new().accent(tone).child(body).build(&t.kit)
+}
+
+fn approval_card(approval: &Approval, t: &Tokens) -> El {
+    let r = &t.roles;
     let requester = inbox::approval_requester(approval);
-    let mut card = col().w_full().gap(8.0).child(header(
-        ink.danger,
-        inbox::approval_title(approval),
-        inbox::expiry(approval),
-        ink,
-    ));
-    card = card.child(
-        text(format!("Held for {requester}"))
-            .font(CAPTION)
-            .color(ink.dim)
-            .truncate(),
-    );
+    let mono = rune::TextStyle {
+        family: MONO,
+        ..t.ty.caption
+    };
+    let mut body = col()
+        .w_full()
+        .gap(t.space.s2)
+        .child(header(
+            Mark::Blocked,
+            inbox::approval_title(approval),
+            inbox::expiry(approval),
+            false,
+            t,
+        ))
+        .child(
+            text(format!("Held for {requester}"))
+                .font(t.ty.caption)
+                .color(r.text.dim.paint())
+                .truncate(),
+        );
     if let Some(credential) = &approval.credential {
         for detail in inbox::credential_details(approval) {
-            card = card.child(text(detail).font(CAPTION).color(ink.text).wrap());
+            body = body.child(
+                text(detail)
+                    .font(t.ty.caption)
+                    .color(r.text.text.paint())
+                    .wrap(),
+            );
         }
         for reference in &credential.request.references {
-            card = card.child(
+            body = body.child(
                 text(reference.clone())
-                    .font(CAPTION.family(Family::SystemMono))
-                    .color(ink.text)
+                    .font(mono)
+                    .color(r.text.text.paint())
                     .wrap(),
             );
         }
     }
     for subject in &approval.subjects {
-        card = card.child(
+        body = body.child(
             text(subject.clone())
-                .font(CAPTION.family(Family::SystemMono))
-                .color(ink.text)
+                .font(mono)
+                .color(r.text.text.paint())
                 .truncate(),
         );
     }
-    let decide = |decision, label: &'static str, primary: bool| {
+    // Deny is destructive; Approve is the one primary action (§1.10).
+    let decide = |decision, label: &'static str, chord: &'static str, variant| {
         let id = approval.id.clone();
-        let button = pressable(format!("decide-{label}-{id}"), ink)
-            .grow(1.0)
-            .py(6.0)
-            .radius(6.0)
-            .center()
+        let key = format!("decide-{label}-{id}");
+        Button::new(label)
+            .variant(variant)
+            .control_size(ControlSize::Large)
+            .shortcut(format!("{MOD}{chord}"))
             .on_press(move |d: &mut Desk| d.decide(&id, decision))
-            .child(text(label).font(CAPTION).color(ink.text));
-        if primary {
-            button.fill(ink.accent.alpha(0.3))
-        } else {
-            button.border(1.0, ink.separator)
-        }
+            .build(&t.kit)
+            .key(key)
+            .grow(1.0)
     };
-    card.child(
+    body = body.child(
         row()
             .w_full()
-            .gap(6.0)
-            .child(decide(Decision::Deny, DENY, false))
-            .child(decide(Decision::Approve, APPROVE, true)),
-    )
+            .gap(t.space.icon_gap)
+            .child(decide(Decision::Deny, "Deny", "⌫", ButtonVariant::Danger))
+            .child(decide(
+                Decision::Approve,
+                "Approve",
+                "↩",
+                ButtonVariant::Submit,
+            )),
+    );
+    card(body, t.status.state(State::NeedsYou).tone.ink, t)
 }
 
-fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, ink: &Ink) -> El {
+fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, t: &Tokens) -> El {
     let body = match item {
-        Item::Approval(approval) => approval_card(approval, ink),
-        Item::Terminal(waiting) => waiting_card(desk, waiting, picked, ink),
+        Item::Approval(approval) => approval_card(approval, t),
+        Item::Terminal(waiting) => waiting_card(desk, waiting, picked, t),
     };
-    pressable(format!("inbox-item-{index}"), ink)
+    let row = el()
+        .key(format!("inbox-item-{index}"))
         .w_full()
-        .padding(12.0)
-        .radius(10.0)
-        .fill(if picked {
-            ink.selected
-        } else {
-            ink.text.alpha(0.025)
-        })
+        .padding(t.space.s1)
+        .radius(t.radius.md)
+        .border(t.space.hairline, t.roles.border.muted.paint());
+    let row = if picked { lifted(row, t) } else { row };
+    t.kit
+        .interactive(row)
+        .cursor(Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.pick_item(index, tx))
         .child(body)
 }
 
-fn empty(ink: &Ink) -> El {
+/// Nothing waiting: the done mark, large, and what lands here.
+fn empty(t: &Tokens) -> El {
+    let r = &t.roles;
     col()
         .w_full()
-        .py(48.0)
-        .gap(6.0)
+        .py(t.space.s12)
+        .gap(t.space.s2)
         .items_center()
+        .child(badge::mark(t, State::Done, t.icon.size.xl).a11y_hidden())
         .child(
-            text("✓")
-                .font(TextStyle::new(22.0, 500.0))
-                .color(mark_color(Mark::Succeeded, ink)),
+            text("Nothing needs you")
+                .font(t.ty.body)
+                .color(r.text.text.paint()),
         )
-        .child(text("Nothing needs you").font(LABEL_STRONG).color(ink.text))
         .child(
             text("Asks, approvals and finished agents land here.")
-                .font(CAPTION)
-                .color(ink.dim),
+                .font(t.ty.caption)
+                .color(r.text.dim.paint()),
         )
 }
 
-pub fn view(desk: &Desk, ink: &Ink) -> El {
+/// The drawer, on the trailing edge: it slides in on the drawer spring and
+/// fades out.
+pub fn view(desk: &Desk, p: &impl AsRef<Tokens>) -> El {
+    let t = p.as_ref();
+    let s = &t.space;
+    let r = &t.roles;
     let items = desk.inbox_items();
     let picked = desk.picked_index(&items);
-    let mut list = col().key("inbox-list").w_full().padding(10.0).gap(8.0);
+    let mut list = col().key("inbox-list").w_full().padding(s.s2).gap(s.s2);
     for (index, item) in items.iter().enumerate() {
-        list = list.child(item_row(desk, item, index, Some(index) == picked, ink));
+        list = list.child(item_row(desk, item, index, Some(index) == picked, t));
     }
     if items.is_empty() {
-        list = list.child(empty(ink));
+        list = list.child(empty(t));
     }
-    let mut foot = row().w_full().px(14.0).py(8.0).gap(12.0).items_center();
+    let mut foot = row().w_full().px(s.s3).py(s.s2).gap(s.s3).items_center();
     foot = match &desk.notice {
-        Some(notice) => foot.child(notice_line(Some(notice), ink)),
+        Some(notice) => foot.child(notice_words(notice, t)),
         None => foot
-            .child(pick_hint("↑↓", "move", ink))
-            .child(pick_hint("↩", "send or open", ink))
-            .child(pick_hint("esc", "close", ink)),
+            .child(key_hint("↑↓", "move", t))
+            .child(key_hint("↩", "send or open", t))
+            .child(key_hint("esc", "close", t)),
+    };
+    let rule = |key: &'static str| {
+        rune::rule(s.hairline, r.border.base.paint())
+            .w_full()
+            .key(key)
     };
     let drawer = col()
         .key("inbox")
         // The phone form is narrower than the drawer.
         .w_full()
-        .max_w(WIDTH)
+        .max_w(EXTENTS.drawer_w)
         .h_full()
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.4))
-        .transition(Transition::opacity())
+        .border(s.hairline, r.border.base.paint())
+        .transition(Transition::asymmetric(
+            Transition::move_edge(Edge::Trailing).springs(t.motion.drawer),
+            Transition::opacity(),
+        ))
         .child(
             row()
                 .w_full()
-                .h(48.0)
-                .px(16.0)
+                .h(s.s12)
+                .px(s.s4)
                 .items_center()
                 .justify_between()
+                .child(text("Inbox").font(t.ty.title).color(r.text.text.paint()))
                 .child(
-                    text("Inbox")
-                        .font(TextStyle::new(14.0, 650.0))
-                        .color(ink.text),
-                )
-                .child(text(items.len().to_string()).font(CAPTION).color(ink.dim)),
+                    text(items.len().to_string())
+                        .font(readout(t))
+                        .color(r.text.dim.paint()),
+                ),
         )
-        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-header-rule"))
+        .child(rule("inbox-header-rule"))
         .child(
             col()
                 .w_full()
@@ -317,11 +417,21 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
                 })
                 .child(list),
         )
-        .child(rune::rule(1.0, ink.separator).w_full().key("inbox-footer-rule"))
+        .child(rule("inbox-footer-rule"))
         .child(foot);
+    let drawer = t.elevate(
+        glass(
+            drawer,
+            t,
+            r.layer.raised,
+            Glass::Overlay,
+            desk.phone.is_some(),
+        ),
+        Tier::Overlay,
+    );
     el().key("inbox-scrim")
         .cover()
-        .fill(Color::BLACK.alpha(0.16))
+        .fill(r.layer.scrim.paint())
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())
         .label("Inbox")
@@ -337,47 +447,61 @@ pub struct AskCard {
 
 /// A focused pane's agent is asking: the question over the pane's corner,
 /// answerable with a click. Hidden while find or the inbox covers it.
-pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Option<AskCard> {
+pub fn ask_card(
+    desk: &Desk,
+    id: &ResourceId,
+    area: [f32; 2],
+    p: &impl AsRef<Tokens>,
+) -> Option<AskCard> {
+    let t = p.as_ref();
+    let s = &t.space;
+    let r = &t.roles;
     if desk.connection.find.is_some() || desk.inbox.open {
         return None;
     }
     let pane = desk.connection.topology.as_ref()?.pane(id)?;
     let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
-    let width = CARD_W.min(area[0] - 20.0);
-    if width < 160.0 {
+    let width = EXTENTS.ask_w.min(area[0] - s.s5);
+    if width < EXTENTS.ask_min_w {
         return None;
     }
     let busy = desk.answering(id);
     let who = desk.activities.agent_name(id).unwrap_or("Agent").to_owned();
     let mut card = col()
         .key(format!("ask-{id}"))
-        .absolute(super::PAD + area[0] - width - 10.0, super::PAD + 10.0)
+        .absolute(super::PAD + area[0] - width - s.s2, super::PAD + s.s2)
         .w(width)
-        .padding(12.0)
-        .gap(8.0)
-        .radius(10.0)
-        .fill(ink.raised)
-        .border(1.0, mark_color(Mark::Blocked, ink).alpha(0.5))
-        .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
+        .padding(s.card_inset)
+        .gap(s.s2)
+        .radius(t.radius.md)
+        .fill(r.layer.overlay.paint())
+        .border(s.hairline, r.status.needs_you_edge.paint())
+        .transition(pop(t))
         .child(header(
-            mark_color(Mark::Blocked, ink),
+            Mark::Blocked,
             who,
             ask_hint(busy, ask.typed()),
-            ink,
+            busy,
+            t,
         ))
-        .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
+        .child(
+            text(ask.text.clone())
+                .font(t.ty.label)
+                .color(r.text.text.paint())
+                .wrap(),
+        );
     if !ask.typed() {
+        let panel = super::questions::panel(desk, id, &ask, t);
         return Some(AskCard {
             editing: desk.inbox.questions.field_focused(id, &ask.id),
-            content: card.child(super::questions::panel(desk, id, &ask, ink)),
+            content: t.elevate(card.child(panel), Tier::Floating),
         });
     }
     if !ask.suggestions.is_empty() {
-        card = card.child(chips(id, &ask, false, busy, ink));
+        card = card.child(chips(id, &ask, false, busy, t));
     }
     Some(AskCard {
-        content: card,
+        content: t.elevate(card, Tier::Floating),
         editing: false,
     })
 }
@@ -385,7 +509,10 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
 fn ask_hint(busy: bool, typed: bool) -> String {
     match (busy, typed) {
         (true, _) => "sending…".to_owned(),
-        (false, true) => format!("{}I to reply", super::MOD),
+        (false, true) => format!("{MOD}I to reply"),
         (false, false) => "ACP".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests;
