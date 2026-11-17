@@ -310,3 +310,27 @@ fn the_general_palette_previews_a_highlighted_theme_and_puts_it_back() {
     });
     assert_eq!(runtime.state.settings.theme, crate::theme::find("nord"));
 }
+
+#[test]
+fn interface_size_zooms_the_chrome_and_not_the_terminal() {
+    let mut desk = settings_desk();
+    desk.set_interface_size(None);
+    let mut runtime = runtime(desk);
+    let cell = runtime.state.metrics().cell_px();
+    let (_, row_before) = runtime.find("interface-size").unwrap();
+    runtime.update(|d, tx| d.shortcut(crate::keys::Shortcut::InterfaceBigger, tx));
+    runtime.frame(0.1);
+    assert_eq!(runtime.state.interface_size, 110);
+    assert_eq!(runtime.state.prefs.get::<u16>("interface_size"), Some(110));
+    runtime.update(|d, _| d.step_interface_size(20));
+    runtime.frame(0.2);
+    assert_eq!(runtime.state.interface_size, 200);
+    assert_eq!(runtime.state.scale.get(), 4.0);
+    assert_eq!(runtime.state.metrics().cell_px(), cell);
+    let (_, row_after) = runtime.find("interface-size").unwrap();
+    assert_ne!(row_before, row_after);
+    runtime.update(|d, _| d.step_interface_size(-20));
+    assert_eq!(runtime.state.interface_size, 80);
+    runtime.update(|d, tx| d.shortcut(crate::keys::Shortcut::InterfaceReset, tx));
+    assert_eq!(runtime.state.interface_size, 100);
+}

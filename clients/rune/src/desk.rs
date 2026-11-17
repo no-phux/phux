@@ -71,6 +71,7 @@ pub use notice::{Notice, NoticeKind};
 pub use palette::{CONTEXT_MENU, TAB_MENU, with_menus};
 pub use reorder::Grab;
 pub use settings::Category as SettingsCategory;
+pub use settings::INTERFACE_SIZES;
 pub use tabs::{Renaming, Tab};
 
 /// How long a requested terminal may stay missing from the server's list
@@ -173,6 +174,9 @@ pub struct Desk {
     /// Bumped by every frame change of the shown terminal, so the view runs.
     pub generation: u64,
     pub font_size: f32,
+    /// The chrome's size in percent (`settings::INTERFACE_SIZES`): the
+    /// view's zoom, which the terminal's text is held against.
+    pub interface_size: u16,
     /// The terminal font family; empty is the default.
     pub font_family: String,
     /// `font_family` is not behind Rune's mono slot yet.
@@ -231,6 +235,10 @@ impl Desk {
             .map_or(grid::DEFAULT_FONT_SIZE, |s| {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
+        let interface_size = settings::interface_size(
+            file.interface_size
+                .or_else(|| prefs.get::<u16>("interface_size")),
+        );
         let font_family: String = (file.font_family.clone())
             .or_else(|| prefs.get("font_family"))
             .unwrap_or_default();
@@ -276,6 +284,7 @@ impl Desk {
             clock: 0.0,
             generation: 0,
             font_size,
+            interface_size,
             font_due: !font_family.is_empty(),
             font_family,
             font_epoch: rune::text::font_epoch(),
@@ -296,8 +305,19 @@ impl Desk {
         desk
     }
 
+    /// The view's zoom: the interface size, except on a phone.
+    pub fn ui_zoom(&self) -> f32 {
+        if self.phone.is_some() {
+            return 1.0;
+        }
+        f32::from(self.interface_size) / 100.0
+    }
+
+    /// The terminal's cells. `scale` is the zoomed view's, so the cells are
+    /// measured at the window's and carried into the zoom unchanged.
     pub fn metrics(&self) -> Metrics {
-        Metrics::new(self.font_size, self.scale.get())
+        let k = self.ui_zoom();
+        Metrics::new(self.font_size, self.scale.get() / k).zoomed(k)
     }
 
     /// Drain the runtime once. True when anything on screen may have changed.

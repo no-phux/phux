@@ -13,6 +13,9 @@ pub struct RuneCfg {
     pub theme: Option<String>,
     /// Terminal text size in points each window starts at.
     pub font_size: Option<f32>,
+    /// Size of the sidebar, tabs, palette and Settings in percent, 80 to
+    /// 200; the terminal's text keeps `font-size`. 100 when unset.
+    pub interface_size: Option<u16>,
     /// Terminal font family; `""` is the built-in face.
     pub font_family: Option<String>,
     /// Post desktop notifications for agents that need attention.
