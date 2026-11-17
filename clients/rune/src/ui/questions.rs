@@ -2,25 +2,37 @@
 //! its fields as text, each sent only through the agent's protocol.
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::native_agent::{NativeOption, NativeQuestion};
+use phux_protocol::native_agent::{NativeOption, NativeQuestion, NativeView};
 use rune::{El, Family, TextEdit, TextStyle, col, row, text, text_input};
 use serde_json::{Value, json};
 
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::Ask;
 use crate::desk::Desk;
-use crate::desk::questions::{CLOSED, Draft, response};
+use crate::desk::questions::{CLOSED, Draft, Questions, response};
 
 /// The agent session's view isn't here: only a streamed pane brings it.
 const UNLOADED: &str = "Show its pane to load this ACP question.";
 const UNSUPPORTED: &str =
     "Unsupported native request type. No approval or terminal fallback will be sent.";
 
+#[cfg(test)]
+mod phone_tests;
+
+const TOUCH_TEXT: TextStyle = TextStyle::new(15.0, 400.0).lh(21.0);
+
 /// Where a control's press goes.
 struct At<'a> {
     terminal: &'a ResourceId,
     question: &'a str,
     held: bool,
+    phone: bool,
+}
+
+impl At<'_> {
+    fn font(&self, desktop: TextStyle) -> TextStyle {
+        if self.phone { TOUCH_TEXT } else { desktop }
+    }
 }
 
 /// An ACP ask on `terminal`: its question's controls, or why there are none.
@@ -35,6 +47,7 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, ink: &Ink) -> El {
         terminal,
         question: &question.id,
         held: questions.held(view, &question.id),
+        phone: desk.phone.is_some(),
     };
     let mut panel = col()
         .w_full()
@@ -43,22 +56,28 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, ink: &Ink) -> El {
         .label(question.title.clone())
         .description(question.message.clone());
     if !question.title.is_empty() && question.title != ask.text {
-        panel = panel.child(say(&question.title, LABEL_STRONG, ink));
+        panel = panel.child(say(&question.title, at.font(LABEL_STRONG), ink));
     }
     if !question.message.is_empty() && question.message != ask.text {
-        panel = panel.child(say(&question.message, LABEL, ink));
+        panel = panel.child(say(&question.message, at.font(LABEL), ink));
     }
     if let Some(details) = details(question) {
-        let mono = CAPTION.family(Family::SystemMono);
+        let mono = at.font(CAPTION).family(Family::SystemMono);
         panel = panel.child(text(details).font(mono).color(ink.dim).wrap());
     }
     panel = controls(panel, draft, &at, ink);
-    let mut actions = row().w_full().gap(6.0).flex_wrap();
+    let mut actions = if at.phone { col() } else { row().flex_wrap() }
+        .w_full()
+        .gap(6.0);
     if matches!(question.kind.as_str(), "input" | "editor" | "ask" | "form") {
         actions = actions.child(action(&at, "submit", "Submit response", None, true, ink));
     }
     let cancel = Some(json!({"cancelled": true}));
     panel = panel.child(actions.child(action(&at, "cancel", "Cancel request", cancel, false, ink)));
+    status(panel, questions, view, &at, ink)
+}
+
+fn status(mut panel: El, questions: &Questions, view: &NativeView, at: &At, ink: &Ink) -> El {
     if !view.connected {
         panel = panel.child(note(
             "ACP controller disconnected. Nothing can be sent.",
@@ -67,11 +86,14 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, ink: &Ink) -> El {
     } else if !view.capabilities.questions.is_supported() {
         panel = panel.child(note("This agent takes no answers over ACP.", ink));
     }
-    if let Some(status) = questions.status.get(&question.id) {
-        panel = panel.child(say(status, CAPTION, ink).role("status"));
+    if let Some(status) = questions.status.get(at.question) {
+        panel = panel.child(say(status, at.font(CAPTION), ink).role("status"));
     }
-    if let Some(error) = questions.error.get(&question.id) {
-        let line = text(error.clone()).font(CAPTION).color(ink.danger).wrap();
+    if let Some(error) = questions.error.get(at.question) {
+        let line = text(error.clone())
+            .font(at.font(CAPTION))
+            .color(ink.danger)
+            .wrap();
         panel = panel.child(line.role("alert"));
     }
     panel
@@ -96,7 +118,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
     let question = &draft.question;
     match question.kind.as_str() {
         "confirm" => panel.child(
-            row()
+            (if at.phone { col() } else { row() })
                 .w_full()
                 .gap(6.0)
                 .child(action(
@@ -134,7 +156,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
                 let multi = if item.multi { " (choose multiple)" } else { "" };
                 let heading = format!("{} {}{multi}", item.header, item.question);
                 panel = panel
-                    .child(say(heading.trim(), CAPTION, ink))
+                    .child(say(heading.trim(), at.font(CAPTION), ink))
                     .child(choices(at, draft, &item.id, &item.options, item.multi, ink));
                 let label = format!("Custom response to {}", item.question);
                 panel = panel.children(field(at, draft, &item.id, &label, false, ink));
@@ -161,9 +183,14 @@ fn form(mut panel: El, draft: &Draft, at: &At, ink: &Ink) -> El {
         } else {
             ""
         };
-        panel = panel.child(say(&format!("{title}{star}"), CAPTION, ink));
+        panel = panel.child(say(&format!("{title}{star}"), at.font(CAPTION), ink));
         if let Some(about) = schema.get("description").and_then(Value::as_str) {
-            panel = panel.child(note(about, ink));
+            panel = panel.child(
+                text(about.to_owned())
+                    .font(at.font(CAPTION))
+                    .color(ink.dim)
+                    .wrap(),
+            );
         }
         panel = match draft.options.get(id) {
             Some(offered) => {
@@ -185,7 +212,11 @@ fn labelled(option: &NativeOption) -> String {
 
 /// A button that answers (`response`) or submits the draft (`None`).
 fn action(at: &At, id: &str, label: &str, answer: Option<Value>, primary: bool, ink: &Ink) -> El {
-    let button = pressable(format!("acp-{}-{id}", at.question), ink)
+    let mut caption = say(label, at.font(CAPTION), ink).a11y_hidden();
+    if at.phone {
+        caption = caption.w_full().min_w(0.0);
+    }
+    let mut button = pressable(format!("acp-{}-{id}", at.question), ink)
         .px(10.0)
         .py(5.0)
         .radius(6.0)
@@ -193,7 +224,10 @@ fn action(at: &At, id: &str, label: &str, answer: Option<Value>, primary: bool, 
         .role("button")
         .label(label.to_owned())
         .disabled(at.held)
-        .child(say(label, CAPTION, ink).a11y_hidden());
+        .child(caption);
+    if at.phone {
+        button = button.w_full().min_w(44.0).min_h(44.0);
+    }
     let button = if primary {
         button.fill(ink.accent.alpha(0.3))
     } else {
@@ -217,11 +251,17 @@ fn choices(
     ink: &Ink,
 ) -> El {
     let chosen = draft.choices.get(item).map(Vec::as_slice).unwrap_or(&[]);
-    let mut line = row().w_full().gap(6.0).flex_wrap();
+    let mut line = if at.phone { col() } else { row().flex_wrap() }
+        .w_full()
+        .gap(6.0);
     for option in offered {
         let on = chosen.contains(&option.id);
         let label = labelled(option);
-        let chip = row()
+        let mut caption = say(&label, at.font(CAPTION), ink).a11y_hidden();
+        if at.phone {
+            caption = caption.w_full().min_w(0.0);
+        }
+        let mut chip = row()
             .key(format!("acp-{}-{item}-{}", at.question, option.id))
             .px(9.0)
             .py(4.0)
@@ -239,7 +279,10 @@ fn choices(
                     ink.accent.alpha(0.4)
                 },
             )
-            .child(say(&label, CAPTION, ink).a11y_hidden());
+            .child(caption);
+        if at.phone {
+            chip = chip.w_full().min_w(44.0).min_h(44.0);
+        }
         let chip = if on {
             chip.fill(ink.accent.alpha(0.24))
         } else {
@@ -264,12 +307,18 @@ fn choices(
 /// an editor, where it breaks the line.
 fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, ink: &Ink) -> Option<El> {
     let edit: &TextEdit = draft.texts.get(id)?;
-    let mut input = text_input(edit, TextStyle::new(13.0, 400.0).lh(18.0))
+    let mut input = text_input(edit, at.font(TextStyle::new(13.0, 400.0).lh(18.0)))
         .key(format!("acp-{}-field-{id}", at.question))
         .grow(1.0)
         .color(ink.text)
         .label(label.to_owned())
         .disabled(at.held);
+    if at.phone {
+        input = input
+            .min_h(44.0)
+            .min_w(0.0)
+            .py((44.0 - TOUCH_TEXT.line_px()) / 2.0);
+    }
     if !multiline {
         input = input.single_line();
     }
@@ -290,7 +339,7 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, ink: &I
         row()
             .w_full()
             .px(10.0)
-            .py(7.0)
+            .py(if at.phone { 0.0 } else { 7.0 })
             .radius(7.0)
             .fill(ink.separator)
             .child(input),

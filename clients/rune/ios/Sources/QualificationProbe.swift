@@ -99,7 +99,8 @@ final class QualificationProbe {
         return value
     }
 
-    func observe(bridge: NativeBridge, input: RuneInput, surfaceAtScale: Bool) throws {
+    func observe(bridge: NativeBridge, input: RuneInput, surfaceAtScale: Bool, didPresent: Bool) throws {
+        guard didPresent else { return }
         try recordResumedFrame(bridge)
         guard !finished else { return }
         var report = try bridge.report(marker: marker)
@@ -117,9 +118,8 @@ final class QualificationProbe {
         report["key_id"] = keyID
         report["input_contracts"] = inputContracts
         report["input_evidence"] = "UIKit insertText entry; not physical OS typing or IME automation"
-        try write(report, name: "rune-qualification.json")
-        try write(bridge.tree(), name: "rune-tree.json")
-        finished = true
+        finished = try QualificationEvidence.publish(report: report, tree: bridge.tree(),
+            marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
     }
 
     private func recordResumedFrame(_ bridge: NativeBridge) throws {

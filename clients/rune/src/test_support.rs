@@ -10,6 +10,7 @@ use crate::desk::{Desk, Shown};
 use crate::launch::Resolved;
 
 pub mod terminal;
+pub mod visual;
 
 pub const SCALE: f32 = 2.0;
 pub const SIZE: (f32, f32) = (1100.0, 720.0);

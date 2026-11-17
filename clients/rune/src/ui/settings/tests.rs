@@ -293,12 +293,7 @@ impl<'g> Camera<'g> {
         );
         if let Some(directory) = std::env::var_os("RUNE_SETTINGS_SNAP") {
             let path = std::path::PathBuf::from(directory).join(format!("{name}.png"));
-            rune::render::write_png(&path, size.0, size.1, &pixels).unwrap();
-            std::fs::write(
-                path.with_extension("json"),
-                rt.accessibility_json().to_string(),
-            )
-            .unwrap();
+            crate::test_support::visual::write(&path, rt, size, &pixels, &name);
         }
     }
 }
@@ -334,6 +329,10 @@ fn settings_native_render_frames() {
         rt.key(crate::keys::plain(Key::Text("clipboard".into())));
         rt.frame(0.0);
         camera.shoot(&mut rt, "-typed-search");
+        rt.update(|d, _| d.clear_settings_search());
+        rt.key(crate::keys::plain(Key::Text("no-such-setting".into())));
+        rt.frame(0.0);
+        camera.shoot(&mut rt, "-no-match");
         if !phone {
             rt.update(|d, tx| {
                 tx.instant();
