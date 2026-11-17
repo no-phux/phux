@@ -1,3 +1,4 @@
+// style-literals: illustration
 //! The reef's scenery, painter by painter as the prototype draws it: water,
 //! far ridges and their school, jellies, rays, sky, kelp, sand, buoys,
 //! coral, bubbles, snow and the vignette.
@@ -347,7 +348,7 @@ pub fn buoy(pen: &mut Pen, r: &Reef, z: &Zone, zi: usize) -> Label {
         at: [bx, by - 36.0 * s],
         text,
         badge: (waiting > 0).then_some(waiting),
-        amber: false,
+        needs_you: false,
         host: Some(z.host.clone()),
     }
 }

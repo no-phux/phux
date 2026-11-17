@@ -1,15 +1,21 @@
 //! The playground views (galaxy, reef, pitch, kitchen, pit lane, hive) and
-//! the way out every one of them shows.
+//! the way out every one of them shows. The scenes are illustration; their
+//! chrome is `hud` and `labels`, on the window's tokens.
 
-use rune::{Cx, El, text};
+use rune::{Cx, El};
 
-use super::{CAPTION, FROST, Ink, galaxy, hive, keycap, kitchen, pitch, pitlane, pressable, reef};
+use super::{Ink, galaxy, hive, kitchen, pitch, pitlane, reef};
 use crate::desk::Desk;
 use crate::desk::surfaces::Playground;
 
+#[allow(clippy::disallowed_methods)] // illustration: the scenes' vignette
 pub(super) mod edges;
+pub(super) mod hud;
 pub(super) mod labels;
+#[allow(clippy::disallowed_methods)] // illustration: the scenes' painter
 pub(super) mod pen;
+#[cfg(test)]
+mod tests;
 
 /// A playground view: whether it is open, how it draws, how it closes.
 type View = (fn(&Desk, &Ink, &mut Cx<Desk>) -> El, fn(&mut Desk));
@@ -27,29 +33,5 @@ pub(super) fn open(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> Option<El> {
     };
     // A child of the view: the view is modal, so anything beside it is inert.
     let right = cx.chrome_insets().trailing;
-    Some(view(desk, p, cx).child(esc_chip(p, close, right)))
-}
-
-/// A frosted key cap, top right in the titlebar band clear of every view's
-/// own chrome: `esc` closes this. Escape lets go of a pick first; a press
-/// here always closes.
-fn esc_chip(p: &Ink, close: fn(&mut Desk), right: f32) -> El {
-    pressable("playground-esc", p)
-        .pin(None, Some(9.0), Some(16.0 + right), None)
-        .h(24.0)
-        .pl(4.0)
-        .pr(9.0)
-        .gap(6.0)
-        .items_center()
-        .radius(8.0)
-        .continuous_corners()
-        .backdrop_blur(FROST)
-        .fill(p.raised.alpha(0.72))
-        .border(1.0, p.text.alpha(0.14))
-        .shadow(4.0, 14.0, p.shade)
-        .hover(p.text.alpha(0.08))
-        .label("Close, Escape")
-        .on_press(close)
-        .child(keycap("esc", p))
-        .child(text("close").font(CAPTION).color(p.dim).a11y_hidden())
+    Some(view(desk, p, cx).child(hud::esc_chip(&p.tokens, close, right)))
 }
