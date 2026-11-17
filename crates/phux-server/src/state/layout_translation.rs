@@ -87,6 +87,7 @@ impl ServerState {
                 owner: ArrangementOwner::Session(record.key),
                 expected,
                 groups,
+                slot_tabs: false,
             },
             actor,
         )
@@ -116,10 +117,7 @@ impl ServerState {
                         id: *id,
                     },
                 };
-                phux_core::LayoutNode::Leaf(EntryRef {
-                    entry: fresh.fresh(),
-                    target,
-                })
+                phux_core::LayoutNode::Leaf(EntryRef::new(fresh.fresh(), target))
             }
             LayoutNode::Split {
                 dir,

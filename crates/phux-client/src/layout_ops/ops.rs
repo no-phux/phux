@@ -137,6 +137,7 @@ impl<'a> LayoutOps<'a> {
             arrangement: read.key,
             expected: read.revision,
             document: wire,
+            slot_tabs: false,
         };
         debug!(
             arrangement = %read.key,

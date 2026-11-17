@@ -147,7 +147,7 @@ fn entry_target() -> impl Strategy<Value = EntryTarget> {
 }
 fn node() -> impl Strategy<Value = ArrangementNode> {
     let leaf = (any::<[u8; 16]>(), entry_target())
-        .prop_map(|(entry, target)| ArrangementNode::Leaf(EntryRef { entry, target }));
+        .prop_map(|(entry, target)| ArrangementNode::Leaf(EntryRef::new(entry, target)));
     leaf.prop_recursive(4, 16, 2, |inner| {
         (any::<bool>(), 1_u16..=999, inner.clone(), inner).prop_map(|(h, r, a, b)| {
             ArrangementNode::Split {

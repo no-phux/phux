@@ -126,6 +126,7 @@ pub(in crate::wire) fn decode_org_command(
             arrangement: req(f.arrangement)?,
             expected: f.expected()?,
             document: req(f.document)?,
+            slot_tabs: f.slot_tabs,
         },
         crate::wire::frame::COMMAND_TAG_ARRANGEMENT_LOCK => Command::ArrangementLock {
             operation: f.operation()?,

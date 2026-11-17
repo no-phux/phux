@@ -136,6 +136,7 @@ async fn replace_command(
         arrangement: key,
         expected: current.revision,
         document: document.clone(),
+        slot_tabs: false,
     })
 }
 
