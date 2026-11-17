@@ -40,6 +40,9 @@ pub struct RuneCfg {
     /// `"~/.1password/agent.sock"`: an app opened from the Dock does not
     /// see the shell's `SSH_AUTH_SOCK`.
     pub ssh_agent: Option<String>,
+    /// Markdown renderer argv: UTF-8 Markdown on stdin, plain UTF-8 on stdout.
+    /// `{width}` expands to columns. Unset uses bundled tmd; `[]` shows source.
+    pub markdown_viewer: Option<Vec<String>>,
     /// `[rune.keys]`: a chord such as `"cmd+shift+d"` and the command it
     /// runs, or `"none"` to take a built-in chord away.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -94,5 +97,26 @@ mod tests {
         assert_eq!(rune.quick_terminal_edge, Some(QuickTerminalEdge::Bottom));
         let sideways = "[rune]\nquick-terminal-edge = \"left\"\n";
         assert!(crate::loader::parse_client(sideways, std::path::Path::new("c.toml")).is_err());
+    }
+
+    #[test]
+    fn markdown_viewers_preserve_argv_and_an_explicit_source_adapter() {
+        for command in [
+            vec![],
+            vec![
+                "/path with spaces/viewer".into(),
+                "--width".into(),
+                "{width}".into(),
+            ],
+        ] {
+            let cfg = RuneCfg {
+                markdown_viewer: Some(command),
+                ..RuneCfg::default()
+            };
+            let parsed =
+                crate::loader::parse_client(&cfg.to_toml(), std::path::Path::new("c.toml"))
+                    .unwrap();
+            assert_eq!(parsed.rune, cfg);
+        }
     }
 }

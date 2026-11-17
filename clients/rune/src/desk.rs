@@ -308,6 +308,7 @@ impl Desk {
         self.follow_path(tx);
         let updated = self.pump_updates(tx)
             | self.finish_document_images()
+            | self.finish_document_viewers(tx)
             | self.pump_machines()
             | self.pump_checklist()
             | self.tick_fleet()

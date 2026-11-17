@@ -46,6 +46,7 @@ impl Resources {
     pub(in crate::desk) fn carry_images(&mut self, next: &mut Resources) {
         next.images = self.images.take();
         next.decodes = std::mem::take(&mut self.decodes);
+        next.viewers = std::mem::take(&mut self.viewers);
     }
 }
 

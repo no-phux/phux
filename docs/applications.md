@@ -105,8 +105,10 @@ Any program can add a resource kind without a client change: open a typed
 `Document` under a pane, publish whole documents of one content type, and
 every viewer draws it by that type
 ([resource kinds](./resource-kinds.md#available-now)): PNG, JPEG, GIF and
-WebP as images, JSON pretty-printed, Markdown, CSV, SVG and other text as
-source. A publish is at most 4 MiB and must match its type.
+WebP as images, JSON pretty-printed, Markdown through desktop's
+[replaceable viewer](./config.md#markdown-viewer), CSV, SVG and other text as
+source. Source stays available for Markdown too. A publish is at most 4 MiB
+and must match its type.
 
 `phux agent doc serve --type MIME [--name NAME] [--pane @N]` is the
 contract, spoken over a pipe from any language. It opens the document
