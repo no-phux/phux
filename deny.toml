@@ -11,6 +11,9 @@ yanked = "deny"
 # `bincode` transitively, with no compatible upgrade that avoids them; security
 # vulnerabilities and yanks remain denied across the complete graph.
 unmaintained = "workspace"
+# chrono is a direct dependency across 140 files; the notice is unmaintained,
+# not a vulnerability. Remove this once the workspace moves to jiff.
+ignore = [{ id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; jiff migration tracked separately" }]
 
 [licenses]
 allow = [
